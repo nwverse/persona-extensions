@@ -7,6 +7,11 @@ Persona 的扩展里，**以后可以公开**的那些：不依赖任何公司�
 | 扩展 | 扩展点 | 说明 |
 | --- | --- | --- |
 | `linuxdo` | `ui`、`connectors` | LINUX DO 的热门帖子：扩展页里按兴趣看热门 / 今日 / 本周 / 最新，点开读正文和热门回复（hub 去读，手机不用代理）；助手的工具。只读公开内容、不用账号。从 internal 搬来。见 `extensions/linuxdo/README.md` |
+| `starter-kit` | `skills`、`prompts`、`triage_templates`、`themes` | 纯声明扩展的例子（不跑程序）：周回顾技能、回答风格的说明、三条快捷提示、两份收件箱分拣规则模板、一个主题色「森林」。要 #1854 之后的 hub |
+| `starter-pack` | `extension_pack` | 扩展合集的例子：一次装好 `starter-kit` 和 `linuxdo`。要 #1854 之后的 hub |
+
+纯声明的扩展（没有 `runtime`）只有清单和它指向的文件（`skills/`、`assistant/`），`scripts/package.sh` 不编程序；合集只有清单。
+写法见 Persona 的 `docs/extensions.md`「纯声明贡献」「依赖、导出和合集」。
 
 ## 放哪个仓库
 
