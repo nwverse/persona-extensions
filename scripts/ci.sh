@@ -24,8 +24,7 @@ bad=$(gofmt -l . | grep -v '^dist/' || true)
 
 step sdk
 go -C sdk/go vet ./...
-go -C sdk/go test -count=1 -timeout=90s ./ext ./exttest
-go -C sdk/go test -count=1 -timeout=90s ./wire -run 'Test(CustomContributionsStayOpaque|AdditionalPropertiesCannotShadowDeclaredFields)$'
+go -C sdk/go test -count=1 -timeout=90s ./...
 
 step vet
 go vet ./...

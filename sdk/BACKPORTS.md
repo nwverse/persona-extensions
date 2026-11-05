@@ -5,6 +5,8 @@ Only the open-object `Contributes` JSON methods were regenerated with the genera
 from Persona `08a782c2eeed292a051623e7031f4b0c45c71210` (upstream issue #2467 / PR #2577).
 The schemas, runtime handlers, declared fields and other SDK files stay at the baseline.
 The two upstream regression tests and their synthetic fixture are copied unchanged.
+The baseline SDK test fixtures are also copied byte-for-byte, making the complete
+nested SDK test suite self-contained; none are from a newer protocol version.
 
 The generated change is 48 added lines: preserve opaque additional JSON properties,
 match known keys by exact spelling, and prevent extras from shadowing declared fields.
@@ -24,7 +26,9 @@ not personal machine paths embedded in this repository.
 python3 -I - <persona-checkout> <extension-repository> <<'PY'
 import hashlib
 import importlib.util
+import json
 from pathlib import Path
+import subprocess
 import sys
 
 source, repo = (Path(p).resolve() for p in sys.argv[1:])
@@ -47,11 +51,19 @@ expected_copies = {'sdk/go/ext/custom_contributes_test.go': '52d30794d903b58a1a0
 for name, expected in expected_copies.items():
     assert digest(source / name) == expected
     assert digest(repo / name) == expected
+provenance_path = repo / "sdk/BASELINE_FIXTURES.json"
+assert digest(provenance_path) == "9b40e6b7f836d347645722db827101ded44b3ae92084c467a74d7646bbf9c776"
+provenance = json.loads(provenance_path.read_text())
+assert provenance["commit"] == "ed75671c7a2419eb815a0e0d6bcb4bd73bf2c46b"
+for name, expected in provenance["files"].items():
+    original = subprocess.run(["git", "-C", str(source), "show", provenance["commit"] + ":" + name],
+                              capture_output=True, check=True).stdout
+    assert hashlib.sha256(original).hexdigest() == expected
+    assert digest(repo / name) == expected
 print("custom-contributes backport: reproducible output and exact upstream test inputs")
 PY
 
-go -C <extension-repository>/sdk/go test -count=1 -timeout=90s ./ext ./exttest
-go -C <extension-repository>/sdk/go test -count=1 -timeout=90s ./wire -run 'Test(CustomContributionsStayOpaque|AdditionalPropertiesCannotShadowDeclaredFields)$'
+go -C <extension-repository>/sdk/go test -count=1 -timeout=90s ./...
 go -C <extension-repository>/sdk/go vet ./...
 ```
 
@@ -60,9 +72,9 @@ The SDK tests exercise typed JSON round trips and the actual JSON-lines `manifes
 reserved-field collision protection and values reused for subsequent decodes.
 The repository's `scripts/ci.sh` runs these tests as well as its existing checks.
 
-The baseline wire tests also reference upstream example directories that were never
-vendored here. A bare `go test ./...` in `sdk/go` therefore fails on missing old
-fixtures; this backport does not suppress those assertions or import unrelated
-examples. For the full local SDK run, provide the example files from the baseline
-commit alongside the new fixture, run `go -C sdk/go test -count=1 -timeout=90s ./...`,
-then remove only the temporary baseline example files. This full run passed locally.
+The SDK previously referenced example directories that were not vendored here, so
+its bare full suite failed on missing fixtures. This backport adds the original
+baseline inputs actually read by the tests, retaining all cases rather than selecting
+a subset to satisfy count assertions. `sdk/BASELINE_FIXTURES.json` records their full
+source commit and per-file SHA256. No showcase snapshots or newer schema examples
+are imported. The CI now runs `sdk/go`'s complete `./...` suite in a clean checkout.
