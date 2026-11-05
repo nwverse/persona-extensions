@@ -199,7 +199,7 @@ func TestMatchingRule(t *testing.T) {
 		{"cd view && rm -f sub/*", ""},
 		{"echo 'git' && push", ""},
 	} {
-		if got := matchingRule(rules, c.cmd); got != c.rule {
+		if got := matchingRule(rules, "Bash", c.cmd); got != c.rule {
 			t.Errorf("matchingRule(%q) = %q, want %q", c.cmd, got, c.rule)
 		}
 	}

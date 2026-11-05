@@ -35,6 +35,10 @@ func TestPersonOnly(t *testing.T) {
 		"gcloud compute instances delete i", "az group delete -n g", "terraform destroy", "docker compose down -v",
 		": > data.db", "echo {} > settings.json", "mv build/out.db data/prod.db", "cp -f a b", "tee config.json",
 		"bash -c 'rm -rf x'", "sh -c \"git push --force\"", "find . -name x -exec rm {} +", "git branch -M main",
+		// from the second review
+		`git commit -m "$(rm -rf ~/data)"`, "git commit -m \"`rm -rf x`\"", "find . | xargs -t rm -f", "sudo -b rm -rf /var/lib/app",
+		"ls &> data.db", "ls 1> data.db", "aws s3 sync ./out s3://b --delete", "gh api -X PATCH repos/o/r --field=visibility=public",
+		"ssh host 'rm -rf /srv/x'", "bash <<EOF\nrm -rf x\nEOF", "psql <<SQL\nDROP TABLE t;\nSQL",
 	}
 	for _, c := range stays {
 		if personOnly(c) == "" {
@@ -52,6 +56,10 @@ func TestPersonOnly(t *testing.T) {
 		"git commit -m 'drop rm wrapper'", "git commit -m 'Fix dd parsing'", "gh pr create --title x --body 'We delete the old cache'",
 		"cd /tmp/rm && ls", "kubectl get rolebinding -A", "aws s3 ls", "terraform plan", "docker compose down",
 		"bash -c 'go test ./...'", "find . -name '*.go'",
+		"git commit -m 'Map a -> b'", "python3 -c 'print(1 if 2 > 1 else 0)'", "awk '$3 > 100' data.csv", "grep -n '<div>' index.html",
+		"cat docs/grant.md", "grep -rn truncate src/", "git mv old new", "find . -name '*.go' -exec grep -l x {} +",
+		"go build | tee /tmp/build.log", "go test > /tmp/test.log 2>&1", "cat > /tmp/x.json <<EOF\n{\"rm\": 1}\nEOF",
+		"cat <<'EOF' | python3 -\nimport os; print('rm -rf would be bad')\nEOF", "git log --format='%h > %s'", "echo ok 2>/dev/null",
 	}
 	for _, c := range goes {
 		if why := personOnly(c); why != "" {
