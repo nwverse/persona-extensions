@@ -7,9 +7,10 @@ import (
 )
 
 // The floor: Bash commands that stay with a person even in bypassPermissions mode, because they delete or overwrite
-// data, force a push, or change permissions (local or online). The hook leaves any prompt for such a command to
-// Claude Code, which then asks as usual. It reads the command loosely and errs toward asking: quotes are dropped,
-// every word of every part of a pipeline or list is looked at, so `echo rm` or `grep chmod` count too.
+// data, force a push, or change permissions (local or online). When Claude Code asks about such a command, the hook
+// stays silent and the person answers. It reads the command loosely and errs toward asking: every part of a list,
+// pipeline or substitution counts, and a quoted argument is read again as a command (bash -c '…', psql -c "…"),
+// except the text of a commit message, title or body (-m, --message, --title, --body).
 //
 // What it cannot see: a command hidden in a variable, a script file, base64 or another program's input.
 
@@ -18,53 +19,149 @@ var alwaysPerson = map[string]string{
 	"rm": "deletion", "rmdir": "deletion", "unlink": "deletion", "shred": "deletion", "srm": "deletion",
 	"trash": "deletion", "trash-put": "deletion", "userdel": "deletion", "groupdel": "deletion",
 	"dd": "overwrite", "truncate": "overwrite", "wipefs": "overwrite", "fdisk": "overwrite", "parted": "overwrite",
+	"mv":    "overwrite",
 	"chmod": "permission change", "chown": "permission change", "chgrp": "permission change",
 	"chattr": "permission change", "setfacl": "permission change", "usermod": "permission change",
 	"passwd": "permission change", "chpasswd": "permission change", "visudo": "permission change",
 	"gpasswd": "permission change", "setcap": "permission change",
 }
 
-// sqlDestructive is SQL that deletes data, anywhere in the command.
-var sqlDestructive = regexp.MustCompile(`(?i)\b(drop\s+(table|database|schema|index|view)|truncate\s+table|delete\s+from)\b`)
+// sqlDestructive is SQL that deletes data or changes who may use it.
+var sqlDestructive = regexp.MustCompile(`(?i)\b(drop\s+(table|database|schema|index|view|user|role)|truncate\b|delete\s+from|grant\b|revoke\b|alter\s+(user|role))`)
 
 // onlinePermission is a path in a GitHub API call that is about who may do what.
 var onlinePermission = regexp.MustCompile(`(?i)(collaborators|permissions|protection|/teams|/members|memberships|invitations|rulesets|/keys|secrets|/hooks|environments)`)
 
+// redirect is output sent to a file with > or >| (not >>, 2>, >&, or a /dev/ file), which overwrites it.
+var redirect = regexp.MustCompile(`(?:^|[^<>&0-9|])>\|?\s*([^\s>&|;()]+)`)
+
+// messageFlags take free text (a commit message, a pull request's title or body), which is not read as a command.
+var messageFlags = map[string]bool{"-m": true, "--message": true, "--title": true, "--body": true, "-t": true, "-b": true}
+
 // personOnly says why cmd must stay with a person ("" when it need not).
-func personOnly(cmd string) string {
-	if sqlDestructive.MatchString(cmd) {
-		return "deletion (SQL)"
+func personOnly(cmd string) string { return personOnlyDepth(cmd, 0) }
+
+func personOnlyDepth(cmd string, depth int) string {
+	for _, m := range redirect.FindAllStringSubmatch(cmd, -1) {
+		if !strings.HasPrefix(m[1], "/dev/") {
+			return "overwrite: > " + m[1]
+		}
 	}
 	for _, words := range segments(cmd) {
-		if why := segmentPersonOnly(words); why != "" {
+		kept := withoutMessages(words)
+		if sqlDestructive.MatchString(strings.Join(kept, " ")) {
+			return "deletion or permission change (SQL)"
+		}
+		if why := segmentPersonOnly(kept); why != "" {
 			return why
+		}
+		if depth < 3 {
+			for _, w := range kept {
+				if strings.ContainsAny(w, " \t\n;&|()`") {
+					if why := personOnlyDepth(w, depth+1); why != "" {
+						return why
+					}
+				}
+			}
 		}
 	}
 	return ""
 }
 
-// segments splits cmd into the words of each simple command, loosely: quotes and line continuations are dropped,
-// and lists, pipes, subshells and command substitutions all separate.
-func segments(cmd string) [][]string {
-	cmd = strings.ReplaceAll(cmd, "\\\n", " ")
-	cmd = strings.NewReplacer(`'`, "", `"`, "", `\`, "").Replace(cmd)
-	parts := strings.FieldsFunc(cmd, func(r rune) bool {
-		return strings.ContainsRune(";&|\n()`{}", r)
-	})
-	var out [][]string
-	for _, p := range parts {
-		p = strings.ReplaceAll(p, "$", " ")
-		if w := strings.Fields(p); len(w) > 0 {
+// withoutMessages drops the free text after a message flag (-m 'text', --body=text).
+func withoutMessages(words []string) []string {
+	var out []string
+	for i := 0; i < len(words); i++ {
+		w := words[i]
+		if messageFlags[w] {
 			out = append(out, w)
+			i++
+			continue
 		}
+		if k, _, ok := strings.Cut(w, "="); ok && messageFlags[k] && strings.HasPrefix(k, "--") {
+			out = append(out, k)
+			continue
+		}
+		out = append(out, w)
 	}
 	return out
 }
 
+// segments splits cmd into the words of each simple command, as a shell would group them: quotes keep a word
+// together (and are removed), a backslash escapes the next character, and lists, pipes, subshells, groups and command
+// substitutions separate.
+func segments(cmd string) [][]string {
+	var out [][]string
+	var words []string
+	var cur strings.Builder
+	inWord, single, double := false, false, false
+	endWord := func() {
+		if inWord {
+			words = append(words, cur.String())
+			cur.Reset()
+			inWord = false
+		}
+	}
+	endSegment := func() {
+		endWord()
+		if len(words) > 0 {
+			out = append(out, words)
+			words = nil
+		}
+	}
+	rs := []rune(cmd)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		switch {
+		case single:
+			if r == '\'' {
+				single = false
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\\' && i+1 < len(rs):
+			i++
+			if rs[i] != '\n' {
+				cur.WriteRune(rs[i])
+				inWord = true
+			}
+		case double:
+			if r == '"' {
+				double = false
+			} else {
+				cur.WriteRune(r)
+			}
+		case r == '\'':
+			single, inWord = true, true
+		case r == '"':
+			double, inWord = true, true
+		case strings.ContainsRune(";&|\n()`{}", r):
+			endSegment()
+		case r == ' ' || r == '\t' || r == '\r':
+			endWord()
+		case r == '$' && i+1 < len(rs) && rs[i+1] == '(':
+			endSegment()
+		default:
+			cur.WriteRune(r)
+			inWord = true
+		}
+	}
+	endSegment()
+	return out
+}
+
+// isProgram says whether word w names the program name: the bare name, or a path to it in a bin directory.
+func isProgram(w, name string) bool {
+	return w == name || (strings.Contains(w, "bin/") && path.Base(w) == name)
+}
+
 func segmentPersonOnly(words []string) string {
 	for i, w := range words {
-		name := path.Base(w)
-		if why, ok := alwaysPerson[name]; ok {
+		name := w
+		if strings.Contains(w, "bin/") {
+			name = path.Base(w)
+		}
+		if why, ok := alwaysPerson[name]; ok && isProgram(w, name) {
 			return why + ": " + name
 		}
 		if strings.HasPrefix(name, "mkfs") {
@@ -78,26 +175,42 @@ func segmentPersonOnly(words []string) string {
 		case "gh":
 			why = ghPersonOnly(rest)
 		case "find":
-			if has(rest, "-delete") {
+			if hasAny(rest, "-delete", "-exec", "-execdir", "-ok") {
 				why = "deletion: find -delete"
 			}
 		case "rsync":
 			if hasPrefix(rest, "--delete") || has(rest, "--remove-source-files") {
 				why = "deletion: rsync --delete"
 			}
+		case "cp":
+			if has(rest, "--force") || has(rest, "--remove-destination") || hasShort(rest, 'f') {
+				why = "overwrite: cp -f"
+			}
+		case "tee":
+			if !has(rest, "--append") && !hasShort(rest, 'a') && len(rest) > 0 {
+				why = "overwrite: tee"
+			}
 		case "docker", "podman":
-			if len(rest) > 0 && (has(rest, "rm") || has(rest, "rmi") || has(rest, "prune")) {
+			if hasAny(rest, "rm", "rmi", "prune") || (has(rest, "down") && (has(rest, "--volumes") || hasShort(rest, 'v'))) {
 				why = "deletion: " + name
 			}
 		case "kubectl", "helm":
-			if has(rest, "delete") || has(rest, "uninstall") {
+			if hasAny(rest, "delete", "uninstall", "drain") {
 				why = "deletion: " + name
-			} else if hasAny(rest, "role", "rolebinding", "clusterrole", "clusterrolebinding", "serviceaccount") {
+			} else if hasAny(rest, "create", "apply", "edit", "patch", "replace", "set") &&
+				hasAny(rest, "role", "rolebinding", "clusterrole", "clusterrolebinding", "serviceaccount", "sa") {
 				why = "permission change: " + name
 			}
+		case "terraform", "tofu", "pulumi":
+			if has(rest, "destroy") || has(rest, "-destroy") {
+				why = "deletion: " + name + " destroy"
+			}
 		case "aws":
-			if len(rest) > 0 && rest[0] == "iam" {
-				why = "permission change: aws iam"
+			switch {
+			case has(rest, "iam") || hasPrefixContaining(rest, "put-", "policy") || hasPrefixContaining(rest, "put-", "acl"):
+				why = "permission change: aws"
+			case hasPrefix(rest, "delete-") || hasPrefix(rest, "terminate-") || (has(rest, "s3") && hasAny(rest, "rm", "rb")):
+				why = "deletion: aws"
 			}
 		case "gcloud", "gsutil":
 			for _, r := range rest {
@@ -105,9 +218,14 @@ func segmentPersonOnly(words []string) string {
 					why = "permission change: " + name
 				}
 			}
+			if why == "" && hasAny(rest, "delete", "rm", "rb") {
+				why = "deletion: " + name
+			}
 		case "az":
-			if len(rest) > 0 && rest[0] == "role" {
+			if has(rest, "role") {
 				why = "permission change: az role"
+			} else if has(rest, "delete") {
+				why = "deletion: az"
 			}
 		}
 		if why != "" {
@@ -153,7 +271,7 @@ func gitPersonOnly(args []string) string {
 		}
 	case "branch", "tag":
 		if has(rest, "--delete") || has(rest, "--force") || hasShort(rest, 'd') || hasShort(rest, 'D') || hasShort(rest, 'f') || hasShort(rest, 'M') {
-			return "deletion: git " + sub + " -d"
+			return "deletion or overwrite: git " + sub
 		}
 	case "stash":
 		if hasAny(rest, "drop", "clear") {
@@ -210,6 +328,20 @@ func ghPersonOnly(args []string) string {
 		if method == "DELETE" {
 			return "deletion: gh api DELETE"
 		}
+		if has(args, "graphql") {
+			for _, a := range args {
+				if strings.Contains(strings.ToLower(a), "mutation") {
+					return "online change: gh api graphql mutation"
+				}
+			}
+		}
+		if method != "GET" && method != "HEAD" {
+			for _, a := range args {
+				if v := strings.ToLower(a); strings.HasPrefix(v, "visibility=") || strings.HasPrefix(v, "private=") {
+					return "permission change: gh api " + a
+				}
+			}
+		}
 		if method != "GET" && method != "HEAD" {
 			for _, a := range args[1:] {
 				if !strings.HasPrefix(a, "-") && onlinePermission.MatchString(a) {
@@ -229,6 +361,16 @@ func hasAny(words []string, ws ...string) bool {
 			if x == w {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+// hasPrefixContaining says whether a word starts with p and has c in it (put-bucket-policy).
+func hasPrefixContaining(words []string, p, c string) bool {
+	for _, x := range words {
+		if strings.HasPrefix(x, p) && strings.Contains(x, c) {
+			return true
 		}
 	}
 	return false

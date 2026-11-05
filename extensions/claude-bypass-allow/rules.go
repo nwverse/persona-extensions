@@ -82,8 +82,15 @@ func ruleTool(r string) string {
 	return strings.TrimSpace(r)
 }
 
-// sameTool says whether a rule for ruleName is about tool; Agent was called Task before.
+// readers are the tools a Read rule also covers: Claude Code applies Read rules to every tool that reads files.
+var readers = map[string]bool{"Read": true, "Glob": true, "Grep": true, "LS": true, "NotebookRead": true}
+
+// sameTool says whether a rule for ruleName is about tool; Agent was called Task before, and a Read rule is about
+// every tool that reads files.
 func sameTool(ruleName, tool string) bool {
+	if ruleName == "Read" && readers[tool] {
+		return true
+	}
 	alias := func(s string) string {
 		if s == "Task" {
 			return "Agent"

@@ -27,6 +27,14 @@ func TestPersonOnly(t *testing.T) {
 		"gh api repos/o/r/branches/main/protection -X DELETE", "gh api repos/o/r/collaborators/u -f permission=admin",
 		"gh ssh-key add k.pub", "aws iam attach-user-policy --user-name u", "gcloud projects add-iam-policy-binding p",
 		"kubectl create rolebinding rb --role=r", "az role assignment create",
+		// from the review: online visibility, global flags, cloud and SQL deletions, overwrites, nested commands
+		"gh api -X PATCH repos/o/r -f visibility=public", "gh api graphql -f query='mutation{updateRepository(x)}'",
+		"aws --profile prod iam attach-role-policy --role-name r", "az --subscription s role assignment create",
+		"aws s3api put-bucket-policy --bucket b", "psql -c 'TRUNCATE users'", "psql -c 'GRANT ALL ON t TO u'",
+		"aws s3 rm s3://b/x --recursive", "aws s3 rb s3://b --force", "aws dynamodb delete-table --table-name t",
+		"gcloud compute instances delete i", "az group delete -n g", "terraform destroy", "docker compose down -v",
+		": > data.db", "echo {} > settings.json", "mv build/out.db data/prod.db", "cp -f a b", "tee config.json",
+		"bash -c 'rm -rf x'", "sh -c \"git push --force\"", "find . -name x -exec rm {} +", "git branch -M main",
 	}
 	for _, c := range stays {
 		if personOnly(c) == "" {
@@ -38,9 +46,12 @@ func TestPersonOnly(t *testing.T) {
 		"git push -u origin feat/x", "git checkout -b feat/x", "git checkout main", "git switch feat/x", "git branch -a",
 		"git reset HEAD~1", "git stash list", "git stash push -m x", "git fetch --prune", "git log --format=%H",
 		"gh pr create --title t", "gh pr merge 3 --squash", "gh api repos/o/r/pulls", "gh api repos/o/r/collaborators",
-		"gh issue create -t x -b y", "make build", "mkdir -p a/b", "cp a b", "mv a b", "rsync -a src/ dst/",
+		"gh issue create -t x -b y", "make build", "mkdir -p a/b", "cp a b", "rsync -a src/ dst/",
 		"python3 -c 'print(1)'", "curl -s https://example.com", "docker ps", "kubectl get pods", "npm run format",
-		"grep -rn armed .", "cat firmware.bin | head", "echo hello > out.txt",
+		"grep -rn armed .", "cat firmware.bin | head", "echo hello >> out.txt", "make 2>&1 | tail", "ls > /dev/null",
+		"git commit -m 'drop rm wrapper'", "git commit -m 'Fix dd parsing'", "gh pr create --title x --body 'We delete the old cache'",
+		"cd /tmp/rm && ls", "kubectl get rolebinding -A", "aws s3 ls", "terraform plan", "docker compose down",
+		"bash -c 'go test ./...'", "find . -name '*.go'",
 	}
 	for _, c := range goes {
 		if why := personOnly(c); why != "" {
@@ -112,7 +123,12 @@ func TestHookLeavesRulesForOtherTools(t *testing.T) {
 	}
 	grep := request(e, "bypassPermissions", "Grep", "")
 	grep["tool_input"] = map[string]any{"pattern": "x"}
-	if got := e.hook(t, grep, now); got == "" {
+	if got := e.hook(t, grep, now); got != "" {
+		t.Errorf("a Read rule covers Grep too: %q", got)
+	}
+	free := newEnv(t)
+	grep["cwd"] = free.project
+	if got := free.hook(t, grep, now); got == "" {
 		t.Error("no rule is about Grep: should be allowed")
 	}
 	if got := e.hook(t, request(e, "bypassPermissions", "Bash", "ls"), now); got == "" {
@@ -129,6 +145,8 @@ func TestMatcher(t *testing.T) {
 		match      bool
 	}{
 		{"Read", "Read", true}, {"Read(~/x)", "Read", true}, {"Task", "Agent", true}, {"Agent(Explore)", "Task", true},
+		{"Read(~/.ssh/**)", "Grep", true}, {"Read(~/.ssh/**)", "Glob", true}, {"Read", "LS", true},
+		{"Read", "NotebookRead", true}, {"Grep", "Read", false},
 		{"Write(./x)", "Read", false}, {"Bash(git push:*)", "Read", false}, {"mcp__x", "Agent", false},
 	} {
 		got := matchingRule([]string{r.rule}, r.tool, "") != ""
