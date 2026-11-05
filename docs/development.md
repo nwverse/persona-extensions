@@ -43,15 +43,16 @@ go test ./...
 scripts/ci.sh
 ```
 
-`scripts/ci.sh` checks local documentation links and their regression tests, manifests, Go formatting, `go vet`, Go tests, the [LarkAgentX companion's synthetic Python tests](extensions/larkagentx.md#local-validation-and-remaining-work), builds for every platform declared by each manifest, equivalent market entries and existing index signatures. It packages extensions locally, but without the `release` argument it does not publish anything.
+`scripts/ci.sh` checks local documentation links and their regression tests, manifests, Go formatting, `go vet` and the full test suite of the copied SDK, root `go vet`, Go tests, the [LarkAgentX companion's synthetic Python tests](extensions/larkagentx.md#local-validation-and-remaining-work), builds for every platform declared by each manifest, equivalent market entries and existing index signatures. It packages extensions locally, but without the `release` argument it does not publish anything.
 
-The copied SDK is a nested module, so root `go test ./...` does not run its own test packages. To check that copy separately:
+The copied SDK is a nested module, so root `go vet ./...` and `go test ./...` do not reach it. `scripts/ci.sh` checks it separately; to run only that part:
 
 ```sh
-go -C sdk/go test ./...
+go -C sdk/go vet ./...
+go -C sdk/go test -count=1 -timeout=90s ./...
 ```
 
-The `ext` and `exttest` packages have self-contained tests. Some `wire` tests look for host-side example fixtures that are not distributed in this public checkout; without those, the full nested-module run fails with "no examples" / "only 0 cases". Report that limitation rather than importing private fixtures or claiming the full suite passed.
+The `wire` tests read synthetic baseline examples vendored under `schema/extension/examples/`, recorded in [`sdk/BASELINE_FIXTURES.json`](../sdk/BASELINE_FIXTURES.json), so the full suite runs in a public checkout. If it fails with "no examples" / "only 0 cases", those files are missing or moved; check them against that record rather than skipping the tests or importing private fixtures.
 
 For a single extension:
 
