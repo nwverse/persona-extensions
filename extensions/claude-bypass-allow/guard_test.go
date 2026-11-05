@@ -48,6 +48,11 @@ func TestPersonOnly(t *testing.T) {
 		"n=$((1<<shift))\nrm -rf \"$t\"", "(( m = 1<<k ))\nrm -rf \"$t\"", "cat <<<'x <<EOF'\nrm -rf \"$t\"",
 		// two heredocs on a line: both bodies are skipped, then the commands after them count
 		"cat <<A <<B\nx\nA\ny\nB\nrm -rf \"$t\"",
+		// from the review: $'…' escapes, nested arithmetic, a continued line, a shell on the line before, backticks,
+		// and delimiters with - or # in them
+		"cat <<X $'a\\''\ndata\nX\n# '\nrm -rf \"$t\"\nX", "echo $(( (1+(2)) << x ))\nrm -rf \"$t\"",
+		"cat <<EOF \\\n; rm -rf \"$t\"\nEOF", "bash \\\n<<EOF\nrm -rf \"$t\"\nEOF", "echo `cat <<'E'`\nrm -rf \"$t\"\nE",
+		"cat <<E-O-F\nx\nE-O-F\nrm -rf \"$t\"\nE", "cat <<EOF#c\nx\nEOF#c\nrm -rf \"$t\"\nEOF",
 	}
 	for _, c := range stays {
 		if personOnly(c) == "" {
@@ -69,7 +74,9 @@ func TestPersonOnly(t *testing.T) {
 		"cat docs/grant.md", "grep -rn truncate src/", "git mv old new", "find . -name '*.go' -exec grep -l x {} +",
 		"go build | tee /tmp/build.log", "go test > /tmp/test.log 2>&1", "cat > /tmp/x.json <<EOF\n{\"rm\": 1}\nEOF",
 		"cat <<'EOF' | python3 -\nimport os; print('rm -rf would be bad')\nEOF", "cat <<A <<'B'\nrm a\nA\nrm b\nB",
-		"diff <(cat <<EOF\nrm x\nEOF\n) f", "cat > /tmp/x <<-EOF\n\trm x\n\tEOF", "echo \"$((1<<3))\" && cat <<EOF\nrm x\nEOF", "git log --format='%h > %s'", "echo ok 2>/dev/null",
+		"diff <(cat <<EOF\nrm x\nEOF\n) f", "cat > /tmp/x <<-EOF\n\trm x\n\tEOF", "echo \"$((1<<3))\" && cat <<EOF\nrm x\nEOF",
+		"((cd /tmp) && echo ok)\ncat > /tmp/o <<'EOF'\nrm x\nEOF", "cat > /tmp/o <<\\EOF\nrm x\nEOF",
+		"git commit -m \"$(cat <<'EOF'\nDrop the rm -rf cleanup\nEOF\n)\"", "python3 - <<'PY'\nimport os; os.remove('x')\nPY", "git log --format='%h > %s'", "echo ok 2>/dev/null",
 		"command -v rm", "sed -n 1,20p f", "sed 's/a/b/' f", "ln -s a b", "npx prettier --check .",
 	}
 	for _, c := range goes {

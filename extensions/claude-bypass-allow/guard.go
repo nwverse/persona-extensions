@@ -44,9 +44,6 @@ var sqlDestructive = regexp.MustCompile(`(?i)\b(drop\s+(table|database|schema|in
 // onlinePermission is a path in a GitHub API call that is about who may do what.
 var onlinePermission = regexp.MustCompile(`(?i)(collaborators|permissions|protection|/teams|/members|memberships|invitations|rulesets|/keys|secrets|/hooks|environments)`)
 
-// heredocOp is what follows a heredoc's << (-EOF, 'EOF', "EOF"): the dash, and the delimiter.
-var heredocOp = regexp.MustCompile(`^(-?)\s*['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?`)
-
 // personOnly says why cmd must stay with a person ("" when it need not).
 func personOnly(cmd string) string { return personOnlyDepth(cmd, 0) }
 
@@ -88,29 +85,30 @@ func personOnlyDepth(cmd string, depth int) string {
 }
 
 // stripHeredocs takes out the body of each heredoc that is not fed to a shell: what cat, tee or python read is data.
-// Only a << the shell reads as one starts a heredoc: not one inside quotes ('usage: x <<FILE'), a comment, or
-// arithmetic ($((1<<n))), whose following lines are commands.
+// Only a << the shell reads as an operator starts a heredoc: not one inside quotes ('usage: x <<FILE', $'…'),
+// backticks, a comment or arithmetic ($((1<<n))), whose following lines are commands. A body starts after the line
+// the command's words end on (a quote or a backslash-newline carries them on), and a shell anywhere in those words
+// keeps the bodies. Where the scan is unsure it finds no heredoc, so a body is read as commands: that asks more.
 func stripHeredocs(cmd string) string {
 	lines := strings.Split(cmd, "\n")
 	var out []string
 	var st heredocScan
 	var pending []heredocStart
+	var words []string // the lines of the command the pending heredocs are on
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		out = append(out, line)
+		words = append(words, line)
+		pending = append(pending, st.line(line)...)
+		if st.single || st.double || st.cont {
+			continue // the command goes on to the next line, and the bodies start after the line it ends on
+		}
 		keep := false
-		segs, _ := scan(line)
-		for _, words := range segs {
-			for _, w := range words {
+		segs, _ := scan(strings.Join(words, "\n"))
+		for _, ws := range segs {
+			for _, w := range ws {
 				keep = keep || shells[path.Base(w)]
 			}
-		}
-		for _, h := range st.line(line) {
-			h.keep = keep
-			pending = append(pending, h)
-		}
-		if st.single || st.double {
-			continue // a quote goes on to the next line, and the bodies start after the line it ends on
 		}
 		for _, h := range pending {
 			for i+1 < len(lines) {
@@ -123,66 +121,124 @@ func stripHeredocs(cmd string) string {
 					out = append(out, lines[i])
 					break
 				}
-				if h.keep {
+				if keep {
 					out = append(out, lines[i])
 				}
 			}
 		}
-		pending = nil
+		pending, words = nil, nil
 	}
 	return strings.Join(out, "\n")
 }
 
-// heredocStart is a heredoc operator: its delimiter, whether it was <<- (leading tabs stripped), and whether its
-// line feeds a shell (its body is then commands).
+// heredocStart is a heredoc operator: its delimiter, and whether it was <<- (leading tabs stripped from the body).
 type heredocStart struct {
-	delim      string
-	dash, keep bool
+	delim string
+	dash  bool
 }
 
-// heredocScan reads a command line by line for heredoc operators, carrying quotes and arithmetic across lines.
+// heredocScan reads a command line by line for heredoc operators, carrying quotes, backticks and arithmetic across
+// lines.
 type heredocScan struct {
 	single, double bool
-	arith          int // depth of (( … )) and $(( … ))
+	ansi           bool // the single quote is $'…', in which a backslash escapes
+	backtick       bool
+	cont           bool // the line ended with a backslash: the command goes on
+	arith          int  // open parentheses of a (( … )) or $(( … )), 0 outside one
 }
 
 // line is the heredoc operators on one line that the shell reads as operators.
 func (st *heredocScan) line(line string) []heredocStart {
 	var found []heredocStart
+	st.cont = false
 	rs := []rune(line)
 	for i := 0; i < len(rs); i++ {
 		r := rs[i]
 		switch {
 		case st.single:
-			st.single = r != '\''
+			if st.ansi && r == '\\' {
+				i++
+			} else if r == '\'' {
+				st.single, st.ansi = false, false
+			}
 		case r == '\\':
+			if i == len(rs)-1 {
+				st.cont = true
+			}
 			i++ // the next character is escaped, in double quotes too
 		case st.double:
 			st.double = r != '"'
+		case r == '$' && i+1 < len(rs) && rs[i+1] == '\'':
+			st.single, st.ansi = true, true
+			i++
 		case r == '\'':
 			st.single = true
 		case r == '"':
 			st.double = true
+		case r == '`':
+			st.backtick = !st.backtick
+		case st.arith > 0:
+			if r == '(' {
+				st.arith++
+			} else if r == ')' {
+				st.arith--
+			}
 		case r == '#' && (i == 0 || strings.ContainsRune(" \t;&|()", rs[i-1])):
 			return found // a comment, to the end of the line
 		case r == '(' && i+1 < len(rs) && rs[i+1] == '(':
-			st.arith++
+			st.arith = 2
 			i++
-		case r == ')' && i+1 < len(rs) && rs[i+1] == ')' && st.arith > 0:
-			st.arith--
-			i++
-		case r == '<' && st.arith == 0 && i+1 < len(rs) && rs[i+1] == '<':
+		case r == '<' && !st.backtick && i+1 < len(rs) && rs[i+1] == '<':
 			if i+2 < len(rs) && rs[i+2] == '<' {
 				i += 2 // a here-string
 				continue
 			}
-			i++
-			if m := heredocOp.FindStringSubmatch(string(rs[i+1:])); m != nil {
-				found = append(found, heredocStart{delim: m[2], dash: m[1] == "-"})
+			var h heredocStart
+			i, h = heredocWord(rs, i+1)
+			if h.delim != "" {
+				found = append(found, h)
 			}
 		}
 	}
 	return found
+}
+
+// heredocWord reads what follows the << whose second < is at rs[i]: the delimiter is the shell word after it (and
+// after a - for <<-), with its quotes and backslashes taken out. It returns the index of the word's last character.
+func heredocWord(rs []rune, i int) (int, heredocStart) {
+	var h heredocStart
+	if i+1 < len(rs) && rs[i+1] == '-' {
+		h.dash = true
+		i++
+	}
+	for i+1 < len(rs) && (rs[i+1] == ' ' || rs[i+1] == '\t') {
+		i++
+	}
+	var w strings.Builder
+	var quote rune
+	for i+1 < len(rs) {
+		r := rs[i+1]
+		if quote == 0 && strings.ContainsRune(" \t;&|()<>", r) {
+			break
+		}
+		i++
+		switch {
+		case quote != 0 && r == quote:
+			quote = 0
+		case quote == 0 && (r == '\'' || r == '"'):
+			quote = r
+		case r == '\\' && quote != '\'' && i+1 < len(rs):
+			i++
+			w.WriteRune(rs[i])
+		default:
+			w.WriteRune(r)
+		}
+	}
+	if quote != 0 {
+		return i, heredocStart{} // a quote left open: not a delimiter the scan can match
+	}
+	h.delim = w.String()
+	return i, h
 }
 
 // withoutMessages drops free text: what follows git's -m and --message, and gh's --title, --body, --notes, -t, -b
