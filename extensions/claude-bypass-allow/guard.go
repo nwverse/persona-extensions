@@ -100,7 +100,7 @@ func stripHeredocs(cmd string) string {
 		out = append(out, line)
 		words = append(words, line)
 		pending = append(pending, st.line(line)...)
-		if st.single || st.double || st.cont {
+		if st.single || st.double || st.cont || st.inside(pending) {
 			continue // the command goes on to the next line, and the bodies start after the line it ends on
 		}
 		keep := false
@@ -131,10 +131,12 @@ func stripHeredocs(cmd string) string {
 	return strings.Join(out, "\n")
 }
 
-// heredocStart is a heredoc operator: its delimiter, and whether it was <<- (leading tabs stripped from the body).
+// heredocStart is a heredoc operator: its delimiter, whether it was <<- (leading tabs stripped from the body), and
+// how many command substitutions it is inside.
 type heredocStart struct {
 	delim string
 	dash  bool
+	depth int
 }
 
 // heredocScan reads a command line by line for heredoc operators, carrying quotes, backticks and arithmetic across
@@ -143,8 +145,29 @@ type heredocScan struct {
 	single, double bool
 	ansi           bool // the single quote is $'…', in which a backslash escapes
 	backtick       bool
-	cont           bool // the line ended with a backslash: the command goes on
-	arith          int  // open parentheses of a (( … )) or $(( … )), 0 outside one
+	cont           bool  // the line ended with a backslash: the command goes on
+	arith          int   // open parentheses of a (( … )) or $(( … )), 0 outside one
+	subst          []int // for each open $( … ), its open parentheses (its own one included)
+}
+
+// depth is how many command substitutions ($( … ) and backticks) the scan is inside.
+func (st *heredocScan) depth() int {
+	if st.backtick {
+		return len(st.subst) + 1
+	}
+	return len(st.subst)
+}
+
+// inside says whether the line ended inside a command substitution that one of the heredocs is outside of: the
+// command they are on goes on, and their bodies start after the line it ends on. A heredoc inside $( … ) has its
+// body on the next line (x=$(cat <<'EOF' …)), and so has one before a ( … ) subshell that goes on.
+func (st *heredocScan) inside(pending []heredocStart) bool {
+	for _, h := range pending {
+		if st.depth() > h.depth {
+			return true
+		}
+	}
+	return false
 }
 
 // line is the heredoc operators on one line that the shell reads as operators.
@@ -188,6 +211,15 @@ func (st *heredocScan) line(line string) []heredocStart {
 		case r == '(' && i+1 < len(rs) && rs[i+1] == '(':
 			st.arith = 2
 			i++
+		case r == '$' && i+1 < len(rs) && rs[i+1] == '(' && (i+2 == len(rs) || rs[i+2] != '('):
+			st.subst = append(st.subst, 1)
+			i++
+		case r == '(' && len(st.subst) > 0:
+			st.subst[len(st.subst)-1]++
+		case r == ')' && len(st.subst) > 0:
+			if st.subst[len(st.subst)-1]--; st.subst[len(st.subst)-1] == 0 {
+				st.subst = st.subst[:len(st.subst)-1]
+			}
 		case r == '<' && !st.backtick && i+1 < len(rs) && rs[i+1] == '<':
 			if i+2 < len(rs) && rs[i+2] == '<' {
 				i += 2 // a here-string
@@ -196,6 +228,7 @@ func (st *heredocScan) line(line string) []heredocStart {
 			var h heredocStart
 			i, h = heredocWord(rs, i+1)
 			if h.delim != "" {
+				h.depth = st.depth()
 				found = append(found, h)
 			}
 		}
@@ -205,6 +238,8 @@ func (st *heredocScan) line(line string) []heredocStart {
 
 // heredocWord reads what follows the << whose second < is at rs[i]: the delimiter is the shell word after it (and
 // after a - for <<-), with its quotes and backslashes taken out. It returns the index of the word's last character.
+// A word the scan cannot read the way the shell does gives no delimiter: one with $ or a backtick in it ($(echo END)
+// is one word to the shell), one that runs into a parenthesis, or one that a backslash-newline carries on.
 func heredocWord(rs []rune, i int) (int, heredocStart) {
 	var h heredocStart
 	if i+1 < len(rs) && rs[i+1] == '-' {
@@ -216,9 +251,11 @@ func heredocWord(rs []rune, i int) (int, heredocStart) {
 	}
 	var w strings.Builder
 	var quote rune
+	unsure := false
 	for i+1 < len(rs) {
 		r := rs[i+1]
 		if quote == 0 && strings.ContainsRune(" \t;&|()<>", r) {
+			unsure = unsure || ((r == '(' || r == ')') && w.Len() > 0)
 			break
 		}
 		i++
@@ -227,15 +264,20 @@ func heredocWord(rs []rune, i int) (int, heredocStart) {
 			quote = 0
 		case quote == 0 && (r == '\'' || r == '"'):
 			quote = r
-		case r == '\\' && quote != '\'' && i+1 < len(rs):
+		case r == '\\' && quote != '\'':
+			if i+1 == len(rs) {
+				unsure = true // a backslash-newline: the word goes on on the next line
+				break
+			}
 			i++
 			w.WriteRune(rs[i])
 		default:
+			unsure = unsure || r == '$' || r == '`'
 			w.WriteRune(r)
 		}
 	}
-	if quote != 0 {
-		return i, heredocStart{} // a quote left open: not a delimiter the scan can match
+	if quote != 0 || unsure {
+		return i, heredocStart{} // not a delimiter the scan can match
 	}
 	h.delim = w.String()
 	return i, h
