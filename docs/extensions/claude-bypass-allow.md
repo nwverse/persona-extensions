@@ -2,7 +2,7 @@
 
 [Documentation](../README.md) · [Source](../../extensions/claude-bypass-allow/)
 
-Claude Code in `bypassPermissions` mode (`--dangerously-skip-permissions`, "bypass permissions on") still stops on some Bash calls and waits for someone to choose **Yes**. Persona then shows the agent as waiting for you, and an unattended run, often a subagent, stalls until someone answers or Claude Code denies the call after two minutes. On the computers you choose, this extension adds a Claude Code `PermissionRequest` hook. It allows those prompts only for Bash calls in `bypassPermissions` sessions. In every other case, it stays silent and Claude Code asks as usual.
+Claude Code in `bypassPermissions` mode (`--dangerously-skip-permissions`, "bypass permissions on") still stops on some calls and waits for someone to choose **Yes**. Persona then shows the agent as waiting for you, and an unattended run, often a subagent, stalls until someone answers or Claude Code denies the call after two minutes. On the computers you choose, this extension adds a Claude Code `PermissionRequest` hook. It allows those prompts only in `bypassPermissions` sessions, only for Bash, the read-only tools and subagents, and never for a Bash command that deletes or overwrites data, forces a push or changes permissions. In every other case, it stays silent and Claude Code asks as usual.
 
 ## What still prompts in bypass mode
 
@@ -14,6 +14,7 @@ Measured with Claude Code 2.1.308 in a throwaway project:
 | `for d in …; do rm -rf "$t"; done` (a target built at run time) | Yes, same check |
 | A Bash command matching your own `permissions.ask` rule, such as `Bash(touch:*)` | Yes: "Permission rule … requires confirmation" |
 | A 12,000-character one-liner, a heredoc, `eval`, a `for` loop, `X=view; rm -rf "$X"/x` | No |
+| Read, Glob or Grep of a path outside the working directories, when reads outside them are blocked | Yes: "Read outside the working directories" |
 
 Length alone does not trigger a prompt. Claude Code has a small set of safety checks that bypass mode does not skip. Its build calls them *bypass-immune*. For Bash, the main one is *dangerous removal*: an `rm` or `rmdir` whose target cannot be resolved before the command runs. Examples are a glob after `cd`, a variable or `$(...)` target, and an `rm` inside a `bash -c` script that Claude Code cannot parse. Claude Code runs `PermissionRequest` hooks for these prompts. The hook input includes `permission_mode`, and a hook's `allow` is honoured. When several hooks are configured, the first `allow` wins, so this hook does not wait for slower ones. Persona's own hook, which sends the prompt to your phone, is one of them.
 
@@ -21,13 +22,16 @@ Length alone does not trigger a prompt. Claude Code has a small set of safety ch
 
 The hook answers `allow` only if all of these hold:
 
-- The session's `permission_mode` is `bypassPermissions` and the tool is `Bash`. Other modes (`default`, `acceptEdits`, `plan`, `auto`) and other tools, including MCP tools, Write and Edit, are never answered.
+- The session's `permission_mode` is `bypassPermissions`, and the tool is `Bash`, a read-only tool (`Read`, `Glob`, `Grep`, `LS`, `NotebookRead`) or `Agent` (`Task` in older versions). A subagent's own calls come to the hook one by one and are judged the same way. Other modes (`default`, `acceptEdits`, `plan`, `auto`) and other tools, including MCP tools, `Write`, `Edit`, `MultiEdit`, `NotebookEdit` and `Workflow`, are never answered. The settings entry's matcher lists exactly these tools.
+- For Bash, the command is not one that stays with a person. These are: deletion (`rm`, `rmdir`, `unlink`, `shred`, `find -delete`, `git clean`, `git rm`, `git branch -d`/`-D`, `git tag -d`, `git stash drop`/`clear`, `git worktree remove`, `rsync --delete`, `docker rm`/`prune`, `kubectl delete`, `gh … delete`, `gh pr merge --delete-branch`, `gh api -X DELETE`, SQL `DROP`/`TRUNCATE TABLE`/`DELETE FROM`); overwriting data (`dd`, `mkfs*`, `truncate`, `git reset --hard`, `git checkout -f`/`--`/`.`, `git restore`, `git switch --discard-changes`); a forced or deleting push (`--force*`, `-f`, `--mirror`, `--delete`, `+ref`, `:ref`); and permission changes (`chmod`, `chown`, `chgrp`, `chattr`, `setfacl`, `usermod`, `passwd`, `visudo`, `setcap`, `gh secret`/`variable`/`ssh-key`/`gpg-key`, `gh repo edit --visibility`, `gh repo deploy-key`, a `gh api` write to collaborators, permissions, branch protection, teams, members, keys, secrets, hooks or environments, `aws iam`, `gcloud … iam-policy`, `az role`, Kubernetes roles and bindings). The command is read loosely: quotes are dropped, and every word of every part of a list, pipeline or substitution counts, so `echo rm` stays with you too. A command hidden in a variable, a script file or another program's input is not seen.
 - The extension's program is running on that computer. It refreshes a heartbeat every minute. If the heartbeat is more than five minutes old, the hook allows nothing. This covers the case where the program was killed before it could remove its entry.
-- None of your own Bash `ask` or `deny` rules could apply to the command. The hook reads managed settings, the config directory's `settings.json` and `settings.local.json`, and `.claude/settings.json` and `.claude/settings.local.json` in the session's working directory and each parent. A rule counts when the literal start of its pattern appears anywhere in the command, either as written or after quotes, backslashes and line continuations are removed and each run of whitespace becomes one space. For example, `Bash(git push:*)` counts for `cd x && git push`, `git  push` and `'git' push`, and a bare `Bash` counts for everything. Flags in another order are not matched: `Bash(rm -rf:*)` does not count for `rm -fr` or `rm -r -f`, and Claude Code 2.1.318 does not ask for those either. This errs toward asking. Claude Code applies `deny` rules before it asks, so those calls never reach the hook; they are checked anyway.
+- None of your own `ask` or `deny` rules could apply to the call. For tools other than Bash, any rule naming the tool counts for every call of it, whatever its pattern: `Read(./secrets/**)` keeps every Read prompt with you, and a rule for `Task` counts for `Agent`. For Bash rules: The hook reads managed settings, the config directory's `settings.json` and `settings.local.json`, and `.claude/settings.json` and `.claude/settings.local.json` in the session's working directory and each parent. A rule counts when the literal start of its pattern appears anywhere in the command, either as written or after quotes, backslashes and line continuations are removed and each run of whitespace becomes one space. For example, `Bash(git push:*)` counts for `cd x && git push`, `git  push` and `'git' push`, and a bare `Bash` counts for everything. Flags in another order are not matched: `Bash(rm -rf:*)` does not count for `rm -fr` or `rm -r -f`, and Claude Code 2.1.318 does not ask for those either. This errs toward asking. Claude Code applies `deny` rules before it asks, so those calls never reach the hook; they are checked anyway.
 
 The hook cannot see rules passed on the command line (`--settings`, `--allowedTools`/`--disallowedTools`), rules added in the session with `/permissions` and not saved, or project settings outside the session's working directory and its parents. If an `ask` rule exists only in one of those places, Claude Code's prompt for it will be auto-allowed in bypass mode. Put rules you depend on into a settings file.
 
-The hook also answers safety checks that are not removals, such as Claude Code's isolated-peer-machine and read-block checks, but only when they are raised by a Bash call. A bypass-mode session has already accepted running arbitrary Bash; this extension removes the remaining interruptions for Bash only.
+The hook also answers other safety checks, such as Claude Code's isolated-peer-machine and read-block checks, when they are raised by one of the tools above. Prompts that Claude Code marks as approvable only by a person, such as edits to its own settings files or a classifier timeout in `auto` mode, ignore a hook's `allow`; this extension does not try to work around them. The `Run a dynamic workflow?` prompt is for the `Workflow` tool, which the hook never answers.
+
+Before 0.2.0, the hook answered every Bash prompt in bypass mode, including dangerous removals, and nothing else.
 
 ## Persona's own approval card
 
@@ -47,7 +51,7 @@ The extension does nothing until a computer is switched on. You can turn it off 
 The program adds one group to `hooks.PermissionRequest` in `<config dir>/settings.json`. If the file is a symlink, it edits the file the link points to:
 
 ```json
-{"matcher": "Bash", "hooks": [{"type": "command", "timeout": 10,
+{"matcher": "Bash|Read|Glob|Grep|LS|NotebookRead|Agent|Task", "hooks": [{"type": "command", "timeout": 10,
   "command": "'<package>/bin/claude-bypass-allow-<platform>' hook --config-dir '<config dir>' --data '<data dir>' --persona-extension=claude-bypass-allow"}]}
 ```
 
@@ -55,7 +59,7 @@ The trailing `--persona-extension=claude-bypass-allow` tag identifies the entry.
 
 ## Audit log
 
-Each auto-allow appends one JSON line to `audit.jsonl` in the program's data directory on that computer (`~/.persona/node-plugins/claude-bypass-allow/data/`, mode 0600). The log keeps about the newest 1 MB across two files. Each entry records the time, session id, subagent id (when present), working directory, config directory, the command's full length, and the command itself. Before the command is stored, it is put on one line, cut to 240 characters, and has likely secrets replaced with `***`: `NAME=value` where the name suggests a token, password or key; `Bearer`/`token` values; `--password`/`--token` flags; `-p` passwords for `mysql` and `sshpass`; the password in `curl -u user:password`; credentials in URLs; and opaque strings of 32 or more characters. This masking is a heuristic, so treat the log as sensitive.
+Each auto-allow appends one JSON line to `audit.jsonl` in the program's data directory on that computer (`~/.persona/node-plugins/claude-bypass-allow/data/`, mode 0600). The log keeps about the newest 1 MB across two files. Each entry records the time, session id, subagent id (when present), working directory, config directory, the tool, the call's full length, and the call itself: the command for Bash, otherwise the tool's name and what it is about (a path, a pattern, a subagent's type and description). Before the command is stored, it is put on one line, cut to 240 characters, and has likely secrets replaced with `***`: `NAME=value` where the name suggests a token, password or key; `Bearer`/`token` values; `--password`/`--token` flags; `-p` passwords for `mysql` and `sshpass`; the password in `curl -u user:password`; credentials in URLs; and opaque strings of 32 or more characters. This masking is a heuristic, so treat the log as sensitive.
 
 The extension's page in **Settings → Extensions** lists, for each switched-on computer, whether the hook is installed in each config directory and the 30 newest auto-allows.
 
@@ -73,4 +77,4 @@ scripts/package.sh claude-bypass-allow
 go test ./extensions/claude-bypass-allow
 ```
 
-The tests cover the hook's decisions, rule matching, redaction, the audit log, editing settings.json without changing anything else, the program's install and cleanup, and the page in three languages.
+The tests cover the hook's decisions for each tool, the commands that stay with a person, rule matching, redaction, the audit log, editing settings.json without changing anything else, the program's install and cleanup, and the page in three languages.
