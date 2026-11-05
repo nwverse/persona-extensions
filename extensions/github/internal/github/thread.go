@@ -131,6 +131,16 @@ func decodeBody(path string, body []byte, out any) error {
 // thread's comments, events, reviews). Page 1 says in its Link header which page is the last: a longer list is read
 // back from there. A list of threadListPages pages or fewer costs what reading it from the start does.
 func cachedList[T any](c *Connector, ctx context.Context, path string) ([]T, error) {
+	return readList[T](c, ctx, path, true)
+}
+
+// cachedListFirst reads the first threadListPages*100 items of such a list: the review page's comments on lines,
+// whose replies need the first comment of their conversation (GitHub answers no reply to a reply).
+func cachedListFirst[T any](c *Connector, ctx context.Context, path string) ([]T, error) {
+	return readList[T](c, ctx, path, false)
+}
+
+func readList[T any](c *Connector, ctx context.Context, path string, newest bool) ([]T, error) {
 	sep := "?"
 	if strings.Contains(path, "?") {
 		sep = "&"
@@ -144,19 +154,19 @@ func cachedList[T any](c *Connector, ctx context.Context, path string) ([]T, err
 	if err != nil || len(all) < 100 {
 		return all, err
 	}
-	if last := lastPage(link); last > threadListPages {
-		var newest []T
-		for page := last; page > 1 && len(newest) < threadListPages*100; page-- {
+	if last := lastPage(link); newest && last > threadListPages {
+		var tail []T
+		for page := last; page > 1 && len(tail) < threadListPages*100; page-- {
 			batch, _, err := read(page)
 			if err != nil {
 				return nil, err
 			}
-			newest = append(batch, newest...)
+			tail = append(batch, tail...)
 		}
-		if len(newest) < threadListPages*100 { // read back to page 2: page 1 belongs too
-			newest = append(all, newest...)
+		if len(tail) < threadListPages*100 { // read back to page 2: page 1 belongs too
+			tail = append(all, tail...)
 		}
-		return newest[max(0, len(newest)-threadListPages*100):], nil
+		return tail[max(0, len(tail)-threadListPages*100):], nil
 	}
 	for page := 2; page <= threadListPages; page++ {
 		batch, _, err := read(page)
