@@ -156,6 +156,7 @@ func (c *Conn) stepCredentials(ctx context.Context, v map[string]string) (connec
 	c.mu.Lock()
 	c.st = stored{APIID: id, APIHash: hash}
 	c.pending.phone, c.pending.hash = "", ""
+	c.lastSync = time.Time{} // a sign-in from the start, as after signing out
 	err = c.saveLocked(ctx)
 	c.mu.Unlock()
 	if err != nil {
