@@ -111,6 +111,14 @@ func stripHeredocs(cmd string) string {
 			}
 		}
 		for _, h := range pending {
+			if h.depth != pending[0].depth {
+				// bash reads the bodies of heredocs inside a $( … ) before the ones outside it: leave all of them as
+				// commands rather than get the order wrong
+				pending = nil
+				break
+			}
+		}
+		for _, h := range pending {
 			for i+1 < len(lines) {
 				i++
 				end := lines[i]

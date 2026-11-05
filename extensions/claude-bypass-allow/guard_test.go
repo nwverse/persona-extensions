@@ -55,6 +55,7 @@ func TestPersonOnly(t *testing.T) {
 		"cat <<E-O-F\nx\nE-O-F\nrm -rf \"$t\"\nE", "cat <<EOF#c\nx\nEOF#c\nrm -rf \"$t\"\nEOF",
 		"cat <<$(echo END)\ndata\n$(echo END)\nrm -rf \"$t\"\n$", "cat <<EOF\\\nFOO\nx\nEOFFOO\nrm -rf \"$t\"\nEOF\\",
 		"cat <<A `echo\ny`; rm -rf \"$t\"\nA", "cat <<A $(echo\ny); rm -rf \"$t\"\nA",
+		"cat <<A; x=$(cat <<B\nbbody\nB\n)\nabody\nA\nrm -rf \"$t\"",
 	}
 	for _, c := range stays {
 		if personOnly(c) == "" {
