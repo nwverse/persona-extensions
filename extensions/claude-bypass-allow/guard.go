@@ -441,7 +441,14 @@ func redirectTarget(rs []rune, i int) (int, string) {
 }
 
 // scratch says whether a file is one nobody keeps: under /dev/ or /tmp/.
-func scratch(f string) bool { return strings.HasPrefix(f, "/dev/") || strings.HasPrefix(f, "/tmp/") }
+// The path is cleaned first, so /tmp/../etc/hosts is not one.
+func scratch(f string) bool {
+	if !strings.HasPrefix(f, "/") {
+		return false
+	}
+	f = path.Clean(f)
+	return strings.HasPrefix(f, "/dev/") || strings.HasPrefix(f, "/tmp/")
+}
 
 func isDigits(s string) bool {
 	for _, r := range s {
