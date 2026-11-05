@@ -260,9 +260,10 @@ func TestThreadReadsAgainAfterAComment(t *testing.T) {
 }
 
 // fakeLongIssue is GitHub's REST API for one made-up issue (example-org/example-repo#12) with n comments, paged 100 at
-// a time oldest first with GitHub's Link header (next, last) and ETags; it counts the comment pages asked for.
-func fakeLongIssue(t *testing.T, n int) (*Connector, *[]int) {
-	var pages []int
+// a time oldest first with GitHub's Link header (next, last) and ETags (a 304 without Link); it records the comment
+// pages asked for. Setting *more adds comments.
+func fakeLongIssue(t *testing.T, n int) (c *Connector, pages *[]int, more *int) {
+	pages, more = &[]int{}, new(int)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/user":
@@ -273,9 +274,10 @@ func fakeLongIssue(t *testing.T, n int) (*Connector, *[]int) {
 		case "/repos/example-org/example-repo/issues/12/events":
 			_, _ = w.Write([]byte(`[]`))
 		case "/repos/example-org/example-repo/issues/12/comments":
+			n := n + *more
 			page, _ := strconv.Atoi(r.URL.Query().Get("page"))
-			pages = append(pages, page)
-			tag := fmt.Sprintf(`"comments-%d"`, page)
+			*pages = append(*pages, page)
+			tag := fmt.Sprintf(`"comments-%d-%d"`, page, min(max(n-(page-1)*100, 0), 100)) // a full page's stays
 			if r.Header.Get("If-None-Match") == tag {
 				w.WriteHeader(http.StatusNotModified)
 				return
@@ -311,19 +313,28 @@ func fakeLongIssue(t *testing.T, n int) (*Connector, *[]int) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	c := New(Config{Auth: AuthConfig{FromMachine: "mac"}}, "Mac", (&machine{tokens: []string{oldToken}}).fetch)
+	c = New(Config{Auth: AuthConfig{FromMachine: "mac"}}, "Mac", (&machine{tokens: []string{oldToken}}).fetch)
 	c.api = srv.URL
 	c.check(context.Background())
-	return c, &pages
+	return c, pages, more
 }
 
 // GitHub lists a thread's comments oldest first: a thread with more than 500 shows its newest 500, read back from the
-// last page that page 1's Link header names, also when GitHub answers 304 for every page the next time.
+// last page that page 1's Link header names; also when GitHub answers 304 for every page the next time, and when the
+// thread has grown past that last page while page 1, unchanged, answers 304.
 func TestThreadShowsTheNewestComments(t *testing.T) {
-	c, pages := fakeLongIssue(t, 650)
+	c, pages, more := fakeLongIssue(t, 650)
 	ctx := context.Background()
-	for round := range 2 {
-		*pages = nil
+	for _, round := range []struct {
+		more           int
+		newest, oldest string
+		pages          []int
+	}{
+		{0, "c650", "c151", []int{1, 7, 6, 5, 4, 3, 2}},
+		{0, "c650", "c151", []int{1, 7, 6, 5, 4, 3, 2}},  // every page 304
+		{70, "c720", "c221", []int{1, 7, 8, 6, 5, 4, 3}}, // page 1 304, still naming page 7 as the last
+	} {
+		*pages, *more = nil, round.more
 		var ids []string
 		for before := ""; ; {
 			page, err := c.Thread(ctx, "example-org/example-repo#12", before, connector.ThreadMost)
@@ -340,15 +351,15 @@ func TestThreadShowsTheNewestComments(t *testing.T) {
 			}
 			before = page.Before
 		}
-		if len(ids) != 500 || ids[0] != "c650" || ids[len(ids)-1] != "c151" {
-			t.Fatalf("round %d: %d comments, newest %s, oldest %s; want the newest 500, c650 to c151", round, len(ids), ids[0], ids[len(ids)-1])
+		if len(ids) != 500 || ids[0] != round.newest || ids[len(ids)-1] != round.oldest {
+			t.Fatalf("%+v: %d comments, newest %s, oldest %s; want the newest 500", round, len(ids), ids[0], ids[len(ids)-1])
 		}
-		if !slices.Equal(*pages, []int{1, 7, 6, 5, 4, 3, 2}) {
-			t.Fatalf("round %d: comment pages asked for %v", round, *pages)
+		if !slices.Equal(*pages, round.pages) {
+			t.Fatalf("%+v: comment pages asked for %v", round, *pages)
 		}
 		c.etags.mu.Lock()
 		for _, e := range c.etags.m {
-			e.at = time.Time{} // not fresh: the next round asks again, and GitHub answers 304
+			e.at = time.Time{} // not fresh: the next round asks again, and GitHub answers 304 for what has not changed
 		}
 		c.etags.mu.Unlock()
 	}
@@ -356,7 +367,7 @@ func TestThreadShowsTheNewestComments(t *testing.T) {
 
 // A thread of 500 comments or fewer is read from page 1 on, as many pages as it has.
 func TestThreadOfAFewHundredComments(t *testing.T) {
-	c, pages := fakeLongIssue(t, 250)
+	c, pages, _ := fakeLongIssue(t, 250)
 	page, err := c.Thread(context.Background(), "example-org/example-repo#12", "", 30)
 	if err != nil {
 		t.Fatal(err)

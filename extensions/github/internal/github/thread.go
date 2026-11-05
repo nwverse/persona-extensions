@@ -89,7 +89,10 @@ func (c *Connector) cachedGetLink(ctx context.Context, path string, out any) (st
 	e.mu.Lock()
 	if code == http.StatusNotModified && old != nil {
 		old.at = time.Now()
-		body, link = old.body, old.link
+		if link == "" { // a 304 may still say the list has grown: page 1's body is the same, its last page is not
+			link = old.link
+		}
+		body, old.link = old.body, link
 	} else if tag := h.Get("ETag"); tag != "" {
 		e.m[path] = &etagEntry{etag: tag, body: body, link: link, at: time.Now(), used: time.Now()}
 		if len(e.m) > etagKeep {
@@ -155,8 +158,20 @@ func readList[T any](c *Connector, ctx context.Context, path string, newest bool
 		return all, err
 	}
 	if last := lastPage(link); newest && last > threadListPages {
+		// From the last page on while the pages are full (page 1 kept from before may name a last page the list has
+		// grown past), then back from the one before it.
 		var tail []T
-		for page := last; page > 1 && len(tail) < threadListPages*100; page-- {
+		for page := last; page < last+threadListPages; page++ {
+			batch, _, err := read(page)
+			if err != nil {
+				return nil, err
+			}
+			tail = append(tail, batch...)
+			if len(batch) < 100 {
+				break
+			}
+		}
+		for page := last - 1; page > 1 && len(tail) < threadListPages*100; page-- {
 			batch, _, err := read(page)
 			if err != nil {
 				return nil, err
