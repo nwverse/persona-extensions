@@ -214,6 +214,7 @@ func (c *Conn) Logout(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	c.st, c.pending.phone, c.pending.hash = stored{}, "", ""
+	c.lastSync = time.Time{} // the account's archive: the next one starts with none
 	err := c.saveLocked(ctx)
 	c.mu.Unlock()
 	c.setStatus(connector.Status{State: connector.StateNotSignedIn, Error: "还没填 Telegram 的 API 凭据"})
