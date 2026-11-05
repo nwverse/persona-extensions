@@ -429,7 +429,14 @@ func redirectTarget(rs []rune, i int) (int, string) {
 	var t strings.Builder
 	for i+1 < len(rs) && !strings.ContainsRune(" \t\n;&|()<>", rs[i+1]) {
 		i++
-		if rs[i] != '\'' && rs[i] != '"' {
+		switch {
+		case rs[i] == '\\' && i+1 < len(rs):
+			// an escaped character is itself (/tmp/\.\./etc), and a backslash-newline joins the next line on
+			i++
+			if rs[i] != '\n' {
+				t.WriteRune(rs[i])
+			}
+		case rs[i] != '\'' && rs[i] != '"':
 			t.WriteRune(rs[i])
 		}
 	}

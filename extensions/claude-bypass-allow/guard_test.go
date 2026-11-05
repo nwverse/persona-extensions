@@ -56,7 +56,7 @@ func TestPersonOnly(t *testing.T) {
 		"ssh host ls /tmp/rm",
 		// a /tmp/ or /dev/ path that .. takes out of it is a kept file
 		"echo x > /tmp/../etc/hosts", "go test > /tmp/a/../../home/u/.bashrc 2>&1", "tee /tmp/../home/u/.profile",
-		"ls &> /dev/../etc/motd",
+		"ls &> /dev/../etc/motd", "echo x > /tmp/\\.\\./etc/hosts", "echo x > /tmp/\\\n../etc/hosts",
 		// gh's -R/--repo before the command
 		"gh -R o/r secret set TOKEN", "gh --repo o/r variable set X", "gh --repo=o/r secret delete-all", "gh -Ro/r ssh-key add k.pub",
 		"gh -R o/r repo deploy-key add k.pub", "gh -R o/r repo edit --visibility public",
@@ -75,7 +75,7 @@ func TestPersonOnly(t *testing.T) {
 		}
 	}
 	goes := []string{
-		"ls -la", "echo x > /tmp/a/../b.log", "tee /tmp/./x.log", "ls > //tmp/x", "gh --repo o/r issue view 3", "cd view && ls sub/*", "go test ./...", "git status", "git push", "git push origin feat/x",
+		"ls -la", "echo x > /tmp/a/../b.log", "tee /tmp/./x.log", "ls > //tmp/x", "echo x > /tmp/a\\ b.log", "gh --repo o/r issue view 3", "cd view && ls sub/*", "go test ./...", "git status", "git push", "git push origin feat/x",
 		"git push -u origin feat/x", "git checkout -b feat/x", "git checkout main", "git switch feat/x", "git branch -a",
 		"git reset HEAD~1", "git stash list", "git stash push -m x", "git fetch --prune", "git log --format=%H",
 		"gh pr create --title t", "gh pr merge 3 --squash", "gh api repos/o/r/pulls", "gh api repos/o/r/collaborators",
