@@ -22,8 +22,9 @@ var alwaysPerson = map[string]string{
 	"rm": "deletion", "rmdir": "deletion", "unlink": "deletion", "shred": "deletion", "srm": "deletion",
 	"trash": "deletion", "trash-put": "deletion", "userdel": "deletion", "groupdel": "deletion",
 	"dd": "overwrite", "truncate": "overwrite", "wipefs": "overwrite", "fdisk": "overwrite", "parted": "overwrite",
-	"mv":    "overwrite",
-	"chmod": "permission change", "chown": "permission change", "chgrp": "permission change",
+	"mv":     "overwrite",
+	"rimraf": "deletion",
+	"chmod":  "permission change", "chown": "permission change", "chgrp": "permission change",
 	"chattr": "permission change", "setfacl": "permission change", "usermod": "permission change",
 	"passwd": "permission change", "chpasswd": "permission change", "visudo": "permission change",
 	"gpasswd": "permission change", "setcap": "permission change",
@@ -289,6 +290,7 @@ var wrappers = map[string]bool{
 	"sudo": true, "doas": true, "xargs": true, "parallel": true, "env": true, "nice": true, "ionice": true, "nohup": true,
 	"time": true, "timeout": true, "exec": true, "command": true, "builtin": true, "stdbuf": true, "setsid": true,
 	"flock": true, "chroot": true, "runuser": true, "strace": true, "unbuffer": true, "watch": true,
+	"npx": true, "pnpx": true, "bunx": true, "dlx": true, "uvx": true, "pipx": true,
 	"-exec": true, "-execdir": true, "-ok": true, "-okdir": true,
 	"do": true, "then": true, "else": true, "elif": true, "if": true, "while": true, "until": true, "!": true,
 }
@@ -304,6 +306,9 @@ func segmentPersonOnly(words []string) string {
 		program := first || wrapped
 		first = false
 		name := path.Base(w)
+		if name == "command" && program && i+1 < len(words) && (words[i+1] == "-v" || words[i+1] == "-V") {
+			return "" // command -v rm only looks rm up
+		}
 		if wrappers[w] || (program && wrappers[name]) {
 			wrapped = true
 			continue
@@ -329,8 +334,20 @@ func segmentPersonOnly(words []string) string {
 				why = "deletion: find -delete"
 			}
 		case "rsync":
-			if hasPrefix(rest, "--delete") || has(rest, "--remove-source-files") {
+			if hasPrefix(rest, "--del") || has(rest, "--remove-source-files") {
 				why = "deletion: rsync --delete"
+			}
+		case "sed", "perl":
+			if hasPrefix(rest, "--in-place") || hasShort(rest, 'i') {
+				why = "overwrite: " + name + " -i"
+			}
+		case "ln":
+			if has(rest, "--force") || hasShort(rest, 'f') {
+				why = "overwrite: ln -f"
+			}
+		case "install":
+			if hasShort(rest, 'm') || hasShort(rest, 'o') || hasShort(rest, 'g') || hasPrefix(rest, "--mode") || hasPrefix(rest, "--owner") || hasPrefix(rest, "--group") {
+				why = "permission change: install -m"
 			}
 		case "cp":
 			if has(rest, "--force") || has(rest, "--remove-destination") || hasShort(rest, 'f') {

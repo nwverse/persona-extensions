@@ -39,6 +39,9 @@ func TestPersonOnly(t *testing.T) {
 		`git commit -m "$(rm -rf ~/data)"`, "git commit -m \"`rm -rf x`\"", "find . | xargs -t rm -f", "sudo -b rm -rf /var/lib/app",
 		"ls &> data.db", "ls 1> data.db", "aws s3 sync ./out s3://b --delete", "gh api -X PATCH repos/o/r --field=visibility=public",
 		"ssh host 'rm -rf /srv/x'", "bash <<EOF\nrm -rf x\nEOF", "psql <<SQL\nDROP TABLE t;\nSQL",
+		// third review
+		"rsync -a --del src/ dst/", "npx rimraf dist", "sed -i 's/a/b/' config.yaml", "sed --in-place=.bak s/a/b/ f",
+		"ln -sf /dev/null ~/.bash_history", "install -m 600 key ~/.ssh/id",
 	}
 	for _, c := range stays {
 		if personOnly(c) == "" {
@@ -60,6 +63,7 @@ func TestPersonOnly(t *testing.T) {
 		"cat docs/grant.md", "grep -rn truncate src/", "git mv old new", "find . -name '*.go' -exec grep -l x {} +",
 		"go build | tee /tmp/build.log", "go test > /tmp/test.log 2>&1", "cat > /tmp/x.json <<EOF\n{\"rm\": 1}\nEOF",
 		"cat <<'EOF' | python3 -\nimport os; print('rm -rf would be bad')\nEOF", "git log --format='%h > %s'", "echo ok 2>/dev/null",
+		"command -v rm", "sed -n 1,20p f", "sed 's/a/b/' f", "ln -s a b", "npx prettier --check .",
 	}
 	for _, c := range goes {
 		if why := personOnly(c); why != "" {
