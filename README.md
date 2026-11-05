@@ -7,6 +7,7 @@ Persona 的扩展里，**以后可以公开**的那些：不依赖任何公司�
 | 扩展 | 扩展点 | 说明 |
 | --- | --- | --- |
 | `linuxdo` | `ui`、`connectors` | LINUX DO 的热门帖子：扩展页里按兴趣看热门 / 今日 / 本周 / 最新，点开读正文和热门回复（hub 去读，手机不用代理）；助手的工具。只读公开内容、不用账号。从 internal 搬来。见 `extensions/linuxdo/README.md` |
+| `telegram` | `connectors`、`assistant` | 你自己的 Telegram 账号（MTProto，hub 直连 Telegram 的数据中心）：App 里的 Telegram 会话、收件箱（私聊、@我）、知识库归档、助手的工具和 `tg` 命令行；写操作先在手机上确认。登录加密存在 hub 的数据库里。从 internal 搬来（0.1.3 起在这里发版）。见 `extensions/telegram/README.md` |
 
 ## 放哪个仓库
 
@@ -19,7 +20,8 @@ Persona 的扩展里，**以后可以公开**的那些：不依赖任何公司�
 extensions/<id>/            一个扩展：清单、源码、测试，market.json（市场里的标签）
   persona-extension.json    清单
   persona-plugin.json       同一份清单的老名字：改名前的 hub 只认它，和新的保持一样（CI 查），hub 都升级后删掉
-pluginkit/                  扩展协议、HTTP、额度、声明式 UI、收件箱规则的辅助（阶段 4 换成 Persona 的官方 SDK）
+pluginkit/                  额度、声明式 UI、收件箱规则的辅助；协议本身走官方 SDK（sdk/go/ext），这里只保留扩展原来的写法
+sdk/go/                     Persona 官方 Go SDK 的拷贝（Persona 仓库的 scripts/gen/sync-sdk.sh 拷来，sdk/VERSION 记着来源 commit，别手改）
 scripts/                    package.sh、release.sh、index.py、manifest.py、ci.sh、sign-index.py（和 internal 的一样）
 persona-extensions.json     市场索引（键 extensions），新 hub 读
 persona-plugins.json        同样的条目（键 plugins、老清单），改名前的 hub 读
