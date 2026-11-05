@@ -274,7 +274,11 @@ func (c *Conn) Run(ctx context.Context) {
 		// that dropped keeps its ok meanwhile.
 		c.mu.Lock()
 		if c.status.State != connector.StateOK {
-			c.status = connector.Status{State: connector.StateError, Via: st.via(), Error: "正在连 Telegram（用存着的登录）"}
+			why := "正在连 Telegram"
+			if len(st.Session) > 0 {
+				why += "（用存着的登录）"
+			}
+			c.status = connector.Status{State: connector.StateError, Via: st.via(), Error: why}
 		}
 		c.mu.Unlock()
 		cctx, stop := context.WithCancel(ctx)
