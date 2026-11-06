@@ -17,7 +17,7 @@ import (
 // whole system, run commands or reach outside), and anything that is only read.
 var defaultWritable = []string{"light", "switch", "fan", "cover", "climate", "media_player", "vacuum", "humidifier",
 	"water_heater", "input_boolean", "input_number", "input_select", "number", "select", "button", "input_button",
-	"scene", "script", "remote", "siren", "valve", "lawn_mower", "lock", "alarm_control_panel"}
+	"scene", "script", "automation", "remote", "siren", "valve", "lawn_mower", "lock", "alarm_control_panel"}
 
 // secureDomains open doors or disarm alarms: the assistant reaches them only through homeassistant_secure_call,
 // which the phone always confirms (confirm_always), and the page asks before each tap.
@@ -200,8 +200,14 @@ func controls(s State) []control {
 			}
 		}
 		return cs
-	case "switch", "fan", "humidifier", "input_boolean", "siren", "remote", "automation":
+	case "switch", "fan", "humidifier", "input_boolean", "siren", "remote":
 		return toggle()
+	case "automation":
+		cs := []control{{Title: "启用", Service: "turn_on"}}
+		if on {
+			cs = []control{{Title: "停用", Service: "turn_off"}}
+		}
+		return append(cs, control{Title: "触发一次", Service: "trigger"})
 	case "cover", "valve":
 		verb := "cover"
 		if s.Domain() == "valve" {
