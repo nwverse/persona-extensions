@@ -20,6 +20,11 @@ SEMVER = re.compile(r"^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$")
 TAGS_MOST, TAG_LONGEST = 16, 24
 # The directories scripts/package.sh copies into a package besides the manifest and the program.
 PACKAGED_DIRS = ("skills", "assistant")
+# macOS/editor junk by basename: AppleDouble ._* and .DS_Store (a stray ._* at the package root is a second
+# top-level entry, so the hub finds no manifest) and Python's __pycache__/. scripts/package.sh excludes the same
+# names from the tar; failing here names the file to remove before a package is ever built.
+JUNK_NAMES = (".DS_Store", "__pycache__")
+JUNK_PREFIXES = ("._",)
 
 
 def ids():
@@ -34,9 +39,20 @@ def path(id):
     return p
 
 
+def _no_duplicate_keys(pairs):
+    # A repeated key is an error, not last-one-wins: a bad merge once shipped two "version" lines that parsers
+    # (Python's json, Go's encoding/json, the hub) all accepted silently.
+    seen = set()
+    for k, _ in pairs:
+        if k in seen:
+            raise ValueError("manifest has a duplicate key %r" % k)
+        seen.add(k)
+    return dict(pairs)
+
+
 def load(id):
     with open(path(id)) as f:
-        return json.load(f)
+        return json.load(f, object_pairs_hook=_no_duplicate_keys)
 
 
 def tags(id):
@@ -56,19 +72,44 @@ def dumps(m):
     return json.dumps(m, ensure_ascii=False, indent=2) + "\n"
 
 
+def git(*args):
+    """Run git in ROOT, capturing text output. Callers interpret the status; every caller must distinguish a name
+    git does not know from git itself failing (issue #100)."""
+    try:
+        return subprocess.run(["git", "-C", ROOT, *args], capture_output=True, text=True)
+    except OSError as e:
+        sys.exit("could not run git: %s" % e)
+
+
 def version_at(ref, id):
-    """The version at a git ref, or None when the extension wasn't there (also under its pre-monorepo path)."""
+    """The version at a git ref, or None when the extension wasn't there (also under its pre-monorepo path).
+    git failing for any reason besides that absence is fatal: taken for absence it would mark every extension
+    new and release it all (issue #100)."""
     for p in ("extensions/%s/%s" % (id, NEW), "extensions/%s/%s" % (id, OLD), "%s/%s" % (id, OLD)):
-        r = subprocess.run(["git", "-C", ROOT, "show", "%s:%s" % (ref, p)], capture_output=True, text=True)
+        r = git("show", "%s:%s" % (ref, p))
         if r.returncode == 0:
             return json.loads(r.stdout).get("version")
+        # show fails both for a path that is not at the ref and when git is broken (an unreadable object). ls-tree
+        # tells them apart: an absent path lists nothing, a present one lists a line, a broken git fails itself.
+        t = git("ls-tree", ref, "--", p)
+        if t.returncode != 0:
+            sys.exit("git could not read %s at %s: %s" % (p, ref, (t.stderr or r.stderr).strip() or "git gave no error"))
+        if t.stdout.strip():
+            sys.exit("git show %s:%s failed though that path is in the tree: %s"
+                     % (ref, p, r.stderr.strip() or "git gave no error"))
     return None
 
 
 def is_commit(ref):
-    r = subprocess.run(["git", "-C", ROOT, "rev-parse", "--verify", "--quiet", "--end-of-options", ref + "^{commit}"],
-                       capture_output=True)
-    return r.returncode == 0
+    r = git("rev-parse", "--verify", "--quiet", "--end-of-options", ref + "^{commit}")
+    if r.returncode == 0:
+        return True
+    # --quiet silences only "no such revision"; an operational failure (a broken git, an unreadable repository)
+    # still explains itself on stderr. Surface it rather than passing a broken git off as an unknown ref (#100).
+    why = r.stderr.strip()
+    if why:
+        sys.exit("git could not resolve %r as a commit: %s" % (ref, why))
+    return False
 
 
 def changed(ref):
@@ -152,10 +193,49 @@ def check_pack(id, m):
     return bad
 
 
+def is_junk(name):
+    return name in JUNK_NAMES or any(name.startswith(p) for p in JUNK_PREFIXES)
+
+
+def check_junk(id):
+    """No macOS/editor junk under the trees scripts/package.sh copies verbatim: the tar excludes these basenames,
+    so shipping them silently drops files at install time; a top-level ._* also hides the manifest from the hub."""
+    bad = []
+    root = os.path.join(ROOT, "extensions", id)
+
+    def raise_error(e):
+        raise e  # an unreadable tree must fail the check, not scan as clean
+
+    for d in PACKAGED_DIRS:
+        top = os.path.join(root, d)
+        if not os.path.isdir(top):
+            continue  # most extensions have neither directory; os.walk's NotFound is not junk to report
+        for dirpath, dirnames, filenames in os.walk(top, onerror=raise_error):
+            kept = []
+            for name in dirnames:
+                if is_junk(name):
+                    rel = os.path.relpath(os.path.join(dirpath, name), root)
+                    bad.append("extensions/%s: %s is packaging junk (._* AppleDouble, .DS_Store, __pycache__); "
+                               "remove it" % (id, rel))
+                else:
+                    kept.append(name)  # no point descending into a directory that is itself junk
+            dirnames[:] = kept
+            for name in filenames:
+                if is_junk(name):
+                    rel = os.path.relpath(os.path.join(dirpath, name), root)
+                    bad.append("extensions/%s: %s is packaging junk (._* AppleDouble, .DS_Store, __pycache__); "
+                               "remove it" % (id, rel))
+    return bad
+
+
 def check():
     bad = []
     for id in ids():
-        m = load(id)
+        try:
+            m = load(id)
+        except ValueError as e:
+            bad.append("extensions/%s: %s" % (id, e))
+            continue
         if m.get("id") != id:
             bad.append("extensions/%s: the manifest's id is %r, not the directory's name" % (id, m.get("id")))
         if not SEMVER.match(str(m.get("version", ""))):
@@ -167,7 +247,7 @@ def check():
         for gone in (OLD, "market.json"):
             if os.path.exists(os.path.join(ROOT, "extensions", id, gone)):
                 bad.append("extensions/%s: no %s (one manifest: %s; see docs/reference.md)" % (id, gone, NEW))
-        bad += check_files(id, m) + check_pack(id, m)
+        bad += check_files(id, m) + check_pack(id, m) + check_junk(id)
     for b in bad:
         print(b, file=sys.stderr)
     return not bad
