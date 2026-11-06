@@ -16,6 +16,7 @@ func TestExecWrappers(t *testing.T) {
 		"bundle exec rm -rf ~/Documents", "npm exec rm -rf ~/Documents", "pnpm exec rm -rf ~/Documents",
 		"yarn exec rm -rf ~/Documents", "uv --directory /srv run rm -rf ~/Documents", "uv tool run rm -rf ~/Documents",
 		"poetry -C /srv run rm -rf ~/Documents", "hatch env run rm -rf ~/Documents",
+		"CAFFEINATE rm -rf ~/Documents", "UV run rm -rf ~/Documents",
 	}
 	for _, c := range stays {
 		if why := newGuard("/Users/u/proj", false).personOnly(c); why == "" {
