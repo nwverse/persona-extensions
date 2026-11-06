@@ -79,10 +79,10 @@ func writeJSON(t *testing.T, path, s string) {
 	}
 }
 
-func TestHookAllowsOnlyBashInBypass(t *testing.T) {
+func TestHookAllowsOnlyItsToolsInBypass(t *testing.T) {
 	e := newEnv(t)
 	now := time.Now()
-	cmd := "cd view && rm -f sub/*; ls"
+	cmd := "cd view && ls sub/*; make"
 	if got := e.hook(t, request(e, "bypassPermissions", "Bash", cmd), now); strings.TrimSpace(got) != allowOutput {
 		t.Fatalf("bypass + Bash: %q", got)
 	}
@@ -92,7 +92,11 @@ func TestHookAllowsOnlyBashInBypass(t *testing.T) {
 		{"auto mode", "auto", "Bash"},
 		{"plan mode", "plan", "Bash"},
 		{"no mode", "", "Bash"},
-		{"another tool", "bypassPermissions", "Write"},
+		{"Write", "bypassPermissions", "Write"},
+		{"Edit", "bypassPermissions", "Edit"},
+		{"NotebookEdit", "bypassPermissions", "NotebookEdit"},
+		{"Workflow", "bypassPermissions", "Workflow"},
+		{"WebFetch", "bypassPermissions", "WebFetch"},
 		{"an MCP tool", "bypassPermissions", "mcp__x__run"},
 	} {
 		if got := e.hook(t, request(e, c.mode, c.tool, cmd), now); got != "" {
@@ -114,7 +118,7 @@ func TestHookAllowsOnlyBashInBypass(t *testing.T) {
 
 func TestHookNeedsTheNodeProgram(t *testing.T) {
 	e := newEnv(t)
-	req := request(e, "bypassPermissions", "Bash", "rm -rf \"$t\"")
+	req := request(e, "bypassPermissions", "Bash", "ls \"$t\"")
 	if got := e.hook(t, req, time.Now().Add(heartbeatFresh+time.Second)); got != "" {
 		t.Errorf("stale heartbeat: %q", got)
 	}
@@ -136,13 +140,13 @@ func TestHookLeavesTheUsersRules(t *testing.T) {
 			t.Errorf("%q matches a rule of the user's, but the hook answered %q", cmd, got)
 		}
 	}
-	if got := e.hook(t, request(e, "bypassPermissions", "Bash", "cd view && rm -f sub/*"), now); got == "" {
+	if got := e.hook(t, request(e, "bypassPermissions", "Bash", "cd view && ls sub/*"), now); got == "" {
 		t.Error("a command no rule is about: should be allowed")
 	}
 
 	all := newEnv(t)
 	writeJSON(t, filepath.Join(all.project, ".claude", "settings.json"), `{"permissions":{"ask":["Bash"]}}`)
-	if got := all.hook(t, request(all, "bypassPermissions", "Bash", "rm -f a/*"), now); got != "" {
+	if got := all.hook(t, request(all, "bypassPermissions", "Bash", "ls a/*"), now); got != "" {
 		t.Errorf("ask: [Bash] covers every command: %q", got)
 	}
 }
@@ -171,6 +175,36 @@ func TestRuleLiteral(t *testing.T) {
 	}
 }
 
+// Claude Code 2.1.318 asks for each "asks" command here under ask: [Bash(touch:*), Bash(rm -rf:*)], measured in a
+// bypass-mode session; the git push ones are the same shapes under the other rule.
+func TestMatchingRule(t *testing.T) {
+	rules := []string{"Bash(git push:*)", "Bash(rm -rf:*)", "Bash(touch:*)"}
+	for _, c := range []struct{ cmd, rule string }{
+		{"git push origin HEAD", "Bash(git push:*)"},
+		{"git  push --force", "Bash(git push:*)"},
+		{"git\tpush", "Bash(git push:*)"},
+		{"'git' push", "Bash(git push:*)"},
+		{"git 'push' origin main", "Bash(git push:*)"},
+		{"git \\\n  push", "Bash(git push:*)"},
+		{"g\\it push", "Bash(git push:*)"},
+		{`"rm" -rf /x`, "Bash(rm -rf:*)"},
+		{"rm  -rf /x", "Bash(rm -rf:*)"},
+		{"cd x &&\n  rm \t-rf y", "Bash(rm -rf:*)"},
+		{"touch\ta3.tmp", "Bash(touch:*)"},
+		{"touch \\\n  a4.tmp", "Bash(touch:*)"},
+		// Flags in another order or split: Claude Code does not ask for these either.
+		{"rm -fr d", ""},
+		{"rm -r -f d", ""},
+		{"git pull", ""},
+		{"cd view && rm -f sub/*", ""},
+		{"echo 'git' && push", ""},
+	} {
+		if got := matchingRule(rules, "Bash", c.cmd); got != c.rule {
+			t.Errorf("matchingRule(%q) = %q, want %q", c.cmd, got, c.rule)
+		}
+	}
+}
+
 func TestRedact(t *testing.T) {
 	for _, c := range []struct{ in, gone string }{
 		{"GITHUB_TOKEN=ghp_abcdefghijklmnop1234 gh pr list", "ghp_abcdefghijklmnop1234"},
@@ -179,14 +213,23 @@ func TestRedact(t *testing.T) {
 		{"git clone https://me:s3cretpass@example.com/r.git", "s3cretpass"},
 		{"echo 0123456789abcdef0123456789abcdef0123", "0123456789abcdef0123456789abcdef0123"},
 		{"export API_KEY='a b c'; run", "a b c"},
+		{"mysql -h db -u root -pS3cretpw app", "S3cretpw"},
+		{"mysqldump -u root -p'S3cret pw' app > a.sql", "S3cret pw"},
+		{"sshpass -p hunter22 ssh me@example.com", "hunter22"},
+		{"sshpass -phunter22 ssh me@example.com", "hunter22"},
+		{"curl -u me:s3cretpass https://example.com", "s3cretpass"},
+		{"curl -sS --user 'me:s3cretpass' https://example.com", "s3cretpass"},
+		{"curl -fsSL -ume:s3cretpass https://example.com", "s3cretpass"},
 	} {
 		got := redact(c.in)
 		if strings.Contains(got, c.gone) {
 			t.Errorf("redact(%q) = %q, still has %q", c.in, got, c.gone)
 		}
 	}
-	if got := redact("cd view && rm -f sub/*; ls"); got != "cd view && rm -f sub/*; ls" {
-		t.Errorf("an ordinary command changed: %q", got)
+	for _, ordinary := range []string{"cd view && rm -f sub/*; ls", "mkdir -p build && cp -pr a b", "mysql -p app", "docker run -u 1000:1000 img", "curl -u me https://example.com"} {
+		if got := redact(ordinary); got != ordinary {
+			t.Errorf("an ordinary command changed: %q", got)
+		}
 	}
 	long := redact(strings.Repeat("echo hi; ", 100))
 	if n := len([]rune(long)); n != commandShown+1 || !strings.HasSuffix(long, "…") {
@@ -199,7 +242,7 @@ func TestRedact(t *testing.T) {
 
 func TestAuditEntry(t *testing.T) {
 	e := newEnv(t)
-	req := request(e, "bypassPermissions", "Bash", "TOKEN=abcdefgh12345678 rm -rf \"$t\"")
+	req := request(e, "bypassPermissions", "Bash", "TOKEN=abcdefgh12345678 make -C \"$t\"")
 	req["agent_id"] = "a1b2"
 	e.hook(t, req, time.Date(2026, 11, 5, 10, 0, 0, 0, time.UTC))
 	got := readAudit(e.data, 10)
@@ -207,7 +250,7 @@ func TestAuditEntry(t *testing.T) {
 		t.Fatalf("%d entries", len(got))
 	}
 	a := got[0]
-	if a.At != "2026-11-05T10:00:00Z" || a.Agent != "a1b2" || a.Cwd != e.project || a.ConfigDir != e.config || strings.Contains(a.Command, "abcdefgh12345678") || a.Length != 34 {
+	if a.At != "2026-11-05T10:00:00Z" || a.Agent != "a1b2" || a.Cwd != e.project || a.ConfigDir != e.config || strings.Contains(a.Command, "abcdefgh12345678") || a.Length != 35 {
 		t.Errorf("entry: %+v", a)
 	}
 	raw, _ := os.ReadFile(filepath.Join(e.data, auditFile))
@@ -350,7 +393,6 @@ func TestNodeInstallsAndCleansUp(t *testing.T) {
 	in.Extension = &wire.ExtensionInfo{ID: "claude-bypass-allow", DataDir: e.data}
 	in.InitializeParams.Config = json.RawMessage(`{"machines":["m1"],"config_dirs":["~/claude","~/missing","relative/dir"]}`)
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 	if _, err := n.init(ctx, in, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -373,12 +415,30 @@ func TestNodeInstallsAndCleansUp(t *testing.T) {
 	if _, err := h(ctx, "nope", nil); err == nil {
 		t.Error("an unknown method")
 	}
+	// Real shutdown: ext.Main has returned, so the run context is cancelled before cleanup runs; cleanup joins
+	// the ticker goroutine there and must not leave a heartbeat it could resurrect.
+	cancel()
 	n.cleanup()
 	if hasHook(p) {
 		t.Error("entry left after cleanup")
 	}
 	if _, err := os.Stat(filepath.Join(e.data, heartbeatFile)); err == nil {
 		t.Error("heartbeat left after cleanup")
+	}
+}
+
+// A node program the hub stops before it initialized has no ticker goroutine: cleanup's WaitGroup join must
+// return immediately rather than block.
+func TestCleanupBeforeInitDoesNotBlock(t *testing.T) {
+	done := make(chan struct{})
+	go func() {
+		(&node{}).cleanup()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("cleanup blocked joining a ticker that never started")
 	}
 }
 
@@ -451,8 +511,8 @@ func TestHookTellsTheNode(t *testing.T) {
 		}
 	}()
 	e := newEnv(t)
-	e.hook(t, request(e, "default", "Bash", "rm -f a/*"), time.Now())
-	req := request(e, "bypassPermissions", "Bash", "cd view && rm -f sub/*")
+	e.hook(t, request(e, "default", "Bash", "ls a/*"), time.Now())
+	req := request(e, "bypassPermissions", "Bash", "cd view && ls sub/*")
 	if out := e.hook(t, req, time.Now()); out == "" {
 		t.Fatal("not allowed")
 	}
@@ -483,7 +543,7 @@ func TestHookWithoutANode(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	e := newEnv(t)
 	start := time.Now()
-	if out := e.hook(t, request(e, "bypassPermissions", "Bash", "rm -f a/*"), time.Now()); out == "" || time.Since(start) > nodeWait {
+	if out := e.hook(t, request(e, "bypassPermissions", "Bash", "ls a/*"), time.Now()); out == "" || time.Since(start) > nodeWait {
 		t.Fatalf("no node: %q after %v", out, time.Since(start))
 	}
 }

@@ -99,11 +99,13 @@ func (t topicDoc) opening() (postDoc, bool) {
 	return postDoc{}, false
 }
 
-// bestReplies are up to n replies of the first page, the most liked (by the site's score) first.
+// bestReplies are up to n replies of the first page, the most liked (by the site's score) first. A reply whose
+// cooked HTML renders to no words (an emoji-only reaction, a video- or audio-only post) is skipped: as a text
+// item it would be empty, which the host's view check refuses, and the tool's reply list would show a bare line.
 func (t topicDoc) bestReplies(n int) []postDoc {
 	var rs []postDoc
 	for _, p := range t.PostStream.Posts {
-		if p.PostNumber > 1 && p.PostType == 1 && !p.Hidden && strings.TrimSpace(p.Cooked) != "" {
+		if p.PostNumber > 1 && p.PostType == 1 && !p.Hidden && strings.TrimSpace(plainText(p.Cooked)) != "" {
 			rs = append(rs, p)
 		}
 	}
@@ -132,7 +134,7 @@ var (
 	emojiRE   = regexp.MustCompile(`(?is)<img[^>]*\bclass="[^"]*\b(?:emoji|avatar)\b[^"]*"[^>]*>`)
 	imgRE     = regexp.MustCompile(`(?is)<img\b[^>]*>`)
 	preRE     = regexp.MustCompile(`(?is)<pre\b[^>]*>(.*?)</pre>`)
-	breakRE   = regexp.MustCompile(`(?i)<br\s*/?>|</(p|div|h[1-6]|blockquote|tr|details|summary|aside|ul|ol)>`)
+	breakRE   = regexp.MustCompile(`(?i)<br\s*/?>|</(p|div|h[1-6]|blockquote|tr|td|th|details|summary|aside|ul|ol)>`)
 	itemRE    = regexp.MustCompile(`(?i)<li\b[^>]*>`)
 	quoteInRE = regexp.MustCompile(`(?i)<blockquote\b[^>]*>`)
 	blankRE   = regexp.MustCompile(`\n[ \t]*\n(?:[ \t]*\n)+`)
