@@ -1,8 +1,10 @@
-// The X extension (nwverse/persona#5363): the user's own X account through the official X API v2, with their own
-// developer app's keys (pay-per-use credits, a daily post budget).
+// The X extension (nwverse/persona#5363), two ways in, either one: the user's own X account through the official X
+// API v2, with their own developer app's keys (pay-per-use credits, a daily post budget); or Grok, the xAI CLI grok on
+// the hub machine signed in with the user's SuperGrok / X Premium+ subscription, run headless to search X (no X
+// account sign-in, no X keys; internal/x/grok.go).
 //
 //   - connectors (id x): the inbox (mentions and replies to the user), the assistant's read tools x_digest / x_feed /
-//     x_following / x_post, a fields sign-in with the four keys, kept in the hub's sealed connector secret. What it
+//     x_following / x_post / x_search, a fields sign-in with the four keys, kept in the hub's sealed connector secret. What it
 //     reads (who the user follows, a few days of the home timeline or chosen lists, the mentions) stays in the
 //     extension's data directory and is deleted after retention_days, or at once when the user signs out.
 //   - ui (nav_page x): the organized digest (internal/page).
@@ -66,7 +68,10 @@ func main() {
 // app holds the connector's page once the hub started the program.
 type app struct {
 	base string // the API's base URL ("" is X's): tests point it at a fake
-	page *page.Page
+	// grok runs grok and findGrok finds it (nil: the real ones); tests set fakes.
+	grok     x.GrokRunner
+	findGrok func(string) string
+	page     *page.Page
 }
 
 // program is the extension: the connector namespace (internal/serve) and the page, both on the one connector.
@@ -102,7 +107,8 @@ func (a *app) build(init serve.Init, secrets connector.Secrets) (connector.Conne
 	if dir == "" {
 		dir = ext.Env().Data
 	}
-	c := x.New(s, x.Options{Base: a.base, DataDir: dir, Locale: init.Locale, Timezone: init.Timezone}).WithRules(pluginkit.TriageRules(init.Config))
+	c := x.New(s, x.Options{Base: a.base, DataDir: dir, Locale: init.Locale, Timezone: init.Timezone,
+		Grok: a.grok, FindGrok: a.findGrok}).WithRules(pluginkit.TriageRules(init.Config))
 	c.UseSecrets(secrets)
 	if hub := init.Hub; hub != nil {
 		c.OnInboxChange(func() {

@@ -35,6 +35,13 @@ type Settings struct {
 	DailyPostBudget *int     `json:"daily_post_budget,omitempty"`
 	RetentionDays   *int     `json:"retention_days,omitempty"`
 	Proxy           string   `json:"proxy,omitempty"`
+	// The Grok source (grok.go, grokdigest.go).
+	Source             string   `json:"source,omitempty"` // auto | x_api | grok
+	GrokPath           string   `json:"grok_path,omitempty"`
+	Handles            []string `json:"handles,omitempty"`
+	Topics             []string `json:"topics,omitempty"`
+	GrokEveryHours     *int     `json:"grok_every_hours,omitempty"`
+	GrokSearchesPerDay *int     `json:"grok_searches_per_day,omitempty"`
 }
 
 // Feed sources.
@@ -117,6 +124,9 @@ type Options struct {
 	Locale, Timezone string
 	// Now is the clock (time.Now when nil).
 	Now func() time.Time
+	// Grok runs grok (ExecGrok when nil); FindGrok finds it for grok_path (LookupGrok when nil).
+	Grok     GrokRunner
+	FindGrok func(configured string) string
 }
 
 // Connector is X.
@@ -153,6 +163,19 @@ type Connector struct {
 	// gen counts sign-ins and sign-outs: a sync applies what it read only to the sign-in it started with.
 	gen  int
 	poke chan struct{}
+
+	// The Grok source (grokdigest.go): its runner and how it is found, where grok is ("" none, as last looked up),
+	// whether it was looked up, what is kept (grok_digest.json) and whether it was read, a refresh running, and the
+	// refresh loop's poke.
+	locale     string
+	grokRun    GrokRunner
+	findGrok   func(string) string
+	grokPath   string
+	grokLooked bool
+	grok       grokState
+	grokLoaded bool // grok_digest.json was read (loadGrok)
+	refreshing bool
+	grokPoke   chan bool
 }
 
 // New is the connector for the settings.
@@ -169,7 +192,15 @@ func New(cfg Settings, o Options) *Connector {
 	if err != nil || o.Timezone == "" {
 		loc = time.Local
 	}
+	run, find := o.Grok, o.FindGrok
+	if run == nil {
+		run = ExecGrok{}
+	}
+	if find == nil {
+		find = func(p string) string { return LookupGrok(p) }
+	}
 	return &Connector{
+		locale: o.Locale, grokRun: run, findGrok: find, grokPoke: make(chan bool, 1),
 		cfg: cfg, tx: texts(o.Locale), loc: loc, now: now, store: store{dir: o.DataDir},
 		api:   &client{base: base, http: httpClient(cfg), now: now, limits: map[string]limit{}},
 		posts: map[string]Post{}, mentions: map[string]Post{}, poke: make(chan struct{}, 1),
@@ -232,6 +263,9 @@ func (c *Connector) Status(context.Context) connector.Status {
 
 func (c *Connector) statusLocked() connector.Status {
 	if !c.keys.complete() {
+		if c.cfg.dataSource() != SourceXAPI {
+			return c.grokStatusLocked()
+		}
 		return connector.Status{State: connector.StateNotSignedIn, Error: c.tx.notSignedIn, Guide: []string{c.tx.notSignedInGuide}}
 	}
 	st := c.status
@@ -277,6 +311,9 @@ var (
 // refresh asked for).
 func (c *Connector) Run(ctx context.Context) {
 	c.load(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); c.runGrok(ctx) }()
+	defer func() { <-done }()
 	retry := retryFirst
 	for ctx.Err() == nil {
 		wait := syncEvery
@@ -326,6 +363,9 @@ type signIn struct {
 	Name     string `json:"name,omitempty"`
 }
 
+// Load reads the sign-in and what was kept, and looks for grok (Run starts with it; tests call it).
+func (c *Connector) Load(ctx context.Context) { c.load(ctx); c.lookGrok() }
+
 // load reads the secret and the files once. A sign-in or sign-out while it reads wins: what it read is dropped.
 func (c *Connector) load(ctx context.Context) {
 	c.mu.Lock()
@@ -357,6 +397,8 @@ func (c *Connector) load(ctx context.Context) {
 		}
 	}
 	c.disk.Unlock()
+	c.loadGrok() // not the sign-in's: read whatever the sign-in did meanwhile
+	c.lookGrok()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.loaded || c.gen != gen {

@@ -93,13 +93,14 @@ func (c *Connector) LoginStep(ctx context.Context, step string, values map[strin
 	}
 	c.mu.Unlock()
 	if switched {
-		_ = c.store.wipe()
+		_ = c.store.wipe(fileGrok)
 	}
 	c.Poke()
 	return connector.Prompt{Done: true, Account: "@" + in.Username}, nil
 }
 
-// Logout forgets the keys and everything read: the hub's secret, memory, and every file in the data directory.
+// Logout forgets the keys and everything read with them: the hub's secret, memory, and every file in the data
+// directory but what the Grok source found (not the X sign-in's; grokdigest.go).
 func (c *Connector) Logout(ctx context.Context) error {
 	c.disk.Lock() // before mu: a save in flight finishes first, then the wipe; a later save finds gen changed
 	c.mu.Lock()
@@ -110,7 +111,7 @@ func (c *Connector) Logout(ctx context.Context) error {
 	c.forgetLocked()
 	notify := c.notify
 	c.mu.Unlock()
-	errs := []error{c.store.wipe()}
+	errs := []error{c.store.wipe(fileGrok)}
 	c.disk.Unlock()
 	if s != nil {
 		errs = append(errs, s.Delete(ctx))

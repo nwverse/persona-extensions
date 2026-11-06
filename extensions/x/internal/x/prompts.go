@@ -5,9 +5,9 @@ import (
 	"embed"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"path"
 	"strings"
+	"text/template"
 )
 
 // The tools' descriptions and input schemas (one file a tool, as the GitHub extension has them: the description, an
@@ -27,33 +27,40 @@ const schemaFence = "\n\n```json\n"
 
 var mcpTools = loadTools()
 
+// loadTools reads the tool files (prompts/<tool>.md for each of toolNames); the grok_*.md files are Grok's prompts
+// (grokPrompts), not tools.
 func loadTools() map[string]mcpTool {
 	out := map[string]mcpTool{}
-	err := fs.WalkDir(promptFiles, "prompts", func(p string, d fs.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
+	for _, name := range toolNames {
+		p := path.Join("prompts", name+".md")
 		raw, err := promptFiles.ReadFile(p)
 		if err != nil {
-			return err
+			panic("x prompts: " + err.Error())
 		}
 		desc, rest, ok := strings.Cut(string(raw), schemaFence)
 		schema, ok2 := strings.CutSuffix(rest, "\n```\n")
 		if !ok || !ok2 || desc == "" {
-			return fmt.Errorf("%s: want the description, an empty line and a ```json block with the input schema", p)
+			panic(fmt.Sprintf("x prompts: %s: want the description, an empty line and a ```json block with the input schema", p))
 		}
 		var b bytes.Buffer
 		if err := json.Compact(&b, []byte(schema)); err != nil {
-			return fmt.Errorf("%s: input schema: %w", p, err)
+			panic(fmt.Sprintf("x prompts: %s: input schema: %v", p, err))
 		}
-		name := strings.TrimSuffix(path.Base(p), ".md")
 		out[name] = mcpTool{Name: name, Description: desc, InputSchema: b.Bytes()}
-		return nil
-	})
-	if err != nil {
-		panic("x prompts: " + err.Error())
 	}
 	return out
+}
+
+// grokPrompts are the prompts grok runs with (text/template; Go only fills in the data).
+var grokPrompts = template.Must(template.New("grok").Option("missingkey=error").ParseFS(promptFiles, "prompts/grok_*.md"))
+
+// grokPrompt is the prompt name ("grok_digest", "grok_search") filled with data.
+func grokPrompt(name string, data any) (string, error) {
+	var b strings.Builder
+	if err := grokPrompts.ExecuteTemplate(&b, name+".md", data); err != nil {
+		return "", err
+	}
+	return b.String(), nil
 }
 
 // toolPrompt is the tool named name; an unknown name is a bug and panics.

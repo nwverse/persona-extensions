@@ -66,7 +66,12 @@ func (p *Page) Action(_ context.Context, r *ext.UIRequest) (*wire.ActionResult, 
 		return &wire.ActionResult{View: p.view(r, s)}, nil
 	case "refresh":
 		toast := ""
-		if p.c.Overview().SignedIn {
+		if o := p.c.Overview(); o.Via == x.SourceGrok && o.GrokFound {
+			toast = t.grokRefreshing
+			if !p.c.RefreshGrokSoon() {
+				toast = t.grokFresh
+			}
+		} else if o.SignedIn {
 			p.c.Poke()
 			toast = t.refreshing
 		}
@@ -108,10 +113,17 @@ func (p *Page) view(r *ext.UIRequest, s state) *wire.View {
 	s.W = window
 	o := p.c.Overview()
 	v := &wire.View{Title: "X", State: ext.EncodeState(s), RefreshAfter: refreshAfter}
-	if o.Syncing {
+	if o.Syncing || o.GrokBusy {
 		v.RefreshAfter = syncingRefresh
 	}
+	if o.Via == x.SourceGrok {
+		return p.grokView(r, t, o, v)
+	}
 	if !o.SignedIn {
+		if o.Via == "" { // neither way is set up
+			v.Sections = []wire.Section{{Items: []wire.Component{grokSetUp(r, t, o)}}}
+			return v
+		}
 		v.Sections = []wire.Section{{Items: []wire.Component{signInPrompt(r, t)}}}
 		return v
 	}

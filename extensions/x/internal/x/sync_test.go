@@ -108,7 +108,8 @@ func intp(n int) *int { return &n }
 func TestLogin(t *testing.T) {
 	e := newEnv(t, x.Settings{}, "")
 	ctx := context.Background()
-	if st := e.c.Status(ctx); st.State != connector.StateNotSignedIn {
+	// Neither way set up (no grok here: TestMain): not configured, with how to set up either.
+	if st := e.c.Status(ctx); st.State != connector.StateNotConfigured || len(st.Guide) != 2 {
 		t.Fatalf("before: %+v", st)
 	}
 	p, err := e.c.LoginStep(ctx, "", nil)
@@ -557,7 +558,7 @@ func TestLogoutWipesTheDataDir(t *testing.T) {
 	if data, deleted := e.sec.Stored(); !deleted || len(data) != 0 {
 		t.Fatal("the secret was not deleted")
 	}
-	if st := e.c.Status(context.Background()); st.State != connector.StateNotSignedIn {
+	if st := e.c.Status(context.Background()); st.State != connector.StateNotConfigured {
 		t.Fatalf("status %+v", st)
 	}
 	if things, _ := e.c.Collect(context.Background()); len(things) != 0 {
@@ -586,7 +587,7 @@ func TestTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	tools := e.c.Tools()
-	if len(tools) != 4 {
+	if len(tools) != 5 {
 		t.Fatalf("tools %v", tools)
 	}
 	for _, tl := range tools {

@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 )
 
@@ -22,6 +23,9 @@ const (
 	filePosts     = "posts.json"
 	fileMentions  = "mentions.json"
 	fileState     = "state.json"
+	// fileGrok is what the Grok source found and its day's runs (grokdigest.go): not the X sign-in's, so signing out
+	// of X keeps it; it goes when the source is set to x_api, or with the extension's data.
+	fileGrok = "grok_digest.json"
 )
 
 // Post is a post as kept: its text whole and unaltered, its author as X said when it was read, its counts.
@@ -159,8 +163,21 @@ func (s store) write(name string, v any) error {
 	return err
 }
 
-// wipe removes everything in the directory (signing out): the files above and anything left from an older version.
-func (s store) wipe() error {
+// remove removes name.
+func (s store) remove(name string) error {
+	if s.dir == "" {
+		return nil
+	}
+	err := os.Remove(filepath.Join(s.dir, name))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// wipe removes everything in the directory but keep (signing out: the files above and anything left from an older
+// version, Grok's file kept).
+func (s store) wipe(keep ...string) error {
 	if s.dir == "" {
 		return nil
 	}
@@ -173,6 +190,9 @@ func (s store) wipe() error {
 	}
 	var errs []error
 	for _, e := range entries {
+		if slices.Contains(keep, e.Name()) {
+			continue
+		}
 		errs = append(errs, os.RemoveAll(filepath.Join(s.dir, e.Name())))
 	}
 	return errors.Join(errs...)

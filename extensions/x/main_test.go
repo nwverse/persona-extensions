@@ -21,6 +21,12 @@ import (
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
+// TestMain: no test finds or runs a real grok (this machine may have one).
+func TestMain(m *testing.M) {
+	x.LookupGrok = func(string) string { return "" }
+	os.Exit(m.Run())
+}
+
 // The hub reads the connector from persona-extension.json before the program runs and uses it over what the program
 // says: the two must be the same, with the inbox kind described, the standard triage rules setting and a fallback.
 func TestManifestIsWhatTheProgramDeclares(t *testing.T) {
@@ -77,12 +83,13 @@ func TestManifestIsWhatTheProgramDeclares(t *testing.T) {
 	if err := json.Unmarshal(m.Contributes["ui"], &ui); err != nil || len(ui) != 1 || ui[0].ID != "x" || ui[0].Placement != wire.PlacementNavPage {
 		t.Fatalf("ui: %s (%v)", m.Contributes["ui"], err)
 	}
-	for _, k := range []string{"triage_rules", "feed_source", "list_ids", "daily_post_budget", "retention_days", "proxy"} {
+	for _, k := range []string{"triage_rules", "feed_source", "list_ids", "daily_post_budget", "retention_days", "proxy",
+		"source", "grok_path", "handles", "topics", "grok_every_hours", "grok_searches_per_day"} {
 		if _, ok := m.Configuration.Properties[k]; !ok {
 			t.Errorf("no setting %s", k)
 		}
 	}
-	if !slices.Equal(m.Permissions.Network, []string{"api.x.com", "x.com", "*.twimg.com"}) {
+	if !slices.Equal(m.Permissions.Network, []string{"api.x.com", "x.com", "*.twimg.com", "x.ai", "*.x.ai"}) {
 		t.Fatalf("network %v", m.Permissions.Network)
 	}
 	if _, err := os.Stat("skills/x/SKILL.md"); err != nil {
@@ -242,5 +249,94 @@ func TestPageSignedIn(t *testing.T) {
 	}
 	if res, _ := a.action(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: "x", Action: "profile:../evil"}}); res != nil && res.OpenURL != "" {
 		t.Fatalf("profile of a bad name: %+v", res)
+	}
+}
+
+// grokReply is a Grok answer with a long post, a topic and more posts than a page holds.
+type grokReply struct{}
+
+func (grokReply) Run(_ context.Context, path, prompt string) (string, error) {
+	if path != "/fake/grok" {
+		return "", fmt.Errorf("ran %s", path)
+	}
+	posts := []string{fmt.Sprintf(`{"url":"https://x.com/example_author/status/1900000000000000001","author":"example_author","name":"Example Author","text":%q,"at":%q,"why":"It is long"}`,
+		strings.Repeat("A long line of a long post. ", 600), time.Now().Add(-time.Hour).UTC().Format(time.RFC3339))}
+	for i := range 14 {
+		posts = append(posts, fmt.Sprintf(`{"url":"https://twitter.com/example_author/status/%d?s=20","text":"Post %d\nwith two lines","at":%q}`,
+			1900000000000000100+i, i, time.Now().Add(-time.Duration(i+2)*time.Hour).UTC().Format(time.RFC3339)))
+	}
+	return "```json\n{\"summary\":\"What the watched accounts talked about.\",\"topics\":[{\"title\":\"Databases\",\"summary\":\"About databases\"," +
+		"\"post_urls\":[\"https://x.com/example_author/status/1900000000000000001\",\"https://x.com/example_author/status/1900000000000000100\"]}]," +
+		"\"posts\":[" + strings.Join(posts, ",") + "]}\n```", nil
+}
+
+func TestPageGrok(t *testing.T) {
+	a := &app{grok: grokReply{}, findGrok: func(string) string { return "/fake/grok" }}
+	conn, err := a.build(serve.Init{Locale: "en", Timezone: "UTC", DataDir: t.TempDir(), Config: json.RawMessage(`{"handles":["example_author"],"topics":["Go"]}`)}, &xtest.Secrets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := conn.(*x.Connector)
+	c.Load(context.Background())
+	if n, err := c.RefreshGrok(context.Background(), true); n != 2 || err != nil {
+		t.Fatalf("refresh %d %v", n, err)
+	}
+	notes := map[string]string{"zh-Hans": "由 Grok 搜索整理，可能不完整。", "en": "Found and organized by Grok's search; it may be incomplete.",
+		"ja": "Grok の検索で集めて整理したもので、漏れがあるかもしれません。"}
+	for _, ui := range []int{1, 2, 3, 5} {
+		for loc, note := range notes {
+			_, raw := render(t, a, wire.UIParams{Contribution: "x", Placement: wire.PlacementNavPage, Size: wire.SizeFull, UIVersion: ui, Locale: loc, TZ: "UTC"})
+			for _, want := range []string{note, "Grok", "Databases", "What the watched accounts talked about.", "https://x.com/example_author/status/1900000000000000001",
+				"https://x.com/example_author/status/1900000000000000100"} {
+				if !strings.Contains(raw, want) {
+					t.Errorf("UI %d %s: no %q", ui, loc, want)
+				}
+			}
+			if ui >= 2 && !strings.Contains(raw, `"type":"stat_grid"`) || strings.Contains(raw, "segmented") {
+				t.Errorf("UI %d header: %s", ui, raw)
+			}
+		}
+	}
+	v, raw := render(t, a, wire.UIParams{Contribution: "x", Placement: wire.PlacementNavPage, Size: wire.SizeFull, UIVersion: 5, Locale: "en", TZ: "UTC"})
+	if !strings.Contains(raw, "2 / 30") || !strings.Contains(raw, "Example Author @example_author") ||
+		strings.Count(raw, `"title":"Databases"`) != 1 || strings.Count(raw, "What the watched accounts talked about.") != 1 {
+		t.Fatalf("grok page: %s", raw)
+	}
+	// Each post once: the topic's post is not repeated below.
+	seen := map[string]int{}
+	for _, s := range v.Sections {
+		for _, it := range s.Items {
+			if it.Type == wire.ComponentLink {
+				seen[it.URL]++
+			}
+		}
+	}
+	for u, n := range seen {
+		if n != 1 {
+			t.Fatalf("%s shown %d times", u, n)
+		}
+	}
+	res, err := a.action(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: "x", Action: "refresh", UIVersion: 5, Locale: "en"}})
+	// Right after a refresh, the button does not spend another few of the day's runs.
+	if err != nil || res.View == nil || res.Toast != "Grok searched X less than 30 minutes ago: this is what it found." {
+		t.Fatalf("refresh: %+v %v", res, err)
+	}
+}
+
+// Neither way set up: the page says how to set up each.
+func TestPageNothingSetUp(t *testing.T) {
+	a := &app{findGrok: func(string) string { return "" }}
+	conn, err := a.build(serve.Init{Locale: "en"}, &xtest.Secrets{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn.(*x.Connector).Load(context.Background())
+	for _, ui := range []int{1, 2, 3, 5} {
+		for _, loc := range []string{"zh-Hans", "en", "ja"} {
+			v, raw := render(t, a, wire.UIParams{Contribution: "x", Placement: wire.PlacementNavPage, Size: wire.SizeFull, UIVersion: ui, Locale: loc})
+			if len(v.Sections) != 1 || !strings.Contains(raw, "grok login") || !strings.Contains(raw, "https://x.ai/cli/install.sh") || !strings.Contains(raw, "X API") {
+				t.Fatalf("UI %d %s: %s", ui, loc, raw)
+			}
+		}
 	}
 }

@@ -273,6 +273,9 @@ func accountOf(u apiUser) Account {
 
 // syncFeed reads the feed's source.
 func (c *Connector) syncFeed(ctx context.Context, k Keys, me Account, gen int) error {
+	if c.cfg.dataSource() == SourceGrok { // the digest comes from Grok: no paid timeline
+		return nil
+	}
 	var err error
 	switch c.cfg.source() {
 	case FeedHome:
