@@ -718,8 +718,8 @@ var wrappers = map[string]bool{
 	"do": true, "then": true, "else": true, "elif": true, "if": true, "while": true, "until": true, "!": true,
 }
 
-// runners run the program after their run subcommand (uv run rm, poetry run rm); bundle, npm, pnpm and yarn exec
-// are read through exec.
+// runners run the program after their run subcommand (uv run rm, poetry run rm), also after options or another
+// subcommand (uv --directory x run rm, uv tool run rm); bundle, npm, pnpm and yarn exec are read through exec.
 var runners = map[string]bool{"uv": true, "poetry": true, "pdm": true, "pipenv": true, "hatch": true, "rye": true}
 
 // segmentPersonOnly looks at one simple command. A word counts as a program when it comes first (after NAME=value
@@ -755,7 +755,7 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 		if name == "command" && program && i+1 < len(words) && (words[i+1] == "-v" || words[i+1] == "-V") {
 			return "" // command -v rm only looks rm up
 		}
-		if wrappers[w] || (program && wrappers[name]) || (program && runners[name] && i+1 < len(words) && words[i+1] == "run") {
+		if wrappers[w] || (program && wrappers[name]) || (program && runners[name] && has(words[i+1:], "run")) {
 			wrapped = true
 			continue
 		}

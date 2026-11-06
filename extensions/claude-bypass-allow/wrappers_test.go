@@ -14,7 +14,8 @@ func TestExecWrappers(t *testing.T) {
 		"uv run rm -rf ~/Documents", "uv run --with x rm -rf ~/Documents", "poetry run rm -rf ~/Documents",
 		"pdm run rm -rf ~/Documents", "pipenv run rm -rf ~/Documents", "hatch run rm -rf ~/Documents",
 		"bundle exec rm -rf ~/Documents", "npm exec rm -rf ~/Documents", "pnpm exec rm -rf ~/Documents",
-		"yarn exec rm -rf ~/Documents",
+		"yarn exec rm -rf ~/Documents", "uv --directory /srv run rm -rf ~/Documents", "uv tool run rm -rf ~/Documents",
+		"poetry -C /srv run rm -rf ~/Documents", "hatch env run rm -rf ~/Documents",
 	}
 	for _, c := range stays {
 		if why := newGuard("/Users/u/proj", false).personOnly(c); why == "" {
@@ -33,12 +34,14 @@ func TestExecWrappers(t *testing.T) {
 	}
 }
 
-// pkexec, nsenter and systemd-run run the program as another user, in another namespace or in a unit, so its
-// targets are not this shell's scratch paths.
+// pkexec, nsenter and systemd-run run the program as another user, in another namespace or in a unit, and a
+// runner can change directory first (uv run --directory, poetry -C), so its targets are not this shell's scratch
+// paths.
 func TestExecWrappersNoScratch(t *testing.T) {
 	b := newBox(t)
 	g := newGuard(b.project, false)
-	for _, c := range []string{"pkexec rm -rf {tmp}/x", "nsenter -t 1 -m rm -rf {tmp}/x", "systemd-run rm -rf {tmp}/x"} {
+	for _, c := range []string{"pkexec rm -rf {tmp}/x", "nsenter -t 1 -m rm -rf {tmp}/x", "systemd-run rm -rf {tmp}/x",
+		"cd {project} && uv run --directory /srv rm -rf build", "cd {project} && poetry -C /srv run rm -rf build"} {
 		if c = b.cmd(c); g.personOnly(c) == "" {
 			t.Errorf("%q should stay with a person", c)
 		}
