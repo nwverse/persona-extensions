@@ -222,6 +222,8 @@ func TestTencentIndexTurnover(t *testing.T) {
 	}
 	if dji := u[".DJI"]; dji.Turnover != 0 || !hasFact(dji.Facts, "成交量", "8.55亿") {
 		t.Errorf(".DJI turnover %.0f, facts %v", dji.Turnover, dji.Facts)
+	} else if l := quoteLine(Ref{"us", ".DJI"}, dji); strings.Contains(l, "成交额") { // unknown is left out, not 0
+		t.Errorf(".DJI line: %s", l)
 	}
 	if a := u["AAPL"]; a.Turnover < 2.6e10 || a.Turnover > 2.7e10 {
 		t.Errorf("AAPL turnover %.0f", a.Turnover)
