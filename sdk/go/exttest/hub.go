@@ -216,4 +216,3 @@ func (h *hub) call(ctx context.Context, method string, params, out any) error {
 		return fmt.Errorf("%s: the program closed its stdout", method)
 	}
 }
-

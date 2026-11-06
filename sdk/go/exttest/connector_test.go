@@ -167,8 +167,10 @@ type failures struct {
 	cleanups []func()
 }
 
-func (f *failures) Errorf(format string, args ...any) { f.errs = append(f.errs, fmt.Sprintf(format, args...)) }
-func (f *failures) Cleanup(fn func())                  { f.cleanups = append(f.cleanups, fn) }
+func (f *failures) Errorf(format string, args ...any) {
+	f.errs = append(f.errs, fmt.Sprintf(format, args...))
+}
+func (f *failures) Cleanup(fn func()) { f.cleanups = append(f.cleanups, fn) }
 func (f *failures) runCleanups() {
 	for i := len(f.cleanups) - 1; i >= 0; i-- {
 		f.cleanups[i]()
