@@ -103,7 +103,7 @@
         "manifest_version": 1,
         "id": "github",
         "name": "GitHub",
-        "version": "0.4.8",
+        "version": "0.4.10",
         "description": "GitHub 进 Persona：收件箱里是请你 review、@ 你、指派给你、你的 PR / issue 有了新评论或 review、CI 失败；和你有关的 PR、issue 归档进知识库；助手能搜、读 PR / issue、看改动和 CI，评论和 review 先在手机上确认。登录用你某台电脑上的 gh 登录或设备码登录，token 加密存在 hub 的数据库里。侧边栏的「GitHub」页：待你 review 的 PR、你的 PR 和 CI、指派 / 提到你的、通知和关注的动态、你的仓库（浏览代码、分支、README），PR 的改动文件、逐文件 diff 和行内评论、全部评论、CI 日志摘要，在这一页上评论、review、合并（先预览、确认后才发）。",
         "publisher": "nwverse",
         "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/github",
@@ -274,9 +274,9 @@
       ],
       "packages": [
         {
-          "url": "release:github-v0.4.8/github-0.4.8.tar.gz",
-          "sha256": "c454f90243bd67819f81b51b54c9da828bee3f842f96ab9ff6223a4363f846fa",
-          "size": 13540342
+          "url": "release:github-v0.4.10/github-0.4.10.tar.gz",
+          "sha256": "3a262148106a1fef2f7d294c21a30eb804603bbb6b96a0a753b45405bfc78f6c",
+          "size": 13543902
         }
       ]
     },
@@ -750,7 +750,7 @@
         "manifest_version": 1,
         "id": "telegram",
         "name": "Telegram",
-        "version": "0.1.14",
+        "version": "0.1.17",
         "description": "用你自己的 Telegram 账号（MTProto，hub 直连 Telegram 的数据中心）：App 里的 Telegram 会话，收件箱（私聊、@我），知识库归档，助手的 Telegram 工具和 tg 命令行。发消息、回复、转发、点 reaction、标为已读都先在手机上确认。登录（api_id、api_hash 和会话）加密存在 hub 的数据库里，不在扩展目录。",
         "publisher": "nwverse",
         "engines": {
@@ -839,9 +839,9 @@
       ],
       "packages": [
         {
-          "url": "release:telegram-v0.1.14/telegram-0.1.14.tar.gz",
-          "sha256": "6f8f8b20d1bbdb1fb2178e2d33dfc0af0c2179497eb5e2b7ca4cd32830c9f9d1",
-          "size": 22156090
+          "url": "release:telegram-v0.1.17/telegram-0.1.17.tar.gz",
+          "sha256": "39b05b0c6a15cbab90b82a8a35c4664b57ff2c582b13e1a5fde44696202022fe",
+          "size": 22156632
         }
       ]
     }
