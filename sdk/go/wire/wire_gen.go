@@ -26,8 +26,9 @@ type Manifest struct {
 	Description     string `json:"description,omitempty"`
 	Publisher       string `json:"publisher,omitempty"`
 	Homepage        string `json:"homepage,omitempty"`
-	// What the market shows and searches (docs「扩展市场」): at most 16, each 1 to 24 characters. Packages and indexes carry
-	// the manifest without them (hubs before tags refuse an unknown field); the index entry carries them instead.
+	// What the market shows and searches (docs "Extension market"): at most 16, each 1 to 24 characters. Packages and
+	// indexes carry the manifest without them (hubs before tags refuse an unknown field); the index entry carries them
+	// instead.
 	Tags             []string     `json:"tags,omitempty"`
 	Engines          *Engines     `json:"engines,omitempty"`
 	Runtime          *Runtime     `json:"runtime,omitempty"`
@@ -35,18 +36,76 @@ type Manifest struct {
 	ActivationEvents []string     `json:"activation_events,omitempty"`
 	Contributes      *Contributes `json:"contributes,omitempty"`
 	// Contributions ("<point>/<id>") that start switched off: at install, and at an upgrade the ones the version before
-	// did not have (docs「贡献的开关」). Not a connector or a channel bound to one (their switch is the connector's). Hubs
-	// before it refuse the manifest.
+	// did not have (docs "Contribution switches"). Not a connector or a channel bound to one (their switch is the
+	// connector's). Hubs before it refuse the manifest.
 	OffByDefault []string `json:"off_by_default,omitempty"`
-	// Extensions it needs installed and on (docs「依赖」): while one is missing, off or too old it waits in needs_setup.
+	// Extensions it needs installed and on (docs "Dependencies"): while one is missing, off or too old it waits in
+	// needs_setup.
 	Depends []Dependency `json:"depends,omitempty"`
 	Exports *Exports     `json:"exports,omitempty"`
-	// An extension pack (docs「扩展合集」): installing it installs these. A pack has no runtime and no contributes of its own.
+	// An extension pack (docs "Extension packs"): installing it installs these. A pack has no runtime and no contributes
+	// of its own.
 	ExtensionPack []PackMember `json:"extension_pack,omitempty"`
-	// The configuration's JSON Schema, in the subset every app draws as a form (docs「配置：表单的子集」).
+	// The configuration's JSON Schema, in the subset every app draws as a form (docs "Configuration: the form subset").
 	Configuration json.RawMessage `json:"configuration,omitempty"`
 	Secrets       []SecretSpec    `json:"secrets,omitempty"`
 	Permissions   *Permissions    `json:"permissions,omitempty"`
+	// Command-line programs the hub installs into the extension's own directory and puts first on its PATH (docs
+	// "Command-line programs (tools)", #4507). Installing them is a permission. Hubs before them refuse the manifest.
+	Tools []ToolSpec `json:"tools,omitempty"`
+	Auth  *AuthSpec  `json:"auth,omitempty"`
+}
+
+// ToolSpec: one command-line program. Exactly one of archive and npm.
+type ToolSpec struct {
+	// The command put on PATH.
+	Name  string `json:"name"`
+	Title string `json:"title,omitempty"`
+	// What is installed, for people.
+	Version string `json:"version"`
+	// Other tools of the manifest installed (and on PATH) first.
+	Requires []string   `json:"requires,omitempty"`
+	Check    *ToolCheck `json:"check,omitempty"`
+	// By <GOOS>-<GOARCH>.
+	Archive map[string]ToolArchive `json:"archive,omitempty"`
+	Npm     *ToolNPM               `json:"npm,omitempty"`
+}
+
+// ToolCheck: A copy on the hub's PATH (outside the home directory) is used instead of installing one when <name>
+// <args> prints a version (the first x.y.z) of at least min_version.
+type ToolCheck struct {
+	// Default --version.
+	Args       []string `json:"args,omitempty"`
+	MinVersion string   `json:"min_version,omitempty"`
+}
+
+// ToolArchive: A download: a .tar.gz, .tgz or .zip with the program at path, or the program itself.
+type ToolArchive struct {
+	URL     string   `json:"url"`
+	Sha256  string   `json:"sha256"`
+	Path    string   `json:"path,omitempty"`
+	Mirrors []string `json:"mirrors,omitempty"`
+}
+
+// ToolNPM: an npm package unpacked as published: no install scripts, no dependencies (a bundled package).
+type ToolNPM struct {
+	Package   string `json:"package"`
+	Version   string `json:"version"`
+	Integrity string `json:"integrity"`
+	// Default https://registry.npmjs.org.
+	Registry string `json:"registry,omitempty"`
+	// The key of package.json's bin; default the tool's name.
+	Bin string `json:"bin,omitempty"`
+}
+
+// AuthSpec: the extension signs in: its program answers auth.status, auth.step and auth.logout (docs "Sign-in
+// (auth)").
+type AuthSpec struct {
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+	// An extension_page (plugin_page) ui contribution: its own sign-in page for apps that do not know auth; apps that do
+	// leave it out of its pages.
+	Page string `json:"page,omitempty"`
 }
 
 type Dependency struct {
@@ -65,7 +124,8 @@ type ExportedPoint struct {
 	ID          string `json:"id"`
 	Version     int    `json:"version"`
 	Description string `json:"description,omitempty"`
-	// Each contribution's JSON Schema, in the configuration's subset (docs「配置：表单的子集」); id is always there and required.
+	// Each contribution's JSON Schema, in the configuration's subset (docs "Configuration: the form subset"); id is
+	// always there and required.
 	Schema json.RawMessage `json:"schema,omitempty"`
 }
 
@@ -95,8 +155,8 @@ type Runtime struct {
 	Resources *Resources        `json:"resources,omitempty"`
 }
 
-// Resources: the most a program may use when the hub runs it in a sandbox (docs/extensions.md「沙箱」): memory in MB, CPU
-// in percent of one core. Unset: 1024 MB, 100%.
+// Resources: the most a program may use when the hub runs it in a sandbox (docs/extensions.md "Sandbox"): memory in
+// MB, CPU in percent of one core. Unset: 1024 MB, 100%.
 type Resources struct {
 	MemoryMb   int `json:"memory_mb,omitempty"`
 	CpuPercent int `json:"cpu_percent,omitempty"`
@@ -105,9 +165,9 @@ type Resources struct {
 // A path in the package, or one per platform ({"linux-amd64": "bin/x"}).
 type Command = json.RawMessage
 
-// NodeRuntime: the extension's program on computers (docs/extensions.md「在电脑上运行的程序」): one per platform (darwin-* /
-// linux-*), on the machines picked in the configuration field `machines` (an array of format machine, x-os the
-// programs' systems).
+// NodeRuntime: the extension's program on computers (docs/extensions.md "Programs running on computers"): one per
+// platform (darwin-* / linux-*), on the machines picked in the configuration field `machines` (an array of format
+// machine, x-os the programs' systems).
 type NodeRuntime struct {
 	Command     json.RawMessage   `json:"command"`
 	Args        []string          `json:"args,omitempty"`
@@ -146,6 +206,15 @@ type Permissions struct {
 	// It asks the hub for the GitHub token of a computer's gh login (the one the user picks for the GitHub connector),
 	// held in its memory only.
 	GhLogin bool `json:"gh_login,omitempty"`
+	// It reads the account list of the account-pool gateways in the hub's usage sources (usage.gateway_accounts):
+	// accounts, status and quota windows, never a key.
+	UsageGateways bool `json:"usage_gateways,omitempty"`
+	// Its program is an agent runtime that connects to this machine's node; in a sandbox it gets a socket in its run
+	// directory (PERSONA_RUNTIME_SOCKET) that leads to the node's runtime.sock only. Needs runtime.
+	AgentRuntimes bool `json:"agent_runtimes,omitempty"`
+	// It receives the error and crash reports of the hub and the user's devices, scrubbed (no message text, tokens, user
+	// names, machine names or IP addresses). Needed by contributes.error_reports.
+	ErrorReports bool `json:"error_reports,omitempty"`
 }
 
 // Contributes: contributions by extension point. A point this hub does not know installs with a warning, not taking
@@ -159,6 +228,7 @@ type Contributes struct {
 	Providers       []ProviderItem       `json:"providers,omitempty"`
 	API             []APIItem            `json:"api,omitempty"`
 	Assistant       []AssistantItem      `json:"assistant,omitempty"`
+	McpServers      []MCPServerItem      `json:"mcp_servers,omitempty"`
 	UI              []UIItem             `json:"ui,omitempty"`
 	AgentSources    []AgentSourceItem    `json:"agent_sources,omitempty"`
 	Channel         []ChannelItem        `json:"channel,omitempty"`
@@ -170,6 +240,8 @@ type Contributes struct {
 	Looks           []LookItem           `json:"looks,omitempty"`
 	TriageTemplates []TriageTemplateItem `json:"triage_templates,omitempty"`
 	AgentFilters    []AgentFilterItem    `json:"agent_filters,omitempty"`
+	Tunnels         []TunnelItem         `json:"tunnels,omitempty"`
+	ErrorReports    []ErrorReportsItem   `json:"error_reports,omitempty"`
 	Messaging       []MessagingItem      `json:"messaging,omitempty"`
 	// Extra keys stay at this object's level on the wire; they cannot replace declared fields.
 	AdditionalProperties map[string]json.RawMessage `json:"-"`
@@ -181,7 +253,7 @@ func (v *Contributes) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	declared := map[string]json.RawMessage{}
-	for _, key := range []string{"connectors", "voice", "computer", "browser", "quota", "providers", "api", "assistant", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "messaging"} {
+	for _, key := range []string{"connectors", "voice", "computer", "browser", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "messaging"} {
 		if value, ok := extra[key]; ok {
 			declared[key] = value
 			delete(extra, key)
@@ -213,7 +285,7 @@ func (v Contributes) MarshalJSON() ([]byte, error) {
 	}
 	for key, value := range v.AdditionalProperties {
 		switch key {
-		case "connectors", "voice", "computer", "browser", "quota", "providers", "api", "assistant", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "messaging":
+		case "connectors", "voice", "computer", "browser", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "messaging":
 			continue
 		}
 		fields[key] = value
@@ -221,7 +293,8 @@ func (v Contributes) MarshalJSON() ([]byte, error) {
 	return json.Marshal(fields)
 }
 
-// SkillItem: A skill (docs「纯声明贡献」): a directory of the package with SKILL.md, put in with the assistant's skills.
+// SkillItem: A skill (docs "Declarative contributions"): a directory of the package with SKILL.md, put in with the
+// assistant's skills.
 type SkillItem struct {
 	ID string `json:"id"`
 	// The directory, relative to the package.
@@ -259,8 +332,8 @@ type ThemeColors struct {
 	Ai       string `json:"ai,omitempty"`
 }
 
-// ThemeItem: A theme (主题色): the design system's role colors for light and dark; the apps check the contrast and do
-// not offer one that fails.
+// ThemeItem: A theme (Theme Color): the design system's role colors for light and dark; the apps check the contrast
+// and do not offer one that fails.
 type ThemeItem struct {
 	ID    string      `json:"id"`
 	Name  string      `json:"name"`
@@ -268,7 +341,7 @@ type ThemeItem struct {
 	Dark  ThemeColors `json:"dark"`
 }
 
-// BuiltinLook: A look every app draws itself: 团子 (the default), 面罩, 汇流.
+// BuiltinLook: A look every app draws itself: Mochi (the default), Visor, Circuit.
 const (
 	BuiltinLookPersona       = "persona"
 	BuiltinLookJarvis        = "jarvis"
@@ -347,7 +420,7 @@ type LookAvatar struct {
 	Dark *LookAvatarDark `json:"dark,omitempty"`
 }
 
-// LookPalette: an appearance's colors, #RRGGBB (docs/persona.md「色系」, the apps' PersonaPalette).
+// LookPalette: an appearance's colors, #RRGGBB (docs/persona.md "Palettes", the apps' PersonaPalette).
 type LookPalette struct {
 	Primary    string `json:"primary,omitempty"`
 	Secondary  string `json:"secondary,omitempty"`
@@ -383,9 +456,8 @@ type LookDot struct {
 	States LookDotStates `json:"states"`
 }
 
-// LookItem: A look (形象, docs/extensions.md「形象」): Persona's name, face, colors and dot. The hub serves it as a persona
-// package; app_icon_fallback is the built-in look whose icon stands for it where only the app's own icons can be
-// shown.
+// LookItem: A look (docs/extensions.md "Looks"): Persona's name, face, colors and dot, served as a persona package.
+// app_icon_fallback is the built-in icon used where only the app's own icons can be shown.
 type LookItem struct {
 	ID              string      `json:"id"`
 	Name            string      `json:"name"`
@@ -405,8 +477,23 @@ type TriageTemplateItem struct {
 	Text  string `json:"text"`
 }
 
-// AgentFilterItem: agent sessions kept out of Agents (docs「Agent 过滤」): a session goes when it is one of agents and
-// any of the matchers fits it.
+// ErrorReportsItem: it is given the error and crash reports of the hub and the user's devices
+// (error_reports.deliver): needs the program to speak the protocol, on_startup and permissions.error_reports.
+type ErrorReportsItem struct {
+	ID string `json:"id"`
+	// Only reports from these; omitted: all.
+	Sources []string `json:"sources,omitempty"`
+}
+
+// TunnelItem: A tunnel the apps can reach this hub through when its own addresses do not answer (docs "In-app
+// tunnels"): an in-app tunnel core built into the app, going to the configuration's target_host and target_port.
+type TunnelItem struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+// AgentFilterItem: agent sessions kept out of Agents (docs "Agent filters"): a session goes when it is one of agents
+// and any of the matchers fits it.
 type AgentFilterItem struct {
 	ID string `json:"id"`
 	// What the extension's contributions list calls it.
@@ -495,7 +582,27 @@ type AssistantItem struct {
 	Gate         string   `json:"gate,omitempty"`
 }
 
-// UIItem: A place in the apps the extension draws (docs「UI 插槽」).
+// MCPServerItem: an MCP server for the Claude assistant (docs "MCP servers"): a command line on the assistant's
+// machine, its tools as mcp__<id>__<tool>. The command reads its own configuration; Persona adds nothing to its
+// environment. Not a shell or an interpreter.
+type MCPServerItem struct {
+	// The server's name for the assistant; not jarvis or persona.
+	ID string `json:"id"`
+	// Looked up on PATH, then in ~/bin.
+	Command string `json:"command"`
+	// A PERSONA_ variable (JARVIS_ read too) that, when set, replaces the lookup: a path, or "" / 0 / off / false to
+	// leave the server out.
+	Env  string   `json:"env,omitempty"`
+	Args []string `json:"args,omitempty"`
+	// Words `<command> --help` must print; otherwise the server is left out.
+	Requires []string `json:"requires,omitempty"`
+	// Tools that run without asking.
+	Allow []string `json:"allow,omitempty"`
+	// Tools never callable. Any other tool goes by the conversation's permission mode.
+	Deny []string `json:"deny,omitempty"`
+}
+
+// UIItem: A place in the apps the extension draws (docs "UI slots").
 type UIItem struct {
 	ID        string `json:"id"`
 	Title     string `json:"title"`
@@ -548,8 +655,8 @@ type EventsItem struct {
 	Subscribe []string `json:"subscribe"`
 }
 
-// ShortcutItem: an action of the extension the system runs (docs「系统级位置」): Shortcuts and Siri on iPhone, Mac and Apple
-// Watch. The hub asks the extension shortcut.run with the values.
+// ShortcutItem: an action of the extension the system runs (docs "System placements"): Shortcuts and Siri on iPhone,
+// Mac and Apple Watch. The hub asks the extension shortcut.run with the values.
 type ShortcutItem struct {
 	ID          string          `json:"id"`
 	Title       string          `json:"title"`
@@ -623,6 +730,58 @@ const (
 
 // Methods are the values of Method, in order.
 var Methods = []string{"initialize", "ping", "manifest"}
+
+// Values of AuthState.
+const (
+	AuthStateSignedOut = "signed_out"
+	AuthStatePending   = "pending"
+	AuthStateSignedIn  = "signed_in"
+	AuthStateExpired   = "expired"
+	AuthStateError     = "error"
+)
+
+// AuthStates are the values of AuthState, in order.
+var AuthStates = []string{"signed_out", "pending", "signed_in", "expired", "error"}
+
+// AuthStatus: auth.status and auth.logout: the extension's sign-in now (manifest.auth).
+type AuthStatus struct {
+	State   string `json:"state"`
+	Account string `json:"account,omitempty"`
+	// For people: why it is in error, what is signed in.
+	Message   string    `json:"message,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+}
+
+// AuthStepParams: auth.step: step "" starts over; values are the fields of the step before.
+type AuthStepParams struct {
+	Step   string            `json:"step"`
+	Values map[string]string `json:"values,omitempty"`
+}
+
+type AuthField struct {
+	Name        string `json:"name"`
+	Label       string `json:"label"`
+	Secret      bool   `json:"secret,omitempty"`
+	Placeholder string `json:"placeholder,omitempty"`
+}
+
+// AuthPrompt: auth.step's answer, the connectors' Prompt: fields to fill, a device code (url to open, user_code to
+// enter) or a QR code (url, scanned with another app), or done. For device_code and qr the app asks the same step
+// again (no values) every interval seconds.
+type AuthPrompt struct {
+	Step   string      `json:"step,omitempty"`
+	Fields []AuthField `json:"fields,omitempty"`
+	// Empty: fields to fill; device_code; qr.
+	Kind      string    `json:"kind,omitempty"`
+	URL       string    `json:"url,omitempty"`
+	UserCode  string    `json:"user_code,omitempty"`
+	Interval  int       `json:"interval,omitempty"`
+	Hint      string    `json:"hint,omitempty"`
+	Error     string    `json:"error,omitempty"`
+	Done      bool      `json:"done,omitempty"`
+	Account   string    `json:"account,omitempty"`
+	ExpiresAt time.Time `json:"expires_at,omitzero"`
+}
 
 // Values of HubRole.
 const (
@@ -795,7 +954,7 @@ type UIPlaces struct {
 	UI []UIPlace `json:"ui"`
 }
 
-// WidgetPlace: A widget an extension draws outside the app (GET …/extensions/-/widgets; docs「系统级位置」).
+// WidgetPlace: A widget an extension draws outside the app (GET …/extensions/-/widgets; docs "System placements").
 type WidgetPlace struct {
 	Extension      string   `json:"extension"`
 	ExtensionName  string   `json:"extension_name,omitempty"`
@@ -895,6 +1054,110 @@ type NotifyActionInput struct {
 	Placeholder string `json:"placeholder,omitempty"`
 }
 
+// ErrorSource: which part of Persona an error report comes from.
+const (
+	ErrorSourceHub     = "hub"
+	ErrorSourceManager = "manager"
+	ErrorSourceWeb     = "web"
+	ErrorSourceAndroid = "android"
+	ErrorSourceIos     = "ios"
+	ErrorSourceMac     = "mac"
+	ErrorSourceWatch   = "watch"
+	ErrorSourceVision  = "vision"
+)
+
+// ErrorSources are the values of ErrorSource, in order.
+var ErrorSources = []string{"hub", "manager", "web", "android", "ios", "mac", "watch", "vision"}
+
+// ErrorKind: what an error report is: a caught exception, a crash (the app died), an ANR (it hung), a Go panic, an
+// error line of a log.
+const (
+	ErrorKindException = "exception"
+	ErrorKindCrash     = "crash"
+	ErrorKindAnr       = "anr"
+	ErrorKindPanic     = "panic"
+	ErrorKindLog       = "log"
+)
+
+// ErrorKinds are the values of ErrorKind, in order.
+var ErrorKinds = []string{"exception", "crash", "anr", "panic", "log"}
+
+// Values of ErrorLevel.
+const (
+	ErrorLevelFatal   = "fatal"
+	ErrorLevelError   = "error"
+	ErrorLevelWarning = "warning"
+)
+
+// ErrorLevels are the values of ErrorLevel, in order.
+var ErrorLevels = []string{"fatal", "error", "warning"}
+
+// ErrorFrame: one frame of a stack trace.
+type ErrorFrame struct {
+	Function string `json:"function,omitempty"`
+	Module   string `json:"module,omitempty"`
+	File     string `json:"file,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	Column   int    `json:"column,omitempty"`
+	// Persona's own code, not a library's or the system's.
+	InApp bool `json:"in_app,omitempty"`
+}
+
+// ErrorException: one exception of a report; frames innermost last (the order Sentry uses).
+type ErrorException struct {
+	Type   string       `json:"type"`
+	Value  string       `json:"value,omitempty"`
+	Frames []ErrorFrame `json:"frames,omitempty"`
+}
+
+// ErrorBreadcrumb: something that happened before the error: a screen opened, a request failed. Code-chosen short
+// text, no user content.
+type ErrorBreadcrumb struct {
+	Time     string `json:"time,omitempty"`
+	Category string `json:"category"`
+	Message  string `json:"message,omitempty"`
+	Level    string `json:"level,omitempty"`
+}
+
+// ErrorReport: an error or crash of the hub or a device (docs/extensions.md "Error reports"). Clients send it to POST
+// /api/v1/error-reports; the manager scrubs it and adds fingerprint, count and received_at before an extension gets
+// it.
+type ErrorReport struct {
+	// Made by the sender; the same id again (a retry) is dropped.
+	ID     string `json:"id"`
+	Source string `json:"source"`
+	Kind   string `json:"kind"`
+	Level  string `json:"level"`
+	// When it happened, RFC 3339.
+	Time      string `json:"time"`
+	Release   string `json:"release,omitempty"`
+	Build     string `json:"build,omitempty"`
+	Commit    string `json:"commit,omitempty"`
+	OS        string `json:"os,omitempty"`
+	OSVersion string `json:"os_version,omitempty"`
+	// The model only, never an id of the device.
+	DeviceModel string            `json:"device_model,omitempty"`
+	Message     string            `json:"message,omitempty"`
+	Exceptions  []ErrorException  `json:"exceptions,omitempty"`
+	Breadcrumbs []ErrorBreadcrumb `json:"breadcrumbs,omitempty"`
+	Tags        map[string]string `json:"tags,omitempty"`
+	// It happened in an earlier run of the app and is sent now.
+	PreviousLaunch bool `json:"previous_launch,omitempty"`
+	// Set by the manager: reports with the same one are the same problem.
+	Fingerprint string `json:"fingerprint,omitempty"`
+	// Set by the manager: how many of this fingerprint it folded into this one (1 or more).
+	Count int `json:"count,omitempty"`
+	// Set by the manager, RFC 3339.
+	ReceivedAt string `json:"received_at,omitempty"`
+}
+
+// ErrorReportsDeliver: error_reports.deliver, sent to an extension with an error_reports contribution: reports,
+// already scrubbed, deduplicated and rate limited. A notification: no answer, not sent again.
+type ErrorReportsDeliver struct {
+	Contribution string        `json:"contribution"`
+	Reports      []ErrorReport `json:"reports"`
+}
+
 // ExtensionNotification: extension_notification in an extension's alert push: whose it is, the page a tap opens (ui
 // with state) and its buttons (category ext.<extension>.<hash of the action ids>, registered by the app as it meets
 // it).
@@ -957,7 +1220,7 @@ const (
 // ButtonRoles are the values of ButtonRole, in order.
 var ButtonRoles = []string{"normal", "destructive"}
 
-// Placement: A slot in the apps an extension draws at (docs「UI 插槽」). extension_page is plugin_page's new name (UI
+// Placement: A slot in the apps an extension draws at (docs "UI slots"). extension_page is plugin_page's new name (UI
 // version 3): the hub takes both and answers the new API with extension_page, the old one with plugin_page.
 const (
 	PlacementPluginPage      = "plugin_page"
@@ -990,8 +1253,8 @@ const (
 // Sizes are the values of Size, in order.
 var Sizes = []string{"compact", "full", "small", "medium", "large", "accessory_circular", "accessory_rectangular", "accessory_inline"}
 
-// WidgetFamily: A widget's size outside the app (docs「系统级位置」): a home screen widget's small / medium / large, a Lock
-// Screen or watch face complication's accessory_*.
+// WidgetFamily: A widget's size outside the app (docs "System placements"): a home screen widget's small / medium /
+// large, a Lock Screen or watch face complication's accessory_*.
 const (
 	WidgetFamilySmall                = "small"
 	WidgetFamilyMedium               = "medium"
@@ -1250,7 +1513,7 @@ type Tab struct {
 	Badge string `json:"badge,omitempty"`
 }
 
-// Fact: A label and its value in a header (作者 · someone).
+// Fact: A label and its value in a header (Author · someone).
 type Fact struct {
 	Label string `json:"label,omitempty"`
 	Value string `json:"value"`
@@ -1314,8 +1577,8 @@ type Thread struct {
 	Resolve *Action `json:"resolve,omitempty"`
 }
 
-// Comment: A comment: its author, when (the app draws it relative), a body in the markdown subset, a badge (已批准). An
-// event is a quiet line (merged, pushed two commits).
+// Comment: A comment: its author, when (the app draws it relative), a body in the markdown subset, a badge
+// (Approved). An event is a quiet line (merged, pushed two commits).
 type Comment struct {
 	ID     string    `json:"id,omitempty"`
 	Author string    `json:"author"`
@@ -1495,8 +1758,8 @@ type Filter struct {
 	Action  Action   `json:"action"`
 }
 
-// More: A section's last row, 加载更多 (UI version 3): reaching it (or tapping it) calls ui.action with action once; the
-// extension answers the whole view, longer.
+// More: A section's last row, Load More (UI version 3): reaching it (or tapping it) calls ui.action with action once;
+// the extension answers the whole view, longer.
 type More struct {
 	Title  string `json:"title,omitempty"`
 	Action Action `json:"action"`
@@ -1650,8 +1913,8 @@ type CardPart struct {
 	Note  string  `json:"note,omitempty"`
 }
 
-// MessagingCapability: what a source supports (docs「三、能力」). The apps show only what is supported; an unknown one is
-// ignored.
+// MessagingCapability: what a source supports (docs "3. Capabilities"). The apps show only what is supported; an
+// unknown one is ignored.
 const (
 	MessagingCapabilityAccounts          = "accounts"
 	MessagingCapabilityPinned            = "pinned"
@@ -1675,8 +1938,8 @@ const (
 // MessagingCapabilities are the values of MessagingCapability, in order.
 var MessagingCapabilities = []string{"accounts", "pinned", "mentions", "attachments", "attachment_replies", "threads", "topics", "reactions", "read_receipts", "chat_pins", "profiles", "url_previews", "documents", "doc_comments", "posts", "edit_history", "translation"}
 
-// MessagingComposerMode: A message box mode besides plain (docs「七、输入框模式」): what is sent is handled by the extension
-// (encoded, sealed).
+// MessagingComposerMode: A message box mode besides plain (docs "7. Composer modes"): what is sent is handled by the
+// extension (encoded, sealed).
 type MessagingComposerMode struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
@@ -1702,7 +1965,7 @@ type MessagingLink struct {
 	Opens string   `json:"opens"`
 }
 
-// MessagingItem: the manifest's contributes.messaging[]: one messaging source (docs「二、清单」).
+// MessagingItem: the manifest's contributes.messaging[]: one messaging source (docs "2. Manifest").
 type MessagingItem struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
@@ -1827,7 +2090,8 @@ type MessagingReaction struct {
 	Users []string `json:"users,omitempty"`
 }
 
-// MessagingDecoration: A small line under a message's body the extension adds (勇攀高峰 · 已解码, 加密消息 · 对外展示).
+// MessagingDecoration: A small line under a message's body the extension adds (Brave Climb · Decoded, Encrypted
+// Message · Public).
 type MessagingDecoration struct {
 	Text string `json:"text"`
 	Icon string `json:"icon,omitempty"`
@@ -1944,8 +2208,9 @@ type MessagingPreview struct {
 	Text       string `json:"text"`
 }
 
-// MessagingPart: A piece of a message's body, told apart by kind (docs「五」). An app that does not know a kind draws
-// its text, or skips it. One struct for every variant: kind says which fields mean something.
+// MessagingPart: A piece of a message's body, told apart by kind (docs "5. Conversations and messages"). An app that
+// does not know a kind draws its text, or skips it. One struct for every variant: kind says which fields mean
+// something.
 type MessagingPart struct {
 	Kind  string         `json:"kind"`
 	Text  string         `json:"text,omitempty"`
@@ -2005,7 +2270,7 @@ type MessagingMention struct {
 	Name   string `json:"name"`
 }
 
-// MessagingOutgoing: POST conversations/{id}/messages (docs「六、发送」).
+// MessagingOutgoing: POST conversations/{id}/messages (docs "6. Sending").
 type MessagingOutgoing struct {
 	ClientID string             `json:"client_id"`
 	Text     string             `json:"text"`
@@ -2265,7 +2530,7 @@ type MessagingConversationRef struct {
 	MentionPosition string `json:"mention_position,omitempty"`
 }
 
-// MessagingError: an error answer. code is one of the codes the apps act on (docs「四、接口」); view comes with
+// MessagingError: an error answer. code is one of the codes the apps act on (docs "4. API"); view comes with
 // input_required.
 type MessagingError struct {
 	Error string `json:"error"`
@@ -2276,6 +2541,11 @@ type MessagingError struct {
 // newDef makes a value of each definition, for tests that read examples by definition name.
 var newDef = map[string]func() any{
 	"Manifest":                  func() any { return new(Manifest) },
+	"ToolSpec":                  func() any { return new(ToolSpec) },
+	"ToolCheck":                 func() any { return new(ToolCheck) },
+	"ToolArchive":               func() any { return new(ToolArchive) },
+	"ToolNPM":                   func() any { return new(ToolNPM) },
+	"AuthSpec":                  func() any { return new(AuthSpec) },
 	"Dependency":                func() any { return new(Dependency) },
 	"Exports":                   func() any { return new(Exports) },
 	"ExportedPoint":             func() any { return new(ExportedPoint) },
@@ -2302,6 +2572,8 @@ var newDef = map[string]func() any{
 	"LookDot":                   func() any { return new(LookDot) },
 	"LookItem":                  func() any { return new(LookItem) },
 	"TriageTemplateItem":        func() any { return new(TriageTemplateItem) },
+	"ErrorReportsItem":          func() any { return new(ErrorReportsItem) },
+	"TunnelItem":                func() any { return new(TunnelItem) },
 	"AgentFilterItem":           func() any { return new(AgentFilterItem) },
 	"ConnectorItem":             func() any { return new(ConnectorItem) },
 	"NamedItem":                 func() any { return new(NamedItem) },
@@ -2311,6 +2583,7 @@ var newDef = map[string]func() any{
 	"APIItem":                   func() any { return new(APIItem) },
 	"APIReceipt":                func() any { return new(APIReceipt) },
 	"AssistantItem":             func() any { return new(AssistantItem) },
+	"MCPServerItem":             func() any { return new(MCPServerItem) },
 	"UIItem":                    func() any { return new(UIItem) },
 	"AgentSourceItem":           func() any { return new(AgentSourceItem) },
 	"ChannelItem":               func() any { return new(ChannelItem) },
@@ -2320,6 +2593,10 @@ var newDef = map[string]func() any{
 	"ShortcutParam":             func() any { return new(ShortcutParam) },
 	"Frame":                     func() any { return new(Frame) },
 	"RPCError":                  func() any { return new(RPCError) },
+	"AuthStatus":                func() any { return new(AuthStatus) },
+	"AuthStepParams":            func() any { return new(AuthStepParams) },
+	"AuthField":                 func() any { return new(AuthField) },
+	"AuthPrompt":                func() any { return new(AuthPrompt) },
 	"InitializeParams":          func() any { return new(InitializeParams) },
 	"ExportedContribution":      func() any { return new(ExportedContribution) },
 	"HubInfo":                   func() any { return new(HubInfo) },
@@ -2349,6 +2626,11 @@ var newDef = map[string]func() any{
 	"ShortcutResult":            func() any { return new(ShortcutResult) },
 	"NotifyAction":              func() any { return new(NotifyAction) },
 	"NotifyActionInput":         func() any { return new(NotifyActionInput) },
+	"ErrorFrame":                func() any { return new(ErrorFrame) },
+	"ErrorException":            func() any { return new(ErrorException) },
+	"ErrorBreadcrumb":           func() any { return new(ErrorBreadcrumb) },
+	"ErrorReport":               func() any { return new(ErrorReport) },
+	"ErrorReportsDeliver":       func() any { return new(ErrorReportsDeliver) },
 	"ExtensionNotification":     func() any { return new(ExtensionNotification) },
 	"View":                      func() any { return new(View) },
 	"Section":                   func() any { return new(Section) },
