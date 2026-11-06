@@ -13,6 +13,9 @@ import (
 // hold to their definitions, and those under invalid/ do not.
 func TestPluginExamples(t *testing.T) {
 	dir := filepath.Join("..", "..", "..", "schema", "extension", "examples", "plugin")
+	if _, err := os.Stat(dir); err != nil {
+		t.Skip("not in the main repository:", err) // an extension repository's copy of the SDK has no schema/
+	}
 	files, _ := filepath.Glob(filepath.Join(dir, "*.json"))
 	if len(files) == 0 {
 		t.Fatal("no plugin examples")
