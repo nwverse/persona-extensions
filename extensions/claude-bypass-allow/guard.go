@@ -703,7 +703,8 @@ func isDigits(s string) bool {
 // busybox rm, autossh host rm, unshare rm, taskset 1 rm, for …; do rm …), so after one every word counts as a
 // possible program; shell keywords are here too. ssh runs its unquoted arguments ("ssh host rm -rf x") joined
 // with a space through the remote shell, the way it runs one quoted argument; autossh execs ssh; busybox runs its
-// applet as a program.
+// applet as a program. caffeinate, arch, xcrun, pkexec, nsenter, systemd-run, chrt, numactl, fakeroot, valgrind,
+// ltrace and gdb --args exec the program after their options.
 var wrappers = map[string]bool{
 	"sudo": true, "doas": true, "xargs": true, "parallel": true, "env": true, "nice": true, "ionice": true, "nohup": true,
 	"time": true, "timeout": true, "exec": true, "command": true, "builtin": true, "stdbuf": true, "setsid": true,
@@ -711,9 +712,15 @@ var wrappers = map[string]bool{
 	"autossh": true, "busybox": true, "eval": true,
 	"npx": true, "pnpx": true, "bunx": true, "dlx": true, "uvx": true, "pipx": true,
 	"unshare": true, "taskset": true, "coproc": true, "script": true, "sg": true, "trap": true,
+	"caffeinate": true, "arch": true, "xcrun": true, "pkexec": true, "nsenter": true, "systemd-run": true, "chrt": true,
+	"numactl": true, "fakeroot": true, "valgrind": true, "ltrace": true, "--args": true,
 	"-exec": true, "-execdir": true, "-ok": true, "-okdir": true,
 	"do": true, "then": true, "else": true, "elif": true, "if": true, "while": true, "until": true, "!": true,
 }
+
+// runners run the program after their run subcommand (uv run rm, poetry run rm); bundle, npm, pnpm and yarn exec
+// are read through exec.
+var runners = map[string]bool{"uv": true, "poetry": true, "pdm": true, "pipenv": true, "hatch": true, "rye": true}
 
 // segmentPersonOnly looks at one simple command. A word counts as a program when it comes first (after NAME=value
 // assignments) or after a wrapper; so `grep -rn truncate src/` and `cd /tmp/rm` go through, `sudo -b rm x` does not.
@@ -748,7 +755,7 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 		if name == "command" && program && i+1 < len(words) && (words[i+1] == "-v" || words[i+1] == "-V") {
 			return "" // command -v rm only looks rm up
 		}
-		if wrappers[w] || (program && wrappers[name]) {
+		if wrappers[w] || (program && wrappers[name]) || (program && runners[name] && i+1 < len(words) && words[i+1] == "run") {
 			wrapped = true
 			continue
 		}
