@@ -103,6 +103,9 @@ func TestPersonOnly(t *testing.T) {
 		"{,rm} -rf v", "{,} rm -rf v", "{,rm,-rf,v}", "{,rm}{,} -rf v", "{,/usr/bin/rm} -rf v", "{{rm,-rf},x}",
 		"{" + strings.Repeat(",", 5000) + "rm} -rf v", "echo " + strings.Repeat("{a,b}", 20) + "; rm -rf v",
 		"echo $(true)#y; rm -rf v", "echo `true`#y; rm -rf v", "echo $(x)#c && rm -rf v", "x$(echo hi)#z; rm -rf v",
+		// macOS file systems ignore case by default: RM finds /bin/RM and runs rm
+		`RM -rf "$t"`, "cd view && /bin/Rm -f sub/*", "sudo RM -rf /var/x", "SUDO rm -rf /var/x", "Git reset --hard",
+		"CHMOD 777 ~/.ssh", "/bin/R? -rf v", "BASH -c 'rm -rf v'", `PSQL -c "DROP TABLE users"`, "MKFS.ext4 /dev/sdb1",
 	}
 	for _, c := range stays {
 		if personOnly(c) == "" {
