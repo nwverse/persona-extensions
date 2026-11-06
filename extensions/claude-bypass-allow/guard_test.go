@@ -106,6 +106,7 @@ func TestPersonOnly(t *testing.T) {
 		// macOS file systems ignore case by default: RM finds /bin/RM and runs rm
 		`RM -rf "$t"`, "cd view && /bin/Rm -f sub/*", "sudo RM -rf /var/x", "SUDO rm -rf /var/x", "Git reset --hard",
 		"CHMOD 777 ~/.ssh", "/bin/R? -rf v", "BASH -c 'rm -rf v'", `PSQL -c "DROP TABLE users"`, "MKFS.ext4 /dev/sdb1",
+		"ſudo rm -rf /var/x", "ſhred ~/f", "/bin/ſh -c 'rm -rf v'", "\u212Aubectl delete ns x",
 	}
 	for _, c := range stays {
 		if personOnly(c) == "" {

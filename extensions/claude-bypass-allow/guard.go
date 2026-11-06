@@ -4,6 +4,7 @@ import (
 	"path"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // The floor: Bash commands that stay with a person even in bypassPermissions mode, because they delete or overwrite
@@ -678,10 +679,17 @@ var wrappers = map[string]bool{
 }
 
 // progName is the program a word runs, by the name the checks know it by. macOS file systems ignore case by default,
-// so RM and /bin/Rm run rm: the name is lowercased (on a case-sensitive file system that only asks more). The shell's
-// own builtins and keywords (cd, if) are matched as written.
+// and fold it the Unicode way, so RM, /bin/Rm and ſhred (a long s) run rm and shred: each letter becomes the lower
+// case of the smallest letter it folds with (on a case-sensitive file system that only asks more). The shell's own
+// builtins and keywords (cd, if) are matched as written.
 func progName(w string) string {
-	return strings.ToLower(path.Base(w))
+	return strings.Map(func(r rune) rune {
+		m := r
+		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+			m = min(m, f)
+		}
+		return unicode.ToLower(m)
+	}, path.Base(w))
 }
 
 // segmentPersonOnly looks at one simple command. A word counts as a program when it comes first (after NAME=value
