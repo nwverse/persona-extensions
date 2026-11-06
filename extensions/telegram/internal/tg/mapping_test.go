@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/gotd/td/bin"
-	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 )
 
@@ -103,15 +102,6 @@ func TestMessageOf(t *testing.T) {
 	if post.FromKey != "c5" || post.From != "示例频道" {
 		t.Fatalf("a post without a sender %+v", post)
 	}
-}
-
-// offlineGotd is the real client with Telegram's answers made up by answer: nothing goes on the network.
-func offlineGotd(answer func(input bin.Encoder, output bin.Decoder) error) *gotdClient {
-	cl := telegram.NewClient(1, "example", telegram.Options{Middlewares: []telegram.Middleware{
-		telegram.MiddlewareFunc(func(tg.Invoker) telegram.InvokeFunc {
-			return func(_ context.Context, input bin.Encoder, output bin.Decoder) error { return answer(input, output) }
-		})}})
-	return &gotdClient{c: cl, done: make(chan struct{})}
 }
 
 // A chat found by search keeps its @username, so a write can name it that way after tg search as after tg chats.
