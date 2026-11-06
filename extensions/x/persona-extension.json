@@ -1,0 +1,96 @@
+{
+  "manifest_version": 1,
+  "id": "x",
+  "name": "X",
+  "version": "0.1.0",
+  "description": "X（原 Twitter）进 Persona：只用官方 X API v2，用你自己的开发者应用的密钥（按量付费，额度花你自己的）。收件箱里是 @你 和回复你的帖子；侧边栏的「X」页是过去 24 小时 / 3 天的整理：热门帖子、分享最多的链接、长串、发得最多的关注账号，不是无限刷的时间线；助手能看摘要、搜读到的帖子、看关注的人、读一条帖子。每天读多少帖子有预算上限；读到的帖子只存在扩展自己的目录里几天，退出登录就删掉。只读，不发帖、不点赞、不读私信，不抓网页、不用 cookie。密钥加密存在 hub 的数据库里。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/x",
+  "tags": ["社交", "资讯", "收件箱"],
+  "engines": {
+    "persona": ">=202611051346",
+    "extension_protocol": 1
+  },
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/x-linux-amd64",
+      "linux-arm64": "bin/x-linux-arm64",
+      "darwin-arm64": "bin/x-darwin-arm64",
+      "darwin-amd64": "bin/x-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [
+      {
+        "id": "x",
+        "name": "X",
+        "capabilities": ["status", "tools", "inbox", "login", "fallback"],
+        "hosts": ["x.com", "twitter.com"],
+        "kinds": ["mention"],
+        "kind_descriptions": {
+          "mention": "X 上 @ 了用户或回复了用户的帖子"
+        }
+      }
+    ],
+    "ui": [
+      {"id": "x", "title": "X", "placement": "nav_page", "icon": "list"}
+    ],
+    "assistant": [
+      {"id": "x", "skills": ["skills/x"]}
+    ]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "triage_rules": {
+        "type": "string",
+        "title": "分拣规则",
+        "maxLength": 4000,
+        "description": "X的条目按什么分「需要你 / 知悉即可 / 噪音」，用你自己的话写；填了就只用它、不用收件箱的全局规则（只管X）。一般不在这里改：和助手说（比如「X 上陌生账号的 @ 都算知悉」），它来改。写 \\n 换行；空着用全局规则"
+      },
+      "feed_source": {
+        "type": "string",
+        "title": "读哪些帖子",
+        "default": "home",
+        "description": "整理页和助手用的帖子从哪里读。X 按返回的每条帖子（大约 0.005 美元）和用户（大约 0.010 美元）收费，受每日预算限制；只读几个列表更省",
+        "oneOf": [
+          {"const": "home", "title": "主页时间线（关注的人）"},
+          {"const": "lists", "title": "只读下面的列表"},
+          {"const": "off", "title": "不读（只收 @我）"}
+        ]
+      },
+      "list_ids": {
+        "type": "array",
+        "title": "列表",
+        "description": "「只读下面的列表」时读这些 X 列表：写列表的数字 id（列表网址 x.com/i/lists/ 后面那串数字）",
+        "maxItems": 20,
+        "uniqueItems": true,
+        "items": {"type": "string", "pattern": "^[0-9]{1,20}$"}
+      },
+      "daily_post_budget": {
+        "type": "integer",
+        "title": "每日帖子预算",
+        "default": 200,
+        "minimum": 0,
+        "maximum": 5000,
+        "description": "每天（按 UTC 算）最多读多少条帖子和用户（X 按返回的每条收费：帖子大约 0.005 美元，用户大约 0.010 美元；默认 200 条每天大约 1–2 美元，每月 30–60 美元）。到了就停，第二天再读；0 是不读动态。@我 和每周刷新一次的关注列表不算在里面（关注列表另外收费，每次刷新每 1,000 个关注大约 1 美元，见扩展说明）"
+      },
+      "retention_days": {
+        "type": "integer",
+        "title": "帖子保留天数",
+        "default": 3,
+        "minimum": 1,
+        "maximum": 7,
+        "description": "读到的帖子在扩展的目录里留几天，过了就删（X 要求删除已经删掉的帖子的副本，所以只存几天）。@我 留 8 天"
+      },
+      "proxy": {
+        "type": "string",
+        "title": "代理",
+        "description": "hub 这台机器连不上 X 时填一个代理（http://、https://、socks5:// 或 socks5h://，可带 用户名:密码@），所有请求都走它；填错了每个请求都失败，不会绕过它直连。空着直连"
+      }
+    }
+  },
+  "permissions": {
+    "network": ["api.x.com", "x.com", "*.twimg.com"]
+  }
+}
