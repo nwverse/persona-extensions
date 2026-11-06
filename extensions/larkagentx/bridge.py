@@ -223,6 +223,7 @@ class Bridge:
         self.timeout, self.qr_timeout = timeout, qr_timeout
         self.vault = self.client = self.ws = self.login = None
         self.chats = self.senders = frozenset()
+        self.self_id = ''
         self.state = 'not_signed_in'
         self.requests = set()
 
@@ -241,6 +242,7 @@ class Bridge:
         self.state = 'not_signed_in'
         self.client = None
         self.chats = self.senders = frozenset()
+        self.self_id = ''
         self.requests.clear()
         if task is not None:
             task.cancel()
@@ -280,7 +282,8 @@ class Bridge:
     async def listen(self, client, vault):
         async def on_message(msg):
             if self.vault is vault and self.state == 'ok':
-                item = normalize(msg, self.chats, self.senders, vault.auth.user_id)
+                # The self ID checked at open; valid() clears auth.user_id while a check runs.
+                item = normalize(msg, self.chats, self.senders, self.self_id)
                 if item is not None:
                     self.emit({'event': 'message', 'message': item})
         try:
@@ -332,6 +335,7 @@ class Bridge:
                     raise Failure('auth_expired')
                 client = await self.call(self.client_type, vault.auth)
                 self.client, self.chats, self.senders = client, chats, senders
+                self.self_id = vault.auth.user_id
                 self.state = 'ok'
                 self.ws = asyncio.create_task(self.listen(client, vault))
                 return {'state': 'ok'}
@@ -362,8 +366,9 @@ class Bridge:
         if method == 'session.check':
             if self.vault is None or self.state != 'ok':
                 return {'state': 'not_signed_in' if self.state == 'not_signed_in' else 'error'}
+            auth = self.vault.auth
             try:
-                valid = await self.valid(self.vault.auth)
+                valid = await self.valid(auth) and auth.user_id == self.self_id
             except Failure:
                 self.state = 'error'
                 return {'state': 'error'}
@@ -427,11 +432,15 @@ async def serve(bridge, reader):
             raw = await reader.readline()
             if not raw:
                 break
-            if len(raw) > LIMIT:
+            # readline keeps the trailing newline; size the JSON frame itself
+            # so that a payload of exactly LIMIT bytes is accepted, matching
+            # the Go transport.
+            frame = raw[:-1] if raw.endswith(b'\n') else raw
+            if len(frame) > LIMIT:
                 bridge.emit({'id': None, 'error': {'code': 'invalid_params'}})
                 break
             try:
-                request = json.loads(raw.decode('utf-8'), parse_constant=lambda _: None)
+                request = json.loads(frame.decode('utf-8'), parse_constant=lambda _: None)
             except (ValueError, UnicodeError, RecursionError):
                 bridge.emit({'id': None, 'error': {'code': 'invalid_params'}})
                 continue

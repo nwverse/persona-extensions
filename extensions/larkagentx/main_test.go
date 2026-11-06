@@ -19,11 +19,13 @@ import (
 var syntheticSession = json.RawMessage(`{"region":"feishu","cookies":{"session":"synthetic-not-a-credential"},"user_id":"self-test"}`)
 
 type memoryHub struct {
-	mu      sync.Mutex
-	data    []byte
-	fail    bool
-	targets []string
-	events  []string
+	mu        sync.Mutex
+	data      []byte
+	fail      bool
+	loadFails int
+	loads     int
+	targets   []string
+	events    []string
 }
 
 func (h *memoryHub) Call(_ context.Context, method string, p, out any) error {
@@ -31,11 +33,18 @@ func (h *memoryHub) Call(_ context.Context, method string, p, out any) error {
 	defer h.mu.Unlock()
 	params := p.(map[string]any)
 	h.targets = append(h.targets, params["contribution"].(string))
+	if method == "connector.secrets.load" {
+		h.loads++
+	}
 	if h.fail {
 		return errors.New("synthetic-cookie-should-not-leak")
 	}
 	switch method {
 	case "connector.secrets.load":
+		if h.loadFails > 0 {
+			h.loadFails--
+			return errors.New("synthetic-transient-load-failure")
+		}
 		raw, _ := json.Marshal(map[string]any{"data": h.data})
 		return json.Unmarshal(raw, out)
 	case "connector.secrets.save":
@@ -55,24 +64,30 @@ func (h *memoryHub) Notify(event string, p any) error {
 }
 
 type fakeBridge struct {
-	mu     sync.Mutex
-	calls  []string
-	fail   string
-	poll   string
-	events chan bridgeEvent
-	done   chan struct{}
-	stop   sync.Once
+	mu         sync.Mutex
+	calls      []string
+	fail       string
+	failCode   string
+	check      string
+	openParams any
+	poll       string
+	events     chan bridgeEvent
+	done       chan struct{}
+	stop       sync.Once
 }
 
 func newFakeBridge() *fakeBridge {
-	return &fakeBridge{events: make(chan bridgeEvent, 8), done: make(chan struct{}), poll: "pending"}
+	return &fakeBridge{failCode: "auth_expired", events: make(chan bridgeEvent, 8), done: make(chan struct{}), poll: "pending"}
 }
 func (b *fakeBridge) Call(_ context.Context, m string, p, out any) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.calls = append(b.calls, m)
 	if b.fail == m {
-		return failure("auth_expired")
+		return failure(b.failCode)
+	}
+	if m == "session.open" {
+		b.openParams = p
 	}
 	result := any(map[string]any{"state": "ok"})
 	switch m {
@@ -82,6 +97,10 @@ func (b *fakeBridge) Call(_ context.Context, m string, p, out any) error {
 		result = map[string]string{"state": "pending", "qr": "synthetic-qr-payload"}
 	case "login.poll":
 		result = map[string]any{"state": b.poll, "credentials": syntheticSession}
+	case "session.check":
+		if b.check != "" {
+			result = map[string]any{"state": b.check}
+		}
 	}
 	if out != nil {
 		raw, _ := json.Marshal(result)
@@ -96,6 +115,11 @@ func (b *fakeBridge) count(m string) int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return len(slices.DeleteFunc(slices.Clone(b.calls), func(x string) bool { return x != m }))
+}
+func (b *fakeBridge) snapshot() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return slices.Clone(b.calls)
 }
 
 func fixture(t *testing.T) (*connector, *memoryHub, *fakeBridge) {
@@ -326,5 +350,192 @@ func TestConcurrentSameRequest(t *testing.T) {
 	wg.Wait()
 	if b.count("session.send") != 1 {
 		t.Fatal(b.calls)
+	}
+}
+
+func runConnector(t *testing.T, h *memoryHub) (*connector, context.CancelFunc, chan *fakeBridge) {
+	t.Helper()
+	c := newConnector()
+	ctx, cancel := context.WithCancel(context.Background())
+	c.ctx = ctx
+	c.hub = h
+	c.argv = []string{"synthetic-command"}
+	c.chats = []string{"chat-test"}
+	c.senders = []string{"sender-test"}
+	created := make(chan *fakeBridge, 8)
+	c.factory = func(context.Context, []string) (bridge, error) {
+		b := newFakeBridge()
+		select {
+		case created <- b:
+		default:
+		}
+		return b, nil
+	}
+	return c, cancel, created
+}
+
+func TestSecretLoadRetriedAfterTransientFailure(t *testing.T) {
+	h := &memoryHub{loadFails: 1}
+	raw, _ := json.Marshal(stored{Session: slices.Clone(syntheticSession)})
+	h.data = raw
+	c, cancel, created := runConnector(t, h)
+	defer cancel()
+	c.signal() // do not wait for the first backoff tick after the failed load
+	go c.run()
+	var open *fakeBridge
+	select {
+	case open = <-created:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stored session never reconnected after transient load failure")
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		state := c.state
+		c.mu.Unlock()
+		if state == "ok" && open.count("session.open") == 1 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	c.mu.Lock()
+	state, hasSession := c.state, len(c.data.Session) > 0
+	c.mu.Unlock()
+	if state != "ok" || !hasSession || open.count("login.begin") != 0 || open.count("session.open") != 1 {
+		t.Fatalf("did not self-heal from transient load failure: state=%q session=%v login.begin=%d session.open=%d",
+			state, hasSession, open.count("login.begin"), open.count("session.open"))
+	}
+	cancel()
+	select {
+	case <-open.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("run loop did not stop the companion after context cancel")
+	}
+}
+
+func TestEmptySecretLoadStaysInteractive(t *testing.T) {
+	h := &memoryHub{} // no stored session
+	c, cancel, created := runConnector(t, h)
+	defer cancel()
+	go c.run()
+	gotState := false
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		state := c.state
+		c.mu.Unlock()
+		if state == "not_signed_in" {
+			gotState = true
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	if !gotState {
+		t.Fatal("empty stored session did not settle at interactive login")
+	}
+	c.signal() // let the run loop take another tick immediately, bypassing backoff
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(c.wake) > 0 {
+		time.Sleep(time.Millisecond)
+	}
+	if len(c.wake) > 0 {
+		t.Fatal("second loop tick did not run after wake")
+	}
+	c.mu.Lock()
+	state, hasSession := c.state, len(c.data.Session) > 0
+	c.mu.Unlock()
+	if state != "not_signed_in" || hasSession {
+		t.Fatalf("empty stored session left interactive mode: state=%q session=%v", state, hasSession)
+	}
+	select {
+	case b := <-created:
+		t.Fatalf("companion started without a session: %v", b.calls)
+	default:
+	}
+}
+
+func waitForState(t *testing.T, c *connector, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		c.mu.Lock()
+		state := c.state
+		c.mu.Unlock()
+		if state == want {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	c.mu.Lock()
+	state := c.state
+	c.mu.Unlock()
+	t.Fatalf("state never reached %q (still %q)", want, state)
+}
+
+func TestFailedThenSessionlessLoadSettlesInteractive(t *testing.T) {
+	h := &memoryHub{loadFails: 1}
+	raw, _ := json.Marshal(stored{Writes: map[string]receipt{"digest-test": {Digest: "d"}}})
+	h.data = raw
+	c, cancel, created := runConnector(t, h)
+	defer cancel()
+	go c.run()
+	waitForState(t, c, "error") // first attempt failed
+	c.signal()
+	waitForState(t, c, "not_signed_in")
+	select {
+	case b := <-created:
+		t.Fatalf("companion started without a session: %v", b.calls)
+	default:
+	}
+}
+
+func TestLogoutDuringLoadOutageIsNotUndoneByRetry(t *testing.T) {
+	h := &memoryHub{} // hub is up but failing every call until the outage ends
+	raw, _ := json.Marshal(stored{Session: slices.Clone(syntheticSession)})
+	h.data = raw
+	c, cancel, created := runConnector(t, h)
+	defer cancel()
+	h.fail = true
+	go c.run()
+	waitForState(t, c, "error") // first startup load failed
+
+	if _, err := invoke(c, "logout", map[string]any{}); err == nil {
+		t.Fatal("logout must surface the failed secret delete")
+	}
+	c.mu.Lock()
+	state, hasSession := c.state, len(c.data.Session) > 0
+	c.mu.Unlock()
+	if state != "not_signed_in" || hasSession {
+		t.Fatalf("logout did not take effect in memory: state=%q session=%v", state, hasSession)
+	}
+
+	h.fail = false // hub recovers; the old blob was never actually deleted
+	c.signal()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		h.mu.Lock()
+		loads := h.loads
+		h.mu.Unlock()
+		if loads >= 2 {
+			break
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	h.mu.Lock()
+	loads := h.loads
+	h.mu.Unlock()
+	if loads < 2 {
+		t.Fatalf("retried load never ran after hub recovery: %d load calls", loads)
+	}
+	c.mu.Lock()
+	state, hasSession = c.state, len(c.data.Session) > 0
+	c.mu.Unlock()
+	if state != "not_signed_in" || hasSession {
+		t.Fatalf("retried load resurrected the logged-out session: state=%q session=%v", state, hasSession)
+	}
+	select {
+	case b := <-created:
+		t.Fatalf("companion reconnected after logout: %v", b.calls)
+	default:
 	}
 }

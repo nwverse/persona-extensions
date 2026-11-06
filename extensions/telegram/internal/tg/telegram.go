@@ -54,8 +54,9 @@ type client interface {
 	Done() <-chan struct{}
 	// Dialogs is the account's conversations, newest first: the main list and the archive folder, up to limit each.
 	Dialogs(ctx context.Context, limit int) ([]dialog, error)
-	// History is a conversation's messages newer than minID, oldest first. With minID 0 (a first read) it goes back
-	// to since, at most max messages.
+	// History is a conversation's messages newer than minID, oldest first, at most max. With minID 0 (a first read) it
+	// goes back to since and keeps the newest; otherwise it keeps the oldest, so a read cut short goes on from the
+	// newest it gave.
 	History(ctx context.Context, d dialog, minID int, since time.Time, max int) ([]message, error)
 	// Older is a conversation's limit messages before the id before (0: the newest) and sent before until (zero: no
 	// bound), oldest first: one request.
@@ -124,6 +125,9 @@ type Conn struct {
 	cl     client             // nil while not connected
 	stop   context.CancelFunc // ends cl
 	status connector.Status
+	// lastSync is when the archive last read (Changes): the archive's, not the connection's, so a reconnect or an
+	// error in between does not take it out of the status.
+	lastSync time.Time
 	// pending is the sign-in under way: the phone it asked a code for and the hash that goes with the code.
 	pending struct{ phone, hash string }
 	// wake makes Run connect again (the credentials changed, or the user signed out).
@@ -172,6 +176,7 @@ func (*Conn) Manifest() connector.Manifest { return spec.Manifest() }
 func (c *Conn) Status(context.Context) connector.Status {
 	c.mu.Lock()
 	st := c.status
+	st.LastSync = c.lastSync
 	c.mu.Unlock()
 	if st.State != connector.StateOK {
 		return st
@@ -268,6 +273,18 @@ func (c *Conn) Run(ctx context.Context) {
 			}
 			continue
 		}
+		// Connecting can take as long as Telegram is out of reach: until then the status is not the one from before
+		// there were credentials ("还没填…", which would have the user enter them and sign in again). A connection
+		// that dropped keeps its ok meanwhile.
+		c.mu.Lock()
+		if c.status.State != connector.StateOK {
+			why := "正在连 Telegram"
+			if len(st.Session) > 0 {
+				why += "（用存着的登录）"
+			}
+			c.status = connector.Status{State: connector.StateError, Via: st.via(), Error: why}
+		}
+		c.mu.Unlock()
 		cctx, stop := context.WithCancel(ctx)
 		cl, err := c.dial(cctx, creds{st.APIID, st.APIHash}, sessionOf{c}, c.gate, c.updated)
 		if err != nil {

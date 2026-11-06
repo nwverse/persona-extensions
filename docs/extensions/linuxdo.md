@@ -16,7 +16,7 @@ LINUX DO's firewall often requires browser verification for JSON list endpoints 
 - `/hot.rss`, `/top.rss?period=daily`, `/top.rss?period=weekly`, `/latest.rss`: up to 30 topics each, including title, author, category, time, summary, post count and participant count.
 - `/t/topic/<id>.json`: the topic and its first 20 posts.
 
-Requests are serialized with at least two seconds between them. Lists are cached for five minutes and topics for ten. A `429` response pauses requests for ten minutes unless `Retry-After` specifies the delay; stale cached data remains available during the pause.
+Requests are serialized with at least two seconds between them. Lists are cached for five minutes and topics for ten. A `429` response pauses requests for ten minutes unless `Retry-After` specifies the delay; stale cached data remains available during the pause. A firewall challenge is recognized only on a non-`200` response whose page says "Just a moment", so a topic or feed that merely mentions the phrase still loads. A `403`/`404` on a topic reads as "this topic is gone"; the same status on a list feed is an ordinary fetch failure — the connector shows an error and the stale cached list still stands in.
 
 The hub fetches and renders the reader content, so the phone does not need its own proxy to read it. Opening the original web page happens in the app's browser and requires the device itself to reach `linux.do`. This distinction matters on networks where the site is not directly accessible, including mainland China networks.
 
@@ -41,7 +41,7 @@ The list selector is segmented on UI version 2 and newer. Earlier apps see four 
 
 Timestamps use the configured `tz`, then the user's time zone supplied by the hub (`tz` in UI version 2 requests), then the hub machine's time zone.
 
-A topic view contains title, author, time, views, likes, posts, participants and tags; body text is capped at 12,000 characters. Code blocks retain code styling and images become textual placeholders. The ten highest-scoring replies from the first 20 posts are shown, followed by actions to open the website or return to the list.
+A topic view contains title, author, time, views, likes, posts, participants and tags; body text is capped at 12,000 characters and 200 text items (each code block starts a new item), then a caption points to the website. Code blocks retain code styling and images become textual placeholders. The ten highest-scoring replies from the first 20 posts are shown, followed by actions to open the website or return to the list.
 
 Views follow the host's `plugin.CheckView` limits: at most 300 items per page, 2,000 characters per item text field and HTTPS links only. Tests exercise equivalent validation.
 

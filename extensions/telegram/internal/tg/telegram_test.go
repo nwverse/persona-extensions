@@ -236,8 +236,10 @@ func (c *fakeClient) History(ctx context.Context, d dialog, minID int, since tim
 			out = append(out, m)
 		}
 	}
-	if len(out) > max { // the newest max
+	if len(out) > max && minID == 0 { // a first read: the newest max
 		out = out[len(out)-max:]
+	} else if len(out) > max { // after minID: the oldest max
+		out = out[:max]
 	}
 	return out, nil
 }
@@ -471,10 +473,23 @@ func running(t *testing.T, sec *memSecrets, f *fakeTelegram) (*Conn, context.Con
 	t.Helper()
 	quickPace(t)
 	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	c := newConn(sec, f.dial)
-	go c.Run(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); c.Run(ctx) }()
+	// Run reads the package's timings: it has returned before the cleanups registered earlier (quickPace's) put
+	// them back.
+	t.Cleanup(func() { cancel(); <-done })
 	return c, ctx
+}
+
+// watch runs c.Watch for the rest of the test. Like running's Run, it has returned before the cleanups registered
+// earlier (archiveAccount's newsSettle, a test's newsEvery) put the timings it reads back.
+func watch(t *testing.T, ctx context.Context, c *Conn, changed func(connector.Scope)) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	go func() { defer close(done); _ = c.Watch(ctx, changed) }()
+	t.Cleanup(func() { cancel(); <-done })
 }
 
 func waitState(t *testing.T, c *Conn, state string) connector.Status {
@@ -577,6 +592,36 @@ func TestRestoredSession(t *testing.T) {
 	}
 }
 
+// A stored sign-in that is still connecting (Telegram out of reach, which can take as long as the network does) says
+// so: not that the API credentials are missing, which would have the user enter them again and sign in again.
+func TestConnectingWithAStoredSignIn(t *testing.T) {
+	raw, _ := json.Marshal(stored{APIID: 1234567, APIHash: exampleHash, Session: []byte("example session")})
+	dialing := make(chan struct{})
+	dial := func(ctx context.Context, _ creds, _ sessionStore, _ *gate, _ func()) (client, error) {
+		select {
+		case dialing <- struct{}{}:
+		default:
+		}
+		<-ctx.Done() // never connects
+		return nil, ctx.Err()
+	}
+	quickPace(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	c := newConn(&memSecrets{data: raw}, dial)
+	done := make(chan struct{})
+	go func() { defer close(done); c.Run(ctx) }()
+	t.Cleanup(func() { cancel(); <-done })
+	select {
+	case <-dialing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not connect")
+	}
+	st := c.Status(ctx)
+	if st.State == connector.StateOK || !strings.Contains(st.Error, "正在连 Telegram") || !strings.HasSuffix(st.Via, "cd9f") {
+		t.Fatalf("status while connecting: %+v", st)
+	}
+}
+
 // Signing out ends the session at Telegram and forgets the credentials and the session; signing in starts at the
 // credentials again.
 func TestLogout(t *testing.T) {
@@ -597,6 +642,51 @@ func TestLogout(t *testing.T) {
 	waitState(t, c, connector.StateNotSignedIn)
 	if p, _ := c.LoginStep(ctx, "", nil); p.Step != stepCredentials {
 		t.Fatalf("after signing out %+v", p)
+	}
+}
+
+// Signing out when Telegram could not be asked whether the session is signed in (a flood wait, a network error)
+// says so and keeps the session: the device stays signed in at Telegram, so the app must not say signed out.
+// Once Telegram answers again, signing out ends the session there.
+func TestLogoutWhenTelegramCannotBeAsked(t *testing.T) {
+	raw, _ := json.Marshal(stored{APIID: 1234567, APIHash: exampleHash, Session: []byte("example session")})
+	sec := &memSecrets{data: raw}
+	f := &fakeTelegram{}
+	c, ctx := running(t, sec, f)
+	waitState(t, c, connector.StateOK)
+
+	c.gate.mu.Lock()
+	c.gate.until = time.Now().Add(time.Hour)
+	c.gate.mu.Unlock()
+	if err := c.Logout(ctx); err == nil || !strings.Contains(err.Error(), "Telegram 限流中") {
+		t.Fatalf("signing out during a flood wait: %v", err)
+	}
+	c.gate.mu.Lock()
+	c.gate.until = time.Now().Add(-time.Millisecond)
+	c.gate.mu.Unlock()
+	f.mu.Lock()
+	f.fail = func(method string) error {
+		if method == "Me" {
+			return errors.New("dial tcp: connection reset by peer")
+		}
+		return nil
+	}
+	f.mu.Unlock()
+	if err := c.Logout(ctx); err == nil || !strings.Contains(err.Error(), "connection reset") {
+		t.Fatalf("signing out without a connection: %v", err)
+	}
+	if f.loggedOut || sec.data == nil {
+		t.Fatalf("logged out %v, kept %s", f.loggedOut, sec.data)
+	}
+
+	f.mu.Lock()
+	f.fail = nil
+	f.mu.Unlock()
+	if err := c.Logout(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !f.loggedOut || sec.data != nil {
+		t.Fatalf("logged out %v, kept %s", f.loggedOut, sec.data)
 	}
 }
 
