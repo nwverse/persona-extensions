@@ -120,6 +120,7 @@ func (c *connector) handle(ctx context.Context, method string, raw json.RawMessa
 		defer c.op.Unlock()
 		c.detach()
 		c.mu.Lock()
+		c.released = nil
 		c.data = stored{}
 		c.state = "not_signed_in"
 		c.loggedOut = true
@@ -239,7 +240,8 @@ func (c *connector) send(ctx context.Context, requestID string, a sendArgs) (any
 	c.mu.Unlock()
 	if err := c.save(ctx); err != nil {
 		c.setError(err)
-		c.detach()
+		c.release()
+		c.signal()
 		return nil, err
 	}
 	var result struct {
@@ -251,7 +253,8 @@ func (c *connector) send(ctx context.Context, requestID string, a sendArgs) (any
 	}
 	if err := b.Call(ctx, "session.send", params, &result); err != nil {
 		c.setError(err)
-		c.detach()
+		c.release()
+		c.signal()
 		return nil, failure("unknown_result")
 	}
 	if !identifier.MatchString(result.MessageID) {
@@ -265,7 +268,8 @@ func (c *connector) send(ctx context.Context, requestID string, a sendArgs) (any
 		c.data.Writes[key] = receipt{Digest: fingerprint}
 		c.mu.Unlock()
 		c.setError(err)
-		c.detach()
+		c.release()
+		c.signal()
 		return nil, failure("unknown_result")
 	}
 	return map[string]string{"text": "Sent Feishu message " + result.MessageID}, nil

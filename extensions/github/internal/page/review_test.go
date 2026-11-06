@@ -18,7 +18,7 @@ import (
 
 const repoAPI = "/repos/example-org/example-repo"
 
-const readme = "# Example\n\n![logo](docs/logo.png)\n\nSee [the guide](docs/guide.md) and <a href=\"https://example.com\">site</a>, " +
+const readme = "# Example\n\n![logo](docs/logo.png)\n\nSee [the guide](docs/guide.md), [install](/docs/install.md) and <a href=\"https://example.com\">site</a>, " +
 	"[bad](javascript:alert(1)), <http://insecure.example.com>.\n<p align=\"center\"><img src=\"x.png\" alt=\"shot\"></p>\n" +
 	"[ref link][g]\n\n[g]: https://example.com/g\n\n```js\nconst a = '<b>' + \"](javascript:x)\";\n```\n"
 
@@ -52,6 +52,8 @@ func fakeMore(w http.ResponseWriter, r *http.Request, at string) bool {
 		repoAPI + "/contents/src/lib": `[{"name":"util.go","path":"src/lib/util.go","type":"file","size":10}]`,
 		repoAPI + "/contents/src/main.go": `{"type":"file","path":"src/main.go","size":30,"encoding":"base64","content":"` + b64("package main\n\nfunc main() {}\n") +
 			`","html_url":"https://github.com/example-org/example-repo/blob/main/src/main.go"}`,
+		repoAPI + "/contents/docs/C#/guide.md": `{"type":"file","path":"docs/C#/guide.md","size":40,"encoding":"base64","content":"` +
+			b64("See [setup](setup.md), [top](/README.md) and [100%](../100%25/notes.md).\n") + `"}`,
 		repoAPI + "/readme":           `{"path":"README.md","encoding":"base64","content":"` + b64(readme) + `"}`,
 		repoAPI + "/issues/12/events": `[{"id":5,"event":"labeled","actor":{"login":"alice"},"label":{"name":"perf"},"created_at":"` + at + `"}]`,
 		repoAPI + "/pulls/12/comments": `[{"id":100,"user":{"login":"erin"},"body":"Why **3**?","path":"cache.go","line":3,"side":"RIGHT","created_at":"` + at + `"},
@@ -174,6 +176,7 @@ func TestRepositories(t *testing.T) {
 	has(t, "repo", got, `"title":"PR"`, `"title":"Issue"`, `"title":"提交"`, `"label":"星标","value":"1.2k"`, "src", "README.md", `"name":"ref"`, `"value":"cache"`,
 		"[logo](https://github.com/example-org/example-repo/blob/main/docs/logo.png)",
 		"[the guide](https://github.com/example-org/example-repo/blob/main/docs/guide.md)", "[site](https://example.com)",
+		"[install](https://github.com/example-org/example-repo/blob/main/docs/install.md)",
 		"[ref link](https://example.com/g)", "shot", "const a = ")
 	hasNot(t, "repo", got, "javascript:alert", "<p align", "<img", "[g]:", "<http://")
 
@@ -356,8 +359,42 @@ func TestEveryPageFitsEveryApp(t *testing.T) {
 	}
 }
 
+// A branch or directory name with a character a URL reserves (#, ?, %) stays part of the path in the links of a
+// Markdown file: GitHub's web paths are escaped segment by segment, as the API's are (github.escapePath).
+func TestFileLinksEscapeRefAndPath(t *testing.T) {
+	p, _ := signedIn(t)
+	s := state{V: viewFile, Repo: "example-org/example-repo", Ref: "fix/#12", Path: "docs/C#/guide.md"}
+	v, _ := p.Render(context.Background(), req(3, s, "", nil))
+	got := checked(t, v)
+	has(t, "file", got,
+		"[setup](https://github.com/example-org/example-repo/blob/fix/%2312/docs/C%23/setup.md)",
+		"[top](https://github.com/example-org/example-repo/blob/fix/%2312/README.md)",
+		"[100%](https://github.com/example-org/example-repo/blob/fix/%2312/docs/100%25/notes.md)")
+	// The directory's 在 GitHub 打开 too.
+	dir := state{V: viewRepo, Repo: "example-org/example-repo", Tab: tabCode, Ref: "fix/#12", Path: "docs/C#"}
+	v, _ = p.Render(context.Background(), req(3, dir, "", nil))
+	has(t, "dir", checked(t, v), `"url":"https://github.com/example-org/example-repo/tree/fix/%2312/docs/C%23"`)
+}
+
+// In a repository's file a /root-relative link or image resolves against the repository at the ref, not the host.
+func TestRootRelativeLinks(t *testing.T) {
+	root := "https://github.com/o/r/blob/main/"
+	for _, tc := range []struct{ in, want string }{
+		{"[guide](/docs/guide.md)", "[guide](https://github.com/o/r/blob/main/docs/guide.md)"},
+		{"![arch](/img/arch.png)", "[arch](https://github.com/o/r/blob/main/img/arch.png)"},
+		{"[x](/docs/x.md#setup)", "[x](https://github.com/o/r/blob/main/docs/x.md#setup)"},
+		{"[up](../y.md)", "[up](https://github.com/o/r/blob/main/y.md)"},
+		{"[cdn](//cdn.example/a.js)", "cdn"},
+	} {
+		if got := cleanMarkdown(tc.in, root+"sub", root); got != tc.want {
+			t.Errorf("cleanMarkdown(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestCleanMarkdown(t *testing.T) {
 	for _, tc := range []struct{ in, base, want string }{
+		{"[x](/docs/x.md)", "https://github.com/o/r/blob/main/sub/", "[x](https://github.com/docs/x.md)"}, // a description: the host
 		{"![a](https://x.example/a.png)", "", "[a](https://x.example/a.png)"},
 		{"![a](a.png)", "", "a"},
 		{"[![build](https://img.example/b.svg)](https://ci.example/b)", "", "[build](https://ci.example/b)"},
@@ -373,7 +410,7 @@ func TestCleanMarkdown(t *testing.T) {
 		{"before <!-- never closed", "", "before"},
 		{"`[x](javascript:y)`", "", "`[x](javascript:y)`"},
 	} {
-		got := cleanMarkdown(tc.in, tc.base)
+		got := cleanMarkdown(tc.in, tc.base, "")
 		if got != tc.want {
 			t.Errorf("cleanMarkdown(%q) = %q, want %q", tc.in, got, tc.want)
 		}
@@ -381,6 +418,21 @@ func TestCleanMarkdown(t *testing.T) {
 		if err := wire.CheckView(v); err != nil {
 			t.Errorf("%q: the hub refuses it: %v", got, err)
 		}
+	}
+}
+
+// A file the repository page draws (up to the contents API's 1 MB) with many <!-- in a code block: each one is kept,
+// and the time stays linear in the size, not one rescan of the kept text per <!--.
+func TestCommentsInCodeLinear(t *testing.T) {
+	text := "# HTML snippets\n\n```html\n" + strings.Repeat("<!---->\n", 60000) + "```\n\n<!-- template -->\nText" // ~480 KB
+	start := time.Now()
+	got := dropComments(text)
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("dropComments on %d bytes took %v", len(text), took)
+	}
+	if want := strings.TrimSuffix(text, "<!-- template -->\nText") + "\nText"; got != want {
+		t.Fatalf("code comments kept: %d of %d, template comment dropped: %v",
+			strings.Count(got, "<!---->"), 60000, !strings.Contains(got, "template"))
 	}
 }
 

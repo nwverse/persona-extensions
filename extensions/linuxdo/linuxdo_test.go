@@ -606,6 +606,33 @@ func TestSiteFailures(t *testing.T) {
 	}
 }
 
+// A cached list standing in for a failed fetch keeps the failure in the status: the connector stays "error"
+// and last_sync stays at the last real read.
+func TestStaleStandInKeepsTheError(t *testing.T) {
+	f := newFakeSite(t)
+	sample(f)
+	p := testPlugin(t, f, nil)
+	if _, err := p.hot(context.Background(), "hot", false); err != nil {
+		t.Fatal(err)
+	}
+	s0, _ := p.cStatus(context.Background(), nil, nil)
+	read := *s0.(connectorStatus).LastSync
+	time.Sleep(10 * time.Millisecond)
+
+	f.status, f.body = http.StatusForbidden, "blocked"
+	if ts, err := p.hot(context.Background(), "hot", true); err != nil || len(ts) != 5 {
+		t.Fatalf("the cached list should stand in: %v (%d topics)", err, len(ts))
+	}
+	s, _ := p.cStatus(context.Background(), nil, nil)
+	st := s.(connectorStatus)
+	if st.State != "error" || !strings.Contains(st.Error, "HTTP 403") {
+		t.Errorf("status after a 403 answered from the cache: %+v", st)
+	}
+	if st.LastSync == nil || !st.LastSync.Equal(read) {
+		t.Errorf("last_sync %v, want the last real read %v", st.LastSync, read)
+	}
+}
+
 // A good answer that only mentions the challenge page is still a good answer.
 func TestJustAMomentInContent(t *testing.T) {
 	f := newFakeSite(t)
@@ -657,6 +684,27 @@ func TestTools(t *testing.T) {
 	}
 	if _, err := p.cToolsCall(context.Background(), nil, json.RawMessage(`{"name":"linuxdo_hot","args":{"list":"monthly"}}`)); err == nil {
 		t.Error("a list it has not")
+	}
+}
+
+func TestToolKeywordsNarrowTheSettings(t *testing.T) {
+	f := newFakeSite(t)
+	sample(f)
+	p := testPlugin(t, f, map[string]any{"keywords": []string{"Claude", "GPU"}})
+	call := func(args string) string {
+		t.Helper()
+		res, err := p.cToolsCall(context.Background(), nil, json.RawMessage(args))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.(map[string]any)["text"].(string)
+	}
+	text := call(`{"name":"linuxdo_hot","args":{"keywords":["gpu"]}}`)
+	if !strings.Contains(text, "按「关键词 Claude、GPU · 隐藏 NSFW · 隐藏置顶 · 另外只看 gpu」过滤后 1 条") || !strings.Contains(text, "id 1004") || strings.Contains(text, "id 1001") {
+		t.Errorf("the call's keywords should narrow the configured ones:\n%s", text)
+	}
+	if text = call(`{"name":"linuxdo_hot","args":{"filtered":false,"keywords":["GPU"]}}`); !strings.Contains(text, "按「关键词 GPU」过滤后 1 条") || strings.Contains(text, "id 1001") {
+		t.Errorf("unfiltered, keywords only:\n%s", text)
 	}
 }
 

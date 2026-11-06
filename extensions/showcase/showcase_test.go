@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -190,6 +191,52 @@ func TestEditFlow(t *testing.T) {
 	r.State, r.Action, r.Values = edit.State, "save", map[string]string{"title": " "}
 	if res, _ := a.action(ctx, r); res == nil || res.Pop || res.Toast == "" {
 		t.Fatalf("an empty title is refused: %+v", res)
+	}
+}
+
+// Pre-v3 apps need an explicit detail view after saving, with the list context intact.
+func TestOldAppSaveView(t *testing.T) {
+	for _, version := range []int{1, 2} {
+		a := newApp()
+		ctx := context.Background()
+		s := state{P: "edit", ID: "3", Q: "示例", Kind: "mail", Shown: 40}
+		r := req(pageUI, wire.SizeFull, version, &s)
+		r.Action = "save"
+		r.Values = map[string]string{"title": "改过的标题", "kind": "mail", "note": "新的备注", "done": "true"}
+		res, err := a.action(ctx, r)
+		if err != nil || res == nil || res.View == nil || res.Pop || res.Toast != "保存了" {
+			t.Fatalf("UI v%d save: %+v, %v; want an explicit view and toast, no pop", version, res, err)
+		}
+		if res.View.Title != "改过的标题" {
+			t.Fatalf("UI v%d save view title = %q", version, res.View.Title)
+		}
+		var saved state
+		if err := json.Unmarshal([]byte(res.View.State), &saved); err != nil {
+			t.Fatal(err)
+		}
+		want := s
+		want.P = "detail"
+		if saved != want {
+			t.Fatalf("UI v%d save state = %+v, want %+v", version, saved, want)
+		}
+		// A refresh must stay on the detail, and Back must restore the original list.
+		r.State, r.Action = res.View.State, ""
+		v, err := a.render(ctx, r)
+		if err != nil || v.Title != "改过的标题" {
+			t.Fatalf("UI v%d refreshed detail: %+v, %v", version, v, err)
+		}
+		r.Action = "back"
+		if _, err := a.action(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+		var back state
+		if err := r.DecodeState(&back); err != nil {
+			t.Fatal(err)
+		}
+		want.P, want.ID = "list", ""
+		if back != want {
+			t.Fatalf("UI v%d back state = %+v, want %+v", version, back, want)
+		}
 	}
 }
 
@@ -392,6 +439,48 @@ func TestInvalidate(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatal("the data never came")
+}
+
+// A second ask must wait for its own timer, even after the first timer fires.
+func TestAskTwice(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		a := newApp()
+		ctx := context.Background()
+		r := req(pageUI, wire.SizeFull, 3, &state{P: "invalidate"})
+		r.Action = "ask"
+		ask := func() {
+			t.Helper()
+			if _, err := a.action(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+		body := func() wire.Component {
+			t.Helper()
+			v, err := a.render(ctx, r)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return v.Sections[0].Items[1]
+		}
+		ask()
+		time.Sleep(2 * time.Second)
+		ask()
+		time.Sleep(time.Second) // The first ask's three-second timer fires.
+		synctest.Wait()
+		if got := body(); got.Type != wire.ComponentLoading {
+			t.Fatalf("after the first timer: %+v, want loading", got)
+		}
+		time.Sleep(2*time.Second - time.Nanosecond)
+		synctest.Wait()
+		if got := body(); got.Type != wire.ComponentLoading {
+			t.Fatalf("before the second timer: %+v, want loading", got)
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		if got := body(); got.Type != wire.ComponentMetric || got.Detail != "等了 3.0 秒" {
+			t.Fatalf("after the second timer: %+v, want data after the full delay", got)
+		}
+	})
 }
 
 func TestShortcuts(t *testing.T) {
