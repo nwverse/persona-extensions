@@ -48,6 +48,9 @@ func sudoShell(args []string) bool {
 		case a == "--" || !strings.HasPrefix(a, "-") || len(a) < 2:
 			return false
 		case strings.HasPrefix(a, "--"):
+			if sudoLongValue[a] { // --user root: the next word is its value
+				i++
+			}
 			continue
 		}
 		for j := 1; j < len(a); j++ {
@@ -64,6 +67,11 @@ func sudoShell(args []string) bool {
 	}
 	return false
 }
+
+// sudoLongValue are sudo's long options that take a value, which is the next word unless it follows "=".
+var sudoLongValue = map[string]bool{"--close-from": true, "--chdir": true, "--group": true, "--host": true,
+	"--prompt": true, "--chroot": true, "--role": true, "--type": true, "--command-timeout": true,
+	"--other-user": true, "--user": true}
 
 // sqlClients run SQL given as an argument or on their input.
 var sqlClients = map[string]bool{"psql": true, "mysql": true, "mariadb": true, "sqlite3": true, "sqlcmd": true,

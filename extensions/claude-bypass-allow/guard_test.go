@@ -69,6 +69,7 @@ func TestPersonOnly(t *testing.T) {
 		"pwsh -c 'rm -rf v'", "tcsh <<EOF\nrm -rf \"$d\"\nEOF", "sudo -s <<EOF\nrm -rf \"$d\"\nEOF",
 		"sudo -i <<'EOF'\nrm -rf /var/x/*\nEOF", "sudo -u root -s <<EOF\nrm -rf v\nEOF", "sudo -Hi <<EOF\nrm -rf v\nEOF",
 		"sudo --login <<EOF\nrm -rf v\nEOF", "doas -s <<EOF\nrm -rf v\nEOF",
+		"sudo --user root -s <<EOF\nrm -rf v\nEOF", "sudo --group staff -i <<EOF\nrm -rf v\nEOF",
 		// git command runners: rebase -x/--exec, bisect run, submodule foreach, -c alias.!
 		"git rebase -x 'rm -rf v' HEAD~1", "git rebase --exec='rm -rf v'", "git rebase --exec 'rm -rf v'",
 		"git rebase --exe='rm -rf v'", "git rebase --exe 'rm -rf v'",
