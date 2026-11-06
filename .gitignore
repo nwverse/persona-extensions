@@ -4,6 +4,7 @@ __pycache__/
 /extensions/*/hackernews
 /extensions/*/linuxdo
 /extensions/*/markets
+/extensions/*/sentry
 /extensions/*/showcase
 /extensions/*/v2ex
 # personad extension test / dev build the program where the manifest says (bin/…).
