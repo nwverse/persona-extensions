@@ -158,6 +158,25 @@ func resolve(p string, follow bool) string {
 	}
 }
 
+// physical is the absolute path p cleaned the way the kernel reads it: a .. goes to the parent of what the path
+// before it leads to, symlinks resolved, where filepath.Clean would only drop the name before it.
+func physical(p string) string {
+	out := "/"
+	for _, part := range strings.Split(p, "/") {
+		switch part {
+		case "", ".":
+		case "..":
+			if real, err := filepath.EvalSymlinks(out); err == nil {
+				out = real
+			}
+			out = filepath.Dir(out)
+		default:
+			out = filepath.Join(out, part)
+		}
+	}
+	return out
+}
+
 // shellVars is what one command string sets that the scratch check can read.
 type shellVars struct {
 	vars    map[string][]string // the values each readable variable can have
@@ -397,9 +416,16 @@ func (sv *shellVars) cd(args []string, k int) {
 		return
 	}
 	var next []string
+	// cd reads a .. logically, cd -P (or zsh's chase_links) physically: both count
+	add := func(d string) {
+		next = append(next, filepath.Clean(d))
+		if real := physical(d); real != filepath.Clean(d) {
+			next = append(next, real)
+		}
+	}
 	for _, d := range dirs {
 		if filepath.IsAbs(d) {
-			next = append(next, filepath.Clean(d))
+			add(d)
 			continue
 		}
 		if len(sv.cwds) == 0 {
@@ -407,7 +433,7 @@ func (sv *shellVars) cd(args []string, k int) {
 			return
 		}
 		for _, c := range sv.cwds {
-			next = append(next, filepath.Join(c, d))
+			add(c + "/" + d)
 		}
 	}
 	if len(sv.cwds) == 0 {
@@ -689,11 +715,11 @@ func (g *guard) scratchPath(p string) bool {
 			return false
 		}
 		for _, c := range g.sv.cwds {
-			abs = append(abs, filepath.Join(c, p))
+			abs = append(abs, c+"/"+p)
 		}
 	}
 	for _, a := range abs {
-		if !g.roots.holds(resolve(filepath.Clean(a), follow)) {
+		if !g.roots.holds(resolve(physical(a), follow)) {
 			return false
 		}
 	}
