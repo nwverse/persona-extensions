@@ -25,7 +25,18 @@ var (
 	files    map[string]map[string]any // file name → its JSON
 	loadErr  error
 	patterns sync.Map // pattern → *regexp.Regexp
+	// refs holds what resolve answers for every $ref the schemas carry, keyed by
+	// the ref and the file it stands in. Filled once with files, read-only after,
+	// so no lock: a view visits the same handful of refs once per component.
+	refs map[refSite]refTarget
 )
+
+type refSite struct{ ref, here string }
+
+type refTarget struct {
+	schema map[string]any
+	file   string
+}
 
 func loadSchemas() {
 	files = map[string]map[string]any{}
@@ -46,6 +57,36 @@ func loadSchemas() {
 			return
 		}
 		files[e.Name()] = doc
+	}
+	refs = map[refSite]refTarget{}
+	for name, doc := range files {
+		collectRefs(doc, name)
+	}
+}
+
+// collectRefs resolves every $ref of node, which stands in the file here, so
+// that resolve walks a JSON pointer once per (ref, file) instead of once per
+// visit. A $ref that is not a schema reference costs one unused entry.
+func collectRefs(node any, here string) {
+	switch value := node.(type) {
+	case map[string]any:
+		for key, member := range value {
+			if key == "$ref" {
+				if ref, ok := member.(string); ok {
+					site := refSite{ref: ref, here: here}
+					if _, seen := refs[site]; !seen {
+						schema, file := walkRef(ref, here)
+						refs[site] = refTarget{schema: schema, file: file}
+					}
+				}
+				continue
+			}
+			collectRefs(member, here)
+		}
+	case []any:
+		for _, member := range value {
+			collectRefs(member, here)
+		}
 	}
 }
 
@@ -115,8 +156,19 @@ func (c *checker) add(format string, a ...any) { c.errs = append(c.errs, fmt.Spr
 
 func (c *checker) full() bool { return len(c.errs) >= errorsMost }
 
-// resolve finds a $ref (#/$defs/X or <file>.json#/$defs/X) from the file here.
+// resolve finds a $ref (#/$defs/X or <file>.json#/$defs/X) from the file here,
+// from what collectRefs already walked; a ref the schemas do not carry is
+// walked here, as before.
 func resolve(ref, here string) (map[string]any, string) {
+	if target, ok := refs[refSite{ref: ref, here: here}]; ok {
+		return target.schema, target.file
+	}
+	return walkRef(ref, here)
+}
+
+// walkRef is resolve's own pointer walk: the file the ref names, else here,
+// then one map step per segment of its JSON pointer.
+func walkRef(ref, here string) (map[string]any, string) {
 	name, ptr, _ := strings.Cut(ref, "#")
 	if name == "" {
 		name = here
