@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,6 +27,9 @@ var (
 	topicFor   = 10 * time.Minute // a topic is read again after this
 	pauseFor   = 10 * time.Minute // after a 429
 )
+
+// cacheKeep bounds the cache: an answer past its per-kind TTL is pruned, then the oldest answers go.
+const cacheKeep = 200
 
 var (
 	errRateLimited = errors.New("LINUX DO 说请求太多，过一会儿再试")
@@ -72,15 +76,34 @@ func (s *site) get(ctx context.Context, path string, fresh time.Duration) ([]byt
 	}
 	s.mu.Lock()
 	s.cache[path] = cached{body, time.Now()}
-	if len(s.cache) > 200 {
-		for k, v := range s.cache {
-			if time.Since(v.at) > topicFor {
-				delete(s.cache, k)
-			}
-		}
+	if len(s.cache) > cacheKeep {
+		s.prune(time.Now())
 	}
 	s.mu.Unlock()
 	return body, nil
+}
+
+// prune drops answers past their per-kind TTL (a topic topicFor, anything else listFor); when the cache is
+// still over cacheKeep the oldest answers go, so sustained reads cannot grow it past the cap. Caller holds mu.
+func (s *site) prune(now time.Time) {
+	for k, v := range s.cache {
+		ttl := listFor
+		if strings.HasPrefix(k, "/t/") {
+			ttl = topicFor
+		}
+		if now.Sub(v.at) > ttl {
+			delete(s.cache, k)
+		}
+	}
+	for len(s.cache) > cacheKeep {
+		oldest := ""
+		for k, v := range s.cache {
+			if oldest == "" || v.at.Before(s.cache[oldest].at) {
+				oldest = k
+			}
+		}
+		delete(s.cache, oldest)
+	}
 }
 
 func (s *site) fetch(ctx context.Context, path string) ([]byte, error) {
@@ -111,7 +134,9 @@ func (s *site) fetch(ctx context.Context, path string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("连不上 LINUX DO：%w", err)
 	}
-	challenge := bytes.Contains(body[:min(len(body), 2048)], []byte("Just a moment"))
+	// The firewall's page answers 403 or 503; a 200 topic or feed may just
+	// mention the phrase.
+	challenge := res.StatusCode != http.StatusOK && bytes.Contains(body[:min(len(body), 2048)], []byte("Just a moment"))
 	switch {
 	case res.StatusCode == http.StatusTooManyRequests:
 		pause := pauseFor
@@ -123,7 +148,11 @@ func (s *site) fetch(ctx context.Context, path string) ([]byte, error) {
 	case challenge:
 		return nil, errChallenged
 	case res.StatusCode == http.StatusNotFound, res.StatusCode == http.StatusForbidden:
-		return nil, errNoTopic
+		// Only a topic read means "this topic is gone"; the same status on a list feed is an ordinary fetch failure.
+		if strings.HasPrefix(path, "/t/") {
+			return nil, errNoTopic
+		}
+		return nil, fmt.Errorf("LINUX DO：HTTP %d", res.StatusCode)
 	case res.StatusCode != http.StatusOK:
 		return nil, fmt.Errorf("LINUX DO：HTTP %d", res.StatusCode)
 	}

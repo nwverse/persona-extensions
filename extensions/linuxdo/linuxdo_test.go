@@ -254,6 +254,36 @@ func TestParseFeed(t *testing.T) {
 	if m := a.meta(time.Now()); m != "开发调优 · alice · 75 帖 · 59 人 · 3 小时前" && m != "开发调优 · alice · 75 帖 · 59 人 · 2 小时前" {
 		t.Fatal(m)
 	}
+
+	// An English-locale feed: the English counts line parses and the "Read full topic" suffix never leaks,
+	// with or without a counts line. The last item covers the Chinese suffix trimmed without a counts line.
+	english := `<?xml version="1.0" encoding="UTF-8" ?><rss version="2.0" xmlns:discourse="http://www.discourse.org/" xmlns:dc="http://purl.org/dc/elements/1.1/"><channel><title>LINUX DO</title>` +
+		`<item><discourse:topicPinned>No</discourse:topicPinned><title>Synthetic English topic</title><dc:creator><![CDATA[alice]]></dc:creator><category>Dev</category>` +
+		`<description><![CDATA[<p>An English excerpt.</p><p><a href="https://linux.do/t/topic/2001">75 posts - 59 participants</a></p> <p><a href="https://linux.do/t/topic/2001">Read full topic</a></p>]]></description>` +
+		`<link>https://linux.do/t/topic/2001</link><pubDate>Fri, 06 Nov 2026 03:04:05 +0000</pubDate></item>` +
+		`<item><discourse:topicPinned>No</discourse:topicPinned><title>No counts line</title><dc:creator><![CDATA[bob]]></dc:creator><category>Dev</category>` +
+		`<description><![CDATA[<p>No counts here.</p> <p><a href="https://linux.do/t/topic/2002">Read full topic</a></p>]]></description>` +
+		`<link>https://linux.do/t/topic/2002</link><pubDate>Fri, 06 Nov 2026 03:04:05 +0000</pubDate></item>` +
+		`<item><discourse:topicPinned>No</discourse:topicPinned><title>没有计数行</title><dc:creator><![CDATA[carol]]></dc:creator><category>开发调优</category>` +
+		`<description><![CDATA[<p>中文摘要。</p> <p><a href="https://linux.do/t/topic/2003">阅读完整话题</a></p>]]></description>` +
+		`<link>https://linux.do/t/topic/2003</link><pubDate>Fri, 06 Nov 2026 03:04:05 +0000</pubDate></item>` +
+		`</channel></rss>`
+	en, err := parseFeed([]byte(english))
+	if err != nil || len(en) != 3 {
+		t.Fatalf("%v %v", en, err)
+	}
+	if en[0].ID != 2001 || en[0].Posts != 75 || en[0].People != 59 || en[0].Excerpt != "An English excerpt." ||
+		strings.Contains(en[0].Excerpt, "Read full topic") {
+		t.Fatalf("english counts item: %+v", en[0])
+	}
+	if en[1].ID != 2002 || en[1].Posts != 0 || en[1].Excerpt != "No counts here." ||
+		strings.Contains(en[1].Excerpt, "Read full topic") {
+		t.Fatalf("english suffix-only item: %+v", en[1])
+	}
+	if en[2].ID != 2003 || en[2].Excerpt != "中文摘要。" || strings.Contains(en[2].Excerpt, "阅读完整话题") {
+		t.Fatalf("chinese suffix-only item: %+v", en[2])
+	}
+
 	if _, err := parseFeed([]byte("<html>Just a moment</html>")); err == nil {
 		t.Fatal("a page that is not RSS read as one")
 	}
@@ -316,6 +346,10 @@ func TestPostText(t *testing.T) {
 	}
 	if sg[2].Text != "[链接] https://example.com/post" {
 		t.Errorf("onebox: %q", sg[2].Text)
+	}
+	// A cooked table's cells stay apart: closing td/th are line breaks too.
+	if table := postText(`<table><tr><th>甲</th><td>一</td><td>二</td></tr></table>`); len(table) != 1 || table[0].Text != "甲\n一\n二" {
+		t.Fatalf("table cells ran together: %+v", table)
 	}
 	if got := plainText(td.PostStream.Posts[2].Cooked); got != "op:\n> 快了 30%\n\n真的吗" && !strings.Contains(got, "> 快了 30%") {
 		t.Errorf("quote: %q", got)
@@ -384,6 +418,14 @@ func TestPage(t *testing.T) {
 		t.Errorf("daily:\n%s", page)
 	}
 
+	// A feed with zero topics says the list is empty, not that the user's filter hid everything.
+	f.feeds["/top.rss?period=weekly"] = rss()
+	weekly, _ := act(t, p, v.State, "list:weekly")
+	if page := texts(weekly); !strings.Contains(page, "本周最热 · 0 / 0 条") ||
+		!strings.Contains(page, "这个列表现在没有帖子") || strings.Contains(page, "没有符合你兴趣的帖子") {
+		t.Errorf("an empty weekly list:\n%s", page)
+	}
+
 	topic, _ := act(t, p, v.State, "topic:1001")
 	page = texts(topic)
 	for _, want := range []string{"Claude 新模型实测 & 对比\n", "op · 11-03 17:37 · 1098 浏览 · 110 赞 · 4 帖 · 13 人 · 标签 人工智能",
@@ -438,6 +480,65 @@ func TestLongTopicFitsThePage(t *testing.T) {
 	}
 }
 
+// Every <pre> starts a new segment, so a short post of many code blocks is many items; the view still fits in 300.
+func TestManyCodeBlocksFitThePage(t *testing.T) {
+	f := newFakeSite(t)
+	var replies []string
+	for i := 0; i < 19; i++ {
+		replies = append(replies, "<p>回复</p>")
+	}
+	f.topics[8] = topicJSON(8, "命令合集", strings.Repeat("<p>步骤</p><pre><code>ls</code></pre>", 200), replies...)
+	p := testPlugin(t, f, nil)
+	v, _ := act(t, p, "", "topic:8") // checkView: at most 300 items
+	if !strings.Contains(texts(v), "正文太长，后面的在网页里看") || !strings.Contains(texts(v), "热门回复") {
+		t.Fatalf("no caption or no replies:\n%s", texts(v))
+	}
+}
+
+// A hot reply that renders to no words (only an emoji image, or only a video/audio upload) is skipped:
+// it would be an empty text item, which the host's view check refuses, and the whole topic page must still open.
+// A plain picture reply still renders the [图片] placeholder, so it is not over-filtered.
+func TestRepliesWithoutTextDoNotBreakThePage(t *testing.T) {
+	f := newFakeSite(t)
+	emojiOnly := `<p><img src="https://cdn.example/fire.png" title=":fire:" class="emoji" alt=":fire:"></p>`
+	videoOnly := `<p><video controls="controls"><source src="https://cdn.example/v.mp4"></video></p>`
+	imageOnly := `<p><img src="https://cdn.example/plain.png" alt=""></p>`
+	audioOnly := `<p><audio controls="controls"><source src="https://cdn.example/a.mp3"></audio></p>`
+	f.topics[40] = topicJSON(40, "一个帖子", `<p>正文在这里</p>`, emojiOnly, videoOnly, imageOnly, audioOnly, `<p>正常回复</p>`)
+	p := testPlugin(t, f, nil)
+
+	var td topicDoc
+	_ = json.Unmarshal([]byte(f.topics[40]), &td)
+	rs := td.bestReplies(10)
+	if len(rs) != 2 || rs[0].PostNumber != 6 || rs[1].PostNumber != 4 {
+		t.Fatalf("the picture reply and the reply with words are the best replies: %+v", rs)
+	}
+
+	// act runs the in-test copy of the host's plugin.CheckView; the fixed view carries no empty text item.
+	v, _ := act(t, p, "", "topic:40")
+	page := texts(v)
+	if !strings.Contains(page, "前 6 楼里最热的 2 条（共 6 帖）") || !strings.Contains(page, "正常回复") ||
+		!strings.Contains(page, "[图片]") {
+		t.Fatalf("the picture and the reply with words are shown with an honest count:\n%s", page)
+	}
+	if strings.Contains(page, "#2 u2") || strings.Contains(page, "#3 u3") || strings.Contains(page, "#5 u5") {
+		t.Fatalf("a reply without words was listed:\n%s", page)
+	}
+
+	text, err := p.toolTopic(context.Background(), 40, 10)
+	if err != nil || !strings.Contains(text, "正常回复") || strings.Contains(text, "）：\n") {
+		t.Fatalf("the tool skips wordless replies too: %v\n%s", err, text)
+	}
+
+	// When every reply is wordless the replies section is simply absent, and the page still passes the view check.
+	f.topics[41] = topicJSON(41, "只有表情和视频", `<p>正文</p>`, emojiOnly, videoOnly)
+	v2, _ := act(t, p, "", "topic:41")
+	page = texts(v2)
+	if strings.Contains(page, "热门回复") || strings.Contains(page, "#2 u2") {
+		t.Fatalf("a topic with only wordless replies shows no replies section:\n%s", page)
+	}
+}
+
 func TestSiteFailures(t *testing.T) {
 	f := newFakeSite(t)
 	sample(f)
@@ -460,6 +561,33 @@ func TestSiteFailures(t *testing.T) {
 		t.Fatalf("status after a good read: %+v", s)
 	}
 
+	// A plain 403/404 on a list feed is an ordinary fetch failure, not a deleted topic: the generic
+	// HTTP error reaches the caller, the connector goes to "error", and a cached copy still stands in.
+	for _, code := range []int{http.StatusForbidden, http.StatusNotFound} {
+		f.status, f.body = code, "blocked"
+		want := fmt.Sprintf("HTTP %d", code)
+		if _, err := p.site.fetch(context.Background(), "/hot.rss"); err == nil || errors.Is(err, errNoTopic) || !strings.Contains(err.Error(), want) {
+			t.Fatalf("a plain %d on /hot.rss read as a missing topic: %v", code, err)
+		}
+		if _, err := p.hot(context.Background(), "latest", false); err == nil || errors.Is(err, errNoTopic) || !strings.Contains(err.Error(), want) {
+			t.Fatalf("an uncached list under %d: %v", code, err)
+		}
+		if s, _ := p.cStatus(context.Background(), nil, nil); s.(connectorStatus).State != "error" {
+			t.Fatalf("status after %d: %+v", code, s)
+		}
+		if ts, err := p.hot(context.Background(), "hot", true); err != nil || len(ts) != 5 {
+			t.Fatalf("the cached list should stand in for %d: %v (%d topics)", code, err, len(ts))
+		}
+	}
+
+	// The same statuses on a topic path still read as "this topic is gone".
+	for _, code := range []int{http.StatusForbidden, http.StatusNotFound} {
+		f.status = code
+		if _, err := p.site.fetch(context.Background(), "/t/topic/9999.json"); !errors.Is(err, errNoTopic) {
+			t.Fatalf("a topic under %d: %v", code, err)
+		}
+	}
+
 	// A 429 pauses every read, and an older copy stands in meanwhile.
 	f.status, f.body = http.StatusTooManyRequests, "slow down"
 	if _, err := p.hot(context.Background(), "hot", true); err != nil {
@@ -470,6 +598,25 @@ func TestSiteFailures(t *testing.T) {
 		t.Fatalf("paused: %v, %d requests", err, f.hit("/top.rss?period=daily")-before)
 	}
 	if s, _ := p.cStatus(context.Background(), nil, nil); s.(connectorStatus).State != "rate_limited" {
+		t.Fatalf("status: %+v", s)
+	}
+}
+
+// A good answer that only mentions the challenge page is still a good answer.
+func TestJustAMomentInContent(t *testing.T) {
+	f := newFakeSite(t)
+	sample(f)
+	f.topics[2001] = topicJSON(2001, "Help: page stuck on Just a moment", `<p>Cloudflare keeps showing "Just a moment..." on every site, any idea?</p>`)
+	f.feeds["/hot.rss"] = rss(item{id: 3001, title: "Just a moment 验证页一直转圈怎么办", author: "a", cat: "开发调优", posts: 3, people: 2})
+	p := testPlugin(t, f, nil)
+
+	if _, err := p.topic(context.Background(), 2001); err != nil {
+		t.Errorf("topic: %v", err)
+	}
+	if ts, err := p.hot(context.Background(), "hot", false); err != nil || len(ts) != 1 {
+		t.Errorf("hot: %d topics, %v", len(ts), err)
+	}
+	if s, _ := p.cStatus(context.Background(), nil, nil); s.(connectorStatus).State != "ok" {
 		t.Fatalf("status: %+v", s)
 	}
 }
@@ -510,7 +657,7 @@ func TestTools(t *testing.T) {
 }
 
 func TestTopicID(t *testing.T) {
-	for raw, want := range map[string]int64{`123`: 123, `"456"`: 456, `"https://linux.do/t/topic/789"`: 789, `"https://linux.do/t/some-slug/42/7"`: 42} {
+	for raw, want := range map[string]int64{`123`: 123, `"456"`: 456, `"https://linux.do/t/topic/789"`: 789, `"https://linux.do/t/some-slug/42/7"`: 42, `"https://linux.do/t/123456/7"`: 123456} {
 		if got, err := topicID(json.RawMessage(raw)); err != nil || got != want {
 			t.Errorf("%s: %d %v", raw, got, err)
 		}
@@ -532,6 +679,72 @@ func TestChunks(t *testing.T) {
 	}
 	if got := chunks("\n\n\n", 2); len(got) != 0 {
 		t.Fatalf("%q", got)
+	}
+}
+
+// An over-cap cache is pruned on the next read: answers past their per-kind TTL go (lists listFor,
+// topics topicFor), then the oldest answers, so sustained topic reads cannot grow it past the cap.
+func TestCachePrunedToCap(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	t.Cleanup(srv.Close)
+	s := newSite(srv.URL)
+
+	now := time.Now()
+	// Per-kind TTL at the cap boundary: the stale list goes (past listFor), the same-aged topic stays
+	// (inside topicFor), and that one deletion is enough — the oldest young answer is not touched.
+	for i := 0; i < 198; i++ {
+		path := fmt.Sprintf("/list-%d.rss", i)
+		if i%2 == 0 {
+			path = fmt.Sprintf("/t/topic/%d.json", i)
+		}
+		s.cache[path] = cached{[]byte("x"), now.Add(-time.Duration(198-i) * time.Second)}
+	}
+	s.cache["/expired.rss"] = cached{[]byte("l"), now.Add(-listFor - time.Minute)}
+	s.cache["/t/topic/900.json"] = cached{[]byte("t"), now.Add(-listFor - time.Minute)}
+	if _, err := s.get(context.Background(), "/one-more.rss", 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.cache) != 200 { // cacheKeep
+		t.Fatalf("after the TTL prune: %d entries, want 200", len(s.cache))
+	}
+	if _, ok := s.cache["/expired.rss"]; ok {
+		t.Error("a list past listFor was not pruned")
+	}
+	if _, ok := s.cache["/t/topic/900.json"]; !ok {
+		t.Error("a topic still inside topicFor was pruned with the list TTL")
+	}
+	if _, ok := s.cache["/t/topic/0.json"]; !ok {
+		t.Error("the oldest young answer was evicted although the TTL prune sufficed")
+	}
+
+	// Hard cap with everything fresh: 210 young answers plus the one just read, nothing is past a TTL,
+	// so the 11 oldest topics make room and younger answers (incl. the new one) stay.
+	for k := range s.cache {
+		delete(s.cache, k)
+	}
+	for i := 0; i < 110; i++ {
+		s.cache[fmt.Sprintf("/t/topic/%d.json", i)] = cached{[]byte("t"), now.Add(-time.Duration(210-i) * time.Second)}
+	}
+	for i := 0; i < 100; i++ {
+		s.cache[fmt.Sprintf("/list-%d.rss", i)] = cached{[]byte("l"), now.Add(-time.Duration(100-i) * time.Second)}
+	}
+	if _, err := s.get(context.Background(), "/fresh.rss", 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.cache) != 200 {
+		t.Fatalf("cache grew to %d, want 200", len(s.cache))
+	}
+	for _, gone := range []string{"/t/topic/0.json", "/t/topic/10.json"} {
+		if _, ok := s.cache[gone]; ok {
+			t.Errorf("old answer %s survived eviction", gone)
+		}
+	}
+	for _, kept := range []string{"/t/topic/11.json", "/list-99.rss", "/fresh.rss"} {
+		if _, ok := s.cache[kept]; !ok {
+			t.Errorf("young answer %s was evicted", kept)
+		}
 	}
 }
 

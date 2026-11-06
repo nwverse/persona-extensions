@@ -22,12 +22,18 @@ for extra in skills assistant; do
   [ -d "$src/$extra" ] && cp -R "$src/$extra" "$out/"
 done
 # A declarative extension (no runtime: skills, prompts, themes, a pack…) has no program to build.
-python3 -c 'import json,sys;[print(k, v) for k, v in json.load(open(sys.argv[1])).get("runtime", {}).get("command", {}).items()]' "$manifest" |
+# -I: with -c, Python would otherwise put the cwd (repo root, an untrusted PR tree in CI) first on sys.path,
+# letting a planted json.py shadow the stdlib module. The snippet uses only stdlib json/sys and an explicit argv path.
+python3 -I -c 'import json,sys;[print(k, v) for k, v in json.load(open(sys.argv[1])).get("runtime", {}).get("command", {}).items()]' "$manifest" |
 while read -r plat path; do
   GOOS=${plat%-*} GOARCH=${plat#*-} CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o "$out/$path" "./$src"
 done
 rmdir "$out/bin" 2>/dev/null || true # nothing built: no empty bin/ in the package
-# No macOS metadata: bsdtar would add AppleDouble ._* entries (a second top-level entry, so the hub finds no
-# manifest) and xattr records; COPYFILE_DISABLE is ignored elsewhere, and GNU tar knows --no-xattrs too.
-COPYFILE_DISABLE=1 tar --no-xattrs -C dist -czf "dist/$id-$version.tar.gz" "$id"
+# No macOS/editor junk in the archive. COPYFILE_DISABLE/--no-xattrs only suppress AppleDouble ._* entries and
+# xattr records tar synthesizes itself; junk already in the source tree (._* files, .DS_Store, __pycache__/)
+# would be copied verbatim, and a stray ._* at the top level is a second top-level entry, so the hub finds no
+# manifest. Exclude by basename at every depth (manifest.py check rejects the same names under skills/assistant).
+COPYFILE_DISABLE=1 tar --no-xattrs \
+  --exclude='._*' --exclude=.DS_Store --exclude=__pycache__ \
+  -C dist -czf "dist/$id-$version.tar.gz" "$id"
 (cd dist && sha256sum "$id-$version.tar.gz" | tee "$id-$version.tar.gz.sha256")

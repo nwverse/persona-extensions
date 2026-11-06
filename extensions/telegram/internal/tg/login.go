@@ -156,6 +156,7 @@ func (c *Conn) stepCredentials(ctx context.Context, v map[string]string) (connec
 	c.mu.Lock()
 	c.st = stored{APIID: id, APIHash: hash}
 	c.pending.phone, c.pending.hash = "", ""
+	c.lastSync = time.Time{} // a sign-in from the start, as after signing out
 	err = c.saveLocked(ctx)
 	c.mu.Unlock()
 	if err != nil {
@@ -200,7 +201,13 @@ func (c *Conn) Logout(ctx context.Context) error {
 	cl := c.cl
 	c.mu.Unlock()
 	if cl != nil {
-		if _, ok, _ := cl.Me(ctx); ok {
+		// Only a session Telegram says is not signed in is forgotten without auth.logOut: when it could not be asked
+		// (a flood wait, the network), the session is kept for another try, as it is still signed in there.
+		_, ok, err := cl.Me(ctx)
+		if err != nil {
+			return c.writeError(err)
+		}
+		if ok {
 			if err := cl.LogOut(ctx); err != nil {
 				return scrubbed(err)
 			}
@@ -208,6 +215,7 @@ func (c *Conn) Logout(ctx context.Context) error {
 	}
 	c.mu.Lock()
 	c.st, c.pending.phone, c.pending.hash = stored{}, "", ""
+	c.lastSync = time.Time{} // the account's archive: the next one starts with none
 	err := c.saveLocked(ctx)
 	c.mu.Unlock()
 	c.setStatus(connector.Status{State: connector.StateNotSignedIn, Error: "还没填 Telegram 的 API 凭据"})

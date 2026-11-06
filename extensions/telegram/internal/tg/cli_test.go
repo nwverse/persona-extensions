@@ -13,6 +13,28 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/telegram/internal/connector"
 )
 
+// parseArgs decodes exactly one object: like an unknown field, anything left after the value (a second object,
+// stray tokens) is refused, so it cannot silently ride along with the arguments the action takes.
+func TestParseArgsRejectsTrailingData(t *testing.T) {
+	if a, err := parseArgs(json.RawMessage(`{"chat":"u1"}`)); err != nil || a.Chat != "u1" {
+		t.Fatalf("one object: %+v, %v", a, err)
+	}
+	if a, err := parseArgs(json.RawMessage("{}\n \t")); err != nil {
+		t.Fatalf("whitespace after the object is nothing: %+v, %v", a, err)
+	}
+	for _, args := range []string{
+		`{}x`,
+		`{} {}`,
+		`{"chat":"u1"} {"chat":"u2"}`,
+		`{} null`,
+		`{} {`, // a second value cut off is not a clean EOF either
+	} {
+		if _, err := parseArgs(json.RawMessage(args)); err == nil || !strings.Contains(err.Error(), "arguments: trailing data") {
+			t.Errorf("%s: %v, want arguments: trailing data", args, err)
+		}
+	}
+}
+
 // The models see the assistant's three read tools only; the CLI's reads and writes are there to be called by name.
 func TestCLIToolsAreUnlisted(t *testing.T) {
 	c, _, ctx := archiveAccount(t)
@@ -205,6 +227,7 @@ func TestCLIWrites(t *testing.T) {
 	for _, bad := range []struct{ name, args, says string }{
 		{"telegram_send", `{"chat":"u1"}`, "text is required"},
 		{"telegram_send", `{"chat":"u1","text":"` + strings.Repeat("字", textMost+1) + `"}`, "at most 4096"},
+		{"telegram_send", `{"chat":"u1","text":"` + strings.Repeat("😀", textMost) + `"}`, "at most 4096"},
 		{"telegram_forward", `{"chat":"c2","ids":[],"to":"u1"}`, "ids"},
 		{"telegram_forward", `{"chat":"c2","ids":[11],"to":"u9"}`, "to: 不认识会话"},
 		{"telegram_react", `{"chat":"c2","id":12}`, "emoji"},
@@ -217,6 +240,92 @@ func TestCLIWrites(t *testing.T) {
 	}
 	if got := f.written(); len(got) != len(want) {
 		t.Fatalf("a refused write reached Telegram: %q", got)
+	}
+}
+
+// The send limit is Telegram's, counted in UTF-16 code units: an astral rune (an emoji) is two. Exactly the limit
+// passes the pre-flight check and, once allowed, sends; one unit over is refused before the card, whatever the runes.
+func TestCLISendLengthUTF16(t *testing.T) {
+	c, f, ctx := archiveAccount(t)
+	r := connector.NewRegistry(nil)
+	if err := r.Add(c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Call(ctx, "telegram_list_chats", nil); err != nil {
+		t.Fatal(err)
+	}
+	var card string
+	yes := func(_ context.Context, summary string, _ json.RawMessage) bool { card = summary; return true }
+
+	before := len(f.written())
+	atLimit := json.RawMessage(`{"chat":"u1","text":"` + strings.Repeat("😀", textMost/2) + `"}`) // 2048 runes, 4096 units
+	if res := r.Call(ctx, "telegram_send", atLimit, yes); res.IsError || !strings.Contains(card, strings.Repeat("😀", 4)) ||
+		len(f.written()) != before+1 {
+		t.Fatalf("exactly 4096 UTF-16 units was refused: %+v, card %q", res, card)
+	}
+
+	for i, text := range []string{
+		strings.Repeat("😀", textMost),         // 4096 runes, 8192 units
+		strings.Repeat("😀", textMost/2) + "x", // 2049 runes, 4097 units
+	} {
+		card = ""
+		sent := len(f.written())
+		args := json.RawMessage(`{"chat":"u1","text":"` + text + `"}`)
+		if res := r.Call(ctx, "telegram_send", args, yes); !res.IsError ||
+			!strings.Contains(res.Content[0].Text, "at most 4096") || card != "" || len(f.written()) != sent {
+			t.Fatalf("case %d: over the UTF-16 limit reached the card or Telegram: %+v, card %q", i, res, card)
+		}
+	}
+}
+
+// A write names its conversation exactly as connector_gate sees it: rules that deny a chat by its id and its
+// @username (the two names a write takes) are not stepped around by spacing or by the @username's case.
+func TestCLIWriteNamesTheChatTheGateSees(t *testing.T) {
+	c, f, ctx := archiveAccount(t)
+	f.mu.Lock()
+	f.dialogs[0].Username = "example_group"
+	f.mu.Unlock()
+	r := connector.NewRegistry([]connector.Rule{
+		{Connector: "telegram", Action: "telegram_react", Match: map[string]any{"chat": "c2"}, Decision: connector.Deny},
+		{Connector: "telegram", Action: "telegram_react", Match: map[string]any{"chat": "@example_group"}, Decision: connector.Deny},
+		{Connector: "telegram", Action: "telegram_forward", Match: map[string]any{"to": "c2"}, Decision: connector.Deny},
+		{Connector: "telegram", Action: "telegram_forward", Match: map[string]any{"to": "@example_group"}, Decision: connector.Deny},
+		{Connector: "telegram", Action: "telegram_react", Decision: connector.Allow},
+		{Connector: "telegram", Action: "telegram_forward", Decision: connector.Allow},
+	})
+	if err := r.Add(c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Call(ctx, "telegram_list_chats", nil); err != nil {
+		t.Fatal(err)
+	}
+	yes := func(context.Context, string, json.RawMessage) bool { return true }
+	for _, chat := range []string{"c2", "@example_group", " c2", "c2\n", "@Example_Group", " @example_group"} {
+		args, _ := json.Marshal(map[string]any{"chat": chat, "id": 12, "emoji": "👍"})
+		if res := r.Call(ctx, "telegram_react", args, yes); !res.IsError {
+			t.Errorf("react in %q went through a rule that denies c2: %+v", chat, res)
+		}
+		args, _ = json.Marshal(map[string]any{"chat": "u1", "ids": []int{11}, "to": chat})
+		if res := r.Call(ctx, "telegram_forward", args, yes); !res.IsError {
+			t.Errorf("forward to %q went through a rule that denies c2: %+v", chat, res)
+		}
+	}
+	// The gate looks a field up by its exact name; encoding/json would fill it from "Chat" or "TO" too.
+	for _, args := range []string{
+		`{"Chat":"c2","id":12,"emoji":"👍"}`,
+		`{"chat":"u1","CHAT":"c2","id":12,"emoji":"👍"}`,
+		`{"chat":"u1","ids":[11],"To":"c2"}`,
+	} {
+		name := "telegram_react"
+		if strings.Contains(args, "ids") {
+			name = "telegram_forward"
+		}
+		if res := r.Call(ctx, name, json.RawMessage(args), yes); !res.IsError {
+			t.Errorf("%s %s went through a rule that denies c2: %+v", name, args, res)
+		}
+	}
+	if got := f.written(); len(got) != 0 {
+		t.Fatalf("a denied write reached Telegram: %q", got)
 	}
 }
 
@@ -244,5 +353,61 @@ func TestCLIWriteDuringAFloodWait(t *testing.T) {
 	}
 	if _, err := c.Call(ctx, "telegram_read_messages", json.RawMessage(`{"chat":"u1"}`)); err == nil || !strings.Contains(err.Error(), "Telegram 限流中") {
 		t.Fatalf("a read during a flood wait: %v", err)
+	}
+}
+
+// A watcher that runs for a long time searches again and again, each search listing peers the process had not seen:
+// the seen map is capped like the sibling caches (thread.go) instead of growing for the process's lifetime. The
+// conversations a read just listed still resolve as a write's target, by id and by @username; an evicted one is
+// asked to be found again. Re-listing a conversation updates it in place, so the recent de-dup is intact.
+func TestCLISeenMapIsCapped(t *testing.T) {
+	c := &Conn{}
+	const batch = searchMost // a search page is the read that keeps introducing fresh peers
+	id := int64(1)
+	rememberPage := func() dialog {
+		ds := make([]dialog, batch)
+		for i := range ds {
+			ds[i] = dialog{Peer: peer{Kind: 'u', ID: id}, Name: "示例用户", Kind: "dm"}
+			id++
+		}
+		c.remember(ds)
+		return ds[batch-1]
+	}
+	var fresh dialog
+	for range locsMost/batch + 2 { // more than locsMost distinct peers across the run
+		fresh = rememberPage()
+	}
+	if got := len(c.box.seen); got > locsMost+batch { // past the cap the map resets, leaving at most the page in hand
+		t.Fatalf("the seen map grew to %d entries, want it capped at about %d", got, locsMost)
+	}
+	if _, err := c.target(fresh.Peer.key()); err != nil {
+		t.Fatalf("a conversation a read just listed no longer resolves: %v", err)
+	}
+	fresh.Username = "fresh_one"
+	c.remember([]dialog{fresh})
+	if _, err := c.target("@fresh_one"); err != nil {
+		t.Fatalf("the freshly listed @username no longer resolves: %v", err)
+	}
+	if _, err := c.target("u1"); err == nil { // evicted many pages ago
+		t.Fatal("an evicted conversation still resolved")
+	}
+	filled := len(c.box.seen)
+	c.remember([]dialog{{Peer: fresh.Peer, Name: "示例用户改名", Username: "fresh_one", Kind: "dm"}})
+	if len(c.box.seen) != filled {
+		t.Fatalf("re-listing a known conversation grew the map from %d to %d", filled, len(c.box.seen))
+	}
+	if d, err := c.target(fresh.Peer.key()); err != nil || d.Name != "示例用户改名" {
+		t.Fatalf("re-listing did not update the conversation in place: %+v %v", d, err)
+	}
+	// Bots, Saved Messages and broadcast channels are never a write's target, even straight from a read.
+	c.remember([]dialog{
+		{Peer: peer{Kind: 'u', ID: 901}, Name: "机器人", Kind: "dm", Bot: true},
+		{Peer: peer{Kind: 'u', ID: 902}, Name: "我", Kind: "dm", Self: true},
+		{Peer: peer{Kind: 'c', ID: 903}, Name: "频道", Kind: "group", Broadcast: true},
+	})
+	for _, chat := range []string{"u901", "u902", "c903"} {
+		if _, err := c.target(chat); err == nil {
+			t.Errorf("%s was kept though its kind is never written to", chat)
+		}
 	}
 }
