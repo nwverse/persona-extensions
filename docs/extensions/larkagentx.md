@@ -43,8 +43,10 @@ First review the licensing and service-policy boundary above. Use an explicitly 
 
    ```sh
    scripts/package.sh larkagentx
-   personad extension install file:/absolute/path/to/larkagentx-0.1.0.tar.gz
+   personad extension install file:/absolute/path/to/larkagentx-<version>.tar.gz
    ```
+
+   Replace `<version>` with the version in [the manifest](../../extensions/larkagentx/persona-extension.json).
 
    This delivery uses local verification and does not include manual market publication. A merged version can trigger release automation if its jobs start and pass. Until a signed Release/index entry is available, install the local package; a manual market release uses the normal release/index-signing workflow.
 
@@ -81,7 +83,7 @@ First review the licensing and service-policy boundary above. Use an explicitly 
 
    This is headless on the companion: it needs no browser/display, and the QR appears through Persona's existing login UI. The implementation is covered with synthetic QR/auth objects only; actual Feishu QR acceptance remains unverified.
 
-6. After signing in, send a synthetic test message from an allowed sender in an allowed conversation, verify it appears once in the inbox, then request `larkagentx_send_text`. Verify the confirmation shows the full text and destination before approving. Verify a denied sender/conversation produces no inbox item. **These real-account steps have not been performed for this PR.**
+6. After signing in, send a synthetic test message from an allowed sender in an allowed conversation, verify it appears once in the inbox, then request `larkagentx_send_text`. Verify the confirmation shows the full text and destination before approving. Verify a denied sender/conversation produces no inbox item. **These real-account steps have not yet been performed.**
 
 ## Credential and delivery lifecycle
 
@@ -89,7 +91,7 @@ Persona's encrypted `connector.secrets` store is the sole durable store for this
 
 Logout closes the bridge, drops inbox/session/QR state and deletes this connector's encrypted secret. A failed secret deletion is reported as a failure, not as successful durable logout. It **does not revoke all Feishu web sessions or log out OpenLark**. Revoke a compromised session using Feishu's own account controls.
 
-Transient bridge/WS disconnects restart with bounded exponential backoff (2–60 seconds). Status and inbox collection are cached and do not issue network requests; auth probes run in the background about once a minute. Incoming message hashes survive bridge and extension restarts, with a rolling 4,096-ID window; the cache holds the latest message per thread for up to 128 threads. Collection also filters the saved cache against the current allowlists, so tightening authorization does not re-expose previously cached conversations through this connector. This is a bounded live inbox, not a complete archive or guaranteed catch-up: upstream reconnect replay is not assumed, and messages received while disconnected may be missed. A message outside the dedup window can be accepted again.
+Transient bridge/WS disconnects restart with bounded exponential backoff (2–60 seconds). Status and inbox collection are cached and do not issue network requests; auth probes run in the background about once a minute. Messages that arrive while a probe runs are still delivered, and a probe that returns a different account ID than the one checked at sign-in reports the session as signed out. Incoming message hashes survive bridge and extension restarts, with a rolling 4,096-ID window; the cache holds the latest message per thread for up to 128 threads. Collection also filters the saved cache against the current allowlists, so tightening authorization does not re-expose previously cached conversations through this connector. This is a bounded live inbox, not a complete archive or guaranteed catch-up: upstream reconnect replay is not assumed, and messages received while disconnected may be missed. A message outside the dedup window can be accepted again.
 
 Before an outbound request crosses SSH, its hashed request ID and exact account/payload fingerprint are durably reserved. Repeating the same request returns its saved receipt or `unknown_result`, never another send; changing the account or text under that ID is rejected. Timeouts, missing message IDs and lost responses are unknown outcomes, not proof of failure. Check the account before intentionally creating a new request. The journal fails closed at 1,024 entries rather than evicting reservations and accidentally resending. Logout clears it, so do not replay old requests after logout/re-login. This deliberately favors avoiding duplicates over automatically recovering a lost reply.
 

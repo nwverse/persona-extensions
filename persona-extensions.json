@@ -8,8 +8,8 @@
         "manifest_version": 1,
         "id": "claude-bypass-allow",
         "name": "Bypass 自动允许",
-        "version": "0.1.1",
-        "description": "Claude Code 开着 bypassPermissions（--dangerously-skip-permissions）时，有些 Bash 命令（如 cd 之后 rm 一个 glob、rm 的目标是变量）仍会弹确认框，无人值守的 Agent 就卡在「在等你」。在你选的电脑上给 Claude Code 装一个 PermissionRequest hook：只在会话是 bypass 模式、工具是 Bash 时自动允许，不覆盖你自己配的 ask / deny 规则，每次自动允许都记一条（命令截断、去掉密钥）。别的模式照常问你。",
+        "version": "0.2.10",
+        "description": "Claude Code 开着 bypassPermissions（--dangerously-skip-permissions）时，有些调用仍会弹确认框（如读工作目录外的文件、开子 Agent、某些 Bash），无人值守的 Agent 就卡在「在等你」。在你选的电脑上给 Claude Code 装一个 PermissionRequest hook：只在会话是 bypass 模式时，自动允许 Bash、只读工具（Read、Glob、Grep、LS、NotebookRead）和子 Agent。删除、覆盖数据、force push、改权限的 Bash 命令，写文件、Workflow 和 MCP 工具，以及你自己配的 ask / deny 规则，仍然问你。每次自动允许都记一条（命令截断、去掉密钥）。别的模式照常问你。",
         "publisher": "nwverse",
         "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/claude-bypass-allow",
         "engines": {
@@ -66,7 +66,7 @@
                   "linux"
                 ]
               },
-              "x-confirm": "这台电脑上 bypass 模式的 Claude Code 会话，Bash 的安全确认（如危险的 rm）将不再问你、直接执行。每次都会记录。"
+              "x-confirm": "这台电脑上 bypass 模式的 Claude Code 会话，Bash、读文件（包括工作目录外的）和开子 Agent 的确认将不再问你、直接执行。删除、覆盖数据、force push、改权限仍然问你。每次都会记录。"
             },
             "config_dirs": {
               "type": "array",
@@ -92,9 +92,9 @@
       ],
       "packages": [
         {
-          "url": "release:claude-bypass-allow-v0.1.1/claude-bypass-allow-0.1.1.tar.gz",
-          "sha256": "c4e8d5d056111cfd1a1046942513a795aaea7b7c112932334d9b3d11890d9e9c",
-          "size": 11607747
+          "url": "release:claude-bypass-allow-v0.2.10/claude-bypass-allow-0.2.10.tar.gz",
+          "sha256": "861123afa4dcce0ec7fa461c418ec97a346e711a4c5a018902b1b841a381e254",
+          "size": 12048590
         }
       ]
     },
@@ -103,7 +103,7 @@
         "manifest_version": 1,
         "id": "github",
         "name": "GitHub",
-        "version": "0.3.0",
+        "version": "0.4.8",
         "description": "GitHub 进 Persona：收件箱里是请你 review、@ 你、指派给你、你的 PR / issue 有了新评论或 review、CI 失败；和你有关的 PR、issue 归档进知识库；助手能搜、读 PR / issue、看改动和 CI，评论和 review 先在手机上确认。登录用你某台电脑上的 gh 登录或设备码登录，token 加密存在 hub 的数据库里。侧边栏的「GitHub」页：待你 review 的 PR、你的 PR 和 CI、指派 / 提到你的、通知和关注的动态、你的仓库（浏览代码、分支、README），PR 的改动文件、逐文件 diff 和行内评论、全部评论、CI 日志摘要，在这一页上评论、review、合并（先预览、确认后才发）。",
         "publisher": "nwverse",
         "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/github",
@@ -274,9 +274,108 @@
       ],
       "packages": [
         {
-          "url": "release:github-v0.3.0/github-0.3.0.tar.gz",
-          "sha256": "bcb97c8cc73a16ac5e5ca36b42bdba93394f46dce1bbd445be75911b7e7096cc",
-          "size": 13202431
+          "url": "release:github-v0.4.8/github-0.4.8.tar.gz",
+          "sha256": "c454f90243bd67819f81b51b54c9da828bee3f842f96ab9ff6223a4363f846fa",
+          "size": 13540342
+        }
+      ]
+    },
+    {
+      "manifest": {
+        "manifest_version": 1,
+        "id": "larkagentx",
+        "name": "Feishu (LarkAgentX adapter)",
+        "version": "0.1.5",
+        "description": "独立的飞书个人账号适配器：用户自行在伴随机器上安装 LarkAgentX，hub 使用 Go 程序经 SSH 接入。只收双白名单内的文本消息，发送全文始终需要确认；不启动 Agent、不发已读回执，不替换 OpenLark。非官方协议，真实账号联调尚未验证。",
+        "publisher": "nwverse",
+        "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/larkagentx",
+        "engines": {
+          "persona": ">=202611041602",
+          "plugin_protocol": 1
+        },
+        "runtime": {
+          "command": {
+            "linux-amd64": "bin/larkagentx-linux-amd64",
+            "linux-arm64": "bin/larkagentx-linux-arm64",
+            "darwin-arm64": "bin/larkagentx-darwin-arm64",
+            "darwin-amd64": "bin/larkagentx-darwin-amd64"
+          }
+        },
+        "contributes": {
+          "connectors": [
+            {
+              "id": "larkagentx",
+              "name": "Feishu (LarkAgentX adapter)",
+              "capabilities": [
+                "status",
+                "login",
+                "inbox",
+                "events",
+                "actions"
+              ],
+              "confirm_always": [
+                "larkagentx_send_text"
+              ],
+              "kinds": [
+                "message"
+              ],
+              "kind_descriptions": {
+                "message": "授权会话中授权发送者发来的飞书文本消息"
+              }
+            }
+          ]
+        },
+        "configuration": {
+          "type": "object",
+          "properties": {
+            "login_method": {
+              "type": "string",
+              "title": "登录方式",
+              "enum": [
+                "qr",
+                "import"
+              ],
+              "default": "qr",
+              "description": "qr 在 App 中扫码；import 通过隐藏字段导入上游登录态 JSON。"
+            },
+            "triage_rules": {
+              "type": "string",
+              "title": "分拣规则",
+              "maxLength": 4000,
+              "description": "飞书适配器的条目按什么分「需要你 / 知悉即可 / 噪音」；只对本扩展生效。写 \\n 换行；空着用全局规则。"
+            },
+            "bridge_command": {
+              "type": "string",
+              "title": "伴随机器命令（JSON 数组）",
+              "maxLength": 8192,
+              "description": "用户信任的 SSH 命令 argv；不经过本地 shell，不在参数中放凭证。见扩展文档。hub 不需要 Python。"
+            },
+            "allowed_chats": {
+              "type": "string",
+              "title": "授权会话 ID",
+              "maxLength": 32768,
+              "description": "逗号或换行分隔的精确 ID；不支持通配符，空白则禁止。发送也受此名单限制。"
+            },
+            "allowed_senders": {
+              "type": "string",
+              "title": "授权发送者 ID",
+              "maxLength": 32768,
+              "description": "逗号或换行分隔的精确 ID；收消息必须同时满足会话和发送者白名单，不接收自身回显。"
+            }
+          }
+        }
+      },
+      "tags": [
+        "feishu",
+        "lark",
+        "connector",
+        "experimental"
+      ],
+      "packages": [
+        {
+          "url": "release:larkagentx-v0.1.5/larkagentx-0.1.5.tar.gz",
+          "sha256": "75051b14d7e77017982d7e189ddd005fabbbe2f7ec47e506857b89cef93bf638",
+          "size": 11957961
         }
       ]
     },
@@ -285,7 +384,7 @@
         "manifest_version": 1,
         "id": "linuxdo",
         "name": "LINUX DO",
-        "version": "0.1.1",
+        "version": "0.1.9",
         "description": "LINUX DO 社区的热门帖子：扩展里的一页按你的兴趣看热门、今日 / 本周最热和最新，点开在 App 里读正文和热门回复（hub 去读，手机不用代理）；助手能用工具查热门、读帖子。只读公开内容，不用账号。",
         "publisher": "nwverse",
         "engines": {
@@ -411,9 +510,9 @@
       ],
       "packages": [
         {
-          "url": "release:linuxdo-v0.1.1/linuxdo-0.1.1.tar.gz",
-          "sha256": "858ed2154b89c1fec152c40c9c0615f1eb657b8d0ef5cfb67495918c3cb05a5d",
-          "size": 11895357
+          "url": "release:linuxdo-v0.1.9/linuxdo-0.1.9.tar.gz",
+          "sha256": "d5ff7ea87e27f087c25ebcd7fc6d2d8b79c084f89607f44822f9962bb21761cc",
+          "size": 12128422
         }
       ]
     },
@@ -422,7 +521,7 @@
         "manifest_version": 1,
         "id": "showcase",
         "name": "组件展示",
-        "version": "0.1.0",
+        "version": "0.1.2",
         "description": "扩展界面的每一种组件、每一种状态各一页：文字、数字、进度、行、按钮、链接、输入、图表、Markdown、表格、空状态、加载中；列表的搜索 / 筛选 / 加载更多，列表 → 详情 → 编辑 → 返回，invalidate；外加一张总览卡片、一个小组件和两个快捷指令。给写扩展的人看效果，也给各端做截图对齐。纯本地数据，不出网、不要密钥。",
         "publisher": "nwverse",
         "engines": {
@@ -523,9 +622,9 @@
       ],
       "packages": [
         {
-          "url": "release:showcase-v0.1.0/showcase-0.1.0.tar.gz",
-          "sha256": "5a2635aeb2ab9da24dbf7c3448efd01fbb2f4f5957ff2a725fe39f7b184ce386",
-          "size": 11050745
+          "url": "release:showcase-v0.1.2/showcase-0.1.2.tar.gz",
+          "sha256": "bfb6c93fa69f5c5f7b20deeb9f28aee3daa67a32d8ccd4a82f8baa8462da22b2",
+          "size": 11660520
         }
       ]
     },
@@ -651,7 +750,7 @@
         "manifest_version": 1,
         "id": "telegram",
         "name": "Telegram",
-        "version": "0.1.3",
+        "version": "0.1.14",
         "description": "用你自己的 Telegram 账号（MTProto，hub 直连 Telegram 的数据中心）：App 里的 Telegram 会话，收件箱（私聊、@我），知识库归档，助手的 Telegram 工具和 tg 命令行。发消息、回复、转发、点 reaction、标为已读都先在手机上确认。登录（api_id、api_hash 和会话）加密存在 hub 的数据库里，不在扩展目录。",
         "publisher": "nwverse",
         "engines": {
@@ -740,9 +839,9 @@
       ],
       "packages": [
         {
-          "url": "release:telegram-v0.1.3/telegram-0.1.3.tar.gz",
-          "sha256": "96d121fdc58f13a2bcbcdaea8c5f9f57cbf914b6e9be7054553bcedee76d3454",
-          "size": 21929958
+          "url": "release:telegram-v0.1.14/telegram-0.1.14.tar.gz",
+          "sha256": "6f8f8b20d1bbdb1fb2178e2d33dfc0af0c2179497eb5e2b7ca4cd32830c9f9d1",
+          "size": 22156090
         }
       ]
     }

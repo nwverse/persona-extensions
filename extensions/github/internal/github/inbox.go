@@ -30,12 +30,13 @@ type inboxState struct {
 }
 
 var (
-	pollDefault  = 60 * time.Second   // when GitHub does not say (X-Poll-Interval)
-	fullEvery    = 10 * time.Minute   // read everything now and then: a notification read on GitHub may not change Last-Modified
-	maxDetails   = 30                 // threads read per poll; the rest wait for the next
-	forgetAfter  = 8 * 24 * time.Hour // things kept for the hub to settle its items, like its own inboxForget
-	contextMoves = 8                  // newest comments / reviews in a thing's context
-	reviewPages  = 10                 // pages of a PR's reviews read (100 each)
+	pollDefault       = 60 * time.Second   // when GitHub does not say (X-Poll-Interval)
+	fullEvery         = 10 * time.Minute   // read everything now and then: a notification read on GitHub may not change Last-Modified
+	maxDetails        = 30                 // threads read per poll; the rest wait for the next
+	notificationPages = 10                 // pages of 50 notifications read per poll (GitHub's largest page)
+	forgetAfter       = 8 * 24 * time.Hour // things kept for the hub to settle its items, like its own inboxForget
+	contextMoves      = 8                  // newest comments / reviews in a thing's context
+	reviewPages       = 10                 // pages of a PR's reviews read (100 each)
 )
 
 type notification struct {
@@ -76,7 +77,8 @@ func (c *Connector) Watch(ctx context.Context, changed func(connector.Scope)) er
 }
 
 // poll reads the unread notifications (not at all when nothing changed: 304) and returns how long GitHub wants
-// the next poll to wait and whether a thing changed.
+// the next poll to wait and whether a thing changed. They come 50 to a page, newest first: poll follows the pages
+// up to notificationPages (only the first while requests run low).
 func (c *Connector) poll(ctx context.Context) (time.Duration, bool, error) {
 	st := &c.inbox
 	st.mu.Lock()
@@ -95,6 +97,23 @@ func (c *Connector) poll(ctx context.Context) (time.Duration, bool, error) {
 	if err != nil {
 		return 0, false, err
 	}
+	whole := true // every unread notification read: those not among them can be marked read elsewhere
+	for page, ph := 1, h; code != http.StatusNotModified; page++ {
+		next, more := nextPage(ph, c.api)
+		if !more {
+			break
+		}
+		if next == "" || page == notificationPages || c.ratesLow() {
+			whole = false
+			break
+		}
+		var batch []notification
+		if _, ph, err = c.request(ctx, http.MethodGet, next, nil, nil, &batch); err != nil {
+			whole = false // what was read still comes in; the rest next time
+			break
+		}
+		ns = append(ns, batch...)
+	}
 	wait := pollDefault
 	if s, err := strconv.Atoi(h.Get("X-Poll-Interval")); err == nil && s > 0 {
 		wait = time.Duration(s) * time.Second
@@ -108,16 +127,16 @@ func (c *Connector) poll(ctx context.Context) (time.Duration, bool, error) {
 		st.fullAt = time.Now()
 	}
 	st.mu.Unlock()
-	moved := c.applyNotifications(ctx, ns, time.Now())
+	moved := c.applyNotifications(ctx, ns, whole, time.Now())
 	if c.followUpCI(ctx) {
 		moved = true
 	}
 	return wait, moved, nil
 }
 
-// applyNotifications reads the threads that moved (at most maxDetails, none while requests run low) and marks
-// those no longer unread as read elsewhere.
-func (c *Connector) applyNotifications(ctx context.Context, ns []notification, now time.Time) bool {
+// applyNotifications reads the threads that moved (at most maxDetails, none while requests run low) and, when ns
+// is every unread notification (whole), marks those no longer unread as read elsewhere.
+func (c *Connector) applyNotifications(ctx context.Context, ns []notification, whole bool, now time.Time) bool {
 	st := &c.inbox
 	me := c.Status(ctx).Account
 	budget := maxDetails
@@ -194,11 +213,26 @@ func (c *Connector) applyNotifications(ctx context.Context, ns []notification, n
 		switch {
 		case now.Sub(t.At) > forgetAfter:
 			delete(st.things, thread)
-		case !unread[thread] && !t.Read && t.Done == "":
+		case whole && !unread[thread] && !t.Read && t.Done == "":
 			t.Read, moved = true, true
 		}
 	}
 	return moved
+}
+
+var linkNext = regexp.MustCompile(`<([^>]+)>;\s*rel="next"`)
+
+// nextPage is the path of the next page a list answer's Link header names, and whether it names one. A next page
+// outside api (not GitHub's own) is not followed: "", true.
+func nextPage(h http.Header, api string) (string, bool) {
+	m := linkNext.FindStringSubmatch(h.Get("Link"))
+	if m == nil {
+		return "", false
+	}
+	if !strings.HasPrefix(m[1], api+"/") {
+		return "", true
+	}
+	return strings.TrimPrefix(m[1], api), true
 }
 
 // tagsOf is what a notification's thing is about: its repository, who made the newest move (a person's PR / issue
@@ -242,16 +276,22 @@ func classify(n notification) (kind, label string) {
 	return "", ""
 }
 
-var subjectURL = regexp.MustCompile(`/repos/([^/]+/[^/]+)/(?:issues|pulls)/(\d+)$`)
+var (
+	subjectURL = regexp.MustCompile(`/repos/([^/]+/[^/]+)/(?:issues|pulls)/(\d+)$`)
+	commitURL  = regexp.MustCompile(`/repos/[^/]+/[^/]+/commits/([0-9a-fA-F]+)$`)
+)
 
 // threadOf is the PR / issue a notification is about ("example-org/example-repo#12"), so a review request and an @
-// on the same PR are one thing; anything else is its own notification.
+// on the same PR are one thing; anything else (a Discussion, a commit) is its own notification. These are not
+// "notification:<id>": that is what CI items were before they were merged per branch, and Settle closes those.
 func threadOf(n notification) string {
 	if m := subjectURL.FindStringSubmatch(n.Subject.URL); m != nil {
 		return m[1] + "#" + m[2]
 	}
-	return "notification:" + n.ID
+	return subjectThread(n.Repository.FullName, n.ID)
 }
+
+func subjectThread(repo, id string) string { return "subject:" + repo + "@" + id }
 
 // move is a comment or a review, for the preview and the context.
 type move struct {
@@ -269,9 +309,16 @@ func isBot(u user) bool { return u.Type == "Bot" || strings.HasSuffix(u.Login, "
 func (c *Connector) describe(ctx context.Context, n notification, me string) (connector.InboxThing, error) {
 	t := connector.InboxThing{Title: n.Subject.Title, At: n.UpdatedAt}
 	m := subjectURL.FindStringSubmatch(n.Subject.URL)
-	if m == nil { // a CI run: there is nothing to read or answer, only the failure to look at
-		t.Sender, t.Preview, t.URL = "GitHub Actions", n.Subject.Title, n.Repository.HTMLURL+"/actions"
-		t.Context = fmt.Sprintf("仓库 %s 的 CI（GitHub Actions）：%s", n.Repository.FullName, n.Subject.Title)
+	if m == nil { // a Discussion (GitHub gives no URL for it), a commit, a release: only its title to show
+		t.Preview, t.URL = n.Subject.Title, n.Repository.HTMLURL
+		switch sha := commitURL.FindStringSubmatch(n.Subject.URL); {
+		case n.Subject.Type == "Discussion":
+			t.URL += "/discussions"
+		case sha != nil:
+			t.URL += "/commit/" + sha[1]
+		}
+		t.Context = fmt.Sprintf("GitHub 仓库 %s 的 %s：%s\n%s", n.Repository.FullName, n.Subject.Type, n.Subject.Title, t.URL)
+		t.Tier, t.Why = tierOf(n.Reason, user{}, nil)
 		return t, nil
 	}
 	repo, number := m[1], m[2]
