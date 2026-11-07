@@ -621,6 +621,18 @@ func TestStatistics(t *testing.T) {
 	contains(t, got, "按周", "- 从电网用电（sensor.grid_import）：30.75 kWh", "## 各设备\n- sensor.ac_energy（sensor.ac_energy）：9 kWh\n- 冰箱（sensor.fridge_energy）：1 kWh",
 		"## 每周的从电网用电", "12-02 起的一周：10.5 kWh")
 	contains(t, callT(t, a, id+"_energy", map[string]any{"period": "hour", "start": "2025-11-01", "end": "2025-12-01"}), "ERR 按小时最多 14 天")
+
+	// by hour, 14 days on a calendar with clock changes: 337 hours across the autumn one
+	berlin, err := time.LoadLocation("Europe/Berlin")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.mu.Lock()
+	a.tz = berlin
+	a.mu.Unlock()
+	contains(t, callT(t, a, id+"_statistics", map[string]any{"entity_id": "sensor.grid_import", "period": "hour", "start": "2025-10-20", "end": "2025-11-03"}), "2025-10-20 到 2025-11-03，按小时")
+	contains(t, callT(t, a, id+"_statistics", map[string]any{"entity_id": "sensor.grid_import", "period": "hour", "start": "2025-10-20", "end": "2025-11-03 01:00"}), "ERR 按小时最多 14 天")
+	contains(t, callT(t, a, id+"_energy", map[string]any{"period": "hour", "days": 14}), "按小时（时区 Europe/Berlin）")
 }
 
 // ---- 6. speakers ----

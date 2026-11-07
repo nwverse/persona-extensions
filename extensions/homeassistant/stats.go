@@ -112,7 +112,8 @@ func (s *statArgs) span(loc *time.Location) (time.Time, time.Time, error) {
 	if err != nil {
 		return time.Time{}, time.Time{}, err
 	}
-	if s.Period == "hour" && to.Sub(from) > 14*24*time.Hour {
+	// 14 days on the hub's calendar too: those across the autumn clock change are 337 hours
+	if s.Period == "hour" && to.Sub(from) > 14*24*time.Hour && to.After(from.In(loc).AddDate(0, 0, 14)) {
 		return time.Time{}, time.Time{}, fmt.Errorf("按小时最多 14 天；更长的用 day、week 或 month")
 	}
 	return from, to, nil
