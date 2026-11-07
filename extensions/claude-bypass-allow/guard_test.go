@@ -88,6 +88,8 @@ func TestPersonOnly(t *testing.T) {
 		"sudo env GIT_EDITOR='rm -rf v' git commit", "env -u X GIT_PAGER='rm -rf v' git log",
 		"export GIT_SSH_COMMAND='rm -rf v'; git fetch", "declare -x GIT_EDITOR='rm -rf v' && git commit",
 		"GIT_SSH_COMMAND='rm -rf v' Git fetch", "ENV GIT_EDITOR='rm -rf v' git commit",
+		"GIT_SSH_COMMAND+='rm -rf v' git fetch", "GIT_EDITOR+='rm -rf v' git commit", "env VISUAL+='rm -rf v' git commit",
+		"export GIT_SSH_COMMAND+='rm -rf v'; git fetch", "declare GIT_PAGER+='rm -rf v'; git log",
 		// git global options that take the next word as their value, and -c aliases without ! (git arguments)
 		"git --namespace x clean -fdx", "git --namespace x reset --hard", "git --namespace x push --force origin main",
 		"git --config-env core.x=Y clean -fdx", "git --attr-source HEAD clean -fdx", "git --super-prefix x/ rm -r d",
@@ -186,7 +188,7 @@ func TestPersonOnly(t *testing.T) {
 		"git -c alias.l='log --oneline' l -5", "git -c alias.x=clean status",
 		"git -c user.name='A B' commit -m x", "git -c core.pager='less -R' log", "git -c core.sshCommand='ssh -i k' fetch",
 		"GIT_SSH_COMMAND='ssh -i k' git fetch", "GIT_EDITOR=vim git commit", "env GIT_PAGER='less -R' git log",
-		"export GIT_SSH_COMMAND='ssh -i k'; git fetch",
+		"export GIT_SSH_COMMAND='ssh -i k'; git fetch", "GIT_SSH_COMMAND+=' -v' git fetch",
 		// a heredoc fed to sudo without its shell options is data, and a benign command in another shell still goes
 		"sudo -u me cat <<EOF\nrm x\nEOF", "sudo -g staff -E cat <<EOF\nrm x\nEOF", "csh -c 'ls -la'", "tcsh <<EOF\necho hi\nEOF",
 	}

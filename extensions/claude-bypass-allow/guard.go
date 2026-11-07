@@ -755,7 +755,8 @@ var wrappers = map[string]bool{
 
 // commandVars are environment variables whose value git runs through the shell, like the git -c values
 // gitConfigPersonOnly reads (GIT_SSH_COMMAND is core.sshCommand, GIT_PAGER core.pager); set before the program or
-// after env (GIT_SSH_COMMAND='…' git fetch), or by export and its kin, the value is read as a command.
+// after env (GIT_SSH_COMMAND='…' git fetch), or by export and its kin, the value is read as a command; so is one
+// appended with += (the whole value when the variable was unset).
 var commandVars = map[string]bool{
 	"GIT_SSH_COMMAND": true, "GIT_EDITOR": true, "GIT_SEQUENCE_EDITOR": true, "GIT_EXTERNAL_DIFF": true,
 	"GIT_PAGER": true, "PAGER": true, "EDITOR": true, "VISUAL": true,
@@ -791,7 +792,7 @@ func (g *guard) segmentPersonOnly(words []string, depth int) string {
 func (g *guard) segmentFrom(pre, words []string, depth int) string {
 	first, wrapped := len(pre) == 0, len(pre) > 0
 	for i, w := range words {
-		if name, val, ok := strings.Cut(w, "="); ok && (first || wrapped) && commandVars[name] && depth < 3 {
+		if name, val, ok := strings.Cut(w, "="); ok && (first || wrapped) && commandVars[strings.TrimSuffix(name, "+")] && depth < 3 {
 			if why := g.personOnlyDepth(val, depth+1); why != "" {
 				return why
 			}
@@ -853,7 +854,7 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 			return g.stays(ghPersonOnly(rest))
 		case "export", "declare", "typeset", "readonly", "local": // export GIT_SSH_COMMAND='…'; git fetch
 			for _, a := range rest {
-				if v, val, ok := strings.Cut(a, "="); ok && commandVars[v] && depth < 3 {
+				if v, val, ok := strings.Cut(a, "="); ok && commandVars[strings.TrimSuffix(v, "+")] && depth < 3 {
 					if why := g.personOnlyDepth(val, depth+1); why != "" {
 						return why
 					}
