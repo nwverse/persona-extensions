@@ -71,7 +71,7 @@ func TestScratchDeletions(t *testing.T) {
 		"rm -rf build", "rm -rf ./dist node_modules", "cd sub && rm -f out/*", "rm -rf {project}/build",
 		"X={tmp}/a; rm -rf \"$X\"/b", "X={tmp}/a\nrm -rf \"${X}/b\"", "S={tmp}; for v in a b c; do rm -rf $S/$v; done",
 		"S={tmp}/a && rm -rf $S/b", "rm -rf {root}/r/.claude/worktrees/w", "rm -rf ~/.claude/worktrees/w/sub",
-		"rmdir {tmp}/empty", "unlink {tmp}/f", "sudo rm -rf {tmp}/x", "sudo -u bob rm -rf build", "sudo --user=bob rm -rf build", "sudo --us bob rm -rf build", "sudo -u i rm -rf build", "timeout 10 rm -rf {tmp}/x", "if true; then rm -rf {tmp}/x; fi",
+		"rmdir {tmp}/empty", "unlink {tmp}/f", "sudo rm -rf {tmp}/x", "sudo -u bob rm -rf build", "sudo --user=bob rm -rf build", "sudo --us bob rm -rf build", "sudo -u i rm -rf build", "sudo FOO=bar rm -rf {tmp}/x", "timeout 10 rm -rf {tmp}/x", "if true; then rm -rf {tmp}/x; fi",
 		"mv {tmp}/a {tmp}/b", "mv -t {tmp}/d {tmp}/a", "cp -f {tmp}/a build/b", "echo x > build/out.json", "go test > ~/ag-work/v1/log 2>&1",
 		"tee build/x.log", "truncate -s 0 {tmp}/log", "find {tmp}/x -name '*.o' -delete", "find . -name '*.o' -delete",
 		"find . -name '*.go' -fprint {tmp}/list", "find {tmp}/x -delete -fls {tmp}/x.log",
@@ -119,6 +119,10 @@ func TestScratchDeletions(t *testing.T) {
 		"sudo -R/c rm -rf build", "sudo --chroot /c rm -rf build", "sudo --chroot=/c rm -rf build", "sudo --chr /c rm -rf build",
 		"sudo -a pam -i rm -rf build", "sudo -c staff -i rm -rf build", "sudo --auth-type pam -i rm -rf build",
 		"sudo --login-class staff -i rm -rf build", "sudo --us bob -i rm -rf build",
+		// sudo reads its options after a VAR=value too
+		"sudo FOO=bar -i rm -rf build", "sudo -u root FOO=bar -i rm -rf build", "sudo FOO=bar --login rm -rf build",
+		"sudo FOO=bar -D/etc rm -rf x", "sudo FOO=bar -bD /etc rm -rf x", "sudo FOO=bar --chd /etc rm -rf x",
+		"sudo FOO=bar -R /c rm -rf build", "sudo FOO=bar --chroot /c rm -rf build",
 		"find -L {tmp}/x -delete", "rsync -a --delete src/ host:{tmp}/d",
 		"rsync -a --delete src/ ~/notes/", "rmdir -p {tmp}/a/b", "mv {tmp}/a ~/notes", "cp -f {tmp}/a ~/notes",
 		// what scratch never covers

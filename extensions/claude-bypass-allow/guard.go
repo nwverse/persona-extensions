@@ -47,10 +47,14 @@ func sudoShell(args []string) bool {
 // sudoOption says whether the options after sudo or doas include one of the short letters (alone or combined, as
 // in -iu bob) or long names. A long option counts by any prefix of its name, as sudo reads a shortened one
 // (--chd /etc is --chdir /etc); an ambiguous one makes sudo stop, so counting it only asks more. It reads options up
-// to the first word that is not one, skipping the values of options that take one.
+// to the first word that is not one, skipping the values of options that take one and VAR=value words, which sudo
+// reads options after too (sudo FOO=bar -i).
 func sudoOption(args []string, short string, long ...string) bool {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		if name, _, ok := strings.Cut(a, "="); ok && identifier.MatchString(name) {
+			continue
+		}
 		switch {
 		case a == "--" || !strings.HasPrefix(a, "-") || len(a) < 2:
 			return false
