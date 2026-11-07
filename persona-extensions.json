@@ -8,7 +8,7 @@
         "manifest_version": 1,
         "id": "claude-bypass-allow",
         "name": "Bypass 自动允许",
-        "version": "0.2.20",
+        "version": "0.2.22",
         "description": "Claude Code 开着 bypassPermissions（--dangerously-skip-permissions）时，有些调用仍会弹确认框（如读工作目录外的文件、开子 Agent、某些 Bash），无人值守的 Agent 就卡在「在等你」。在你选的电脑上给 Claude Code 装一个 PermissionRequest hook：只在会话是 bypass 模式时，自动允许 Bash、只读工具（Read、Glob、Grep、LS、NotebookRead）和子 Agent。删除、覆盖数据的 Bash 命令，目标都在临时目录或工作目录里（/tmp、会话的工作目录、~/ag-work、~/wt、Claude Code 的 worktree 等）时直接放行，其余的仍然问你；打开「删除和覆盖也自动允许」就都放行。force push、改权限的 Bash 命令，写文件、Workflow 和 MCP 工具，以及你自己配的 ask / deny 规则，始终问你。每次自动允许都记一条（命令截断、去掉密钥）。别的模式照常问你。",
         "publisher": "nwverse",
         "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/claude-bypass-allow",
@@ -98,9 +98,9 @@
       ],
       "packages": [
         {
-          "url": "release:claude-bypass-allow-v0.2.20/claude-bypass-allow-0.2.20.tar.gz",
-          "sha256": "6e6bab81e0ff35ea4076afc2af670d7bf01bb11ad677e26828a716c7ebe6c606",
-          "size": 12267125
+          "url": "release:claude-bypass-allow-v0.2.22/claude-bypass-allow-0.2.22.tar.gz",
+          "sha256": "983b364734726afe886f69279e8783133fd41ce7b233bc165761d3f5a4d4c288",
+          "size": 12271434
         }
       ]
     },
@@ -291,7 +291,7 @@
         "manifest_version": 1,
         "id": "hackernews",
         "name": "Hacker News",
-        "version": "0.1.0",
+        "version": "0.1.1",
         "description": "Hacker News 的帖子：扩展里的一页看 Top、New、Best、Ask HN 和 Show HN，点开在 App 里读正文和顶层评论（hub 去读，手机不用代理），页面文字跟随 App 的语言；助手能用工具查列表、读帖子。只读公开内容，不用账号。",
         "publisher": "nwverse",
         "engines": {
@@ -397,9 +397,9 @@
       ],
       "packages": [
         {
-          "url": "release:hackernews-v0.1.0/hackernews-0.1.0.tar.gz",
-          "sha256": "cb55374cd61010c8277aa027d74501ca5038234fac935399eb44d62281bb6b84",
-          "size": 12777045
+          "url": "release:hackernews-v0.1.1/hackernews-0.1.1.tar.gz",
+          "sha256": "baf882986d669ec70595c9c803660183a8ce519ad11681fca779db1d74fee90d",
+          "size": 12781008
         }
       ]
     },
@@ -978,7 +978,7 @@
         "manifest_version": 1,
         "id": "sentry",
         "name": "Sentry",
-        "version": "0.1.1",
+        "version": "0.1.2",
         "description": "把 Persona 各端（hub、网页、安卓、之后的 iOS / Mac）的错误和崩溃发到你的 Sentry 项目，方便持续发现和修问题。报告先经 hub 脱敏：不含消息正文、token、用户名、机器名和 IP 地址。填好 DSN 才开始上报；没有填就什么都不发。",
         "publisher": "nwverse",
         "homepage": "https://github.com/nwverse/persona-extensions/blob/main/docs/extensions/sentry.md",
@@ -1057,9 +1057,9 @@
       ],
       "packages": [
         {
-          "url": "release:sentry-v0.1.1/sentry-0.1.1.tar.gz",
-          "sha256": "196c687f7a5311ea55bae251f5d9ff8faaa06fedcd755217e9d266b99362c6ae",
-          "size": 12455193
+          "url": "release:sentry-v0.1.2/sentry-0.1.2.tar.gz",
+          "sha256": "b92c948ac9fca79ed75ea936674283024fa7284ed2794f6c64dbbdca000235ae",
+          "size": 12456271
         }
       ]
     },

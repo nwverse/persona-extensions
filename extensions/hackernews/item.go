@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -213,7 +214,8 @@ var (
 )
 
 // plain turns the site's HTML (paragraphs as <p>, links, <i>, code in <pre><code>) into text: a link becomes its
-// address, since the site shortens long addresses in the link's text.
+// address, since the site shortens long addresses in the link's text. Only line breaks are trimmed at the start: a code
+// block that opens the text keeps its first line's indentation.
 func plain(s string) string {
 	if s == "" {
 		return ""
@@ -225,7 +227,7 @@ func plain(s string) string {
 	s = paraRE.ReplaceAllString(s, "\n\n")
 	s = tagRE.ReplaceAllString(s, "")
 	s = html.UnescapeString(s)
-	return strings.TrimSpace(blankRE.ReplaceAllString(s, "\n\n"))
+	return strings.TrimRightFunc(strings.TrimLeft(blankRE.ReplaceAllString(s, "\n\n"), "\n"), unicode.IsSpace)
 }
 
 // filter is the user's interests: a story shows when its title or domain has one of the keywords (when there are
@@ -270,13 +272,13 @@ func nonEmpty(xs []string) []string {
 	return out
 }
 
-// clip shortens s to n characters, with an ellipsis.
+// clip shortens s to n characters, with an ellipsis; leading spaces (a code line's indentation) stay.
 func clip(s string, n int) string {
 	if utf8.RuneCountInString(s) <= n {
 		return s
 	}
 	r := []rune(s)
-	return strings.TrimSpace(string(r[:n-1])) + "…"
+	return strings.TrimRightFunc(string(r[:n-1]), unicode.IsSpace) + "…"
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
