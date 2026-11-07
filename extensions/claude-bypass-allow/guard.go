@@ -243,7 +243,7 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 				}
 			}
 			if b == "sftp" {
-				if command, ok := sftpServerCommand(kept[i+1:]); ok {
+				for _, command := range sftpServerCommands(kept[i+1:]) {
 					if why := g.nested(kept, command, depth+1); why != "" {
 						return why
 					}
@@ -307,14 +307,16 @@ func sshOptionCommand(w string) (string, bool) {
 	return command, true
 }
 
-// sftpServerCommand returns the value of sftp's -D option, a command and its arguments that sftp runs on this
-// computer as its server: -D command, -Dcommand, and -D in a group of short options (-qD command). It reads options
-// up to the first word that is not one, skipping the values of the options that take one.
-func sftpServerCommand(args []string) (string, bool) {
+// sftpServerCommands returns the values of sftp's -D options, each a command and its arguments that sftp runs on this
+// computer as its server: -D command, -Dcommand, and -D in a group of short options (-qD command). sftp runs the last
+// -D, so every one is read: a harmless -D before a destructive one (sftp -D true -D 'rm -rf /x') asks too. It reads
+// options up to the first word that is not one, skipping the values of the options that take one.
+func sftpServerCommands(args []string) []string {
+	var commands []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		if a == "--" || !strings.HasPrefix(a, "-") || len(a) < 2 {
-			return "", false
+			break
 		}
 		for j := 1; j < len(a); j++ {
 			if strings.IndexByte("BbcDFiJloPRSsX", a[j]) < 0 {
@@ -325,13 +327,13 @@ func sftpServerCommand(args []string) (string, bool) {
 				i++
 				value = args[i]
 			}
-			if a[j] == 'D' {
-				return value, value != ""
+			if a[j] == 'D' && value != "" {
+				commands = append(commands, value)
 			}
 			break
 		}
 	}
-	return "", false
+	return commands
 }
 
 // nested reads a command string that the words run: with no scratch targets when it runs elsewhere (ssh host '…',
