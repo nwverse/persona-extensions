@@ -189,10 +189,10 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 		shell, ssh := false, false
 		for i, w := range kept {
 			b := progName(w)
-			ssh = ssh || b == "ssh" || b == "autossh"
+			ssh = ssh || sshClients[b]
 			shell = shell || shells[b] || ((b == "sudo" || b == "doas") && sudoShell(kept[i+1:]))
 			for _, n := range globMatches(b) {
-				ssh = ssh || n == "ssh" || n == "autossh"
+				ssh = ssh || sshClients[n]
 				shell = shell || shells[n]
 			}
 			if b == "env" {
@@ -206,10 +206,7 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 		}
 		for _, w := range kept {
 			if ssh {
-				// Both -o Key=command and -oKey=command run the value, not the assignment.
-				key, command, ok := strings.Cut(strings.TrimPrefix(w, "-o"), "=")
-				key = strings.TrimSpace(key)
-				if ok && (strings.EqualFold(key, "RemoteCommand") || strings.EqualFold(key, "ProxyCommand")) {
+				if command, ok := sshOptionCommand(w); ok {
 					if why := g.nested(kept, command, depth+1); why != "" {
 						return why
 					}
@@ -240,6 +237,27 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 		}
 	}
 	return ""
+}
+
+// sshClients pass -o options to ssh's config parser.
+var sshClients = map[string]bool{"ssh": true, "autossh": true, "scp": true, "sftp": true}
+
+// sshOptionCommands are the ssh_config keywords whose value ssh runs as a command.
+var sshOptionCommands = map[string]bool{"remotecommand": true, "proxycommand": true, "localcommand": true, "knownhostscommand": true}
+
+// sshOptionCommand returns the command of an -o value that runs one: -o Key=command, -oKey=command, and the
+// "Key command" and "Key = command" spellings ssh_config accepts too.
+func sshOptionCommand(w string) (string, bool) {
+	w = strings.TrimLeft(strings.TrimPrefix(w, "-o"), " \t")
+	i := strings.IndexAny(w, "= \t")
+	if i < 0 || !sshOptionCommands[strings.ToLower(w[:i])] {
+		return "", false
+	}
+	command := strings.TrimLeft(w[i:], " \t")
+	if strings.HasPrefix(command, "=") {
+		command = strings.TrimLeft(command[1:], " \t")
+	}
+	return command, true
 }
 
 // nested reads a command string that the words run: with no scratch targets when it runs elsewhere (ssh host '…',
