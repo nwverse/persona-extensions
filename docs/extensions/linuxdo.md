@@ -33,7 +33,7 @@ The hub fetches and renders the reader content, so the phone does not need its o
 | `hide_pinned` | Hide pinned site announcements; enabled by default. RSS exposes `discourse:topicPinned`; old announcements can otherwise dominate hot lists. |
 | `tz` | Time zone used for timestamps in the view and tools. |
 
-The page can temporarily show everything without interest filters. Tools apply the configured filters by default; set `filtered: false` to bypass them.
+The page can temporarily show everything without interest filters. Tools apply the configured filters by default; set `filtered: false` to bypass them. A `linuxdo_hot` call's `keywords` narrow the configured result further rather than adding to the configured keywords.
 
 ## App view and compatibility
 
@@ -41,7 +41,7 @@ The list selector is segmented on UI version 2 and newer. Earlier apps see four 
 
 Timestamps use the configured `tz`, then the user's time zone supplied by the hub (`tz` in UI version 2 requests), then the hub machine's time zone.
 
-A topic view contains title, author, time, views, likes, posts, participants and tags; body text is capped at 12,000 characters and 200 text items (each code block starts a new item), then a caption points to the website. Code blocks retain code styling and images become textual placeholders. The ten highest-scoring replies from the first 20 posts are shown, followed by actions to open the website or return to the list.
+A topic view contains title, author, time, views, likes, posts, participants and tags; body text is capped at 12,000 characters and 200 text items (each code block starts a new item), then a caption points to the website. Code blocks retain code styling and their indentation, including the first line, and images become textual placeholders. The ten highest-scoring replies from the first 20 posts are shown, followed by actions to open the website or return to the list.
 
 Views follow the host's `plugin.CheckView` limits: at most 300 items per page, 2,000 characters per item text field and HTTPS links only. Tests exercise equivalent validation.
 

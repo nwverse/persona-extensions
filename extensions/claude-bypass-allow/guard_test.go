@@ -57,6 +57,8 @@ func TestPersonOnly(t *testing.T) {
 		// other command wrappers: eval runs its words in this shell, autossh execs ssh, busybox runs its applet
 		"eval rm -rf /x", "eval git push --force", "autossh -M 0 host rm -rf /x",
 		"busybox rm -rf /x", "busybox sh -c 'rm -rf /x'",
+		"toybox rm -rf /x", "torsocks rm -rf /x", "proxychains rm -rf /x", "proxychains4 rm -rf /x",
+		"firejail rm -rf /x", "bwrap --ro-bind / / -- rm -rf /x", "bwrap rm -rf /x",
 		// command runners and wrappers: env -S/--split-string, flock/script/sg/npx -c, trap, coproc, unshare, taskset
 		"env -S 'rm -rf v'", "env --split-string='rm -rf v'", `env -S"rm -rf v"`,
 		"flock /tmp/l -c 'rm -rf v'", "script -qc 'rm -rf v' /dev/null", "script -c 'rm -rf v'",
@@ -78,6 +80,16 @@ func TestPersonOnly(t *testing.T) {
 		`git -c core.editor="sh -c 'rm -rf v'" commit --amend`, "git -c credential.helper='!rm -rf v' fetch",
 		"git bisect run rm -rf v",
 		"git submodule foreach 'rm -rf v'", "git submodule foreach --recursive 'rm -rf v'",
+		// the environment variables git runs through the shell like those -c values, before git or after env
+		"GIT_SSH_COMMAND='rm -rf v' git fetch", "GIT_EDITOR='rm -rf v' git commit --amend",
+		"GIT_SEQUENCE_EDITOR='rm -rf v' git rebase -i HEAD~2", "GIT_EXTERNAL_DIFF='rm -rf v' git diff",
+		"GIT_PAGER='rm -rf v' git -p log", "PAGER='rm -rf v' git log", "EDITOR='rm -rf v' git commit",
+		"FOO=1 VISUAL='rm -rf v' git commit", "env GIT_SSH_COMMAND='rm -rf v' git fetch",
+		"sudo env GIT_EDITOR='rm -rf v' git commit", "env -u X GIT_PAGER='rm -rf v' git log",
+		"export GIT_SSH_COMMAND='rm -rf v'; git fetch", "declare -x GIT_EDITOR='rm -rf v' && git commit",
+		"GIT_SSH_COMMAND='rm -rf v' Git fetch", "ENV GIT_EDITOR='rm -rf v' git commit",
+		"GIT_SSH_COMMAND+='rm -rf v' git fetch", "GIT_EDITOR+='rm -rf v' git commit", "env VISUAL+='rm -rf v' git commit",
+		"export GIT_SSH_COMMAND+='rm -rf v'; git fetch", "declare GIT_PAGER+='rm -rf v'; git log",
 		// git global options that take the next word as their value, and -c aliases without ! (git arguments)
 		"git --namespace x clean -fdx", "git --namespace x reset --hard", "git --namespace x push --force origin main",
 		"git --config-env core.x=Y clean -fdx", "git --attr-source HEAD clean -fdx", "git --super-prefix x/ rm -r d",
@@ -154,6 +166,8 @@ func TestPersonOnly(t *testing.T) {
 		"ssh -L 8080:localhost:80 -N host", "ssh host 'echo chmod 755 in text'",
 		// benign words after the other wrappers still go through (eval "$(ssh-agent)" is a common shell init line)
 		"eval echo hi", "busybox ls -la", "busybox true", "autossh -M 0 host", `eval "$(ssh-agent -s)"`,
+		"toybox ls -la", "torsocks curl -s https://example.com", "proxychains curl -s https://example.com",
+		"proxychains4 curl -s https://example.com", "firejail ls -la", "bwrap --ro-bind / / -- ls -la",
 		// git options that are not shortenings of a destructive one, and a checkout of one branch or commit
 		"git push --dry-run origin x", "git push --porcelain", "git push --progress origin x", "git reset --soft HEAD~1",
 		"git checkout -b feat/x origin/main", "git checkout --orphan new main",
@@ -173,6 +187,8 @@ func TestPersonOnly(t *testing.T) {
 		"git --namespace x status", "git --config-env core.x=Y log", "git -c alias.co=checkout co main",
 		"git -c alias.l='log --oneline' l -5", "git -c alias.x=clean status",
 		"git -c user.name='A B' commit -m x", "git -c core.pager='less -R' log", "git -c core.sshCommand='ssh -i k' fetch",
+		"GIT_SSH_COMMAND='ssh -i k' git fetch", "GIT_EDITOR=vim git commit", "env GIT_PAGER='less -R' git log",
+		"export GIT_SSH_COMMAND='ssh -i k'; git fetch", "GIT_SSH_COMMAND+=' -v' git fetch",
 		// a heredoc fed to sudo without its shell options is data, and a benign command in another shell still goes
 		"sudo -u me cat <<EOF\nrm x\nEOF", "sudo -g staff -E cat <<EOF\nrm x\nEOF", "csh -c 'ls -la'", "tcsh <<EOF\necho hi\nEOF",
 	}
@@ -180,6 +196,56 @@ func TestPersonOnly(t *testing.T) {
 		if why := personOnly(c); why != "" {
 			t.Errorf("%q: %s, should go through", c, why)
 		}
+	}
+}
+
+func TestSSHOptionCommands(t *testing.T) {
+	for _, c := range []struct {
+		command string
+		blocked bool
+	}{
+		{`ssh -o 'RemoteCommand=rm -rf /x' host`, true},
+		{`ssh -o ProxyCommand='rm -rf /x' host`, true},
+		{`ssh -oRemoteCommand='rm -rf /x' host`, true},
+		{`ssh -oProxyCommand='rm -rf /x' host`, true},
+		{`ssh -o 'remotecommand=rm -rf /x' host`, true},
+		{`ssh -o 'PROXYCOMMAND=rm -rf /x' host`, true},
+		{`sudo /usr/bin/ssh -o 'RemoteCommand=rm -rf /x' host`, true},
+		{`autossh -M 0 -o 'ProxyCommand=rm -rf /x' host`, true},
+		{`ssh -o 'ProxyCommand=sh -c "rm -rf /x"' host`, true},
+		{`ssh -o RemoteCommand=rm host`, true},
+		{`ssh -o 'RemoteCommand=rm -rf /tmp/x' host`, true},
+		{`ssh -o 'ProxyCommand rm -rf /x' host`, true},
+		{`ssh -o 'RemoteCommand rm -rf /x' host`, true},
+		{`ssh -o 'ProxyCommand = rm -rf /x' host`, true},
+		{`ssh -o PermitLocalCommand=yes -o 'LocalCommand=rm -rf /x' host`, true},
+		{`ssh -o 'KnownHostsCommand=rm -rf /x' host`, true},
+		{`scp -o 'ProxyCommand=rm -rf /x' a host:b`, true},
+		{`sftp -o 'ProxyCommand=rm -rf /x' host`, true},
+		{`sftp -oProxyCommand='rm -rf /x' host`, true},
+		{`ssh -o '=ProxyCommand=rm -rf /x' host`, true},
+		{`ssh '-o=ProxyCommand=rm -rf /x' host`, true},
+		{`ssh -o ' =ProxyCommand=rm -rf /x' host`, true},
+		{`ssh -o=ProxyCommand="rm -rf /x" host`, true},
+		{`ssh -o '=RemoteCommand=rm -rf /x' host`, true},
+		{`scp '-o=ProxyCommand=rm -rf /x' a host:b`, true},
+		{`ssh -o ConnectTimeout=5 host`, false},
+		{`ssh -oConnectTimeout=5 host`, false},
+		{`ssh -o 'RemoteCommand=ls -la' host`, false},
+		{`ssh -o 'ProxyCommand=nc %h %p' host`, false},
+		{`ssh -o ProxyCommand=none host`, false},
+		{`ssh -o 'ProxyCommand nc %h %p' host`, false},
+		{`scp -o ConnectTimeout=5 a host:b`, false},
+		{`ssh -o=ConnectTimeout=5 host`, false},
+		{`echo 'RemoteCommand=rm -rf /x'`, false},
+	} {
+		t.Run(c.command, func(t *testing.T) {
+			// Remote commands must not inherit the local scratch-directory exemption.
+			g := newGuard("/home/me/project", false)
+			if why := g.personOnly(c.command); (why != "") != c.blocked {
+				t.Errorf("personOnly() = %q, want blocked %v", why, c.blocked)
+			}
+		})
 	}
 }
 

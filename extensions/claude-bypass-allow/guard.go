@@ -186,11 +186,13 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 		if depth >= 3 {
 			continue
 		}
-		shell := false
+		shell, ssh := false, false
 		for i, w := range kept {
 			b := progName(w)
+			ssh = ssh || sshClients[b]
 			shell = shell || shells[b] || ((b == "sudo" || b == "doas") && sudoShell(kept[i+1:]))
 			for _, n := range globMatches(b) {
+				ssh = ssh || sshClients[n]
 				shell = shell || shells[n]
 			}
 			if b == "env" {
@@ -203,6 +205,14 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 			}
 		}
 		for _, w := range kept {
+			if ssh {
+				if command, ok := sshOptionCommand(w); ok {
+					if why := g.nested(kept, command, depth+1); why != "" {
+						return why
+					}
+					continue
+				}
+			}
 			sub := strings.Contains(w, "$(") || strings.Contains(w, "`")
 			if sub || (shell && strings.ContainsAny(w, " \t\n;&|()<>")) {
 				target := w
@@ -227,6 +237,28 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 		}
 	}
 	return ""
+}
+
+// sshClients pass -o options to ssh's config parser.
+var sshClients = map[string]bool{"ssh": true, "autossh": true, "scp": true, "sftp": true}
+
+// sshOptionCommands are the ssh_config keywords whose value ssh runs as a command.
+var sshOptionCommands = map[string]bool{"remotecommand": true, "proxycommand": true, "localcommand": true, "knownhostscommand": true}
+
+// sshOptionCommand returns the command of an -o value that runs one: -o Key=command, -oKey=command, and the
+// "Key command" and "Key = command" spellings ssh_config accepts too. ssh skips an = before the key, so
+// -o=Key=command and -o '=Key=command' run it as well.
+func sshOptionCommand(w string) (string, bool) {
+	w = strings.TrimLeft(strings.TrimPrefix(w, "-o"), "= \t")
+	i := strings.IndexAny(w, "= \t")
+	if i < 0 || !sshOptionCommands[strings.ToLower(w[:i])] {
+		return "", false
+	}
+	command := strings.TrimLeft(w[i:], " \t")
+	if strings.HasPrefix(command, "=") {
+		command = strings.TrimLeft(command[1:], " \t")
+	}
+	return command, true
 }
 
 // nested reads a command string that the words run: with no scratch targets when it runs elsewhere (ssh host '…',
@@ -705,18 +737,29 @@ func isDigits(s string) bool {
 // possible program; shell keywords are here too. ssh runs its unquoted arguments ("ssh host rm -rf x") joined
 // with a space through the remote shell, the way it runs one quoted argument; autossh execs ssh; busybox runs its
 // applet as a program. caffeinate, arch, xcrun, pkexec, nsenter, systemd-run, chrt, numactl, fakeroot, valgrind,
-// ltrace and gdb --args exec the program after their options.
+// ltrace and gdb --args exec the program after their options. toybox runs its applet like busybox; torsocks,
+// proxychains, proxychains4, firejail and bwrap run the wrapped command after their options.
 var wrappers = map[string]bool{
 	"sudo": true, "doas": true, "xargs": true, "parallel": true, "env": true, "nice": true, "ionice": true, "nohup": true,
 	"time": true, "timeout": true, "exec": true, "command": true, "builtin": true, "stdbuf": true, "setsid": true,
 	"flock": true, "chroot": true, "runuser": true, "strace": true, "unbuffer": true, "watch": true, "ssh": true,
 	"autossh": true, "busybox": true, "eval": true,
+	"toybox": true, "torsocks": true, "proxychains": true, "proxychains4": true, "firejail": true, "bwrap": true,
 	"npx": true, "pnpx": true, "bunx": true, "dlx": true, "uvx": true, "pipx": true,
 	"unshare": true, "taskset": true, "coproc": true, "script": true, "sg": true, "trap": true,
 	"caffeinate": true, "arch": true, "xcrun": true, "pkexec": true, "nsenter": true, "systemd-run": true, "chrt": true,
 	"numactl": true, "fakeroot": true, "valgrind": true, "ltrace": true, "--args": true,
 	"-exec": true, "-execdir": true, "-ok": true, "-okdir": true,
 	"do": true, "then": true, "else": true, "elif": true, "if": true, "while": true, "until": true, "!": true,
+}
+
+// commandVars are environment variables whose value git runs through the shell, like the git -c values
+// gitConfigPersonOnly reads (GIT_SSH_COMMAND is core.sshCommand, GIT_PAGER core.pager); set before the program or
+// after env (GIT_SSH_COMMAND='…' git fetch), or by export and its kin, the value is read as a command; so is one
+// appended with += (the whole value when the variable was unset).
+var commandVars = map[string]bool{
+	"GIT_SSH_COMMAND": true, "GIT_EDITOR": true, "GIT_SEQUENCE_EDITOR": true, "GIT_EXTERNAL_DIFF": true,
+	"GIT_PAGER": true, "PAGER": true, "EDITOR": true, "VISUAL": true,
 }
 
 // runners run the program after their run subcommand (uv run rm, poetry run rm), also after options or another
@@ -749,6 +792,11 @@ func (g *guard) segmentPersonOnly(words []string, depth int) string {
 func (g *guard) segmentFrom(pre, words []string, depth int) string {
 	first, wrapped := len(pre) == 0, len(pre) > 0
 	for i, w := range words {
+		if name, val, ok := strings.Cut(w, "="); ok && (first || wrapped) && commandVars[strings.TrimSuffix(name, "+")] && depth < 3 {
+			if why := g.personOnlyDepth(val, depth+1); why != "" {
+				return why
+			}
+		}
 		if first && strings.Contains(w, "=") && !strings.HasPrefix(w, "-") {
 			continue
 		}
@@ -804,9 +852,20 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 			return g.stays(g.gitPersonOnly(rest, depth))
 		case "gh":
 			return g.stays(ghPersonOnly(rest))
+		case "export", "declare", "typeset", "readonly", "local": // export GIT_SSH_COMMAND='…'; git fetch
+			for _, a := range rest {
+				if v, val, ok := strings.Cut(a, "="); ok && commandVars[strings.TrimSuffix(v, "+")] && depth < 3 {
+					if why := g.personOnlyDepth(val, depth+1); why != "" {
+						return why
+					}
+				}
+			}
 		case "find": // what -exec runs is checked as the words after it
 			if has(rest, "-delete") {
 				why = "deletion: find -delete"
+			}
+			if f := findOutputs(rest); f != "" {
+				why = "overwrite: find " + f
 			}
 		case "rsync":
 			if hasPrefix(rest, "--del") || has(rest, "--remove-source-files") {
