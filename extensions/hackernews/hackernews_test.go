@@ -248,7 +248,7 @@ func TestPlain(t *testing.T) {
 		"a<p>b":                            "a\n\nb",
 		"x &amp; y &#x27;z&#x27; <i>w</i>": "x & y 'z' w",
 		`see <a href="https://e.com/full">https://e.com/...</a>`: "see https://e.com/full",
-		"<pre><code>  a\n  b\n</code></pre>":                     "a\n  b",
+		"<pre><code>  a\n  b\n</code></pre>":                     "  a\n  b",
 		"<p><p><p>q":                                             "q",
 	} {
 		if got := plain(in); got != want {
@@ -369,6 +369,42 @@ func TestStaleCopy(t *testing.T) {
 	}
 }
 
+func TestStaleItemCopy(t *testing.T) {
+	ctx := context.Background()
+	f := newFakeSite(t)
+	sample(f)
+	a := testApp(t, f, Config{})
+	if _, err := a.thread(ctx, 1, commentsShow, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := a.stories(ctx, "top", listMost, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{1, 11, 12, 13} { // read 3 hours ago, and the site fails for them from here on
+		old := a.site.cache[itemPath(id)]
+		old.at = old.at.Add(-3 * time.Hour)
+		a.site.cache[itemPath(id)] = old
+		f.set(itemPath(id), "")
+	}
+	res, _ := a.action(ctx, req("en", 3, pageState{List: "top", Story: 1}, "refresh", nil))
+	checkView(t, res.View)
+	if all := joined(res.View); !strings.Contains(all, "This read failed: Hacker News answered HTTP 500. Showing what was read 3h ago") || !strings.Contains(all, "Great news.") {
+		t.Errorf("story page:\n%s", all)
+	}
+	out, err := a.toolItem(ctx, 1, 10)
+	if err != nil || !strings.Contains(out, "(This read failed: Hacker News answered HTTP 500. This is what was read 3h ago.)") || !strings.Contains(out, "- bob (") {
+		t.Errorf("hn_item: %v\n%s", err, out)
+	}
+	// the ids were read just now, story 1 is the older copy: the list is as old as its oldest story
+	v, _ := a.render(ctx, req("en", 3, nil, "", nil))
+	if all := joined(v); !strings.Contains(all, "Showing what was read 3h ago") || !strings.Contains(all, "Read 3h ago") || !strings.Contains(all, "Rust in the kernel") {
+		t.Errorf("list page:\n%s", all)
+	}
+	if st := a.status(); st.State != "error" || !strings.Contains(st.Error, "HTTP 500") {
+		t.Fatalf("status %+v", st)
+	}
+}
+
 func TestStoryPage(t *testing.T) {
 	f := newFakeSite(t)
 	sample(f)
@@ -428,6 +464,36 @@ func TestLongStoryStaysInBounds(t *testing.T) {
 	}
 	if !strings.Contains(joined(v), "First 15 top-level comments of 40") {
 		t.Fatalf("long:\n%s", joined(v))
+	}
+}
+
+// Hacker News sends every line of a code block indented by two or more spaces. The first line keeps them like the
+// others when the code starts a comment or the story's last text item, or a cut ends it.
+func TestCodeBlockKeepsIndentation(t *testing.T) {
+	f := newFakeSite(t)
+	prose := strings.Repeat("Some words of prose. ", 85) + "Extra" // 1,790 characters: the code goes to the last text item
+	f.item(map[string]any{"id": 7, "type": "story", "by": "u", "time": testNow, "title": "Ask HN: YAML?", "descendants": 1, "kids": []int{71},
+		"text": prose + "<p><pre><code>  server:\n    port: 80\n</code></pre>"})
+	f.item(map[string]any{"id": 71, "type": "comment", "by": "c", "time": testNow, "text": "<pre><code>  def f():\n      return 1\n</code></pre>"})
+	a := testApp(t, f, Config{})
+	v, _ := a.render(context.Background(), req("en", 3, pageState{Story: 7}, "", nil))
+	checkView(t, v)
+	var body []string
+	for _, s := range v.Sections {
+		for _, c := range s.Items {
+			if c.Style == wire.TextStyleBody {
+				body = append(body, c.Text)
+			}
+		}
+	}
+	if want := []string{"  server:\n    port: 80", "  def f():\n      return 1"}; len(body) != 3 || !slices.Equal(body[1:], want) {
+		t.Errorf("body items after the prose %q, want %q", body[min(1, len(body)):], want)
+	}
+	if got := chunks("  a:\n    b\n  c:\n    d", 12); !slices.Equal(got, []string{"  a:\n    b", "  c:\n    d"}) {
+		t.Errorf("chunks %q", got)
+	}
+	if got := clip("  a:\n    b", 6); got != "  a:…" {
+		t.Errorf("clip %q", got)
 	}
 }
 

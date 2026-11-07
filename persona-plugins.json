@@ -8,7 +8,7 @@
         "manifest_version": 1,
         "id": "claude-bypass-allow",
         "name": "Bypass 自动允许",
-        "version": "0.2.22",
+        "version": "0.2.23",
         "description": "Claude Code 开着 bypassPermissions（--dangerously-skip-permissions）时，有些调用仍会弹确认框（如读工作目录外的文件、开子 Agent、某些 Bash），无人值守的 Agent 就卡在「在等你」。在你选的电脑上给 Claude Code 装一个 PermissionRequest hook：只在会话是 bypass 模式时，自动允许 Bash、只读工具（Read、Glob、Grep、LS、NotebookRead）和子 Agent。删除、覆盖数据的 Bash 命令，目标都在临时目录或工作目录里（/tmp、会话的工作目录、~/ag-work、~/wt、Claude Code 的 worktree 等）时直接放行，其余的仍然问你；打开「删除和覆盖也自动允许」就都放行。force push、改权限的 Bash 命令，写文件、Workflow 和 MCP 工具，以及你自己配的 ask / deny 规则，始终问你。每次自动允许都记一条（命令截断、去掉密钥）。别的模式照常问你。",
         "publisher": "nwverse",
         "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/claude-bypass-allow",
@@ -98,9 +98,9 @@
       ],
       "packages": [
         {
-          "url": "release:claude-bypass-allow-v0.2.22/claude-bypass-allow-0.2.22.tar.gz",
-          "sha256": "983b364734726afe886f69279e8783133fd41ce7b233bc165761d3f5a4d4c288",
-          "size": 12271434
+          "url": "release:claude-bypass-allow-v0.2.23/claude-bypass-allow-0.2.23.tar.gz",
+          "sha256": "4a9c8bcd2c12b530f73f56499eb0306775e5615a458baedfe06cc8e9901fa417",
+          "size": 12275634
         }
       ]
     },
@@ -291,7 +291,7 @@
         "manifest_version": 1,
         "id": "hackernews",
         "name": "Hacker News",
-        "version": "0.1.0",
+        "version": "0.1.2",
         "description": "Hacker News 的帖子：扩展里的一页看 Top、New、Best、Ask HN 和 Show HN，点开在 App 里读正文和顶层评论（hub 去读，手机不用代理），页面文字跟随 App 的语言；助手能用工具查列表、读帖子。只读公开内容，不用账号。",
         "publisher": "nwverse",
         "engines": {
@@ -397,9 +397,9 @@
       ],
       "packages": [
         {
-          "url": "release:hackernews-v0.1.0/hackernews-0.1.0.tar.gz",
-          "sha256": "cb55374cd61010c8277aa027d74501ca5038234fac935399eb44d62281bb6b84",
-          "size": 12777045
+          "url": "release:hackernews-v0.1.2/hackernews-0.1.2.tar.gz",
+          "sha256": "6f0b698da02bcb2e584889efd526929d6b641faf16707d93d6b997467425061c",
+          "size": 12786318
         }
       ]
     },
@@ -408,7 +408,7 @@
         "manifest_version": 1,
         "id": "homeassistant",
         "name": "Home Assistant",
-        "version": "0.2.2",
+        "version": "0.2.3",
         "description": "接你自己的 Home Assistant：主导航上多一个「家」：总览直接写出每个房间开着什么，房间里按设备列（设备的配置开关收在设备里），灯和开关点一下就开关，点开设备调亮度、空调温度和模式、开关窗帘，看最近 24 小时的变化；「动态」看最近两小时家里的变化，「自动化」运行脚本和场景、启停和触发自动化；助手能查家里的状态、历史、全屋日志、长期统计和能耗，看摄像头画面，列出和运行自动化、脚本，按房间批量操作（跳过设备的配置开关），在音箱上播报，也能新建和修改自动化（每次都在手机上确认，门锁、警戒、改自动化和播报永远要确认）；提醒规则在门开、漏水、设备离线、湿度超标时主动推送到手机或叫助手。用长期访问令牌连 Home Assistant 的 REST 和 WebSocket API。",
         "publisher": "nwverse",
         "engines": {
@@ -517,9 +517,9 @@
       ],
       "packages": [
         {
-          "url": "release:homeassistant-v0.2.2/homeassistant-0.2.2.tar.gz",
-          "sha256": "6a8710d6a8c99a8aef9887c890f63bc1fe4d7889115fd324901c250786edeb4b",
-          "size": 14122727
+          "url": "release:homeassistant-v0.2.3/homeassistant-0.2.3.tar.gz",
+          "sha256": "49dfe4cd8d2791d31e1236b9c4d9f36ab3ef386c433cad3ac08eb11590cf9163",
+          "size": 14213817
         }
       ]
     },
