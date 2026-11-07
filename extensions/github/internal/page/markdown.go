@@ -58,16 +58,16 @@ func cleanMarkdown(text, base, root string) string {
 // them too). An unclosed one runs to the end, as GitHub draws it. Whether a <!-- is code is read from all the text
 // kept before it, so fences before a <!-- kept as code still count.
 func dropComments(text string) string {
-	var out strings.Builder
+	var out keptText
 	for {
 		i := strings.Index(text, "<!--")
 		if i < 0 {
-			out.WriteString(text)
+			out.add(text)
 			return out.String()
 		}
-		out.WriteString(text[:i])
-		if inCode(out.String()) { // the <!-- is code: keep it, go on after it
-			out.WriteString("<!--")
+		out.add(text[:i])
+		if out.inCode() { // the <!-- is code: keep it, go on after it
+			out.add("<!--")
 			text = text[i+4:]
 			continue
 		}
@@ -79,20 +79,44 @@ func dropComments(text string) string {
 	}
 }
 
-// inCode says whether the end of before is inside a fenced block or an inline code span.
-func inCode(before string) bool {
-	fences := 0
-	for _, line := range strings.Split(before, "\n") {
-		t := strings.TrimLeft(line, " ")
-		if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
-			fences++
+// keptText is the text dropComments keeps, with what says whether its end is code counted as it is written, so asking
+// costs nothing more than the text added since (not a rescan of everything kept for every <!--).
+type keptText struct {
+	strings.Builder
+	fences int // fence lines (``` or ~~~) before the current line
+	ticks  int // backticks on the current line
+	line   int // where the current line starts
+}
+
+func (k *keptText) add(s string) {
+	from := k.Len()
+	k.WriteString(s)
+	all := k.String()
+	for p := from; p < len(all); p++ {
+		switch all[p] {
+		case '`':
+			k.ticks++
+		case '\n':
+			if isFence(all[k.line:p]) {
+				k.fences++
+			}
+			k.ticks, k.line = 0, p+1
 		}
 	}
-	if fences%2 == 1 {
-		return true
+}
+
+// inCode says whether the end of the kept text is inside a fenced block or an inline code span.
+func (k *keptText) inCode() bool {
+	fences := k.fences
+	if isFence(k.String()[k.line:]) {
+		fences++
 	}
-	last := before[strings.LastIndex(before, "\n")+1:]
-	return strings.Count(last, "`")%2 == 1
+	return fences%2 == 1 || k.ticks%2 == 1
+}
+
+func isFence(line string) bool {
+	t := strings.TrimLeft(line, " ")
+	return strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~")
 }
 
 func cleanProse(s, base, root string, defs map[string]string) string {
@@ -184,6 +208,21 @@ func absolute(target, base, root string) (string, bool) {
 	return u.String(), true
 }
 
+// blobRoot is a repository's blob URL at ref, ending in "/": the base a file's links resolve against. ref goes in
+// escaped segment by segment (a branch may hold #, ? or %), as the API's paths are.
+func blobRoot(web, repo, ref string) string {
+	return web + "/" + repo + "/blob/" + escapeSegments(ref) + "/"
+}
+
+// escapeSegments is p with each "/"-separated segment path-escaped.
+func escapeSegments(p string) string {
+	parts := strings.Split(p, "/")
+	for i, s := range parts {
+		parts[i] = url.PathEscape(s)
+	}
+	return strings.Join(parts, "/")
+}
+
 // markdownItem is text as a markdown component (cleaned, cut to most); an app before UI version 3 gets the text.
 func markdownItem(r *ext.UIRequest, key, text, base string, most int) wire.Component {
 	return markdownAt(r, key, text, base, "", most)
@@ -205,7 +244,7 @@ func markdownAt(r *ext.UIRequest, key, text, base, root string, most int) wire.C
 // anything else as code.
 func fileBody(r *ext.UIRequest, name, text, root string, src bool, most int) []wire.Component {
 	if isMarkdown(name) && !src {
-		return []wire.Component{markdownAt(r, "readme", text, root+parentDir(name), root, most)}
+		return []wire.Component{markdownAt(r, "readme", text, root+escapeSegments(parentDir(name)), root, most)}
 	}
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
 	return codeBlocks(r, "readme", language(name), lines, 1)
