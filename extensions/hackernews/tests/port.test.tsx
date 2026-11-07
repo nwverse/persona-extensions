@@ -355,6 +355,6 @@ test("service replacement publishes loading rather than the previous service's d
 });
 test("manifest stays transitional, unchanged version and read-only egress", async () => {
   const manifest = JSON.parse(await readFile("persona-extension.json", "utf8"));
-  assert.equal(manifest.version, "0.1.1"); assert.deepEqual(manifest.permissions.network, ["hacker-news.firebaseio.com"]);
+  assert.equal(manifest.version, "0.1.2"); assert.deepEqual(manifest.permissions.network, ["hacker-news.firebaseio.com"]);
   assert.ok(manifest.runtime.command); assert.equal(manifest.runtime.source, undefined);
 });
