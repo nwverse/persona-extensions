@@ -1,4 +1,5 @@
 # Persona Extensions
+<!-- Required CI validation; no product content changes. -->
 
 [简体中文](README.zh-CN.md)
 
