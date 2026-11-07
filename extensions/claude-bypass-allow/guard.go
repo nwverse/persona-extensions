@@ -3,6 +3,7 @@ package main
 import (
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"unicode"
 )
@@ -38,13 +39,19 @@ var shells = map[string]bool{"bash": true, "sh": true, "zsh": true, "dash": true
 	"flock": true, "script": true, "sg": true, "npx": true, "trap": true, "coproc": true}
 
 // sudoShell says whether the options after sudo or doas start a shell (-s/--shell, -i/--login), which runs a
-// quoted argument or its input as commands. It reads options up to the first word that is not one, skipping the
-// values of options that take one.
+// quoted argument or its input as commands.
 func sudoShell(args []string) bool {
+	return sudoOption(args, "si", "--shell", "--login")
+}
+
+// sudoOption says whether the options after sudo or doas include one of the short letters (alone or combined, as
+// in -iu bob) or long names. It reads options up to the first word that is not one, skipping the values of options
+// that take one.
+func sudoOption(args []string, short string, long ...string) bool {
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
-		case a == "--shell" || a == "--login":
+		case slices.Contains(long, a):
 			return true
 		case a == "--" || !strings.HasPrefix(a, "-") || len(a) < 2:
 			return false
@@ -55,7 +62,7 @@ func sudoShell(args []string) bool {
 			continue
 		}
 		for j := 1; j < len(a); j++ {
-			if a[j] == 's' || a[j] == 'i' {
+			if strings.IndexByte(short, a[j]) >= 0 {
 				return true
 			}
 			if strings.IndexByte("CDghpRrTtUu", a[j]) >= 0 { // the rest of the word, or the next one, is its value
