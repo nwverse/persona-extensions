@@ -242,6 +242,13 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 					}
 				}
 			}
+			if b == "sftp" {
+				if command, ok := sftpServerCommand(kept[i+1:]); ok {
+					if why := g.nested(kept, command, depth+1); why != "" {
+						return why
+					}
+				}
+			}
 		}
 		for _, w := range kept {
 			if ssh {
@@ -298,6 +305,33 @@ func sshOptionCommand(w string) (string, bool) {
 		command = strings.TrimLeft(command[1:], " \t")
 	}
 	return command, true
+}
+
+// sftpServerCommand returns the value of sftp's -D option, a command and its arguments that sftp runs on this
+// computer as its server: -D command, -Dcommand, and -D in a group of short options (-qD command). It reads options
+// up to the first word that is not one, skipping the values of the options that take one.
+func sftpServerCommand(args []string) (string, bool) {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if a == "--" || !strings.HasPrefix(a, "-") || len(a) < 2 {
+			return "", false
+		}
+		for j := 1; j < len(a); j++ {
+			if strings.IndexByte("BbcDFiJloPRSsX", a[j]) < 0 {
+				continue
+			}
+			value := a[j+1:]
+			if value == "" && i+1 < len(args) { // -D command: the next word is its value
+				i++
+				value = args[i]
+			}
+			if a[j] == 'D' {
+				return value, value != ""
+			}
+			break
+		}
+	}
+	return "", false
 }
 
 // nested reads a command string that the words run: with no scratch targets when it runs elsewhere (ssh host '…',
