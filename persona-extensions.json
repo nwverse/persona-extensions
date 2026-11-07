@@ -8,7 +8,7 @@
         "manifest_version": 1,
         "id": "claude-bypass-allow",
         "name": "Bypass 自动允许",
-        "version": "0.2.18",
+        "version": "0.2.19",
         "description": "Claude Code 开着 bypassPermissions（--dangerously-skip-permissions）时，有些调用仍会弹确认框（如读工作目录外的文件、开子 Agent、某些 Bash），无人值守的 Agent 就卡在「在等你」。在你选的电脑上给 Claude Code 装一个 PermissionRequest hook：只在会话是 bypass 模式时，自动允许 Bash、只读工具（Read、Glob、Grep、LS、NotebookRead）和子 Agent。删除、覆盖数据的 Bash 命令，目标都在临时目录或工作目录里（/tmp、会话的工作目录、~/ag-work、~/wt、Claude Code 的 worktree 等）时直接放行，其余的仍然问你；打开「删除和覆盖也自动允许」就都放行。force push、改权限的 Bash 命令，写文件、Workflow 和 MCP 工具，以及你自己配的 ask / deny 规则，始终问你。每次自动允许都记一条（命令截断、去掉密钥）。别的模式照常问你。",
         "publisher": "nwverse",
         "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/claude-bypass-allow",
@@ -98,9 +98,9 @@
       ],
       "packages": [
         {
-          "url": "release:claude-bypass-allow-v0.2.18/claude-bypass-allow-0.2.18.tar.gz",
-          "sha256": "62ae6fcda0588a770d0ce05867d090585218ad70725bca3a54d11c9220841ba0",
-          "size": 12249607
+          "url": "release:claude-bypass-allow-v0.2.19/claude-bypass-allow-0.2.19.tar.gz",
+          "sha256": "8e93197939ffc6ed8e89441a09ed4ee07d56d82a0dedb829e1aaa451e29174e1",
+          "size": 12253576
         }
       ]
     },
@@ -283,6 +283,123 @@
           "url": "release:github-v0.4.18/github-0.4.18.tar.gz",
           "sha256": "2fe84beda73e26365ec1618ca20c3fadc6c11319973976c383d873faed7547f5",
           "size": 13699468
+        }
+      ]
+    },
+    {
+      "manifest": {
+        "manifest_version": 1,
+        "id": "hackernews",
+        "name": "Hacker News",
+        "version": "0.1.0",
+        "description": "Hacker News 的帖子：扩展里的一页看 Top、New、Best、Ask HN 和 Show HN，点开在 App 里读正文和顶层评论（hub 去读，手机不用代理），页面文字跟随 App 的语言；助手能用工具查列表、读帖子。只读公开内容，不用账号。",
+        "publisher": "nwverse",
+        "engines": {
+          "plugin_protocol": 1
+        },
+        "runtime": {
+          "command": {
+            "linux-amd64": "bin/hackernews-linux-amd64",
+            "linux-arm64": "bin/hackernews-linux-arm64",
+            "darwin-arm64": "bin/hackernews-darwin-arm64",
+            "darwin-amd64": "bin/hackernews-darwin-amd64"
+          }
+        },
+        "contributes": {
+          "connectors": [
+            {
+              "id": "hackernews",
+              "name": "Hacker News",
+              "capabilities": [
+                "status",
+                "tools"
+              ],
+              "hosts": [
+                "news.ycombinator.com"
+              ]
+            }
+          ],
+          "ui": [
+            {
+              "id": "stories",
+              "title": "Hacker News",
+              "placement": "plugin_page"
+            }
+          ]
+        },
+        "configuration": {
+          "type": "object",
+          "properties": {
+            "list": {
+              "type": "string",
+              "title": "打开时看",
+              "default": "top",
+              "oneOf": [
+                {
+                  "const": "top",
+                  "title": "Top"
+                },
+                {
+                  "const": "new",
+                  "title": "New"
+                },
+                {
+                  "const": "best",
+                  "title": "Best"
+                },
+                {
+                  "const": "ask",
+                  "title": "Ask HN"
+                },
+                {
+                  "const": "show",
+                  "title": "Show HN"
+                }
+              ]
+            },
+            "keywords": {
+              "type": "array",
+              "title": "关键词",
+              "description": "标题或网站域名里有其中一个才显示（不分大小写）；空着不限",
+              "items": {
+                "type": "string"
+              }
+            },
+            "exclude_keywords": {
+              "type": "array",
+              "title": "屏蔽词",
+              "description": "标题或网站域名里有其中一个就不显示",
+              "items": {
+                "type": "string"
+              }
+            },
+            "min_score": {
+              "type": "integer",
+              "title": "最低分数",
+              "description": "分数（points）低于这个的不显示；0 不限",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        },
+        "permissions": {
+          "network": [
+            "hacker-news.firebaseio.com"
+          ]
+        }
+      },
+      "tags": [
+        "社区",
+        "热门",
+        "阅读",
+        "英文",
+        "技术"
+      ],
+      "packages": [
+        {
+          "url": "release:hackernews-v0.1.0/hackernews-0.1.0.tar.gz",
+          "sha256": "cb55374cd61010c8277aa027d74501ca5038234fac935399eb44d62281bb6b84",
+          "size": 12777045
         }
       ]
     },
@@ -510,7 +627,7 @@
         "manifest_version": 1,
         "id": "linuxdo",
         "name": "LINUX DO",
-        "version": "0.1.13",
+        "version": "0.1.14",
         "description": "LINUX DO 社区的热门帖子：扩展里的一页按你的兴趣看热门、今日 / 本周最热和最新，点开在 App 里读正文和热门回复（hub 去读，手机不用代理）；助手能用工具查热门、读帖子。只读公开内容，不用账号。",
         "publisher": "nwverse",
         "engines": {
@@ -636,9 +753,9 @@
       ],
       "packages": [
         {
-          "url": "release:linuxdo-v0.1.13/linuxdo-0.1.13.tar.gz",
-          "sha256": "fe5bcf03e12de80647fb56b8636613cd756ef91d196137432679dc7791f1b180",
-          "size": 12218818
+          "url": "release:linuxdo-v0.1.14/linuxdo-0.1.14.tar.gz",
+          "sha256": "82718191bc53f2a889cae12fcb2cbe62cbdfad144227cc7cd2b35fa5fbf01f18",
+          "size": 12217994
         }
       ]
     },
@@ -1180,7 +1297,7 @@
         "manifest_version": 1,
         "id": "telegram",
         "name": "Telegram",
-        "version": "0.1.22",
+        "version": "0.1.23",
         "description": "用你自己的 Telegram 账号（MTProto，hub 连 Telegram 的数据中心；hub 的环境设了 HTTPS_PROXY 时经它的 HTTP CONNECT 隧道）：App 里的 Telegram 会话，收件箱（私聊、@我），知识库归档，助手的 Telegram 工具和 tg 命令行。发消息、回复、转发、点 reaction、标为已读都先在手机上确认。登录（api_id、api_hash 和会话）加密存在 hub 的数据库里，不在扩展目录。",
         "publisher": "nwverse",
         "engines": {
@@ -1269,9 +1386,9 @@
       ],
       "packages": [
         {
-          "url": "release:telegram-v0.1.22/telegram-0.1.22.tar.gz",
-          "sha256": "e36922e663a89ab6739523b00e7feda8ac32ff554be0de154b38de10ae50afbc",
-          "size": 22350697
+          "url": "release:telegram-v0.1.23/telegram-0.1.23.tar.gz",
+          "sha256": "681db0159f8cd6f18fda75b1dd1d738699f96fa9395f739c1ffc67dd3e860f89",
+          "size": 22354973
         }
       ]
     },
