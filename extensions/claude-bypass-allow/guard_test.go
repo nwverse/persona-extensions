@@ -207,6 +207,12 @@ func TestSSHOptionCommands(t *testing.T) {
 		{`scp -o 'ProxyCommand=rm -rf /x' a host:b`, true},
 		{`sftp -o 'ProxyCommand=rm -rf /x' host`, true},
 		{`sftp -oProxyCommand='rm -rf /x' host`, true},
+		{`ssh -o '=ProxyCommand=rm -rf /x' host`, true},
+		{`ssh '-o=ProxyCommand=rm -rf /x' host`, true},
+		{`ssh -o ' =ProxyCommand=rm -rf /x' host`, true},
+		{`ssh -o=ProxyCommand="rm -rf /x" host`, true},
+		{`ssh -o '=RemoteCommand=rm -rf /x' host`, true},
+		{`scp '-o=ProxyCommand=rm -rf /x' a host:b`, true},
 		{`ssh -o ConnectTimeout=5 host`, false},
 		{`ssh -oConnectTimeout=5 host`, false},
 		{`ssh -o 'RemoteCommand=ls -la' host`, false},
@@ -214,6 +220,7 @@ func TestSSHOptionCommands(t *testing.T) {
 		{`ssh -o ProxyCommand=none host`, false},
 		{`ssh -o 'ProxyCommand nc %h %p' host`, false},
 		{`scp -o ConnectTimeout=5 a host:b`, false},
+		{`ssh -o=ConnectTimeout=5 host`, false},
 		{`echo 'RemoteCommand=rm -rf /x'`, false},
 	} {
 		t.Run(c.command, func(t *testing.T) {

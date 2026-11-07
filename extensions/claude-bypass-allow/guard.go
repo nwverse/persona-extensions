@@ -246,9 +246,10 @@ var sshClients = map[string]bool{"ssh": true, "autossh": true, "scp": true, "sft
 var sshOptionCommands = map[string]bool{"remotecommand": true, "proxycommand": true, "localcommand": true, "knownhostscommand": true}
 
 // sshOptionCommand returns the command of an -o value that runs one: -o Key=command, -oKey=command, and the
-// "Key command" and "Key = command" spellings ssh_config accepts too.
+// "Key command" and "Key = command" spellings ssh_config accepts too. ssh skips an = before the key, so
+// -o=Key=command and -o '=Key=command' run it as well.
 func sshOptionCommand(w string) (string, bool) {
-	w = strings.TrimLeft(strings.TrimPrefix(w, "-o"), " \t")
+	w = strings.TrimLeft(strings.TrimPrefix(w, "-o"), "= \t")
 	i := strings.IndexAny(w, "= \t")
 	if i < 0 || !sshOptionCommands[strings.ToLower(w[:i])] {
 		return "", false
