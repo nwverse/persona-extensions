@@ -103,17 +103,17 @@ Run the original decoder/formatter/duration controls with an installed Go 1.27.1
 (no downloads). `scripts/original-round4.mjs` requires absolute `LINUXDO_GO` and `GOROOT` paths and runs the
 unchanged second/third-round oracles plus the zero-time, oversized-topic, RSS and raw-tool controls.
 These Go overlays require the original Go checkout; the source archive contains only TypeScript authoring files
-and the unchanged relative SDK dependency. A cold archive rebuild uses a separate HOME, npm user/global config
-and download cache, all with the public registry. Only run that mode where changing HOME is authorized:
+and the unchanged relative SDK dependency. They are separate from the authoring rebuild:
 
 ```sh
 node scripts/original-round4.mjs
-python3 -I scripts/cold-rebuild.py
 ```
 
-Where HOME cannot be changed, `python3 -I scripts/cold-rebuild.py --config-only` performs an explicitly weaker
-extraction/config/cache check, preserving the caller's HOME. It is not fresh-HOME proof. Both modes run the full
-suite and preserve a failed gate's logs; neither retries, skips cases or increases a budget.
+The [registered CI profile](source-rebuild.json) and committed `source-reference/bundle.mjs` let a fresh
+GitHub-hosted runner rebuild isolated source, then the extracted standalone archive, and compare both bundles
+byte-for-byte. A successful hosted source-rebuild job is the maintainer-approved fresh-HOME proof and is required
+by `CI required`. It is not yet claimed passed here. A local fresh-HOME rebuild is not a merge requirement;
+local HOME/permission restrictions are unchanged and are never bypassed through config-only mode, peers or wrappers.
 
 The original gone-cache retention, null-post handling, hidden-first-post selection, empty-feed behavior for no valid
 links, and title double decoding are inherited and unchanged. They are not reported as new migration bugs or removed
