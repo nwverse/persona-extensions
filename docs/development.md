@@ -86,6 +86,8 @@ Each new executable source migration registers `extensions/<id>/source-rebuild.j
 
 The maintainer's merge policy accepts the successful hosted job as fresh-HOME proof. A local fresh-HOME rebuild is not required and local permission restrictions remain unchanged: do not substitute HOME, use a peer or wrapper, or relabel a weaker local check as that proof. Hosted rebuilding proves contained authoring and bundle reproducibility, not installed-hub behavior, production sandbox isolation, source default publication or catalog signing.
 
+Credential-negative lock fixtures use synthetic `URL.username` and `URL.password` values on the approved public registry origin. Assert that origin and retain the credential-rejection check, so an unrelated bad hostname cannot make the control pass. Do not add privacy exceptions, change the lock policy, or encode/split real private values to get them through a scan.
+
 ## Documentation checks
 
 ```sh

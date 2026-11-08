@@ -317,7 +317,13 @@ test("public lock provenance rejects private sources, credentials and unapproved
   assert.deepEqual(await verifyPublicLock("build/package/sdk/ts/package-lock.json", null), { packages: 8, publicResolved: 7, localSDKLinks: 0 });
   const dir = await mkdtemp(resolve("build/tests/lock-")), path = resolve(dir, "package-lock.json");
   try {
-    for (const resolved of ["https://registry.example.invalid/entities/-/entities-6.0.1.tgz", "https://fixture:fixture@registry.npmjs.org/entities/-/entities-6.0.1.tgz", "https://registry.npmjs.org/entities/-/entities-6.0.1.tgz?token=fixture", "http://registry.npmjs.org/entities/-/entities-6.0.1.tgz", "../unapproved-sdk"]) {
+    const credentialSource = new URL("https://registry.npmjs.org/entities/-/entities-6.0.1.tgz");
+    credentialSource.username = "fixture";
+    credentialSource.password = "fixture";
+    assert.equal(credentialSource.origin, "https://registry.npmjs.org");
+    assert.equal(credentialSource.username, "fixture");
+    assert.equal(credentialSource.password, "fixture");
+    for (const resolved of ["https://registry.example.invalid/entities/-/entities-6.0.1.tgz", credentialSource.href, "https://registry.npmjs.org/entities/-/entities-6.0.1.tgz?token=fixture", "http://registry.npmjs.org/entities/-/entities-6.0.1.tgz", "../unapproved-sdk"]) {
       const lock = structuredClone(original); lock.packages["node_modules/entities"].resolved = resolved;
       await writeFile(path, JSON.stringify(lock)); await assert.rejects(verifyPublicLock(path));
     }
