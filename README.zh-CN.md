@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-Persona 的公开扩展：接入数据源，为助手添加工具和技能，并贡献由各端 App 渲染的界面。本仓库也是一个扩展市场，版本化安装包发布在 GitHub Releases 中。
+Persona 的公开扩展：接入数据源，为助手添加工具和技能，并贡献由各端 App 渲染的界面。本仓库也是一个扩展市场，使用单文件嵌入签名目录，以及 GHCR 上按摘要固定的 OCI 安装包。初始目录格式转换暂时保留清洗后冻结的 Release 引用，直到获批的切换引导发布和匿名公开校验完成；格式转换本身不发布安装包。
 
 [![Persona Extensions 宣传片：加一行地址，再挑需要的扩展](docs/assets/promo-preview-zh.webp)](#视频介绍)
 
@@ -16,7 +16,7 @@ Persona 的公开扩展：接入数据源，为助手添加工具和技能，并
 github:nwverse/persona-extensions
 ```
 
-然后选择扩展安装。这个公开市场不需要 GitHub token。
+然后选择扩展安装。这个公开市场不需要 GitHub token。hub 需要支持嵌入签名目录和 OCI，并使用当前官方公钥 pin；旧版 hub 仍可安装本地包。
 
 也可以在 hub 所在的机器上通过命令行登记市场：
 

@@ -1,0 +1,135 @@
+#!/usr/bin/env python3
+"""Signed catalog primitives. Signatures cover the UTF-8 payload, never reserialized JSON."""
+import base64
+import hashlib
+import json
+import pathlib
+import re
+import subprocess
+import tempfile
+
+ROOT = pathlib.Path(__file__).resolve().parent.parent
+CATALOG = ROOT / "persona-extensions.json"
+# Approved cleaned repository key; embedding a signature does not rotate this pin.
+APPROVED_PUBLIC_KEY = "ed25519:+J+9FsfWHflg/wLLB3FYK32UGGNBUDPwSb64LtprtZ4="
+APPROVED_KEY_ID = "3cce0f471911a1cf"
+SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
+
+
+def unique_object(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key: " + key)
+        result[key] = value
+    return result
+
+
+def invalid_constant(value):
+    raise ValueError("non-JSON numeric constant: " + value)
+
+
+def loads(data):
+    return json.loads(data, object_pairs_hook=unique_object, parse_constant=invalid_constant)
+
+
+def encode(value):
+    return (json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False) + "\n").encode("utf-8")
+
+
+def public_raw(line):
+    if not isinstance(line, str) or not line.startswith("ed25519:"):
+        raise ValueError("not an Ed25519 public key")
+    raw = base64.b64decode(line[8:], validate=True)
+    if len(raw) != 32:
+        raise ValueError("public key must be 32 bytes")
+    return raw
+
+
+def key_id(raw):
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def openssl(*args):
+    result = subprocess.run(["openssl", *map(str, args)], capture_output=True, timeout=30)
+    if result.returncode:
+        # Never include OpenSSL diagnostics or key paths in logs.
+        raise ValueError("OpenSSL operation failed: " + args[0])
+    return result.stdout
+
+
+def verify_signature(payload, signature, public_key=None):
+    raw = public_raw(public_key or APPROVED_PUBLIC_KEY)
+    if not isinstance(signature, dict) or signature.get("alg") != "ed25519":
+        raise ValueError("signature algorithm must be ed25519")
+    if signature.get("key_id") != key_id(raw):
+        raise ValueError("signature key does not match approved key")
+    sig = base64.b64decode(signature.get("sig", ""), validate=True)
+    if len(sig) != 64:
+        raise ValueError("signature must be 64 bytes")
+    with tempfile.TemporaryDirectory() as directory:
+        d = pathlib.Path(directory)
+        (d / "public.pem").write_bytes(b"-----BEGIN PUBLIC KEY-----\n" +
+                                      base64.encodebytes(SPKI_PREFIX + raw) + b"-----END PUBLIC KEY-----\n")
+        (d / "payload").write_bytes(payload)
+        (d / "signature").write_bytes(sig)
+        openssl("pkeyutl", "-verify", "-pubin", "-inkey", d / "public.pem", "-rawin",
+                "-in", d / "payload", "-sigfile", d / "signature")
+
+
+def validate_payload(payload):
+    if not isinstance(payload, dict) or payload.get("market_version") != 1:
+        raise ValueError("unsupported catalog payload")
+    entries = payload.get("extensions")
+    if not isinstance(entries, list):
+        raise ValueError("extensions must be an array")
+    ids = set()
+    for entry in entries:
+        m = entry["manifest"]
+        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", m["id"]) or m["id"] in ids:
+            raise ValueError("unsafe or duplicate extension id")
+        ids.add(m["id"])
+        if "tags" in m:
+            raise ValueError("packaged manifests must not contain tags")
+        if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?", m["version"]):
+            raise ValueError("unsafe extension version")
+        packages = entry["packages"]
+        if not isinstance(packages, list) or not packages:
+            raise ValueError("entry must have packages")
+        platforms = set()
+        for package in packages:
+            if not re.fullmatch(r"[0-9a-f]{64}", package["sha256"]):
+                raise ValueError("archive SHA256 must be lowercase hex")
+            if type(package["size"]) is not int or package["size"] <= 0:
+                raise ValueError("archive size must be positive")
+            platform = package.get("platform", "any")
+            if platform in platforms or not re.fullmatch(r"any|(?:linux|darwin|windows)-(?:amd64|arm64)", platform):
+                raise ValueError("unsafe or duplicate package platform")
+            platforms.add(platform)
+            if not isinstance(package["url"], str) or not package["url"]:
+                raise ValueError("package URL is missing")
+    return payload
+
+
+def envelope(payload, signatures):
+    # Strict UTF-8 round trip preserves all signed bytes, including whitespace and trailing newline.
+    text = payload.decode("utf-8")
+    validate_payload(loads(text))
+    return {"payload": text, "signatures": signatures}
+
+
+def verified(path=CATALOG, public_key=None):
+    wrapper = loads(pathlib.Path(path).read_bytes())
+    if not isinstance(wrapper, dict) or set(wrapper) != {"payload", "signatures"}:
+        raise ValueError("catalog must be a single signed envelope")
+    if not isinstance(wrapper["payload"], str):
+        raise ValueError("payload must be a raw UTF-8 JSON string")
+    signatures = wrapper["signatures"]
+    if not isinstance(signatures, list) or len(signatures) != 1:
+        raise ValueError("exactly one approved signature is required")
+    payload = wrapper["payload"].encode("utf-8")
+    verify_signature(payload, signatures[0], public_key)
+    result = validate_payload(loads(payload))
+    if result.get("signing_key") != (public_key or APPROVED_PUBLIC_KEY):
+        raise ValueError("payload signing_key differs from approved public key")
+    return payload, result
