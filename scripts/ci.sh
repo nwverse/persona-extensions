@@ -62,6 +62,7 @@ python3 -I scripts/test-sign-index.py
 step publisher
 python3 -I scripts/test-oci.py
 python3 -I scripts/test-publish-oci.py
+python3 -I scripts/test-publication-regressions.py
 
 echo
 echo "ci: ok"

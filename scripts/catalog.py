@@ -14,6 +14,44 @@ CATALOG = ROOT / "persona-extensions.json"
 APPROVED_PUBLIC_KEY = "ed25519:+J+9FsfWHflg/wLLB3FYK32UGGNBUDPwSb64LtprtZ4="
 APPROVED_KEY_ID = "3cce0f471911a1cf"
 SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
+FINAL_REPOSITORY = "nwverse/persona-extensions"
+CLEANED_REPOSITORY_ID = 1449704212
+VERSION_MOST = 96
+PACKAGE_MOST = 200 * 1024 * 1024
+VERSION = re.compile(r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-(?:[A-Za-z0-9-]+)(?:\.[A-Za-z0-9-]+)*)?")
+
+
+def valid_version(value):
+    if not isinstance(value, str) or len(value) > VERSION_MOST or not VERSION.fullmatch(value):
+        return False
+    return "-" not in value or all(not p.isdigit() or p == "0" or not p.startswith("0")
+                                   for p in value.split("-", 1)[1].split("."))
+
+
+def payload_hash(payload):
+    return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+
+def inventory_hash(inventory):
+    # Explicit canonical encoding here is for inventory provenance, never for signature verification.
+    raw = json.dumps(inventory, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return payload_hash(raw)
+
+
+def validate_generation(generation):
+    fields = {"repository", "repository_id", "base_catalog_hash", "source_commit", "source_inventory_hash", "mode"}
+    if not isinstance(generation, dict) or set(generation) != fields:
+        raise ValueError("new catalog requires signed generation provenance")
+    if generation["repository"] != FINAL_REPOSITORY or generation["repository_id"] != CLEANED_REPOSITORY_ID:
+        raise ValueError("generation repository identity mismatch")
+    if not isinstance(generation["source_commit"], str) or not re.fullmatch(r"[0-9a-f]{40}", generation["source_commit"]):
+        raise ValueError("generation source_commit must be a full SHA")
+    for name in ("base_catalog_hash", "source_inventory_hash"):
+        if not isinstance(generation[name], str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", generation[name]):
+            raise ValueError("invalid generation hash")
+    if generation["mode"] not in ("bootstrap", "versions"):
+        raise ValueError("invalid generation mode")
+    return generation
 
 
 def unique_object(pairs):
@@ -83,15 +121,17 @@ def validate_payload(payload):
     entries = payload.get("extensions")
     if not isinstance(entries, list):
         raise ValueError("extensions must be an array")
+    if "generation" in payload:
+        validate_generation(payload["generation"])
     ids = set()
     for entry in entries:
         m = entry["manifest"]
-        if not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", m["id"]) or m["id"] in ids:
+        if not isinstance(m["id"], str) or len(m["id"]) > 32 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", m["id"]) or m["id"] in ids:
             raise ValueError("unsafe or duplicate extension id")
         ids.add(m["id"])
         if "tags" in m:
             raise ValueError("packaged manifests must not contain tags")
-        if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?", m["version"]):
+        if not valid_version(m["version"]):
             raise ValueError("unsafe extension version")
         packages = entry["packages"]
         if not isinstance(packages, list) or not packages:
@@ -100,8 +140,8 @@ def validate_payload(payload):
         for package in packages:
             if not re.fullmatch(r"[0-9a-f]{64}", package["sha256"]):
                 raise ValueError("archive SHA256 must be lowercase hex")
-            if type(package["size"]) is not int or package["size"] <= 0:
-                raise ValueError("archive size must be positive")
+            if type(package["size"]) is not int or not 0 < package["size"] <= PACKAGE_MOST:
+                raise ValueError("archive size must be positive and at most 200 MiB")
             platform = package.get("platform", "any")
             if platform in platforms or not re.fullmatch(r"any|(?:linux|darwin|windows)-(?:amd64|arm64)", platform):
                 raise ValueError("unsafe or duplicate package platform")
@@ -119,7 +159,11 @@ def envelope(payload, signatures):
 
 
 def verified(path=CATALOG, public_key=None):
-    wrapper = loads(pathlib.Path(path).read_bytes())
+    return verified_data(pathlib.Path(path).read_bytes(), public_key)
+
+
+def verified_data(data, public_key=None):
+    wrapper = loads(data)
     if not isinstance(wrapper, dict) or set(wrapper) != {"payload", "signatures"}:
         raise ValueError("catalog must be a single signed envelope")
     if not isinstance(wrapper["payload"], str):

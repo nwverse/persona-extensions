@@ -4,6 +4,8 @@
 
 Public extensions for Persona: connect data sources, add assistant tools and skills, and contribute views rendered by the apps. This repository is also an extension market, using one embedded-signature catalog and digest-pinned OCI packages on GHCR. The initial catalog conversion retains frozen cleaned Release references until the authorized cutover bootstrap and anonymous public gate complete; it does not publish packages by itself.
 
+New catalog signatures also cover their predecessor and source inventory, which PR CI checks against the real base commit. Publication stays checks-only in next; after cutover, the final repository identity enables trusted main publication without an extra repository setting. Package visibility is the only manual package setting. See [releases](docs/releases.md) for continuity, immutable versions and dedicated catalog-update issues.
+
 [![Persona Extensions promo: add the market with one line, then pick the extensions you need](docs/assets/promo-preview.webp)](#video-tour)
 
 [Watch the video tour (with voice-over)](#video-tour)

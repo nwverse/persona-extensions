@@ -176,7 +176,7 @@ class OCITests(unittest.TestCase):
         obj, ref = self.server.preload(b"archive", "darwin-arm64")
         package = {"url": oci.package_url("demo", ref), "sha256": oci.digest(b"archive")[7:], "size": 7, "platform": "darwin-arm64"}
         self.assertEqual(oci.verify_package(self.server.client(None, None), "demo", "1.2.3", package), ref)
-        self.assertEqual(obj["layers"][0]["annotations"]["org.opencontainers.image.title"], "demo-1.2.3-darwin-arm64.tar.gz")
+        self.assertEqual(obj["layers"][0]["annotations"]["org.opencontainers.image.title"], "demo-1.2.3__darwin-arm64.tar.gz")
 
 
 if __name__ == "__main__":

@@ -5,8 +5,10 @@ The read-only audit can run before cutover. All publication commands require the
 """
 import argparse
 import copy
+import gzip
 import io
 import os
+import posixpath
 import pathlib
 import re
 import subprocess
@@ -16,12 +18,13 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import catalog
+import index
 import manifest as manifests
 import oci
 
-FINAL_REPOSITORY = "nwverse/persona-extensions"
-CLEANED_REPOSITORY_ID = 1449704212
-TRUSTED_BRANCHES = {"main", "feat/146-oci-extension-market"}
+FINAL_REPOSITORY = catalog.FINAL_REPOSITORY
+CLEANED_REPOSITORY_ID = catalog.CLEANED_REPOSITORY_ID
+TRUSTED_BRANCHES = {"main"}
 
 
 def gh(*args):
@@ -36,7 +39,7 @@ def identity(repository, repository_id, ref):
     if repository != FINAL_REPOSITORY or str(repository_id) != str(CLEANED_REPOSITORY_ID):
         raise ValueError("publication blocked until cleaned repository cutover is complete")
     if ref not in TRUSTED_BRANCHES:
-        raise ValueError("publication requires trusted main or the issue-146 branch")
+        raise ValueError("publication requires trusted main")
 
 
 def cutover_gate(args):
@@ -46,6 +49,12 @@ def cutover_gate(args):
     identity(args.repository, args.repository_id, args.ref)
     remote = catalog.loads(gh("api", "repos/" + args.repository))
     identity(remote["full_name"], remote["id"], args.ref)
+    if index.git("rev-parse", "HEAD").decode().strip() != index.full_sha(args.head_sha):
+        raise ValueError("checkout differs from trusted Actions SHA")
+    index.git("diff", "--exit-code", "HEAD", "--", "extensions", "persona-extensions.json")
+    inventory = [{"manifest": manifests.packaged(k), "tags": manifests.tags(k)} for k in manifests.ids()]
+    if inventory != index.tree_inventory(args.head_sha):
+        raise ValueError("checkout inventory differs from trusted source commit")
 
 
 def archive_matches(data, package):
@@ -53,18 +62,111 @@ def archive_matches(data, package):
         raise ValueError("cleaned Release archive checksum or size mismatch")
 
 
+def safe_path(path):
+    return manifests.inside(path) and not any(ord(c) < 32 or ord(c) == 127 for c in path)
+
+
+# Match source.go's compressed/unpacked regular-file and manifest.go's manifest limits.
+PACKAGE_MOST = catalog.PACKAGE_MOST
+PACKAGE_FILES = 20000
+MANIFEST_MOST = 256 * 1024
+MAX_MEMBERS = 40000  # Also bound directories and metadata/header floods.
+MAX_TAR_BYTES = PACKAGE_MOST + MAX_MEMBERS * 1024 + 10240
+
+
+class ScanBudget:
+    def __init__(self, stream):
+        self.stream, self.left = stream, MAX_TAR_BYTES
+
+    def read(self, size):
+        data = self.stream.read(min(size, self.left + 1))
+        self.left -= len(data)
+        if self.left < 0:
+            raise ValueError("archive exceeds decompressed scan budget")
+        return data
+
+
+class BoundedTarInfo(tarfile.TarInfo):
+    @classmethod
+    def frombuf(cls, *args):
+        member = super().frombuf(*args)
+        # tarfile otherwise allocates PAX/GNU metadata before yielding a member.
+        if member.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.GNUTYPE_LONGNAME,
+                           tarfile.GNUTYPE_LONGLINK) and member.size > MANIFEST_MOST:
+            raise ValueError("archive metadata exceeds scan budget")
+        return member
+
+
+def scan_archive(data, extension_id, capture=()):
+    if len(data) > PACKAGE_MOST:
+        raise ValueError("archive exceeds compressed byte limit")
+    files, saved, names = {}, {}, set()
+    count = total = members = 0
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(data)) as compressed:
+            budget = ScanBudget(compressed)
+            with tarfile.open(fileobj=budget, mode="r|", tarinfo=BoundedTarInfo) as archive:
+                for member in archive:
+                    members += 1
+                    if members > MAX_MEMBERS:
+                        raise ValueError("archive has too many members")
+                    path = member.name.removeprefix("./").removesuffix("/")
+                    if not safe_path(path) or not (path == extension_id or path.startswith(extension_id + "/")):
+                        raise ValueError("archive has an unsafe path or wrong package root")
+                    if path in names:
+                        raise ValueError("archive has duplicate paths")
+                    names.add(path)
+                    if member.isdir():
+                        if member.size != 0:
+                            raise ValueError("archive directory is not empty")
+                    elif member.type in (tarfile.REGTYPE, tarfile.AREGTYPE) and member.sparse is None:
+                        count += 1
+                        total += member.size
+                        if count > PACKAGE_FILES:
+                            raise ValueError("archive has more than 20000 files")
+                        if member.size < 0 or total > PACKAGE_MOST:
+                            raise ValueError("archive exceeds unpacked byte limit")
+                        rel = path[len(extension_id) + 1:]
+                        if not rel:
+                            raise ValueError("archive root is not a directory")
+                        files[rel] = (member.mode, member.size)
+                        if rel in ("persona-extension.json", "persona-plugin.json") and member.size > MANIFEST_MOST:
+                            raise ValueError("archive manifest exceeds 256 KiB")
+                        # Keep bounded JSON references only, never binaries or arbitrary file contents.
+                        if (rel.endswith(".json") or rel in capture) and member.size <= MANIFEST_MOST:
+                            saved[rel] = archive.extractfile(member).read()
+                    else:
+                        raise ValueError("archive member is not an ordinary file or directory")
+                    # Streaming tarfile still caches TarInfo objects on older Python versions.
+                    archive.members.clear()
+            # Drain padding/trailing gzip bytes under the same budget and verify gzip integrity.
+            while budget.read(64 * 1024):
+                pass
+    except (tarfile.TarError, EOFError, OSError, RecursionError) as error:
+        raise ValueError("invalid or truncated archive") from error
+    if "persona-extension.json" not in saved:
+        raise ValueError("archive has no regular extension manifest")
+    # No file may be used as a parent directory, even if header order masks it.
+    for path in names:
+        parent = posixpath.dirname(path)
+        while parent and parent != extension_id:
+            if parent[len(extension_id) + 1:] in files:
+                raise ValueError("archive file is used as a directory")
+            parent = posixpath.dirname(parent)
+    return catalog.loads(saved["persona-extension.json"]), files, saved
+
+
 def archive_manifest(data, extension_id):
-    # Inspect only, never extract downloaded archives or run code inside them.
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-        name = extension_id + "/persona-extension.json"
-        matches = [m for m in archive.getmembers() if m.name == name]
-        if len(matches) != 1 or not matches[0].isfile() or matches[0].size > 1024 * 1024:
-            raise ValueError("archive has no unique regular extension manifest")
-        return catalog.loads(archive.extractfile(matches[0]).read())
+    return scan_archive(data, extension_id)[0]
 
 
-def check_archive(data, expected, strict=False):
-    actual = archive_manifest(data, expected["id"])
+def check_archive(data, expected, strict=False, platform="any"):
+    actual, files, saved = scan_archive(data, expected["id"])
+    gates = {a["gate"] for m in (actual, expected) for a in m.get("contributes", {}).get("assistant", []) if a.get("gate")}
+    if any(path in files and path not in saved for path in gates):
+        # Gates contain JSON but have no required suffix. A bounded second pass also handles gates
+        # appearing before the manifest, without retaining every small binary/text file in memory.
+        _, _, saved = scan_archive(data, expected["id"], capture=gates)
     if actual.get("id") != expected["id"] or actual.get("version") != expected["version"]:
         raise ValueError("archive extension identity differs from catalog")
     if strict and actual != expected:
@@ -72,13 +174,42 @@ def check_archive(data, expected, strict=False):
     commands = expected.get("runtime", {}).get("command", {})
     if actual.get("runtime", {}).get("command", {}) != commands:
         raise ValueError("archive runtime platform mapping differs from catalog")
-    with tarfile.open(fileobj=io.BytesIO(data), mode="r:gz") as archive:
-        members = archive.getmembers()
-        for path in commands.values():
-            full = expected["id"] + "/" + path
-            matches = [m for m in members if m.name == full]
-            if len(matches) != 1 or not matches[0].isfile():
-                raise ValueError("archive is missing a regular platform binary")
+    oci.version_tag(expected["version"], platform)
+    if commands and platform != "any" and platform not in commands:
+        raise ValueError("archive runtime does not declare package platform")
+
+    def required(path, executable=False):
+        if not safe_path(path) or path not in files:
+            raise ValueError("archive is missing a regular " + ("platform binary" if executable else "referenced file"))
+        if executable and files[path][0] & 0o111 == 0:
+            raise ValueError("archive platform binary is not executable")
+
+    selected = commands.values() if platform == "any" else ([commands[platform]] if commands else [])
+    for path in selected:
+        required(path, True)
+    # Node programs are shipped to other computers: hub checks all declared node commands.
+    for path in actual.get("node", {}).get("command", {}).values():
+        required(path, True)
+    for m in (actual, expected):
+        for _, path, kind in manifests.referenced(m):
+            if not safe_path(path):
+                raise ValueError("archive reference has an unsafe path")
+            required(path + "/SKILL.md" if kind == "skill" else path)
+        for assistant in m.get("contributes", {}).get("assistant", []):
+            if not assistant.get("gate"):
+                continue
+            gate_path = assistant["gate"]
+            if gate_path not in saved:
+                raise ValueError("archive gate is missing or exceeds JSON limit")
+            gate = catalog.loads(saved[gate_path])
+            script = gate.get("script")
+            if not safe_path(script):
+                raise ValueError("archive gate script has an unsafe path")
+            matching = [skill for skill in assistant.get("skills", [])
+                        if script.startswith(posixpath.basename(skill) + "/")]
+            if len(matching) != 1:
+                raise ValueError("archive gate script is not in a unique declared skill")
+            required(posixpath.dirname(matching[0]) + "/" + script)
     return sorted(k for k in actual.keys() | expected.keys() if actual.get(k) != expected.get(k))
 
 
@@ -100,7 +231,7 @@ def cleaned_archive(repository, entry, package, destination):
     archive_matches(data, package)
     # Cleaned historical archives can have scrubbed descriptive fields. The approved frozen signature
     # pins their exact bytes; never rebuild or rewrite them to make descriptive metadata match.
-    differences = check_archive(data, m)
+    differences = check_archive(data, m, platform=platform)
     return data, {"release_id": remote["id"], "tag": remote["tag_name"], "asset_id": assets[0]["id"],
                   "filename": expected_name, "sha256": package["sha256"], "size": len(data),
                   "runtime_platforms": sorted(m.get("runtime", {}).get("command", {})),
@@ -147,8 +278,11 @@ def desired_entries(body, mode):
         m = manifests.packaged(extension_id)
         old = prior.get(extension_id)
         if old and old["manifest"]["version"] == m["version"]:
-            if old["manifest"] != m or old["tags"] != manifests.tags(extension_id):
-                raise ValueError("same-version manifest or tags changed; bump version before publishing")
+            if old["manifest"] != m:
+                raise ValueError("same-version manifest changed; bump version before publishing")
+            tags = manifests.tags(extension_id)
+            if old["tags"] != tags:
+                result.append(dict(copy.deepcopy(old), tags=tags))
             continue
         result.append({"manifest": m, "tags": manifests.tags(extension_id), "packages": []})
     if result and any(not p["url"].startswith("oci:") for e in body["extensions"] for p in e["packages"]):
@@ -172,8 +306,7 @@ def reuse_version(registry, entry):
         raise ValueError("existing version tag metadata conflicts")
     registry.read_blob(expected["config"]["digest"], expected["config"]["size"])
     archive = registry.read_blob(layer["digest"], layer["size"])
-    if archive_manifest(archive, m["id"]) != m:
-        raise ValueError("existing version manifest conflicts with source; bump version")
+    check_archive(archive, m, strict=True)
     return {"url": oci.package_url(m["id"], ref), "sha256": layer["digest"].removeprefix("sha256:"), "size": layer["size"]}
 
 
@@ -186,8 +319,10 @@ def push(args):
     entries = desired_entries(body, args.mode)
     output = pathlib.Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
+    removed = sorted({e["manifest"]["id"] for e in body["extensions"]} - set(manifests.ids())) if args.mode == "versions" else []
     plan = {"repository_id": CLEANED_REPOSITORY_ID, "head_sha": args.head_sha, "mode": args.mode,
-            "base_payload_sha256": oci.digest(original), "entries": [], "release_receipts": []}
+            "base_payload_sha256": oci.digest(original), "entries": [], "release_receipts": [],
+            "removed_ids": removed, "catalog_update_required": bool(entries or removed)}
     for entry in entries:
         m = entry["manifest"]
         registry = oci.Registry(oci.repository(m["id"]), token, username)
@@ -199,14 +334,16 @@ def push(args):
                 packages.append(dict(package, url=oci.package_url(m["id"], ref)))
                 plan["release_receipts"].append(receipt)
             entry["packages"] = packages
+        elif entry["packages"]:
+            # Catalog-only tags updates reuse all immutable package descriptors, including platform.
+            pass
         else:
             package = reuse_version(registry, entry)
             if package is None:
                 subprocess.run([str(catalog.ROOT / "scripts/package.sh"), m["id"]], check=True, timeout=900,
                                env={k: v for k, v in os.environ.items() if k not in ("GHCR_TOKEN", "GH_TOKEN", "EXTENSION_MARKET_SIGNING_KEY")})
                 archive = (catalog.ROOT / "dist" / oci.filename(m["id"], m["version"])).read_bytes()
-                if archive_manifest(archive, m["id"]) != m:
-                    raise ValueError("new archive manifest does not match source")
+                check_archive(archive, m, strict=True)
                 ref = registry.push_once(m["id"], m["version"], archive)
                 package = {"url": oci.package_url(m["id"], ref), "sha256": oci.digest(archive)[7:], "size": len(archive)}
             entry["packages"] = [package]
@@ -230,6 +367,9 @@ def validate_plan(plan, original, body, head_sha):
     if plan.get("mode") not in ("bootstrap", "versions"):
         raise ValueError("unknown publication plan mode")
     expected = desired_entries(body, plan["mode"])
+    removed = sorted({e["manifest"]["id"] for e in body["extensions"]} - set(manifests.ids())) if plan["mode"] == "versions" else []
+    if plan.get("removed_ids") != removed or plan.get("catalog_update_required") is not bool(expected or removed):
+        raise ValueError("plan deletion inventory or catalog-update signal differs from trusted checkout")
     entries = plan["entries"]
     if len(entries) != len(expected):
         raise ValueError("plan is incomplete")
@@ -242,6 +382,9 @@ def validate_plan(plan, original, body, head_sha):
             for a, w in zip(actual["packages"], wanted["packages"]):
                 if {k: v for k, v in a.items() if k != "url"} != {k: v for k, v in w.items() if k != "url"}:
                     raise ValueError("bootstrap archive descriptor differs from frozen signature")
+        elif wanted["packages"]:
+            if actual["packages"] != wanted["packages"]:
+                raise ValueError("tags-only update must retain immutable package descriptors")
         elif len(actual["packages"]) != 1 or set(actual["packages"][0]) != {"url", "sha256", "size"}:
             raise ValueError("new versions must have one any-platform archive")
     catalog.validate_payload(dict(body, extensions=entries))
@@ -256,12 +399,20 @@ def generate_payload(plan, catalog_path, head_sha, registry_factory=oci.Registry
         m = entry["manifest"]
         registry = registry_factory(oci.repository(m["id"]))
         for package in entry["packages"]:
+            strict = plan["mode"] == "versions" and not next(
+                (old["manifest"]["version"] == m["version"] for old in body["extensions"] if old["manifest"]["id"] == m["id"]), False)
             oci.verify_package(registry, m["id"], m["version"], package,
-                               archive_validator=lambda data: check_archive(data, m, plan["mode"] == "versions"))
+                               archive_validator=lambda data: check_archive(data, m, strict, package.get("platform", "any")))
             print(m["id"] + ": anonymous manifest/config/archive verified")
-    merged = {e["manifest"]["id"]: e for e in body["extensions"]}
+    inventory = [{"manifest": manifests.packaged(k), "tags": manifests.tags(k)} for k in manifests.ids()]
+    present = {e["manifest"]["id"] for e in inventory}
+    merged = {e["manifest"]["id"]: e for e in body["extensions"]
+              if plan["mode"] == "bootstrap" or e["manifest"]["id"] in present}
     merged.update({e["manifest"]["id"]: e for e in entries})
     body["extensions"] = [merged[k] for k in sorted(merged)]
+    body["generation"] = {"repository": FINAL_REPOSITORY, "repository_id": CLEANED_REPOSITORY_ID,
+                          "base_catalog_hash": oci.digest(original), "source_commit": head_sha,
+                          "source_inventory_hash": catalog.inventory_hash(inventory), "mode": plan["mode"]}
     # Verify every retained OCI reference too, not just the newly uploaded versions.
     for entry in body["extensions"]:
         if entry in entries:
@@ -272,7 +423,7 @@ def generate_payload(plan, catalog_path, head_sha, registry_factory=oci.Registry
             if not package["url"].startswith("oci:"):
                 raise ValueError("bootstrap must finish before publishing new-version catalogs")
             oci.verify_package(registry, m["id"], m["version"], package,
-                               archive_validator=lambda data: check_archive(data, m))
+                               archive_validator=lambda data: check_archive(data, m, platform=package.get("platform", "any")))
     return catalog.encode(catalog.validate_payload(body))
 
 

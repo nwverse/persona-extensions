@@ -44,7 +44,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           CONFIRM: ${{ inputs.confirm_cutover }}
-          CUTOVER_READY: ${{ vars.PERSONA_OCI_CUTOVER_READY }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
             if [ "$CONFIRM" != true ]; then
@@ -53,7 +52,7 @@ jobs:
             fi
             python3 -I scripts/publish-oci.py gate --confirm-cutover
             printf '%s\n' 'publish=true' >> "$GITHUB_OUTPUT"
-          elif [ "$GITHUB_REPOSITORY" = nwverse/persona-extensions ] && [ "$GITHUB_REPOSITORY_ID" = 1449704212 ] && [ "$CUTOVER_READY" = true ]; then
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" = main ] && [ "$GITHUB_REPOSITORY" = nwverse/persona-extensions ] && [ "$GITHUB_REPOSITORY_ID" = 1449704212 ]; then
             python3 -I scripts/publish-oci.py gate --confirm-cutover
             printf '%s\n' 'publish=true' >> "$GITHUB_OUTPUT"
           else
@@ -67,11 +66,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 0 # PR continuity reads the actual base and signed source ancestry.
       - uses: actions/setup-go@v5
         with:
           go-version-file: pluginkit/go.mod
           cache-dependency-path: '**/go.sum'
       - run: scripts/ci.sh
+        env:
+          CATALOG_PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
   ci-required:
     name: CI required
     if: ${{ always() && github.event_name == 'pull_request' }}
@@ -117,6 +119,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
+          overwrite: true # Reruns share the run id; replace the partial plan.
           name: oci-package-plan
           path: |
             ${{ runner.temp }}/packages/plan.json
@@ -140,6 +143,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
         run: python3 -I scripts/publish-oci.py validate-run --confirm-cutover --run-id "$PACKAGE_RUN_ID"
+      - name: Require a new empty artifact directory
+        run: mkdir "$RUNNER_TEMP/package-plan"
       - uses: actions/download-artifact@v4
         with:
           name: oci-package-plan
@@ -152,6 +157,7 @@ jobs:
         run: python3 -I scripts/publish-oci.py catalog --confirm-cutover --plan "$RUNNER_TEMP/package-plan/plan.json" --output "$RUNNER_TEMP/unsigned"
       - uses: actions/upload-artifact@v4
         with:
+          overwrite: true
           name: verified-unsigned-payload
           path: ${{ runner.temp }}/unsigned/payload.json
           if-no-files-found: error
@@ -165,6 +171,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Require a new empty artifact directory
+        run: mkdir "$RUNNER_TEMP/unsigned"
       - uses: actions/download-artifact@v4
         with:
           name: verified-unsigned-payload
@@ -175,11 +183,12 @@ jobs:
           EXTENSION_MARKET_SIGNING_KEY: ${{ secrets.EXTENSION_MARKET_SIGNING_KEY }}
         run: |
           mkdir "$RUNNER_TEMP/signed"
-          python3 -I scripts/sign-index.py sign --payload "$RUNNER_TEMP/unsigned/payload.json" --output "$RUNNER_TEMP/signed/persona-extensions.json"
+          python3 -I scripts/sign-index.py sign --payload "$RUNNER_TEMP/unsigned/payload.json" --output "$RUNNER_TEMP/signed/persona-extensions.json" --source-commit "$GITHUB_SHA"
           python3 -I scripts/sign-index.py verify --catalog "$RUNNER_TEMP/signed/persona-extensions.json"
-          printf '%s\n' 'Publish the verified catalog through an issue-linked PR. Refs #146. Never push it directly to main.' > "$RUNNER_TEMP/signed/PR-body.txt"
+          printf '%s\n' 'Catalog artifact only: create or reuse a dedicated catalog-update issue before opening its PR. Put Refs #<catalog-issue-number> in that PR body; #146 is code tracking only. Require the PR own CI; never push the catalog directly to main.' > "$RUNNER_TEMP/signed/PR-body.txt"
       - uses: actions/upload-artifact@v4
         with:
+          overwrite: true
           name: signed-oci-catalog
           path: ${{ runner.temp }}/signed/
           if-no-files-found: error

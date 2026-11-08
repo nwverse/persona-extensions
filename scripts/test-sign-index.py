@@ -18,6 +18,36 @@ spec.loader.exec_module(sign_index)
 
 
 class SigningTests(CatalogFixture, unittest.TestCase):
+    def setUp(self):
+        super().setUp()
+        self.body["generation"] = {"repository": catalog.FINAL_REPOSITORY, "repository_id": catalog.CLEANED_REPOSITORY_ID,
+                                   "base_catalog_hash": "sha256:" + "1" * 64, "source_commit": "1" * 40,
+                                   "source_inventory_hash": "sha256:" + "2" * 64, "mode": "versions"}
+        self.write_signed(self.body)
+
+    def test_new_signature_requires_signed_provenance(self):
+        self.body.pop("generation")
+        self.payload_path.write_bytes(catalog.encode(self.body))
+        with mock.patch.dict(os.environ, {"EXTENSION_MARKET_SIGNING_KEY": self.key.read_text()}, clear=True):
+            with self.assertRaisesRegex(ValueError, "provenance"):
+                sign_index.sign(self.payload_path, self.directory / "new.json")
+
+    def test_provenance_cannot_be_changed_without_resigning(self):
+        wrapper = catalog.loads(self.catalog_path.read_bytes())
+        body = catalog.loads(wrapper["payload"])
+        body["generation"]["base_catalog_hash"] = "sha256:" + "3" * 64
+        wrapper["payload"] = catalog.encode(body).decode()
+        self.catalog_path.write_bytes(catalog.encode(wrapper))
+        with self.assertRaises(ValueError):
+            catalog.verified(self.catalog_path)
+
+    def test_untrusted_sidecar_provenance_is_rejected(self):
+        wrapper = catalog.loads(self.catalog_path.read_bytes())
+        wrapper["generation"] = self.body["generation"]
+        self.catalog_path.write_bytes(catalog.encode(wrapper))
+        with self.assertRaisesRegex(ValueError, "envelope"):
+            catalog.verified(self.catalog_path)
+
     def test_raw_unicode_crlf_and_whitespace_survive_conversion(self):
         body = dict(self.body, name="Synthetic ☃")
         payload = json.dumps(body, ensure_ascii=False, indent=3).encode() + b"\r\n\n"

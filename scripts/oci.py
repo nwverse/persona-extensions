@@ -21,7 +21,7 @@ CONFIG_TYPE = "application/vnd.oci.empty.v1+json"
 EMPTY_CONFIG = b"{}"
 SOURCE = "https://github.com/nwverse/persona-extensions"
 PREFIX = "nwverse/persona-extensions/"
-MAX_BLOB = 256 * 1024 * 1024
+MAX_BLOB = catalog.PACKAGE_MOST
 
 
 def digest(data):
@@ -29,24 +29,25 @@ def digest(data):
 
 
 def repository(extension_id):
-    if not isinstance(extension_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", extension_id):
+    if not isinstance(extension_id, str) or len(extension_id) > 32 or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", extension_id):
         raise ValueError("unsafe extension registry path")
     return PREFIX + extension_id
 
 
 def filename(extension_id, version, platform="any"):
     repository(extension_id)
-    if not re.fullmatch(r"\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?", version):
-        raise ValueError("unsafe version")
+    if not catalog.valid_version(version):
+        raise ValueError("unsafe version (SemVer without build metadata, at most 96 characters)")
     if not re.fullmatch(r"any|(?:linux|darwin|windows)-(?:amd64|arm64)", platform):
         raise ValueError("unsafe platform")
-    suffix = "" if platform == "any" else "-" + platform
+    # Underscores are outside the version domain, so a prerelease cannot mimic this suffix.
+    suffix = "" if platform == "any" else "__" + platform
     return f"{extension_id}-{version}{suffix}.tar.gz"
 
 
 def version_tag(version, platform="any"):
     filename("demo", version, platform)
-    return version if platform == "any" else version + "-" + platform
+    return version if platform == "any" else "p_" + platform + "_" + version
 
 
 def manifest(extension_id, version, archive_digest, size, platform="any"):

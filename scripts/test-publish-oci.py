@@ -48,7 +48,8 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
         self.candidate["packages"] = [{"url": oci.package_url("demo", ref), "sha256": oci.digest(data)[7:], "size": len(data)}]
         raw, _ = catalog.verified(self.catalog_path)
         self.plan = {"repository_id": publisher.CLEANED_REPOSITORY_ID, "head_sha": SHA, "mode": "versions",
-                     "base_payload_sha256": oci.digest(raw), "entries": [self.candidate], "release_receipts": []}
+                     "base_payload_sha256": oci.digest(raw), "entries": [self.candidate], "release_receipts": [],
+                     "removed_ids": [], "catalog_update_required": True}
 
     def args(self, **changes):
         values = dict(repository=publisher.FINAL_REPOSITORY, repository_id=publisher.CLEANED_REPOSITORY_ID,
@@ -111,6 +112,39 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
         self.assertEqual(calls, [oci.repository("demo")])
         token_call = next(c for c in self.server.calls if "/token?" in c[1])
         self.assertNotIn("Authorization", token_call[2])
+
+    def test_tags_only_platform_catalog_update_verifies_without_reupload(self):
+        m = dict(self.entry["manifest"], runtime={"command": {"linux-amd64": "bin/linux", "darwin-arm64": "bin/mac"}})
+        packages = []
+        for platform, path in m["runtime"]["command"].items():
+            data = archive(m, [(path, b"binary", 0o755)])
+            obj = oci.manifest("demo", m["version"], oci.digest(data), len(data), platform)
+            encoded = oci.manifest_bytes(obj)
+            ref = oci.digest(encoded)
+            self.server.blobs[oci.digest(data)] = data
+            self.server.manifests[ref] = encoded
+            packages.append({"url": oci.package_url("demo", ref), "sha256": oci.digest(data)[7:],
+                             "size": len(data), "platform": platform})
+        self.entry.update(manifest=m, packages=packages)
+        raw, _ = self.write_signed(self.body)
+        changed = dict(copy.deepcopy(self.entry), tags=["new"])
+        plan = dict(self.plan, base_payload_sha256=oci.digest(raw), entries=[changed])
+        with mock.patch.object(publisher.manifests, "packaged", return_value=m), \
+             mock.patch.object(publisher.manifests, "tags", return_value=["new"]):
+            result = catalog.loads(publisher.generate_payload(plan, self.catalog_path, SHA,
+                                                             lambda p: oci.Registry(p, transport=self.server)))
+        self.assertEqual(result["extensions"], [changed])
+        self.assertEqual(result["extensions"][0]["packages"], packages)
+        self.assertEqual(result["generation"]["base_catalog_hash"], oci.digest(raw))
+        self.assertEqual(result["generation"]["source_commit"], SHA)
+        self.assertFalse(any(c[0] in ("POST", "PUT", "DELETE") for c in self.server.calls))
+
+    def test_actual_remote_gate_rejects_wrong_checkout_before_credentials(self):
+        remote = {"full_name": publisher.FINAL_REPOSITORY, "id": publisher.CLEANED_REPOSITORY_ID}
+        with mock.patch.object(publisher, "gh", return_value=catalog.encode(remote)), \
+             mock.patch.object(publisher.index, "git", return_value=("2" * 40).encode()):
+            with self.assertRaisesRegex(ValueError, "checkout"):
+                publisher.cutover_gate(self.args())
 
     def test_private_registry_blocks_payload_generation(self):
         self.server.failure = 403
@@ -182,8 +216,8 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
         text = "\n".join((root / p).read_text() for p in (".github/workflows/ci.yml", "scripts/ci.sh", "scripts/release.sh", "scripts/publish-oci.py"))
         for prohibited in ("gh release create", "gh release delete", "git tag ", "git push", "git rebase", "INDEX_DEPLOY_KEY", "::warning::no EXTENSION_MARKET_SIGNING_KEY"):
             self.assertNotIn(prohibited, text)
-        self.assertIn("Refs #146", text)
-        self.assertIn("PERSONA_OCI_CUTOVER_READY", text)
+        self.assertIn("dedicated catalog-update issue", text)
+        self.assertNotIn("PERSONA_OCI_CUTOVER_READY", text)
         self.assertIn("verified-unsigned-payload", text)
         self.assertIn("signed-oci-catalog", text)
 

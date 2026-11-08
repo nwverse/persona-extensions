@@ -9,6 +9,7 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import catalog
+import index
 
 
 def convert_legacy(source, signature, public_key, output):
@@ -26,9 +27,14 @@ def convert_legacy(source, signature, public_key, output):
     catalog.verified(output)
 
 
-def sign(payload_path, output):
+def sign(payload_path, output, source_commit=None):
     payload = pathlib.Path(payload_path).read_bytes()
     body = catalog.validate_payload(catalog.loads(payload))
+    generation = catalog.validate_generation(body.get("generation"))
+    if source_commit is not None:
+        if generation["source_commit"] != index.full_sha(source_commit):
+            raise ValueError("payload source differs from trusted signing checkout")
+        index.check_source(generation, source_commit, body)
     if body.get("signing_key") != catalog.APPROVED_PUBLIC_KEY:
         raise ValueError("payload signing_key differs from approved key")
     with tempfile.TemporaryDirectory() as directory:
@@ -63,13 +69,14 @@ def main():
     signing = commands.add_parser("sign")
     signing.add_argument("--payload", required=True)
     signing.add_argument("--output", required=True)
+    signing.add_argument("--source-commit", required=True, help="Trusted Actions checkout SHA, not artifact metadata")
     args = parser.parse_args()
     if args.command == "verify":
         catalog.verified(args.catalog)
     elif args.command == "convert-legacy":
         convert_legacy(args.catalog, args.signature, args.public_key, args.output)
     else:
-        sign(args.payload, args.output)
+        sign(args.payload, args.output, args.source_commit)
     print("catalog: verified approved key " + catalog.APPROVED_KEY_ID)
 
 

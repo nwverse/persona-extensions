@@ -8,7 +8,7 @@ Each extension is rooted at `extensions/<id>/` and has one manifest, `persona-ex
 
 | Field or file | Purpose |
 | --- | --- |
-| `manifest_version`, `id`, `name`, `version` | Manifest format and extension identity; version is `MAJOR.MINOR.PATCH`, optionally with a prerelease suffix. |
+| `manifest_version`, `id`, `name`, `version` | Manifest format and extension identity; SemVer `MAJOR.MINOR.PATCH`, optionally with prerelease identifiers, no numeric leading zeros or build metadata, at most 96 ASCII characters. See [OCI naming](releases.md#oci-contract). |
 | `engines` | Host/protocol compatibility requirements. `plugin_protocol` remains a compatibility identifier. |
 | `runtime.command` | Platform-to-binary map; package paths are `bin/<id>-<platform>`. |
 | `contributes` | Connectors, app views, assistant skills and other contributions supported by the host. |

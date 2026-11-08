@@ -17,11 +17,36 @@ The repository has one catalog, `persona-extensions.json`, with embedded signatu
 }
 ```
 
-The payload has `market_version: 1`, market metadata, `signing_key` and `extensions`. Each entry contains its packaged `manifest` (without `tags`), entry `tags` and `packages`. There is no legacy catalog, detached signature or standalone public-key file. [scripts/catalog.py](../scripts/catalog.py) retains the approved **public** key as a code constant; no private key belongs in the repository.
+The payload has `market_version: 1`, market metadata, `signing_key` and `extensions`. Newly generated payloads also have signed `generation` provenance (see below). Each entry contains its packaged `manifest` (without `tags`), entry `tags` and `packages`. There is no legacy catalog, detached signature or standalone public-key file. [scripts/catalog.py](../scripts/catalog.py) retains the approved **public** key as a code constant; no private key belongs in the repository.
 
 Signatures cover `payload.encode("utf-8")`, **not** the outer JSON, parsed objects or canonicalized JSON. Outer formatting can change; the signed string cannot. Duplicate keys, absent/empty signatures, the wrong key and malformed signatures fail closed.
 
 The initial format conversion deliberately retains the frozen signed payload's `release:<tag>/<filename>` references. It is not an OCI publication. Do not replace these with guessed digests. Only successful package publication and the anonymous gate below generate OCI references.
+
+### Signed continuation and PR validation
+
+Every new payload includes this object **inside the signed UTF-8 payload**, not in an unsigned envelope field or artifact sidecar:
+
+```json
+{
+  "generation": {
+    "repository": "nwverse/persona-extensions",
+    "repository_id": 1449704212,
+    "base_catalog_hash": "sha256:<predecessor raw payload hash>",
+    "source_commit": "<full trusted source commit SHA>",
+    "source_inventory_hash": "sha256:<complete source manifest and tags inventory hash>",
+    "mode": "versions"
+  }
+}
+```
+
+`base_catalog_hash` hashes the predecessor's decoded **raw payload bytes**, not its outer envelope formatting. The inventory hash covers the full sorted inventory, including IDs, packaged manifests and tags; it uses the canonical encoding in `catalog.inventory_hash`, independently of signature encoding. Mode is `bootstrap` or `versions`.
+
+PR CI obtains the repository ID and actual PR base SHA from GitHub context, fetches full history, and reads the base catalog directly from that commit with `git show`. The signed predecessor hash must equal that base's verified payload hash. The signed source commit must be its ancestor, have the same source inventory as that base, and contain the predecessor catalog. Versions-mode output must match the complete inventory. Thus docs-only base advances remain valid, but a newer catalog merge or source deletion makes an older signed artifact fail. Regenerate from the new base rather than editing provenance.
+
+The only exception is an unchanged raw payload **and the original signature reused exactly**: this allows the initial detached-to-envelope conversion without a private key, and unchanged catalogs in code-only PRs. A different old signed payload without signed provenance is never accepted as an update.
+
+Trust boundary: GitHub supplies base SHA/repository ID; the signer supplies signed provenance; reviewed workflow/checker code enforces it. Artifact metadata and PR-supplied labels/branch names cannot replace those values. Workflow/checker changes need normal code review and the PR's own CI; this is not protection against a maintainer deliberately replacing the validation code. An offline signature-only check is not a PR continuity verdict.
 
 ## OCI contract
 
@@ -37,7 +62,7 @@ The initial format conversion deliberately retains the frozen signed payload's `
 | Source | Always `https://github.com/nwverse/persona-extensions`, including before the source repository is renamed |
 | Catalog `sha256` / `size` | Archive **blob** digest / bytes, not manifest digest / bytes |
 
-Current packages are all `any`: each program archive includes its manifest's platform-to-binary map. Declarative packages need no binary. Explicit platform packages keep their `platform` field, use `<version>-<platform>` tags and safe platform-specific archive titles; manifests are not Docker multi-platform indexes.
+Current packages are all `any`: each program archive includes its manifest's platform-to-binary map. Declarative packages need no binary. `any` keeps the historical `<version>` tag and `<id>-<version>.tar.gz` title unchanged. Explicit platform packages keep their `platform` field, use `p_<platform>_<version>` tags and `<id>-<version>__<platform>.tar.gz` titles. Underscores are outside the accepted version domain, so `1.2.3`/`linux-amd64` cannot collide with `1.2.3-linux-amd64`/`any`. The version domain is SemVer `MAJOR.MINOR.PATCH` with optional dot-separated prerelease identifiers, no leading zeros in numeric identifiers, **no build metadata**, at most **96 ASCII characters**; explicit-platform tags remain below OCI's 128-character limit. Manifests are not Docker multi-platform indexes.
 
 [scripts/oci.py](../scripts/oci.py) implements the exact Distribution protocol with Python's standard library. It checks manifest/config/archive digests and metadata. Existing tags are verified and reused, never overwritten; an archive, metadata or source-label conflict requires a new version. Only a registry HTTP 404 means absent. Auth, rate limits, transport and server errors stop publication. Workflow writers are serialized globally, across trusted branches. Never run an independent tag writer concurrently.
 
@@ -45,22 +70,22 @@ Current packages are all `any`: each program archive includes its manifest's pla
 
 [CI](../.github/workflows/ci.yml) runs [scripts/ci.sh](../scripts/ci.sh) on PRs, main pushes, the issue-146 branch and dispatches. `CI required` fails unless PR checks succeed. Local checks do not replace required hosted CI. `scripts/ci.sh` never publishes and rejects the former `release` arguments.
 
-Publication requires both the final name `nwverse/persona-extensions` and cleaned repository ID `1449704212`. The former repository cannot pass this gate. Only trusted `main` and `feat/146-oci-extension-market` refs can publish. Before cutover, pushes perform **checks only**; dispatch publication refuses even when a caller checks the confirmation input. The script rechecks the actual GitHub repository identity before reading package credentials or doing any upload.
+Publication requires both the final name `nwverse/persona-extensions` and cleaned repository ID `1449704212`. The former repository cannot pass this gate. Only trusted `main` can publish; issue branches remain checks-only. Before cutover, pushes perform **checks only**; dispatch publication refuses even when a caller checks the confirmation input. The script rechecks the actual GitHub repository identity, checkout SHA and full source inventory before reading package credentials or doing any upload.
 
-After the cutover owner confirms completion, an authorized maintainer can enable future push publication with the repository variable `PERSONA_OCI_CUTOVER_READY=true`. A dispatch additionally requires `confirm_cutover=true`. This variable is not set by the workflow. Do not enable it or dispatch early.
+After cutover, trusted main pushes automatically enable publication based on that live final name and immutable ID. **No repository/org variable or additional manual setting is required.** Dispatch still requires `confirm_cutover=true` and the same live identity checks. The only manual package setting is the visibility step below; do not dispatch or publish early.
 
 ### Phase 1: packages
 
 The initial bootstrap downloads **all 14 current archives from the cleaned repository's Releases**, compares asset metadata and downloaded bytes to the frozen signed catalog, and uploads those exact bytes. It never recompiles/replaces a current version or uses the former repository's assets. Cleaned historical archives can differ from the catalog in scrubbed descriptive fields; the audit lists those differences while enforcing identical id/version/runtime mappings and exact frozen checksums. Do not rewrite them to make their descriptions match.
 
-Future main pushes select source manifest versions not already in the signed catalog, including work from a replaced waiting run. A same-version manifest/tags change fails. An existing registry version is verified and reused **before any build**, so interrupted runs do not rebuild or overwrite published bytes. New versions are locally packaged once if absent. There are no Release/tag creation/deletion calls. The current catalog must first complete bootstrap before new-version catalogs can be generated.
+Future main pushes compare the **full current source inventory** to the signed catalog, including work from a replaced waiting run. A same-version packaged-manifest change fails; tags-only changes retain the original package URL/SHA256/size and need neither a version bump nor a new upload. Removing `extensions/<id>` removes that ID from the next generated catalog without deleting any historic Release, tag or GHCR version. Selection is not just a version-bump diff. An existing registry version is verified and reused **before any build**, so interrupted runs do not rebuild or overwrite published bytes. New versions are locally packaged once if absent. There are no Release/tag creation/deletion calls. The current catalog must first complete bootstrap before new-version catalogs can be generated.
 
 The successful job produces artifact **`oci-package-plan`**:
 
-- `plan.json`: source SHA, frozen payload digest, complete updated entries, OCI manifest references, archive descriptors and cleaned Release receipts for bootstrap.
+- `plan.json`: source SHA, frozen payload digest, complete updated entries, `removed_ids`, `catalog_update_required` (including deletion-only updates), OCI manifest references, archive descriptors and cleaned Release receipts for bootstrap. Validation recomputes changes from the complete trusted inventory; these unsigned plan signals are not signing authority.
 - `package-settings.json`: all package names and GitHub package settings URLs for that run.
 
-A failed run may retain a partial plan for diagnosis. It cannot pass the successful-run provenance check or completeness validation. Rerun packages to resume from verified registry versions. Do not sign a partial plan.
+A failed run may retain a partial plan for diagnosis. It cannot pass the successful-run provenance check or completeness validation. Rerun packages to resume from verified registry versions. All three fixed-name artifacts use overwrite on reruns (which share a run ID), and consumers keep those exact names. Each artifact download starts in a new empty directory; Python runs with `-I` from the reviewed checkout, never inside downloaded data. Do not sign a partial plan.
 
 ### Human visibility step
 
@@ -72,11 +97,11 @@ Do this for the complete bootstrap batch, and for every newly introduced package
 
 Dispatch `phase=catalog` using the successful package run id and the **same checkout SHA**. The workflow checks repository/run identity, trusted branch, workflow path, successful conclusion and matching SHA before downloading the plan. If main moved, rerun packages at the new SHA; existing tags are reused.
 
-A separate job creates fresh **anonymous** registry clients, ignoring all GitHub/registry credential environment variables. It checks every retained and updated OCI package by digest, including config, archive, id/version and platform binaries. Private packages, wrong digests, a changed source catalog or incomplete/tampered plan block payload output. Archive checks are bounded; registry token requests use the fixed GHCR HTTPS endpoint and exact pull scope. Credentials never follow blob redirects or a server-supplied realm.
+A separate job creates fresh **anonymous** registry clients, ignoring all GitHub/registry credential environment variables. It checks every retained and updated OCI package by digest, including config, archive, id/version and platform binaries. Private packages, wrong digests, a changed source catalog or incomplete/tampered plan block payload output. The tar scanner is streaming: compressed and unpacked regular-file bytes are capped at **200 MiB**, regular files at **20,000**, manifests at **256 KiB**, matching the hub's package limits. A separate decompressed scan budget (including headers, directories and padding) and bounded PAX/GNU metadata prevent small compressed bombs/header floods. No extraction or execution occurs. Paths must stay inside the extension root; duplicates, links, sparse files and special files are rejected. Required instructions, skills' `SKILL.md`, gates and gate script references must be safe regular files. Runtime commands must have executable bits: `any` checks all declared platforms, while an explicit platform package checks its own runtime binary; node commands still cover all declared computers. Registry token requests use the fixed GHCR HTTPS endpoint and exact pull scope. Credentials never follow blob redirects or a server-supplied realm.
 
 Only after this gate does artifact **`verified-unsigned-payload`** contain `payload.json`. A separate signing job downloads it; no extension build/test code runs in that job. Only its signing step receives `EXTENSION_MARKET_SIGNING_KEY`. Missing secret, a secret exporting a different public key or failed verification is fatal. The fixed key remains `3cce0f471911a1cf`; embedding signatures is **not** another rotation.
 
-Artifact **`signed-oci-catalog`** contains `persona-extensions.json` and `PR-body.txt` (`Refs #146`). An authorized maintainer applies the verified catalog in an issue-linked PR, not a direct main commit. Require that PR's own green CI before merging. A catalog-only main merge selects no new versions and writes no packages; there is no catalog-PR publication loop and no bypass deploy key.
+Artifact **`signed-oci-catalog`** contains `persona-extensions.json` and `PR-body.txt` with issue-creation instructions, not an automatic PR. Before each catalog-update PR, an authorized maintainer creates or reuses a **dedicated issue for that catalog update**, claims it, and references it in that PR. #146 tracks the code change only; do not reuse it to close multiple publication PRs. The initial code PR can use `Refs #146`; completed OCI publication is separate cutover-dependent work. Require each catalog PR's own green CI and signed base continuity before merging. An unchanged catalog-only main merge selects no versions and writes no packages; there is no catalog-PR publication loop and no bypass deploy key.
 
 ## Authorized cutover bootstrap
 
@@ -99,7 +124,7 @@ python3 -I scripts/sign-index.py verify \
   --catalog /path/to/new-empty-catalog-directory/persona-extensions.json
 ```
 
-Apply that one catalog file to a new issue-linked branch/PR. Do not copy a workflow, script, old public key or historical package from the artifact. The PR body must reference #146. Release/tag identities and all archive digests remain unchanged; compare the audit history before/after, not only counts.
+Apply that one catalog file to a branch/PR linked to its own dedicated catalog-update issue, not a second PR closing #146. Do not copy a workflow, script, old public key or historical package from the artifact. Release/tag identities and all archive digests remain unchanged; compare the audit history before/after, not only counts.
 
 For an independently authorized local publisher, [scripts/release.sh](../scripts/release.sh) delegates to the same identity-gated `push` command. Provide `--repository`, `--repository-id`, `--ref`, full `--head-sha`, `--confirm-cutover`, `--mode` and a new `--output` directory. GHCR credentials belong in `GHCR_TOKEN`/`GITHUB_ACTOR`, never argv or repository files. Signing still belongs in the independent Actions secret step, not local bootstrap.
 

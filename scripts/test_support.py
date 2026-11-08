@@ -44,11 +44,11 @@ class CatalogFixture:
         return payload, sig
 
 
-def archive(manifest):
-    data = catalog.encode(manifest)
+def archive(manifest, files=()):
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w:gz") as file:
-        info = tarfile.TarInfo(manifest["id"] + "/persona-extension.json")
-        info.size = len(data)
-        file.addfile(info, io.BytesIO(data))
+        for path, data, mode in [("persona-extension.json", catalog.encode(manifest), 0o644), *files]:
+            info = tarfile.TarInfo(manifest["id"] + "/" + path)
+            info.size, info.mode = len(data), mode
+            file.addfile(info, io.BytesIO(data))
     return output.getvalue()
