@@ -38,7 +38,8 @@ def identity(repository, repository_id, ref):
     # Name alone is insufficient: the former repository must never publish to the new package namespace.
     if repository != FINAL_REPOSITORY or str(repository_id) != str(CLEANED_REPOSITORY_ID):
         raise ValueError("publication blocked until cleaned repository cutover is complete")
-    if ref not in TRUSTED_BRANCHES:
+    # A tag named main has the same short name: only the full branch ref is trusted.
+    if not ref.startswith("refs/heads/") or ref[len("refs/heads/"):] not in TRUSTED_BRANCHES:
         raise ValueError("publication requires trusted main")
 
 
@@ -215,7 +216,7 @@ def check_archive(data, expected, strict=False, platform="any"):
 
 def cleaned_archive(repository, entry, package, destination):
     m = entry["manifest"]
-    platform = package.get("platform", "any")
+    platform = catalog.package_platform(package)
     expected_name = oci.filename(m["id"], m["version"], platform)
     expected_tag = m["id"] + "-v" + m["version"]
     if package["url"] != f"release:{expected_tag}/{expected_name}":
@@ -253,7 +254,7 @@ def audit(args):
         for package in entry["packages"]:
             _, receipt = cleaned_archive(remote["full_name"], entry, package, destination)
             receipt["id"] = entry["manifest"]["id"]
-            receipt["platform"] = package.get("platform", "any")
+            receipt["platform"] = catalog.package_platform(package)
             results.append(receipt)
             print(receipt["id"] + ": cleaned Release bytes verified")
     # Preserve all historic identities for an independent before/after comparison, not just counts.
@@ -268,7 +269,7 @@ def audit(args):
 def desired_entries(body, mode):
     if mode == "bootstrap":
         # Do not derive already published versions from a new build or from the former repository.
-        if len(body["extensions"]) != 14 or any(len(e["packages"]) != 1 or e["packages"][0].get("platform", "any") != "any"
+        if len(body["extensions"]) != 14 or any(len(e["packages"]) != 1 or catalog.package_platform(e["packages"][0]) != "any"
                                                 for e in body["extensions"]):
             raise ValueError("bootstrap expects the frozen 14 any-platform packages")
         return copy.deepcopy(body["extensions"])
@@ -330,7 +331,7 @@ def push(args):
             packages = []
             for package in entry["packages"]:
                 archive, receipt = cleaned_archive(args.repository, entry, package, output)
-                ref = registry.push_once(m["id"], m["version"], archive, package.get("platform", "any"))
+                ref = registry.push_once(m["id"], m["version"], archive, catalog.package_platform(package))
                 packages.append(dict(package, url=oci.package_url(m["id"], ref)))
                 plan["release_receipts"].append(receipt)
             entry["packages"] = packages
@@ -402,7 +403,7 @@ def generate_payload(plan, catalog_path, head_sha, registry_factory=oci.Registry
             strict = plan["mode"] == "versions" and not next(
                 (old["manifest"]["version"] == m["version"] for old in body["extensions"] if old["manifest"]["id"] == m["id"]), False)
             oci.verify_package(registry, m["id"], m["version"], package,
-                               archive_validator=lambda data: check_archive(data, m, strict, package.get("platform", "any")))
+                               archive_validator=lambda data: check_archive(data, m, strict, catalog.package_platform(package)))
             print(m["id"] + ": anonymous manifest/config/archive verified")
     inventory = [{"manifest": manifests.packaged(k), "tags": manifests.tags(k)} for k in manifests.ids()]
     present = {e["manifest"]["id"] for e in inventory}
@@ -423,13 +424,16 @@ def generate_payload(plan, catalog_path, head_sha, registry_factory=oci.Registry
             if not package["url"].startswith("oci:"):
                 raise ValueError("bootstrap must finish before publishing new-version catalogs")
             oci.verify_package(registry, m["id"], m["version"], package,
-                               archive_validator=lambda data: check_archive(data, m, platform=package.get("platform", "any")))
+                               archive_validator=lambda data: check_archive(data, m, platform=catalog.package_platform(package)))
     return catalog.encode(catalog.validate_payload(body))
 
 
 def catalog_phase(args):
     cutover_gate(args)
     plan = catalog.loads(pathlib.Path(args.plan).read_bytes())
+    if plan.get("catalog_update_required") is not True:
+        # Signing an unchanged catalog would only rotate its generation and open an empty update.
+        raise ValueError("plan has no catalog change; nothing to sign")
     payload = generate_payload(plan, args.catalog, args.head_sha)
     output = pathlib.Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
@@ -454,7 +458,7 @@ def main():
     parser.add_argument("command", choices=["audit", "push", "catalog", "validate-run", "gate"])
     parser.add_argument("--repository", default=os.environ.get("GITHUB_REPOSITORY", "nwverse/persona-extensions-next"))
     parser.add_argument("--repository-id", default=os.environ.get("GITHUB_REPOSITORY_ID", ""))
-    parser.add_argument("--ref", default=os.environ.get("GITHUB_REF_NAME", ""))
+    parser.add_argument("--ref", default=os.environ.get("GITHUB_REF", ""))
     parser.add_argument("--head-sha", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--confirm-cutover", action="store_true")
     parser.add_argument("--catalog", default=catalog.CATALOG)

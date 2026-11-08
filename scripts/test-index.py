@@ -26,7 +26,7 @@ class CatalogTests(CatalogFixture, unittest.TestCase):
             catalog.validate_payload(self.body)
 
     def test_bad_archive_descriptors_fail(self):
-        for values in ({"sha256": "x"}, {"size": True}, {"size": -1}, {"platform": "../../demo"}):
+        for values in ({"sha256": "x"}, {"size": True}, {"size": -1}, {"platforms": ["../../demo"]}, {"platform": "linux-amd64"}, {"platforms": ["linux-amd64", "darwin-arm64"]}, {"platforms": []}):
             body = copy.deepcopy(self.body)
             body["extensions"][0]["packages"][0].update(values)
             with self.assertRaises(ValueError):
@@ -53,9 +53,9 @@ class CatalogTests(CatalogFixture, unittest.TestCase):
 
     def test_multiple_platform_packages_preserve_mapping(self):
         package = self.entry["packages"][0]
-        self.entry["packages"] = [dict(package, platform="linux-amd64"), dict(package, platform="darwin-arm64")]
+        self.entry["packages"] = [dict(package, platforms=["linux-amd64"]), dict(package, platforms=["darwin-arm64"])]
         self.assertEqual(catalog.validate_payload(self.body), self.body)
-        self.entry["packages"].append(dict(package, platform="linux-amd64"))
+        self.entry["packages"].append(dict(package, platforms=["linux-amd64"]))
         with self.assertRaisesRegex(ValueError, "duplicate package"):
             catalog.validate_payload(self.body)
 

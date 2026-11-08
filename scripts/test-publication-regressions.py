@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Regression cases for publication continuity, inventory and installable archives."""
+import argparse
 import copy
 import importlib.util
 import io
@@ -318,7 +319,7 @@ class FrozenArchiveRegressions(unittest.TestCase):
                     shutil.copyfile(originals[0], path)
                     data = path.read_bytes()
                     publisher.archive_matches(data, descriptor)
-                    publisher.check_archive(data, entry["manifest"], platform=descriptor.get("platform", "any"))
+                    publisher.check_archive(data, entry["manifest"], platform=catalog.package_platform(descriptor))
                 print(entry["manifest"]["id"] + ": frozen archive checksum/size/files PASS")
 
 
@@ -333,7 +334,9 @@ class WorkflowRegressions(unittest.TestCase):
     def test_automatic_gate_needs_no_repository_setting(self):
         text = (catalog.ROOT / ".github/workflows/ci.yml").read_text()
         self.assertNotIn("PERSONA_OCI_CUTOVER_READY", text)
-        self.assertIn('"$GITHUB_REF_NAME" = main', text)
+        self.assertIn('"$GITHUB_REF" = refs/heads/main', text)
+        self.assertNotIn("GITHUB_REF_NAME", text)
+        self.assertNotIn("feat/146-oci-extension-market", text.split("workflow_dispatch:", 1)[0])
         self.assertIn('"$GITHUB_REPOSITORY_ID" = 1449704212', text)
 
     def test_version_domain_and_tag_length_are_explicit(self):
@@ -355,25 +358,49 @@ class WorkflowRegressions(unittest.TestCase):
             executable = root / "python3"
             # Synthetic stand-in for the separate remote identity gate: no API/registry access.
             executable.write_text('#!/bin/sh\n[ "$GITHUB_REPOSITORY" = nwverse/persona-extensions ] && '
-                                  '[ "$GITHUB_REPOSITORY_ID" = 1449704212 ] && [ "$GITHUB_REF_NAME" = main ]\n')
+                                  '[ "$GITHUB_REPOSITORY_ID" = 1449704212 ] && [ "$GITHUB_REF" = refs/heads/main ]\n')
             executable.chmod(0o755)
-            cases = [("push", "nwverse/persona-extensions-next", "1449704212", "main", "", False, 0),
-                     ("push", "nwverse/persona-extensions", "123", "main", "", False, 0),
-                     ("push", "nwverse/persona-extensions", "1449704212", "feat/146-oci-extension-market", "", False, 0),
-                     ("push", "nwverse/persona-extensions", "1449704212", "main", "", True, 0),
-                     ("workflow_dispatch", "nwverse/persona-extensions", "1449704212", "main", "false", False, 1),
-                     ("workflow_dispatch", "nwverse/persona-extensions-next", "1449704212", "main", "true", False, 1),
-                     ("workflow_dispatch", "nwverse/persona-extensions", "1449704212", "main", "true", True, 0)]
+            main = "refs/heads/main"
+            cases = [("push", "nwverse/persona-extensions-next", "1449704212", main, "", False, 0),
+                     ("push", "nwverse/persona-extensions", "123", main, "", False, 0),
+                     ("push", "nwverse/persona-extensions", "1449704212", "refs/heads/feat/146-oci-extension-market", "", False, 0),
+                     ("push", "nwverse/persona-extensions", "1449704212", "refs/tags/main", "", False, 0),
+                     ("push", "nwverse/persona-extensions", "1449704212", main, "", True, 0),
+                     ("workflow_dispatch", "nwverse/persona-extensions", "1449704212", main, "false", False, 1),
+                     ("workflow_dispatch", "nwverse/persona-extensions-next", "1449704212", main, "true", False, 1),
+                     ("workflow_dispatch", "nwverse/persona-extensions", "1449704212", main, "true", True, 0)]
             for number, (event, repository, repository_id, ref, confirm, publish, status) in enumerate(cases):
                 output = root / ("output-" + str(number))
                 env = dict(os.environ, PATH=str(root) + ":/usr/bin:/bin", GITHUB_OUTPUT=str(output),
                            GITHUB_EVENT_NAME=event, GITHUB_REPOSITORY=repository, GITHUB_REPOSITORY_ID=repository_id,
-                           GITHUB_REF_NAME=ref, CONFIRM=confirm)
+                           GITHUB_REF=ref, CONFIRM=confirm)
                 result = subprocess.run(["/bin/bash", "-e", "-c", script], cwd=catalog.ROOT, env=env,
                                         capture_output=True, timeout=10)
                 with self.subTest(event=event, ref=ref, repo=repository):
                     self.assertEqual(result.returncode, status)
                     self.assertEqual(output.exists() and "publish=true" in output.read_text(), publish)
+
+    def test_hub_platforms_field_is_the_only_platform_field(self):
+        # The hub reads `platforms`; it ignores a singular `platform` and would install the package anywhere.
+        self.assertEqual(catalog.package_platform({}), "any")
+        self.assertEqual(catalog.package_platform({"platforms": ["linux-arm64"]}), "linux-arm64")
+        for package in ({"platform": "linux-amd64"}, {"platform": "any"}, {"platforms": ["any"]}, {"platforms": "linux-amd64"},
+                        {"platforms": ["linux-amd64", "linux-arm64"]}, {"platforms": []}, {"platforms": ["plan9-amd64"]}):
+            with self.subTest(package=package), self.assertRaises(ValueError):
+                catalog.package_platform(package)
+
+    def test_unchanged_plan_is_not_signed(self):
+        with tempfile.TemporaryDirectory(prefix="noop-plan-") as directory:
+            plan = pathlib.Path(directory) / "plan.json"
+            plan.write_bytes(catalog.encode({"catalog_update_required": False, "entries": [], "removed_ids": []}))
+            args = argparse.Namespace(plan=str(plan), catalog=catalog.CATALOG, head_sha="0" * 40,
+                                      output=str(pathlib.Path(directory) / "out"))
+            with mock.patch.object(publisher, "cutover_gate"), \
+                    mock.patch.object(publisher, "generate_payload") as generate:
+                with self.assertRaisesRegex(ValueError, "nothing to sign"):
+                    publisher.catalog_phase(args)
+                generate.assert_not_called()
+            self.assertFalse((pathlib.Path(directory) / "out").exists())
 
     def test_version_platform_tuple_is_injective(self):
         self.assertNotEqual(oci.version_tag("1.2.3", "linux-amd64"), oci.version_tag("1.2.3-linux-amd64", "any"))

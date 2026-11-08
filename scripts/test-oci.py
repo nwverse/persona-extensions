@@ -174,7 +174,7 @@ class OCITests(unittest.TestCase):
 
     def test_explicit_platform_mapping_and_safe_titles(self):
         obj, ref = self.server.preload(b"archive", "darwin-arm64")
-        package = {"url": oci.package_url("demo", ref), "sha256": oci.digest(b"archive")[7:], "size": 7, "platform": "darwin-arm64"}
+        package = {"url": oci.package_url("demo", ref), "sha256": oci.digest(b"archive")[7:], "size": 7, "platforms": ["darwin-arm64"]}
         self.assertEqual(oci.verify_package(self.server.client(None, None), "demo", "1.2.3", package), ref)
         self.assertEqual(obj["layers"][0]["annotations"]["org.opencontainers.image.title"], "demo-1.2.3__darwin-arm64.tar.gz")
 

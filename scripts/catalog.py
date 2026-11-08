@@ -142,13 +142,29 @@ def validate_payload(payload):
                 raise ValueError("archive SHA256 must be lowercase hex")
             if type(package["size"]) is not int or not 0 < package["size"] <= PACKAGE_MOST:
                 raise ValueError("archive size must be positive and at most 200 MiB")
-            platform = package.get("platform", "any")
-            if platform in platforms or not re.fullmatch(r"any|(?:linux|darwin|windows)-(?:amd64|arm64)", platform):
+            platform = package_platform(package)
+            if platform in platforms:
                 raise ValueError("unsafe or duplicate package platform")
             platforms.add(platform)
             if not isinstance(package["url"], str) or not package["url"]:
                 raise ValueError("package URL is missing")
     return payload
+
+
+def package_platform(package):
+    """The package's platform as the hub reads it: `platforms` lists GOOS-GOARCH values; absent means any.
+
+    Publication makes one package per platform, so a list holds exactly one value. The singular `platform`
+    is not a hub field: a hub would ignore it and install the package everywhere, so it is refused."""
+    if "platform" in package:
+        raise ValueError("unsafe or duplicate package platform: use the hub's platforms list")
+    if "platforms" not in package:
+        return "any"
+    platforms = package["platforms"]
+    if (not isinstance(platforms, list) or len(platforms) != 1 or not isinstance(platforms[0], str) or
+            not re.fullmatch(r"(?:linux|darwin|windows)-(?:amd64|arm64)", platforms[0])):
+        raise ValueError("unsafe or duplicate package platform")
+    return platforms[0]
 
 
 def envelope(payload, signatures):

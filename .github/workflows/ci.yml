@@ -3,7 +3,7 @@ name: ci
 on:
   pull_request:
   push:
-    branches: [main, feat/146-oci-extension-market]
+    branches: [main]
   workflow_dispatch:
     inputs:
       phase:
@@ -52,7 +52,7 @@ jobs:
             fi
             python3 -I scripts/publish-oci.py gate --confirm-cutover
             printf '%s\n' 'publish=true' >> "$GITHUB_OUTPUT"
-          elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF_NAME" = main ] && [ "$GITHUB_REPOSITORY" = nwverse/persona-extensions ] && [ "$GITHUB_REPOSITORY_ID" = 1449704212 ]; then
+          elif [ "$GITHUB_EVENT_NAME" = push ] && [ "$GITHUB_REF" = refs/heads/main ] && [ "$GITHUB_REPOSITORY" = nwverse/persona-extensions ] && [ "$GITHUB_REPOSITORY_ID" = 1449704212 ]; then
             python3 -I scripts/publish-oci.py gate --confirm-cutover
             printf '%s\n' 'publish=true' >> "$GITHUB_OUTPUT"
           else

@@ -53,13 +53,14 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
 
     def args(self, **changes):
         values = dict(repository=publisher.FINAL_REPOSITORY, repository_id=publisher.CLEANED_REPOSITORY_ID,
-                      ref="main", head_sha=SHA, confirm_cutover=True, run_id="123")
+                      ref="refs/heads/main", head_sha=SHA, confirm_cutover=True, run_id="123")
         values.update(changes)
         return argparse.Namespace(**values)
 
     def test_cutover_identity_gate_before_api_or_credentials(self):
         for args in (self.args(repository="nwverse/persona-extensions-next"), self.args(repository_id=123),
-                     self.args(ref="untrusted"), self.args(confirm_cutover=False)):
+                     self.args(ref="untrusted"), self.args(ref="main"), self.args(ref="refs/tags/main"),
+                     self.args(confirm_cutover=False)):
             with mock.patch.object(publisher, "gh") as gh:
                 with self.assertRaises(ValueError):
                     publisher.cutover_gate(args)
@@ -70,7 +71,7 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "cutover"):
                 publisher.cutover_gate(self.args())
         for ref in publisher.TRUSTED_BRANCHES:
-            publisher.identity(publisher.FINAL_REPOSITORY, publisher.CLEANED_REPOSITORY_ID, ref)
+            publisher.identity(publisher.FINAL_REPOSITORY, publisher.CLEANED_REPOSITORY_ID, "refs/heads/" + ref)
 
     def test_cleaned_release_checksum_mismatch_fails(self):
         package = {"sha256": oci.digest(b"cleaned")[7:], "size": 7}
@@ -124,7 +125,7 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
             self.server.blobs[oci.digest(data)] = data
             self.server.manifests[ref] = encoded
             packages.append({"url": oci.package_url("demo", ref), "sha256": oci.digest(data)[7:],
-                             "size": len(data), "platform": platform})
+                             "size": len(data), "platforms": [platform]})
         self.entry.update(manifest=m, packages=packages)
         raw, _ = self.write_signed(self.body)
         changed = dict(copy.deepcopy(self.entry), tags=["new"])
@@ -195,7 +196,7 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
             entries.append(entry)
         body = dict(self.body, extensions=entries)
         self.assertEqual(len(publisher.desired_entries(body, "bootstrap")), 14)
-        body["extensions"][0]["packages"][0]["platform"] = "linux-amd64"
+        body["extensions"][0]["packages"][0]["platforms"] = ["linux-amd64"]
         with self.assertRaisesRegex(ValueError, "any"):
             publisher.desired_entries(body, "bootstrap")
 

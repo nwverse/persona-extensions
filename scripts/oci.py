@@ -253,7 +253,7 @@ def verify_package(registry, extension_id, version, package, archive_validator=N
     ref = parse_url(package["url"], extension_id)
     actual, body = registry.read_manifest(ref)
     expected = manifest(extension_id, version, "sha256:" + package["sha256"], package["size"],
-                        package.get("platform", "any"))
+                        catalog.package_platform(package))
     if catalog.loads(body) != expected:
         raise ValueError("OCI manifest does not match catalog archive descriptor and metadata")
     registry.read_blob(expected["config"]["digest"], expected["config"]["size"])
