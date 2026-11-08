@@ -73,7 +73,11 @@ test("source packaging refuses unapproved resolved origins, credentials and alte
     await writeFile(resolve(dir, "persona-extension.json"), await readFile(resolve(extension, "persona-extension.json")));
     await symlink(resolve(extension, "node_modules"), resolve(dir, "node_modules"), "dir");
     const lock = JSON.parse(await readFile(resolve(extension, "package-lock.json"), "utf8"));
-    for (const bad of ["https://example.com/package.tgz", "https://fixture@registry.npmjs.org/package.tgz", "https://registry.npmjs.org/package.tgz?token=fixture", "../../other-sdk"]) {
+    const credentialSource = new URL("https://registry.npmjs.org/package.tgz");
+    credentialSource.username = "fixture";
+    assert.equal(credentialSource.origin, "https://registry.npmjs.org");
+    assert.equal(credentialSource.username, "fixture");
+    for (const bad of ["https://example.com/package.tgz", credentialSource.href, "https://registry.npmjs.org/package.tgz?token=fixture", "../../other-sdk"]) {
       const variant = structuredClone(lock);
       const entry = bad.startsWith("../") ? variant.packages["node_modules/@persona/extension"] : variant.packages["node_modules/typescript"];
       entry.resolved = bad;
@@ -84,6 +88,26 @@ test("source packaging refuses unapproved resolved origins, credentials and alte
       await assert.rejects(stat(resolve(dir, "build/markets-source.tar.gz")), { code: "ENOENT" });
     }
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+test("synthetic credential fixtures retain exactly the existing approved-origin boundaries", () => {
+  const registry = new URL("https://registry.npmjs.org/package.tgz"); registry.username = "fixture";
+  const provider = new URL("https://www.okx.com/x"); provider.username = "user";
+  const query = new URL("https://registry.npmjs.org/package.tgz"); query.searchParams.set("token", "fixture");
+  const probe = `import importlib.util, json, pathlib, sys
+path = pathlib.Path(sys.argv[1])
+spec = importlib.util.spec_from_file_location("fixture_policy", path)
+policy = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(policy)
+actual = policy.synthetic_credential_fixtures()
+assert actual == set(json.load(sys.stdin)) and len(actual) == 3
+print("fixtures: PASS (three unchanged boundaries)")
+`;
+  const result = spawnSync("python3", ["-I", "-B", "-c", probe, resolve(extension, "scripts/verify-source.py")], {
+    input: JSON.stringify([registry.href, provider.href, query.href]), encoding: "utf8", timeout: 5000,
+  });
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /fixtures: PASS/);
+  assert.equal(result.stderr, "");
 });
 test("privacy verifier treats grep PCRE compilation exit 2 as failure, never PASS", async () => {
   const dir = await mkdtemp(resolve(extension, "build/pcre-negative-"));

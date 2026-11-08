@@ -34,6 +34,17 @@ def verify_lock(data):
     return public
 
 
+def synthetic_credential_fixtures():
+    """Keep the existing exact refusal fixtures; never allow another origin or credential."""
+    registry = urllib.parse.urlsplit("https://registry.npmjs.org/package.tgz")
+    provider = urllib.parse.urlsplit("https://www.okx.com/x")
+    return {
+        registry._replace(netloc=f"fixture@{registry.netloc}").geturl(),
+        registry._replace(query="token=fixture").geturl(),
+        provider._replace(netloc=f"user@{provider.netloc}").geturl(),
+    }
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--terms", type=pathlib.Path, required=True)
@@ -114,7 +125,7 @@ def main():
         check(result.returncode != 2, f"FAIL invalid PCRE rule {ordinal} (pattern withheld)")
         check(result.returncode == 1, f"FAIL privacy rule {ordinal} matched (content withheld)")
     # Credentials are allowed only as these exact, synthetic refusal fixtures.
-    synthetic = {"https://fixture@registry.npmjs.org/package.tgz", "https://registry.npmjs.org/package.tgz?token=fixture", "https://user@www.okx.com/x"}
+    synthetic = synthetic_credential_fixtures()
     urls = re.findall(rb"https?://[^\s\"'<>`\\)]+", payload)
     credential_fixtures = 0
     for raw in urls:

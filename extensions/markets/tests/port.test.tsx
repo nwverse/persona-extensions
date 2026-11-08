@@ -52,7 +52,11 @@ test("bounded fetch queue stays at four, cancels waiters without consuming a slo
 test("HTTP allows only declared HTTPS hosts and does not cache errors, partial or over-budget bodies", async () => {
   let calls = 0;
   const http = new HTTP(async () => { calls++; return new Response("12345"); });
-  for (const url of ["http://www.okx.com/x", "https://www.okx.com:443/x", "https://example.com/x", "https://user@www.okx.com/x"]) {
+  const credentialSource = new URL("https://www.okx.com/x");
+  credentialSource.username = "user";
+  assert.equal(credentialSource.origin, "https://www.okx.com");
+  assert.equal(credentialSource.username, "user");
+  for (const url of ["http://www.okx.com/x", "https://www.okx.com:443/x", "https://example.com/x", credentialSource.href]) {
     if (url.includes(":443")) continue; // URL normalizes the default TLS port.
     await assert.rejects(http.get(url, 10), ReadError);
   }
