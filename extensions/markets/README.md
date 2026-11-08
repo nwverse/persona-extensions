@@ -14,6 +14,12 @@ The TypeScript profile uses the official `sdk/ts` dependency, a default stdio
 bump or a market release. The released Go manifest, configuration, grants,
 `watchlist` navigation ID and `card` overview ID remain unchanged.
 
+The [hosted rebuild profile](source-rebuild.json) registers the unchanged reference bundle in
+`source-reference/bundle.mjs` for the shared CI-only standalone rebuild gate introduced by #167.
+Once that workflow is in the PR base, both isolated source and extracted-authoring rebuilds must
+match the committed reference byte-for-byte. This is not a claimed hosted result or installed-hub
+acceptance yet, and it does not require or authorize a local HOME substitution.
+
 From this extension directory:
 
 ```sh
@@ -28,7 +34,7 @@ The package is `build/markets-source.tar.gz`. The official installable manifest 
 `extensions/markets/src/index.ts`. Complete markets authoring lives at
 `extensions/markets/`, alongside the complete unchanged official SDK authoring
 closure at `sdk/ts/` (exports, compatibility/exact-JSON modules, fixtures, tests,
-checker scripts and Go oracle module). The existing `file:../../sdk/ts` dependency
+checker scripts and standalone Go oracle tooling). The existing `file:../../sdk/ts` dependency
 and lock remain valid after standalone extraction. Dependencies and generated
 SDK outputs are excluded; the original markets Go implementation stays in the
 repository. Markets' source, tests, provider fixtures and scripts are included.
