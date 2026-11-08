@@ -15,10 +15,10 @@ bump or a market release. The released Go manifest, configuration, grants,
 `watchlist` navigation ID and `card` overview ID remain unchanged.
 
 The [hosted rebuild profile](source-rebuild.json) registers the unchanged reference bundle in
-`source-reference/bundle.mjs` for the shared CI-only standalone rebuild gate introduced by #167.
-Once that workflow is in the PR base, both isolated source and extracted-authoring rebuilds must
-match the committed reference byte-for-byte. This is not a claimed hosted result or installed-hub
-acceptance yet, and it does not require or authorize a local HOME substitution.
+`source-reference/bundle.mjs`. The shared CI-only gate introduced by merged #167 is now in
+`main`: both isolated source and independently extracted-authoring rebuilds must match that
+reference byte-for-byte on the current PR head. Local synthetic tests do not claim a hosted
+result or installed-hub acceptance and do not authorize HOME substitution.
 
 From this extension directory:
 
@@ -155,12 +155,15 @@ node ../../sdk/ts/scripts/check-source-bundle.mjs --root "$PWD/build/package" \
   --timeout-ms 2000
 ```
 
-The source PR is based on the provisional official SDK delivery PR #165 rather
-than duplicating SDK changes. Its main-repository synchronization, hosted CI and
-merge remain independent prerequisites; this is not a released SDK. Repository
-layout currently rejects that SDK's unchanged `scripts/int64-oracle.go` (issue
-#164). This baseline failure is retained, not edited or skipped. Bun verification
-invokes its actual `bun test` runner, not Bun's script-mode `--test`.
+The source PR now targets real merged `main`. Official SDK delivery #165 was generated
+through the upstream helper after readiness #1570 merged, then passed its own hosted checks
+and merged. The copied canonical SDK is not handpatched. The formerly failing standalone
+Go-oracle layout was fixed separately by #166; the old failure remains recorded, not waived.
+Bun verification invokes its actual `bun test` runner, not Bun's script-mode `--test`.
+
+Retarget every open stacked extension PR to merged `main` before deleting its SDK base
+branch. GitHub closes a PR when its base disappears; preserve the existing issue/PR rather
+than opening a replacement to hide that workflow error.
 
 The original Go overlay oracle is repository-only (the authoring archive intentionally
 omits Go). Supply the real cached declared toolchain rather than editing go.mod or
@@ -174,11 +177,10 @@ The runner selects the supplied binary's matching GOROOT, disables toolchain and
 module downloads, records uncached race results, and compares original Go/mod hashes.
 Only the original root package is tested; generated build overlays are not Go
 packages. Test inputs are `tests/go-boundaries.txt` and `tests/round3-go.txt`.
-The full numeric wire and cold snapshot transport tests now run against the
-provisional official SDK; host integration is still a separate prerequisite.
-Source-loading and SIGTERM process-lifetime acceptance remain mandatory migration
-gates. Nothing here permits installation in production or use of an authoring VM
-as isolation.
+The retained numeric-wire and cold-snapshot tests apply to the byte-identical canonical
+SDK; actual manager and installed-hub acceptance remain separate evidence. Source-loading
+and SIGTERM process-lifetime acceptance remain applicable migration gates. Nothing here
+permits production installation or treating an authoring VM as production isolation.
 
 ### Persistent-state upgrade boundary
 
@@ -204,6 +206,14 @@ contains user state: keep it private and import it through the authorized host's
 encrypted connector storage. The converter does **not** install the extension or
 perform that host import. Importing real existing state and verifying a restart
 are outstanding upgrade acceptance steps.
+
+Process restart and uninstall/reinstall are different lifecycle checks. The existing
+manager cleanup can delete connector secrets even with `keep_data=1`, so this source's
+sealed watchlist/alert envelope is not retained by that uninstall. This is a known main
+issue, tracked in nwverse/persona#1187; per the maintainer's decision it does not block this
+source-profile migration. The failure stays recorded separately from successful process
+restart. Do not fix it in this lane, reseed data, weaken credential teardown or call it a
+passed retention check.
 
 ### Acceptance and publishing boundary
 
