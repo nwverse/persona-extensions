@@ -1,0 +1,40 @@
+{
+  "manifest_version": 1,
+  "id": "openproject",
+  "name": "OpenProject 工作包",
+  "version": "0.1.0",
+  "description": "在 Persona 里处理自建 OpenProject 的个人工作包：查看分配给自己的工作包、描述、状态和日期；选择项目与类型并创建工作包前在手机上确认。opapi token 加密存在 hub，不删除工作包，不管理项目。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/openproject/README.md",
+  "tags": ["OpenProject", "工作包", "自托管", "项目管理"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/openproject-linux-amd64",
+      "linux-arm64": "bin/openproject-linux-arm64",
+      "darwin-arm64": "bin/openproject-darwin-arm64",
+      "darwin-amd64": "bin/openproject-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "openproject", "name": "OpenProject", "capabilities": ["status", "tools", "actions"],
+      "hosts": [], "agent_tools": ["openproject_*"],
+      "confirm_always": ["openproject_create_work_package"]
+    }],
+    "ui": [{"id": "work", "title": "OpenProject 工作包", "placement": "nav_page", "icon": "check"}]
+  },
+  "configuration": {
+    "type": "object",
+    "required": ["instance_url"],
+    "properties": {
+      "instance_url": {"type": "string", "title": "OpenProject 实例地址", "description": "你的 OpenProject HTTPS 地址；同一台机器上的实例可写 http://127.0.0.1", "format": "uri"}
+    }
+  },
+  "secrets": [{
+    "name": "api_token", "title": "OpenProject API token",
+    "description": "在 OpenProject 账户页面创建 opapi token；只作为 Bearer 令牌发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
