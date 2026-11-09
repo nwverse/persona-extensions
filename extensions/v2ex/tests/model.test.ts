@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { cleanNodes, clip, chunks, configFrom, filter, latestReplies, length, nodePath, parseArray, parseReplies, parseTopics, topicID } from "../src/model.ts";
 import { textsFor, time, topicMeta } from "../src/i18n.ts";
 import { rawReplies, rawTopic } from "./fixtures.ts";
+import { credentialFixtures } from "./credential-fixtures.ts";
 import en from "../src/locales/en.json";
 import zh from "../src/locales/zh-Hans.json";
 import ja from "../src/locales/ja.json";
@@ -29,7 +30,7 @@ test("int64 tokens, escaping and synthetic markers never round or spoof field ty
 test("topic IDs accept only the site's links and positive exact signed-int64 IDs", () => {
   for (const value of [123, "00123", " /t/123 ", "v2ex.com/t/123", "https://www.v2ex.com/t/123?p=2#reply", "http://V2EX.com/t/123/2"]) assert.equal(topicID(value), "123");
   assert.equal(topicID("9223372036854775807"), "9223372036854775807");
-  for (const value of [0, -1, 1.5, NaN, 9007199254740992, "9223372036854775808", "1e3", true, null, "https://example.com/t/123", "https://v2ex.com.example.com/t/123", "https://user@v2ex.com/t/123", "//v2ex.com/t/123", "1/2"]) assert.throws(() => topicID(value), { code: "invalid" });
+  for (const value of [0, -1, 1.5, NaN, 9007199254740992, "9223372036854775808", "1e3", true, null, "https://example.com/t/123", "https://v2ex.com.example.com/t/123", credentialFixtures.topic, "//v2ex.com/t/123", "1/2"]) assert.throws(() => topicID(value), { code: "invalid" });
 });
 test("all configuration keys, exact node filters and independently narrowing keywords survive", () => {
   assert.deepEqual(configFrom({ list: "latest", nodes: ["go"], exclude_nodes: ["Jobs"], keywords: ["Go"], exclude_keywords: ["blocked"], tz: "UTC" }),

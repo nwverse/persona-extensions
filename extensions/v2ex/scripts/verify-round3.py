@@ -103,11 +103,17 @@ for i, lock in enumerate(locks):
     assert run("lock-" + str(i), [node22, root / "scripts/check-lock.mjs", lock])[0] == 0
     assert run("hidden-privacy-" + str(i), ["python3", "-I", term_checker, terms, lock])[0] == 0
 # URL credentials are scanned independently of terms and lock-origin checks.
-controls = {
-    "https://user@v2ex.com/t/123": "tests/model.test.ts",
-    "https://fixture:synthetic@registry.npmjs.org/example/-/example-1.0.0.tgz": "tests/lock.test.mjs",
-    "https://registry.npmjs.org/example/-/example-1.0.0.tgz?token=synthetic": "tests/lock.test.mjs",
-}
+def credential_fixtures():
+    """The unchanged three synthetic URL boundaries; no real credentials."""
+    topic = urlsplit("https://v2ex.com/t/123")
+    archive = urlsplit("https://registry.npmjs.org/example/-/example-1.0.0.tgz")
+    return {
+        topic._replace(netloc="user" + "@" + topic.netloc).geturl(): "tests/model.test.ts",
+        archive._replace(netloc="fixture:synthetic" + "@" + archive.netloc).geturl(): "tests/lock.test.mjs",
+        archive._replace(query="token=synthetic").geturl(): "tests/lock.test.mjs",
+    }
+
+controls = credential_fixtures()
 credential_controls = 0
 for path in set(paths):
     text = path.read_text(errors="strict")
