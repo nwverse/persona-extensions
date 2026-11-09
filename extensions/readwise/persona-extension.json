@@ -1,0 +1,33 @@
+{
+  "manifest_version": 1,
+  "id": "readwise",
+  "name": "Readwise 阅读",
+  "version": "0.1.0",
+  "description": "在 Persona 里继续 Readwise Reader 的阅读：待读、短名单和归档，按进度恢复，读文章与关联划线。保存链接、移动队列、更新进度和写笔记前在手机上确认；token 加密存在 hub。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/readwise/README.md",
+  "tags": ["阅读", "稍后读", "划线", "Readwise"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/readwise-linux-amd64",
+      "linux-arm64": "bin/readwise-linux-arm64",
+      "darwin-arm64": "bin/readwise-darwin-arm64",
+      "darwin-amd64": "bin/readwise-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "readwise", "name": "Readwise Reader", "capabilities": ["status", "tools", "actions"],
+      "hosts": ["readwise.io"], "agent_tools": ["readwise_*"],
+      "confirm_always": ["readwise_save", "readwise_update"]
+    }],
+    "ui": [{"id": "reading", "title": "阅读", "placement": "nav_page", "icon": "doc"}]
+  },
+  "secrets": [{
+    "name": "access_token", "title": "Readwise 访问令牌",
+    "description": "在 Readwise 的 Access Token 页面获取；只作为 Token 认证头发往 readwise.io",
+    "required": true
+  }],
+  "permissions": {"network": ["readwise.io"]}
+}
