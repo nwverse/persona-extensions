@@ -56,8 +56,8 @@ export function configFrom(raw: unknown): Config {
   if (typeof raw !== "object" || Array.isArray(raw)) throw new ReadError("invalid");
   const c = raw as Record<string, unknown>, out: Config = {};
   const keys = ["list", "tz", "nodes", "exclude_nodes", "keywords", "exclude_keywords"] as const;
-  // Init currently supplies a decoded object, not the original config tokens.
-  // Ordered occurrences are retained when a caller has supplied parseJSON output.
+  // Raw initialization and HTTP input retain ordered occurrences via parseJSON.
+  // Direct authoring calls without a raw RPC frame use the supplied object.
   const fields = occurrences.get(c) ?? Object.entries(c).map(([key, value]) => ({ key, value }));
   for (const { key: name, value } of fields) {
     const key = keys.find(key => key === name) ?? keys.find(key => equalFold(key, name));

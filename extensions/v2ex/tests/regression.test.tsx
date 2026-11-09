@@ -130,15 +130,28 @@ test("source manifest RPC describes the packaged Deno profile and never an absen
   } finally { p.close(); }
 });
 
-test("legacy immediate-suspend counterexample without host finite-loading readiness", { todo: "Retained failing negative control; this raw Renderer bypasses the snapshot host bridge" }, async () => {
+test("legacy immediate-suspend negative control cancels every cold read; uninterrupted resume settles", async () => {
   const { fixture: f, service: s } = setup(), renderer = new Renderer({ authorize: () => true });
   f.put("/topics/hot.json", [rawTopic()], { delay: 100 });
   let last: Snapshot | undefined;
   try {
+    // Retain the four original premature suspensions. This raw Renderer is not
+    // a snapshot host and must not manufacture topics from a cancelled read.
     for (let i = 0; i < 4; i++) {
       last = i ? renderer.resume() : renderer.mount(root({ service: s, uiVersion: 1 }));
+      await until(() => f.active, active => active === 1);
       await tick(5); last = renderer.current(); renderer.suspend(); await tick(10);
+      assert.ok(last && !body(last).includes("topic-1"));
+      assert.equal(f.active, 0);
     }
-    assert.ok(last && body(last).includes("topic-1"), `cold HTTP remains loading: attempts=${f.hits.get("/topics/hot.json")}, cancelled=${f.cancelled}`);
+    assert.equal(f.hits.get("/topics/hot.json"), 4); assert.equal(f.cancelled, 4);
+    assert.equal(s.cacheStats().entries, 0);
+    const pending = renderer.resume();
+    assert.ok(!body(pending).includes("topic-1"));
+    const settled = await until(() => renderer.current(), snapshot => body(snapshot).includes("topic-1"));
+    assert.ok(settled.version > pending.version); assert.equal(f.hits.get("/topics/hot.json"), 5);
+    assert.equal(f.cancelled, 4); assert.equal(f.active, 0);
+    await renderer.event(interaction(settled, "topic-1"));
+    await until(() => renderer.current(), snapshot => body(snapshot).includes("reply-meta-124-25"));
   } finally { renderer.dispose(); }
 });

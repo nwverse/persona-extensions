@@ -761,6 +761,14 @@ function withExactParams(handler) {
   Object.defineProperty(wrapped, EXACT_PARAMS, { value: true });
   return wrapped;
 }
+var EXACT_INIT_KEY = "@persona/extension.exactInitParams";
+function withExactInit(handler) {
+  const wrapped = function(init, hub, call) {
+    return Reflect.apply(handler, this, [init, hub, call]);
+  };
+  Object.defineProperty(wrapped, Symbol.for(EXACT_INIT_KEY), { value: true });
+  return wrapped;
+}
 
 // persona-extension.json
 var persona_extension_default = {
@@ -2159,9 +2167,11 @@ function createProgram(fetch = (input, init) => globalThis.fetch(input, init), o
     id: persona_extension_default.id,
     version: persona_extension_default.version,
     manifest: sourceManifest,
-    init: (init) => {
-      service = new V2EX(fetch, init.config, { ...options, timezone: init.hub?.timezone ?? options.timezone, locale: init.hub?.locale ?? options.locale });
-    },
+    init: withExactInit((init, _hub, call) => {
+      const raw = call?.params?.field("config")?.raw;
+      const config = raw === void 0 ? init.config : parseJSON(raw);
+      service = new V2EX(fetch, config, { ...options, timezone: init.hub?.timezone ?? options.timezone, locale: init.hub?.locale ?? options.locale });
+    }),
     namespaces: { connector: connector(current) },
     ui: {
       topics: componentPage((req) => root({ service: current(), state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version }))

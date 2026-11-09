@@ -1,9 +1,10 @@
-import { componentPage, type Program } from "@persona/extension";
+import { componentPage, withExactInit, type Program } from "@persona/extension";
 import type { FetchAdapter } from "@persona/extension/ui";
 import released from "../persona-extension.json";
 import { V2EX, type ServiceOptions } from "./service.ts";
 import { connector } from "./tools.ts";
 import { root } from "./root.tsx";
+import { parseJSON } from "./model.ts";
 export { V2EX, budget, limits, ReadError } from "./service.ts";
 export { connector, callTool, tools } from "./tools.ts";
 export { Root, root } from "./root.tsx";
@@ -23,9 +24,13 @@ export function createProgram(fetch: FetchAdapter = (input, init) => globalThis.
   return {
     id: released.id, version: released.version,
     manifest: sourceManifest,
-    init: init => {
-      service = new V2EX(fetch, init.config, { ...options, timezone: init.hub?.timezone ?? options.timezone, locale: init.hub?.locale ?? options.locale });
-    },
+    init: withExactInit((init, _hub, call) => {
+      // Only an actual initialize RPC carries original tokens. Direct probes keep
+      // their supplied object; never serialize it to fabricate raw metadata.
+      const raw = call?.params?.field("config")?.raw;
+      const config = raw === undefined ? init.config : parseJSON(raw);
+      service = new V2EX(fetch, config, { ...options, timezone: init.hub?.timezone ?? options.timezone, locale: init.hub?.locale ?? options.locale });
+    }),
     namespaces: { connector: connector(current) },
     ui: {
       topics: componentPage(req => root({ service: current(), state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })),

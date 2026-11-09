@@ -54,18 +54,25 @@ full signed-int64 lexical/range rules and scalar versus pointer null behavior,
 then clamps counts before converting them to JavaScript numbers. It does not use
 a safe-integer subset or reconstruct original tokens from rounded numbers.
 Finite page loading opts into `useLoadEffect`, so snapshot host calls await the
-bounded read before suspension. Direct Renderer suspension before completion is
-still retained as a failing negative control, not proof about the installed host.
+bounded read before suspension. The original four premature direct Renderer
+suspensions remain an explicit negative control: every read is cancelled and no
+topics or cache are fabricated. An uninterrupted resume must then settle, advance
+the callback revision and open the topic; a separate snapshot-transport test must
+return topics before suspension and preserve cached resume/replay receipts. This
+qualifies the old host-bypassing counterexample, not a renderer or deadline waiver.
 
-**Initializer raw configuration remains blocked.** The official `Init` exposes
-an already parsed config object, so an earlier invalid duplicate can be lost
-before this extension sees it. For example, `{"nodes":1,"nodes":["go"]}` must fail
-like Go, but currently initializes. A real failing TODO records this gap; ordinary
-`JSON.parse` is not claimed to solve it. `npm test` reports `BLOCKED` and exit 2
-while any TODO actually fails. Exact connector support does not cover initialize.
+Initialization now opts into the official `withExactInit` API delivered by the
+merged official SDK synchronization. Its actual RPC config slice passes through
+the same ordered parser before validation. The original
+`{"nodes":1,"nodes":["go"]}` rejection assertion is unchanged and no longer a TODO.
+Folded duplicates, nulls, failed-init retry, ignored deep fields and the enclosing
+config RawMessage's last-occurrence rule are covered. Direct authoring probes have
+no raw frame and use their supplied config object, without fabricating tokens.
 
-The SDK dependency is provisional until the official upstream-main synchronization
-is ready. Hosted required CI, coordinator-owned isolated installed-hub acceptance,
-actual client readings and screenshots remain merge gates. Synthetic fixtures and
-offline checks are not installation acceptance. No production activation or release
-is part of this delivery.
+The source uses the unchanged official SDK from merged main, not a provisional or
+handpatched copy. Current-head hosted required CI/standalone source and archive
+rebuilds, plus isolated installed-hub content, callback readings and inspected
+screenshots, remain merge gates. The last actual upstream browser-check response
+contained zero topic rows and is still **BLOCKED**, not content acceptance.
+Synthetic fixtures and offline checks do not erase that result. No production
+activation, source default/catalog/key change or release is part of this delivery.

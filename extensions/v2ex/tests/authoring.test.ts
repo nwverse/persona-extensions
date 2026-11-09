@@ -79,12 +79,74 @@ test("finite snapshot loading returns topics before suspend and preserves cached
   } finally { p.close(); }
 });
 
-test("initializer raw-config type errors survive overwritten duplicate keys", { todo: "BLOCKED: official Init exposes parsed config, not original config tokens" }, async () => {
+test("initializer raw-config type errors survive overwritten duplicate keys", async () => {
   const bundle = await import(pathToFileURL(resolve("build/v2ex.mjs")).href), frames: any[] = [];
   const fixture = new Fixture(), p = connect(bundle.createProgram(fixture.fetch) as Program, line => frames.push(JSON.parse(line)));
   try {
     p.line('{"id":"init","method":"initialize","params":{"protocol":1,"config":{"nodes":1,"nodes":["go"]}}}'); await p.drain();
     assert.ok(frames.find(frame => frame.id === "init").error, "ordinary JSON.parse erased the earlier invalid config occurrence");
     assert.equal(fixture.requests.length, 0);
+  } finally { p.close(); }
+});
+
+test("exact initialization keeps folded duplicates, nulls, retry and ignored deep config", async () => {
+  const bundle = await import(pathToFileURL(resolve("build/v2ex.mjs")).href);
+  const invalid = [
+    '{"nodes":1,"Nodes":["go"]}', '{"nodes":[1],"nodes":["go"]}',
+    '{"keywords":false,"keywords":["Synthetic"]}', '{"exclude_nodes":{},"exclude_nodes":null}',
+    '{"list":1,"list":"hot"}', '{"tz":true,"tz":"UTC"}',
+  ];
+  const valid = [
+    '{}', 'null', '{"List":"nodes","Nodes":["go"]}',
+    '{"nodes":["python"],"Nodes":["go"],"keywords":["Synthetic"],"Keywords":null}',
+    '{"nodes":["go"],"nodes":null,"list":"hot"}',
+    '{"tz":"Mars/Olympus","tz":"UTC"}',
+    '{"unused":' + '['.repeat(9000) + '0' + ']'.repeat(9000) + '}',
+  ];
+  for (const config of invalid) {
+    const fixture = new Fixture(), frames: any[] = [];
+    const p = connect(bundle.createProgram(fixture.fetch, { limits: { gap: 0 } }) as Program, line => frames.push(JSON.parse(line)));
+    const raw = async (id: string, method: string, params: string) => {
+      p.line(`{"id":"${id}","method":"${method}","params":${params}}`); await p.drain();
+      return frames.find(frame => frame.id === id);
+    };
+    try {
+      assert.ok((await raw("bad", "initialize", `{"protocol":1,"config":${config}}`)).error, config);
+      assert.equal((await raw("before", "connector.status", "{}")).error.code, "not_initialized");
+      assert.equal(fixture.requests.length, 0);
+      assert.equal((await raw("retry", "initialize", '{"protocol":1,"config":{"List":"nodes","Nodes":["go"]}}')).error, undefined);
+      const result = await raw("tool", "connector.tools.call", '{"name":"v2ex_hot","args":{"source":"nodes"}}');
+      assert.equal(result.error, undefined); assert.ok(result.result.text.includes("Synthetic topic 4"));
+      assert.deepEqual(fixture.requests.map(request => request.path), ["/topics/show.json?node_name=go"]);
+    } finally { p.close(); }
+  }
+  for (const config of valid) {
+    const fixture = new Fixture(), frames: any[] = [];
+    const p = connect(bundle.createProgram(fixture.fetch) as Program, line => frames.push(JSON.parse(line)));
+    try {
+      p.line(`{"id":"init","method":"initialize","params":{"protocol":1,"Config":${config}}}`); await p.drain();
+      assert.equal(frames.find(frame => frame.id === "init").error, undefined, config.slice(0, 120));
+      assert.equal(fixture.requests.length, 0);
+    } finally { p.close(); }
+  }
+  // Config is a RawMessage in the enclosing Go initialize struct: its last
+  // occurrence wins, while duplicates inside that selected object stay ordered.
+  const fixture = new Fixture(), frames: any[] = [];
+  const p = connect(bundle.createProgram(fixture.fetch) as Program, line => frames.push(JSON.parse(line)));
+  try {
+    p.line('{"id":"last-config","method":"initialize","params":{"protocol":1,"config":1,"config":{"nodes":["go"]}}}'); await p.drain();
+    assert.equal(frames.find(frame => frame.id === "last-config").error, undefined);
+  } finally { p.close(); }
+});
+
+test("direct initializer probes use supplied config without pretending to have raw RPC metadata", async () => {
+  const bundle = await import(pathToFileURL(resolve("build/v2ex.mjs")).href), fixture = new Fixture();
+  const program = bundle.createProgram(fixture.fetch, { limits: { gap: 0 } }) as Program;
+  const frames: any[] = [], p = connect(program, line => frames.push(JSON.parse(line)));
+  try {
+    assert.equal(await program.init?.({ protocol: 1, hub: { build: 0, extension_points: {}, locale: "en", timezone: "UTC" }, granted: {}, info: { id: "v2ex", version: "0.1.0" }, config: { list: "nodes", nodes: ["go"] } }, p.hub), undefined);
+    const result = await program.namespaces!.connector("tools.call", { name: "v2ex_hot", args: { source: "nodes" } });
+    assert.ok(result && typeof result === "object" && "text" in result && typeof result.text === "string" && result.text.includes("Synthetic topic 4"));
+    assert.deepEqual(fixture.requests.map(request => request.path), ["/topics/show.json?node_name=go"]);
   } finally { p.close(); }
 });
