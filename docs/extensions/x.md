@@ -182,7 +182,7 @@ Network access: `api.x.com`, `x.com` and `*.twimg.com` for the X API; `x.ai` and
 - **Deleted posts**: kept posts are not re-checked against X; they simply expire after `retention_days`.
 - **Media**: images and videos are not shown; the page links to the post.
 - The X brand mark is not shown; the apps use the generic connector icon.
-- **Grok** is a search, not a feed: it may miss posts, a run covers at most 20 accounts, and the digest covers the last 24 hours. Whether every post it returns exists is only checked by the shape of its permalink. The subscription's quota for automated headless use is not published; `grok_searches_per_day` is only your own cap. Sign-ins expire after 7 days. Whether xAI's subscription terms allow this kind of automated personal use is not confirmed. The Grok path has not been run against a live subscription yet: the tests use a fake grok.
+- **Grok** is a search, not a feed: it may miss posts, a run covers at most 20 accounts, and the digest covers the last 24 hours. Whether every post it returns exists is only checked by the shape of its permalink. The subscription's quota for automated headless use is not published; `grok_searches_per_day` is only your own cap. Sign-ins expire after 7 days. Whether xAI's subscription terms allow this kind of automated personal use is not confirmed.
 
 ## Tests
 
