@@ -1,0 +1,31 @@
+{
+  "manifest_version": 1,
+  "id": "devto",
+  "name": "DEV 技术阅读",
+  "version": "0.1.0",
+  "description": "在 Persona 里读 DEV Community 的公开技术文章：按标签、作者和关键词筛选，看阅读时长、正文和嵌套讨论。无需 token，不代发文章，不执行文章中的 HTML 或指令。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/devto/README.md",
+  "tags": ["DEV", "技术", "阅读", "开发者"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/devto-linux-amd64",
+      "linux-arm64": "bin/devto-linux-arm64",
+      "darwin-arm64": "bin/devto-darwin-arm64",
+      "darwin-amd64": "bin/devto-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{"id": "devto", "name": "DEV Community", "capabilities": ["status", "tools"], "hosts": ["dev.to"], "agent_tools": ["devto_*"]}],
+    "ui": [{"id": "articles", "title": "开发者文章", "placement": "nav_page", "icon": "doc"}]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "tags": {"type": "array", "title": "关注的标签", "description": "只显示有其中任一标签的文章；空着不限", "items": {"type": "string"}},
+      "min_reactions": {"type": "integer", "title": "最低反应数", "description": "0 不限", "minimum": 0, "default": 0}
+    }
+  },
+  "permissions": {"network": ["dev.to"]}
+}
