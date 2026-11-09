@@ -1,0 +1,40 @@
+{
+  "manifest_version": 1,
+  "id": "karakeep",
+  "name": "Karakeep 书签",
+  "version": "0.1.0",
+  "description": "在 Persona 里搜索自己 Karakeep 实例的书签：全文搜索、列表与标签、笔记和划线。保存链接、收藏或归档前在手机上确认；API key 加密存在 hub，只发给你配置的实例。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/karakeep/README.md",
+  "tags": ["Karakeep", "书签", "稍后读", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/karakeep-linux-amd64",
+      "linux-arm64": "bin/karakeep-linux-arm64",
+      "darwin-arm64": "bin/karakeep-darwin-arm64",
+      "darwin-amd64": "bin/karakeep-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "karakeep", "name": "Karakeep", "capabilities": ["status", "tools", "actions"],
+      "hosts": [], "agent_tools": ["karakeep_*"],
+      "confirm_always": ["karakeep_save", "karakeep_update"]
+    }],
+    "ui": [{"id": "bookmarks", "title": "书签", "placement": "nav_page", "icon": "link"}]
+  },
+  "configuration": {
+    "type": "object",
+    "required": ["instance_url"],
+    "properties": {
+      "instance_url": {"type": "string", "title": "Karakeep 实例地址", "description": "你的实例的 HTTPS 地址，例如 https://karakeep.example.com；同一台机器上的实例可写 http://127.0.0.1:3000", "format": "uri"}
+    }
+  },
+  "secrets": [{
+    "name": "api_key", "title": "Karakeep API Key",
+    "description": "在 Karakeep 的 Settings › API Keys 中创建；只作为 Bearer 令牌发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
