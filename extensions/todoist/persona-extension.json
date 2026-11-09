@@ -1,0 +1,33 @@
+{
+  "manifest_version": 1,
+  "id": "todoist",
+  "name": "Todoist 任务",
+  "version": "0.1.0",
+  "description": "在 Persona 里查看和搜索自己的 Todoist 任务：今天、逾期、近期，保留项目、分区、标签和截止时间；创建、修改和完成任务前在手机上确认。token 加密存在 hub，不与 Persona 的 Agent 待办混用。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/todoist/README.md",
+  "tags": ["任务", "待办", "Todoist", "计划"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/todoist-linux-amd64",
+      "linux-arm64": "bin/todoist-linux-arm64",
+      "darwin-arm64": "bin/todoist-darwin-arm64",
+      "darwin-amd64": "bin/todoist-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "todoist", "name": "Todoist", "capabilities": ["status", "tools", "actions"],
+      "hosts": ["todoist.com"], "agent_tools": ["todoist_*"],
+      "confirm_always": ["todoist_create", "todoist_update", "todoist_complete"]
+    }],
+    "ui": [{"id": "tasks", "title": "任务", "placement": "nav_page", "icon": "check"}]
+  },
+  "secrets": [{
+    "name": "api_token", "title": "Todoist API Token",
+    "description": "在 Todoist 设置的 Integrations › Developer 中复制；只作为 Bearer 令牌发往 api.todoist.com",
+    "required": true
+  }],
+  "permissions": {"network": ["api.todoist.com"]}
+}
