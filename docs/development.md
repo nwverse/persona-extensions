@@ -10,6 +10,8 @@ Use the Go version the modules declare (for example [pluginkit/go.mod](../plugin
 
 Every program extension is its own Go module: a `main` package in `extensions/<id>/` with its own `go.mod` and `go.sum`, module path `github.com/nwverse/persona-extensions/extensions/<id>`. It builds, tests and packages on its own. Shared code is a module of its own that an extension pulls in with a `replace` directive: `pluginkit/` (`../../pluginkit`) and the copied SDK (`../../sdk/go`). The repository root holds no package-manager file (`go.mod`, `go.sum`, `go.work`, `package.json`, lockfiles, `node_modules`, `Cargo.toml`, `pyproject.toml`, `requirements.txt` and the like); [scripts/check-layout.py](../scripts/check-layout.py) fails when one appears.
 
+The official TypeScript SDK also owns one standalone authoring oracle, `sdk/ts/scripts/int64-oracle.go`, which its portable checks invoke explicitly with `go run <file>`. It is not an extension runtime or a discovered Go module. The layout guard recognizes only that exact SDK-owned file; other Go files outside modules, including other SDK scripts, still fail. Synchronize the oracle unchanged with the SDK rather than adding an invented module or editing the copied SDK.
+
 ```text
 extensions/<id>/           Manifest, source, tests and dependencies for one extension
   persona-extension.json   The only manifest, including the market tags
@@ -73,6 +75,18 @@ scripts/package.sh linuxdo
 Packaging produces `dist/<id>-<version>.tar.gz` and a SHA-256 file. It includes both manifest names and any `skills/` or `assistant/` directories the extension ships. Files a manifest references (skill directories, instruction prompts, assistant skills, instructions and gates) must therefore live under `skills/` or `assistant/`; `scripts/manifest.py check` fails when one is elsewhere or missing. Every manifest, including those of extensions without a program, is also validated against the SDK `Manifest` schema as committed and as packaged, by `go -C tools test ./...`. Archives omit macOS AppleDouble metadata and extended attributes, which otherwise can hide the manifest from the hub's package reader.
 
 See [installation](installation.md#install-a-local-package) to install the package on a hub. Extension tests use fake services; running them does not require real account credentials.
+
+## Standalone source rebuilds on hosted CI
+
+Each new executable source migration registers `extensions/<id>/source-rebuild.json` and commits its expected import-free bundle under `source-reference/`. The reference is a byte-comparison fixture, not a released default package. The profile names its source build script, generated bundle/archive, and the extension/SDK paths inside the standalone authoring archive. See the [LinuxDo profile](../extensions/linuxdo/source-rebuild.json).
+
+[The source rebuild job](../.github/workflows/ci.yml) runs every registered profile on its own fresh GitHub-hosted runner, with pinned Node, no restored dependency cache and no HOME substitution. [The driver](../scripts/source-rebuild.py) copies only tracked extension and official SDK authoring inputs into a new tree, excluding the reference bundle; installs locked public dependencies; builds; and compares the result **byte-for-byte** with the committed reference. It then extracts the produced authoring archive into another new directory and independently installs and rebuilds it, repeating the same byte comparison. Archive traversal, links, special files, duplicate files and excessive size fail before extraction.
+
+`CI required` includes profile discovery and every source-rebuild matrix result. New source authoring cannot omit a rebuild profile. The pre-existing Hacker News and Showcase examples are not part of the new migration batch and supply no fresh-HOME proof unless they register a profile; their separate acceptance gates are not waived. [Pure guard regressions](../scripts/test-source-rebuild.py) run locally and in CI without executing a local standalone rebuild.
+
+The maintainer's merge policy accepts the successful hosted job as fresh-HOME proof. A local fresh-HOME rebuild is not required and local permission restrictions remain unchanged: do not substitute HOME, use a peer or wrapper, or relabel a weaker local check as that proof. Hosted rebuilding proves contained authoring and bundle reproducibility, not installed-hub behavior, production sandbox isolation, source default publication or catalog signing.
+
+Credential-negative lock fixtures use synthetic `URL.username` and `URL.password` values on the approved public registry origin. Assert that origin and retain the credential-rejection check, so an unrelated bad hostname cannot make the control pass. Do not add privacy exceptions, change the lock policy, or encode/split real private values to get them through a scan.
 
 ## Documentation checks
 

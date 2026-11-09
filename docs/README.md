@@ -14,7 +14,7 @@
 - [Markets](extensions/markets.md): cryptocurrency (OKX) and A-share, Hong Kong and US stock (Tencent) watchlist on the main navigation, price and volume charts, assistant tools and rate limits.
 - [Telegram](extensions/telegram.md): login, inbox, archives, network requirements, tools and the `tg` CLI.
 - [Discord](extensions/discord.md): your own bot as a read-only source: setting it up, what goes into the knowledge base and how nothing is skipped, the assistant tools, status, network and the sandbox.
-- [Bypass auto-allow (Claude Code)](extensions/claude-bypass-allow.md): auto-allow Claude Code's remaining Bash, read-only and subagent prompts in bypassPermissions sessions on chosen computers; deletion and overwriting ask unless inside temporary or work directories (or a setting allows them all); force pushes, permission changes and your own ask/deny rules still ask; audit log and limits.
+- [Bypass auto-allow (Claude Code)](extensions/agent-bypass-allow.md): auto-allow Claude Code's remaining Bash, read-only and subagent prompts in bypassPermissions sessions on chosen computers; deletion and overwriting ask unless inside temporary or work directories (or a setting allows them all); force pushes, permission changes and your own ask/deny rules still ask; audit log and limits.
 - [mnemo](../extensions/mnemo/README.md): let the Claude assistant search past coding-agent sessions through mnemo's MCP server, when mnemo is installed on its computer; read-only tools only.
 - [Feishu / LarkAgentX adapter](extensions/larkagentx.md): non-redistributing user-installed companion, headless QR/import login, exact allowlists, always-confirmed text sends and experimental validation limits.
 

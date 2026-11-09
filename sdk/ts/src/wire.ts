@@ -191,8 +191,8 @@ export interface SourceRuntime {
 }
 
 /**
- * The most a program may use when the hub runs it in a sandbox (docs/extensions.md "Sandbox"): memory in MB, CPU in
- * percent of one core. Unset: 1024 MB, 100%.
+ * The most a program may use when the hub runs it in a sandbox (docs/extensions/extensions.md "Sandbox"): memory in
+ * MB, CPU in percent of one core. Unset: 1024 MB, 100%.
  */
 export interface Resources {
   memory_mb?: number;
@@ -205,9 +205,9 @@ export interface Resources {
 export type Command = unknown;
 
 /**
- * The extension's program on computers (docs/extensions.md "Programs running on computers"): one per platform
- * (darwin-* / linux-*), on the machines picked in the configuration field `machines` (an array of format machine,
- * x-os the programs' systems).
+ * The extension's program on computers (docs/extensions/extensions.md "Programs running on computers"): one per
+ * platform (darwin-* / linux-*), on the machines picked in the configuration field `machines` (an array of format
+ * machine, x-os the programs' systems).
  */
 export interface NodeRuntime {
   command: unknown;
@@ -367,8 +367,8 @@ export type BuiltinLook = "persona" | (string & {});
 export const BUILTIN_LOOKS = ["persona"] as const;
 
 /**
- * A text in the other languages, by code (docs/i18n.md): only zh-Hans, en and ja, each 1 to 40 characters (the hub
- * checks).
+ * A text in the other languages, by code (docs/protocol/i18n.md): only zh-Hans, en and ja, each 1 to 40 characters
+ * (the hub checks).
  */
 export interface LookTexts {
   /** Extra keys are opaque JSON; declared properties keep their own types. */
@@ -399,7 +399,7 @@ export interface LookAvatar {
 }
 
 /**
- * An appearance's colors, #RRGGBB (docs/persona.md "Palettes", the apps' PersonaPalette).
+ * An appearance's colors, #RRGGBB (docs/apple/persona.md "Palettes", the apps' PersonaPalette).
  */
 export interface LookPalette {
   primary?: string;
@@ -441,7 +441,7 @@ export interface LookDot {
 }
 
 /**
- * A look (docs/extensions.md "Looks"): Persona's name, face, colors and dot, served as a persona package.
+ * A look (docs/extensions/extensions.md "Looks"): Persona's name, face, colors and dot, served as a persona package.
  * app_icon_fallback is the built-in icon used where only the app's own icons can be shown.
  */
 export interface LookItem {
@@ -528,7 +528,7 @@ export interface AgentFilterItem {
 }
 
 /**
- * The connector protocol's manifest (docs/connector-protocol.md).
+ * The connector protocol's manifest (docs/protocol/connector-protocol.md).
  */
 export interface ConnectorItem {
   id: string;
@@ -831,7 +831,7 @@ export interface HubInfo {
   extension_points: Record<string, number>;
   role?: HubRole;
   timezone?: string;
-  /** The user's language (zh-Hans, en, ja; see docs/i18n.md); empty means zh-Hans. */
+  /** The user's language (zh-Hans, en, ja; see docs/protocol/i18n.md); empty means zh-Hans. */
   locale?: string;
   capabilities?: string[];
   /** The hub's API on this machine, for the token below. */
@@ -854,6 +854,8 @@ export interface InitializeResult {
   version: string;
   /** A subset of the manifest's. */
   contributes?: Record<string, unknown>;
+  /** Request-ID scoped rpc.cancel for mounted page lifecycle calls only. */
+  ui_page_cancellation?: 1;
 }
 
 /**
@@ -1139,7 +1141,7 @@ export interface ErrorBreadcrumb {
 }
 
 /**
- * An error or crash of the hub or a device (docs/extensions.md "Error reports"). Clients send it to POST
+ * An error or crash of the hub or a device (docs/extensions/extensions.md "Error reports"). Clients send it to POST
  * /api/v1/error-reports; the manager scrubs it and adds fingerprint, count and received_at before an extension gets
  * it.
  */
@@ -2491,7 +2493,7 @@ export interface MessagingReaction {
 }
 
 /**
- * A small line under a message's body the extension adds (Brave Climb · Decoded, Encrypted Message · Public).
+ * A mode supported by the message source.
  */
 export interface MessagingDecoration {
   text: string;
@@ -3026,19 +3028,22 @@ export interface MessagingError {
 
 /**
  * error.code a program answers or gets besides the base ErrorCode: rate_limited (tools.call / actions.do, and the
- * hub's answer to too many sent.record; data {retry_after} in seconds, fractional allowed), and why
- * credentials.gh_token has no token.
+ * hub's answer to too many sent.record; data {retry_after} in seconds, fractional allowed), why credentials.gh_token
+ * has no token, and what recall answers: not_recallable (nothing was sent: the program cannot take that message back)
+ * and recall_unknown (the request may have taken effect). not_signed_in, offline and rate_limited also say that
+ * recall could not act now.
  */
-export type ConnectorErrorCode = "rate_limited" | "no_machine" | "offline" | "node_too_old" | "no_gh" | "not_signed_in" | (string & {});
-export const CONNECTOR_ERROR_CODES = ["rate_limited", "no_machine", "offline", "node_too_old", "no_gh", "not_signed_in"] as const;
+export type ConnectorErrorCode = "rate_limited" | "no_machine" | "offline" | "node_too_old" | "no_gh" | "not_signed_in" | "not_recallable" | "recall_unknown" | (string & {});
+export const CONNECTOR_ERROR_CODES = ["rate_limited", "no_machine", "offline", "node_too_old", "no_gh", "not_signed_in", "not_recallable", "recall_unknown"] as const;
 
 /**
  * What a connector declares (ConnectorItem.capabilities): the hub calls only the methods of declared ones. fallback
- * has no method: every inbox thing promises extra.rule_tier. An extension's connector with one this hub does not know
- * loses only that capability.
+ * has no method: every inbox thing promises extra.rule_tier. recall is the program's word that it can take back what
+ * it sent: the hub then calls connector.recall (only after the user agreed), and the install preview says so. An
+ * extension's connector with one this hub does not know loses only that capability.
  */
-export type ConnectorCapability = "status" | "tools" | "actions" | "events" | "inbox" | "settle" | "archive" | "chats" | "items" | "login" | "options" | "threads" | "snapshot" | "group" | "meta" | "fallback" | "machines" | (string & {});
-export const CONNECTOR_CAPABILITIES = ["status", "tools", "actions", "events", "inbox", "settle", "archive", "chats", "items", "login", "options", "threads", "snapshot", "group", "meta", "fallback", "machines"] as const;
+export type ConnectorCapability = "status" | "tools" | "actions" | "events" | "inbox" | "settle" | "archive" | "chats" | "items" | "login" | "options" | "threads" | "snapshot" | "group" | "meta" | "fallback" | "machines" | "recall" | (string & {});
+export const CONNECTOR_CAPABILITIES = ["status", "tools", "actions", "events", "inbox", "settle", "archive", "chats", "items", "login", "options", "threads", "snapshot", "group", "meta", "fallback", "machines", "recall"] as const;
 
 /**
  * ConnectorStatus.state. disabled is the hub's own (the user switched it off); a program never answers it.
@@ -3226,6 +3231,46 @@ export interface ConnectorDoParams {
   name: string;
   args?: unknown;
   request_id: string;
+}
+
+/**
+ * recall: take back a message the connector's program sent in the user's name, which the sent-as-user ledger has a
+ * row of (docs/extensions/connectors.md "Sent as the user"). Only for a connector that declares the capability
+ * recall, and only once the user agreed on their own device; the program never starts one. The fields are the row's,
+ * as the hub kept them: nothing of what the message said. A repeat after success is a success too. Answer with
+ * ConnectorRecallResult (recalled true) only when the service confirms the message is no longer there, one that was
+ * already gone included; otherwise an error: not_recallable (it cannot, and nothing was sent), not_signed_in, offline
+ * or rate_limited (it cannot act now), recall_unknown (it may have gone through), any other error is the service
+ * refusing, with one sentence for people (no secret, no text of the message).
+ */
+export interface ConnectorRecallParams {
+  contribution: string;
+  /**
+   * What wrote it: the tool's name (actions.do), sent.record, or, for a write the node's gate forwarded, "METHOD
+   * /path".
+   */
+  action: string;
+  /**
+   * The sent message's id on the other side, as the program gave it (actions.do or sent.record) or as the service's
+   * answer did (a write through the node's gate).
+   */
+  message_ref: string;
+  /**
+   * Where it went, as the ledger kept it (short values): the program's own for a send it recorded; for a write
+   * through the node's gate also method, path and command (the gate's name), and the ids its path names.
+   */
+  target?: Record<string, unknown>;
+  /** When the ledger wrote the row, right after the send. */
+  at?: string;
+}
+
+/**
+ * recall's answer: recalled true is the program's word that the service confirmed the message is no longer there.
+ * Anything else (no recalled, false) is not taken for a yes: the hub then knows nothing, writes nothing and lets the
+ * user ask again.
+ */
+export interface ConnectorRecallResult {
+  recalled: boolean;
 }
 
 /**
@@ -3833,7 +3878,7 @@ export interface ConnectorGhTokenParams {
 /**
  * sent.record: the program of a connector that declares sends_as_user (manifest connectors[].sends_as_user) tells the
  * hub about a message it sent in the user's name outside the hub's write gate, for the sent-as-user ledger
- * (docs/connectors.md "Sent as the user"). Only a connector of the caller's own that declares it may: else
+ * (docs/extensions/connectors.md "Sent as the user"). Only a connector of the caller's own that declares it may: else
  * permission_denied. The hub sets the row's origin (the extension; session_id and machine_id are kept beside it) and
  * how it was let through (kind auto, with setting) itself. Errors: permission_denied, invalid_params, rate_limited
  * (data {retry_after} in seconds: 60 calls at once per extension, then one a second, whether or not they were
@@ -4328,7 +4373,7 @@ export interface KBHit {
 /**
  * kb.update: kind and id, and the fields to change (the knowledge base's update API, plus pinned, lock and the
  * remove_* lists). A field left out is kept; the other lists add to what is there. Protected fields and history
- * limits: docs/knowledge.md.
+ * limits: docs/assistant/knowledge.md.
  */
 export interface KBUpdateParams {
   kind: KBKind;
@@ -4550,6 +4595,85 @@ export interface ModelInvalidOutput {
   problem: string;
   text: string;
   usage: ModelUsage;
+}
+
+/**
+ * error.code of the assistant calls besides permission_denied (data {scope: "assistant.read"}): invalid_params;
+ * not_found (assistant.messages: no such conversation in the assistant's own space); assistant_offline (the manager
+ * is away: try again); machine_offline (the assistant's computer is not connected or not set up: try again).
+ */
+export type AssistantErrorCode = "invalid_params" | "not_found" | "assistant_offline" | "machine_offline" | (string & {});
+export const ASSISTANT_ERROR_CODES = ["invalid_params", "not_found", "assistant_offline", "machine_offline"] as const;
+
+/**
+ * assistant.conversations (assistant.read): the conversations last active at or after since, newest first.
+ */
+export interface AssistantConversationsParams {
+  /** An RFC 3339 time: last active at or after it. */
+  since: string;
+  /** An RFC 3339 time: those known to have started at or after it are left out. */
+  until?: string;
+  include_archived?: boolean;
+  /** 0 is 50. */
+  limit?: number;
+  offset?: number;
+}
+
+export interface AssistantConversation {
+  id: string;
+  /** Empty while it has none. */
+  title: string;
+  /** The main conversation. */
+  main?: boolean;
+  archived?: boolean;
+  /** Who opened it: user, channel, inbox, task, spawned, lark_agent or extension. */
+  origin: string;
+  /** When it began, when known. */
+  started?: string;
+  /** Its last activity. */
+  updated: string;
+}
+
+export interface AssistantConversationsResult {
+  items: AssistantConversation[];
+  total: number;
+  next_offset?: number;
+}
+
+/**
+ * assistant.messages (assistant.read): one conversation's words in time order, paged by seq.
+ */
+export interface AssistantMessagesParams {
+  /** The conversation (assistant.conversations' id). */
+  id: string;
+  /** An RFC 3339 time: messages at or after it. */
+  since?: string;
+  /** An RFC 3339 time: messages before it. */
+  until?: string;
+  /** Continue after this seq (the last page's next_seq). */
+  after_seq?: number;
+  /** 0 is 200. */
+  limit?: number;
+}
+
+export interface AssistantMessage {
+  seq: number;
+  at: string;
+  role: AssistantRole;
+  text: string;
+  /** The text was cut for pages (a very long message). */
+  truncated?: boolean;
+}
+
+export type AssistantRole = "user" | "assistant" | (string & {});
+export const ASSISTANT_ROLES = ["user", "assistant"] as const;
+
+/**
+ * next_seq is set while there is more to read (pass it as after_seq), even when this page has no messages.
+ */
+export interface AssistantMessagesResult {
+  messages: AssistantMessage[];
+  next_seq?: number;
 }
 
 /**
@@ -4902,6 +5026,7 @@ export const CALLS: Record<string, Call> = {
   "connector.actions.list": { from: "hub", params: "ConnectorParams", result: "ConnectorTools" },
   "connector.actions.describe": { from: "hub", params: "ConnectorCallParams", result: "ConnectorDescribeResult" },
   "connector.actions.do": { from: "hub", params: "ConnectorDoParams", result: "ConnectorCallResult" },
+  "connector.recall": { from: "hub", params: "ConnectorRecallParams", result: "ConnectorRecallResult" },
   "connector.thread.page": { from: "hub", params: "ConnectorThreadParams", result: "ConnectorThreadPage" },
   "connector.thread.media": { from: "hub", params: "ConnectorMediaParams", result: "ConnectorMedia" },
   "connector.inbox.collect": { from: "hub", params: "ConnectorParams", result: "ConnectorCollectResult" },
@@ -4949,4 +5074,6 @@ export const CALLS: Record<string, Call> = {
   "event.todo.changed": { from: "hub", params: "TodoChangedEvent", event: true },
   "event.todo.decision": { from: "hub", params: "TodoDecisionEvent", event: true },
   "model.complete": { from: "program", params: "ModelCompleteParams", result: "ModelCompleteResult" },
+  "assistant.conversations": { from: "program", params: "AssistantConversationsParams", result: "AssistantConversationsResult" },
+  "assistant.messages": { from: "program", params: "AssistantMessagesParams", result: "AssistantMessagesResult" },
 };
