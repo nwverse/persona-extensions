@@ -1,0 +1,39 @@
+{
+  "manifest_version": 1,
+  "id": "gitlab",
+  "name": "GitLab 评审",
+  "version": "0.1.0",
+  "description": "在 Persona 里处理 GitLab 和自建 GitLab 的合并请求：查看分配、待评审的 MR、描述和讨论；批准、取消批准或发表评论前在手机上确认。个人访问令牌加密存在 hub，不合并 MR，不改项目设置。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/gitlab/README.md",
+  "tags": ["GitLab", "合并请求", "代码评审", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/gitlab-linux-amd64",
+      "linux-arm64": "bin/gitlab-linux-arm64",
+      "darwin-arm64": "bin/gitlab-darwin-arm64",
+      "darwin-amd64": "bin/gitlab-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "gitlab", "name": "GitLab", "capabilities": ["status", "tools", "actions"],
+      "hosts": [], "agent_tools": ["gitlab_*"],
+      "confirm_always": ["gitlab_approve", "gitlab_unapprove", "gitlab_comment"]
+    }],
+    "ui": [{"id": "reviews", "title": "合并请求", "placement": "nav_page", "icon": "pull_request"}]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "instance_url": {"type": "string", "title": "GitLab 实例地址", "description": "默认 https://gitlab.com；自建实例填 HTTPS 地址，同一台机器上的实例可写 http://127.0.0.1", "format": "uri", "default": "https://gitlab.com"}
+    }
+  },
+  "secrets": [{
+    "name": "access_token", "title": "GitLab 个人访问令牌",
+    "description": "在 GitLab 的个人访问令牌设置中创建，需要 read_api 读取，批准和评论需要 api；只通过 PRIVATE-TOKEN 发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
