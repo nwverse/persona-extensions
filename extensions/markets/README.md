@@ -155,10 +155,12 @@ node ../../sdk/ts/scripts/check-source-bundle.mjs --root "$PWD/build/package" \
   --timeout-ms 2000
 ```
 
-The source PR now targets real merged `main`. Official SDK delivery #165 was generated
-through the upstream helper after readiness #1570 merged, then passed its own hosted checks
-and merged. The copied canonical SDK is not handpatched. The formerly failing standalone
-Go-oracle layout was fixed separately by #166; the old failure remains recorded, not waived.
+The source PR targets real merged `main`. Official SDK delivery #165 followed readiness
+#1570; the subsequent delivery #173 supplies the already merged exact-initialization SDK
+through the same unchanged upstream helper. Both deliveries passed their own current-head
+hosted checks before merging. The copied SDK is not handpatched, and Markets' executable
+bundle remains byte-identical after adopting it. The formerly failing standalone Go-oracle
+layout was fixed separately by #166; the old failure remains recorded, not waived.
 Bun verification invokes its actual `bun test` runner, not Bun's script-mode `--test`.
 
 Retarget every open stacked extension PR to merged `main` before deleting its SDK base
