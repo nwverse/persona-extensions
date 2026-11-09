@@ -1,0 +1,40 @@
+{
+  "manifest_version": 1,
+  "id": "jira",
+  "name": "Jira 工作项",
+  "version": "0.1.0",
+  "description": "在 Persona 里处理 Jira 工作：分配给我的未完成事项，按项目看状态、负责人和评论；新建工作项和发评论前在手机上确认。个人访问令牌加密存在 hub，只发给你配置的实例。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/jira/README.md",
+  "tags": ["Jira", "项目", "工作项", "研发"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/jira-linux-amd64",
+      "linux-arm64": "bin/jira-linux-arm64",
+      "darwin-arm64": "bin/jira-darwin-arm64",
+      "darwin-amd64": "bin/jira-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "jira", "name": "Jira", "capabilities": ["status", "tools", "actions"],
+      "hosts": [], "agent_tools": ["jira_*"],
+      "confirm_always": ["jira_create", "jira_comment"]
+    }],
+    "ui": [{"id": "issues", "title": "工作项", "placement": "nav_page", "icon": "list"}]
+  },
+  "configuration": {
+    "type": "object",
+    "required": ["instance_url"],
+    "properties": {
+      "instance_url": {"type": "string", "title": "Jira 实例地址", "description": "你的 Jira 的 HTTPS 地址，可以带 context path，例如 https://jira.example.com；同一台机器上的实例可写 http://127.0.0.1:8080", "format": "uri"}
+    }
+  },
+  "secrets": [{
+    "name": "access_token", "title": "Jira 个人访问令牌",
+    "description": "在 Jira 的个人访问令牌设置中创建；只作为 Bearer 令牌发往配置的实例，不使用 Jira 主密码",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
