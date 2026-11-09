@@ -1,0 +1,40 @@
+{
+  "manifest_version": 1,
+  "id": "bitbucket",
+  "name": "Bitbucket 评审",
+  "version": "0.1.0",
+  "description": "在 Persona 里处理自建 Bitbucket 的代码评审：打开 PR 看项目/仓库、作者、审查人、描述和讨论；批准或取消批准前在手机上确认。个人访问令牌加密存在 hub，不合并 PR，不改仓库设置。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/bitbucket/README.md",
+  "tags": ["Bitbucket", "代码评审", "PR", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/bitbucket-linux-amd64",
+      "linux-arm64": "bin/bitbucket-linux-arm64",
+      "darwin-arm64": "bin/bitbucket-darwin-arm64",
+      "darwin-amd64": "bin/bitbucket-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "bitbucket", "name": "Bitbucket", "capabilities": ["status", "tools", "actions"],
+      "hosts": [], "agent_tools": ["bitbucket_*"],
+      "confirm_always": ["bitbucket_approve", "bitbucket_unapprove"]
+    }],
+    "ui": [{"id": "reviews", "title": "代码评审", "placement": "nav_page", "icon": "pull_request"}]
+  },
+  "configuration": {
+    "type": "object",
+    "required": ["instance_url"],
+    "properties": {
+      "instance_url": {"type": "string", "title": "Bitbucket 实例地址", "description": "你的 Bitbucket Server / Data Center 的 HTTPS 地址；同一台机器上的实例可写 http://127.0.0.1:7990", "format": "uri"}
+    }
+  },
+  "secrets": [{
+    "name": "access_token", "title": "Bitbucket 个人访问令牌",
+    "description": "在 Bitbucket 的个人访问令牌设置中创建；只作为 Bearer 令牌发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
