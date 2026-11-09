@@ -1,0 +1,40 @@
+{
+  "manifest_version": 1,
+  "id": "linkwarden",
+  "name": "Linkwarden 书签",
+  "version": "0.1.0",
+  "description": "在 Persona 里搜索自己 Linkwarden 实例的书签：按集合看链接，读笔记和划线。保存新链接或归档前在手机上确认；API key 加密存在 hub，只发给你配置的实例。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/linkwarden/README.md",
+  "tags": ["Linkwarden", "书签", "稍后读", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/linkwarden-linux-amd64",
+      "linux-arm64": "bin/linkwarden-linux-arm64",
+      "darwin-arm64": "bin/linkwarden-darwin-arm64",
+      "darwin-amd64": "bin/linkwarden-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "linkwarden", "name": "Linkwarden", "capabilities": ["status", "tools", "actions"],
+      "hosts": [], "agent_tools": ["linkwarden_*"],
+      "confirm_always": ["linkwarden_save", "linkwarden_archive"]
+    }],
+    "ui": [{"id": "links", "title": "书签", "placement": "nav_page", "icon": "link"}]
+  },
+  "configuration": {
+    "type": "object",
+    "required": ["instance_url"],
+    "properties": {
+      "instance_url": {"type": "string", "title": "Linkwarden 实例地址", "description": "你的实例的 HTTPS 地址，例如 https://linkwarden.example.com；同一台机器上的实例可写 http://127.0.0.1:3000", "format": "uri"}
+    }
+  },
+  "secrets": [{
+    "name": "api_key", "title": "Linkwarden API Key",
+    "description": "在 Linkwarden 的 API Keys 设置中创建；只作为 Bearer 令牌发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
