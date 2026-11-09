@@ -1,0 +1,41 @@
+{
+  "manifest_version": 1,
+  "id": "plane",
+  "name": "Plane 工作项",
+  "version": "0.1.0",
+  "description": "在 Persona 里处理 Plane 和自建 Plane 的项目工作：浏览项目和工作项，查看状态、优先级与描述；创建任务、调整状态和优先级前在手机上确认。API key 加密存在 hub，不删除任务，不管理项目。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/plane/README.md",
+  "tags": ["Plane", "工作项", "项目管理", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/plane-linux-amd64",
+      "linux-arm64": "bin/plane-linux-arm64",
+      "darwin-arm64": "bin/plane-darwin-arm64",
+      "darwin-amd64": "bin/plane-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "plane", "name": "Plane", "capabilities": ["status", "tools", "actions"],
+      "hosts": [], "agent_tools": ["plane_*"],
+      "confirm_always": ["plane_create_work_item", "plane_update_work_item"]
+    }],
+    "ui": [{"id": "work", "title": "Plane 工作项", "placement": "nav_page", "icon": "check"}]
+  },
+  "configuration": {
+    "type": "object",
+    "required": ["workspace_slug"],
+    "properties": {
+      "instance_url": {"type": "string", "title": "Plane API 地址", "description": "默认 https://api.plane.so；自建实例填 API 根地址或实例地址，自动补 /api/v1。远程实例必须使用 HTTPS", "format": "uri", "default": "https://api.plane.so"},
+      "workspace_slug": {"type": "string", "title": "Plane 工作区 slug", "description": "Plane 项目链接中 /workspaces/ 后的工作区标识"}
+    }
+  },
+  "secrets": [{
+    "name": "api_key", "title": "Plane API key",
+    "description": "在 Plane 的 API token 设置中创建；只通过 X-API-Key 发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
