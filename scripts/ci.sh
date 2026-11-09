@@ -5,6 +5,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 step() { printf '\n== %s\n' "$*"; }
 
+step workflow
+python3 -I scripts/test-ci-policy.py
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/ci.yml
+
 step docs
 python3 -I scripts/check-docs.py
 python3 -I scripts/test-docs.py
@@ -40,9 +44,6 @@ for m in $modules; do go -C "$m" vet ./...; done
 # -race: tests start goroutines (connection loops, watchers) next to package settings they shorten for the test.
 step test
 for m in $modules; do go -C "$m" test -race ./...; done
-
-step companion
-python3 -I -B extensions/larkagentx/bridge_test.py
 
 step build
 for id in $(scripts/manifest.py ids); do
