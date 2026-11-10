@@ -27,6 +27,7 @@
 - [Spaces](extensions/spaces.md): types, properties, relations and status flows you define yourself, with the overview card, views, four templates, rollups, derive and the assistant's seven tools; the MCP server needs the `spaces` binary on `PATH` or in `~/bin`, or `PERSONA_SPACES_BIN`.
 - [Custom looks](extensions/custom-looks.md): five avatars (looks) with pictures, colors and status dots; images only. A hub pack of the same id wins until it is removed, and the chosen look carries on.
 - [ChatGPT apps](extensions/chatgpt-apps.md): the apps connected to your ChatGPT account and the ChatGPT plugin marketplace for the assistant, through ChatGPT's own (non-public) web backend: device-code sign-in on the phone, read tools run directly, every change a `confirm_always` action approved on the phone, plugin pages, tokens only in the hub's encrypted secrets; terms and risk.
+- [1Password](extensions/onepassword.md): your 1Password vaults through a service account, read-only: list vaults, find items by title, tag or website, see an item's fields and their `op://` references; the token checked before it is saved, values never leave the extension, redaction, status and limits.
 
 ## Developing and maintaining extensions
 
