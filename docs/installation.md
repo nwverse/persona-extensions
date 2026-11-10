@@ -66,5 +66,6 @@ Legacy protocol names and UI placements, such as `plugin_protocol` and `plugin_p
 - [Custom looks](extensions/custom-looks.md#setup): no settings. A hub pack of the same id keeps showing until it is removed; the chosen look does not change either way.
 - [Currency and units](../extensions/currency/README.md): no account. The hub reaches `api.frankfurter.dev` for dated ECB reference rates; local unit conversions need no network.
 - [ChatGPT apps](extensions/chatgpt-apps.md#sign-in): your own ChatGPT account. Sign in from the extension's details with a device code (the sign-in page says Codex). The hub must reach `chatgpt.com`, `auth.openai.com` and `*.oaiusercontent.com`. It uses ChatGPT's non-public web backend; see the guide before installing.
+- [1Password](extensions/onepassword.md#setting-it-up): a 1Password service account with read access to the vaults Persona may look into. Paste its token (`ops_…`) into the extension's settings; the hub checks it with 1Password before saving it, except the first time, when the connection page shows the result. The hub must reach `*.1password.com` (or `.ca` / `.eu`, where the account is).
 
 Do not paste credentials into repository files or installation examples. Configure accounts through the hub/app's protected credential flow.
