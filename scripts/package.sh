@@ -21,6 +21,24 @@ cp "$out/persona-extension.json" "$out/persona-plugin.json"
 for extra in skills assistant; do
   [ -d "$src/$extra" ] && cp -R "$src/$extra" "$out/"
 done
+# Native TypeScript source packages ship the import-free bundle and its verified digest.
+if python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("runtime", {}).get("mode") == "deno" else 1)' "$manifest"; then
+  python3 -I - "$src" "$out" <<'PY'
+import hashlib, json, pathlib, sys
+src, out = map(pathlib.Path, sys.argv[1:])
+m = json.loads((src / "persona-extension.json").read_text())
+source = m["runtime"]["source"]
+bundle = src / source["bundle"]
+data = bundle.read_bytes()
+if not data or hashlib.sha256(data).hexdigest() != source["sha256"]:
+    raise SystemExit("source bundle digest does not match the manifest")
+for name in ("persona-extension.json", "persona-plugin.json"):
+    (out / name).write_bytes((out / name).read_bytes())
+target = out / source["bundle"]
+target.parent.mkdir(parents=True, exist_ok=True)
+target.write_bytes(data)
+PY
+fi
 # A declarative extension (no runtime: skills, prompts, themes, a pack…) has no program to build.
 # -I: with -c, Python would otherwise put the cwd (repo root, an untrusted PR tree in CI) first on sys.path,
 # letting a planted json.py shadow the stdlib module. The snippet uses only stdlib json/sys and an explicit argv path.
