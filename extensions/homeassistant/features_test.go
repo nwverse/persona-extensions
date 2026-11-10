@@ -1055,6 +1055,24 @@ func TestWSAuth(t *testing.T) {
 
 // ---- the page, with the registry ----
 
+func TestDayTitleAroundMidnight(t *testing.T) {
+	for _, loc := range []*time.Location{time.UTC, time.FixedZone("UTC+08", 8*60*60)} {
+		now := time.Date(2026, 11, 11, 0, 10, 0, 0, loc)
+		for _, tc := range []struct {
+			day  time.Time
+			want string
+		}{
+			{time.Date(2026, 11, 11, 0, 5, 0, 0, loc), "今天"},
+			{time.Date(2026, 11, 10, 23, 59, 0, 0, loc), "昨天"},
+			{time.Date(2026, 11, 9, 23, 59, 0, 0, loc), "11-09 周一"},
+		} {
+			if got := dayTitle(tc.day, now); got != tc.want {
+				t.Errorf("dayTitle(%s, %s) = %q, want %q", tc.day, now, got, tc.want)
+			}
+		}
+	}
+}
+
 // TestPageDevices: the page on a home like the user's, where a ceiling light's device also has an auxiliary light
 // switch and a power-on default (config) switch. The overview names what is on and leaves the settings out; the area
 // is a row per device, the settings folded into it; a light and a plug switch from their rows; the open light shows
@@ -1093,7 +1111,8 @@ func TestPageDevices(t *testing.T) {
 	contains(t, texts(res.View), "## 「吸顶灯」的设置和其他项 · 2", "row 吸顶灯 厂商自定义 通电默认状态|设置 · 开关|", "→open:switch.ceiling_power_default", "收起")
 
 	// 动态: the last two hours, newest first, a noisy sensor one row, hidden areas left out
-	now := time.Now().UTC()
+	localNow := time.Now().In(a.loc())
+	now := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 12, 0, 0, 0, a.loc())
 	at := func(m int) string { return now.Add(-time.Duration(m) * time.Minute).Format(time.RFC3339) }
 	rows := []string{
 		`{"when":"` + at(30) + `","name":"客厅吸顶灯","state":"on","entity_id":"light.ceiling","context_entity_id":"automation.night","context_name":"夜灯"}`,
