@@ -1,0 +1,39 @@
+{
+  "manifest_version": 1,
+  "id": "outline",
+  "name": "Outline 知识库",
+  "version": "0.1.0",
+  "description": "在 Persona 中搜索 Outline 知识库，阅读 token 可见的 Markdown 文档和有效集合，确认后创建不公开的文档草稿。API key 加密保存在 hub；自托管服务要求 HTTPS，不发布、删除或移动文档，不修改权限。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/outline/README.md",
+  "tags": ["Outline", "知识库", "文档", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/outline-linux-amd64",
+      "linux-arm64": "bin/outline-linux-arm64",
+      "darwin-arm64": "bin/outline-darwin-arm64",
+      "darwin-amd64": "bin/outline-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "outline", "name": "Outline", "capabilities": ["status", "tools", "actions"],
+      "hosts": [], "agent_tools": ["outline_*"],
+      "confirm_always": ["outline_create_document"]
+    }],
+    "ui": [{"id": "knowledge", "title": "Outline 知识库", "placement": "nav_page", "icon": "doc"}]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "instance_url": {"type": "string", "title": "Outline 实例地址", "description": "例如 https://app.getoutline.com 或 https://outline.example.com；仅本机允许 HTTP，会自动追加 /api", "format": "uri", "default": "https://app.getoutline.com"}
+    }
+  },
+  "secrets": [{
+    "name": "api_token", "title": "Outline API key",
+    "description": "在 Outline 设置的 API & Apps 中创建；仅作为 Bearer 令牌发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
