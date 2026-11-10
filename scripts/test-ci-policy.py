@@ -119,7 +119,11 @@ class PublicationPolicyTests(unittest.TestCase):
         sign = job(self.text, "sign")
         self.assertIn("needs: [anonymous]", sign)
         self.assertIn("if: needs.anonymous.result == 'success'", sign)
+        self.assertIn("needs.anonymous.outputs.unchanged != 'true'", sign)
         self.assertIn("secrets.EXTENSION_MARKET_SIGNING_KEY", sign)
+        self.assertIn("cmp -s persona-extensions.json", anonymous)
+        self.assertIn("steps.current-catalog.outputs.unchanged != 'true'", anonymous)
+        self.assertIn("outputs:\n      unchanged:", anonymous)
 
     def test_publication_aggregate_rejects_skipped_stages(self):
         aggregate = job(self.text, "publication-required")
@@ -165,9 +169,25 @@ class PublicationPolicyTests(unittest.TestCase):
                         "PACKAGES_RESULT": packages,
                         "ANONYMOUS_RESULT": anonymous,
                         "SIGN_RESULT": sign,
+                        "CATALOG_UNCHANGED": "false",
                     },
                 )
                 self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
+    def test_unchanged_catalog_is_an_explicit_successful_noop(self):
+        command = job(self.text, "publication-required").split("run: |\n", 1)[1]
+        for event in ("push", "workflow_dispatch"):
+            result = subprocess.run(["bash", "-c", command], check=False, capture_output=True, text=True,
+                                    env={**os.environ, "GITHUB_EVENT_NAME": event,
+                                         "PACKAGES_RESULT": "success" if event == "push" else "skipped",
+                                         "ANONYMOUS_RESULT": "success", "SIGN_RESULT": "skipped", "CATALOG_UNCHANGED": "true"})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("no catalog change", result.stdout)
+        for anonymous, sign in (("success", "success"), ("failure", "skipped")):
+            with self.subTest(anonymous=anonymous, sign=sign):
+                result = subprocess.run(["bash", "-c", command], check=False, capture_output=True, text=True,
+                                        env={**os.environ, "GITHUB_EVENT_NAME": "push", "PACKAGES_RESULT": "success",
+                                             "ANONYMOUS_RESULT": anonymous, "SIGN_RESULT": sign, "CATALOG_UNCHANGED": "true"})
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

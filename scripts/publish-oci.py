@@ -402,6 +402,24 @@ def validate_plan(plan, original, body, head_sha):
     return entries
 
 
+def unchanged_catalog(plan, catalog_path, head_sha, registry_factory=oci.Registry):
+    """Revalidate a current signed catalog without inventing a new generation or signature."""
+    envelope = pathlib.Path(catalog_path).read_bytes()
+    original, body = catalog.verified(catalog_path)
+    entries = validate_plan(plan, original, body, head_sha)
+    if entries or plan["removed_ids"]:
+        raise ValueError("unchanged catalog requires an empty version plan")
+    for entry in body["extensions"]:
+        m = entry["manifest"]
+        registry = registry_factory(oci.repository(m["id"]))
+        for package in entry["packages"]:
+            if not package["url"].startswith("oci:"):
+                raise ValueError("a current catalog must contain OCI references")
+            oci.verify_package(registry, m["id"], m["version"], package,
+                               archive_validator=lambda data: check_archive(data, m, platform=catalog.package_platform(package)))
+    return envelope
+
+
 def generate_payload(plan, catalog_path, head_sha, registry_factory=oci.Registry):
     original, body = catalog.verified(catalog_path)
     entries = validate_plan(plan, original, body, head_sha)
@@ -438,15 +456,19 @@ def generate_payload(plan, catalog_path, head_sha, registry_factory=oci.Registry
     return catalog.encode(catalog.validate_payload(body))
 
 
-def catalog_phase(args):
+def catalog_phase(args, registry_factory=oci.Registry):
     cutover_gate(args)
     plan = catalog.loads(pathlib.Path(args.plan).read_bytes())
-    if plan.get("catalog_update_required") is not True:
-        # Signing an unchanged catalog would only rotate its generation and open an empty update.
-        raise ValueError("plan has no catalog change; nothing to sign")
-    payload = generate_payload(plan, args.catalog, args.head_sha)
     output = pathlib.Path(args.output)
     output.mkdir(parents=True, exist_ok=False)
+    if plan.get("catalog_update_required") is not True:
+        # The signed catalog and its immutable generation already describe this source tree.
+        # Revalidate every OCI payload anonymously, then reuse the exact verified envelope.
+        (output / "catalog.json").write_bytes(unchanged_catalog(plan, args.catalog, args.head_sha, registry_factory))
+        (output / "payload.json").write_bytes(catalog.verified(args.catalog)[0])
+        print("anonymous gate: ok; current signed catalog verified, no new signature needed")
+        return
+    payload = generate_payload(plan, args.catalog, args.head_sha, registry_factory)
     (output / "payload.json").write_bytes(payload)
     print("anonymous gate: ok; payload ready for independent secret signing step")
 
