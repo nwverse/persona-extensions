@@ -26,6 +26,7 @@
 - [mnemo](../extensions/mnemo/README.md): let the Claude assistant search past coding-agent sessions through mnemo's MCP server, when mnemo is installed on its computer; read-only tools only.
 - [Spaces](extensions/spaces.md): types, properties, relations and status flows you define yourself, with the overview card, views, four templates, rollups, derive and the assistant's seven tools; the MCP server needs the `spaces` binary on `PATH` or in `~/bin`, or `PERSONA_SPACES_BIN`.
 - [Custom looks](extensions/custom-looks.md): five avatars (looks) with pictures, colors and status dots; images only. A hub pack of the same id wins until it is removed, and the chosen look carries on.
+- [ChatGPT apps](extensions/chatgpt-apps.md): the apps connected to your ChatGPT account and the ChatGPT plugin marketplace for the assistant, through ChatGPT's own (non-public) web backend: device-code sign-in on the phone, read tools run directly, every change a `confirm_always` action approved on the phone, plugin pages, tokens only in the hub's encrypted secrets; terms and risk.
 
 ## Developing and maintaining extensions
 
