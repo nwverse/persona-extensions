@@ -1,0 +1,38 @@
+{
+  "manifest_version": 1,
+  "id": "mattermost",
+  "name": "Mattermost 未读消息",
+  "version": "0.1.0",
+  "description": "在 Persona 中查看 Mattermost 当前用户的团队、频道未读和 @提及，阅读频道消息及发送者，按时间向前翻页。API token 加密保存在 hub；自托管服务要求 HTTPS，只读，不标记已读、不发送消息、不下载附件、不修改成员。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/mattermost/README.md",
+  "tags": ["Mattermost", "未读消息", "频道", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/mattermost-linux-amd64",
+      "linux-arm64": "bin/mattermost-linux-arm64",
+      "darwin-arm64": "bin/mattermost-darwin-arm64",
+      "darwin-amd64": "bin/mattermost-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "mattermost", "name": "Mattermost", "capabilities": ["status", "tools"],
+      "hosts": [], "agent_tools": ["mattermost_*"]
+    }],
+    "ui": [{"id": "inbox", "title": "Mattermost 未读消息", "placement": "nav_page", "icon": "doc"}]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "instance_url": {"type": "string", "title": "Mattermost 实例地址", "description": "例如 https://mattermost.example.com；仅本机允许 HTTP，会自动追加 /api/v4", "format": "uri"}
+    }
+  },
+  "secrets": [{
+    "name": "api_token", "title": "Mattermost personal access token",
+    "description": "在 Mattermost 个人访问令牌中创建；仅作为 Bearer 令牌发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
