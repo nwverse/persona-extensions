@@ -1,0 +1,32 @@
+{
+  "manifest_version": 1,
+  "id": "lunchmoney",
+  "name": "Lunch Money 账务",
+  "version": "0.1.0",
+  "description": "在 Persona 中查询 Lunch Money v2 近期收支、按日期和分类筛选、查看手动及同步账户余额和分类。API token 加密保存在 hub；固定官方 HTTPS API，只读，不修改交易、不触发同步、不管理账户。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/lunchmoney/README.md",
+  "tags": ["Lunch Money", "个人账务", "收支", "只读"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/lunchmoney-linux-amd64",
+      "linux-arm64": "bin/lunchmoney-linux-arm64",
+      "darwin-arm64": "bin/lunchmoney-darwin-arm64",
+      "darwin-amd64": "bin/lunchmoney-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "lunchmoney", "name": "Lunch Money", "capabilities": ["status", "tools"],
+      "hosts": [], "agent_tools": ["lunchmoney_*"]
+    }],
+    "ui": [{"id": "finance", "title": "Lunch Money 账务", "placement": "nav_page", "icon": "doc"}]
+  },
+  "secrets": [{
+    "name": "api_token", "title": "Lunch Money API token",
+    "description": "在 Lunch Money 开发者页面创建；仅作为 Bearer 令牌发往 https://api.lunchmoney.dev/v2",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
