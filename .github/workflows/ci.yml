@@ -197,7 +197,7 @@ jobs:
       contents: read
       actions: read
     outputs:
-      catalog_unchanged: ${{ steps.current-catalog.outputs.catalog_unchanged }}
+      payload: ${{ steps.payload.outputs.path }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -227,18 +227,17 @@ jobs:
           GH_TOKEN: ${{ github.token }} # GitHub identity check only; registry clients are explicitly anonymous.
         run: python3 -I scripts/publish-oci.py catalog --confirm-cutover --plan "$RUNNER_TEMP/package-plan/plan.json" --output "$RUNNER_TEMP/unsigned"
       - name: Read the unchanged signed catalog
-        id: current-catalog
+        id: payload
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           if cmp -s persona-extensions.json "$RUNNER_TEMP/unsigned/catalog.json"; then
             printf '%s\n' 'Signed catalog is current; no new signature or catalog PR is needed.'
-            printf '%s\n' 'catalog_unchanged=true' >> "$GITHUB_OUTPUT"
           else
-            printf '%s\n' 'catalog_unchanged=false' >> "$GITHUB_OUTPUT"
+            printf 'path=%s\n' "$RUNNER_TEMP/unsigned/payload.json" >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/upload-artifact@v4
-        if: steps.current-catalog.outputs.catalog_unchanged != 'true'
+        if: steps.payload.outputs.path != ''
         with:
           overwrite: true
           name: verified-unsigned-payload
@@ -246,7 +245,7 @@ jobs:
           if-no-files-found: error
   sign:
     needs: [anonymous]
-    if: needs.anonymous.result == 'success' && needs.anonymous.outputs.catalog_unchanged != 'true'
+    if: needs.anonymous.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -257,12 +256,25 @@ jobs:
           persist-credentials: false
       - name: Require a new empty artifact directory
         run: mkdir "$RUNNER_TEMP/unsigned"
+      - name: Locate a changed payload without exposing a secret
+        id: artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=verified-unsigned-payload&per_page=1" --jq '.artifacts[0].id' > "$RUNNER_TEMP/artifact-id"
       - uses: actions/download-artifact@v4
+        if: needs.anonymous.outputs.payload != ''
         with:
-          name: verified-unsigned-payload
+          artifact-ids: ${{ steps.artifact.outputs.id }}
           path: ${{ runner.temp }}/unsigned
+      - name: Accept the verified unchanged catalog without a signing secret
+        if: needs.anonymous.outputs.payload == ''
+        run: printf '%s\n' 'Anonymous verification confirmed the current signed catalog; no new signature is needed.'
+      - name: Require a changed payload before signing
+        if: needs.anonymous.outputs.payload != ''
+        run: test -s "$RUNNER_TEMP/unsigned/payload.json"
       # No build/test/untrusted extension code in this job. The secret belongs only to this step.
       - name: Sign raw payload with the approved existing key
+        if: needs.anonymous.outputs.payload != ''
         env:
           EXTENSION_MARKET_SIGNING_KEY: ${{ secrets.EXTENSION_MARKET_SIGNING_KEY }}
         run: |
@@ -271,6 +283,7 @@ jobs:
           python3 -I scripts/sign-index.py verify --catalog "$RUNNER_TEMP/signed/persona-extensions.json"
           printf '%s\n' 'Catalog artifact only: create or reuse a dedicated catalog-update issue before opening its PR. Put Refs #<catalog-issue-number> in that PR body; #146 is code tracking only. Require local verification and signed base continuity; never push the catalog directly to main.' > "$RUNNER_TEMP/signed/PR-body.txt"
       - uses: actions/upload-artifact@v4
+        if: needs.anonymous.outputs.payload != ''
         with:
           overwrite: true
           name: signed-oci-catalog
@@ -292,7 +305,7 @@ jobs:
           PACKAGES_RESULT: ${{ needs.packages.result }}
           ANONYMOUS_RESULT: ${{ needs.anonymous.result }}
           SIGN_RESULT: ${{ needs.sign.result }}
-          CATALOG_UNCHANGED: ${{ needs.anonymous.outputs.catalog_unchanged }}
+          CATALOG_UNCHANGED: ${{ needs.anonymous.outputs.payload == '' }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$PACKAGES_RESULT" != success ]; then
             printf 'Main publication did not publish or verify packages: %s\n' "$PACKAGES_RESULT"
