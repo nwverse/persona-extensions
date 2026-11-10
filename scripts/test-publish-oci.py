@@ -174,6 +174,36 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
         self.assertEqual(package, self.candidate["packages"][0])
         self.assertFalse(any(c[0] in ("POST", "PUT") for c in self.server.calls))
 
+    def test_unchanged_catalog_reverifies_and_reuses_exact_signature(self):
+        self.body["extensions"] = [copy.deepcopy(self.candidate)]
+        raw, _ = self.write_signed(self.body)
+        plan = dict(self.plan, base_payload_sha256=oci.digest(raw), entries=[], catalog_update_required=False)
+        with mock.patch.dict(os.environ, isolated_environ(GHCR_TOKEN="synthetic-unused"), clear=True):
+            result = publisher.unchanged_catalog(plan, self.catalog_path, SHA,
+                                                 lambda path: oci.Registry(path, transport=self.server))
+        self.assertEqual(result, self.catalog_path.read_bytes())
+        self.assertEqual(catalog.verified(self.catalog_path)[0], raw)
+        self.assertFalse(any(c[0] in ("POST", "PUT", "DELETE") for c in self.server.calls))
+        for invalid in (dict(plan, entries=[self.candidate]), dict(plan, removed_ids=["demo"]),
+                        dict(plan, base_payload_sha256="sha256:" + "2" * 64)):
+            factory = mock.Mock()
+            with self.assertRaises(ValueError):
+                publisher.unchanged_catalog(invalid, self.catalog_path, SHA, factory)
+            factory.assert_not_called()
+
+    def test_unchanged_catalog_writes_verified_payload_and_envelope(self):
+        self.body["extensions"] = [copy.deepcopy(self.candidate)]
+        raw, _ = self.write_signed(self.body)
+        args = self.args(plan=str(self.directory / "plan.json"), output=str(self.directory / "result"), catalog=str(self.catalog_path))
+        import json
+        with open(args.plan, "w") as stream:
+            json.dump(dict(self.plan, base_payload_sha256=oci.digest(raw), entries=[], catalog_update_required=False), stream)
+        with mock.patch.object(publisher, "cutover_gate"), \
+             mock.patch.dict(os.environ, isolated_environ(GHCR_TOKEN="synthetic-unused"), clear=True):
+            publisher.catalog_phase(args, lambda path: oci.Registry(path, transport=self.server))
+        self.assertEqual((self.directory / "result/catalog.json").read_bytes(), self.catalog_path.read_bytes())
+        self.assertEqual((self.directory / "result/payload.json").read_bytes(), catalog.verified(self.catalog_path)[0])
+
     def test_same_version_is_a_noop_preventing_catalog_pr_loops(self):
         self.body["extensions"] = [copy.deepcopy(self.candidate)]
         self.assertEqual(publisher.desired_entries(self.body, "versions"), [])

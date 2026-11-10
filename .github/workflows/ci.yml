@@ -193,6 +193,8 @@ jobs:
     permissions:
       contents: read
       actions: read
+    outputs:
+      unchanged: ${{ steps.current-catalog.outputs.unchanged }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -221,7 +223,19 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }} # GitHub identity check only; registry clients are explicitly anonymous.
         run: python3 -I scripts/publish-oci.py catalog --confirm-cutover --plan "$RUNNER_TEMP/package-plan/plan.json" --output "$RUNNER_TEMP/unsigned"
+      - name: Read the unchanged signed catalog
+        id: current-catalog
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if cmp -s persona-extensions.json "$RUNNER_TEMP/unsigned/catalog.json"; then
+            printf '%s\n' 'Signed catalog is current; no new signature or catalog PR is needed.'
+            printf '%s\n' 'unchanged=true' >> "$GITHUB_OUTPUT"
+          else
+            printf '%s\n' 'unchanged=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/upload-artifact@v4
+        if: steps.current-catalog.outputs.unchanged != 'true'
         with:
           overwrite: true
           name: verified-unsigned-payload
@@ -229,7 +243,7 @@ jobs:
           if-no-files-found: error
   sign:
     needs: [anonymous]
-    if: needs.anonymous.result == 'success'
+    if: needs.anonymous.result == 'success' && needs.anonymous.outputs.unchanged != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -275,9 +289,17 @@ jobs:
           PACKAGES_RESULT: ${{ needs.packages.result }}
           ANONYMOUS_RESULT: ${{ needs.anonymous.result }}
           SIGN_RESULT: ${{ needs.sign.result }}
+          CATALOG_UNCHANGED: ${{ needs.anonymous.outputs.unchanged }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$PACKAGES_RESULT" != success ]; then
             printf 'Main publication did not publish or verify packages: %s\n' "$PACKAGES_RESULT"
+            exit 1
+          fi
+          if [ "$CATALOG_UNCHANGED" = true ] && [ "$ANONYMOUS_RESULT" = success ] && [ "$SIGN_RESULT" = skipped ]; then
+            printf '%s\n' 'Existing signed catalog and all OCI payloads verified; no catalog change is required.'
+            exit 0
+          elif [ "$CATALOG_UNCHANGED" = true ] || { [ "$ANONYMOUS_RESULT" = success ] && [ "$SIGN_RESULT" = skipped ]; }; then
+            printf '%s\n' 'Catalog change output is inconsistent with the signing result.'
             exit 1
           fi
           if [ "$ANONYMOUS_RESULT" != success ] || [ "$SIGN_RESULT" != success ]; then

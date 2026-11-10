@@ -419,18 +419,19 @@ class WorkflowRegressions(unittest.TestCase):
             with self.subTest(package=package), self.assertRaises(ValueError):
                 catalog.package_platform(package)
 
-    def test_unchanged_plan_is_not_signed(self):
+    def test_unchanged_plan_reuses_verified_catalog_without_signing(self):
         with tempfile.TemporaryDirectory(prefix="noop-plan-") as directory:
             plan = pathlib.Path(directory) / "plan.json"
             plan.write_bytes(catalog.encode({"catalog_update_required": False, "entries": [], "removed_ids": []}))
             args = argparse.Namespace(plan=str(plan), catalog=catalog.CATALOG, head_sha="0" * 40,
                                       output=str(pathlib.Path(directory) / "out"))
             with mock.patch.object(publisher, "cutover_gate"), \
+                    mock.patch.object(publisher, "unchanged_catalog", return_value=catalog.CATALOG.read_bytes()) as unchanged, \
                     mock.patch.object(publisher, "generate_payload") as generate:
-                with self.assertRaisesRegex(ValueError, "nothing to sign"):
-                    publisher.catalog_phase(args)
+                publisher.catalog_phase(args)
                 generate.assert_not_called()
-            self.assertFalse((pathlib.Path(directory) / "out").exists())
+                self.assertEqual(unchanged.call_args.args[1:3], (catalog.CATALOG, "0" * 40))
+            self.assertEqual((pathlib.Path(directory) / "out/catalog.json").read_bytes(), catalog.CATALOG.read_bytes())
 
     def test_version_platform_tuple_is_injective(self):
         self.assertNotEqual(oci.version_tag("1.2.3", "linux-amd64"), oci.version_tag("1.2.3-linux-amd64", "any"))

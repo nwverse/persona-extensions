@@ -9,6 +9,7 @@
 - [Home Assistant](extensions/homeassistant.md): areas, devices, controls and history from your own Home Assistant; the logbook, statistics and energy, automations, calls by area, speakers, cameras, watch rules that notify or wake the assistant, confirmed assistant writes, writable domains and the sandbox.
 - [Hacker News](extensions/hackernews.md): public Top, New, Best, Ask HN and Show HN stories, top-level comments, filtering, the localized app view and assistant tools.
 - [Termwise](extensions/termwise.md): a reading page with translation mode and vocabulary mode. Vocabulary mode underlines candidate words; choosing one shows the gloss and can remember it.
+- [Search as Code](extensions/search-as-code.md): executable Search-as-Code pipelines over local coding-agent session transcripts and repositories (`\|>` operators for `Without tools` conversational filtering, regex matching, cross-session file correlation, grouping and ranking), with step execution traces, reusable search recipes and a local MCP server (`search-as-code mcp`).
 - [LINUX DO](extensions/linuxdo.md): public topics, filtering, request limits and the app view.
 - [Sentry](extensions/sentry.md): the errors and crashes of the hub, the web and the apps, scrubbed by the hub, sent to your Sentry project; events, settings, limits and network.
 - [V2EX](extensions/v2ex.md): public hot, latest and followed-node topics, filtering, request limits and the app view.
@@ -20,6 +21,8 @@
 - [Discord](extensions/discord.md): your own bot as a read-only source: setting it up, what goes into the knowledge base and how nothing is skipped, the assistant tools, status, network and the sandbox.
 - [X](extensions/x.md): two optional ways in: the official X API with your own developer app (mentions in the inbox, a daily-budgeted digest of your timeline or lists, cost and X's terms), or the `grok` CLI on the hub signed in with a SuperGrok or X Premium+ subscription (searches chosen accounts and topics, no X keys); read-only assistant tools and retention.
 - [Bypass auto-allow (Claude Code)](extensions/agent-bypass-allow.md): auto-allow Claude Code's remaining Bash, read-only and subagent prompts in bypassPermissions sessions on chosen computers; deletion and overwriting ask unless inside temporary or work directories (or a setting allows them all); force pushes, permission changes and your own ask/deny rules still ask; audit log and limits.
+- [ATS](../extensions/ats/README.md): self-contained Go native agent task scheduler with tag-driven priority/difficulty and generic quota-provider scheduling, a queue navigation page, idempotent `todos.write` outcome decision write-back, read-only MCP tools (`list_tasks`, `get_task`, `get_evidence`) and `enqueue_task` (asks every time).
+- [Disklessly](extensions/disklessly.md): fleet disk watermarks, rebuildable developer cache cleanup with `df`-measured freed space, dry-run plans, and coding-agent cold session tiering across local and SSH machines.
 - [mnemo](../extensions/mnemo/README.md): let the Claude assistant search past coding-agent sessions through mnemo's MCP server, when mnemo is installed on its computer; read-only tools only.
 
 ## Developing and maintaining extensions
