@@ -1,0 +1,39 @@
+{
+  "manifest_version": 1,
+  "id": "immich",
+  "name": "Immich 照片库",
+  "version": "0.1.0",
+  "description": "在 Persona 中按文件名或自然语言搜索 Immich 照片和视频，查看收藏、相册、拍摄时间和 EXIF，确认后切换收藏。API key 加密保存在 hub；实例要求 HTTPS，不自动下载媒体、不删除资产、不修改分享或成员权限。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/immich/README.md",
+  "tags": ["Immich", "照片", "相册", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/immich-linux-amd64",
+      "linux-arm64": "bin/immich-linux-arm64",
+      "darwin-arm64": "bin/immich-darwin-arm64",
+      "darwin-amd64": "bin/immich-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "immich", "name": "Immich", "capabilities": ["status", "tools", "actions"],
+      "hosts": [], "agent_tools": ["immich_*"],
+      "confirm_always": ["immich_set_favorite"]
+    }],
+    "ui": [{"id": "library", "title": "Immich 照片库", "placement": "nav_page", "icon": "doc"}]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "instance_url": {"type": "string", "title": "Immich 实例地址", "description": "例如 https://immich.example.com；仅本机允许 HTTP，会自动追加 /api", "format": "uri"}
+    }
+  },
+  "secrets": [{
+    "name": "api_token", "title": "Immich API key",
+    "description": "在 Immich 账户设置的 API Keys 中创建，授予资产和相册读取及资产更新权限；仅作为 x-api-key 发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
