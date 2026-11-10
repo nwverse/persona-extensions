@@ -7,8 +7,10 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -17,7 +19,9 @@ const (
 	AssistantPagesMost = 8
 )
 
-var assistantPageName = regexp.MustCompile(`^[\p{L}\p{N}_-]{1,64}$`)
+// assistantPageName is compiled on first use: 64 copies of two Unicode classes take about 1 ms and 2.5 MB, paid by
+// every program that links this package when it starts (a hook, #1308).
+var assistantPageName = sync.OnceValue(func() *regexp.Regexp { return regexp.MustCompile(`^[\p{L}\p{N}_-]{1,64}$`) })
 
 func ParseAssistantView(raw json.RawMessage) (*View, error) {
 	if len(raw) > AssistantViewMost {
@@ -112,7 +116,7 @@ func CheckAssistantView(v *View) error {
 		return fmt.Errorf("pages: at most %d named pages", AssistantPagesMost)
 	}
 	for name, page := range v.Pages {
-		if !assistantPageName.MatchString(name) {
+		if !assistantPageName().MatchString(name) {
 			return fmt.Errorf("pages.%s: use 1–64 letters, numbers, underscores or hyphens", name)
 		}
 		if len(page.Pages) > 0 {
@@ -135,6 +139,14 @@ func CheckAssistantView(v *View) error {
 			for j, e := range s.Items {
 				if e.Type == "field" && e.Kind == "secret" {
 					return fmt.Errorf("%s.sections[%d].items[%d]: assistant cards must not collect secrets", where, i, j)
+				}
+				// UI version 6: no extension serves an assistant card's pictures, and a control acts at once, which a
+				// card's actions (a reply the user confirms) do not.
+				if HasImageRef(&e) {
+					return fmt.Errorf("%s.sections[%d].items[%d]: assistant cards show pictures by https url, not ref", where, i, j)
+				}
+				if e.Control != nil || slices.ContainsFunc(e.Tiles, func(t Tile) bool { return t.Control != nil }) {
+					return fmt.Errorf("%s.sections[%d].items[%d]: assistant cards have no controls; use a button", where, i, j)
 				}
 			}
 		}
@@ -211,7 +223,7 @@ func CheckAssistantOpen(target string) error {
 	if u.Scheme == "https" {
 		return nil
 	}
-	if (u.Scheme != "persona" && u.Scheme != "jarvis") || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
+	if !assistantURLScheme(u.Scheme) || u.RawQuery != "" || u.Fragment != "" || u.Opaque != "" {
 		return errors.New("open: use https or a persona session, task, kb or file link")
 	}
 	parts := strings.Split(strings.TrimPrefix(u.EscapedPath(), "/"), "/")

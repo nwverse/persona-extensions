@@ -29,9 +29,21 @@ type Host struct {
 	Init wire.InitializeResult // what initialize answered
 }
 
-// Start opens the protocol with the program (initialize, with config if given) and fails the test if it cannot.
-// The connectors and channels the manifest declares are the active ones, as the hub has them.
+// Start opens the protocol with the program (initialize, with config if given) and fails the test if it cannot. It
+// sends what the real hub does: the manifest's contributions as the active ones, its permissions as granted, every
+// hub capability this SDK knows (wire.HubCapabilities). StartWith changes any of it.
 func Start(t testing.TB, manifest []byte, run Run, config ...json.RawMessage) *Host {
+	t.Helper()
+	return StartWith(t, manifest, run, func(p *wire.InitializeParams) {
+		if len(config) > 0 {
+			p.Config = config[0]
+		}
+	})
+}
+
+// StartWith is Start with initialize's params as adjust leaves them: another grant, the hub's extension point
+// versions (none by default), a locale, the user's secrets.
+func StartWith(t testing.TB, manifest []byte, run Run, adjust func(*wire.InitializeParams)) *Host {
 	t.Helper()
 	var m wire.Manifest
 	if err := json.Unmarshal(manifest, &m); err != nil {
@@ -47,25 +59,48 @@ func Start(t testing.TB, manifest []byte, run Run, config ...json.RawMessage) *H
 			t.Errorf("%s", p)
 		}
 	})
-	active := map[string][]string{}
-	if m.Contributes != nil {
-		for _, c := range m.Contributes.Connectors {
-			active["connectors"] = append(active["connectors"], c.ID)
-		}
-		for _, c := range m.Contributes.Channel {
-			active["channel"] = append(active["channel"], c.ID)
-		}
-	}
 	info := &wire.ExtensionInfo{ID: m.ID, Version: m.Version, Dir: t.TempDir(), DataDir: t.TempDir()}
-	init := wire.InitializeParams{Protocol: ext.Protocol, Extension: info, Plugin: info, Active: active,
-		Hub: wire.HubInfo{Build: 0, Role: wire.HubRoleCenter, Timezone: "UTC", ExtensionPoints: map[string]int{}}}
-	if len(config) > 0 {
-		init.Config = config[0]
+	init := wire.InitializeParams{Protocol: ext.Protocol, Extension: info, Plugin: info, Active: active(manifest),
+		Hub: wire.HubInfo{Build: 0, Role: wire.HubRoleCenter, Timezone: "UTC", ExtensionPoints: map[string]int{},
+			Capabilities: slices.Clone(wire.HubCapabilities)}}
+	if m.Permissions != nil {
+		init.Granted = *m.Permissions
 	}
+	if adjust != nil {
+		adjust(&init)
+	}
+	g := init.Granted // the host refuses by what is granted, as the hub does
+	h.mu.Lock()
+	h.manifest = &wire.Manifest{ID: m.ID, Contributes: m.Contributes, Permissions: &g}
+	h.mu.Unlock()
 	if err := host.call(wire.MethodInitialize, init, &host.Init); err != nil {
 		t.Fatalf("initialize: %v", err)
 	}
 	return host
+}
+
+// active are the ids of every contribution the manifest has, by extension point: what the hub starts a program
+// with when all of them are on.
+func active(manifest []byte) map[string][]string {
+	var m struct {
+		Contributes map[string]json.RawMessage `json:"contributes"`
+	}
+	_ = json.Unmarshal(manifest, &m)
+	out := map[string][]string{}
+	for point, raw := range m.Contributes {
+		var items []struct {
+			ID string `json:"id"`
+		}
+		if json.Unmarshal(raw, &items) != nil {
+			continue
+		}
+		for _, it := range items {
+			if it.ID != "" {
+				out[point] = append(out[point], it.ID)
+			}
+		}
+	}
+	return out
 }
 
 // Call calls the program's method as the hub does and decodes its answer into out (nil: not decoded). Params and
@@ -135,7 +170,7 @@ func (h *Host) Events() []Event {
 	return slices.Clone(h.h.events)
 }
 
-// CheckConnectors holds each connector the manifest contributes to the connector protocol (docs/connector-protocol.md),
+// CheckConnectors holds each connector the manifest contributes to the connector protocol (docs/protocol/connector-protocol.md),
 // the read-only calls the hub makes of what its capabilities declare: status, tools.list, actions.list,
 // inbox.collect, thread.page of the first thread, archive.changes, items.list, snapshot.get and options.get. Each
 // answer holds to the schema (connector.schema.json); a refusal in words is fine (a backend a test cannot reach), not
@@ -178,6 +213,14 @@ func CheckConnectors(t testing.TB, manifest []byte, run Run, config ...json.RawM
 				t.Errorf("connector %s: status disabled is the hub's, not a program's", c.ID)
 			}
 		}
+		if has(wire.ConnectorCapabilityCatalog) {
+			var catalog wire.ConnectorCatalog
+			if ask("catalog.list", p, &catalog) {
+				if err := wire.CheckConnectorCatalog(catalog); err != nil {
+					t.Errorf("connector %s: catalog.list: %v", c.ID, err)
+				}
+			}
+		}
 		if has(wire.ConnectorCapabilityTools) {
 			ask("tools.list", p, nil)
 		}
@@ -207,7 +250,7 @@ func CheckConnectors(t testing.TB, manifest []byte, run Run, config ...json.RawM
 	return h
 }
 
-// CheckChannels holds each channel the manifest contributes to the channel protocol (docs/channels.md "4.
+// CheckChannels holds each channel the manifest contributes to the channel protocol (docs/extensions/channels.md "4.
 // Contributing a channel"): channel.send of a note is sent or cannot_send, the same ref again answers the same
 // (sent once), channel.typing is taken, a send without a ref is refused, and another channel is no_contribution.
 // Every message both ways holds to the schema (channel.schema.json). It returns the host, with the messages the
@@ -243,6 +286,13 @@ func CheckChannels(t testing.TB, manifest []byte, run Run, config ...json.RawMes
 		t.Errorf("channel.send to a channel it does not have: want %s, got %v", wire.ErrorCodeNoContribution, err)
 	}
 	return h
+}
+
+// Sent are the sends the program recorded with sent.record (RecordSent), in order.
+func (h *Host) Sent() []wire.ConnectorSentRecordParams {
+	h.h.mu.Lock()
+	defer h.h.mu.Unlock()
+	return slices.Clone(h.h.sent)
 }
 
 // Received are the owner's messages the program handed over (channel.receive), in order.

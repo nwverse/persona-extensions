@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "messaging.schema.json",
   "title": "Messaging sources",
-  "description": "What a messaging source answers the apps with (docs/extension-messaging.md, #2138): conversations, messages and their parts, sends, documents and posts. The apps draw them with their own messaging components; the hub checks every answer against these before passing it on.",
+  "description": "What a messaging source answers the apps with (docs/extensions/extension-messaging.md, #2138): conversations, messages and their parts, sends, documents and posts. The apps draw them with their own messaging components; the hub checks every answer against these before passing it on.",
   "$defs": {
     "MessagingCapability": {
       "description": "What a source supports (docs \"3. Capabilities\"). The apps show only what is supported; an unknown one is ignored.",
@@ -196,7 +196,7 @@
       "required": ["key", "count"]
     },
     "MessagingDecoration": {
-      "description": "A small line under a message's body the extension adds (Brave Climb · Decoded, Encrypted Message · Public).",
+      "description": "A mode supported by the message source.",
       "type": "object",
       "properties": {
         "text": {"type": "string", "minLength": 1, "maxLength": 60},
@@ -336,7 +336,10 @@
         "kind": {"const": "mention"},
         "text": {"type": "string", "maxLength": 200},
         "user_id": {"type": "string", "maxLength": 200},
-        "all": {"type": "boolean"}
+        "all": {"type": "boolean"},
+        "block": {"$ref": "#/$defs/MessagingBlock"},
+        "list": {"$ref": "#/$defs/MessagingList"},
+        "block_id": {"type": "string", "maxLength": 200, "description": "The block it is in, as a text part's block_id."}
       },
       "required": ["kind", "text"]
     },
@@ -345,7 +348,10 @@
       "properties": {
         "kind": {"const": "link"},
         "text": {"type": "string", "maxLength": 2000},
-        "url": {"type": "string", "minLength": 1, "maxLength": 2000}
+        "url": {"type": "string", "minLength": 1, "maxLength": 2000},
+        "block": {"$ref": "#/$defs/MessagingBlock"},
+        "list": {"$ref": "#/$defs/MessagingList"},
+        "block_id": {"type": "string", "maxLength": 200, "description": "The block it is in, as a text part's block_id."}
       },
       "required": ["kind", "text", "url"]
     },
@@ -354,7 +360,10 @@
       "properties": {
         "kind": {"const": "emoji"},
         "key": {"type": "string", "minLength": 1, "maxLength": 100},
-        "text": {"type": "string", "maxLength": 100}
+        "text": {"type": "string", "maxLength": 100},
+        "block": {"$ref": "#/$defs/MessagingBlock"},
+        "list": {"$ref": "#/$defs/MessagingList"},
+        "block_id": {"type": "string", "maxLength": 200, "description": "The block it is in, as a text part's block_id."}
       },
       "required": ["kind", "key", "text"]
     },

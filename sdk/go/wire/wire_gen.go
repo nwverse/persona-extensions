@@ -49,7 +49,9 @@ type Manifest struct {
 	// The configuration's JSON Schema, in the subset every app draws as a form (docs "Configuration: the form subset").
 	Configuration json.RawMessage `json:"configuration,omitempty"`
 	Secrets       []SecretSpec    `json:"secrets,omitempty"`
-	Permissions   *Permissions    `json:"permissions,omitempty"`
+	// The program checks a change of its settings or secrets before the hub saves it (settings.check).
+	SettingsCheck bool         `json:"settings_check,omitempty"`
+	Permissions   *Permissions `json:"permissions,omitempty"`
 	// Command-line programs the hub installs into the extension's own directory and puts first on its PATH (docs
 	// "Command-line programs (tools)", #4507). Installing them is a permission. Hubs before them refuse the manifest.
 	Tools []ToolSpec `json:"tools,omitempty"`
@@ -147,7 +149,11 @@ type Engines struct {
 }
 
 type Runtime struct {
-	Command   json.RawMessage   `json:"command"`
+	// Default process preserves executable packages. deno requires a self-contained source bundle and verified
+	// independent Linux isolation.
+	Mode      string            `json:"mode,omitempty"`
+	Source    *SourceRuntime    `json:"source,omitempty"`
+	Command   json.RawMessage   `json:"command,omitempty"`
 	Args      []string          `json:"args,omitempty"`
 	Env       map[string]string `json:"env,omitempty"`
 	RPC       string            `json:"rpc,omitempty"`
@@ -155,8 +161,16 @@ type Runtime struct {
 	Resources *Resources        `json:"resources,omitempty"`
 }
 
-// Resources: the most a program may use when the hub runs it in a sandbox (docs/extensions.md "Sandbox"): memory in
-// MB, CPU in percent of one core. Unset: 1024 MB, 100%.
+// SourceRuntime: entry is offline build input only; bundle is the signed self-contained artifact, verified again on
+// each start. No runtime dependency resolution.
+type SourceRuntime struct {
+	Entry  string `json:"entry"`
+	Bundle string `json:"bundle"`
+	Sha256 string `json:"sha256"`
+}
+
+// Resources: the most a program may use when the hub runs it in a sandbox (docs/extensions/extensions.md "Sandbox"):
+// memory in MB, CPU in percent of one core. Unset: 1024 MB, 100%.
 type Resources struct {
 	MemoryMb   int `json:"memory_mb,omitempty"`
 	CpuPercent int `json:"cpu_percent,omitempty"`
@@ -165,9 +179,9 @@ type Resources struct {
 // A path in the package, or one per platform ({"linux-amd64": "bin/x"}).
 type Command = json.RawMessage
 
-// NodeRuntime: the extension's program on computers (docs/extensions.md "Programs running on computers"): one per
-// platform (darwin-* / linux-*), on the machines picked in the configuration field `machines` (an array of format
-// machine, x-os the programs' systems).
+// NodeRuntime: the extension's program on computers (docs/extensions/extensions.md "Programs running on computers"):
+// one per platform (darwin-* / linux-*), on the machines picked in the configuration field `machines` (an array of
+// format machine, x-os the programs' systems).
 type NodeRuntime struct {
 	Command     json.RawMessage   `json:"command"`
 	Args        []string          `json:"args,omitempty"`
@@ -193,6 +207,8 @@ type SecretSpec struct {
 	Title       string `json:"title"`
 	Description string `json:"description,omitempty"`
 	Required    bool   `json:"required,omitempty"`
+	// last4: once set, the settings show its last four characters.
+	Hint json.RawMessage `json:"hint,omitempty"`
 }
 
 // Permissions: A closed vocabulary: a permission the hub does not know fails the install.
@@ -214,7 +230,22 @@ type Permissions struct {
 	AgentRuntimes bool `json:"agent_runtimes,omitempty"`
 	// It receives the error and crash reports of the hub and the user's devices, scrubbed (no message text, tokens, user
 	// names, machine names or IP addresses). Needed by contributes.error_reports.
-	ErrorReports bool `json:"error_reports,omitempty"`
+	ErrorReports bool               `json:"error_reports,omitempty"`
+	Storage      *StoragePermission `json:"storage,omitempty"`
+	// It is handed the authorization links the user's Agents stop at (only links its contributes.auth_relay names,
+	// printed by the Agent's own command) to complete them with the account it is signed in with. Needed by
+	// contributes.auth_relay.
+	AuthRelay bool `json:"auth_relay,omitempty"`
+}
+
+// StoragePermission: default-deny installation-scoped business data, separate from credentials. Only declared logical
+// keys or literal prefixes ending in *; no filesystem, SQL, hub or network access. CAS and transactions use existing
+// RPC limits and host quotas. Queue and blob methods additionally require their flags.
+type StoragePermission struct {
+	Keys     []string `json:"keys,omitempty"`
+	Patterns []string `json:"patterns,omitempty"`
+	Queues   bool     `json:"queues,omitempty"`
+	Blobs    bool     `json:"blobs,omitempty"`
 }
 
 // Contributes: contributions by extension point. A point this hub does not know installs with a warning, not taking
@@ -242,6 +273,7 @@ type Contributes struct {
 	AgentFilters    []AgentFilterItem    `json:"agent_filters,omitempty"`
 	Tunnels         []TunnelItem         `json:"tunnels,omitempty"`
 	ErrorReports    []ErrorReportsItem   `json:"error_reports,omitempty"`
+	AuthRelay       []AuthRelayItem      `json:"auth_relay,omitempty"`
 	Messaging       []MessagingItem      `json:"messaging,omitempty"`
 	// Extra keys stay at this object's level on the wire; they cannot replace declared fields.
 	AdditionalProperties map[string]json.RawMessage `json:"-"`
@@ -253,7 +285,7 @@ func (v *Contributes) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	declared := map[string]json.RawMessage{}
-	for _, key := range []string{"connectors", "voice", "computer", "browser", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "messaging"} {
+	for _, key := range []string{"connectors", "voice", "computer", "browser", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "messaging"} {
 		if value, ok := extra[key]; ok {
 			declared[key] = value
 			delete(extra, key)
@@ -285,7 +317,7 @@ func (v Contributes) MarshalJSON() ([]byte, error) {
 	}
 	for key, value := range v.AdditionalProperties {
 		switch key {
-		case "connectors", "voice", "computer", "browser", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "messaging":
+		case "connectors", "voice", "computer", "browser", "quota", "providers", "api", "assistant", "mcp_servers", "ui", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "messaging":
 			continue
 		}
 		fields[key] = value
@@ -341,18 +373,16 @@ type ThemeItem struct {
 	Dark  ThemeColors `json:"dark"`
 }
 
-// BuiltinLook: A look every app draws itself: Mochi (the default), Visor, Circuit.
+// BuiltinLook: the look every app draws itself: Mochi (the default).
 const (
-	BuiltinLookPersona       = "persona"
-	BuiltinLookJarvis        = "jarvis"
-	BuiltinLookJarvisCircuit = "jarvis-circuit"
+	BuiltinLookPersona = "persona"
 )
 
 // BuiltinLooks are the values of BuiltinLook, in order.
-var BuiltinLooks = []string{"persona", "jarvis", "jarvis-circuit"}
+var BuiltinLooks = []string{"persona"}
 
-// LookTexts: A text in the other languages, by code (docs/i18n.md): only zh-Hans, en and ja, each 1 to 40 characters
-// (the hub checks).
+// LookTexts: A text in the other languages, by code (docs/protocol/i18n.md): only zh-Hans, en and ja, each 1 to 40
+// characters (the hub checks).
 type LookTexts struct {
 	// Extra keys stay at this object's level on the wire; they cannot replace declared fields.
 	AdditionalProperties map[string]json.RawMessage `json:"-"`
@@ -420,7 +450,7 @@ type LookAvatar struct {
 	Dark *LookAvatarDark `json:"dark,omitempty"`
 }
 
-// LookPalette: an appearance's colors, #RRGGBB (docs/persona.md "Palettes", the apps' PersonaPalette).
+// LookPalette: an appearance's colors, #RRGGBB (docs/apple/persona.md "Color scheme", the apps' PersonaPalette).
 type LookPalette struct {
 	Primary    string `json:"primary,omitempty"`
 	Secondary  string `json:"secondary,omitempty"`
@@ -456,8 +486,8 @@ type LookDot struct {
 	States LookDotStates `json:"states"`
 }
 
-// LookItem: A look (docs/extensions.md "Looks"): Persona's name, face, colors and dot, served as a persona package.
-// app_icon_fallback is the built-in icon used where only the app's own icons can be shown.
+// LookItem: A look (docs/extensions/extensions.md "Avatars"): Persona's name, face, colors and dot, served as a
+// persona package. app_icon_fallback is the built-in icon used where only the app's own icons can be shown.
 type LookItem struct {
 	ID              string      `json:"id"`
 	Name            string      `json:"name"`
@@ -475,6 +505,18 @@ type TriageTemplateItem struct {
 	ID    string `json:"id"`
 	Title string `json:"title"`
 	Text  string `json:"text"`
+}
+
+// AuthRelayItem: authorization links it completes for the user's Agents (auth_relay.complete): links on these hosts
+// and paths, https only. Needs the program to speak the protocol and permissions.auth_relay.
+type AuthRelayItem struct {
+	ID string `json:"id"`
+	// What it completes, in a few words (shown in the extension's details).
+	Name string `json:"name,omitempty"`
+	// The pages' exact host names.
+	Hosts []string `json:"hosts"`
+	// The pages' exact paths (a trailing / is ignored).
+	Paths []string `json:"paths"`
 }
 
 // ErrorReportsItem: it is given the error and crash reports of the hub and the user's devices
@@ -513,7 +555,7 @@ type AgentFilterItem struct {
 	FirstMessagePrefixes []string `json:"first_message_prefixes,omitempty"`
 }
 
-// ConnectorItem: the connector protocol's manifest (docs/connector-protocol.md).
+// ConnectorItem: the connector protocol's manifest (docs/protocol/connector-protocol.md).
 type ConnectorItem struct {
 	ID               string            `json:"id"`
 	Name             string            `json:"name"`
@@ -528,6 +570,10 @@ type ConnectorItem struct {
 	ArchiveSources   []string          `json:"archive_sources,omitempty"`
 	MetaDescription  string            `json:"meta_description,omitempty"`
 	CLI              string            `json:"cli,omitempty"`
+	// The connector sends messages in the user's name by itself, not through the hub's write gate (a read tool that also
+	// replies, say). Its program may then record each one in the sent-as-user ledger with sent.record, and the install
+	// preview says so.
+	SendsAsUser bool `json:"sends_as_user,omitempty"`
 }
 
 // NamedItem: A contribution with only an id and a name: voice, computer, browser.
@@ -586,11 +632,11 @@ type AssistantItem struct {
 // machine, its tools as mcp__<id>__<tool>. The command reads its own configuration; Persona adds nothing to its
 // environment. Not a shell or an interpreter.
 type MCPServerItem struct {
-	// The server's name for the assistant; not jarvis or persona.
+	// The server's name for the assistant; not persona or persona.
 	ID string `json:"id"`
 	// Looked up on PATH, then in ~/bin.
 	Command string `json:"command"`
-	// A PERSONA_ variable (JARVIS_ read too) that, when set, replaces the lookup: a path, or "" / 0 / off / false to
+	// A PERSONA_ variable (PERSONA_ read too) that, when set, replaces the lookup: a path, or "" / 0 / off / false to
 	// leave the server out.
 	Env  string   `json:"env,omitempty"`
 	Args []string `json:"args,omitempty"`
@@ -830,7 +876,7 @@ type HubInfo struct {
 	ExtensionPoints map[string]int `json:"extension_points"`
 	Role            string         `json:"role,omitempty"`
 	Timezone        string         `json:"timezone,omitempty"`
-	// The user's language (zh-Hans, en, ja; see docs/i18n.md); empty means zh-Hans.
+	// The user's language (zh-Hans, en, ja; see docs/protocol/i18n.md); empty means zh-Hans.
 	Locale       string   `json:"locale,omitempty"`
 	Capabilities []string `json:"capabilities,omitempty"`
 	// The hub's API on this machine, for the token below.
@@ -853,6 +899,8 @@ type InitializeResult struct {
 	Version  string `json:"version"`
 	// A subset of the manifest's.
 	Contributes map[string]json.RawMessage `json:"contributes,omitempty"`
+	// Request-ID scoped rpc.cancel for mounted page lifecycle calls only.
+	UIPageCancellation int `json:"ui_page_cancellation,omitempty"`
 }
 
 // UIParams: ui.render's and ui.action's parameters: what to draw, where, for whom.
@@ -870,6 +918,25 @@ type UIParams struct {
 	Machine      *UIMachine        `json:"machine,omitempty"`
 	Launcher     *UILauncher       `json:"launcher,omitempty"`
 	Item         *UIInboxItem      `json:"item,omitempty"`
+}
+
+// UIImageParams: ui.image's parameters (UI version 6): the hub asks the extension for a picture it drew as a ref, for
+// the ui contribution that drew it. width is the pixel width the app wants (320, 640, 1280 or 2048; 0 when it says
+// nothing); the extension may ignore it.
+type UIImageParams struct {
+	Contribution string `json:"contribution"`
+	Ref          string `json:"ref"`
+	Width        int    `json:"width,omitempty"`
+	Placement    string `json:"placement,omitempty"`
+}
+
+// UIImage: what ui.image answers: the picture's bytes in base64 (png, jpeg, webp or gif, at most 4 MB decoded and
+// 8192 pixels a side; the hub reads the type from the bytes, not from mime) and how long the hub may keep it
+// (seconds, 60 when absent; a camera 5 to 10, a still 86400).
+type UIImage struct {
+	Mime   string `json:"mime"`
+	Data   string `json:"data"`
+	MaxAge *int   `json:"max_age,omitempty"`
 }
 
 type UIMachine struct {
@@ -923,6 +990,9 @@ type UIContext struct {
 	Locale    string `json:"locale,omitempty"`
 	Platform  string `json:"platform,omitempty"`
 	UIVersion int    `json:"ui_version,omitempty"`
+	// Explicit stream opt-in, independent of ui_version. Absent means snapshot-only. Contract only: no current client or
+	// hub advertises it.
+	Stream *UIStreamCapability `json:"stream,omitempty"`
 }
 
 // UIRequest: an app's POST …/-/ui/{ui}: without action it draws, with one a control was used.
@@ -1119,9 +1189,9 @@ type ErrorBreadcrumb struct {
 	Level    string `json:"level,omitempty"`
 }
 
-// ErrorReport: an error or crash of the hub or a device (docs/extensions.md "Error reports"). Clients send it to POST
-// /api/v1/error-reports; the manager scrubs it and adds fingerprint, count and received_at before an extension gets
-// it.
+// ErrorReport: an error or crash of the hub or a device (docs/extensions/extensions.md "Error reports"). Clients send
+// it to POST /api/v1/error-reports; the manager scrubs it and adds fingerprint, count and received_at before an
+// extension gets it.
 type ErrorReport struct {
 	// Made by the sender; the same id again (a retry) is dropped.
 	ID     string `json:"id"`
@@ -1158,6 +1228,52 @@ type ErrorReportsDeliver struct {
 	Reports      []ErrorReport `json:"reports"`
 }
 
+// AuthRelayCompleteParams: auth_relay.complete's parameters: an authorization link one of the user's Agents stopped
+// at, on a host and path the contribution names. The manager has checked that the Agent's own command printed it on
+// one of the user's computers. The link is a secret while it lives: never log it.
+type AuthRelayCompleteParams struct {
+	Contribution string `json:"contribution"`
+	URL          string `json:"url"`
+}
+
+// AuthRelayStatus: how auth_relay.complete ended: done (authorized, the Agent can go on), manual (not one it
+// completes: the user's), failed (one it completes, but it did not go through).
+const (
+	AuthRelayStatusDone   = "done"
+	AuthRelayStatusManual = "manual"
+	AuthRelayStatusFailed = "failed"
+)
+
+// AuthRelayStatuses are the values of AuthRelayStatus, in order.
+var AuthRelayStatuses = []string{"done", "manual", "failed"}
+
+// AuthRelayReason: why it was not done: not_handled (not a link it completes), not_signed_in (its account is not
+// signed in for the page), new_permissions (the page asks for more than was granted before), app_not_allowed (the
+// extension's own settings leave this app to the user), unknown_page (not the page it knows), unavailable (what it
+// completes them with can't be reached), not_confirmed (it clicked, the page never said it was done), expired (the
+// link is no longer valid).
+const (
+	AuthRelayReasonNotHandled     = "not_handled"
+	AuthRelayReasonNotSignedIn    = "not_signed_in"
+	AuthRelayReasonNewPermissions = "new_permissions"
+	AuthRelayReasonAppNotAllowed  = "app_not_allowed"
+	AuthRelayReasonUnknownPage    = "unknown_page"
+	AuthRelayReasonUnavailable    = "unavailable"
+	AuthRelayReasonNotConfirmed   = "not_confirmed"
+	AuthRelayReasonExpired        = "expired"
+)
+
+// AuthRelayReasons are the values of AuthRelayReason, in order.
+var AuthRelayReasons = []string{"not_handled", "not_signed_in", "new_permissions", "app_not_allowed", "unknown_page", "unavailable", "not_confirmed", "expired"}
+
+// AuthRelayResult: what auth_relay.complete answers. Never the link, a token or a page's text.
+type AuthRelayResult struct {
+	Status string `json:"status"`
+	// The app the page authorized (or asked to), as the page names it.
+	App    string `json:"app,omitempty"`
+	Reason string `json:"reason,omitempty"`
+}
+
 // ExtensionNotification: extension_notification in an extension's alert push: whose it is, the page a tap opens (ui
 // with state) and its buttons (category ext.<extension>.<hash of the action ids>, registered by the app as it meets
 // it).
@@ -1179,37 +1295,82 @@ const (
 // Tones are the values of Tone, in order.
 var Tones = []string{"neutral", "positive", "caution", "danger"}
 
-// Values of TextStyle.
+// TextStyle: title and headline (UI version 6) are a section's big title and a small heading; an older app draws them
+// as body.
 const (
 	TextStyleBody      = "body"
 	TextStyleSecondary = "secondary"
 	TextStyleCaption   = "caption"
 	TextStyleCode      = "code"
+	TextStyleTitle     = "title"
+	TextStyleHeadline  = "headline"
 )
 
 // TextStyles are the values of TextStyle, in order.
-var TextStyles = []string{"body", "secondary", "caption", "code"}
+var TextStyles = []string{"body", "secondary", "caption", "code", "title", "headline"}
 
-// Values of FieldKind.
+// FieldKind: date, time, datetime, multichoice and multiline are UI version 6. Values stay strings: date YYYY-MM-DD,
+// time HH:MM (24 hours), datetime YYYY-MM-DDTHH:MM local to context.tz, multichoice a JSON array of the chosen
+// values, multiline the text with \n.
 const (
-	FieldKindText   = "text"
-	FieldKindSecret = "secret"
-	FieldKindNumber = "number"
-	FieldKindToggle = "toggle"
-	FieldKindChoice = "choice"
+	FieldKindText        = "text"
+	FieldKindSecret      = "secret"
+	FieldKindNumber      = "number"
+	FieldKindToggle      = "toggle"
+	FieldKindChoice      = "choice"
+	FieldKindDate        = "date"
+	FieldKindTime        = "time"
+	FieldKindDatetime    = "datetime"
+	FieldKindMultichoice = "multichoice"
+	FieldKindMultiline   = "multiline"
 )
 
 // FieldKinds are the values of FieldKind, in order.
-var FieldKinds = []string{"text", "secret", "number", "toggle", "choice"}
+var FieldKinds = []string{"text", "secret", "number", "toggle", "choice", "date", "time", "datetime", "multichoice", "multiline"}
 
-// Values of ChartKind.
+// ChartKind: area, candlestick, donut and pie are UI version 6: an older app gets a line (an area, a candlestick's
+// closes) or bars (a donut, a pie).
 const (
-	ChartKindBar  = "bar"
-	ChartKindLine = "line"
+	ChartKindBar         = "bar"
+	ChartKindLine        = "line"
+	ChartKindArea        = "area"
+	ChartKindCandlestick = "candlestick"
+	ChartKindDonut       = "donut"
+	ChartKindPie         = "pie"
 )
 
 // ChartKinds are the values of ChartKind, in order.
-var ChartKinds = []string{"bar", "line"}
+var ChartKinds = []string{"bar", "line", "area", "candlestick", "donut", "pie"}
+
+// CandleRising: A candlestick's rising candle: green (the default) or red, as the market writes it; the falling one
+// is the other.
+const (
+	CandleRisingGreen = "green"
+	CandleRisingRed   = "red"
+)
+
+// CandleRisings are the values of CandleRising, in order.
+var CandleRisings = []string{"green", "red"}
+
+// Color: A named color (UI version 6): each app has its own of each, right in light and dark and in every style. Not
+// a hex; an unknown one draws as the app's quiet ink. Only on badges, icons, tiles, chart series and sparks, never on
+// text; never with a tone on the same object.
+const (
+	ColorRed    = "red"
+	ColorOrange = "orange"
+	ColorAmber  = "amber"
+	ColorYellow = "yellow"
+	ColorGreen  = "green"
+	ColorTeal   = "teal"
+	ColorBlue   = "blue"
+	ColorIndigo = "indigo"
+	ColorPurple = "purple"
+	ColorPink   = "pink"
+	ColorGray   = "gray"
+)
+
+// Colors are the values of Color, in order.
+var Colors = []string{"red", "orange", "amber", "yellow", "green", "teal", "blue", "indigo", "purple", "pink", "gray"}
 
 // Values of ButtonRole.
 const (
@@ -1279,8 +1440,9 @@ const (
 var Platforms = []string{"ios", "mac", "android", "web"}
 
 // NavIcon: the fixed icon set: a nav_page's icon, a row's, an empty state's (UI version 3 for the last two and the
-// icons after money; 4 for those after settings). Each app draws its own icon for the meaning; an unknown one draws
-// as the default (extension; plugin is its old name).
+// icons after money; 4 for those after settings; 6 for those after file, and a metric's, a tile's, a row action's).
+// Each app draws its own icon for the meaning; an unknown one draws as the default (extension; plugin is its old
+// name).
 const (
 	NavIconPlugin      = "plugin"
 	NavIconChart       = "chart"
@@ -1309,10 +1471,55 @@ const (
 	NavIconPullRequest = "pull_request"
 	NavIconMerge       = "merge"
 	NavIconFile        = "file"
+	NavIconHome        = "home"
+	NavIconSofa        = "sofa"
+	NavIconLight       = "light"
+	NavIconPower       = "power"
+	NavIconFan         = "fan"
+	NavIconThermometer = "thermometer"
+	NavIconDroplet     = "droplet"
+	NavIconLock        = "lock"
+	NavIconUnlock      = "unlock"
+	NavIconDoor        = "door"
+	NavIconWindow      = "window"
+	NavIconCamera      = "camera"
+	NavIconVideo       = "video"
+	NavIconPlay        = "play"
+	NavIconPause       = "pause"
+	NavIconStop        = "stop"
+	NavIconSpeaker     = "speaker"
+	NavIconTv          = "tv"
+	NavIconPlug        = "plug"
+	NavIconBattery     = "battery"
+	NavIconBolt        = "bolt"
+	NavIconSun         = "sun"
+	NavIconMoon        = "moon"
+	NavIconCloud       = "cloud"
+	NavIconRain        = "rain"
+	NavIconSnow        = "snow"
+	NavIconWind        = "wind"
+	NavIconLeaf        = "leaf"
+	NavIconCar         = "car"
+	NavIconLocation    = "location"
+	NavIconRobot       = "robot"
+	NavIconWifi        = "wifi"
+	NavIconShield      = "shield"
+	NavIconTrendUp     = "trend_up"
+	NavIconTrendDown   = "trend_down"
+	NavIconWallet      = "wallet"
+	NavIconBank        = "bank"
+	NavIconHeart       = "heart"
+	NavIconPlus        = "plus"
+	NavIconMinus       = "minus"
+	NavIconTrash       = "trash"
+	NavIconEdit        = "edit"
+	NavIconRefresh     = "refresh"
+	NavIconShare       = "share"
+	NavIconInfo        = "info"
 )
 
 // NavIcons are the values of NavIcon, in order.
-var NavIcons = []string{"plugin", "chart", "gauge", "list", "bell", "doc", "calendar", "money", "extension", "person", "chat", "mail", "link", "folder", "star", "check", "warning", "clock", "tag", "search", "settings", "branch", "commit", "code", "pull_request", "merge", "file"}
+var NavIcons = []string{"plugin", "chart", "gauge", "list", "bell", "doc", "calendar", "money", "extension", "person", "chat", "mail", "link", "folder", "star", "check", "warning", "clock", "tag", "search", "settings", "branch", "commit", "code", "pull_request", "merge", "file", "home", "sofa", "light", "power", "fan", "thermometer", "droplet", "lock", "unlock", "door", "window", "camera", "video", "play", "pause", "stop", "speaker", "tv", "plug", "battery", "bolt", "sun", "moon", "cloud", "rain", "snow", "wind", "leaf", "car", "location", "robot", "wifi", "shield", "trend_up", "trend_down", "wallet", "bank", "heart", "plus", "minus", "trash", "edit", "refresh", "share", "info"}
 
 type View struct {
 	Title    string    `json:"title,omitempty"`
@@ -1334,6 +1541,8 @@ type View struct {
 }
 
 type Section struct {
+	// Stable section identity in stream protocol 1 (UI version 7); optional for legacy snapshots.
+	Key    string      `json:"key,omitempty"`
 	Title  string      `json:"title,omitempty"`
 	Footer string      `json:"footer,omitempty"`
 	Items  []Component `json:"items"`
@@ -1344,51 +1553,65 @@ type Section struct {
 // Component: one component of a view, told apart by type. A type an app does not know is skipped and the rest drawn.
 // One struct for every variant: type says which fields mean something.
 type Component struct {
-	Type     string   `json:"type"`
-	Key      string   `json:"key,omitempty"`
-	Text     string   `json:"text,omitempty"`
-	Style    string   `json:"style,omitempty"`
-	Label    string   `json:"label,omitempty"`
-	Value    string   `json:"value,omitempty"`
-	Detail   string   `json:"detail,omitempty"`
-	Tone     string   `json:"tone,omitempty"`
-	Ratio    *float64 `json:"ratio,omitempty"`
-	Title    string   `json:"title,omitempty"`
-	Subtitle string   `json:"subtitle,omitempty"`
-	Badge    *Badge   `json:"badge,omitempty"`
-	Action   *Action  `json:"action,omitempty"`
-	// At most one of icon, avatar and thumbnail.
-	Icon        string        `json:"icon,omitempty"`
-	Avatar      *Avatar       `json:"avatar,omitempty"`
-	Thumbnail   *Thumbnail    `json:"thumbnail,omitempty"`
-	Role        string        `json:"role,omitempty"`
-	URL         string        `json:"url,omitempty"`
-	Name        string        `json:"name,omitempty"`
-	Kind        string        `json:"kind,omitempty"`
-	Choices     []Choice      `json:"choices,omitempty"`
-	Placeholder string        `json:"placeholder,omitempty"`
-	Series      []ChartSeries `json:"series,omitempty"`
-	Unit        string        `json:"unit,omitempty"`
-	Stacked     bool          `json:"stacked,omitempty"`
-	Stats       []Stat        `json:"stats,omitempty"`
-	Columns     []TableColumn `json:"columns,omitempty"`
-	Rows        [][]string    `json:"rows,omitempty"`
-	Caption     string        `json:"caption,omitempty"`
-	Button      *EmptyButton  `json:"button,omitempty"`
-	Html        string        `json:"html,omitempty"`
-	Height      int           `json:"height,omitempty"`
-	Badges      []Badge       `json:"badges,omitempty"`
-	Facts       []Fact        `json:"facts,omitempty"`
-	Crumbs      []Crumb       `json:"crumbs,omitempty"`
-	Entries     []TreeEntry   `json:"entries,omitempty"`
-	Selected    string        `json:"selected,omitempty"`
-	Expand      *Action       `json:"expand,omitempty"`
-	Path        string        `json:"path,omitempty"`
-	Language    string        `json:"language,omitempty"`
-	StartLine   int           `json:"start_line,omitempty"`
-	Highlight   *LineRange    `json:"highlight,omitempty"`
-	Truncated   bool          `json:"truncated,omitempty"`
-	Load        *Action       `json:"load,omitempty"`
+	Type      string     `json:"type"`
+	Key       string     `json:"key,omitempty"`
+	Text      string     `json:"text,omitempty"`
+	Style     string     `json:"style,omitempty"`
+	Label     string     `json:"label,omitempty"`
+	Value     string     `json:"value,omitempty"`
+	Detail    string     `json:"detail,omitempty"`
+	Tone      string     `json:"tone,omitempty"`
+	Icon      string     `json:"icon,omitempty"`
+	IconColor string     `json:"icon_color,omitempty"`
+	Spark     *Spark     `json:"spark,omitempty"`
+	Ratio     *float64   `json:"ratio,omitempty"`
+	Title     string     `json:"title,omitempty"`
+	Subtitle  string     `json:"subtitle,omitempty"`
+	Badge     *Badge     `json:"badge,omitempty"`
+	Action    *Action    `json:"action,omitempty"`
+	Avatar    *Avatar    `json:"avatar,omitempty"`
+	Thumbnail *Thumbnail `json:"thumbnail,omitempty"`
+	// A switch, a slider or a stepper; the row then has a key.
+	Control *RowControl `json:"control,omitempty"`
+	// Extra actions in the row's menu and under a swipe: shortcuts only, the same must be possible on the page the row
+	// opens.
+	Actions     []RowAction `json:"actions,omitempty"`
+	Role        string      `json:"role,omitempty"`
+	URL         string      `json:"url,omitempty"`
+	Name        string      `json:"name,omitempty"`
+	Kind        string      `json:"kind,omitempty"`
+	Choices     []Choice    `json:"choices,omitempty"`
+	Placeholder string      `json:"placeholder,omitempty"`
+	// date, time, datetime: the first one allowed, written like value.
+	Earliest string `json:"earliest,omitempty"`
+	// date, time, datetime: the last one allowed.
+	Latest  string        `json:"latest,omitempty"`
+	Series  []ChartSeries `json:"series,omitempty"`
+	Unit    string        `json:"unit,omitempty"`
+	Stacked bool          `json:"stacked,omitempty"`
+	// donut: the words in the hole (a total).
+	Center string `json:"center,omitempty"`
+	// candlestick: the color of a rising candle.
+	Rising    string        `json:"rising,omitempty"`
+	Stats     []Stat        `json:"stats,omitempty"`
+	Columns   []TableColumn `json:"columns,omitempty"`
+	Rows      [][]string    `json:"rows,omitempty"`
+	Caption   string        `json:"caption,omitempty"`
+	Button    *EmptyButton  `json:"button,omitempty"`
+	Html      string        `json:"html,omitempty"`
+	Height    int           `json:"height,omitempty"`
+	Badges    []Badge       `json:"badges,omitempty"`
+	Facts     []Fact        `json:"facts,omitempty"`
+	Crumbs    []Crumb       `json:"crumbs,omitempty"`
+	Entries   []TreeEntry   `json:"entries,omitempty"`
+	Selected  string        `json:"selected,omitempty"`
+	Expand    *Action       `json:"expand,omitempty"`
+	Path      string        `json:"path,omitempty"`
+	Language  string        `json:"language,omitempty"`
+	StartLine int           `json:"start_line,omitempty"`
+	Highlight *LineRange    `json:"highlight,omitempty"`
+	Truncated bool          `json:"truncated,omitempty"`
+	Load      *Action       `json:"load,omitempty"`
 	// An https link to lines of this file on its site, {start} and {end} standing for the lines
 	// (…/blob/<sha>/a.go#L{start}-L{end}).
 	LineURL   string   `json:"line_url,omitempty"`
@@ -1423,6 +1646,16 @@ type Component struct {
 	Resolved    bool             `json:"resolved,omitempty"`
 	Reply       *Action          `json:"reply,omitempty"`
 	Buttons     []ComposerButton `json:"buttons,omitempty"`
+	Src         *ImageSource     `json:"src,omitempty"`
+	// Read out, and shown when the picture does not load.
+	Alt    string `json:"alt,omitempty"`
+	Aspect string `json:"aspect,omitempty"`
+	Fit    string `json:"fit,omitempty"`
+	// Tapping does nothing (else it shows the picture full screen).
+	NoZoom     bool   `json:"no_zoom,omitempty"`
+	Tiles      []Tile `json:"tiles,omitempty"`
+	MaxColumns int    `json:"max_columns,omitempty"`
+	Width      string `json:"width,omitempty"`
 }
 
 // Component types.
@@ -1450,13 +1683,134 @@ const (
 	ComponentDiff          = "diff"
 	ComponentCommentThread = "comment_thread"
 	ComponentComposer      = "composer"
+	ComponentImage         = "image"
+	ComponentGrid          = "grid"
+	ComponentCarousel      = "carousel"
 )
 
 // ComponentTypes are the types of Component, in order.
-var ComponentTypes = []string{"text", "metric", "progress", "row", "button", "link", "field", "divider", "chart", "stat_grid", "segmented", "markdown", "table", "empty", "loading", "html", "header", "breadcrumb", "file_tree", "code", "diff", "comment_thread", "composer"}
+var ComponentTypes = []string{"text", "metric", "progress", "row", "button", "link", "field", "divider", "chart", "stat_grid", "segmented", "markdown", "table", "empty", "loading", "html", "header", "breadcrumb", "file_tree", "code", "diff", "comment_thread", "composer", "image", "grid", "carousel"}
 
 // ComponentSince is the UI version that brought each type.
-var ComponentSince = map[string]int{"text": 1, "metric": 1, "progress": 1, "row": 1, "button": 1, "link": 1, "field": 1, "divider": 1, "chart": 2, "stat_grid": 2, "segmented": 2, "markdown": 3, "table": 3, "empty": 3, "loading": 3, "html": 4, "header": 4, "breadcrumb": 4, "file_tree": 4, "code": 4, "diff": 4, "comment_thread": 4, "composer": 4}
+var ComponentSince = map[string]int{"text": 1, "metric": 1, "progress": 1, "row": 1, "button": 1, "link": 1, "field": 1, "divider": 1, "chart": 2, "stat_grid": 2, "segmented": 2, "markdown": 3, "table": 3, "empty": 3, "loading": 3, "html": 4, "header": 4, "breadcrumb": 4, "file_tree": 4, "code": 4, "diff": 4, "comment_thread": 4, "composer": 4, "image": 6, "grid": 6, "carousel": 6}
+
+// ImageSource: where a picture comes from (UI version 6): an https url the app loads without credentials, or a ref
+// the extension serves itself (ui.image) through the hub; exactly one. path is written by the hub only, for a ref:
+// its own address, which the app loads with its device credentials. An extension that writes path is refused.
+type ImageSource struct {
+	URL    string `json:"url,omitempty"`
+	Ref    string `json:"ref,omitempty"`
+	Path   string `json:"path,omitempty"`
+	Width  int    `json:"width,omitempty"`
+	Height int    `json:"height,omitempty"`
+}
+
+// ImageAspect: square 1:1, landscape 4:3 (the default), wide 16:9, portrait 3:4, auto from src's width and height
+// (4:3 until the picture comes).
+const (
+	ImageAspectSquare    = "square"
+	ImageAspectLandscape = "landscape"
+	ImageAspectWide      = "wide"
+	ImageAspectPortrait  = "portrait"
+	ImageAspectAuto      = "auto"
+)
+
+// ImageAspects are the values of ImageAspect, in order.
+var ImageAspects = []string{"square", "landscape", "wide", "portrait", "auto"}
+
+// ImageFit: fill crops to fill the frame (the default); fit shows all of it.
+const (
+	ImageFitFill = "fill"
+	ImageFitFit  = "fit"
+)
+
+// ImageFits are the values of ImageFit, in order.
+var ImageFits = []string{"fill", "fit"}
+
+// Values of RowControlKind.
+const (
+	RowControlKindSwitch  = "switch"
+	RowControlKindSlider  = "slider"
+	RowControlKindStepper = "stepper"
+)
+
+// RowControlKinds are the values of RowControlKind, in order.
+var RowControlKinds = []string{"switch", "slider", "stepper"}
+
+// RowControl: A control in a row or a tile (UI version 6). Changing it calls ui.action with action and values {name:
+// the new value} (a switch "true" or "false", a slider and a stepper the number). The app shows the new value at once
+// and puts back the old one if the action fails. A slider sends when the finger lifts, a stepper 0.6 s after the last
+// tap.
+type RowControl struct {
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+	// switch: on or off.
+	On bool `json:"on,omitempty"`
+	// slider, stepper: the value now.
+	Value *float64 `json:"value,omitempty"`
+	Min   *float64 `json:"min,omitempty"`
+	Max   *float64 `json:"max,omitempty"`
+	// More than 0 (checked by the hub); a slider's is (max - min) / 100 when absent.
+	Step *float64 `json:"step,omitempty"`
+	Unit string   `json:"unit,omitempty"`
+	// How to write the value ("22.5 °C"); else the number and unit.
+	Display  string `json:"display,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
+	Action   Action `json:"action"`
+}
+
+// RowAction: one of a row's or a tile's extra actions (UI version 6): in its menu (long press, right click, the …
+// button) and, with swipe, under a swipe from the trailing edge. confirm and push work as on any action; a
+// destructive one has confirm.
+type RowAction struct {
+	Title string `json:"title"`
+	Icon  string `json:"icon,omitempty"`
+	Role  string `json:"role,omitempty"`
+	// Also under a swipe. At most two of a row's actions.
+	Swipe  bool   `json:"swipe,omitempty"`
+	Action Action `json:"action"`
+}
+
+// Spark: A small trend line inside a row, a metric, a stat or a tile (UI version 6): values only, no axes. Without
+// color or tone, the app's quiet ink.
+type Spark struct {
+	Values []float64 `json:"values"`
+	Color  string    `json:"color,omitempty"`
+	Tone   string    `json:"tone,omitempty"`
+	// Shade under the line.
+	Fill bool `json:"fill,omitempty"`
+}
+
+// TileWidth: A carousel's tiles: narrow about 140pt (scenes), regular about 200pt (the default; rooms), wide about
+// 80% of the screen (camera pictures).
+const (
+	TileWidthNarrow  = "narrow"
+	TileWidthRegular = "regular"
+	TileWidthWide    = "wide"
+)
+
+// TileWidths are the values of TileWidth, in order.
+var TileWidths = []string{"narrow", "regular", "wide"}
+
+// Tile: A tile of a grid or a carousel (UI version 6): an icon or a picture, a title, a state line, a value; tapping
+// does its action. active marks a tile that is on (a scene running, a light on) in its color.
+type Tile struct {
+	Key      string `json:"key,omitempty"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle,omitempty"`
+	Value    string `json:"value,omitempty"`
+	// At most one of icon and image.
+	Icon   string       `json:"icon,omitempty"`
+	Image  *ImageSource `json:"image,omitempty"`
+	Color  string       `json:"color,omitempty"`
+	Badge  *Badge       `json:"badge,omitempty"`
+	Active bool         `json:"active,omitempty"`
+	Spark  *Spark       `json:"spark,omitempty"`
+	// A switch only; the tile then has a key.
+	Control *RowControl `json:"control,omitempty"`
+	Actions []RowAction `json:"actions,omitempty"`
+	Action  *Action     `json:"action,omitempty"`
+}
 
 // Layout: stack: sections one under another. split: on a wide screen the side pane's sections in a column at the
 // start, the rest beside it, each scrolling on its own; on a narrow one the side pane folds into a bar on top that
@@ -1717,7 +2071,7 @@ type Action struct {
 	// Assistant only: send this text back to the same conversation. The hub reads it from the saved view, not from the
 	// client.
 	Reply string `json:"reply,omitempty"`
-	// Assistant only: an https URL or a validated persona/jarvis session, task, kb or file target, opened inside the
+	// Assistant only: an https URL or a validated persona/persona session, task, kb or file target, opened inside the
 	// app.
 	Open string `json:"open,omitempty"`
 	// Assistant only: return one page within the card.
@@ -1770,12 +2124,20 @@ type More struct {
 type Avatar struct {
 	URL  string `json:"url,omitempty"`
 	Text string `json:"text,omitempty"`
+	// The extension's own picture (ui.image) through the hub, in place of url.
+	Ref string `json:"ref,omitempty"`
+	// Written by the hub only, for a ref.
+	Path string `json:"path,omitempty"`
 }
 
-// Thumbnail: A small picture at the row's start: an https image the app loads without any credentials.
+// Thumbnail: A small picture at the row's start: an https image the app loads without any credentials, or (UI version
+// 6) a ref the extension serves (ui.image) through the hub; exactly one of url and ref.
 type Thumbnail struct {
-	URL    string `json:"url"`
+	URL    string `json:"url,omitempty"`
 	Aspect string `json:"aspect,omitempty"`
+	Ref    string `json:"ref,omitempty"`
+	// Written by the hub only, for a ref.
+	Path string `json:"path,omitempty"`
 }
 
 // Values of ThumbnailAspect.
@@ -1808,8 +2170,9 @@ type EmptyButton struct {
 }
 
 type Badge struct {
-	Text string `json:"text"`
-	Tone string `json:"tone,omitempty"`
+	Text  string `json:"text"`
+	Tone  string `json:"tone,omitempty"`
+	Color string `json:"color,omitempty"`
 }
 
 type Choice struct {
@@ -1817,19 +2180,26 @@ type Choice struct {
 	Title string `json:"title,omitempty"`
 }
 
-// ChartSeries: one line, or one color of bars. No tone: the app's own colors, in order.
+// ChartSeries: one line, or one color of bars. No tone and no color: the app's own colors, in order. At most 120
+// points (240 for a candlestick, checked by the hub).
 type ChartSeries struct {
 	Name   string       `json:"name,omitempty"`
 	Tone   string       `json:"tone,omitempty"`
 	Points []ChartPoint `json:"points"`
+	Color  string       `json:"color,omitempty"`
 }
 
 // ChartPoint: A value at a label (a day, a model); display is how to write it ("¥1.20"), else the app writes value
 // with the unit.
 type ChartPoint struct {
-	Label   string  `json:"label"`
-	Value   float64 `json:"value"`
-	Display string  `json:"display,omitempty"`
+	Label   string   `json:"label"`
+	Value   float64  `json:"value"`
+	Display string   `json:"display,omitempty"`
+	Open    *float64 `json:"open,omitempty"`
+	High    *float64 `json:"high,omitempty"`
+	Low     *float64 `json:"low,omitempty"`
+	Close   *float64 `json:"close,omitempty"`
+	Volume  *float64 `json:"volume,omitempty"`
 }
 
 type Stat struct {
@@ -1837,6 +2207,7 @@ type Stat struct {
 	Value  string `json:"value"`
 	Detail string `json:"detail,omitempty"`
 	Tone   string `json:"tone,omitempty"`
+	Spark  *Spark `json:"spark,omitempty"`
 }
 
 // ActionResult: what ui.action answers: a new view, a short message, an https link to open, a page to push or to pop
@@ -1876,16 +2247,18 @@ type Review struct {
 	Discard     *Action          `json:"discard,omitempty"`
 }
 
-// Values of PersonaCardKind.
+// PersonaCardKind: ring: one day's total and its parts (a donut); stacked_bar: parts side by side to compare (days,
+// people).
 const (
 	PersonaCardKindStat       = "stat"
 	PersonaCardKindStackedBar = "stacked_bar"
 	PersonaCardKindLine       = "line"
 	PersonaCardKindBar        = "bar"
+	PersonaCardKindRing       = "ring"
 )
 
 // PersonaCardKinds are the values of PersonaCardKind, in order.
-var PersonaCardKinds = []string{"stat", "stacked_bar", "line", "bar"}
+var PersonaCardKinds = []string{"stat", "stacked_bar", "line", "bar", "ring"}
 
 // PersonaCard: the assistant's ```persona-card block (#886): one JSON object. Joins the components in #1850; this
 // form keeps drawing.
@@ -2090,8 +2463,7 @@ type MessagingReaction struct {
 	Users []string `json:"users,omitempty"`
 }
 
-// MessagingDecoration: A small line under a message's body the extension adds (Brave Climb · Decoded, Encrypted
-// Message · Public).
+// MessagingDecoration: A mode supported by the message source.
 type MessagingDecoration struct {
 	Text string `json:"text"`
 	Icon string `json:"icon,omitempty"`
@@ -2538,45 +2910,162 @@ type MessagingError struct {
 	View  *View  `json:"view,omitempty"`
 }
 
-// ConnectorErrorCode: error.code a program answers or gets besides the base ErrorCode: rate_limited (tools.call /
-// actions.do; data {retry_after} in seconds, fractional allowed), and why credentials.gh_token has no token.
+// ConnectorCatalog: catalog.list: subscribable sources. An empty catalog is an empty sources list.
+type ConnectorCatalog struct {
+	Sources []ConnectorCatalogSource `json:"sources"`
+}
+
+// ConnectorCatalogSource: A stable source id, independent of its display name. Tool names are short and unique within
+// this source.
+type ConnectorCatalogSource struct {
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Icon               string `json:"icon,omitempty"`
+	Service            string `json:"service,omitempty"`
+	MinIntervalSeconds *int   `json:"min_interval_seconds,omitempty"`
+	// A shared connector/account budget, across all its sources.
+	MaxCallsPerHour *int                          `json:"max_calls_per_hour,omitempty"`
+	Tools           []ConnectorCatalogTool        `json:"tools"`
+	Recipes         []ConnectorSubscriptionRecipe `json:"recipes,omitempty"`
+}
+
+type ConnectorCatalogTool struct {
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description"`
+	// A JSON object containing the tool input schema.
+	InputSchema json.RawMessage              `json:"input_schema"`
+	ReadOnly    bool                         `json:"read_only"`
+	Annotations *ConnectorCatalogAnnotations `json:"annotations,omitempty"`
+}
+
+// ConnectorCatalogAnnotations: when present, hints must agree with read_only: true and destructive: false.
+type ConnectorCatalogAnnotations struct {
+	ReadOnlyHint    *bool `json:"read_only_hint,omitempty"`
+	DestructiveHint *bool `json:"destructive_hint,omitempty"`
+}
+
+// ConnectorCatalogCallParams: catalog.call: a source and one of its read-only short tool names. args is an object,
+// default {}.
+type ConnectorCatalogCallParams struct {
+	Contribution string          `json:"contribution"`
+	Source       string          `json:"source"`
+	Tool         string          `json:"tool"`
+	Args         json.RawMessage `json:"args,omitempty"`
+}
+
+// Values of ConnectorSubscriptionMode.
 const (
-	ConnectorErrorCodeRateLimited = "rate_limited"
-	ConnectorErrorCodeNoMachine   = "no_machine"
-	ConnectorErrorCodeOffline     = "offline"
-	ConnectorErrorCodeNodeTooOld  = "node_too_old"
-	ConnectorErrorCodeNoGh        = "no_gh"
-	ConnectorErrorCodeNotSignedIn = "not_signed_in"
+	ConnectorSubscriptionModeItems    = "items"
+	ConnectorSubscriptionModeSnapshot = "snapshot"
+)
+
+// ConnectorSubscriptionModes are the values of ConnectorSubscriptionMode, in order.
+var ConnectorSubscriptionModes = []string{"items", "snapshot"}
+
+// Values of ConnectorSubscriptionGroup.
+const (
+	ConnectorSubscriptionGroupSource = "source"
+	ConnectorSubscriptionGroupThread = "thread"
+)
+
+// ConnectorSubscriptionGroups are the values of ConnectorSubscriptionGroup, in order.
+var ConnectorSubscriptionGroups = []string{"source", "thread"}
+
+// Values of ConnectorSubscriptionKind.
+const (
+	ConnectorSubscriptionKindSubMail     = "sub_mail"
+	ConnectorSubscriptionKindSubMessage  = "sub_message"
+	ConnectorSubscriptionKindSubNotice   = "sub_notice"
+	ConnectorSubscriptionKindSubDeadline = "sub_deadline"
+	ConnectorSubscriptionKindSubEvent    = "sub_event"
+	ConnectorSubscriptionKindSubUpdate   = "sub_update"
+	ConnectorSubscriptionKindSubDigest   = "sub_digest"
+)
+
+// ConnectorSubscriptionKinds are the values of ConnectorSubscriptionKind, in order.
+var ConnectorSubscriptionKinds = []string{"sub_mail", "sub_message", "sub_notice", "sub_deadline", "sub_event", "sub_update", "sub_digest"}
+
+// ConnectorSubscriptionFields: paths relative to one item. Only $, .field and [index] are supported; no expressions
+// or recursive descent.
+type ConnectorSubscriptionFields struct {
+	ID      string `json:"id,omitempty"`
+	Thread  string `json:"thread,omitempty"`
+	Title   string `json:"title,omitempty"`
+	Sender  string `json:"sender,omitempty"`
+	Time    string `json:"time,omitempty"`
+	Body    string `json:"body,omitempty"`
+	Link    string `json:"link,omitempty"`
+	DueDate string `json:"due_date,omitempty"`
+}
+
+// ConnectorSubscriptionRecipe: A pull recipe, not a schedule. args is an object (default {}); strings may contain
+// {{since}} or {{since_date}}. items_path defaults to $; fields are relative to one item. Text results require
+// snapshot mode. Runtime argument/schema and mapped-value validation belongs to the subscription runner.
+type ConnectorSubscriptionRecipe struct {
+	Mode      string                       `json:"mode"`
+	Tool      string                       `json:"tool"`
+	Args      json.RawMessage              `json:"args,omitempty"`
+	ItemsPath string                       `json:"items_path,omitempty"`
+	Fields    *ConnectorSubscriptionFields `json:"fields,omitempty"`
+	Kind      string                       `json:"kind"`
+	GroupBy   string                       `json:"group_by"`
+}
+
+// ConnectorErrorCode: error.code a program answers or gets besides the base ErrorCode: rate_limited (tools.call /
+// actions.do, and the hub's answer to too many sent.record; data {retry_after} in seconds, fractional allowed), why
+// credentials.gh_token has no token, and what recall answers: not_recallable (nothing was sent: the program cannot
+// take that message back) and recall_unknown (the request may have taken effect). not_signed_in, offline and
+// rate_limited also say that recall could not act now. not_read_only refuses a catalog.call outside the current
+// read-only catalog.
+const (
+	ConnectorErrorCodeRateLimited   = "rate_limited"
+	ConnectorErrorCodeNoMachine     = "no_machine"
+	ConnectorErrorCodeOffline       = "offline"
+	ConnectorErrorCodeNodeTooOld    = "node_too_old"
+	ConnectorErrorCodeNoGh          = "no_gh"
+	ConnectorErrorCodeNotSignedIn   = "not_signed_in"
+	ConnectorErrorCodeNotRecallable = "not_recallable"
+	ConnectorErrorCodeRecallUnknown = "recall_unknown"
+	ConnectorErrorCodeNotReadOnly   = "not_read_only"
 )
 
 // ConnectorErrorCodes are the values of ConnectorErrorCode, in order.
-var ConnectorErrorCodes = []string{"rate_limited", "no_machine", "offline", "node_too_old", "no_gh", "not_signed_in"}
+var ConnectorErrorCodes = []string{"rate_limited", "no_machine", "offline", "node_too_old", "no_gh", "not_signed_in", "not_recallable", "recall_unknown", "not_read_only"}
 
 // ConnectorCapability: what a connector declares (ConnectorItem.capabilities): the hub calls only the methods of
-// declared ones. fallback has no method: every inbox thing promises extra.rule_tier. An extension's connector with
-// one this hub does not know loses only that capability.
+// declared ones. fallback has no method: every inbox thing promises extra.rule_tier. recall is the program's word
+// that it can take back what it sent: the hub calls recall.can / recall.do after the user agreed, or legacy
+// connector.recall for a program without those methods, and the install preview says so. history (needs archive) is
+// history.chats and archive.history, history_anchors (needs history) is history.anchors. catalog lists subscribable
+// read-only sources and calls their short tool names. An extension's connector with one this hub does not know loses
+// only that capability.
 const (
-	ConnectorCapabilityStatus   = "status"
-	ConnectorCapabilityTools    = "tools"
-	ConnectorCapabilityActions  = "actions"
-	ConnectorCapabilityEvents   = "events"
-	ConnectorCapabilityInbox    = "inbox"
-	ConnectorCapabilitySettle   = "settle"
-	ConnectorCapabilityArchive  = "archive"
-	ConnectorCapabilityChats    = "chats"
-	ConnectorCapabilityItems    = "items"
-	ConnectorCapabilityLogin    = "login"
-	ConnectorCapabilityOptions  = "options"
-	ConnectorCapabilityThreads  = "threads"
-	ConnectorCapabilitySnapshot = "snapshot"
-	ConnectorCapabilityGroup    = "group"
-	ConnectorCapabilityMeta     = "meta"
-	ConnectorCapabilityFallback = "fallback"
-	ConnectorCapabilityMachines = "machines"
+	ConnectorCapabilityStatus         = "status"
+	ConnectorCapabilityTools          = "tools"
+	ConnectorCapabilityActions        = "actions"
+	ConnectorCapabilityEvents         = "events"
+	ConnectorCapabilityInbox          = "inbox"
+	ConnectorCapabilitySettle         = "settle"
+	ConnectorCapabilityArchive        = "archive"
+	ConnectorCapabilityChats          = "chats"
+	ConnectorCapabilityItems          = "items"
+	ConnectorCapabilityLogin          = "login"
+	ConnectorCapabilityOptions        = "options"
+	ConnectorCapabilityThreads        = "threads"
+	ConnectorCapabilitySnapshot       = "snapshot"
+	ConnectorCapabilityGroup          = "group"
+	ConnectorCapabilityMeta           = "meta"
+	ConnectorCapabilityFallback       = "fallback"
+	ConnectorCapabilityMachines       = "machines"
+	ConnectorCapabilityRecall         = "recall"
+	ConnectorCapabilityHistory        = "history"
+	ConnectorCapabilityHistoryAnchors = "history_anchors"
+	ConnectorCapabilityCatalog        = "catalog"
 )
 
 // ConnectorCapabilities are the values of ConnectorCapability, in order.
-var ConnectorCapabilities = []string{"status", "tools", "actions", "events", "inbox", "settle", "archive", "chats", "items", "login", "options", "threads", "snapshot", "group", "meta", "fallback", "machines"}
+var ConnectorCapabilities = []string{"status", "tools", "actions", "events", "inbox", "settle", "archive", "chats", "items", "login", "options", "threads", "snapshot", "group", "meta", "fallback", "machines", "recall", "history", "history_anchors", "catalog"}
 
 // ConnectorState: connectorStatus.state. disabled is the hub's own (the user switched it off); a program never
 // answers it.
@@ -2746,6 +3235,11 @@ type ConnectorCallParams struct {
 // ConnectorCallResult: tools.call and actions.do.
 type ConnectorCallResult struct {
 	Text string `json:"text,omitempty"`
+	// actions.do only (tools.call ignores it): the id, on the other side, of the message the write made, when the
+	// service gave one (a comment's id, a mail's Message-ID, a chat message's id). The hub trims it and keeps it as the
+	// sent-as-user ledger row's message_ref; one longer than 200 characters is dropped (the row has none), not cut.
+	// Leave it out when there is none.
+	MessageRef string `json:"message_ref,omitempty"`
 }
 
 // ConnectorAction: A write as the card names it: visible says who will see it.
@@ -2768,6 +3262,85 @@ type ConnectorDoParams struct {
 	Name         string          `json:"name"`
 	Args         json.RawMessage `json:"args,omitempty"`
 	RequestID    string          `json:"request_id"`
+}
+
+// ConnectorRecallParams: recall: take back a message the connector's program sent in the user's name, which the
+// sent-as-user ledger has a row of (docs/extensions/connectors.md "Sent as the user"). Only for a connector that
+// declares the capability recall, and only once the user agreed on their own device; the program never starts one.
+// The fields are the row's, as the hub kept them: nothing of what the message said. A repeat after success is a
+// success too. Answer with ConnectorRecallResult (recalled true) only when the service confirms the message is no
+// longer there, one that was already gone included; otherwise an error: not_recallable (it cannot, and nothing was
+// sent), not_signed_in, offline or rate_limited (it cannot act now), recall_unknown (it may have gone through), any
+// other error is the service refusing, with one sentence for people (no secret, no text of the message).
+type ConnectorRecallParams struct {
+	Contribution string `json:"contribution"`
+	// What wrote it: the tool's name (actions.do), sent.record, or, for a write the node's gate forwarded, "METHOD
+	// /path".
+	Action string `json:"action"`
+	// The sent message's id on the other side, as the program gave it (actions.do or sent.record) or as the service's
+	// answer did (a write through the node's gate).
+	MessageRef string `json:"message_ref"`
+	// Where it went, as the ledger kept it (short values): the program's own for a send it recorded; for a write through
+	// the node's gate also method, path and command (the gate's name), and the ids its path names.
+	Target map[string]json.RawMessage `json:"target,omitempty"`
+	// When the ledger wrote the row, right after the send.
+	At time.Time `json:"at,omitzero"`
+}
+
+// ConnectorRecallResult: legacy recall's answer: recalled true is the program's word that the service confirmed the
+// message is no longer there. Anything else (no recalled, false) is not taken for a yes: the hub then knows nothing,
+// writes nothing and lets the user ask again.
+type ConnectorRecallResult struct {
+	Recalled bool `json:"recalled"`
+}
+
+// ConnectorRecallCanParams: recall.can's read-only, memory-only preflight. The hub asks it immediately before
+// recall.do, not for every row of a ledger page. age_seconds is the sent row's age, clamped at zero for a future
+// timestamp.
+type ConnectorRecallCanParams struct {
+	Contribution string `json:"contribution"`
+	Action       string `json:"action"`
+	AgeSeconds   int    `json:"age_seconds"`
+}
+
+// ConnectorRecallCanResult: recall.can's answer. can false stops before any write and means not_recallable.
+type ConnectorRecallCanResult struct {
+	Can bool `json:"can"`
+}
+
+// ConnectorRecallDoParams: recall.do takes back one message after the user agreed on their own full device.
+// request_id is stable for this connector and external message: concurrent duplicates share one operation, and a
+// confirmed success can be replayed after a lost answer. A failure or unknown outcome may be tried again explicitly.
+// at is retained for connectors whose own recall window counts from the send. No message text, origin, approval
+// record, account or credential is included.
+type ConnectorRecallDoParams struct {
+	Contribution string                     `json:"contribution"`
+	RequestID    string                     `json:"request_id"`
+	Action       string                     `json:"action"`
+	MessageRef   string                     `json:"message_ref"`
+	Target       map[string]json.RawMessage `json:"target,omitempty"`
+	At           time.Time                  `json:"at,omitzero"`
+}
+
+// ConnectorRecallOutcome: recall.do's outcome. Only done and already_recalled say the message is known to be gone.
+// unknown may have taken effect and is never success.
+const (
+	ConnectorRecallOutcomeDone            = "done"
+	ConnectorRecallOutcomeAlreadyRecalled = "already_recalled"
+	ConnectorRecallOutcomeNotRecallable   = "not_recallable"
+	ConnectorRecallOutcomeUnavailable     = "unavailable"
+	ConnectorRecallOutcomeRefused         = "refused"
+	ConnectorRecallOutcomeUnknown         = "unknown"
+)
+
+// ConnectorRecallOutcomes are the values of ConnectorRecallOutcome, in order.
+var ConnectorRecallOutcomes = []string{"done", "already_recalled", "not_recallable", "unavailable", "refused", "unknown"}
+
+// ConnectorRecallDoResult: recall.do's result. error is one human-readable sentence for a non-success status, never a
+// secret or the message's text. An empty or unrecognized status is treated as unknown by the hub.
+type ConnectorRecallDoResult struct {
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
 }
 
 // ConnectorThreadParams: thread.page: one page of an inbox thread, oldest first; no before is the newest page.
@@ -3023,8 +3596,8 @@ type ConnectorGroupToolParams struct {
 }
 
 // ConnectorGroupAppendParams: group.append (meta): add messages to one event, an existing one (event and its meta) or
-// a new one (event empty, meta null) that may continue a done one. Answered with the event as a ConnectorInboxThing
-// with id and meta.
+// a new one (event empty, meta null: meta is always there) that may continue a done one. Answered with the event as a
+// ConnectorInboxThing with id and meta.
 type ConnectorGroupAppendParams struct {
 	Contribution string          `json:"contribution"`
 	Thread       string          `json:"thread"`
@@ -3091,12 +3664,22 @@ type ConnectorChatBatch struct {
 	Messages []ConnectorArchiveMessage `json:"messages,omitempty"`
 }
 
+// ConnectorArchiveChat: A batch's conversation. The flags are what the owner set at the source (none: not set, or the
+// program cannot tell); the knowledge base's selection matches its rules on them and on kind, and a flag a program
+// never reports never matches its rule.
 type ConnectorArchiveChat struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// dm, group or bot.
-	Kind      string    `json:"kind"`
-	Topic     bool      `json:"topic,omitempty"`
+	// The selection's kind rules match dm, group, bot, official (an official or service account) and system (the
+	// service's own notices); a source may report other kinds (mail, issue, pr…), which match no kind rule.
+	Kind  string `json:"kind"`
+	Topic bool   `json:"topic,omitempty"`
+	// The owner muted it (a source's automatic muting of large groups included).
+	Muted bool `json:"muted,omitempty"`
+	// The owner folded it away (a chat box, folded groups).
+	Collapsed bool `json:"collapsed,omitempty"`
+	// The owner marked it done.
+	Done      bool      `json:"done,omitempty"`
 	UpdatedAt time.Time `json:"updated_at,omitzero"`
 }
 
@@ -3108,6 +3691,12 @@ type ConnectorArchiveMessage struct {
 	SenderID   string `json:"sender_id,omitempty"`
 	SenderName string `json:"sender_name,omitempty"`
 	Mine       bool   `json:"mine,omitempty"`
+	// The owner is mentioned by name in it (an @-mention of the owner, or the owner's display names): the program
+	// decides, on archive.changes batches and history pages alike. An @all alone is mentioned_all.
+	Mentioned bool `json:"mentioned,omitempty"`
+	// It mentions everyone in the chat (an @all / @everyone). Reported apart from mentioned: whether it counts as a
+	// mention is the knowledge base's selection (include_all).
+	MentionedAll bool `json:"mentioned_all,omitempty"`
 	// TEXT, POST, IMAGE, FILE, CARD, SYSTEM…
 	Type string    `json:"type,omitempty"`
 	Text string    `json:"text,omitempty"`
@@ -3118,6 +3707,96 @@ type ConnectorArchiveMessage struct {
 	SenderHandles []KBHandle `json:"sender_handles,omitempty"`
 }
 
+// ConnectorHistoryChats: history.chats: the conversations the connector can import the history of. Read-only.
+type ConnectorHistoryChats struct {
+	Chats []ConnectorHistoryChat `json:"chats"`
+}
+
+// ConnectorHistoryChat: one conversation to import: estimate is roughly how many messages it has (0 or none:
+// unknown); source is the name it is filed under, as a batch's (none: the connector's id). id alone names it, unique
+// across the connector's sources.
+type ConnectorHistoryChat struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Kind string `json:"kind"`
+	// As an archive chat's muted, collapsed and done.
+	Muted     bool   `json:"muted,omitempty"`
+	Collapsed bool   `json:"collapsed,omitempty"`
+	Done      bool   `json:"done,omitempty"`
+	Bot       bool   `json:"bot,omitempty"`
+	Estimate  int    `json:"estimate,omitempty"`
+	Source    string `json:"source,omitempty"`
+}
+
+// ConnectorHistoryParams: archive.history: one page of a conversation, older than before, newer than after, or around
+// a position (at most one; none: the newest page). Positions and cursors are the program's own strings. limit is a
+// hint (the hub sends at most 200; 0 or none: the program's default) and a program may answer more.
+type ConnectorHistoryParams struct {
+	Contribution string `json:"contribution"`
+	Chat         string `json:"chat"`
+	Before       string `json:"before,omitempty"`
+	After        string `json:"after,omitempty"`
+	Around       string `json:"around,omitempty"`
+	Limit        int    `json:"limit,omitempty"`
+}
+
+// ConnectorHistoryPage: archive.history's answer, messages oldest first. older is the cursor to go further back and
+// more says there is older history. Read in this order, since a paced or unreadable page is empty with more false
+// too: pace asks the hub to wait or stop and never means the start; unreadable: the account can no longer read the
+// conversation (left, dissolved, not found), permanent, with no messages, not an error; otherwise more false (or no
+// messages) is the start of the conversation.
+type ConnectorHistoryPage struct {
+	Messages   []ConnectorArchiveMessage `json:"messages,omitempty"`
+	Older      string                    `json:"older,omitempty"`
+	Newer      string                    `json:"newer,omitempty"`
+	More       bool                      `json:"more,omitempty"`
+	Unreadable bool                      `json:"unreadable,omitempty"`
+	Pace       *ConnectorPace            `json:"pace,omitempty"`
+}
+
+// ConnectorPace: how fast the program may be read: retry_after_ms is ask again no sooner (a rate limit), stop is wait
+// for a person (an expired sign-in, a refusal); reason is for people and never a secret. The hub never sends a read
+// that timed out again.
+type ConnectorPace struct {
+	RetryAfterMs int    `json:"retry_after_ms,omitempty"`
+	Stop         bool   `json:"stop,omitempty"`
+	Reason       string `json:"reason,omitempty"`
+}
+
+// ConnectorHistoryAnchorsParams: history.anchors: the messages the owner sent or was mentioned in between since and
+// until, in one conversation (chat) or all of them (none); cursor is the next of the call before. limit is a hint, as
+// archive.history's.
+type ConnectorHistoryAnchorsParams struct {
+	Contribution string    `json:"contribution"`
+	Chat         string    `json:"chat,omitempty"`
+	Since        time.Time `json:"since,omitzero"`
+	Until        time.Time `json:"until,omitzero"`
+	Cursor       string    `json:"cursor,omitempty"`
+	Limit        int       `json:"limit,omitempty"`
+}
+
+// ConnectorHistoryAnchors: history.anchors' answer: next is the cursor for the next call, more says there are more.
+type ConnectorHistoryAnchors struct {
+	Anchors []ConnectorHistoryAnchor `json:"anchors,omitempty"`
+	Next    string                   `json:"next,omitempty"`
+	More    bool                     `json:"more,omitempty"`
+	Pace    *ConnectorPace           `json:"pace,omitempty"`
+}
+
+// ConnectorHistoryAnchor: one message the owner sent (mine) or was mentioned in (mention), at position in chat: the
+// hub reads the page around it. message is the hit itself, the only way to keep one from a conversation that is
+// unreadable now; a search hit may have no sender_id. source is the name the conversation is filed under, as a chat's
+// source (a conversation the account left is often missing from history.chats).
+type ConnectorHistoryAnchor struct {
+	Chat     string                   `json:"chat"`
+	Source   string                   `json:"source,omitempty"`
+	Position string                   `json:"position"`
+	At       time.Time                `json:"at,omitzero"`
+	Mine     bool                     `json:"mine,omitempty"`
+	Mention  bool                     `json:"mention,omitempty"`
+	Message  *ConnectorArchiveMessage `json:"message,omitempty"`
+}
+
 // ConnectorItems: items.list: the knowledge base's documents, meetings and events.
 type ConnectorItems struct {
 	Items []ConnectorKBItem `json:"items"`
@@ -3126,16 +3805,23 @@ type ConnectorItems struct {
 // ConnectorKBItem: one knowledge-base item. The fields after where are the knowledge base's own (its tagging); a
 // program leaves them out.
 type ConnectorKBItem struct {
-	Kind  string    `json:"kind"`
-	ID    string    `json:"id"`
-	Title string    `json:"title"`
-	URL   string    `json:"url,omitempty"`
-	At    time.Time `json:"at,omitzero"`
+	Kind string `json:"kind"`
+	// The connector the item belongs to. A program may leave it out: the knowledge base sets it to the calling
+	// connector's id, whatever the program sends.
+	Source string    `json:"source,omitempty"`
+	ID     string    `json:"id"`
+	Title  string    `json:"title"`
+	URL    string    `json:"url,omitempty"`
+	At     time.Time `json:"at,omitzero"`
 	// Where it came from (a chat id, calendar…).
-	Where        string    `json:"where,omitempty"`
-	Projects     []string  `json:"projects,omitempty"`
-	Note         string    `json:"note,omitempty"`
-	Seen         time.Time `json:"seen,omitzero"`
+	Where    string    `json:"where,omitempty"`
+	Projects []string  `json:"projects,omitempty"`
+	Note     string    `json:"note,omitempty"`
+	Seen     time.Time `json:"seen,omitzero"`
+	// Why it concerns the owner, as far as the program can tell: mentions (the document mentions the owner),
+	// comment_mentions (a comment or reply on it does), authored (the owner owns it), viewed (the owner opened it
+	// recently). The knowledge base's selection keeps documents by them; leave out what the program cannot tell.
+	Signals      []string  `json:"signals,omitempty"`
 	Importance   string    `json:"importance,omitempty"`
 	Relevance    int       `json:"relevance,omitempty"`
 	Tags         []string  `json:"tags,omitempty"`
@@ -3143,6 +3829,23 @@ type ConnectorKBItem struct {
 	TaggedAt     time.Time `json:"tagged_at,omitzero"`
 	Pinned       string    `json:"pinned,omitempty"`
 	LockedFields []string  `json:"locked_fields,omitempty"`
+	// The store's: which extension holds a locked field. A connector's is ignored.
+	Provenance map[string]ConnectorKBProvenance `json:"provenance,omitempty"`
+}
+
+// ConnectorKBProvenance: who holds a locked field of a knowledge-base entity, and from what (kb.schema.json
+// KBProvenance).
+type ConnectorKBProvenance struct {
+	By       string                `json:"by"`
+	At       time.Time             `json:"at"`
+	Evidence []ConnectorKBEvidence `json:"evidence,omitempty"`
+}
+
+type ConnectorKBEvidence struct {
+	Chat string `json:"chat"`
+	Day  string `json:"day"`
+	N    int    `json:"n,omitempty"`
+	Note string `json:"note,omitempty"`
 }
 
 // ConnectorDocTitleParams: items.doc_title: the title of a document link in a chat.
@@ -3286,6 +3989,39 @@ type ConnectorGhTokenParams struct {
 	Host         string `json:"host,omitempty"`
 }
 
+// ConnectorSentRecordParams: sent.record: the program of a connector that declares sends_as_user (manifest
+// connectors[].sends_as_user) tells the hub about a message it sent in the user's name outside the hub's write gate,
+// for the sent-as-user ledger (docs/extensions/connectors.md "Sent as the user"). Only a connector of the caller's
+// own that declares it may: else permission_denied. The hub sets the row's origin (the extension; session_id and
+// machine_id are kept beside it) and how it was let through (kind auto, with setting) itself. Errors:
+// permission_denied, invalid_params, rate_limited (data {retry_after} in seconds: 60 calls at once per extension,
+// then one a second, whether or not they were allowed), and no_database on a hub without a database; a ledger that
+// cannot be written is an error with a message and no code. Recording is best effort: it never undoes the send.
+type ConnectorSentRecordParams struct {
+	Contribution string `json:"contribution"`
+	// Where it went: an object of short values (a chat, a thread, recipients…). Strings are cut to 200 characters; a
+	// value that is not a string, a number, a boolean or a list of up to 10 strings is dropped, and so is an empty
+	// string. The hub keeps 20 keys at most, in key order, each name cut to 64 characters. Anything but an object is
+	// invalid_params.
+	Target map[string]json.RawMessage `json:"target"`
+	// What it said; may be empty, but it must be there (else invalid_params). The hub keeps the first 4000 characters.
+	Text string `json:"text"`
+	// One line saying what it was: the first line is kept, cut to 300 characters. Without it the hub makes one from the
+	// connector and the target.
+	Summary string `json:"summary,omitempty"`
+	// The Persona conversation that asked for the send, when one did. The extension's own word, which the hub cannot
+	// check; cut to 200 characters.
+	SessionID string `json:"session_id,omitempty"`
+	// The computer that conversation ran on, when it names one. The extension's own word, which the hub cannot check;
+	// cut to 200 characters.
+	MachineID string `json:"machine_id,omitempty"`
+	// The sent message's id on the other side, when the service gave one. The hub trims it; one longer than 200
+	// characters is dropped (the row has none), not cut.
+	MessageRef string `json:"message_ref,omitempty"`
+	// The extension's setting (config key) that let it send without asking, when there is one; cut to 200 characters.
+	Setting string `json:"setting,omitempty"`
+}
+
 type ConnectorGhToken struct {
 	Token string `json:"token"`
 }
@@ -3301,7 +4037,7 @@ type ConnectorPostsPutParams struct {
 // empty list is none.
 type ConnectorPostPut struct {
 	Post     ConnectorPost          `json:"post"`
-	Comments []ConnectorPostComment `json:"comments,omitempty"`
+	Comments []ConnectorPostComment `json:"comments,omitzero"`
 }
 
 // ConnectorPost: one public post. feed names the archive's heading; text over 64 KB is cut.
@@ -3426,12 +4162,14 @@ type ChannelReceiveParams struct {
 	Message      ChannelMessage `json:"message"`
 }
 
-// ChannelMessage: at most 4 images of 3 MB and files of 50 MB each; what does not fit is dropped and said in
-// unsupported. A message with nothing in it (no text, images, files, quote, forward or unsupported) is not handed on.
+// ChannelMessage: at most 4 images of 3 MB and files of 50 MB each, and the hub hands on at most 40 MB of them
+// together; what does not fit is dropped and said in unsupported. A message with nothing in it (no text, images,
+// files, quote, forward or unsupported) is not handed on.
 type ChannelMessage struct {
 	// The chat app's id of the message: the same message delivered again is taken once.
-	ID     string        `json:"id"`
-	Text   string        `json:"text,omitempty"`
+	ID   string `json:"id"`
+	Text string `json:"text,omitempty"`
+	// At most 4 are kept.
 	Images []ChannelBlob `json:"images,omitempty"`
 	Files  []ChannelBlob `json:"files,omitempty"`
 	// The text of the message it quotes.
@@ -3474,8 +4212,7 @@ type ChannelSendParams struct {
 	Contribution string `json:"contribution"`
 	Ref          string `json:"ref"`
 	Text         string `json:"text"`
-	// ChannelSendKind.
-	Kind string `json:"kind"`
+	Kind         string `json:"kind"`
 	// The owner's message it answers (ChannelMessage.id).
 	ReplyTo string `json:"reply_to,omitempty"`
 }
@@ -3513,17 +4250,44 @@ const (
 var KBKinds = []string{"projects", "chats", "people", "docs", "meetings", "events", "recordings"}
 
 // KBErrorCode: error.code of a knowledge-base call besides permission_denied (data {scope}, the one missing):
-// invalid_params, not_found, assistant_offline (the manager is away), kb_unavailable (not open yet). Both of the last
-// are worth trying again.
+// invalid_params, not_found, assistant_offline (the manager is away), kb_unavailable (not open yet), conflict
+// (kb.update touches fields the user or another extension holds; data KBConflict, nothing was written).
+// assistant_offline and kb_unavailable are worth trying again; conflict is for the user to decide.
 const (
 	KBErrorCodeInvalidParams    = "invalid_params"
 	KBErrorCodeNotFound         = "not_found"
 	KBErrorCodeAssistantOffline = "assistant_offline"
 	KBErrorCodeKbUnavailable    = "kb_unavailable"
+	KBErrorCodeConflict         = "conflict"
 )
 
 // KBErrorCodes are the values of KBErrorCode, in order.
-var KBErrorCodes = []string{"invalid_params", "not_found", "assistant_offline", "kb_unavailable"}
+var KBErrorCodes = []string{"invalid_params", "not_found", "assistant_offline", "kb_unavailable", "conflict"}
+
+// KBConflict: the data of a conflict error: field → who holds it (user, or ext:<extension id>); a linked entity's
+// field is <kind>/<id>.<field>.
+type KBConflict struct {
+	Owners map[string]string `json:"owners"`
+}
+
+// KBEvidence: what a written value rests on: a chat's day (kb.day) and optionally the line n there.
+type KBEvidence struct {
+	Chat string `json:"chat"`
+	// YYYY-MM-DD in the knowledge base's time zone.
+	Day string `json:"day"`
+	// 1-based line in that day's file (kb.day's n).
+	N    int    `json:"n,omitempty"`
+	Note string `json:"note,omitempty"`
+}
+
+// KBProvenance: an entry of an entity's meta.provenance (kb.get): which extension holds that locked field, since
+// when, from what. A locked field without one is the user's.
+type KBProvenance struct {
+	// ext:<extension id>
+	By       string       `json:"by"`
+	At       time.Time    `json:"at"`
+	Evidence []KBEvidence `json:"evidence,omitempty"`
+}
 
 // KBHandle: an identity clue: kind (phone, email, a source's user id kind…) and the raw value.
 type KBHandle struct {
@@ -3538,6 +4302,8 @@ type KBListParams struct {
 	// 0 is 30.
 	Limit  int `json:"limit,omitempty"`
 	Offset int `json:"offset,omitempty"`
+	// An RFC 3339 time: only entities updated at or after it (a chat: its last message).
+	Since string `json:"since,omitempty"`
 }
 
 type KBListResult struct {
@@ -3562,6 +4328,28 @@ type KBEntry struct {
 	Updated   time.Time `json:"updated"`
 	// A project's short / long · status, a chat's dm / group…
 	Extra string `json:"extra,omitempty"`
+	// A chat's source (lark, mail, wechat, github…).
+	Source string `json:"source,omitempty"`
+}
+
+// KBRecentParams: kb.recent (kb.read): what came in from every source in [since, until), newest first, across kinds:
+// one feed for a curation pass. Read a chat's text with kb.day, anything else with kb.get.
+type KBRecentParams struct {
+	// An RFC 3339 time.
+	Since string `json:"since"`
+	// An RFC 3339 time; none is now.
+	Until string `json:"until,omitempty"`
+	// None is chats, docs, meetings, events and recordings.
+	Kinds []string `json:"kinds,omitempty"`
+	// 0 is 50.
+	Limit  int `json:"limit,omitempty"`
+	Offset int `json:"offset,omitempty"`
+}
+
+type KBRecentResult struct {
+	Items      []KBEntry `json:"items"`
+	Total      int       `json:"total"`
+	NextOffset *int      `json:"next_offset,omitempty"`
 }
 
 // KBGetParams: kb.get: one entity, with its most recent messages (recent_chars, none is 12000; 0 leaves them out).
@@ -3589,6 +4377,8 @@ type KBDetail struct {
 	Links    []KBEntry            `json:"links,omitempty"`
 	Moments  []KBMomentRef        `json:"moments,omitempty"`
 	Segments []KBRecordingSegment `json:"segments,omitempty"`
+	// A recording's meeting minutes, once written (docs/assistant/meeting-minutes.md); kept as the hub sends them.
+	Minutes json.RawMessage `json:"minutes,omitempty"`
 }
 
 // KBMomentRef: A feed post linked to a project.
@@ -3611,7 +4401,8 @@ type KBRecordingSegment struct {
 
 // KBDayParams: kb.day: a chat's messages of one day in the knowledge base's time zone.
 type KBDayParams struct {
-	ID  string `json:"id"`
+	ID string `json:"id"`
+	// YYYY-MM-DD, a real date (the hub refuses 2026-13-45).
 	Day string `json:"day"`
 }
 
@@ -3621,16 +4412,27 @@ type KBDayResult struct {
 	Messages []KBDayMessage `json:"messages"`
 	Prev     string         `json:"prev"`
 	Next     string         `json:"next"`
+	// available means ledger matching ran, not that unmarked messages are human-authored. missing_scope requires
+	// sent.read; unavailable means the service cannot provide provenance. Older hosts omit this field: treat absence as
+	// unavailable.
+	SentOrigin string `json:"sent_origin"`
 }
 
 type KBDayMessage struct {
 	// The message's first line in the day's file, from 1.
 	N    int    `json:"n"`
 	Text string `json:"text"`
+	// Present only for a unique match in the sent-as-user ledger, with sent.read.
+	SentBy string `json:"sent_by,omitempty"`
+	// The matching ledger row.
+	SentLedgerID int64 `json:"sent_ledger_id,omitempty"`
+	// When this matched send was recalled; the archive may still contain its text.
+	RecalledAt time.Time `json:"recalled_at,omitzero"`
 }
 
 // KBSearchParams: kb.search: lines that match, messages too unless messages is false.
 type KBSearchParams struct {
+	// Not only spaces (the hub refuses that).
 	Query    string `json:"query"`
 	Messages *bool  `json:"messages,omitempty"`
 	// 0 is 40.
@@ -3648,8 +4450,8 @@ type KBHit struct {
 }
 
 // KBUpdateParams: kb.update: kind and id, and the fields to change (the knowledge base's update API, plus pinned,
-// lock and the remove_* lists). tags replaces (an empty list clears); a field left out is kept. Protected fields and
-// history limits: docs/knowledge.md.
+// lock and the remove_* lists). A field left out is kept; the other lists add to what is there. Protected fields and
+// history limits: docs/assistant/knowledge.md.
 type KBUpdateParams struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
@@ -3663,15 +4465,16 @@ type KBUpdateParams struct {
 	RemoveProjects []string `json:"remove_projects,omitempty"`
 	Name           string   `json:"name,omitempty"`
 	// A project's: short or long.
-	ProjectKind string   `json:"project_kind,omitempty"`
-	Status      string   `json:"status,omitempty"`
-	Goal        string   `json:"goal,omitempty"`
-	MyRole      string   `json:"my_role,omitempty"`
-	Note        string   `json:"note,omitempty"`
-	Importance  string   `json:"importance,omitempty"`
-	Relevance   *int     `json:"relevance,omitempty"`
-	Tags        []string `json:"tags,omitempty"`
-	Summary     string   `json:"summary,omitempty"`
+	ProjectKind string `json:"project_kind,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Goal        string `json:"goal,omitempty"`
+	MyRole      string `json:"my_role,omitempty"`
+	Note        string `json:"note,omitempty"`
+	Importance  string `json:"importance,omitempty"`
+	Relevance   *int   `json:"relevance,omitempty"`
+	// Replaces the tags; an empty list clears them, none keeps them.
+	Tags    []string `json:"tags,omitzero"`
+	Summary string   `json:"summary,omitempty"`
 	// A project's: a line appended to its timeline.
 	Log string `json:"log,omitempty"`
 	// Who writes the log line.
@@ -3680,13 +4483,20 @@ type KBUpdateParams struct {
 	Chats   []string `json:"chats,omitempty"`
 	People  []string `json:"people,omitempty"`
 	// A project's code directories, <machine>:<path>.
-	Dirs      []string `json:"dirs,omitempty"`
-	Projects  []string `json:"projects,omitempty"`
-	MergeInto string   `json:"merge_into,omitempty"`
+	Dirs     []string `json:"dirs,omitempty"`
+	Projects []string `json:"projects,omitempty"`
+	// Refused (conflict) when the user or another extension holds anything on the project folded away; no before.
+	MergeInto string `json:"merge_into,omitempty"`
+	// Kept as the provenance of the fields this write holds.
+	Evidence []KBEvidence `json:"evidence,omitempty"`
+	// Fields this extension holds, handed back to the built-in pipeline; unlocking pinned clears it.
+	Unlock []string `json:"unlock,omitempty"`
 }
 
 type KBUpdateResult struct {
 	ID string `json:"id"`
+	// The previous value of each field written (null when unset; summary is the old text), for the extension's own undo.
+	Before map[string]json.RawMessage `json:"before,omitempty"`
 }
 
 // KBOwnerParams: kb.owner takes nothing.
@@ -3712,314 +4522,1481 @@ type KBForgottenEvent struct {
 	Source string `json:"source"`
 }
 
+// TodoEventThread: the chat thread a to-do is bound to: the channel it lives on (feishu…), the chat and the thread in
+// it, and the title shown for it.
+type TodoEventThread struct {
+	Channel  string `json:"channel"`
+	ChatID   string `json:"chat_id"`
+	ThreadID string `json:"thread_id"`
+	Title    string `json:"title"`
+}
+
+// TodoChangedEvent: event.todo.changed: a to-do was created or deleted, or its title, whether it is done (or failed
+// to start), or the thread it is bound to changed. Changes within about a second of each other are told once, as the
+// to-do is at the end of them. title, thread and done are as after the change (the last ones for a deleted to-do);
+// thread is left out when the to-do has none, done unless the to-do is done (closed, or its task failed to start).
+// Notes, agents and decisions changing do not send it (decisions have event.todo.decision). Read the to-do again if
+// it matters.
+type TodoChangedEvent struct {
+	ID     string           `json:"id"`
+	Title  string           `json:"title"`
+	Thread *TodoEventThread `json:"thread,omitempty"`
+	Done   bool             `json:"done,omitempty"`
+	What   string           `json:"what"`
+}
+
+// TodoEventDecision: A decision on a to-do: what was asked and chosen (reason and supersedes_id left out when empty),
+// and where it came from: manual (written in the to-do), card (the user answered an Agent's question card), outcome
+// (pulled out of an Agent's finished work, not made by the user), agent (an Agent noted it), thread (the user's reply
+// in the to-do's chat thread).
+type TodoEventDecision struct {
+	ID           string `json:"id"`
+	Question     string `json:"question"`
+	Choice       string `json:"choice"`
+	Reason       string `json:"reason,omitempty"`
+	Source       string `json:"source"`
+	SupersedesID string `json:"supersedes_id,omitempty"`
+}
+
+// TodoDecisionEvent: event.todo.decision: a decision was written on a to-do, whatever its source (a decision from the
+// to-do's own thread has source thread: an extension that posts decisions into that thread should skip it). Sent once
+// for each decision written, not for one marked superseded later. title and thread are the to-do's now; thread is
+// left out when it has none.
+type TodoDecisionEvent struct {
+	ID       string            `json:"id"`
+	Title    string            `json:"title"`
+	Thread   *TodoEventThread  `json:"thread,omitempty"`
+	Decision TodoEventDecision `json:"decision"`
+}
+
+// ModelErrorCode: error.code of model.complete besides permission_denied (data {scope: "models"}): invalid_params;
+// assistant_offline (the manager is away: try again); model_unavailable (nothing to call for this extension: the user
+// picks a model for it in Settings › Model configuration); model_paused (the connection is held for quota or load,
+// nothing was sent; data ModelPause: try again after until); model_failed (the upstream failed the request: an error
+// status or a dropped connection); model_refused (the model declined to answer this input, a refusal or a content
+// filter: sending it again unchanged gets the same answer, so split it, drop a part or report it; data ModelRefusal);
+// timeout (past timeout_seconds); invalid_output (with json_schema, the reply was still not JSON matching it after
+// one more try; data ModelInvalidOutput).
+const (
+	ModelErrorCodeInvalidParams    = "invalid_params"
+	ModelErrorCodeAssistantOffline = "assistant_offline"
+	ModelErrorCodeModelUnavailable = "model_unavailable"
+	ModelErrorCodeModelPaused      = "model_paused"
+	ModelErrorCodeModelFailed      = "model_failed"
+	ModelErrorCodeModelRefused     = "model_refused"
+	ModelErrorCodeTimeout          = "timeout"
+	ModelErrorCodeInvalidOutput    = "invalid_output"
+)
+
+// ModelErrorCodes are the values of ModelErrorCode, in order.
+var ModelErrorCodes = []string{"invalid_params", "assistant_offline", "model_unavailable", "model_paused", "model_failed", "model_refused", "timeout", "invalid_output"}
+
+// ModelMessage: one turn of the conversation: the user's, or the model's earlier answer.
+type ModelMessage struct {
+	Role    string `json:"role"`
+	Content string `json:"content"`
+}
+
+// Values of ModelRole.
+const (
+	ModelRoleUser      = "user"
+	ModelRoleAssistant = "assistant"
+)
+
+// ModelRoles are the values of ModelRole, in order.
+var ModelRoles = []string{"user", "assistant"}
+
+// ModelCompleteParams: model.complete (models): one answer to a conversation that starts and ends with the user's
+// turn, the turns alternating.
+type ModelCompleteParams struct {
+	// The system prompt.
+	System   string         `json:"system,omitempty"`
+	Messages []ModelMessage `json:"messages"`
+	// Room for the answer; 0 is 4096. Connections speaking the Responses API are sent none.
+	MaxTokens int `json:"max_tokens,omitempty"`
+	// A JSON Schema the answer must match: the hub asks for JSON matching it, checks the reply (type, enum, const,
+	// properties, required, additionalProperties, items, prefixItems, lengths, bounds, allOf / anyOf / oneOf, local
+	// $ref) and asks once more when it does not match; the result's json has the decoded value. At most 64 KiB.
+	JSONSchema json.RawMessage `json:"json_schema,omitempty"`
+	// Bounds the whole call, a second try included; 0 is 120.
+	TimeoutSeconds int `json:"timeout_seconds,omitempty"`
+	// What the call is for (daily, weekly…): it goes in the hub's log line with the usage.
+	Label string `json:"label,omitempty"`
+}
+
+// ModelUsage: what the call spent, every request of it together (a second try for json_schema included), as the
+// upstream counted it.
+type ModelUsage struct {
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"`
+	Requests                 int `json:"requests"`
+}
+
+type ModelCompleteResult struct {
+	// The answer as the model wrote it.
+	Text string `json:"text"`
+	// With json_schema: the answer decoded, matching it.
+	JSON json.RawMessage `json:"json,omitempty"`
+	// The model that answered.
+	Model string `json:"model"`
+	// end_turn, or max_tokens when the answer was cut off.
+	StopReason string     `json:"stop_reason"`
+	Usage      ModelUsage `json:"usage"`
+}
+
+// ModelPause: the data of model_paused.
+type ModelPause struct {
+	// quota or busy.
+	Reason string `json:"reason"`
+	// An RFC 3339 time.
+	Until string `json:"until"`
+}
+
+// ModelInvalidOutput: the data of invalid_output: why the last reply did not match, the reply, and what the call
+// spent.
+type ModelInvalidOutput struct {
+	Problem string     `json:"problem"`
+	Text    string     `json:"text"`
+	Usage   ModelUsage `json:"usage"`
+}
+
+// ModelRefusal: the data of model_refused: what the upstream said and what the declined call spent.
+type ModelRefusal struct {
+	// The upstream's reason: refusal (a refusal stop or part) or content_filter.
+	StopReason string     `json:"stop_reason,omitempty"`
+	Usage      ModelUsage `json:"usage"`
+}
+
+// AssistantErrorCode: error.code of the assistant calls besides permission_denied (data {scope: "assistant.read"}):
+// invalid_params; not_found (assistant.messages: no such conversation in the assistant's own space);
+// assistant_offline (the manager is away: try again); machine_offline (the assistant's computer is not connected or
+// not set up: try again).
+const (
+	AssistantErrorCodeInvalidParams    = "invalid_params"
+	AssistantErrorCodeNotFound         = "not_found"
+	AssistantErrorCodeAssistantOffline = "assistant_offline"
+	AssistantErrorCodeMachineOffline   = "machine_offline"
+)
+
+// AssistantErrorCodes are the values of AssistantErrorCode, in order.
+var AssistantErrorCodes = []string{"invalid_params", "not_found", "assistant_offline", "machine_offline"}
+
+// AssistantConversationsParams: assistant.conversations (assistant.read): the conversations last active at or after
+// since, newest first.
+type AssistantConversationsParams struct {
+	// An RFC 3339 time: last active at or after it.
+	Since string `json:"since"`
+	// An RFC 3339 time: those known to have started at or after it are left out.
+	Until           string `json:"until,omitempty"`
+	IncludeArchived bool   `json:"include_archived,omitempty"`
+	// 0 is 50.
+	Limit  int `json:"limit,omitempty"`
+	Offset int `json:"offset,omitempty"`
+}
+
+type AssistantConversation struct {
+	ID string `json:"id"`
+	// Empty while it has none.
+	Title string `json:"title"`
+	// The main conversation.
+	Main     bool `json:"main,omitempty"`
+	Archived bool `json:"archived,omitempty"`
+	// Who opened it: user, channel, inbox, task, spawned, lark_agent or extension.
+	Origin string `json:"origin"`
+	// When it began, when known.
+	Started time.Time `json:"started,omitzero"`
+	// Its last activity.
+	Updated time.Time `json:"updated"`
+}
+
+type AssistantConversationsResult struct {
+	Items      []AssistantConversation `json:"items"`
+	Total      int                     `json:"total"`
+	NextOffset *int                    `json:"next_offset,omitempty"`
+}
+
+// AssistantMessagesParams: assistant.messages (assistant.read): one conversation's words in time order, paged by seq.
+type AssistantMessagesParams struct {
+	// The conversation (assistant.conversations' id).
+	ID string `json:"id"`
+	// An RFC 3339 time: messages at or after it.
+	Since string `json:"since,omitempty"`
+	// An RFC 3339 time: messages before it.
+	Until string `json:"until,omitempty"`
+	// Continue after this seq (the last page's next_seq).
+	AfterSeq *int `json:"after_seq,omitempty"`
+	// 0 is 200.
+	Limit int `json:"limit,omitempty"`
+}
+
+type AssistantMessage struct {
+	Seq  int       `json:"seq"`
+	At   time.Time `json:"at"`
+	Role string    `json:"role"`
+	Text string    `json:"text"`
+	// The text was cut for pages (a very long message).
+	Truncated bool `json:"truncated,omitempty"`
+}
+
+// Values of AssistantRole.
+const (
+	AssistantRoleUser      = "user"
+	AssistantRoleAssistant = "assistant"
+)
+
+// AssistantRoles are the values of AssistantRole, in order.
+var AssistantRoles = []string{"user", "assistant"}
+
+// AssistantMessagesResult: next_seq is set while there is more to read (pass it as after_seq), even when this page
+// has no messages.
+type AssistantMessagesResult struct {
+	Messages []AssistantMessage `json:"messages"`
+	NextSeq  *int               `json:"next_seq,omitempty"`
+}
+
+type StorageEmptyParams struct {
+}
+
+// StorageRequestResult: opaque timestamped request identity from the host. Retry only the same ID and payload;
+// expires after five minutes and is never automatically regenerated for an unknown effect.
+type StorageRequestResult struct {
+	RequestID string `json:"request_id"`
+}
+
+type StorageKeyParams struct {
+	Key string `json:"key"`
+}
+
+// StorageEntry: canonical base64 business bytes, at most64KiB decoded; revision is an opaque CAS token.
+type StorageEntry struct {
+	Revision string `json:"revision"`
+	Data     string `json:"data"`
+}
+
+type StorageListParams struct {
+	Prefix string `json:"prefix,omitempty"`
+	After  string `json:"after,omitempty"`
+	Limit  int    `json:"limit,omitempty"`
+}
+
+type StorageMutationItem struct {
+	Key      string `json:"key"`
+	Revision string `json:"revision,omitempty"`
+	Deleted  bool   `json:"deleted,omitempty"`
+	JobID    string `json:"job_id,omitempty"`
+}
+
+type StorageListResult struct {
+	Items []StorageMutationItem `json:"items"`
+	More  bool                  `json:"more"`
+}
+
+// StorageOperation: one atomic operation. Empty revision means require absence; missing revision is unconditional.
+// Queue enqueue/ack require separate queue permission; their job and progress changes commit atomically.
+type StorageOperation struct {
+	Kind      string  `json:"kind"`
+	Key       string  `json:"key"`
+	Data      string  `json:"data,omitempty"`
+	Revision  *string `json:"revision,omitempty"`
+	Dedup     string  `json:"dedup,omitempty"`
+	NotBefore int64   `json:"not_before,omitempty"`
+	JobID     string  `json:"job_id,omitempty"`
+	Lease     string  `json:"lease,omitempty"`
+}
+
+type StorageTransactionParams struct {
+	RequestID  string             `json:"request_id"`
+	Operations []StorageOperation `json:"operations"`
+}
+
+type StorageTransactionResult struct {
+	Items []StorageMutationItem `json:"items"`
+}
+
+type StorageQueueListParams struct {
+	Key   string `json:"key"`
+	After string `json:"after,omitempty"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+type StorageJob struct {
+	ID         string `json:"id"`
+	Dedup      string `json:"dedup"`
+	Data       string `json:"data"`
+	State      string `json:"state"`
+	NotBefore  int64  `json:"not_before"`
+	Attempts   int64  `json:"attempts"`
+	Lease      string `json:"lease,omitempty"`
+	LeaseUntil int64  `json:"lease_until,omitempty"`
+}
+
+type StorageQueueListResult struct {
+	Items []StorageJob `json:"items"`
+	More  bool         `json:"more"`
+}
+
+type StorageEnqueueParams struct {
+	RequestID string `json:"request_id"`
+	Key       string `json:"key"`
+	Dedup     string `json:"dedup"`
+	Data      string `json:"data"`
+	NotBefore int64  `json:"not_before,omitempty"`
+}
+
+type StorageJobResult struct {
+	ID    string `json:"id"`
+	State string `json:"state,omitempty"`
+}
+
+type StorageClaimParams struct {
+	RequestID    string `json:"request_id"`
+	Key          string `json:"key"`
+	LeaseSeconds int    `json:"lease_seconds"`
+}
+
+// StorageClaimResult: one claimed job; job is absent when no pending job is due.
+type StorageClaimResult struct {
+	Job *StorageJob `json:"job,omitempty"`
+}
+
+type StorageSettleParams struct {
+	RequestID string `json:"request_id"`
+	Key       string `json:"key"`
+	ID        string `json:"id"`
+	Lease     string `json:"lease,omitempty"`
+}
+
+type StorageRetryParams struct {
+	RequestID string `json:"request_id"`
+	Key       string `json:"key"`
+	ID        string `json:"id"`
+	Lease     string `json:"lease"`
+	NotBefore int64  `json:"not_before"`
+}
+
+type StorageDeleteResult struct {
+	Deleted bool `json:"deleted"`
+}
+
+type StorageBlobCreateParams struct {
+	RequestID string `json:"request_id"`
+	Key       string `json:"key"`
+}
+
+type StorageBlobCreateResult struct {
+	Handle string `json:"handle"`
+}
+
+type StorageBlobWriteParams struct {
+	RequestID string `json:"request_id"`
+	Key       string `json:"key"`
+	Handle    string `json:"handle"`
+	Offset    int    `json:"offset"`
+	Data      string `json:"data"`
+}
+
+type StorageBlobWriteResult struct {
+	Bytes int `json:"bytes"`
+}
+
+type StorageBlobMutateParams struct {
+	RequestID string `json:"request_id"`
+	Key       string `json:"key"`
+	Handle    string `json:"handle"`
+}
+
+type StorageBlobFinishResult struct {
+	Handle   string `json:"handle"`
+	Bytes    int    `json:"bytes"`
+	Complete bool   `json:"complete"`
+}
+
+type StorageBlobReadParams struct {
+	Key    string `json:"key"`
+	Handle string `json:"handle"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
+}
+
+type StorageBlobReadResult struct {
+	Data   string `json:"data"`
+	Offset int    `json:"offset"`
+	Bytes  int    `json:"bytes"`
+	Eof    bool   `json:"eof"`
+}
+
+// Bounded JSON scalar, not executable content. Strings at most 4096 code points; finite numbers in the JSON-safe
+// range.
+type UIStreamScalar = json.RawMessage
+
+// Interaction value: scalar, scalar array or scalar map only (one container level). No functions, callbacks, binary
+// data or nested containers. Never send credentials or secret field contents.
+type UIStreamValue = json.RawMessage
+
+// UIStreamCapability: client opt-in for protocol 1 plus supported native component tags. ui_version alone does not
+// opt in. Declaration is not runtime support.
+type UIStreamCapability struct {
+	Protocol   int      `json:"protocol"`
+	Components []string `json:"components"`
+}
+
+// UIStreamSnapshot: full authoritative tree before deltas, including after resume or recovery. Keys required on
+// sections/items; tiles and global uniqueness need semantic validation.
+type UIStreamSnapshot struct {
+	Protocol int    `json:"protocol"`
+	Session  string `json:"session"`
+	Epoch    string `json:"epoch"`
+	Version  int64  `json:"version"`
+	RootKey  string `json:"root_key"`
+	View     View   `json:"view"`
+}
+
+func (v UIStreamSnapshot) MarshalJSON() ([]byte, error) {
+	type plain UIStreamSnapshot
+	return json.Marshal(struct {
+		plain
+		Protocol int              `json:"protocol"`
+		Session  string           `json:"session"`
+		Epoch    string           `json:"epoch"`
+		Version  int64            `json:"version"`
+		RootKey  string           `json:"root_key"`
+		View     requiredJSONView `json:"view"`
+	}{
+		plain:    plain(v),
+		Protocol: v.Protocol,
+		Session:  v.Session,
+		Epoch:    v.Epoch,
+		Version:  v.Version,
+		RootKey:  v.RootKey,
+		View:     (requiredJSONView)(v.View),
+	})
+}
+
+// UIStreamDelta: atomic batch, at most 256 operations. An explicit empty batch keeps the version for a non-event
+// no-op or advances exactly one revision as an accepted or ambiguous callback fence. Validate against a staged whole
+// tree before committing. Ordering/equality are reducer checks.
+type UIStreamDelta struct {
+	Protocol    int                 `json:"protocol"`
+	Session     string              `json:"session"`
+	Epoch       string              `json:"epoch"`
+	BaseVersion int64               `json:"base_version"`
+	Version     int64               `json:"version"`
+	Operations  []UIStreamOperation `json:"operations"`
+}
+
+// UIStreamEvent: authenticated owner interaction for the displayed generation/version. Deduplicate event_id before
+// writes. Validate action against the saved node/event slot, then resolve its callback server-side; no callback code
+// or secrets in this payload.
+type UIStreamEvent struct {
+	Protocol int    `json:"protocol"`
+	Session  string `json:"session"`
+	Epoch    string `json:"epoch"`
+	Version  int64  `json:"version"`
+	EventID  string `json:"event_id"`
+	Key      string `json:"key"`
+	// Opaque registered callback Action.id for this node and event slot; never callback code or an authority claim.
+	Action string        `json:"action"`
+	Event  string        `json:"event"`
+	Value  UIStreamValue `json:"value"`
+}
+
+// UIStreamOperation: atomic native tree operation. Unknown operations invalidate the entire batch and require a
+// snapshot, never skipping. Tiles update by replacing their containing grid/carousel. One struct for every variant:
+// op says which fields mean something.
+type UIStreamOperation struct {
+	Op      string     `json:"op"`
+	Key     string     `json:"key,omitempty"`
+	View    *View      `json:"view,omitempty"`
+	Section *Section   `json:"section,omitempty"`
+	Item    *Component `json:"item,omitempty"`
+	Parent  string     `json:"parent,omitempty"`
+	Before  string     `json:"before,omitempty"`
+}
+
+// UIStreamOperation ops.
+const (
+	UIStreamOperationReplace = "replace"
+	UIStreamOperationInsert  = "insert"
+	UIStreamOperationRemove  = "remove"
+	UIStreamOperationMove    = "move"
+)
+
+// UIStreamOperationOps are the ops of UIStreamOperation, in order.
+var UIStreamOperationOps = []string{"replace", "insert", "remove", "move"}
+
+func (v UIStreamOperation) MarshalJSON() ([]byte, error) {
+	type plain UIStreamOperation
+	switch v.Op {
+	case "replace", "remove":
+		return json.Marshal(struct {
+			plain
+			Key     string                 `json:"key"`
+			View    *requiredJSONView      `json:"view,omitempty"`
+			Section *requiredJSONSection   `json:"section,omitempty"`
+			Item    *requiredJSONComponent `json:"item,omitempty"`
+		}{
+			plain:   plain(v),
+			Key:     v.Key,
+			View:    (*requiredJSONView)(v.View),
+			Section: (*requiredJSONSection)(v.Section),
+			Item:    (*requiredJSONComponent)(v.Item),
+		})
+	case "insert":
+		return json.Marshal(struct {
+			plain
+			View    *requiredJSONView      `json:"view,omitempty"`
+			Section *requiredJSONSection   `json:"section,omitempty"`
+			Item    *requiredJSONComponent `json:"item,omitempty"`
+			Parent  string                 `json:"parent"`
+		}{
+			plain:   plain(v),
+			View:    (*requiredJSONView)(v.View),
+			Section: (*requiredJSONSection)(v.Section),
+			Item:    (*requiredJSONComponent)(v.Item),
+			Parent:  v.Parent,
+		})
+	case "move":
+		return json.Marshal(struct {
+			plain
+			Key     string                 `json:"key"`
+			View    *requiredJSONView      `json:"view,omitempty"`
+			Section *requiredJSONSection   `json:"section,omitempty"`
+			Item    *requiredJSONComponent `json:"item,omitempty"`
+			Parent  string                 `json:"parent"`
+		}{
+			plain:   plain(v),
+			Key:     v.Key,
+			View:    (*requiredJSONView)(v.View),
+			Section: (*requiredJSONSection)(v.Section),
+			Item:    (*requiredJSONComponent)(v.Item),
+			Parent:  v.Parent,
+		})
+	default:
+		return json.Marshal(plain(v))
+	}
+}
+
+// UIStreamRequest: owner-bound lifecycle request over the authenticated WebSocket. The transport supplies
+// principal/hub identity; never trust an owner field from JSON. No endpoint or runtime is enabled by these contracts.
+// One struct for every variant: request says which fields mean something.
+type UIStreamRequest struct {
+	Request      string         `json:"request"`
+	Protocol     int            `json:"protocol,omitempty"`
+	RequestID    string         `json:"request_id,omitempty"`
+	Extension    string         `json:"extension,omitempty"`
+	Contribution string         `json:"contribution,omitempty"`
+	Context      *UIContext     `json:"context,omitempty"`
+	State        string         `json:"state,omitempty"`
+	Session      string         `json:"session,omitempty"`
+	Epoch        string         `json:"epoch,omitempty"`
+	Version      int64          `json:"version,omitempty"`
+	Interaction  *UIStreamEvent `json:"interaction,omitempty"`
+}
+
+// UIStreamRequest requests.
+const (
+	UIStreamRequestOpen     = "open"
+	UIStreamRequestClose    = "close"
+	UIStreamRequestSuspend  = "suspend"
+	UIStreamRequestResume   = "resume"
+	UIStreamRequestEvent    = "event"
+	UIStreamRequestSnapshot = "snapshot"
+)
+
+// UIStreamRequestRequests are the requests of UIStreamRequest, in order.
+var UIStreamRequestRequests = []string{"open", "close", "suspend", "resume", "event", "snapshot"}
+
+func (v UIStreamRequest) MarshalJSON() ([]byte, error) {
+	type plain UIStreamRequest
+	switch v.Request {
+	case "open":
+		return json.Marshal(struct {
+			plain
+			Protocol     int        `json:"protocol"`
+			RequestID    string     `json:"request_id"`
+			Extension    string     `json:"extension"`
+			Contribution string     `json:"contribution"`
+			Context      *UIContext `json:"context"`
+			State        string     `json:"state"`
+		}{
+			plain:        plain(v),
+			Protocol:     v.Protocol,
+			RequestID:    v.RequestID,
+			Extension:    v.Extension,
+			Contribution: v.Contribution,
+			Context:      v.Context,
+			State:        v.State,
+		})
+	case "close", "suspend":
+		return json.Marshal(struct {
+			plain
+			Protocol  int    `json:"protocol"`
+			RequestID string `json:"request_id"`
+			Session   string `json:"session"`
+			Epoch     string `json:"epoch"`
+		}{
+			plain:     plain(v),
+			Protocol:  v.Protocol,
+			RequestID: v.RequestID,
+			Session:   v.Session,
+			Epoch:     v.Epoch,
+		})
+	case "resume", "snapshot":
+		return json.Marshal(struct {
+			plain
+			Protocol  int    `json:"protocol"`
+			RequestID string `json:"request_id"`
+			Session   string `json:"session"`
+			Epoch     string `json:"epoch"`
+			Version   int64  `json:"version"`
+		}{
+			plain:     plain(v),
+			Protocol:  v.Protocol,
+			RequestID: v.RequestID,
+			Session:   v.Session,
+			Epoch:     v.Epoch,
+			Version:   v.Version,
+		})
+	case "event":
+		return json.Marshal(struct {
+			plain
+			Protocol    int            `json:"protocol"`
+			RequestID   string         `json:"request_id"`
+			Interaction *UIStreamEvent `json:"interaction"`
+		}{
+			plain:       plain(v),
+			Protocol:    v.Protocol,
+			RequestID:   v.RequestID,
+			Interaction: v.Interaction,
+		})
+	default:
+		return json.Marshal(plain(v))
+	}
+}
+
+type UIStreamClientEnvelope struct {
+	Type    string           `json:"type"`
+	Manager string           `json:"manager,omitempty"`
+	Request *UIStreamRequest `json:"request,omitempty"`
+}
+
+// UIStreamActionResult: bounded presentation-only subset of native ActionResult, at most 64 KiB UTF-8 JSON. Carried
+// in the correlated event receipt and cached on replay. Clients apply it once per session/epoch/event_id, only after
+// reaching receipt.version; never execute HTML, JavaScript or infer authorization from a result. JSX state owns
+// view/items updates through snapshots/deltas. Manager validates push ownership and credential-free HTTPS (or its own
+// permitted native URL).
+type UIStreamActionResult struct {
+	Toast   string             `json:"toast,omitempty"`
+	OpenURL string             `json:"open_url,omitempty"`
+	Push    *UIStreamPush      `json:"push,omitempty"`
+	Pop     bool               `json:"pop,omitempty"`
+	Lines   *UIStreamFileLines `json:"lines,omitempty"`
+}
+
+// UIStreamPush: extension-owned native Push only: no assistant page or arbitrary target. State is additionally
+// bounded to 16 KiB UTF-8. Not authority to invoke an action.
+type UIStreamPush struct {
+	UI    string `json:"ui,omitempty"`
+	State string `json:"state,omitempty"`
+	Title string `json:"title,omitempty"`
+}
+
+// UIStreamFileLines: native FileLines presentation response correlated to the saved event, not filesystem access or
+// code execution. The complete result remains limited to 64 KiB UTF-8 JSON.
+type UIStreamFileLines struct {
+	Path  string   `json:"path"`
+	Side  string   `json:"side,omitempty"`
+	Start int      `json:"start"`
+	Lines []string `json:"lines"`
+	Total int      `json:"total,omitempty"`
+}
+
+type UIStreamReceipt struct {
+	Session string                `json:"session"`
+	Epoch   string                `json:"epoch"`
+	EventID string                `json:"event_id"`
+	Version int64                 `json:"version"`
+	Status  string                `json:"status"`
+	Result  *UIStreamActionResult `json:"result,omitempty"`
+}
+
+type UIStreamFailure struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// One struct for every variant: kind says which fields mean something.
+type UIStreamServerEnvelope struct {
+	Kind      string            `json:"kind"`
+	Type      string            `json:"type,omitempty"`
+	RequestID string            `json:"request_id,omitempty"`
+	Manager   string            `json:"manager,omitempty"`
+	Snapshot  *UIStreamSnapshot `json:"snapshot,omitempty"`
+	Delta     *UIStreamDelta    `json:"delta,omitempty"`
+	Receipt   *UIStreamReceipt  `json:"receipt,omitempty"`
+	Error     *UIStreamFailure  `json:"error,omitempty"`
+	Session   string            `json:"session,omitempty"`
+}
+
+// UIStreamServerEnvelope kinds.
+const (
+	UIStreamServerEnvelopeSnapshot  = "snapshot"
+	UIStreamServerEnvelopeDelta     = "delta"
+	UIStreamServerEnvelopeReceipt   = "receipt"
+	UIStreamServerEnvelopeError     = "error"
+	UIStreamServerEnvelopeClosed    = "closed"
+	UIStreamServerEnvelopeSuspended = "suspended"
+)
+
+// UIStreamServerEnvelopeKinds are the kinds of UIStreamServerEnvelope, in order.
+var UIStreamServerEnvelopeKinds = []string{"snapshot", "delta", "receipt", "error", "closed", "suspended"}
+
+func (v UIStreamServerEnvelope) MarshalJSON() ([]byte, error) {
+	type plain UIStreamServerEnvelope
+	switch v.Kind {
+	case "snapshot":
+		return json.Marshal(struct {
+			plain
+			Type     string            `json:"type"`
+			Snapshot *UIStreamSnapshot `json:"snapshot"`
+		}{
+			plain:    plain(v),
+			Type:     v.Type,
+			Snapshot: v.Snapshot,
+		})
+	case "delta":
+		return json.Marshal(struct {
+			plain
+			Type  string         `json:"type"`
+			Delta *UIStreamDelta `json:"delta"`
+		}{
+			plain: plain(v),
+			Type:  v.Type,
+			Delta: v.Delta,
+		})
+	case "receipt":
+		return json.Marshal(struct {
+			plain
+			Type    string           `json:"type"`
+			Receipt *UIStreamReceipt `json:"receipt"`
+		}{
+			plain:   plain(v),
+			Type:    v.Type,
+			Receipt: v.Receipt,
+		})
+	case "error":
+		return json.Marshal(struct {
+			plain
+			Type  string           `json:"type"`
+			Error *UIStreamFailure `json:"error"`
+		}{
+			plain: plain(v),
+			Type:  v.Type,
+			Error: v.Error,
+		})
+	case "closed", "suspended":
+		return json.Marshal(struct {
+			plain
+			Type    string `json:"type"`
+			Session string `json:"session"`
+		}{
+			plain:   plain(v),
+			Type:    v.Type,
+			Session: v.Session,
+		})
+	default:
+		return json.Marshal(plain(v))
+	}
+}
+
+// UIPageSnapshot: source-process native render revision, independent of manager-owned wire revisions. Validate
+// original JSON before fitting; never trust source recipients or owners.
+type UIPageSnapshot struct {
+	Generation string `json:"generation"`
+	Version    int64  `json:"version"`
+	RootKey    string `json:"rootKey"`
+	View       View   `json:"view"`
+}
+
+func (v UIPageSnapshot) MarshalJSON() ([]byte, error) {
+	type plain UIPageSnapshot
+	return json.Marshal(struct {
+		plain
+		Generation string           `json:"generation"`
+		Version    int64            `json:"version"`
+		RootKey    string           `json:"rootKey"`
+		View       requiredJSONView `json:"view"`
+	}{
+		plain:      plain(v),
+		Generation: v.Generation,
+		Version:    v.Version,
+		RootKey:    v.RootKey,
+		View:       (requiredJSONView)(v.View),
+	})
+}
+
+// requiredJSONComponent preserves required fields only inside stream payloads.
+type requiredJSONComponent Component
+
+func (v requiredJSONComponent) MarshalJSON() ([]byte, error) {
+	type plain Component
+	switch v.Type {
+	case "text", "markdown", "code":
+		return json.Marshal(struct {
+			plain
+			Text string `json:"text"`
+		}{
+			plain: plain(v),
+			Text:  v.Text,
+		})
+	case "metric":
+		return json.Marshal(struct {
+			plain
+			Label string `json:"label"`
+			Value string `json:"value"`
+		}{
+			plain: plain(v),
+			Label: v.Label,
+			Value: v.Value,
+		})
+	case "progress":
+		return json.Marshal(struct {
+			plain
+			Label string   `json:"label"`
+			Ratio *float64 `json:"ratio"`
+		}{
+			plain: plain(v),
+			Label: v.Label,
+			Ratio: v.Ratio,
+		})
+	case "row", "empty", "header":
+		return json.Marshal(struct {
+			plain
+			Title string `json:"title"`
+		}{
+			plain: plain(v),
+			Title: v.Title,
+		})
+	case "button":
+		return json.Marshal(struct {
+			plain
+			Title  string  `json:"title"`
+			Action *Action `json:"action"`
+		}{
+			plain:  plain(v),
+			Title:  v.Title,
+			Action: v.Action,
+		})
+	case "link":
+		return json.Marshal(struct {
+			plain
+			Title string `json:"title"`
+			URL   string `json:"url"`
+		}{
+			plain: plain(v),
+			Title: v.Title,
+			URL:   v.URL,
+		})
+	case "field":
+		return json.Marshal(struct {
+			plain
+			Label string `json:"label"`
+			Name  string `json:"name"`
+			Kind  string `json:"kind"`
+		}{
+			plain: plain(v),
+			Label: v.Label,
+			Name:  v.Name,
+			Kind:  v.Kind,
+		})
+	case "divider", "loading":
+		return json.Marshal(struct {
+			plain
+		}{
+			plain: plain(v),
+		})
+	case "chart":
+		return json.Marshal(struct {
+			plain
+			Kind   string        `json:"kind"`
+			Series []ChartSeries `json:"series"`
+		}{
+			plain:  plain(v),
+			Kind:   v.Kind,
+			Series: v.Series,
+		})
+	case "stat_grid":
+		return json.Marshal(struct {
+			plain
+			Stats []Stat `json:"stats"`
+		}{
+			plain: plain(v),
+			Stats: v.Stats,
+		})
+	case "segmented":
+		return json.Marshal(struct {
+			plain
+			Value   string   `json:"value"`
+			Action  *Action  `json:"action"`
+			Name    string   `json:"name"`
+			Choices []Choice `json:"choices"`
+		}{
+			plain:   plain(v),
+			Value:   v.Value,
+			Action:  v.Action,
+			Name:    v.Name,
+			Choices: v.Choices,
+		})
+	case "table":
+		return json.Marshal(struct {
+			plain
+			Columns []TableColumn `json:"columns"`
+			Rows    [][]string    `json:"rows"`
+		}{
+			plain:   plain(v),
+			Columns: v.Columns,
+			Rows:    v.Rows,
+		})
+	case "html":
+		return json.Marshal(struct {
+			plain
+			Html string `json:"html"`
+		}{
+			plain: plain(v),
+			Html:  v.Html,
+		})
+	case "breadcrumb":
+		return json.Marshal(struct {
+			plain
+			Crumbs []Crumb `json:"crumbs"`
+		}{
+			plain:  plain(v),
+			Crumbs: v.Crumbs,
+		})
+	case "file_tree":
+		return json.Marshal(struct {
+			plain
+			Entries []TreeEntry `json:"entries"`
+		}{
+			plain:   plain(v),
+			Entries: v.Entries,
+		})
+	case "diff":
+		return json.Marshal(struct {
+			plain
+			Path string `json:"path"`
+		}{
+			plain: plain(v),
+			Path:  v.Path,
+		})
+	case "comment_thread":
+		return json.Marshal(struct {
+			plain
+			Comments []Comment `json:"comments"`
+		}{
+			plain:    plain(v),
+			Comments: v.Comments,
+		})
+	case "composer":
+		return json.Marshal(struct {
+			plain
+			Name    string           `json:"name"`
+			Buttons []ComposerButton `json:"buttons"`
+		}{
+			plain:   plain(v),
+			Name:    v.Name,
+			Buttons: v.Buttons,
+		})
+	case "image":
+		return json.Marshal(struct {
+			plain
+			Src *ImageSource `json:"src"`
+			Alt string       `json:"alt"`
+		}{
+			plain: plain(v),
+			Src:   v.Src,
+			Alt:   v.Alt,
+		})
+	case "grid", "carousel":
+		return json.Marshal(struct {
+			plain
+			Tiles []Tile `json:"tiles"`
+		}{
+			plain: plain(v),
+			Tiles: v.Tiles,
+		})
+	default:
+		return json.Marshal(plain(v))
+	}
+}
+
+// requiredJSONSection preserves required fields only inside stream payloads.
+type requiredJSONSection Section
+
+func (v requiredJSONSection) MarshalJSON() ([]byte, error) {
+	type plain Section
+	return json.Marshal(struct {
+		plain
+		Items []requiredJSONComponent `json:"items"`
+	}{
+		plain: plain(v),
+		Items: func() []requiredJSONComponent {
+			if v.Items == nil {
+				return nil
+			}
+			out := make([]requiredJSONComponent, len(v.Items))
+			for i, item := range v.Items {
+				out[i] = (requiredJSONComponent)(item)
+			}
+			return out
+		}(),
+	})
+}
+
+// requiredJSONView preserves required fields only inside stream payloads.
+type requiredJSONView View
+
+func (v requiredJSONView) MarshalJSON() ([]byte, error) {
+	type plain View
+	return json.Marshal(struct {
+		plain
+		Sections []requiredJSONSection       `json:"sections"`
+		Pages    map[string]requiredJSONView `json:"pages,omitempty"`
+	}{
+		plain: plain(v),
+		Sections: func() []requiredJSONSection {
+			if v.Sections == nil {
+				return nil
+			}
+			out := make([]requiredJSONSection, len(v.Sections))
+			for i, item := range v.Sections {
+				out[i] = (requiredJSONSection)(item)
+			}
+			return out
+		}(),
+		Pages: func() map[string]requiredJSONView {
+			if v.Pages == nil {
+				return nil
+			}
+			out := make(map[string]requiredJSONView, len(v.Pages))
+			for key, item := range v.Pages {
+				out[key] = (requiredJSONView)(item)
+			}
+			return out
+		}(),
+	})
+}
+
 // newDef makes a value of each definition, for tests that read examples by definition name.
 var newDef = map[string]func() any{
-	"Manifest":                     func() any { return new(Manifest) },
-	"ToolSpec":                     func() any { return new(ToolSpec) },
-	"ToolCheck":                    func() any { return new(ToolCheck) },
-	"ToolArchive":                  func() any { return new(ToolArchive) },
-	"ToolNPM":                      func() any { return new(ToolNPM) },
-	"AuthSpec":                     func() any { return new(AuthSpec) },
-	"Dependency":                   func() any { return new(Dependency) },
-	"Exports":                      func() any { return new(Exports) },
-	"ExportedPoint":                func() any { return new(ExportedPoint) },
-	"PackMember":                   func() any { return new(PackMember) },
-	"Engines":                      func() any { return new(Engines) },
-	"Runtime":                      func() any { return new(Runtime) },
-	"Resources":                    func() any { return new(Resources) },
-	"NodeRuntime":                  func() any { return new(NodeRuntime) },
-	"NodePermissions":              func() any { return new(NodePermissions) },
-	"SecretSpec":                   func() any { return new(SecretSpec) },
-	"Permissions":                  func() any { return new(Permissions) },
-	"Contributes":                  func() any { return new(Contributes) },
-	"SkillItem":                    func() any { return new(SkillItem) },
-	"PromptItem":                   func() any { return new(PromptItem) },
-	"ThemeColors":                  func() any { return new(ThemeColors) },
-	"ThemeItem":                    func() any { return new(ThemeItem) },
-	"LookTexts":                    func() any { return new(LookTexts) },
-	"LookAvatarDark":               func() any { return new(LookAvatarDark) },
-	"LookAvatar":                   func() any { return new(LookAvatar) },
-	"LookPalette":                  func() any { return new(LookPalette) },
-	"LookColors":                   func() any { return new(LookColors) },
-	"LookDotState":                 func() any { return new(LookDotState) },
-	"LookDotStates":                func() any { return new(LookDotStates) },
-	"LookDot":                      func() any { return new(LookDot) },
-	"LookItem":                     func() any { return new(LookItem) },
-	"TriageTemplateItem":           func() any { return new(TriageTemplateItem) },
-	"ErrorReportsItem":             func() any { return new(ErrorReportsItem) },
-	"TunnelItem":                   func() any { return new(TunnelItem) },
-	"AgentFilterItem":              func() any { return new(AgentFilterItem) },
-	"ConnectorItem":                func() any { return new(ConnectorItem) },
-	"NamedItem":                    func() any { return new(NamedItem) },
-	"QuotaItem":                    func() any { return new(QuotaItem) },
-	"ProviderItem":                 func() any { return new(ProviderItem) },
-	"ProviderModel":                func() any { return new(ProviderModel) },
-	"APIItem":                      func() any { return new(APIItem) },
-	"APIReceipt":                   func() any { return new(APIReceipt) },
-	"AssistantItem":                func() any { return new(AssistantItem) },
-	"MCPServerItem":                func() any { return new(MCPServerItem) },
-	"UIItem":                       func() any { return new(UIItem) },
-	"AgentSourceItem":              func() any { return new(AgentSourceItem) },
-	"ChannelItem":                  func() any { return new(ChannelItem) },
-	"ChannelCapabilities":          func() any { return new(ChannelCapabilities) },
-	"EventsItem":                   func() any { return new(EventsItem) },
-	"ShortcutItem":                 func() any { return new(ShortcutItem) },
-	"ShortcutParam":                func() any { return new(ShortcutParam) },
-	"Frame":                        func() any { return new(Frame) },
-	"RPCError":                     func() any { return new(RPCError) },
-	"AuthStatus":                   func() any { return new(AuthStatus) },
-	"AuthStepParams":               func() any { return new(AuthStepParams) },
-	"AuthField":                    func() any { return new(AuthField) },
-	"AuthPrompt":                   func() any { return new(AuthPrompt) },
-	"InitializeParams":             func() any { return new(InitializeParams) },
-	"ExportedContribution":         func() any { return new(ExportedContribution) },
-	"HubInfo":                      func() any { return new(HubInfo) },
-	"ExtensionInfo":                func() any { return new(ExtensionInfo) },
-	"InitializeResult":             func() any { return new(InitializeResult) },
-	"UIParams":                     func() any { return new(UIParams) },
-	"UIMachine":                    func() any { return new(UIMachine) },
-	"UILauncher":                   func() any { return new(UILauncher) },
-	"UIInboxItem":                  func() any { return new(UIInboxItem) },
-	"BadgeEvent":                   func() any { return new(BadgeEvent) },
-	"InvalidateEvent":              func() any { return new(InvalidateEvent) },
-	"UIContext":                    func() any { return new(UIContext) },
-	"UIRequest":                    func() any { return new(UIRequest) },
-	"UIPlace":                      func() any { return new(UIPlace) },
-	"UIPlaces":                     func() any { return new(UIPlaces) },
-	"WidgetPlace":                  func() any { return new(WidgetPlace) },
-	"WidgetPlaces":                 func() any { return new(WidgetPlaces) },
-	"WidgetRequest":                func() any { return new(WidgetRequest) },
-	"WidgetAnswer":                 func() any { return new(WidgetAnswer) },
-	"DeviceWidget":                 func() any { return new(DeviceWidget) },
-	"DeviceWidgets":                func() any { return new(DeviceWidgets) },
-	"WidgetPush":                   func() any { return new(WidgetPush) },
-	"ShortcutPlace":                func() any { return new(ShortcutPlace) },
-	"ShortcutPlaces":               func() any { return new(ShortcutPlaces) },
-	"ShortcutRequest":              func() any { return new(ShortcutRequest) },
-	"ShortcutRunParams":            func() any { return new(ShortcutRunParams) },
-	"ShortcutResult":               func() any { return new(ShortcutResult) },
-	"NotifyAction":                 func() any { return new(NotifyAction) },
-	"NotifyActionInput":            func() any { return new(NotifyActionInput) },
-	"ErrorFrame":                   func() any { return new(ErrorFrame) },
-	"ErrorException":               func() any { return new(ErrorException) },
-	"ErrorBreadcrumb":              func() any { return new(ErrorBreadcrumb) },
-	"ErrorReport":                  func() any { return new(ErrorReport) },
-	"ErrorReportsDeliver":          func() any { return new(ErrorReportsDeliver) },
-	"ExtensionNotification":        func() any { return new(ExtensionNotification) },
-	"View":                         func() any { return new(View) },
-	"Section":                      func() any { return new(Section) },
-	"Component":                    func() any { return new(Component) },
-	"Tabs":                         func() any { return new(Tabs) },
-	"Tab":                          func() any { return new(Tab) },
-	"Fact":                         func() any { return new(Fact) },
-	"Crumb":                        func() any { return new(Crumb) },
-	"TreeEntry":                    func() any { return new(TreeEntry) },
-	"LineRange":                    func() any { return new(LineRange) },
-	"Hunk":                         func() any { return new(Hunk) },
-	"Thread":                       func() any { return new(Thread) },
-	"Comment":                      func() any { return new(Comment) },
-	"ComposerButton":               func() any { return new(ComposerButton) },
-	"AssistantView":                func() any { return new(AssistantView) },
-	"ViewAction":                   func() any { return new(ViewAction) },
-	"ViewActionInput":              func() any { return new(ViewActionInput) },
-	"AssistantHTMLActionInput":     func() any { return new(AssistantHTMLActionInput) },
-	"AssistantHTMLOpenResult":      func() any { return new(AssistantHTMLOpenResult) },
-	"ViewChangedError":             func() any { return new(ViewChangedError) },
-	"Action":                       func() any { return new(Action) },
-	"Push":                         func() any { return new(Push) },
-	"Search":                       func() any { return new(Search) },
-	"Filter":                       func() any { return new(Filter) },
-	"More":                         func() any { return new(More) },
-	"Avatar":                       func() any { return new(Avatar) },
-	"Thumbnail":                    func() any { return new(Thumbnail) },
-	"TableColumn":                  func() any { return new(TableColumn) },
-	"EmptyButton":                  func() any { return new(EmptyButton) },
-	"Badge":                        func() any { return new(Badge) },
-	"Choice":                       func() any { return new(Choice) },
-	"ChartSeries":                  func() any { return new(ChartSeries) },
-	"ChartPoint":                   func() any { return new(ChartPoint) },
-	"Stat":                         func() any { return new(Stat) },
-	"ActionResult":                 func() any { return new(ActionResult) },
-	"FileLines":                    func() any { return new(FileLines) },
-	"Review":                       func() any { return new(Review) },
-	"PersonaCard":                  func() any { return new(PersonaCard) },
-	"CardAmount":                   func() any { return new(CardAmount) },
-	"CardPart":                     func() any { return new(CardPart) },
-	"MessagingComposerMode":        func() any { return new(MessagingComposerMode) },
-	"MessagingLink":                func() any { return new(MessagingLink) },
-	"MessagingItem":                func() any { return new(MessagingItem) },
-	"MessagingSource":              func() any { return new(MessagingSource) },
-	"MessagingSources":             func() any { return new(MessagingSources) },
-	"MessagingStatus":              func() any { return new(MessagingStatus) },
-	"MessagingMe":                  func() any { return new(MessagingMe) },
-	"MessagingAccount":             func() any { return new(MessagingAccount) },
-	"MessagingAccounts":            func() any { return new(MessagingAccounts) },
-	"MessagingConversation":        func() any { return new(MessagingConversation) },
-	"MessagingConversationPage":    func() any { return new(MessagingConversationPage) },
-	"MessagingPerson":              func() any { return new(MessagingPerson) },
-	"MessagingMembers":             func() any { return new(MessagingMembers) },
-	"MessagingReplyTo":             func() any { return new(MessagingReplyTo) },
-	"MessagingThread":              func() any { return new(MessagingThread) },
-	"MessagingReaction":            func() any { return new(MessagingReaction) },
-	"MessagingDecoration":          func() any { return new(MessagingDecoration) },
-	"MessagingAction":              func() any { return new(MessagingAction) },
-	"MessagingEditVersion":         func() any { return new(MessagingEditVersion) },
-	"MessagingMessage":             func() any { return new(MessagingMessage) },
-	"MessagingMessagePage":         func() any { return new(MessagingMessagePage) },
-	"MessagingMessageAnswer":       func() any { return new(MessagingMessageAnswer) },
-	"MessagingList":                func() any { return new(MessagingList) },
-	"MessagingMediaSize":           func() any { return new(MessagingMediaSize) },
-	"MessagingField":               func() any { return new(MessagingField) },
-	"MessagingPreview":             func() any { return new(MessagingPreview) },
-	"MessagingPart":                func() any { return new(MessagingPart) },
-	"MessagingMention":             func() any { return new(MessagingMention) },
-	"MessagingOutgoing":            func() any { return new(MessagingOutgoing) },
-	"MessagingSendReceipt":         func() any { return new(MessagingSendReceipt) },
-	"MessagingCompose":             func() any { return new(MessagingCompose) },
-	"MessagingComposeAnswer":       func() any { return new(MessagingComposeAnswer) },
-	"MessagingReadReport":          func() any { return new(MessagingReadReport) },
-	"MessagingReadState":           func() any { return new(MessagingReadState) },
-	"MessagingReadStates":          func() any { return new(MessagingReadStates) },
-	"MessagingChatPin":             func() any { return new(MessagingChatPin) },
-	"MessagingChatPins":            func() any { return new(MessagingChatPins) },
-	"MessagingPinTarget":           func() any { return new(MessagingPinTarget) },
-	"MessagingPinTargetAnswer":     func() any { return new(MessagingPinTargetAnswer) },
-	"MessagingPinAnswer":           func() any { return new(MessagingPinAnswer) },
-	"MessagingEmoji":               func() any { return new(MessagingEmoji) },
-	"MessagingEmojiGroup":          func() any { return new(MessagingEmojiGroup) },
-	"MessagingEmojis":              func() any { return new(MessagingEmojis) },
-	"MessagingQuickReactions":      func() any { return new(MessagingQuickReactions) },
-	"MessagingURLPreview":          func() any { return new(MessagingURLPreview) },
-	"MessagingProfileField":        func() any { return new(MessagingProfileField) },
-	"MessagingProfile":             func() any { return new(MessagingProfile) },
-	"MessagingChatOpened":          func() any { return new(MessagingChatOpened) },
-	"MessagingDocBlock":            func() any { return new(MessagingDocBlock) },
-	"MessagingDocPermission":       func() any { return new(MessagingDocPermission) },
-	"MessagingDocument":            func() any { return new(MessagingDocument) },
-	"MessagingCommentReply":        func() any { return new(MessagingCommentReply) },
-	"MessagingCommentThread":       func() any { return new(MessagingCommentThread) },
-	"MessagingCommentThreads":      func() any { return new(MessagingCommentThreads) },
-	"MessagingCommentWrite":        func() any { return new(MessagingCommentWrite) },
-	"MessagingResolve":             func() any { return new(MessagingResolve) },
-	"MessagingPostImage":           func() any { return new(MessagingPostImage) },
-	"MessagingPost":                func() any { return new(MessagingPost) },
-	"MessagingPostComment":         func() any { return new(MessagingPostComment) },
-	"MessagingPostComments":        func() any { return new(MessagingPostComments) },
-	"MessagingChanged":             func() any { return new(MessagingChanged) },
-	"MessagingConversationRef":     func() any { return new(MessagingConversationRef) },
-	"MessagingError":               func() any { return new(MessagingError) },
-	"Empty":                        func() any { return new(Empty) },
-	"ConnectorInitParams":          func() any { return new(ConnectorInitParams) },
-	"ConnectorManifest":            func() any { return new(ConnectorManifest) },
-	"ConnectorParams":              func() any { return new(ConnectorParams) },
-	"ConnectorStatus":              func() any { return new(ConnectorStatus) },
-	"ConnectorTool":                func() any { return new(ConnectorTool) },
-	"ConnectorTools":               func() any { return new(ConnectorTools) },
-	"ConnectorCallParams":          func() any { return new(ConnectorCallParams) },
-	"ConnectorCallResult":          func() any { return new(ConnectorCallResult) },
-	"ConnectorAction":              func() any { return new(ConnectorAction) },
-	"ConnectorDescribeResult":      func() any { return new(ConnectorDescribeResult) },
-	"ConnectorDoParams":            func() any { return new(ConnectorDoParams) },
-	"ConnectorThreadParams":        func() any { return new(ConnectorThreadParams) },
-	"ConnectorThreadPage":          func() any { return new(ConnectorThreadPage) },
-	"ConnectorThreadChat":          func() any { return new(ConnectorThreadChat) },
-	"ConnectorThreadMessage":       func() any { return new(ConnectorThreadMessage) },
-	"ConnectorThreadPerson":        func() any { return new(ConnectorThreadPerson) },
-	"ConnectorThreadMedia":         func() any { return new(ConnectorThreadMedia) },
-	"ConnectorThreadQuote":         func() any { return new(ConnectorThreadQuote) },
-	"ConnectorThreadLabel":         func() any { return new(ConnectorThreadLabel) },
-	"ConnectorThreadBranch":        func() any { return new(ConnectorThreadBranch) },
-	"ConnectorThreadCode":          func() any { return new(ConnectorThreadCode) },
-	"ConnectorThreadCheck":         func() any { return new(ConnectorThreadCheck) },
-	"ConnectorMediaParams":         func() any { return new(ConnectorMediaParams) },
-	"ConnectorMedia":               func() any { return new(ConnectorMedia) },
-	"ConnectorCollectResult":       func() any { return new(ConnectorCollectResult) },
-	"ConnectorInboxThing":          func() any { return new(ConnectorInboxThing) },
-	"ConnectorTag":                 func() any { return new(ConnectorTag) },
-	"ConnectorThingExtra":          func() any { return new(ConnectorThingExtra) },
-	"ConnectorThingGroup":          func() any { return new(ConnectorThingGroup) },
-	"ConnectorThingParent":         func() any { return new(ConnectorThingParent) },
-	"ConnectorInboxReply":          func() any { return new(ConnectorInboxReply) },
-	"ConnectorStatusChange":        func() any { return new(ConnectorStatusChange) },
-	"ConnectorSettleParams":        func() any { return new(ConnectorSettleParams) },
-	"ConnectorSettled":             func() any { return new(ConnectorSettled) },
-	"ConnectorGroupToolParams":     func() any { return new(ConnectorGroupToolParams) },
-	"ConnectorGroupAppendParams":   func() any { return new(ConnectorGroupAppendParams) },
-	"ConnectorGroupFallbackParams": func() any { return new(ConnectorGroupFallbackParams) },
-	"ConnectorGroupEvent":          func() any { return new(ConnectorGroupEvent) },
-	"ConnectorGroupFallback":       func() any { return new(ConnectorGroupFallback) },
-	"ConnectorGroupAssign":         func() any { return new(ConnectorGroupAssign) },
-	"ConnectorGroupNew":            func() any { return new(ConnectorGroupNew) },
-	"ConnectorChangesParams":       func() any { return new(ConnectorChangesParams) },
-	"ConnectorChangesResult":       func() any { return new(ConnectorChangesResult) },
-	"ConnectorChatBatch":           func() any { return new(ConnectorChatBatch) },
-	"ConnectorArchiveChat":         func() any { return new(ConnectorArchiveChat) },
-	"ConnectorArchiveMessage":      func() any { return new(ConnectorArchiveMessage) },
-	"ConnectorItems":               func() any { return new(ConnectorItems) },
-	"ConnectorKBItem":              func() any { return new(ConnectorKBItem) },
-	"ConnectorDocTitleParams":      func() any { return new(ConnectorDocTitleParams) },
-	"ConnectorDocTitle":            func() any { return new(ConnectorDocTitle) },
-	"ConnectorSnapshotParams":      func() any { return new(ConnectorSnapshotParams) },
-	"ConnectorSnapshot":            func() any { return new(ConnectorSnapshot) },
-	"ConnectorSnapshotChats":       func() any { return new(ConnectorSnapshotChats) },
-	"ConnectorSnapshotChat":        func() any { return new(ConnectorSnapshotChat) },
-	"ConnectorSnapshotMeeting":     func() any { return new(ConnectorSnapshotMeeting) },
-	"ConnectorLoginParams":         func() any { return new(ConnectorLoginParams) },
-	"ConnectorPrompt":              func() any { return new(ConnectorPrompt) },
-	"ConnectorField":               func() any { return new(ConnectorField) },
-	"ConnectorQRCode":              func() any { return new(ConnectorQRCode) },
-	"ConnectorOptions":             func() any { return new(ConnectorOptions) },
-	"ConnectorOptionsParams":       func() any { return new(ConnectorOptionsParams) },
-	"ConnectorMachineParams":       func() any { return new(ConnectorMachineParams) },
-	"ConnectorAuthSource":          func() any { return new(ConnectorAuthSource) },
-	"ConnectorAuth":                func() any { return new(ConnectorAuth) },
-	"ConnectorSecret":              func() any { return new(ConnectorSecret) },
-	"ConnectorSecretSaveParams":    func() any { return new(ConnectorSecretSaveParams) },
-	"ConnectorGhTokenParams":       func() any { return new(ConnectorGhTokenParams) },
-	"ConnectorGhToken":             func() any { return new(ConnectorGhToken) },
-	"ConnectorPostsPutParams":      func() any { return new(ConnectorPostsPutParams) },
-	"ConnectorPostPut":             func() any { return new(ConnectorPostPut) },
-	"ConnectorPost":                func() any { return new(ConnectorPost) },
-	"ConnectorPostComment":         func() any { return new(ConnectorPostComment) },
-	"ConnectorPostsPut":            func() any { return new(ConnectorPostsPut) },
-	"ConnectorPostsCommentsParams": func() any { return new(ConnectorPostsCommentsParams) },
-	"ConnectorPostsPendingParams":  func() any { return new(ConnectorPostsPendingParams) },
-	"ConnectorPostsPending":        func() any { return new(ConnectorPostsPending) },
-	"ConnectorPendingPost":         func() any { return new(ConnectorPendingPost) },
-	"ConnectorArchiveChatsParams":  func() any { return new(ConnectorArchiveChatsParams) },
-	"ConnectorArchivedChats":       func() any { return new(ConnectorArchivedChats) },
-	"ConnectorArchivedChat":        func() any { return new(ConnectorArchivedChat) },
-	"ConnectorChangedEvent":        func() any { return new(ConnectorChangedEvent) },
-	"ChannelReceiveParams":         func() any { return new(ChannelReceiveParams) },
-	"ChannelMessage":               func() any { return new(ChannelMessage) },
-	"ChannelBlob":                  func() any { return new(ChannelBlob) },
-	"ChannelStatusParams":          func() any { return new(ChannelStatusParams) },
-	"ChannelAccount":               func() any { return new(ChannelAccount) },
-	"ChannelSendParams":            func() any { return new(ChannelSendParams) },
-	"ChannelSendResult":            func() any { return new(ChannelSendResult) },
-	"ChannelTypingParams":          func() any { return new(ChannelTypingParams) },
-	"ChannelEditParams":            func() any { return new(ChannelEditParams) },
-	"KBHandle":                     func() any { return new(KBHandle) },
-	"KBListParams":                 func() any { return new(KBListParams) },
-	"KBListResult":                 func() any { return new(KBListResult) },
-	"KBEntry":                      func() any { return new(KBEntry) },
-	"KBGetParams":                  func() any { return new(KBGetParams) },
-	"KBGetResult":                  func() any { return new(KBGetResult) },
-	"KBDetail":                     func() any { return new(KBDetail) },
-	"KBMomentRef":                  func() any { return new(KBMomentRef) },
-	"KBRecordingSegment":           func() any { return new(KBRecordingSegment) },
-	"KBDayParams":                  func() any { return new(KBDayParams) },
-	"KBDayResult":                  func() any { return new(KBDayResult) },
-	"KBDayMessage":                 func() any { return new(KBDayMessage) },
-	"KBSearchParams":               func() any { return new(KBSearchParams) },
-	"KBSearchResult":               func() any { return new(KBSearchResult) },
-	"KBHit":                        func() any { return new(KBHit) },
-	"KBUpdateParams":               func() any { return new(KBUpdateParams) },
-	"KBUpdateResult":               func() any { return new(KBUpdateResult) },
-	"KBOwnerParams":                func() any { return new(KBOwnerParams) },
-	"KBOwner":                      func() any { return new(KBOwner) },
-	"KBChangedEvent":               func() any { return new(KBChangedEvent) },
-	"KBForgottenEvent":             func() any { return new(KBForgottenEvent) },
+	"Manifest":                      func() any { return new(Manifest) },
+	"ToolSpec":                      func() any { return new(ToolSpec) },
+	"ToolCheck":                     func() any { return new(ToolCheck) },
+	"ToolArchive":                   func() any { return new(ToolArchive) },
+	"ToolNPM":                       func() any { return new(ToolNPM) },
+	"AuthSpec":                      func() any { return new(AuthSpec) },
+	"Dependency":                    func() any { return new(Dependency) },
+	"Exports":                       func() any { return new(Exports) },
+	"ExportedPoint":                 func() any { return new(ExportedPoint) },
+	"PackMember":                    func() any { return new(PackMember) },
+	"Engines":                       func() any { return new(Engines) },
+	"Runtime":                       func() any { return new(Runtime) },
+	"SourceRuntime":                 func() any { return new(SourceRuntime) },
+	"Resources":                     func() any { return new(Resources) },
+	"NodeRuntime":                   func() any { return new(NodeRuntime) },
+	"NodePermissions":               func() any { return new(NodePermissions) },
+	"SecretSpec":                    func() any { return new(SecretSpec) },
+	"Permissions":                   func() any { return new(Permissions) },
+	"StoragePermission":             func() any { return new(StoragePermission) },
+	"Contributes":                   func() any { return new(Contributes) },
+	"SkillItem":                     func() any { return new(SkillItem) },
+	"PromptItem":                    func() any { return new(PromptItem) },
+	"ThemeColors":                   func() any { return new(ThemeColors) },
+	"ThemeItem":                     func() any { return new(ThemeItem) },
+	"LookTexts":                     func() any { return new(LookTexts) },
+	"LookAvatarDark":                func() any { return new(LookAvatarDark) },
+	"LookAvatar":                    func() any { return new(LookAvatar) },
+	"LookPalette":                   func() any { return new(LookPalette) },
+	"LookColors":                    func() any { return new(LookColors) },
+	"LookDotState":                  func() any { return new(LookDotState) },
+	"LookDotStates":                 func() any { return new(LookDotStates) },
+	"LookDot":                       func() any { return new(LookDot) },
+	"LookItem":                      func() any { return new(LookItem) },
+	"TriageTemplateItem":            func() any { return new(TriageTemplateItem) },
+	"AuthRelayItem":                 func() any { return new(AuthRelayItem) },
+	"ErrorReportsItem":              func() any { return new(ErrorReportsItem) },
+	"TunnelItem":                    func() any { return new(TunnelItem) },
+	"AgentFilterItem":               func() any { return new(AgentFilterItem) },
+	"ConnectorItem":                 func() any { return new(ConnectorItem) },
+	"NamedItem":                     func() any { return new(NamedItem) },
+	"QuotaItem":                     func() any { return new(QuotaItem) },
+	"ProviderItem":                  func() any { return new(ProviderItem) },
+	"ProviderModel":                 func() any { return new(ProviderModel) },
+	"APIItem":                       func() any { return new(APIItem) },
+	"APIReceipt":                    func() any { return new(APIReceipt) },
+	"AssistantItem":                 func() any { return new(AssistantItem) },
+	"MCPServerItem":                 func() any { return new(MCPServerItem) },
+	"UIItem":                        func() any { return new(UIItem) },
+	"AgentSourceItem":               func() any { return new(AgentSourceItem) },
+	"ChannelItem":                   func() any { return new(ChannelItem) },
+	"ChannelCapabilities":           func() any { return new(ChannelCapabilities) },
+	"EventsItem":                    func() any { return new(EventsItem) },
+	"ShortcutItem":                  func() any { return new(ShortcutItem) },
+	"ShortcutParam":                 func() any { return new(ShortcutParam) },
+	"Frame":                         func() any { return new(Frame) },
+	"RPCError":                      func() any { return new(RPCError) },
+	"AuthStatus":                    func() any { return new(AuthStatus) },
+	"AuthStepParams":                func() any { return new(AuthStepParams) },
+	"AuthField":                     func() any { return new(AuthField) },
+	"AuthPrompt":                    func() any { return new(AuthPrompt) },
+	"InitializeParams":              func() any { return new(InitializeParams) },
+	"ExportedContribution":          func() any { return new(ExportedContribution) },
+	"HubInfo":                       func() any { return new(HubInfo) },
+	"ExtensionInfo":                 func() any { return new(ExtensionInfo) },
+	"InitializeResult":              func() any { return new(InitializeResult) },
+	"UIParams":                      func() any { return new(UIParams) },
+	"UIImageParams":                 func() any { return new(UIImageParams) },
+	"UIImage":                       func() any { return new(UIImage) },
+	"UIMachine":                     func() any { return new(UIMachine) },
+	"UILauncher":                    func() any { return new(UILauncher) },
+	"UIInboxItem":                   func() any { return new(UIInboxItem) },
+	"BadgeEvent":                    func() any { return new(BadgeEvent) },
+	"InvalidateEvent":               func() any { return new(InvalidateEvent) },
+	"UIContext":                     func() any { return new(UIContext) },
+	"UIRequest":                     func() any { return new(UIRequest) },
+	"UIPlace":                       func() any { return new(UIPlace) },
+	"UIPlaces":                      func() any { return new(UIPlaces) },
+	"WidgetPlace":                   func() any { return new(WidgetPlace) },
+	"WidgetPlaces":                  func() any { return new(WidgetPlaces) },
+	"WidgetRequest":                 func() any { return new(WidgetRequest) },
+	"WidgetAnswer":                  func() any { return new(WidgetAnswer) },
+	"DeviceWidget":                  func() any { return new(DeviceWidget) },
+	"DeviceWidgets":                 func() any { return new(DeviceWidgets) },
+	"WidgetPush":                    func() any { return new(WidgetPush) },
+	"ShortcutPlace":                 func() any { return new(ShortcutPlace) },
+	"ShortcutPlaces":                func() any { return new(ShortcutPlaces) },
+	"ShortcutRequest":               func() any { return new(ShortcutRequest) },
+	"ShortcutRunParams":             func() any { return new(ShortcutRunParams) },
+	"ShortcutResult":                func() any { return new(ShortcutResult) },
+	"NotifyAction":                  func() any { return new(NotifyAction) },
+	"NotifyActionInput":             func() any { return new(NotifyActionInput) },
+	"ErrorFrame":                    func() any { return new(ErrorFrame) },
+	"ErrorException":                func() any { return new(ErrorException) },
+	"ErrorBreadcrumb":               func() any { return new(ErrorBreadcrumb) },
+	"ErrorReport":                   func() any { return new(ErrorReport) },
+	"ErrorReportsDeliver":           func() any { return new(ErrorReportsDeliver) },
+	"AuthRelayCompleteParams":       func() any { return new(AuthRelayCompleteParams) },
+	"AuthRelayResult":               func() any { return new(AuthRelayResult) },
+	"ExtensionNotification":         func() any { return new(ExtensionNotification) },
+	"View":                          func() any { return new(View) },
+	"Section":                       func() any { return new(Section) },
+	"Component":                     func() any { return new(Component) },
+	"ImageSource":                   func() any { return new(ImageSource) },
+	"RowControl":                    func() any { return new(RowControl) },
+	"RowAction":                     func() any { return new(RowAction) },
+	"Spark":                         func() any { return new(Spark) },
+	"Tile":                          func() any { return new(Tile) },
+	"Tabs":                          func() any { return new(Tabs) },
+	"Tab":                           func() any { return new(Tab) },
+	"Fact":                          func() any { return new(Fact) },
+	"Crumb":                         func() any { return new(Crumb) },
+	"TreeEntry":                     func() any { return new(TreeEntry) },
+	"LineRange":                     func() any { return new(LineRange) },
+	"Hunk":                          func() any { return new(Hunk) },
+	"Thread":                        func() any { return new(Thread) },
+	"Comment":                       func() any { return new(Comment) },
+	"ComposerButton":                func() any { return new(ComposerButton) },
+	"AssistantView":                 func() any { return new(AssistantView) },
+	"ViewAction":                    func() any { return new(ViewAction) },
+	"ViewActionInput":               func() any { return new(ViewActionInput) },
+	"AssistantHTMLActionInput":      func() any { return new(AssistantHTMLActionInput) },
+	"AssistantHTMLOpenResult":       func() any { return new(AssistantHTMLOpenResult) },
+	"ViewChangedError":              func() any { return new(ViewChangedError) },
+	"Action":                        func() any { return new(Action) },
+	"Push":                          func() any { return new(Push) },
+	"Search":                        func() any { return new(Search) },
+	"Filter":                        func() any { return new(Filter) },
+	"More":                          func() any { return new(More) },
+	"Avatar":                        func() any { return new(Avatar) },
+	"Thumbnail":                     func() any { return new(Thumbnail) },
+	"TableColumn":                   func() any { return new(TableColumn) },
+	"EmptyButton":                   func() any { return new(EmptyButton) },
+	"Badge":                         func() any { return new(Badge) },
+	"Choice":                        func() any { return new(Choice) },
+	"ChartSeries":                   func() any { return new(ChartSeries) },
+	"ChartPoint":                    func() any { return new(ChartPoint) },
+	"Stat":                          func() any { return new(Stat) },
+	"ActionResult":                  func() any { return new(ActionResult) },
+	"FileLines":                     func() any { return new(FileLines) },
+	"Review":                        func() any { return new(Review) },
+	"PersonaCard":                   func() any { return new(PersonaCard) },
+	"CardAmount":                    func() any { return new(CardAmount) },
+	"CardPart":                      func() any { return new(CardPart) },
+	"MessagingComposerMode":         func() any { return new(MessagingComposerMode) },
+	"MessagingLink":                 func() any { return new(MessagingLink) },
+	"MessagingItem":                 func() any { return new(MessagingItem) },
+	"MessagingSource":               func() any { return new(MessagingSource) },
+	"MessagingSources":              func() any { return new(MessagingSources) },
+	"MessagingStatus":               func() any { return new(MessagingStatus) },
+	"MessagingMe":                   func() any { return new(MessagingMe) },
+	"MessagingAccount":              func() any { return new(MessagingAccount) },
+	"MessagingAccounts":             func() any { return new(MessagingAccounts) },
+	"MessagingConversation":         func() any { return new(MessagingConversation) },
+	"MessagingConversationPage":     func() any { return new(MessagingConversationPage) },
+	"MessagingPerson":               func() any { return new(MessagingPerson) },
+	"MessagingMembers":              func() any { return new(MessagingMembers) },
+	"MessagingReplyTo":              func() any { return new(MessagingReplyTo) },
+	"MessagingThread":               func() any { return new(MessagingThread) },
+	"MessagingReaction":             func() any { return new(MessagingReaction) },
+	"MessagingDecoration":           func() any { return new(MessagingDecoration) },
+	"MessagingAction":               func() any { return new(MessagingAction) },
+	"MessagingEditVersion":          func() any { return new(MessagingEditVersion) },
+	"MessagingMessage":              func() any { return new(MessagingMessage) },
+	"MessagingMessagePage":          func() any { return new(MessagingMessagePage) },
+	"MessagingMessageAnswer":        func() any { return new(MessagingMessageAnswer) },
+	"MessagingList":                 func() any { return new(MessagingList) },
+	"MessagingMediaSize":            func() any { return new(MessagingMediaSize) },
+	"MessagingField":                func() any { return new(MessagingField) },
+	"MessagingPreview":              func() any { return new(MessagingPreview) },
+	"MessagingPart":                 func() any { return new(MessagingPart) },
+	"MessagingMention":              func() any { return new(MessagingMention) },
+	"MessagingOutgoing":             func() any { return new(MessagingOutgoing) },
+	"MessagingSendReceipt":          func() any { return new(MessagingSendReceipt) },
+	"MessagingCompose":              func() any { return new(MessagingCompose) },
+	"MessagingComposeAnswer":        func() any { return new(MessagingComposeAnswer) },
+	"MessagingReadReport":           func() any { return new(MessagingReadReport) },
+	"MessagingReadState":            func() any { return new(MessagingReadState) },
+	"MessagingReadStates":           func() any { return new(MessagingReadStates) },
+	"MessagingChatPin":              func() any { return new(MessagingChatPin) },
+	"MessagingChatPins":             func() any { return new(MessagingChatPins) },
+	"MessagingPinTarget":            func() any { return new(MessagingPinTarget) },
+	"MessagingPinTargetAnswer":      func() any { return new(MessagingPinTargetAnswer) },
+	"MessagingPinAnswer":            func() any { return new(MessagingPinAnswer) },
+	"MessagingEmoji":                func() any { return new(MessagingEmoji) },
+	"MessagingEmojiGroup":           func() any { return new(MessagingEmojiGroup) },
+	"MessagingEmojis":               func() any { return new(MessagingEmojis) },
+	"MessagingQuickReactions":       func() any { return new(MessagingQuickReactions) },
+	"MessagingURLPreview":           func() any { return new(MessagingURLPreview) },
+	"MessagingProfileField":         func() any { return new(MessagingProfileField) },
+	"MessagingProfile":              func() any { return new(MessagingProfile) },
+	"MessagingChatOpened":           func() any { return new(MessagingChatOpened) },
+	"MessagingDocBlock":             func() any { return new(MessagingDocBlock) },
+	"MessagingDocPermission":        func() any { return new(MessagingDocPermission) },
+	"MessagingDocument":             func() any { return new(MessagingDocument) },
+	"MessagingCommentReply":         func() any { return new(MessagingCommentReply) },
+	"MessagingCommentThread":        func() any { return new(MessagingCommentThread) },
+	"MessagingCommentThreads":       func() any { return new(MessagingCommentThreads) },
+	"MessagingCommentWrite":         func() any { return new(MessagingCommentWrite) },
+	"MessagingResolve":              func() any { return new(MessagingResolve) },
+	"MessagingPostImage":            func() any { return new(MessagingPostImage) },
+	"MessagingPost":                 func() any { return new(MessagingPost) },
+	"MessagingPostComment":          func() any { return new(MessagingPostComment) },
+	"MessagingPostComments":         func() any { return new(MessagingPostComments) },
+	"MessagingChanged":              func() any { return new(MessagingChanged) },
+	"MessagingConversationRef":      func() any { return new(MessagingConversationRef) },
+	"MessagingError":                func() any { return new(MessagingError) },
+	"ConnectorCatalog":              func() any { return new(ConnectorCatalog) },
+	"ConnectorCatalogSource":        func() any { return new(ConnectorCatalogSource) },
+	"ConnectorCatalogTool":          func() any { return new(ConnectorCatalogTool) },
+	"ConnectorCatalogAnnotations":   func() any { return new(ConnectorCatalogAnnotations) },
+	"ConnectorCatalogCallParams":    func() any { return new(ConnectorCatalogCallParams) },
+	"ConnectorSubscriptionFields":   func() any { return new(ConnectorSubscriptionFields) },
+	"ConnectorSubscriptionRecipe":   func() any { return new(ConnectorSubscriptionRecipe) },
+	"Empty":                         func() any { return new(Empty) },
+	"ConnectorInitParams":           func() any { return new(ConnectorInitParams) },
+	"ConnectorManifest":             func() any { return new(ConnectorManifest) },
+	"ConnectorParams":               func() any { return new(ConnectorParams) },
+	"ConnectorStatus":               func() any { return new(ConnectorStatus) },
+	"ConnectorTool":                 func() any { return new(ConnectorTool) },
+	"ConnectorTools":                func() any { return new(ConnectorTools) },
+	"ConnectorCallParams":           func() any { return new(ConnectorCallParams) },
+	"ConnectorCallResult":           func() any { return new(ConnectorCallResult) },
+	"ConnectorAction":               func() any { return new(ConnectorAction) },
+	"ConnectorDescribeResult":       func() any { return new(ConnectorDescribeResult) },
+	"ConnectorDoParams":             func() any { return new(ConnectorDoParams) },
+	"ConnectorRecallParams":         func() any { return new(ConnectorRecallParams) },
+	"ConnectorRecallResult":         func() any { return new(ConnectorRecallResult) },
+	"ConnectorRecallCanParams":      func() any { return new(ConnectorRecallCanParams) },
+	"ConnectorRecallCanResult":      func() any { return new(ConnectorRecallCanResult) },
+	"ConnectorRecallDoParams":       func() any { return new(ConnectorRecallDoParams) },
+	"ConnectorRecallDoResult":       func() any { return new(ConnectorRecallDoResult) },
+	"ConnectorThreadParams":         func() any { return new(ConnectorThreadParams) },
+	"ConnectorThreadPage":           func() any { return new(ConnectorThreadPage) },
+	"ConnectorThreadChat":           func() any { return new(ConnectorThreadChat) },
+	"ConnectorThreadMessage":        func() any { return new(ConnectorThreadMessage) },
+	"ConnectorThreadPerson":         func() any { return new(ConnectorThreadPerson) },
+	"ConnectorThreadMedia":          func() any { return new(ConnectorThreadMedia) },
+	"ConnectorThreadQuote":          func() any { return new(ConnectorThreadQuote) },
+	"ConnectorThreadLabel":          func() any { return new(ConnectorThreadLabel) },
+	"ConnectorThreadBranch":         func() any { return new(ConnectorThreadBranch) },
+	"ConnectorThreadCode":           func() any { return new(ConnectorThreadCode) },
+	"ConnectorThreadCheck":          func() any { return new(ConnectorThreadCheck) },
+	"ConnectorMediaParams":          func() any { return new(ConnectorMediaParams) },
+	"ConnectorMedia":                func() any { return new(ConnectorMedia) },
+	"ConnectorCollectResult":        func() any { return new(ConnectorCollectResult) },
+	"ConnectorInboxThing":           func() any { return new(ConnectorInboxThing) },
+	"ConnectorTag":                  func() any { return new(ConnectorTag) },
+	"ConnectorThingExtra":           func() any { return new(ConnectorThingExtra) },
+	"ConnectorThingGroup":           func() any { return new(ConnectorThingGroup) },
+	"ConnectorThingParent":          func() any { return new(ConnectorThingParent) },
+	"ConnectorInboxReply":           func() any { return new(ConnectorInboxReply) },
+	"ConnectorStatusChange":         func() any { return new(ConnectorStatusChange) },
+	"ConnectorSettleParams":         func() any { return new(ConnectorSettleParams) },
+	"ConnectorSettled":              func() any { return new(ConnectorSettled) },
+	"ConnectorGroupToolParams":      func() any { return new(ConnectorGroupToolParams) },
+	"ConnectorGroupAppendParams":    func() any { return new(ConnectorGroupAppendParams) },
+	"ConnectorGroupFallbackParams":  func() any { return new(ConnectorGroupFallbackParams) },
+	"ConnectorGroupEvent":           func() any { return new(ConnectorGroupEvent) },
+	"ConnectorGroupFallback":        func() any { return new(ConnectorGroupFallback) },
+	"ConnectorGroupAssign":          func() any { return new(ConnectorGroupAssign) },
+	"ConnectorGroupNew":             func() any { return new(ConnectorGroupNew) },
+	"ConnectorChangesParams":        func() any { return new(ConnectorChangesParams) },
+	"ConnectorChangesResult":        func() any { return new(ConnectorChangesResult) },
+	"ConnectorChatBatch":            func() any { return new(ConnectorChatBatch) },
+	"ConnectorArchiveChat":          func() any { return new(ConnectorArchiveChat) },
+	"ConnectorArchiveMessage":       func() any { return new(ConnectorArchiveMessage) },
+	"ConnectorHistoryChats":         func() any { return new(ConnectorHistoryChats) },
+	"ConnectorHistoryChat":          func() any { return new(ConnectorHistoryChat) },
+	"ConnectorHistoryParams":        func() any { return new(ConnectorHistoryParams) },
+	"ConnectorHistoryPage":          func() any { return new(ConnectorHistoryPage) },
+	"ConnectorPace":                 func() any { return new(ConnectorPace) },
+	"ConnectorHistoryAnchorsParams": func() any { return new(ConnectorHistoryAnchorsParams) },
+	"ConnectorHistoryAnchors":       func() any { return new(ConnectorHistoryAnchors) },
+	"ConnectorHistoryAnchor":        func() any { return new(ConnectorHistoryAnchor) },
+	"ConnectorItems":                func() any { return new(ConnectorItems) },
+	"ConnectorKBItem":               func() any { return new(ConnectorKBItem) },
+	"ConnectorKBProvenance":         func() any { return new(ConnectorKBProvenance) },
+	"ConnectorKBEvidence":           func() any { return new(ConnectorKBEvidence) },
+	"ConnectorDocTitleParams":       func() any { return new(ConnectorDocTitleParams) },
+	"ConnectorDocTitle":             func() any { return new(ConnectorDocTitle) },
+	"ConnectorSnapshotParams":       func() any { return new(ConnectorSnapshotParams) },
+	"ConnectorSnapshot":             func() any { return new(ConnectorSnapshot) },
+	"ConnectorSnapshotChats":        func() any { return new(ConnectorSnapshotChats) },
+	"ConnectorSnapshotChat":         func() any { return new(ConnectorSnapshotChat) },
+	"ConnectorSnapshotMeeting":      func() any { return new(ConnectorSnapshotMeeting) },
+	"ConnectorLoginParams":          func() any { return new(ConnectorLoginParams) },
+	"ConnectorPrompt":               func() any { return new(ConnectorPrompt) },
+	"ConnectorField":                func() any { return new(ConnectorField) },
+	"ConnectorQRCode":               func() any { return new(ConnectorQRCode) },
+	"ConnectorOptions":              func() any { return new(ConnectorOptions) },
+	"ConnectorOptionsParams":        func() any { return new(ConnectorOptionsParams) },
+	"ConnectorMachineParams":        func() any { return new(ConnectorMachineParams) },
+	"ConnectorAuthSource":           func() any { return new(ConnectorAuthSource) },
+	"ConnectorAuth":                 func() any { return new(ConnectorAuth) },
+	"ConnectorSecret":               func() any { return new(ConnectorSecret) },
+	"ConnectorSecretSaveParams":     func() any { return new(ConnectorSecretSaveParams) },
+	"ConnectorGhTokenParams":        func() any { return new(ConnectorGhTokenParams) },
+	"ConnectorSentRecordParams":     func() any { return new(ConnectorSentRecordParams) },
+	"ConnectorGhToken":              func() any { return new(ConnectorGhToken) },
+	"ConnectorPostsPutParams":       func() any { return new(ConnectorPostsPutParams) },
+	"ConnectorPostPut":              func() any { return new(ConnectorPostPut) },
+	"ConnectorPost":                 func() any { return new(ConnectorPost) },
+	"ConnectorPostComment":          func() any { return new(ConnectorPostComment) },
+	"ConnectorPostsPut":             func() any { return new(ConnectorPostsPut) },
+	"ConnectorPostsCommentsParams":  func() any { return new(ConnectorPostsCommentsParams) },
+	"ConnectorPostsPendingParams":   func() any { return new(ConnectorPostsPendingParams) },
+	"ConnectorPostsPending":         func() any { return new(ConnectorPostsPending) },
+	"ConnectorPendingPost":          func() any { return new(ConnectorPendingPost) },
+	"ConnectorArchiveChatsParams":   func() any { return new(ConnectorArchiveChatsParams) },
+	"ConnectorArchivedChats":        func() any { return new(ConnectorArchivedChats) },
+	"ConnectorArchivedChat":         func() any { return new(ConnectorArchivedChat) },
+	"ConnectorChangedEvent":         func() any { return new(ConnectorChangedEvent) },
+	"ChannelReceiveParams":          func() any { return new(ChannelReceiveParams) },
+	"ChannelMessage":                func() any { return new(ChannelMessage) },
+	"ChannelBlob":                   func() any { return new(ChannelBlob) },
+	"ChannelStatusParams":           func() any { return new(ChannelStatusParams) },
+	"ChannelAccount":                func() any { return new(ChannelAccount) },
+	"ChannelSendParams":             func() any { return new(ChannelSendParams) },
+	"ChannelSendResult":             func() any { return new(ChannelSendResult) },
+	"ChannelTypingParams":           func() any { return new(ChannelTypingParams) },
+	"ChannelEditParams":             func() any { return new(ChannelEditParams) },
+	"KBConflict":                    func() any { return new(KBConflict) },
+	"KBEvidence":                    func() any { return new(KBEvidence) },
+	"KBProvenance":                  func() any { return new(KBProvenance) },
+	"KBHandle":                      func() any { return new(KBHandle) },
+	"KBListParams":                  func() any { return new(KBListParams) },
+	"KBListResult":                  func() any { return new(KBListResult) },
+	"KBEntry":                       func() any { return new(KBEntry) },
+	"KBRecentParams":                func() any { return new(KBRecentParams) },
+	"KBRecentResult":                func() any { return new(KBRecentResult) },
+	"KBGetParams":                   func() any { return new(KBGetParams) },
+	"KBGetResult":                   func() any { return new(KBGetResult) },
+	"KBDetail":                      func() any { return new(KBDetail) },
+	"KBMomentRef":                   func() any { return new(KBMomentRef) },
+	"KBRecordingSegment":            func() any { return new(KBRecordingSegment) },
+	"KBDayParams":                   func() any { return new(KBDayParams) },
+	"KBDayResult":                   func() any { return new(KBDayResult) },
+	"KBDayMessage":                  func() any { return new(KBDayMessage) },
+	"KBSearchParams":                func() any { return new(KBSearchParams) },
+	"KBSearchResult":                func() any { return new(KBSearchResult) },
+	"KBHit":                         func() any { return new(KBHit) },
+	"KBUpdateParams":                func() any { return new(KBUpdateParams) },
+	"KBUpdateResult":                func() any { return new(KBUpdateResult) },
+	"KBOwnerParams":                 func() any { return new(KBOwnerParams) },
+	"KBOwner":                       func() any { return new(KBOwner) },
+	"KBChangedEvent":                func() any { return new(KBChangedEvent) },
+	"KBForgottenEvent":              func() any { return new(KBForgottenEvent) },
+	"TodoEventThread":               func() any { return new(TodoEventThread) },
+	"TodoChangedEvent":              func() any { return new(TodoChangedEvent) },
+	"TodoEventDecision":             func() any { return new(TodoEventDecision) },
+	"TodoDecisionEvent":             func() any { return new(TodoDecisionEvent) },
+	"ModelMessage":                  func() any { return new(ModelMessage) },
+	"ModelCompleteParams":           func() any { return new(ModelCompleteParams) },
+	"ModelUsage":                    func() any { return new(ModelUsage) },
+	"ModelCompleteResult":           func() any { return new(ModelCompleteResult) },
+	"ModelPause":                    func() any { return new(ModelPause) },
+	"ModelInvalidOutput":            func() any { return new(ModelInvalidOutput) },
+	"ModelRefusal":                  func() any { return new(ModelRefusal) },
+	"AssistantConversationsParams":  func() any { return new(AssistantConversationsParams) },
+	"AssistantConversation":         func() any { return new(AssistantConversation) },
+	"AssistantConversationsResult":  func() any { return new(AssistantConversationsResult) },
+	"AssistantMessagesParams":       func() any { return new(AssistantMessagesParams) },
+	"AssistantMessage":              func() any { return new(AssistantMessage) },
+	"AssistantMessagesResult":       func() any { return new(AssistantMessagesResult) },
+	"StorageEmptyParams":            func() any { return new(StorageEmptyParams) },
+	"StorageRequestResult":          func() any { return new(StorageRequestResult) },
+	"StorageKeyParams":              func() any { return new(StorageKeyParams) },
+	"StorageEntry":                  func() any { return new(StorageEntry) },
+	"StorageListParams":             func() any { return new(StorageListParams) },
+	"StorageMutationItem":           func() any { return new(StorageMutationItem) },
+	"StorageListResult":             func() any { return new(StorageListResult) },
+	"StorageOperation":              func() any { return new(StorageOperation) },
+	"StorageTransactionParams":      func() any { return new(StorageTransactionParams) },
+	"StorageTransactionResult":      func() any { return new(StorageTransactionResult) },
+	"StorageQueueListParams":        func() any { return new(StorageQueueListParams) },
+	"StorageJob":                    func() any { return new(StorageJob) },
+	"StorageQueueListResult":        func() any { return new(StorageQueueListResult) },
+	"StorageEnqueueParams":          func() any { return new(StorageEnqueueParams) },
+	"StorageJobResult":              func() any { return new(StorageJobResult) },
+	"StorageClaimParams":            func() any { return new(StorageClaimParams) },
+	"StorageClaimResult":            func() any { return new(StorageClaimResult) },
+	"StorageSettleParams":           func() any { return new(StorageSettleParams) },
+	"StorageRetryParams":            func() any { return new(StorageRetryParams) },
+	"StorageDeleteResult":           func() any { return new(StorageDeleteResult) },
+	"StorageBlobCreateParams":       func() any { return new(StorageBlobCreateParams) },
+	"StorageBlobCreateResult":       func() any { return new(StorageBlobCreateResult) },
+	"StorageBlobWriteParams":        func() any { return new(StorageBlobWriteParams) },
+	"StorageBlobWriteResult":        func() any { return new(StorageBlobWriteResult) },
+	"StorageBlobMutateParams":       func() any { return new(StorageBlobMutateParams) },
+	"StorageBlobFinishResult":       func() any { return new(StorageBlobFinishResult) },
+	"StorageBlobReadParams":         func() any { return new(StorageBlobReadParams) },
+	"StorageBlobReadResult":         func() any { return new(StorageBlobReadResult) },
+	"UIStreamCapability":            func() any { return new(UIStreamCapability) },
+	"UIStreamSnapshot":              func() any { return new(UIStreamSnapshot) },
+	"UIStreamDelta":                 func() any { return new(UIStreamDelta) },
+	"UIStreamEvent":                 func() any { return new(UIStreamEvent) },
+	"UIStreamOperation":             func() any { return new(UIStreamOperation) },
+	"UIStreamRequest":               func() any { return new(UIStreamRequest) },
+	"UIStreamClientEnvelope":        func() any { return new(UIStreamClientEnvelope) },
+	"UIStreamActionResult":          func() any { return new(UIStreamActionResult) },
+	"UIStreamPush":                  func() any { return new(UIStreamPush) },
+	"UIStreamFileLines":             func() any { return new(UIStreamFileLines) },
+	"UIStreamReceipt":               func() any { return new(UIStreamReceipt) },
+	"UIStreamFailure":               func() any { return new(UIStreamFailure) },
+	"UIStreamServerEnvelope":        func() any { return new(UIStreamServerEnvelope) },
+	"UIPageSnapshot":                func() any { return new(UIPageSnapshot) },
 }
 
 // Call is one call or event of an extension point's protocol (the schemas' x-methods and x-events): who
@@ -4034,11 +6011,16 @@ type Call struct {
 var Calls = map[string]Call{
 	"connector.status":               {Name: "connector.status", From: "hub", Params: "ConnectorParams", Result: "ConnectorStatus"},
 	"connector.manifest":             {Name: "connector.manifest", From: "hub", Params: "ConnectorParams", Result: "ConnectorManifest"},
+	"connector.catalog.list":         {Name: "connector.catalog.list", From: "hub", Params: "ConnectorParams", Result: "ConnectorCatalog"},
+	"connector.catalog.call":         {Name: "connector.catalog.call", From: "hub", Params: "ConnectorCatalogCallParams", Result: "ConnectorCallResult"},
 	"connector.tools.list":           {Name: "connector.tools.list", From: "hub", Params: "ConnectorParams", Result: "ConnectorTools"},
 	"connector.tools.call":           {Name: "connector.tools.call", From: "hub", Params: "ConnectorCallParams", Result: "ConnectorCallResult"},
 	"connector.actions.list":         {Name: "connector.actions.list", From: "hub", Params: "ConnectorParams", Result: "ConnectorTools"},
 	"connector.actions.describe":     {Name: "connector.actions.describe", From: "hub", Params: "ConnectorCallParams", Result: "ConnectorDescribeResult"},
 	"connector.actions.do":           {Name: "connector.actions.do", From: "hub", Params: "ConnectorDoParams", Result: "ConnectorCallResult"},
+	"connector.recall":               {Name: "connector.recall", From: "hub", Params: "ConnectorRecallParams", Result: "ConnectorRecallResult"},
+	"connector.recall.can":           {Name: "connector.recall.can", From: "hub", Params: "ConnectorRecallCanParams", Result: "ConnectorRecallCanResult"},
+	"connector.recall.do":            {Name: "connector.recall.do", From: "hub", Params: "ConnectorRecallDoParams", Result: "ConnectorRecallDoResult"},
 	"connector.thread.page":          {Name: "connector.thread.page", From: "hub", Params: "ConnectorThreadParams", Result: "ConnectorThreadPage"},
 	"connector.thread.media":         {Name: "connector.thread.media", From: "hub", Params: "ConnectorMediaParams", Result: "ConnectorMedia"},
 	"connector.inbox.collect":        {Name: "connector.inbox.collect", From: "hub", Params: "ConnectorParams", Result: "ConnectorCollectResult"},
@@ -4046,6 +6028,9 @@ var Calls = map[string]Call{
 	"connector.inbox.settle":         {Name: "connector.inbox.settle", From: "hub", Params: "ConnectorSettleParams", Result: "ConnectorSettled"},
 	"connector.archive.changes":      {Name: "connector.archive.changes", From: "hub", Params: "ConnectorChangesParams", Result: "ConnectorChangesResult"},
 	"connector.archive.media":        {Name: "connector.archive.media", From: "hub", Params: "ConnectorMediaParams", Result: "ConnectorMedia"},
+	"connector.history.chats":        {Name: "connector.history.chats", From: "hub", Params: "ConnectorParams", Result: "ConnectorHistoryChats"},
+	"connector.archive.history":      {Name: "connector.archive.history", From: "hub", Params: "ConnectorHistoryParams", Result: "ConnectorHistoryPage"},
+	"connector.history.anchors":      {Name: "connector.history.anchors", From: "hub", Params: "ConnectorHistoryAnchorsParams", Result: "ConnectorHistoryAnchors"},
 	"connector.items.list":           {Name: "connector.items.list", From: "hub", Params: "ConnectorParams", Result: "ConnectorItems"},
 	"connector.items.doc_title":      {Name: "connector.items.doc_title", From: "hub", Params: "ConnectorDocTitleParams", Result: "ConnectorDocTitle"},
 	"connector.snapshot.get":         {Name: "connector.snapshot.get", From: "hub", Params: "ConnectorSnapshotParams", Result: "ConnectorSnapshot"},
@@ -4067,6 +6052,7 @@ var Calls = map[string]Call{
 	"connector.posts.pending":        {Name: "connector.posts.pending", From: "program", Params: "ConnectorPostsPendingParams", Result: "ConnectorPostsPending"},
 	"connector.archive.chats":        {Name: "connector.archive.chats", From: "program", Params: "ConnectorArchiveChatsParams", Result: "ConnectorArchivedChats"},
 	"connector.credentials.gh_token": {Name: "connector.credentials.gh_token", From: "program", Params: "ConnectorGhTokenParams", Result: "ConnectorGhToken"},
+	"sent.record":                    {Name: "sent.record", From: "program", Params: "ConnectorSentRecordParams", Result: "Empty"},
 	"connector.changed":              {Name: "connector.changed", From: "program", Params: "ConnectorChangedEvent", Result: "", Event: true},
 	"channel.receive":                {Name: "channel.receive", From: "program", Params: "ChannelReceiveParams", Result: "Empty"},
 	"channel.status":                 {Name: "channel.status", From: "program", Params: "ChannelStatusParams", Result: "Empty"},
@@ -4079,6 +6065,27 @@ var Calls = map[string]Call{
 	"kb.search":                      {Name: "kb.search", From: "program", Params: "KBSearchParams", Result: "KBSearchResult"},
 	"kb.update":                      {Name: "kb.update", From: "program", Params: "KBUpdateParams", Result: "KBUpdateResult"},
 	"kb.owner":                       {Name: "kb.owner", From: "program", Params: "KBOwnerParams", Result: "KBOwner"},
+	"kb.recent":                      {Name: "kb.recent", From: "program", Params: "KBRecentParams", Result: "KBRecentResult"},
 	"event.kb.changed":               {Name: "event.kb.changed", From: "hub", Params: "KBChangedEvent", Result: "", Event: true},
 	"event.kb.forgotten":             {Name: "event.kb.forgotten", From: "hub", Params: "KBForgottenEvent", Result: "", Event: true},
+	"event.todo.changed":             {Name: "event.todo.changed", From: "hub", Params: "TodoChangedEvent", Result: "", Event: true},
+	"event.todo.decision":            {Name: "event.todo.decision", From: "hub", Params: "TodoDecisionEvent", Result: "", Event: true},
+	"model.complete":                 {Name: "model.complete", From: "program", Params: "ModelCompleteParams", Result: "ModelCompleteResult"},
+	"assistant.conversations":        {Name: "assistant.conversations", From: "program", Params: "AssistantConversationsParams", Result: "AssistantConversationsResult"},
+	"assistant.messages":             {Name: "assistant.messages", From: "program", Params: "AssistantMessagesParams", Result: "AssistantMessagesResult"},
+	"storage.request":                {Name: "storage.request", From: "program", Params: "StorageEmptyParams", Result: "StorageRequestResult"},
+	"storage.get":                    {Name: "storage.get", From: "program", Params: "StorageKeyParams", Result: "StorageEntry"},
+	"storage.list":                   {Name: "storage.list", From: "program", Params: "StorageListParams", Result: "StorageListResult"},
+	"storage.transaction":            {Name: "storage.transaction", From: "program", Params: "StorageTransactionParams", Result: "StorageTransactionResult"},
+	"storage.queue.list":             {Name: "storage.queue.list", From: "program", Params: "StorageQueueListParams", Result: "StorageQueueListResult"},
+	"storage.queue.enqueue":          {Name: "storage.queue.enqueue", From: "program", Params: "StorageEnqueueParams", Result: "StorageJobResult"},
+	"storage.queue.claim":            {Name: "storage.queue.claim", From: "program", Params: "StorageClaimParams", Result: "StorageClaimResult"},
+	"storage.queue.ack":              {Name: "storage.queue.ack", From: "program", Params: "StorageSettleParams", Result: "StorageJobResult"},
+	"storage.queue.forget":           {Name: "storage.queue.forget", From: "program", Params: "StorageSettleParams", Result: "StorageDeleteResult"},
+	"storage.queue.retry":            {Name: "storage.queue.retry", From: "program", Params: "StorageRetryParams", Result: "StorageJobResult"},
+	"storage.blob.create":            {Name: "storage.blob.create", From: "program", Params: "StorageBlobCreateParams", Result: "StorageBlobCreateResult"},
+	"storage.blob.write":             {Name: "storage.blob.write", From: "program", Params: "StorageBlobWriteParams", Result: "StorageBlobWriteResult"},
+	"storage.blob.finish":            {Name: "storage.blob.finish", From: "program", Params: "StorageBlobMutateParams", Result: "StorageBlobFinishResult"},
+	"storage.blob.delete":            {Name: "storage.blob.delete", From: "program", Params: "StorageBlobMutateParams", Result: "StorageDeleteResult"},
+	"storage.blob.read":              {Name: "storage.blob.read", From: "program", Params: "StorageBlobReadParams", Result: "StorageBlobReadResult"},
 }

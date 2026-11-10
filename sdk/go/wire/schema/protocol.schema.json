@@ -117,7 +117,7 @@
         "extension_points": {"type": "object", "additionalProperties": {"type": "integer"}},
         "role": {"$ref": "#/$defs/HubRole"},
         "timezone": {"type": "string"},
-        "locale": {"type": "string", "description": "The user's language (zh-Hans, en, ja; see docs/i18n.md); empty means zh-Hans."},
+        "locale": {"type": "string", "description": "The user's language (zh-Hans, en, ja; see docs/protocol/i18n.md); empty means zh-Hans."},
         "capabilities": {"type": "array", "items": {"type": "string"}},
         "url": {"type": "string", "description": "The hub's API on this machine, for the token below."},
         "token": {"type": "string", "description": "A token of the scopes it was granted (permissions.hub): new each start."},
@@ -141,7 +141,8 @@
         "protocol": {"type": "integer", "const": 1},
         "id": {"type": "string"},
         "version": {"type": "string"},
-        "contributes": {"type": "object", "additionalProperties": {}, "description": "A subset of the manifest's."}
+        "contributes": {"type": "object", "additionalProperties": {}, "description": "A subset of the manifest's."},
+        "ui_page_cancellation": {"type": "integer", "const": 1, "description": "Request-ID scoped rpc.cancel for mounted page lifecycle calls only."}
       },
       "required": ["protocol", "id", "version"]
     },
@@ -164,6 +165,27 @@
         "item": {"$ref": "#/$defs/UIInboxItem"}
       },
       "required": ["contribution", "state", "placement", "size", "ui_version"]
+    },
+    "UIImageParams": {
+      "description": "ui.image's parameters (UI version 6): the hub asks the extension for a picture it drew as a ref, for the ui contribution that drew it. width is the pixel width the app wants (320, 640, 1280 or 2048; 0 when it says nothing); the extension may ignore it.",
+      "type": "object",
+      "properties": {
+        "contribution": {"type": "string"},
+        "ref": {"type": "string", "minLength": 1, "maxLength": 256},
+        "width": {"type": "integer", "minimum": 0, "maximum": 8192},
+        "placement": {"$ref": "view.schema.json#/$defs/Placement"}
+      },
+      "required": ["contribution", "ref"]
+    },
+    "UIImage": {
+      "description": "What ui.image answers: the picture's bytes in base64 (png, jpeg, webp or gif, at most 4 MB decoded and 8192 pixels a side; the hub reads the type from the bytes, not from mime) and how long the hub may keep it (seconds, 60 when absent; a camera 5 to 10, a still 86400).",
+      "type": "object",
+      "properties": {
+        "mime": {"type": "string", "maxLength": 64},
+        "data": {"type": "string", "minLength": 1},
+        "max_age": {"type": "integer", "minimum": 0, "maximum": 86400, "x-go-pointer": true}
+      },
+      "required": ["mime", "data"]
     },
     "UIMachine": {
       "type": "object",
@@ -226,7 +248,9 @@
         "tz": {"type": "string"},
         "locale": {"type": "string"},
         "platform": {"$ref": "view.schema.json#/$defs/Platform"},
-        "ui_version": {"type": "integer"}
+        "ui_version": {"type": "integer"},
+        "stream": {"$ref": "stream.schema.json#/$defs/UIStreamCapability",
+          "description": "Explicit stream opt-in, independent of ui_version. Absent means snapshot-only. Contract only: no current client or hub advertises it."}
       }
     },
     "UIRequest": {
@@ -424,7 +448,7 @@
       "required": ["category"]
     },
     "ErrorReport": {
-      "description": "An error or crash of the hub or a device (docs/extensions.md \"Error reports\"). Clients send it to POST /api/v1/error-reports; the manager scrubs it and adds fingerprint, count and received_at before an extension gets it.",
+      "description": "An error or crash of the hub or a device (docs/extensions/extensions.md \"Error reports\"). Clients send it to POST /api/v1/error-reports; the manager scrubs it and adds fingerprint, count and received_at before an extension gets it.",
       "type": "object",
       "properties": {
         "id": {"type": "string", "minLength": 1, "maxLength": 64, "description": "Made by the sender; the same id again (a retry) is dropped."},
@@ -457,6 +481,29 @@
         "reports": {"type": "array", "items": {"$ref": "#/$defs/ErrorReport"}}
       },
       "required": ["contribution", "reports"]
+    },
+    "AuthRelayCompleteParams": {
+      "description": "auth_relay.complete's parameters: an authorization link one of the user's Agents stopped at, on a host and path the contribution names. The manager has checked that the Agent's own command printed it on one of the user's computers. The link is a secret while it lives: never log it.",
+      "type": "object",
+      "properties": {
+        "contribution": {"type": "string"},
+        "url": {"type": "string", "maxLength": 4096}
+      },
+      "required": ["contribution", "url"]
+    },
+    "AuthRelayStatus": {"description": "How auth_relay.complete ended: done (authorized, the Agent can go on), manual (not one it completes: the user's), failed (one it completes, but it did not go through).", "type": "string",
+      "enum": ["done", "manual", "failed"]},
+    "AuthRelayReason": {"description": "Why it was not done: not_handled (not a link it completes), not_signed_in (its account is not signed in for the page), new_permissions (the page asks for more than was granted before), app_not_allowed (the extension's own settings leave this app to the user), unknown_page (not the page it knows), unavailable (what it completes them with can't be reached), not_confirmed (it clicked, the page never said it was done), expired (the link is no longer valid).", "type": "string",
+      "enum": ["not_handled", "not_signed_in", "new_permissions", "app_not_allowed", "unknown_page", "unavailable", "not_confirmed", "expired"]},
+    "AuthRelayResult": {
+      "description": "What auth_relay.complete answers. Never the link, a token or a page's text.",
+      "type": "object",
+      "properties": {
+        "status": {"$ref": "#/$defs/AuthRelayStatus"},
+        "app": {"type": "string", "maxLength": 80, "description": "The app the page authorized (or asked to), as the page names it."},
+        "reason": {"$ref": "#/$defs/AuthRelayReason"}
+      },
+      "required": ["status"]
     },
     "ExtensionNotification": {
       "description": "extension_notification in an extension's alert push: whose it is, the page a tap opens (ui with state) and its buttons (category ext.<extension>.<hash of the action ids>, registered by the app as it meets it).",

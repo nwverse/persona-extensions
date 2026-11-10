@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "channel.schema.json",
   "title": "Channel protocol",
-  "description": "The channel extension point's calls (docs/channels.md \"4. Contributing a channel\", version 1): the program hands the hub the owner's messages (channel.receive) and, without a connector, its own state (channel.status); the hub sends the answers, notes, questions and pushes back (channel.send), and shows typing (channel.typing) or edits a message it sent (channel.edit) when the channel's capabilities say it can. The program only talks to its chat app: following the turn, splitting the answer and asking are the pipeline's. Every params object carries contribution, the channel's id. Plugin-side: only the hub and the program speak it.",
+  "description": "The channel extension point's calls (docs/extensions/channels.md \"4. Contributing a channel\", version 1): the program hands the hub the owner's messages (channel.receive) and, without a connector, its own state (channel.status); the hub sends the answers, notes, questions and pushes back (channel.send), and shows typing (channel.typing) or edits a message it sent (channel.edit) when the channel's capabilities say it can. The program only talks to its chat app: following the turn, splitting the answer and asking are the pipeline's. Every params object carries contribution, the channel's id. Plugin-side: only the hub and the program speak it.",
   "x-side": "plugin",
   "x-methods": {
     "channel.receive": {"from": "program", "params": "ChannelReceiveParams", "result": "Empty"},
@@ -37,12 +37,12 @@
       "required": ["contribution", "message"]
     },
     "ChannelMessage": {
-      "description": "At most 4 images of 3 MB and files of 50 MB each; what does not fit is dropped and said in unsupported. A message with nothing in it (no text, images, files, quote, forward or unsupported) is not handed on.",
+      "description": "At most 4 images of 3 MB and files of 50 MB each, and the hub hands on at most 40 MB of them together; what does not fit is dropped and said in unsupported. A message with nothing in it (no text, images, files, quote, forward or unsupported) is not handed on.",
       "type": "object",
       "properties": {
         "id": {"type": "string", "minLength": 1, "description": "The chat app's id of the message: the same message delivered again is taken once."},
         "text": {"type": "string"},
-        "images": {"type": "array", "maxItems": 4, "items": {"$ref": "#/$defs/ChannelBlob"}},
+        "images": {"type": "array", "items": {"$ref": "#/$defs/ChannelBlob"}, "description": "At most 4 are kept."},
         "files": {"type": "array", "items": {"$ref": "#/$defs/ChannelBlob"}},
         "quote": {"type": "string", "description": "The text of the message it quotes."},
         "forward": {"type": "string", "description": "What it forwards, as text."},
@@ -88,7 +88,7 @@
         "contribution": {"type": "string"},
         "ref": {"type": "string", "minLength": 1},
         "text": {"type": "string"},
-        "kind": {"type": "string", "description": "ChannelSendKind."},
+        "kind": {"$ref": "#/$defs/ChannelSendKind"},
         "reply_to": {"type": "string", "description": "The owner's message it answers (ChannelMessage.id)."}
       },
       "required": ["contribution", "ref", "text", "kind"]
