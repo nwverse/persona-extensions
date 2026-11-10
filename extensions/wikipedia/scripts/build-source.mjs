@@ -34,6 +34,13 @@ const built = await build({ absWorkingDir: root, entryPoints: ["src/index.ts"], 
   plugins: [{ name: "source-sdk-entry", setup(build) {
     build.onResolve({ filter: /^@persona\/extension$/ }, () => ({ path: sourceEntry }));
     build.onLoad({ filter: /sdk\/ts\/src\/index\.ts$/ }, () => ({ contents: sourceSDK(), loader: "ts" }));
+    build.onLoad({ filter: /persona-extension\.json$/ }, () => {
+      const manifest = JSON.parse(ts.sys.readFile(resolve(root, "persona-extension.json")));
+      // Only the outer package carries the artifact digest. Embedding it would
+      // make every subsequent build hash its own predecessor.
+      manifest.runtime.source.sha256 = "";
+      return { contents: JSON.stringify(manifest), loader: "json" };
+    });
   } }],
   jsx: "automatic", jsxImportSource: "@persona/extension", legalComments: "none", outfile: "build/wikipedia.mjs" });
 if (Object.values(built.metafile.outputs).some(output => output.imports.length)) throw new Error("runtime imports are forbidden");
@@ -41,13 +48,13 @@ const bytes = built.outputFiles[0].contents;
 if (!bytes.length || bytes.length > (8 << 20) || /\b(?:require|import)\s*\(/.test(new TextDecoder().decode(bytes))) throw new Error("invalid source bundle");
 await mkdir(out, { recursive: true });
 const bundle = resolve(out, "wikipedia.mjs");
+const releasedText = await readFile(resolve(root, "persona-extension.json"), "utf8");
+const released = JSON.parse(releasedText);
+released.runtime.source.sha256 = "";
 await writeFile(bundle, bytes);
 const program = (await import(pathToFileURL(bundle).href + "?sha=" + digest(bytes))).default;
 if (program.id !== "wikipedia" || !program.init || !program.namespaces?.connector || !program.ui?.today || program.fetch) throw new Error("incomplete default Program");
 const source = { entry: "src/index.ts", bundle: "build/wikipedia.mjs", sha256: digest(bytes) };
-const releasedText = await readFile(resolve(root, "persona-extension.json"), "utf8");
-const released = JSON.parse(releasedText.replace('"BUILD_SHA256"', '"0000000000000000000000000000000000000000000000000000000000000000"'));
-released.runtime.source.sha256 = "";
 const runtimeSource = program.manifest?.runtime?.source;
 if (program.manifest?.runtime?.mode !== "deno" || program.manifest?.runtime?.command || runtimeSource?.entry !== source.entry || runtimeSource?.bundle !== source.bundle || runtimeSource?.sha256) throw new Error("Program manifest differs from source package");
 const manifest = { ...released, runtime: { ...released.runtime, mode: "deno", source } };
