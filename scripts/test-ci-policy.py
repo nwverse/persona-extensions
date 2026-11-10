@@ -119,11 +119,15 @@ class PublicationPolicyTests(unittest.TestCase):
         sign = job(self.text, "sign")
         self.assertIn("needs: [anonymous]", sign)
         self.assertIn("if: needs.anonymous.result == 'success'", sign)
-        self.assertIn("needs.anonymous.outputs.unchanged != 'true'", sign)
+        self.assertIn("needs.anonymous.outputs.catalog_unchanged != 'true'", sign)
         self.assertIn("secrets.EXTENSION_MARKET_SIGNING_KEY", sign)
         self.assertIn("cmp -s persona-extensions.json", anonymous)
-        self.assertIn("steps.current-catalog.outputs.unchanged != 'true'", anonymous)
-        self.assertIn("outputs:\n      unchanged:", anonymous)
+        self.assertIn("steps.current-catalog.outputs.catalog_unchanged != 'true'", anonymous)
+        self.assertIn("outputs:\n      catalog_unchanged: ${{ steps.current-catalog.outputs.catalog_unchanged }}", anonymous)
+        self.assertIn("catalog_unchanged=true", anonymous)
+        self.assertIn("catalog_unchanged=false", anonymous)
+        self.assertIn("CATALOG_UNCHANGED: ${{ needs.anonymous.outputs.catalog_unchanged }}", job(self.text, "publication-required"))
+        self.assertNotIn("outputs.unchanged", self.text)
 
     def test_publication_aggregate_rejects_skipped_stages(self):
         aggregate = job(self.text, "publication-required")

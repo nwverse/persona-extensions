@@ -197,7 +197,7 @@ jobs:
       contents: read
       actions: read
     outputs:
-      unchanged: ${{ steps.current-catalog.outputs.unchanged }}
+      catalog_unchanged: ${{ steps.current-catalog.outputs.catalog_unchanged }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -233,12 +233,12 @@ jobs:
         run: |
           if cmp -s persona-extensions.json "$RUNNER_TEMP/unsigned/catalog.json"; then
             printf '%s\n' 'Signed catalog is current; no new signature or catalog PR is needed.'
-            printf '%s\n' 'unchanged=true' >> "$GITHUB_OUTPUT"
+            printf '%s\n' 'catalog_unchanged=true' >> "$GITHUB_OUTPUT"
           else
-            printf '%s\n' 'unchanged=false' >> "$GITHUB_OUTPUT"
+            printf '%s\n' 'catalog_unchanged=false' >> "$GITHUB_OUTPUT"
           fi
       - uses: actions/upload-artifact@v4
-        if: steps.current-catalog.outputs.unchanged != 'true'
+        if: steps.current-catalog.outputs.catalog_unchanged != 'true'
         with:
           overwrite: true
           name: verified-unsigned-payload
@@ -246,7 +246,7 @@ jobs:
           if-no-files-found: error
   sign:
     needs: [anonymous]
-    if: needs.anonymous.result == 'success' && needs.anonymous.outputs.unchanged != 'true'
+    if: needs.anonymous.result == 'success' && needs.anonymous.outputs.catalog_unchanged != 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -292,7 +292,7 @@ jobs:
           PACKAGES_RESULT: ${{ needs.packages.result }}
           ANONYMOUS_RESULT: ${{ needs.anonymous.result }}
           SIGN_RESULT: ${{ needs.sign.result }}
-          CATALOG_UNCHANGED: ${{ needs.anonymous.outputs.unchanged }}
+          CATALOG_UNCHANGED: ${{ needs.anonymous.outputs.catalog_unchanged }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$PACKAGES_RESULT" != success ]; then
             printf 'Main publication did not publish or verify packages: %s\n' "$PACKAGES_RESULT"
