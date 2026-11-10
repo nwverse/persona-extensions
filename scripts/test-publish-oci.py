@@ -202,12 +202,12 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
 
     def test_artifact_run_provenance_fail_closed(self):
         run = {"repository": {"id": publisher.CLEANED_REPOSITORY_ID}, "head_sha": SHA, "head_branch": "main",
-               "conclusion": "success", "path": ".github/workflows/ci.yml", "event": "push"}
+               "conclusion": None, "status": "in_progress", "path": ".github/workflows/ci.yml", "event": "push"}
         jobs = {"total_count": 1, "jobs": [{"name": "packages", "status": "completed", "conclusion": "success"}]}
         with mock.patch.object(publisher, "cutover_gate"):
             with mock.patch.object(publisher, "gh", side_effect=[catalog.encode(run), catalog.encode(jobs)]):
                 publisher.validate_run(self.args())
-            for change in ({"event": "pull_request"}, {"head_branch": "untrusted"}, {"conclusion": "failure"},
+            for change in ({"event": "pull_request"}, {"head_branch": "untrusted"},
                            {"head_sha": "2" * 40}, {"repository": {"id": 123}}, {"path": "other.yml"}):
                 with mock.patch.object(publisher, "gh", return_value=catalog.encode(dict(run, **change))):
                     with self.assertRaises(ValueError):

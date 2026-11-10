@@ -458,10 +458,11 @@ def validate_run(args):
     run = catalog.loads(gh("api", f"repos/{args.repository}/actions/runs/{args.run_id}"))
     if (run.get("repository", {}).get("id") != CLEANED_REPOSITORY_ID or run.get("head_sha") != args.head_sha or
             run.get("head_branch") not in TRUSTED_BRANCHES or run.get("path") != ".github/workflows/ci.yml" or
-            run.get("event") not in ("push", "workflow_dispatch") or
-            (run.get("event") == "push" and run.get("conclusion") != "success") or
-            (run.get("event") == "workflow_dispatch" and run.get("conclusion") not in ("success", "failure"))):
+            run.get("event") not in ("push", "workflow_dispatch")):
         raise ValueError("package artifact must come from an approved trusted same-SHA publication run")
+    # A push consumes its current run while anonymous/sign are still pending. Its overall conclusion
+    # is necessarily unset, so the completed package job below is the available success evidence.
+    # A prior manual run may have a later failed visibility gate, but its package job must succeed.
     jobs = catalog.loads(gh("api", f"repos/{args.repository}/actions/runs/{args.run_id}/jobs?per_page=100"))
     if jobs.get("total_count") != len(jobs.get("jobs", [])) or jobs["total_count"] > 100:
         raise ValueError("package run job inventory is incomplete")
