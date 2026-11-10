@@ -26,7 +26,7 @@ var locales = map[string]*texts{
 		},
 		canTitle: "What the assistant can do",
 		can: []string{
-			"List the vaults above, and find items in them by title, tag or website.",
+			"List the vaults this service account can read, and find items in them by title, tag or website.",
 			"See which fields an item has, and each field's op:// reference.",
 			"Passwords, keys, notes and one-time codes never reach the assistant, and nothing here can change your vaults.",
 		},
@@ -57,7 +57,7 @@ var locales = map[string]*texts{
 		},
 		canTitle: "アシスタントにできること",
 		can: []string{
-			"上の保管庫を一覧し、タイトル・タグ・ウェブサイトでアイテムを探す。",
+			"このサービスアカウントが読み取れる保管庫を一覧し、タイトル・タグ・ウェブサイトでアイテムを探す。",
 			"アイテムにどんなフィールドがあるかと、各フィールドの op:// 参照を見る。",
 			"パスワード・キー・メモ・ワンタイムコードがアシスタントに渡ることはなく、保管庫を変更することもありません。",
 		},
@@ -88,7 +88,7 @@ var locales = map[string]*texts{
 		},
 		canTitle: "助手能做什么",
 		can: []string{
-			"列出上面的保险库，按标题、标签或网站查找里面的条目。",
+			"列出这个服务账号能读的保险库，按标题、标签或网站查找里面的条目。",
 			"看一个条目有哪些字段，以及每个字段的 op:// 引用。",
 			"密码、密钥、备注和一次性验证码从不交给助手，也不会改动你的保险库。",
 		},
