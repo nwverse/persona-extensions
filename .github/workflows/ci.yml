@@ -186,6 +186,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   anonymous:
+    name: Anonymous verification and isolated signing
     needs: [identity, check, packages]
     if: >-
       !cancelled() && needs.identity.outputs.publish == 'true' && needs.check.result == 'success' &&
@@ -243,38 +244,13 @@ jobs:
           name: verified-unsigned-payload
           path: ${{ runner.temp }}/unsigned/payload.json
           if-no-files-found: error
-  sign:
-    needs: [anonymous]
-    if: needs.anonymous.result == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
-      - name: Require a new empty artifact directory
-        run: mkdir "$RUNNER_TEMP/unsigned"
-      - name: Locate a changed payload without exposing a secret
-        id: artifact
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api "repos/$GITHUB_REPOSITORY/actions/artifacts?name=verified-unsigned-payload&per_page=1" --jq '.artifacts[0].id' > "$RUNNER_TEMP/artifact-id"
-      - uses: actions/download-artifact@v4
-        if: needs.anonymous.outputs.payload != ''
-        with:
-          artifact-ids: ${{ steps.artifact.outputs.id }}
-          path: ${{ runner.temp }}/unsigned
-      - name: Accept the verified unchanged catalog without a signing secret
-        if: needs.anonymous.outputs.payload == ''
-        run: printf '%s\n' 'Anonymous verification confirmed the current signed catalog; no new signature is needed.'
       - name: Require a changed payload before signing
-        if: needs.anonymous.outputs.payload != ''
+        if: steps.payload.outputs.path != ''
         run: test -s "$RUNNER_TEMP/unsigned/payload.json"
-      # No build/test/untrusted extension code in this job. The secret belongs only to this step.
+      # No build/test/untrusted extension code runs in this job. The secret is
+      # introduced only after every anonymous check has passed and a payload exists.
       - name: Sign raw payload with the approved existing key
-        if: needs.anonymous.outputs.payload != ''
+        if: steps.payload.outputs.path != ''
         env:
           EXTENSION_MARKET_SIGNING_KEY: ${{ secrets.EXTENSION_MARKET_SIGNING_KEY }}
         run: |
@@ -283,7 +259,7 @@ jobs:
           python3 -I scripts/sign-index.py verify --catalog "$RUNNER_TEMP/signed/persona-extensions.json"
           printf '%s\n' 'Catalog artifact only: create or reuse a dedicated catalog-update issue before opening its PR. Put Refs #<catalog-issue-number> in that PR body; #146 is code tracking only. Require local verification and signed base continuity; never push the catalog directly to main.' > "$RUNNER_TEMP/signed/PR-body.txt"
       - uses: actions/upload-artifact@v4
-        if: needs.anonymous.outputs.payload != ''
+        if: steps.payload.outputs.path != ''
         with:
           overwrite: true
           name: signed-oci-catalog
@@ -295,7 +271,7 @@ jobs:
     if: >-
       !cancelled() && needs.identity.outputs.publish == 'true' &&
       (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'catalog'))
-    needs: [identity, packages, anonymous, sign]
+    needs: [identity, packages, anonymous]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions: {}
@@ -304,7 +280,7 @@ jobs:
         env:
           PACKAGES_RESULT: ${{ needs.packages.result }}
           ANONYMOUS_RESULT: ${{ needs.anonymous.result }}
-          SIGN_RESULT: ${{ needs.sign.result }}
+          SIGN_RESULT: ${{ needs.anonymous.result }}
           CATALOG_UNCHANGED: ${{ needs.anonymous.outputs.payload == '' }}
         run: |
           if [ "$GITHUB_EVENT_NAME" = push ] && [ "$PACKAGES_RESULT" != success ]; then
