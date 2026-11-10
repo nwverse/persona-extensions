@@ -387,14 +387,14 @@ func (a *app) entityPage(ctx context.Context, r *ext.UIRequest, hm *home, reg *R
 	}
 	v.Title = clip(s.Name(), 60)
 	if r.UIVersion >= 4 {
-		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{entityHeader(hm, s, a.loc())}})
+		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{entityHeader(hm, s, r.Location())}})
 	} else {
 		v.Sections = append(v.Sections, crumbs(r, entityPath(hm, st, clip(shortName(hm, s), 40)), "back"))
 		facts := []string{domainName(s.Domain())}
 		if n := hm.areaName(s.EntityID); n != "" {
 			facts = append(facts, n)
 		}
-		facts = append(facts, "变于 "+s.LastChanged.In(a.loc()).Format("01-02 15:04"))
+		facts = append(facts, "变于 "+s.LastChanged.In(r.Location()).Format("01-02 15:04"))
 		head := wire.Section{}
 		head.Items = append(head.Items,
 			wire.Component{Type: "metric", Label: "状态", Value: orDash(stateText(s)), Detail: detail(s), Tone: stateTone(s)},
@@ -414,7 +414,7 @@ func (a *app) entityPage(ctx context.Context, r *ext.UIRequest, hm *home, reg *R
 	if sec, ok := deviceSection(hm, reg, s, st.Sub); ok {
 		v.Sections = append(v.Sections, sec)
 	}
-	if hist := a.historySection(ctx, s); len(hist.Items) > 0 {
+	if hist := a.historySection(ctx, s, r.Location()); len(hist.Items) > 0 {
 		v.Sections = append(v.Sections, hist)
 	}
 
@@ -531,7 +531,7 @@ func (a *app) logPage(ctx context.Context, r *ext.UIRequest, hm *home, reg *Regi
 		entries = onlyDeviceLog(hm, entries)
 	}
 	kept, count := keepLog(hm, withoutDiagnostics(hm, reg, entries), nil)
-	loc := a.loc()
+	loc := r.Location()
 	now := time.Now().In(loc)
 
 	type day struct {
@@ -699,7 +699,7 @@ func dayTitle(day time.Time, now time.Time) string {
 // asking first.
 func (a *app) autoPage(r *ext.UIRequest, hm *home, v *wire.View) {
 	v.Title = "自动化"
-	loc := a.loc()
+	loc := r.Location()
 	n := 0
 	for _, d := range []string{"automation", "script", "scene"} {
 		var items []wire.Component

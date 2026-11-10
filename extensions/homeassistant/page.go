@@ -770,7 +770,7 @@ func (a *app) controlSection(r *ext.UIRequest, s State) wire.Section {
 }
 
 // historySection is the last 24 hours: a line for a number, the last changes otherwise.
-func (a *app) historySection(ctx context.Context, s State) wire.Section {
+func (a *app) historySection(ctx context.Context, s State, loc *time.Location) wire.Section {
 	sec := wire.Section{Title: "最近 24 小时"}
 	h, _, _ := a.client()
 	changes, err := h.History(ctx, s.EntityID, time.Now().Add(-24*time.Hour))
@@ -781,7 +781,7 @@ func (a *app) historySection(ctx context.Context, s State) wire.Section {
 	if len(changes) == 0 {
 		return sec
 	}
-	if pts := series(changes, 96); len(pts) >= 3 {
+	if pts := series(changes, 96, loc); len(pts) >= 3 {
 		unit := s.attr("unit_of_measurement")
 		for i := range pts {
 			pts[i].Display = tidy(pts[i].Value) + unit
@@ -796,7 +796,7 @@ func (a *app) historySection(ctx context.Context, s State) wire.Section {
 	}
 	for i := len(shown) - 1; i >= 0; i-- {
 		c := shown[i]
-		t.Rows = append(t.Rows, []string{c.At.Local().Format("01-02 15:04"), orDash(stateText(State{EntityID: s.EntityID, State: c.State, Attributes: s.Attributes}))})
+		t.Rows = append(t.Rows, []string{c.At.In(loc).Format("01-02 15:04"), orDash(stateText(State{EntityID: s.EntityID, State: c.State, Attributes: s.Attributes}))})
 	}
 	sec.Items = append(sec.Items, t)
 	return sec
@@ -804,7 +804,7 @@ func (a *app) historySection(ctx context.Context, s State) wire.Section {
 
 // series turns numeric changes into at most n points: the value each change set, averaged into n even buckets over
 // the span when there are more.
-func series(cs []Change, n int) []wire.ChartPoint {
+func series(cs []Change, n int, loc *time.Location) []wire.ChartPoint {
 	type pt struct {
 		at time.Time
 		v  float64
@@ -818,7 +818,7 @@ func series(cs []Change, n int) []wire.ChartPoint {
 	if len(ps) < len(cs)/2 || len(ps) == 0 {
 		return nil
 	}
-	label := func(t time.Time) string { return t.Local().Format("15:04") }
+	label := func(t time.Time) string { return t.In(loc).Format("15:04") }
 	if len(ps) <= n {
 		out := make([]wire.ChartPoint, len(ps))
 		for i, p := range ps {
