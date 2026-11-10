@@ -20,7 +20,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/wikipedia.mjs",
-      "sha256": "30272e72b037437b82e4fd30ee97d1709e21b806e94eb306d54145bf590b6418"
+      "sha256": "ed0990c396c6011ac755e01795d4532dfb8f3abb09b7c966d0ae8429694c39be"
     }
   },
   "contributes": {

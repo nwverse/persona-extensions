@@ -785,7 +785,7 @@ var persona_extension_default = {
     source: {
       entry: "src/index.ts",
       bundle: "build/wikipedia.mjs",
-      sha256: "bfde05dbb906cc13af5608ac9a93cf28f4a08102192b11cb2a0ffc79087a16c2"
+      sha256: "30272e72b037437b82e4fd30ee97d1709e21b806e94eb306d54145bf590b6418"
     }
   },
   contributes: {
