@@ -1,0 +1,42 @@
+{
+  "manifest_version": 1,
+  "id": "zulip",
+  "name": "Zulip 未读话题",
+  "version": "0.1.0",
+  "description": "在 Persona 中查看 Zulip 当前用户订阅的频道和话题，读取首个未读消息及其上下文，按 stream/topic 过滤并向前翻页。API 邮箱和 key 加密保存在 hub；自托管服务要求 HTTPS，只读，不标记已读、不发送消息、不下载附件、不修改成员。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/zulip/README.md",
+  "tags": ["Zulip", "未读消息", "话题", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/zulip-linux-amd64",
+      "linux-arm64": "bin/zulip-linux-arm64",
+      "darwin-arm64": "bin/zulip-darwin-arm64",
+      "darwin-amd64": "bin/zulip-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "zulip", "name": "Zulip", "capabilities": ["status", "tools"],
+      "hosts": [], "agent_tools": ["zulip_*"]
+    }],
+    "ui": [{"id": "inbox", "title": "Zulip 未读话题", "placement": "nav_page", "icon": "doc"}]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "instance_url": {"type": "string", "title": "Zulip 实例地址", "description": "例如 https://example.zulipchat.com；仅本机允许 HTTP，会自动追加 /api/v1", "format": "uri"}
+    }
+  },
+  "secrets": [{
+    "name": "api_email", "title": "Zulip API 邮箱",
+    "description": "用于 API Basic Auth 的用户或 bot 邮箱；仅作为认证信息发往配置的实例",
+    "required": true
+  }, {
+    "name": "api_token", "title": "Zulip API key",
+    "description": "在 Zulip 账户或 bot 设置中创建的 API key；仅作为 Basic Auth 密码发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
