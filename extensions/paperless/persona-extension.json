@@ -1,0 +1,38 @@
+{
+  "manifest_version": 1,
+  "id": "paperless",
+  "name": "Paperless-ngx 档案",
+  "version": "0.1.0",
+  "description": "在 Persona 中全文搜索可访问的 Paperless-ngx 扫描档案，阅读 OCR 文本、笔记、标签和往来方，按需打开原件下载链接。API token 加密保存在 hub；只读、自托管服务要求 HTTPS，不自动下载附件、不修改档案或权限。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/paperless/README.md",
+  "tags": ["Paperless-ngx", "文档管理", "OCR", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/paperless-linux-amd64",
+      "linux-arm64": "bin/paperless-linux-arm64",
+      "darwin-arm64": "bin/paperless-darwin-arm64",
+      "darwin-amd64": "bin/paperless-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "paperless", "name": "Paperless-ngx", "capabilities": ["status", "tools"],
+      "hosts": [], "agent_tools": ["paperless_*"]
+    }],
+    "ui": [{"id": "documents", "title": "Paperless-ngx 档案", "placement": "nav_page", "icon": "doc"}]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "instance_url": {"type": "string", "title": "Paperless-ngx 实例地址", "description": "例如 https://paperless.example.com；仅本机允许 HTTP", "format": "uri"}
+    }
+  },
+  "secrets": [{
+    "name": "api_token", "title": "Paperless-ngx API token",
+    "description": "在 Paperless-ngx 个人资料中创建；仅作为 Authorization: Token 发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
