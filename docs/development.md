@@ -16,7 +16,7 @@ The official TypeScript SDK also owns one standalone authoring oracle, `sdk/ts/s
 extensions/<id>/           Manifest, source, tests and dependencies for one extension
   persona-extension.json   The only manifest, including the market tags
   go.mod, go.sum           The extension's own Go module (program extensions only)
-pluginkit/                 Quota, UI and inbox helpers for the existing extension APIs (own module)
+pluginkit/                 Quota, UI and inbox helpers, and the spaces kernel and file store (pluginkit/spaces) shared by spaces and household (own module)
 tools/                     Repository-level Go tests, such as every manifest against the SDK schema (own module)
 sdk/go/                    Synced copy of the official Persona Go SDK; do not hand-edit
 sdk/VERSION                Upstream source revision and sync ownership
@@ -25,7 +25,7 @@ docs/                      Human-maintained English guides and references
 persona-extensions.json    Single signed envelope: raw UTF-8 payload plus embedded signatures
 ```
 
-The SDK implements the process protocol; `pluginkit` preserves the helpers used by existing extensions. See [reference](reference.md) for schema and configuration details.
+The SDK implements the process protocol; `pluginkit` holds the helpers used by existing extensions and the spaces kernel that spaces and household share. See [reference](reference.md) for schema and configuration details.
 
 ## Add a program extension
 
