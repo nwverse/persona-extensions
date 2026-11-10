@@ -17,8 +17,8 @@ rm -rf "${out:?}" && mkdir -p "$out/bin"
 # stop writing persona-plugin.json once the compatibility period ends (docs/reference.md, "Compatibility").
 scripts/manifest.py packaged "$id" >"$out/persona-extension.json"
 cp "$out/persona-extension.json" "$out/persona-plugin.json"
-# What the manifest points at besides the program: the assistant's skills and instructions.
-for extra in skills assistant; do
+# What the manifest points at besides the program: the assistant's skills and instructions, and the looks' images.
+for extra in skills assistant looks; do
   [ -d "$src/$extra" ] && cp -R "$src/$extra" "$out/"
 done
 # Native TypeScript source packages ship the import-free bundle and its verified digest.
