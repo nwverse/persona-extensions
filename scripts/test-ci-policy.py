@@ -1,4 +1,4 @@
-"""Manual-only CI policy (#190), without dispatching jobs or running rebuilds."""
+"""Publication policy for trusted-main pushes and checks-only manual dispatch."""
 import re
 import unittest
 from pathlib import Path
@@ -26,19 +26,20 @@ def job(text, name):
     return tail[:end.start()] if end else tail
 
 
-class ManualCIPolicyTests(unittest.TestCase):
+class PublicationPolicyTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.text = WORKFLOW.read_text()
 
-    def test_only_explicit_dispatch_can_run(self):
-        self.assertEqual(events(self.text), ["workflow_dispatch"])
+    def test_only_manual_dispatch_and_trusted_main_push_can_run(self):
+        self.assertEqual(events(self.text), ["push", "workflow_dispatch"])
+        self.assertRegex(self.text, r"on:\n  push:\n    branches: \[main\]\n  workflow_dispatch:")
 
-    def test_automatic_event_negative_controls(self):
-        for event in ("pull_request", "push", "schedule", "release", "merge_group"):
+    def test_other_automatic_events_are_not_allowed(self):
+        for event in ("pull_request", "schedule", "release", "merge_group"):
             with self.subTest(event=event):
                 changed = self.text.replace("on:\n", "on:\n  " + event + ":\n", 1)
-                self.assertNotEqual(events(changed), ["workflow_dispatch"])
+                self.assertNotEqual(events(changed), ["push", "workflow_dispatch"])
 
     def test_inline_or_duplicate_event_blocks_are_not_guessed(self):
         for text in ("on: [push, workflow_dispatch]\n", "on:\n  push:\non:\n  workflow_dispatch:\n"):
@@ -87,6 +88,17 @@ class ManualCIPolicyTests(unittest.TestCase):
         self.assertIn("packages: write", packages)
         self.assertIn("group: persona-extension-oci-publication", packages)
         self.assertIn("cancel-in-progress: false", packages)
+        self.assertIn("uses: actions/upload-artifact@v4", packages)
+        anonymous = job(self.text, "anonymous")
+        self.assertIn("needs: [identity, check, packages]", anonymous)
+        self.assertIn("inputs.phase == 'catalog'", anonymous)
+        self.assertIn("github.event_name == 'push'", anonymous)
+        self.assertIn("github.run_id", anonymous)
+        self.assertIn("github.event_name == 'push' && github.run_id || inputs.package_run_id", anonymous)
+        self.assertIn("run-id: ${{ steps.package-run.outputs.run_id }}", anonymous)
+        sign = job(self.text, "sign")
+        self.assertIn("needs: [anonymous]", sign)
+        self.assertIn("secrets.EXTENSION_MARKET_SIGNING_KEY", sign)
 
 
 if __name__ == "__main__":

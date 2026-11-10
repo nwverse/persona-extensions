@@ -68,7 +68,7 @@ Current packages are all `any`: each program archive includes its manifest's pla
 
 ## Automated releases
 
-[CI](../.github/workflows/ci.yml) runs [scripts/ci.sh](../scripts/ci.sh) only on explicit dispatch. PRs and main pushes trigger neither checks nor publication. A manual `phase=check` dispatch is the default and sets publication off: it needs no cutover confirmation, reads no publication credentials and performs no package writes or signing. `CI required` aggregates that manual checks-only run; PRs merge after affected local verification, not after a hosted result. `scripts/ci.sh` never publishes and rejects the former `release` arguments.
+[CI](../.github/workflows/ci.yml) runs [scripts/ci.sh](../scripts/ci.sh) on every push to `main` and on explicit dispatch. A trusted-main push runs the normal checks, then `phase=versions` publishes or verifies existing OCI packages, runs anonymous verification and signs the resulting catalog. A manual `phase=check` dispatch is still available for validation without publication credentials, package writes or signing. `CI required` aggregates that manual checks-only run; PRs merge after affected local verification, not after a hosted result. `scripts/ci.sh` never publishes and rejects the former `release` arguments.
 
 ```sh
 gh workflow run ci.yml --repo nwverse/persona-extensions --ref <issue-branch> -f phase=check
@@ -76,7 +76,7 @@ gh workflow run ci.yml --repo nwverse/persona-extensions --ref <issue-branch> -f
 
 Publication requires both the final name `nwverse/persona-extensions` and cleaned repository ID `1449704212`. The former repository cannot pass this gate. Only trusted `main` can publish; issue branches remain checks-only. Before cutover, a checks-only dispatch is permitted; dispatch publication refuses even when a caller checks the confirmation input. The script rechecks the actual GitHub repository identity, checkout SHA and full source inventory before reading package credentials or doing any upload.
 
-After cutover, publication is still explicitly dispatched: `phase=packages` or `phase=catalog` requires `confirm_cutover=true` and the same live identity checks. Main pushes do not enable or run publication. No new repository/org variable or publication credential is introduced by this trigger policy. The package visibility step below remains manual; do not dispatch or publish early.
+After cutover, a manual publication dispatch still requires `phase=packages` or `phase=catalog` with `confirm_cutover=true` and the same live identity checks. A manual catalog dispatch also requires `package_run_id` for a successful package run at the same checkout SHA. On main pushes, the workflow instead uses the actual current `github.run_id`, verifies the successful package run and continues to anonymous verification and signing. Existing tags are reused. No new repository/org variable or publication credential is introduced by this trigger policy. The package visibility step below remains manual and is not bypassed by automatic publication.
 
 ### Phase 1: packages
 

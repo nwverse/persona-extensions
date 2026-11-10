@@ -1,6 +1,8 @@
-# Explicit dispatch only; checks are the default and publication remains separately gated.
+# Publish immutable packages after trusted-main merges; manual checks remain available.
 name: ci
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       phase:
@@ -15,7 +17,7 @@ on:
         description: Bootstrap reuses the frozen cleaned Release archives; versions never creates Releases
         default: bootstrap
       package_run_id:
-        description: Successful same-checkout-SHA package run (required for catalog phase)
+        description: Successful same-checkout-SHA package run for a manual catalog dispatch (push uses the current run)
         required: false
       confirm_cutover:
         type: boolean
@@ -181,8 +183,8 @@ jobs:
           if-no-files-found: error
           retention-days: 30
   anonymous:
-    needs: [identity, check]
-    if: needs.identity.outputs.publish == 'true' && github.event_name == 'workflow_dispatch' && inputs.phase == 'catalog'
+    needs: [identity, check, packages]
+    if: needs.identity.outputs.publish == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'catalog'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -192,18 +194,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Validate artifact provenance before download
+      - name: Resolve the package run for this publication
+        id: package-run
         env:
           GH_TOKEN: ${{ github.token }}
-          PACKAGE_RUN_ID: ${{ inputs.package_run_id }}
-        run: python3 -I scripts/publish-oci.py validate-run --confirm-cutover --run-id "$PACKAGE_RUN_ID"
+          PACKAGE_RUN_ID: ${{ github.event_name == 'push' && github.run_id || inputs.package_run_id }}
+        run: |
+          if [ -z "$PACKAGE_RUN_ID" ]; then
+            printf '%s\n' 'A manual catalog dispatch requires package_run_id.'
+            exit 1
+          fi
+          python3 -I scripts/publish-oci.py validate-run --confirm-cutover --run-id "$PACKAGE_RUN_ID"
+          printf 'run_id=%s\n' "$PACKAGE_RUN_ID" >> "$GITHUB_OUTPUT"
       - name: Require a new empty artifact directory
         run: mkdir "$RUNNER_TEMP/package-plan"
       - uses: actions/download-artifact@v4
         with:
           name: oci-package-plan
           path: ${{ runner.temp }}/package-plan
-          run-id: ${{ inputs.package_run_id }}
+          run-id: ${{ steps.package-run.outputs.run_id }}
           github-token: ${{ github.token }}
       - name: Anonymous public gate and payload generation
         env:
