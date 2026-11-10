@@ -23,6 +23,13 @@ for extra in skills assistant; do
 done
 # Native TypeScript source packages ship the import-free bundle and its verified digest.
 if python3 -I -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("runtime", {}).get("mode") == "deno" else 1)' "$manifest"; then
+  # A clean checkout has no build output. Compile through the extension's locked
+  # public dependencies, not a pre-existing local bundle or an untracked SDK edit.
+  if [ ! -x "$src/node_modules/.bin/esbuild" ]; then
+    npm --prefix sdk/ts ci --ignore-scripts --registry=https://registry.npmjs.org --no-audit --no-fund
+    npm --prefix "$src" ci --ignore-scripts --registry=https://registry.npmjs.org --no-audit --no-fund
+  fi
+  npm --prefix "$src" run build:source
   python3 -I - "$src" "$out" <<'PY'
 import hashlib, json, pathlib, sys
 src, out = map(pathlib.Path, sys.argv[1:])
