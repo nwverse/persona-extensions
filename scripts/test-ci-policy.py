@@ -1,5 +1,7 @@
-"""Publication policy for trusted-main pushes and checks-only manual dispatch."""
+"""Publication policy for trusted-main pushes and explicit manual phases."""
+import os
 import re
+import subprocess
 import unittest
 from pathlib import Path
 
@@ -99,6 +101,73 @@ class PublicationPolicyTests(unittest.TestCase):
         sign = job(self.text, "sign")
         self.assertIn("needs: [anonymous]", sign)
         self.assertIn("secrets.EXTENSION_MARKET_SIGNING_KEY", sign)
+
+    def test_packages_only_runs_when_the_current_run_publishes_packages(self):
+        packages = job(self.text, "packages")
+        self.assertIn("github.event_name == 'push' || inputs.phase == 'packages'", packages)
+        self.assertNotIn("inputs.phase == 'catalog'", packages)
+
+    def test_catalog_does_not_require_packages_to_run_again(self):
+        anonymous = job(self.text, "anonymous")
+        self.assertIn("needs: [identity, check, packages]", anonymous)
+        self.assertIn("!cancelled()", anonymous)
+        self.assertIn("needs.check.result == 'success'", anonymous)
+        self.assertIn("github.event_name == 'push' && needs.packages.result == 'success'", anonymous)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.phase == 'catalog' && needs.packages.result == 'skipped'", anonymous)
+        self.assertIn("github.event_name == 'push' && github.run_id || inputs.package_run_id", anonymous)
+        self.assertIn("run-id: ${{ steps.package-run.outputs.run_id }}", anonymous)
+        sign = job(self.text, "sign")
+        self.assertIn("needs: [anonymous]", sign)
+        self.assertIn("if: needs.anonymous.result == 'success'", sign)
+        self.assertIn("secrets.EXTENSION_MARKET_SIGNING_KEY", sign)
+
+    def test_publication_aggregate_rejects_skipped_stages(self):
+        aggregate = job(self.text, "publication-required")
+        self.assertIn("needs: [identity, packages, anonymous, sign]", aggregate)
+        self.assertIn("!cancelled()", aggregate)
+        self.assertIn("github.event_name == 'push'", aggregate)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.phase == 'catalog'", aggregate)
+        self.assertNotIn("inputs.phase == 'packages'", aggregate)
+        for result in ("PACKAGES_RESULT", "ANONYMOUS_RESULT", "SIGN_RESULT"):
+            self.assertIn('${{ needs.' + result.split("_")[0].lower() + '.result }}', aggregate)
+            self.assertIn(f'"${result}" != success', aggregate)
+        self.assertIn("exit 1", aggregate)
+        for missing_job in ("anonymous", "sign"):
+            with self.subTest(missing_job=missing_job):
+                changed = self.text.replace(job(self.text, missing_job), "", 1)
+                with self.assertRaises(ValueError):
+                    job(changed, missing_job)
+        for condition in ("!cancelled()", "needs.packages.result == 'skipped'", "needs.packages.result == 'success'"):
+            with self.subTest(condition=condition):
+                changed = self.text.replace(condition, "false", 1)
+                self.assertNotIn(condition, job(changed, "anonymous"))
+
+    def test_publication_completion_command_rejects_skipped_stages(self):
+        command = job(self.text, "publication-required").split("run: |\n", 1)[1]
+        cases = [
+            ("push", "success", "success", "success", 0),
+            ("workflow_dispatch", "skipped", "success", "success", 0),
+            ("push", "skipped", "skipped", "skipped", 1),
+            ("workflow_dispatch", "skipped", "skipped", "skipped", 1),
+            ("workflow_dispatch", "skipped", "success", "skipped", 1),
+            ("push", "success", "success", "failure", 1),
+        ]
+        for event, packages, anonymous, sign, expected in cases:
+            with self.subTest(event=event, packages=packages, anonymous=anonymous, sign=sign):
+                result = subprocess.run(
+                    ["bash", "-c", command],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env={
+                        **os.environ,
+                        "GITHUB_EVENT_NAME": event,
+                        "PACKAGES_RESULT": packages,
+                        "ANONYMOUS_RESULT": anonymous,
+                        "SIGN_RESULT": sign,
+                    },
+                )
+                self.assertEqual(result.returncode, expected, result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

@@ -184,7 +184,10 @@ jobs:
           retention-days: 30
   anonymous:
     needs: [identity, check, packages]
-    if: needs.identity.outputs.publish == 'true' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'catalog'))
+    if: >-
+      !cancelled() && needs.identity.outputs.publish == 'true' && needs.check.result == 'success' &&
+      ((github.event_name == 'push' && needs.packages.result == 'success') ||
+      (github.event_name == 'workflow_dispatch' && inputs.phase == 'catalog' && needs.packages.result == 'skipped'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -226,6 +229,7 @@ jobs:
           if-no-files-found: error
   sign:
     needs: [anonymous]
+    if: needs.anonymous.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -256,3 +260,28 @@ jobs:
           path: ${{ runner.temp }}/signed/
           if-no-files-found: error
           retention-days: 30
+  publication-required:
+    name: Publication required
+    if: >-
+      !cancelled() && needs.identity.outputs.publish == 'true' &&
+      (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.phase == 'catalog'))
+    needs: [identity, packages, anonymous, sign]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require anonymous verification and a signed catalog
+        env:
+          PACKAGES_RESULT: ${{ needs.packages.result }}
+          ANONYMOUS_RESULT: ${{ needs.anonymous.result }}
+          SIGN_RESULT: ${{ needs.sign.result }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ] && [ "$PACKAGES_RESULT" != success ]; then
+            printf 'Main publication did not publish or verify packages: %s\n' "$PACKAGES_RESULT"
+            exit 1
+          fi
+          if [ "$ANONYMOUS_RESULT" != success ] || [ "$SIGN_RESULT" != success ]; then
+            printf 'Catalog publication did not complete: anonymous=%s sign=%s\n' "$ANONYMOUS_RESULT" "$SIGN_RESULT"
+            exit 1
+          fi
+          printf '%s\n' 'Anonymous verification and signing completed; signed-oci-catalog is ready.'

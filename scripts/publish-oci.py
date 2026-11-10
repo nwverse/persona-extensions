@@ -457,10 +457,18 @@ def validate_run(args):
         raise ValueError("invalid package run id")
     run = catalog.loads(gh("api", f"repos/{args.repository}/actions/runs/{args.run_id}"))
     if (run.get("repository", {}).get("id") != CLEANED_REPOSITORY_ID or run.get("head_sha") != args.head_sha or
-            run.get("head_branch") not in TRUSTED_BRANCHES or run.get("conclusion") != "success" or
-            run.get("path") != ".github/workflows/ci.yml" or run.get("event") not in ("push", "workflow_dispatch")):
-        raise ValueError("package artifact must come from a successful trusted same-SHA publication run")
-    print("package run: approved provenance")
+            run.get("head_branch") not in TRUSTED_BRANCHES or run.get("path") != ".github/workflows/ci.yml" or
+            run.get("event") not in ("push", "workflow_dispatch") or
+            (run.get("event") == "push" and run.get("conclusion") != "success") or
+            (run.get("event") == "workflow_dispatch" and run.get("conclusion") not in ("success", "failure"))):
+        raise ValueError("package artifact must come from an approved trusted same-SHA publication run")
+    jobs = catalog.loads(gh("api", f"repos/{args.repository}/actions/runs/{args.run_id}/jobs?per_page=100"))
+    if jobs.get("total_count") != len(jobs.get("jobs", [])) or jobs["total_count"] > 100:
+        raise ValueError("package run job inventory is incomplete")
+    packages = [job for job in jobs["jobs"] if job.get("name") == "packages"]
+    if len(packages) != 1 or packages[0].get("status") != "completed" or packages[0].get("conclusion") != "success":
+        raise ValueError("package artifact requires a completed successful packages job")
+    print("package run: approved provenance and successful packages job")
 
 
 def main():

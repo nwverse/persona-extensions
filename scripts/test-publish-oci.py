@@ -203,12 +203,24 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
     def test_artifact_run_provenance_fail_closed(self):
         run = {"repository": {"id": publisher.CLEANED_REPOSITORY_ID}, "head_sha": SHA, "head_branch": "main",
                "conclusion": "success", "path": ".github/workflows/ci.yml", "event": "push"}
+        jobs = {"total_count": 1, "jobs": [{"name": "packages", "status": "completed", "conclusion": "success"}]}
         with mock.patch.object(publisher, "cutover_gate"):
-            with mock.patch.object(publisher, "gh", return_value=catalog.encode(run)):
+            with mock.patch.object(publisher, "gh", side_effect=[catalog.encode(run), catalog.encode(jobs)]):
                 publisher.validate_run(self.args())
             for change in ({"event": "pull_request"}, {"head_branch": "untrusted"}, {"conclusion": "failure"},
                            {"head_sha": "2" * 40}, {"repository": {"id": 123}}, {"path": "other.yml"}):
                 with mock.patch.object(publisher, "gh", return_value=catalog.encode(dict(run, **change))):
+                    with self.assertRaises(ValueError):
+                        publisher.validate_run(self.args())
+            # A rerun may have completed packages successfully even though a later visibility gate failed.
+            manual = dict(run, event="workflow_dispatch", conclusion="failure")
+            with mock.patch.object(publisher, "gh", side_effect=[catalog.encode(manual), catalog.encode(jobs)]):
+                publisher.validate_run(self.args())
+            for bad_jobs in ({"total_count": 0, "jobs": []},
+                             {"total_count": 1, "jobs": [{"name": "packages", "status": "completed", "conclusion": "failure"}]},
+                             {"total_count": 1, "jobs": [{"name": "packages", "status": "completed", "conclusion": "skipped"}]},
+                             {"total_count": 101, "jobs": [jobs["jobs"][0]]}):
+                with mock.patch.object(publisher, "gh", side_effect=[catalog.encode(manual), catalog.encode(bad_jobs)]):
                     with self.assertRaises(ValueError):
                         publisher.validate_run(self.args())
 
