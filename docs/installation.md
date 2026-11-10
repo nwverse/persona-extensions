@@ -64,5 +64,6 @@ Legacy protocol names and UI placements, such as `plugin_protocol` and `plugin_p
 - [mnemo](../extensions/mnemo/README.md): no account. Install [mnemo](https://github.com/szupzj18/mnemo#install) on the computer that runs the assistant, where Persona finds it on `PATH` or in `~/bin` (or through `PERSONA_MNEMO_BIN`). Only the Claude assistant gets its tools.
 - [Spaces](extensions/spaces.md): no account and no network. The page and the overview card work as soon as the package is installed. For the assistant's tools, the `spaces` binary from the package (`bin/spaces-<platform>`) must be on `PATH` or in `~/bin` under the name `spaces`, or be named by `PERSONA_SPACES_BIN`; set that to `off` to leave the tools out. See [Making the assistant's `spaces` command findable](extensions/spaces.md#making-the-assistants-spaces-command-findable).
 - [Custom looks](extensions/custom-looks.md#setup): no settings. A hub pack of the same id keeps showing until it is removed; the chosen look does not change either way.
+- [Currency and units](../extensions/currency/README.md): no account. The hub reaches `api.frankfurter.dev` for dated ECB reference rates; local unit conversions need no network.
 
 Do not paste credentials into repository files or installation examples. Configure accounts through the hub/app's protected credential flow.
