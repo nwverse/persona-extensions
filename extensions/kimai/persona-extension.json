@@ -1,0 +1,39 @@
+{
+  "manifest_version": 1,
+  "id": "kimai",
+  "name": "Kimai 时间记录",
+  "version": "0.1.0",
+  "description": "在 Persona 中查看 Kimai 当前用户的近期工时和进行中的计时器，选择可见项目与活动，确认后登记工时或停止计时。API token 加密保存在 hub；自托管服务要求 HTTPS，不删除工时、不修改他人记录或权限。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/kimai/README.md",
+  "tags": ["Kimai", "时间记录", "工时", "自托管"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/kimai-linux-amd64",
+      "linux-arm64": "bin/kimai-linux-arm64",
+      "darwin-arm64": "bin/kimai-darwin-arm64",
+      "darwin-amd64": "bin/kimai-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "kimai", "name": "Kimai", "capabilities": ["status", "tools", "actions"],
+      "hosts": [], "agent_tools": ["kimai_*"],
+      "confirm_always": ["kimai_create_timesheet", "kimai_stop_timesheet"]
+    }],
+    "ui": [{"id": "time", "title": "Kimai 时间记录", "placement": "nav_page", "icon": "doc"}]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "instance_url": {"type": "string", "title": "Kimai 实例地址", "description": "例如 https://kimai.example.com；仅本机允许 HTTP，会自动追加 /api", "format": "uri"}
+    }
+  },
+  "secrets": [{
+    "name": "api_token", "title": "Kimai API token",
+    "description": "在 Kimai 个人资料的 API 令牌中创建；仅作为 Bearer 令牌发往配置的实例",
+    "required": true
+  }],
+  "permissions": {"network": []}
+}
