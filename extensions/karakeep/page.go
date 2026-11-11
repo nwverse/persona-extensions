@@ -13,6 +13,9 @@ import (
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
+// pageLimit is how many bookmarks one page of the bookmarks view requests.
+const pageLimit = 50
+
 type pageState struct {
 	Query      string `json:"q,omitempty"`
 	Cursor     string `json:"c,omitempty"`
@@ -113,13 +116,13 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if err != nil {
 			return nil, err
 		}
-		highlights, err := a.client.highlights(ctx, "")
+		highlights, err := a.client.bookmarkHighlights(ctx, st.BookmarkID)
 		if err != nil {
 			return nil, err
 		}
-		return detailView(r, st, item, highlights.Bookmarks), nil
+		return detailView(r, st, item, highlights), nil
 	}
-	page, err := a.client.bookmarks(ctx, st.Query, st.Cursor)
+	page, err := a.client.bookmarks(ctx, st.Query, st.Cursor, pageLimit)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -129,7 +132,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		Type: wire.ComponentButton, Title: t.save, Action: &wire.Action{ID: "save-form", Push: &wire.Push{State: ext.EncodeState(pageState{Mode: "save", DraftID: randomID()}), Title: t.save}},
 	}}}
 	for _, item := range page.Bookmarks {
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "bookmark-" + item.ID, Title: clipText(item.Title, 2000), Subtitle: item.Type, Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID}}})
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "bookmark-" + item.ID, Title: clipText(item.displayTitle(), 2000), Subtitle: item.kind(), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID}}})
 	}
 	if len(page.Bookmarks) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noBookmarks})
@@ -146,34 +149,29 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 func detailView(r *ext.UIRequest, st pageState, item bookmark, highlights []highlight) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{}
-	if item.Type != "" {
-		items = append(items, wire.Component{Type: wire.ComponentText, Text: item.Type, Style: wire.TextStyleSecondary})
+	title := clipText(item.displayTitle(), 2000)
+	if kind := item.kind(); kind != "" {
+		items = append(items, wire.Component{Type: wire.ComponentText, Text: kind, Style: wire.TextStyleSecondary})
 	}
-	if item.URL != "" {
-		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.URL})
+	if link := item.link(); link != "" {
+		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
-	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.favourite, Action: &wire.Action{ID: "favourite", Confirm: t.favourite + "\n" + item.Title}})
-	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.archive, Action: &wire.Action{ID: "archive", Confirm: t.archive + "\n" + item.Title}})
+	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.favourite, Action: &wire.Action{ID: "favourite", Confirm: t.favourite + "\n" + title}})
+	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.archive, Action: &wire.Action{ID: "archive", Confirm: t.archive + "\n" + title}})
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
-	v := &wire.View{Title: clipText(item.Title, 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
+	v := &wire.View{Title: title, State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
 	if item.Note != "" {
 		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: textComponents(item.Note)})
 	}
-	if item.Text != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.text, Items: textComponents(item.Text)})
+	if item.Content.Text != "" {
+		v.Sections = append(v.Sections, wire.Section{Title: t.text, Items: textComponents(item.Content.Text)})
 	}
-	if item.Content != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.text, Items: textComponents(item.Content)})
+	section := wire.Section{Title: t.highlights}
+	for _, h := range highlights {
+		section.Items = append(section.Items, textComponents(h.Text)...)
+		section.Items = append(section.Items, textComponents(h.Note)...)
 	}
-	if len(highlights) > 0 {
-		section := wire.Section{Title: t.highlights}
-		for _, h := range highlights {
-			if h.BookmarkID != item.ID {
-				continue
-			}
-			section.Items = append(section.Items, textComponents(h.Text)...)
-			section.Items = append(section.Items, textComponents(h.Note)...)
-		}
+	if len(section.Items) > 0 {
 		v.Sections = append(v.Sections, section)
 	}
 	return v
