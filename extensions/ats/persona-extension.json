@@ -7,7 +7,7 @@
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/ats",
   "tags": ["agents", "assistant", "todos", "scheduler"],
-  "engines": {"persona": ">=202611051918", "extension_protocol": 1},
+  "engines": {"persona": ">=202611092100", "extension_protocol": 1},
   "activation_events": ["on_startup"],
   "runtime": {
     "command": {
