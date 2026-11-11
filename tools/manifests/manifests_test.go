@@ -5,9 +5,13 @@ package manifests
 import (
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"testing"
 	"unicode/utf8"
 
@@ -130,11 +134,76 @@ func TestAuthorIconMetadata(t *testing.T) {
 }
 
 func TestUnknownRuntimeFieldsRemainStrict(t *testing.T) {
-	raw := []byte(`{"id":"example","version":"0.1.0","name":"Example","icon":"assets/icon.svg","unknown_runtime_field":true}`)
+	raw := []byte(`{"manifest_version":1,"id":"example","version":"0.1.0","name":"Example","icon":"assets/icon.svg","unknown_runtime_field":true}`)
 	if err := wire.ValidateJSON("Manifest", withoutAuthorMetadata(t, raw)); err == nil {
 		t.Fatal("source metadata projection accepted an unknown runtime field")
 	}
 	if err := wire.ValidateJSON("Manifest", packaged(t, raw)); err == nil {
 		t.Fatal("packaged projection accepted an unknown runtime field")
+	}
+}
+
+// Every native extension must project its source metadata before serving a raw
+// manifest or giving it to the strict copied SDK's conformance checker.
+func TestEmbeddedGoManifestsHaveRuntimeProjection(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("..", "..", "extensions", "*", "*.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	checked := 0
+	for _, path := range paths {
+		file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ParseComments)
+		if err != nil {
+			t.Fatal(err)
+		}
+		embedded := ""
+		projected := false
+		for _, declaration := range file.Decls {
+			gen, ok := declaration.(*ast.GenDecl)
+			if !ok || gen.Tok != token.VAR {
+				continue
+			}
+			for _, spec := range gen.Specs {
+				value := spec.(*ast.ValueSpec)
+				if gen.Doc != nil {
+					for _, comment := range gen.Doc.List {
+						if strings.Contains(comment.Text, "go:embed persona-extension.json") {
+							if len(value.Names) != 1 {
+								t.Fatalf("%s: ambiguous embedded manifest", path)
+							}
+							embedded = value.Names[0].Name
+						}
+					}
+				}
+				if len(value.Names) != 1 || value.Names[0].Name != "manifest" || len(value.Values) != 1 {
+					continue
+				}
+				call, ok := value.Values[0].(*ast.CallExpr)
+				if !ok || len(call.Args) != 1 {
+					continue
+				}
+				argument, ok := call.Args[0].(*ast.Ident)
+				if !ok || argument.Name != "authorManifest" {
+					continue
+				}
+				switch function := call.Fun.(type) {
+				case *ast.Ident:
+					projected = function.Name == "packagedManifest"
+				case *ast.SelectorExpr:
+					qualifier, ok := function.X.(*ast.Ident)
+					projected = ok && qualifier.Name == "pluginkit" && function.Sel.Name == "PackagedManifest"
+				}
+			}
+		}
+		if embedded == "" {
+			continue
+		}
+		checked++
+		if embedded != "authorManifest" || !projected {
+			t.Errorf("%s: embedded source manifest must have an explicit runtime projection", path)
+		}
+	}
+	if checked == 0 {
+		t.Fatal("no native embedded manifests were checked")
 	}
 }
