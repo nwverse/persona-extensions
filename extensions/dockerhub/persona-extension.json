@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/dockerhub.mjs",
-      "sha256": "fbb9b70cf051dc5e2e1d15f1a6fa65bd40785721c95274b4954fe5d5c9b74eb2"
+      "sha256": "a1e53ba3bde6ad13da4465a537e42b40d61e74d410a7b2455487ac825c194031"
     }
   },
   "contributes": {

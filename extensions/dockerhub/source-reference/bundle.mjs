@@ -763,7 +763,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "dockerhub", name: "Docker Hub", version: "0.1.0", description: "Search public Docker Hub images. Check official status, publisher namespaces, pull activity, selected tag digests and supported platforms. Get an exact docker pull command as text without pulling or running images.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/dockerhub/README.md", tags: ["Development", "Docker", "Containers", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/dockerhub.mjs", sha256: "" } }, contributes: { connectors: [{ id: "dockerhub", name: "Docker Hub", capabilities: ["status", "tools"], hosts: ["hub.docker.com"], agent_tools: ["dockerhub_*"] }], ui: [{ id: "dockerhub", title: "Docker Hub", placement: "nav_page", icon: "code" }] }, permissions: { network: ["hub.docker.com"] } };
+var persona_extension_default = { manifest_version: 1, id: "dockerhub", name: "Docker Hub", version: "0.1.1", icon: "assets/icon.png", description: "Search public Docker Hub images. Check official status, publisher namespaces, pull activity, selected tag digests and supported platforms. Get an exact docker pull command as text without pulling or running images.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/dockerhub/README.md", tags: ["Development", "Docker", "Containers", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/dockerhub.mjs", sha256: "" } }, contributes: { connectors: [{ id: "dockerhub", name: "Docker Hub", capabilities: ["status", "tools"], hosts: ["hub.docker.com"], agent_tools: ["dockerhub_*"] }], ui: [{ id: "dockerhub", title: "Docker Hub", placement: "nav_page", icon: "code" }] }, permissions: { network: ["hub.docker.com"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 1 << 20, fresh: 15 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 250 });
@@ -1486,6 +1486,8 @@ function snapshotPage(service) {
 
 // src/index.ts
 var sourceManifest = { ...persona_extension_default, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/dockerhub.mjs", sha256: "" } } };
+delete sourceManifest.icon;
+delete sourceManifest.replaces;
 function createProgram(fetch = (input, init) => globalThis.fetch(input, init), options = {}) {
   let service;
   const current = () => {
