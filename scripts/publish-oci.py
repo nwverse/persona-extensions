@@ -476,7 +476,8 @@ def generate_payload(plan, catalog_path, head_sha, registry_factory=oci.Registry
     present = {e["manifest"]["id"] for e in inventory}
     merged = {e["manifest"]["id"]: e for e in body["extensions"]
               if plan["mode"] == "bootstrap" or e["manifest"]["id"] in present}
-    merged.update({e["manifest"]["id"]: e for e in entries})
+    updated_ids = {e["manifest"]["id"] for e in entries}
+    merged.update({e["manifest"]["id"]: copy.deepcopy(e) for e in entries})
     body["extensions"] = [merged[k] for k in sorted(merged)]
     # Icons are tied to the trusted source SHA, never a mutable branch or tag.
     for entry in body["extensions"]:
@@ -497,7 +498,7 @@ def generate_payload(plan, catalog_path, head_sha, registry_factory=oci.Registry
                           "source_inventory_hash": catalog.inventory_hash(inventory), "mode": plan["mode"]}
     # Verify every retained OCI reference too, not just the newly uploaded versions.
     for entry in body["extensions"]:
-        if entry in entries:
+        if entry["manifest"]["id"] in updated_ids:
             continue
         m = entry["manifest"]
         registry = registry_factory(oci.repository(m["id"]))

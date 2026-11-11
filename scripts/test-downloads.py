@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """Exact public download counters, signed ranking, and immutable icon projections."""
 import copy
-import datetime
 import pathlib
 import sys
 import unittest
@@ -73,6 +72,65 @@ class DownloadTests(unittest.TestCase):
         for timestamp in (None, "2026-01-02", "2026-01-02T03:04:05", "2026-13-01T00:00:00Z"):
             with self.assertRaises(ValueError):
                 catalog.validate_downloads_timestamp(timestamp)
+
+
+from test_support import CatalogFixture
+
+
+class PayloadTests(CatalogFixture, unittest.TestCase):
+    def test_legacy_payload_remains_valid_without_metadata(self):
+        catalog.verified(self.catalog_path)
+
+    def test_signed_metadata_validated_and_tampering_fails(self):
+        self.entry.update(icon="assets/icon.png", icon_url=catalog.icon_url("demo", "assets/icon.png", "1" * 40), downloads=123)
+        self.body["downloads_updated_at"] = "2026-01-02T03:04:05Z"
+        self.write_signed(self.body)
+        self.assertEqual(catalog.verified(self.catalog_path)[1]["extensions"][0]["downloads"], 123)
+        wrapper = catalog.loads(self.catalog_path.read_bytes())
+        wrapper["payload"] = wrapper["payload"].replace('"downloads": 123', '"downloads": 999')
+        self.catalog_path.write_bytes(catalog.encode(wrapper))
+        with self.assertRaises(ValueError):
+            catalog.verified(self.catalog_path)
+
+    def test_ranked_payload_requires_integer_downloads_and_immutable_icon(self):
+        self.body["downloads_updated_at"] = "2026-01-02T03:04:05Z"
+        for value in (None, True, -1, 1.5):
+            self.entry["downloads"] = value
+            with self.assertRaisesRegex(ValueError, "downloads"):
+                catalog.validate_payload(self.body)
+        self.entry["downloads"] = 123
+        self.entry["icon"] = "assets/icon.svg"
+        for url in ("https://example.com/icon.svg", "http://example.com/icon.svg",
+                    "https://raw.githubusercontent.com/nwverse/persona-extensions/main/extensions/demo/assets/icon.svg"):
+            self.entry["icon_url"] = url
+            with self.assertRaises(ValueError):
+                catalog.validate_payload(self.body)
+
+    def test_ranked_continuity_compares_inventory_in_id_order(self):
+        import index
+        low = copy.deepcopy(self.entry)
+        low["manifest"]["id"] = "alpha"
+        low["downloads"] = 1
+        self.entry["downloads"] = 100
+        self.body["extensions"] = [self.entry, low]
+        inventory = [catalog.entry_inventory(low), catalog.entry_inventory(self.entry)]
+        predecessor = b"synthetic predecessor"
+        generation = {"source_commit": "1" * 40, "source_inventory_hash": catalog.inventory_hash(inventory),
+                      "base_catalog_hash": catalog.payload_hash(predecessor), "mode": "versions"}
+        with mock.patch.object(index, "git"), mock.patch.object(index, "tree_inventory", return_value=inventory), \
+                mock.patch.object(index, "tree_catalog", return_value=(predecessor, [])):
+            index.check_source(generation, "2" * 40, self.body)
+
+    def test_ranked_payload_rejects_wrong_order(self):
+        low = copy.deepcopy(self.entry)
+        low["manifest"]["id"] = "alpha"
+        low["downloads"] = 1
+        self.entry["downloads"] = 100
+        self.body.update(downloads_updated_at="2026-01-02T03:04:05Z", extensions=[low, self.entry])
+        with self.assertRaisesRegex(ValueError, "sorted"):
+            catalog.validate_payload(self.body)
+        self.body["extensions"].reverse()
+        catalog.validate_payload(self.body)
 
 
 if __name__ == "__main__":

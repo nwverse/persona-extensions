@@ -114,6 +114,39 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
         token_call = next(c for c in self.server.calls if "/token?" in c[1])
         self.assertNotIn("Authorization", token_call[2])
 
+    def test_changed_publication_adds_exact_signed_download_snapshot(self):
+        metadata = {"downloads_updated_at": "2026-01-02T03:04:05Z", "downloads": {"demo": 456}}
+        result = catalog.loads(publisher.generate_payload(self.plan, self.catalog_path, SHA,
+            lambda p: oci.Registry(p, transport=self.server), metadata=metadata))
+        self.assertEqual(result["extensions"][0]["downloads"], 456)
+        self.assertEqual(result["downloads_updated_at"], metadata["downloads_updated_at"])
+        self.assertEqual(result["generation"]["source_inventory_hash"],
+                         catalog.inventory_hash([catalog.entry_inventory(self.candidate)]))
+
+    def test_metadata_only_refresh_reuses_packages_and_generates_new_payload(self):
+        self.body["extensions"] = [copy.deepcopy(self.candidate)]
+        raw, _ = self.write_signed(self.body)
+        plan = dict(self.plan, base_payload_sha256=oci.digest(raw), entries=[], catalog_update_required=False)
+        args = self.args(plan=str(self.directory / "plan.json"), output=str(self.directory / "refreshed"),
+                         catalog=str(self.catalog_path), refresh_metadata=True)
+        pathlib.Path(args.plan).write_bytes(catalog.encode(plan))
+        metadata = {"downloads_updated_at": "2026-01-02T03:04:05Z", "downloads": {"demo": 123}}
+        with mock.patch.object(publisher, "cutover_gate"), mock.patch.object(publisher.downloads, "snapshot", return_value=metadata):
+            publisher.catalog_phase(args, lambda p: oci.Registry(p, transport=self.server))
+        result = catalog.loads((self.directory / "refreshed/payload.json").read_bytes())
+        self.assertEqual(result["extensions"][0]["downloads"], 123)
+        self.assertEqual(result["extensions"][0]["packages"], self.candidate["packages"])
+        self.assertFalse((self.directory / "refreshed/catalog.json").exists())
+        self.assertFalse(any(c[0] in ("POST", "PUT", "DELETE") for c in self.server.calls))
+
+    def test_downloads_failure_prevents_payload_output(self):
+        args = self.args(plan=str(self.directory / "plan.json"), output=str(self.directory / "failed"), catalog=str(self.catalog_path))
+        pathlib.Path(args.plan).write_bytes(catalog.encode(self.plan))
+        with mock.patch.object(publisher, "cutover_gate"), mock.patch.object(publisher.downloads, "snapshot", side_effect=ValueError("synthetic unavailable")):
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                publisher.catalog_phase(args, lambda p: oci.Registry(p, transport=self.server))
+        self.assertFalse((self.directory / "failed/payload.json").exists())
+
     def test_tags_only_platform_catalog_update_verifies_without_reupload(self):
         m = dict(self.entry["manifest"], runtime={"command": {"linux-amd64": "bin/linux", "darwin-arm64": "bin/mac"}})
         packages = []
