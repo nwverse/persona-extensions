@@ -427,7 +427,7 @@ func TestConformance(t *testing.T) {
 	a.api, a.nodes = newFakeHub(), &localNodes{fail: map[string]error{}}
 	a.disp = a.newDispatcher()
 	mustEnqueue(t, a.queue, EnqueueInput{Title: "Queued", Labels: map[string]string{PersonaTodoLabel: "todo_1"}})
-	exttest.Check(t, manifest, exttest.Serve(t, a.program("ats", "0.4.0")))
+	exttest.Check(t, manifest, exttest.Serve(t, a.program(about.ID, about.Version)))
 }
 
 func TestQueuePageShowsEveryStateAndItsButtonsWork(t *testing.T) {
