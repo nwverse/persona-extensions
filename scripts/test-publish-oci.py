@@ -114,6 +114,20 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
         token_call = next(c for c in self.server.calls if "/token?" in c[1])
         self.assertNotIn("Authorization", token_call[2])
 
+    def test_anonymous_archive_icon_matches_trusted_source_bytes(self):
+        icon_tests = load("test_icons", "test-icons.py")
+        expected = icon_tests.png()
+        source = self.directory / "extensions/demo/assets"
+        source.mkdir(parents=True)
+        (source / "icon.png").write_bytes(expected)
+        entry = dict(self.candidate, icon="assets/icon.png")
+        with mock.patch.object(catalog, "ROOT", self.directory):
+            publisher.check_entry_archive(archive(entry["manifest"], [("assets/icon.png", expected, 0o644)]), entry, strict=True)
+            with self.assertRaisesRegex(ValueError, "missing its icon"):
+                publisher.check_entry_archive(archive(entry["manifest"]), entry)
+            with self.assertRaisesRegex(ValueError, "differs from trusted source"):
+                publisher.check_entry_archive(archive(entry["manifest"], [("assets/icon.png", icon_tests.png(512, 512), 0o644)]), entry)
+
     def test_changed_publication_adds_exact_signed_download_snapshot(self):
         metadata = {"downloads_updated_at": "2026-01-02T03:04:05Z", "downloads": {"demo": 456}}
         result = catalog.loads(publisher.generate_payload(self.plan, self.catalog_path, SHA,
