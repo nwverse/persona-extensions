@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { connect } from "@persona/extension";
@@ -38,6 +38,13 @@ test("locked source bundle is reproducible, offline and portable without package
     protocol.line(JSON.stringify({ id: "2", method: "shortcut.run", params: { contribution: "showcase-count", values: { n: "3", unit: "star" }, locale: "en" } }));
     await protocol.drain(); assert.equal(replies[1].result.text, "Counted 3 stars");
   } finally { protocol.close(); }
+});
+
+test("APP fixtures are retained unchanged in the source package", () => {
+  build();
+  const source = root + "src/legacy-snapshots/", packaged = root + ".source-dist/showcase/src/legacy-snapshots/";
+  assert.deepEqual(readdirSync(packaged).sort(), readdirSync(source).sort());
+  for (const name of readdirSync(source)) assert.deepEqual(readFileSync(packaged + name), readFileSync(source + name));
 });
 
 test("actual bundled default Program mounts its own renderer and retains independent hooks through bridge lifecycle", async () => {

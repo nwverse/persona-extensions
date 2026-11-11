@@ -20,7 +20,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/foodfacts.mjs",
-      "sha256": "7840a07be97f39cd4d57ebfb3be453e8467a58484e5a183b878aefad3cc3f689"
+      "sha256": "c9b896535b25300d0672993bc4ceb73ddbb1290df5283553778b0cac120e047c"
     }
   },
   "contributes": {

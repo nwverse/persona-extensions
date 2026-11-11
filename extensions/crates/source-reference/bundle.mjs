@@ -763,7 +763,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "crates", name: "Rust Crates", version: "0.1.0", description: "Search Rust crates on the official crates.io JSON API. Compare default versions, licenses, release dates, download activity, documentation and repository links. Get an exact-version cargo add command without executing it.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/crates/README.md", tags: ["Development", "Rust", "Cargo", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/crates.mjs", sha256: "" } }, contributes: { connectors: [{ id: "crates", name: "Rust Crates", capabilities: ["status", "tools"], hosts: ["crates.io"], agent_tools: ["crates_*"] }], ui: [{ id: "crates", title: "Rust Crates", placement: "nav_page", icon: "code" }] }, permissions: { network: ["crates.io"] } };
+var persona_extension_default = { manifest_version: 1, id: "crates", name: "Rust Crates", version: "0.1.1", icon: "assets/icon.png", description: "Search Rust crates on the official crates.io JSON API. Compare default versions, licenses, release dates, download activity, documentation and repository links. Get an exact-version cargo add command without executing it.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/crates/README.md", tags: ["Development", "Rust", "Cargo", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/crates.mjs", sha256: "" } }, contributes: { connectors: [{ id: "crates", name: "Rust Crates", capabilities: ["status", "tools"], hosts: ["crates.io"], agent_tools: ["crates_*"] }], ui: [{ id: "crates", title: "Rust Crates", placement: "nav_page", icon: "code" }] }, permissions: { network: ["crates.io"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 1 << 20, fresh: 15 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 250 });
@@ -1499,6 +1499,8 @@ function snapshotPage(service) {
 
 // src/index.ts
 var sourceManifest = { ...persona_extension_default, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/crates.mjs", sha256: "" } } };
+delete sourceManifest.icon;
+delete sourceManifest.replaces;
 function createProgram(fetch = (input, init) => globalThis.fetch(input, init), options = {}) {
   let service;
   const current = () => {

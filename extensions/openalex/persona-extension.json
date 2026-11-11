@@ -20,7 +20,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/openalex.mjs",
-      "sha256": "5762a8dc542fca5bc47c717a1b8d326a4f575853b08b685ab26bafd03e026472"
+      "sha256": "e27e03fa32e1d08eaac71b5e59725eb7d37fef92f9327d69be3cebea2b6ade22"
     }
   },
   "contributes": {

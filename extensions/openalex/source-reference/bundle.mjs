@@ -763,7 +763,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "openalex", name: "OpenAlex \u7814\u7A76\u68C0\u7D22", version: "0.1.0", description: "\u6309\u4E3B\u9898\u3001\u6807\u9898\u6216 DOI \u641C\u7D22 OpenAlex \u8BBA\u6587\uFF0C\u67E5\u770B\u5E74\u4EFD\u3001\u5F15\u7528\u91CF\u3001\u5F00\u653E\u83B7\u53D6\u72B6\u6001\u548C\u539F\u59CB\u94FE\u63A5\u3002\u5185\u5BB9\u7531 hub \u901A\u8FC7\u516C\u5F00 API \u83B7\u53D6\uFF0C\u65E0\u9700\u8D26\u53F7\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/openalex/README.md", tags: ["\u7814\u7A76", "\u8BBA\u6587", "OpenAlex"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/openalex.mjs", sha256: "" } }, contributes: { connectors: [{ id: "openalex", name: "OpenAlex", capabilities: ["status", "tools"], hosts: ["api.openalex.org"], agent_tools: ["openalex_*"] }], ui: [{ id: "research", title: "\u7814\u7A76\u68C0\u7D22", placement: "nav_page", icon: "doc" }] }, permissions: { network: ["api.openalex.org"] } };
+var persona_extension_default = { manifest_version: 1, id: "openalex", name: "OpenAlex \u7814\u7A76\u68C0\u7D22", version: "0.1.1", icon: "assets/icon.png", description: "\u6309\u4E3B\u9898\u3001\u6807\u9898\u6216 DOI \u641C\u7D22 OpenAlex \u8BBA\u6587\uFF0C\u67E5\u770B\u5E74\u4EFD\u3001\u5F15\u7528\u91CF\u3001\u5F00\u653E\u83B7\u53D6\u72B6\u6001\u548C\u539F\u59CB\u94FE\u63A5\u3002\u5185\u5BB9\u7531 hub \u901A\u8FC7\u516C\u5F00 API \u83B7\u53D6\uFF0C\u65E0\u9700\u8D26\u53F7\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/openalex/README.md", tags: ["\u7814\u7A76", "\u8BBA\u6587", "OpenAlex"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/openalex.mjs", sha256: "" } }, contributes: { connectors: [{ id: "openalex", name: "OpenAlex", capabilities: ["status", "tools"], hosts: ["api.openalex.org"], agent_tools: ["openalex_*"] }], ui: [{ id: "research", title: "\u7814\u7A76\u68C0\u7D22", placement: "nav_page", icon: "doc" }] }, permissions: { network: ["api.openalex.org"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 2 << 20, fresh: 60 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 200 });
@@ -1352,6 +1352,8 @@ function snapshotPage(service) {
 
 // src/index.ts
 var sourceManifest = { ...persona_extension_default, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/openalex.mjs", sha256: "" } } };
+delete sourceManifest.icon;
+delete sourceManifest.replaces;
 function createProgram(fetch = (input, init) => globalThis.fetch(input, init), options = {}) {
   let service;
   const current = () => {

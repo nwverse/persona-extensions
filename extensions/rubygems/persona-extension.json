@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/rubygems.mjs",
-      "sha256": "f25ee50b00d69a7efab33bb40a738d07fda572ead885c4e34f812fa20cab0b38"
+      "sha256": "1d11ac0d58fcf8f947bd7e03d20b66ce1aa27926cbd16cf8bb3cb6c3a27d4f9b"
     }
   },
   "contributes": {

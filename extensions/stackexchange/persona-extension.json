@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/stackexchange.mjs",
-      "sha256": "e670deb26403957d5ed8b9dfe9d774a570c6d008e96b37a7f79878bb960e9515"
+      "sha256": "adefd27bf313264c41e9994c5125f19e5c8d2b6557e555727cfe5e7b5106d6a7"
     }
   },
   "contributes": {

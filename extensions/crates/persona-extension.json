@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/crates.mjs",
-      "sha256": "c05b6db37d106ca78745b2af7c9bdbf48a5bf4d4b3c6fbb57faac5fa6e552d1e"
+      "sha256": "848e254095207856fa8fcf05971d18708a0752f59eb47d84a17ce59b81f40946"
     }
   },
   "contributes": {

@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/npmpackages.mjs",
-      "sha256": "17439f24aa4a8ca0715874578d7393e66b2dd6b659c78c1484d98fd460d1204f"
+      "sha256": "ed8f6dfa1d2d044a8c169f17f46e748a6fd1012d35f883a42191672e8f9e9358"
     }
   },
   "contributes": {

@@ -763,7 +763,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "nuget", name: "NuGet Packages", version: "0.1.0", description: "Search .NET packages on the official NuGet JSON APIs. Compare current stable versions, licenses, release dates, target frameworks, dependencies and project links. Get an exact-version dotnet add command without executing it.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/nuget/README.md", tags: ["Development", ".NET", "NuGet", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/nuget.mjs", sha256: "" } }, contributes: { connectors: [{ id: "nuget", name: "NuGet Packages", capabilities: ["status", "tools"], hosts: ["azuresearch-usnc.nuget.org", "api.nuget.org", "nuget.azure.cn"], agent_tools: ["nuget_*"] }], ui: [{ id: "nuget", title: "NuGet Packages", placement: "nav_page", icon: "code" }] }, permissions: { network: ["azuresearch-usnc.nuget.org", "api.nuget.org", "nuget.azure.cn"] } };
+var persona_extension_default = { manifest_version: 1, id: "nuget", name: "NuGet Packages", version: "0.1.1", icon: "assets/icon.png", description: "Search .NET packages on the official NuGet JSON APIs. Compare current stable versions, licenses, release dates, target frameworks, dependencies and project links. Get an exact-version dotnet add command without executing it.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/nuget/README.md", tags: ["Development", ".NET", "NuGet", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/nuget.mjs", sha256: "" } }, contributes: { connectors: [{ id: "nuget", name: "NuGet Packages", capabilities: ["status", "tools"], hosts: ["azuresearch-usnc.nuget.org", "api.nuget.org", "nuget.azure.cn"], agent_tools: ["nuget_*"] }], ui: [{ id: "nuget", title: "NuGet Packages", placement: "nav_page", icon: "code" }] }, permissions: { network: ["azuresearch-usnc.nuget.org", "api.nuget.org", "nuget.azure.cn"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 1 << 20, fresh: 15 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 250 });
@@ -1548,6 +1548,8 @@ function snapshotPage(service) {
 
 // src/index.ts
 var sourceManifest = { ...persona_extension_default, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/nuget.mjs", sha256: "" } } };
+delete sourceManifest.icon;
+delete sourceManifest.replaces;
 function createProgram(fetch = (input, init) => globalThis.fetch(input, init), options = {}) {
   let service;
   const current = () => {

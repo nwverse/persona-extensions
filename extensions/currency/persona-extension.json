@@ -20,7 +20,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/currency.mjs",
-      "sha256": "3dd33ad2e3f72b6750232652fc54ebbcbc19fcdbdd2023e7faafe17b85dc8c8f"
+      "sha256": "d00ce131818c556fa66c84e0d10423f8910155ea1b9ff8355179a4d23bdefc59"
     }
   },
   "contributes": {

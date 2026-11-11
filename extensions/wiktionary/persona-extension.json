@@ -20,7 +20,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/wiktionary.mjs",
-      "sha256": "d1af2cae6174bc2495de79d293e72a30e2d0d48138c393f9a883f79b108ac0f0"
+      "sha256": "b307c4e21e25e96822beaebd1d2e4d50a4dda752aa22b5b7e81a97ec7df8fcb5"
     }
   },
   "contributes": {

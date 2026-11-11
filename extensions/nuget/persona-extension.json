@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/nuget.mjs",
-      "sha256": "9d2c90949dda0488b47000c5eab751970c913bc62d49d98d36175f068a818ee7"
+      "sha256": "7913d72b5b32f9733fdb2bb384d3bf8b1aa67f10aa441a629815ca3f3896b567"
     }
   },
   "contributes": {

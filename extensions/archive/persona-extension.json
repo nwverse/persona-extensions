@@ -20,7 +20,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/archive.mjs",
-      "sha256": "e2de48d06cdd53dc3123fb0ad4bceb1ac56ba52c59e0f88c2ca22970b0a19ae6"
+      "sha256": "b3983ac8dd05682a91e1ff51cc5be10c355f8e9738b002620625bc783ac3dadf"
     }
   },
   "contributes": {
