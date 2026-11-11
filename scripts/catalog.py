@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Signed catalog primitives. Signatures cover the UTF-8 payload, never reserialized JSON."""
 import base64
+import datetime
 import hashlib
 import json
 import pathlib
@@ -43,6 +44,11 @@ def source_entry(source):
     has_predecessor = "replaces" in manifest
     predecessor = manifest.pop("replaces", None)
     entry = {"manifest": manifest, "tags": tags}
+    if "icon" in manifest:
+        icon = manifest.pop("icon")
+        if not valid_icon_path(icon):
+            raise ValueError("invalid extension icon path")
+        entry["icon"] = icon
     if has_predecessor:
         if not valid_extension_id(predecessor) or predecessor == manifest.get("id"):
             raise ValueError("invalid extension replaces declaration")
@@ -55,7 +61,30 @@ def entry_inventory(entry):
     result = {"manifest": entry["manifest"], "tags": entry.get("tags", [])}
     if "replaces" in entry:
         result["replaces"] = entry["replaces"]
+    if "icon" in entry:
+        result["icon"] = entry["icon"]
     return result
+
+
+def valid_icon_path(value):
+    return isinstance(value, str) and len(value) <= 256 and re.fullmatch(
+        r"assets/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.(?:png|svg)", value) is not None
+
+
+def icon_url(extension_id, icon, commit):
+    if not valid_extension_id(extension_id) or not valid_icon_path(icon) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("unsafe immutable icon URL input")
+    return f"https://raw.githubusercontent.com/{FINAL_REPOSITORY}/{commit}/extensions/{extension_id}/{icon}"
+
+
+def validate_downloads_timestamp(value):
+    if not isinstance(value, str) or not re.fullmatch(
+            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})", value):
+        raise ValueError("downloads_updated_at must be RFC 3339")
+    try:
+        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        raise ValueError("downloads_updated_at must be RFC 3339") from None
 
 
 def validate_entry_identities(entries):
@@ -169,8 +198,26 @@ def validate_payload(payload):
     if "generation" in payload:
         validate_generation(payload["generation"])
     validate_entry_identities(entries)
+    ranked = "downloads_updated_at" in payload
+    if ranked:
+        validate_downloads_timestamp(payload["downloads_updated_at"])
     for entry in entries:
+        if "icon" in entry and not valid_icon_path(entry["icon"]):
+            raise ValueError("invalid extension icon path")
+        if "icon_url" in entry:
+            prefix = f"https://raw.githubusercontent.com/{FINAL_REPOSITORY}/"
+            value = entry["icon_url"]
+            if not isinstance(value, str) or not value.startswith(prefix):
+                raise ValueError("icon_url must be an immutable official HTTPS URL")
+            parts = value[len(prefix):].split("/", 3)
+            if len(parts) != 4 or parts[1] != "extensions" or value != icon_url(entry["manifest"]["id"], entry.get("icon"), parts[0]):
+                raise ValueError("icon_url must match the extension icon at a full commit SHA")
+        if ranked or "downloads" in entry:
+            if type(entry.get("downloads")) is not int or entry["downloads"] < 0:
+                raise ValueError("downloads must be a nonnegative integer")
         m = entry["manifest"]
+        if "icon" in m:
+            raise ValueError("packaged manifests must not contain icon")
         if "tags" in m:
             raise ValueError("packaged manifests must not contain tags")
         if "replaces" in m:
@@ -192,6 +239,8 @@ def validate_payload(payload):
             platforms.add(platform)
             if not isinstance(package["url"], str) or not package["url"]:
                 raise ValueError("package URL is missing")
+    if ranked and entries != sorted(entries, key=lambda e: (-e["downloads"], e["manifest"]["id"])):
+        raise ValueError("catalog must be sorted by downloads descending, then id")
     return payload
 
 
