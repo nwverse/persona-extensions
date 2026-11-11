@@ -300,6 +300,17 @@
       "trademark_owner": "Persona / nwverse",
       "usage": "Official Persona app branding for this Persona-native tool or pack, not the logo of an external data provider."
     },
+    "dockerhub": {
+      "path": "assets/icon.png",
+      "source_id": "raycast",
+      "source_url": "https://raw.githubusercontent.com/raycast/extensions/dfa15bf5d53b5c97722f9d4df1b1e0af939a81ab/extensions/dockerhub/assets/docker-icon.png",
+      "sha256": "caed5042f8f269e5f557be76aaa458c46c6ed693f3f6a27552bf7616d0017b06",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "Docker, Inc.",
+      "usage": "Exact Docker Hub extension icon copied unchanged from the pinned MIT-licensed Raycast extensions repository, used solely to identify Docker Hub. Docker trademarks remain separately owned; no affiliation or endorsement is implied."
+    },
     "feishu-sidebar": {
       "path": "assets/icon.png",
       "source_id": "raycast",
