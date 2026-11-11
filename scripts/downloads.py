@@ -66,7 +66,8 @@ def read_downloads(extension_id):
     for attempt in range(3):
         try:
             with urllib.request.urlopen(request, timeout=45) as response:
-                if response.status != 200 or urllib.parse.urlsplit(response.url).netloc != "github.com":
+                final = urllib.parse.urlsplit(response.url)
+                if response.status != 200 or final.scheme != "https" or final.netloc != "github.com":
                     raise ValueError("GitHub package statistics response identity mismatch")
                 data = response.read(MAX_PAGE_BYTES + 1)
                 if len(data) > MAX_PAGE_BYTES:
