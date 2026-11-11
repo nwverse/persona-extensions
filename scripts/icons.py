@@ -194,6 +194,8 @@ def validate_registry(root, manifests):
         if declared:
             raise ValueError("source icons require icon-sources.json")
         return
+    if len(declared) != len(manifests):
+        raise ValueError("every official extension must declare an attributed icon")
     def unique(pairs):
         result = {}
         for key, value in pairs:

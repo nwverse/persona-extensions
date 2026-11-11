@@ -134,6 +134,23 @@ class IconTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             icons.validate_registry(self.root, [self.source])
 
+    def test_original_png_can_be_non_square_but_display_icon_cannot(self):
+        data = png(512, 256)
+        (self.ext / 'assets/icon-source.png').write_bytes(data)
+        registry = self.registry()
+        record = registry['icons']['example']
+        record.update(source_path='assets/icon-source.png', source_sha256=hashlib.sha256(data).hexdigest(),
+                      transformation='Synthetic image fitted to a square without changing its aspect ratio.')
+        file = self.root / 'icon-sources.json'
+        file.write_text(json.dumps(registry))
+        icons.validate_registry(self.root, [self.source])
+        with self.assertRaises(ValueError):
+            icons.validate_image(data, 'assets/icon.png')
+        record['source_path'] = 'assets/../../outside.png'
+        file.write_text(json.dumps(registry))
+        with self.assertRaisesRegex(ValueError, 'source_path'):
+            icons.validate_registry(self.root, [self.source])
+
     def test_author_schema_and_python_path_validation_agree(self):
         import re
         schema = json.loads((REPO / 'schema/extension/author.schema.json').read_text())['$defs']['IconPath']
