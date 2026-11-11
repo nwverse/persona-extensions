@@ -39,7 +39,7 @@ def contained_file(root, path):
     return current
 
 
-def png_size(data):
+def png_size(data, square=True):
     if not data.startswith(b"\x89PNG\r\n\x1a\n"):
         raise ValueError("invalid PNG signature")
     offset, chunks, compressed = 8, [], bytearray()
@@ -63,7 +63,9 @@ def png_size(data):
             depths = {0: (1, 2, 4, 8, 16), 2: (8, 16), 3: (1, 2, 4, 8), 4: (8, 16), 6: (8, 16)}
             if color not in depths or depth not in depths[color] or compression or filtering or interlace not in (0, 1):
                 raise ValueError("invalid PNG encoding")
-            if not 256 <= width == height <= MAX_DIMENSION:
+            if not 0 < width <= MAX_DIMENSION or not 0 < height <= MAX_DIMENSION:
+                raise ValueError("PNG dimensions must be positive and bounded")
+            if square and not 256 <= width == height:
                 raise ValueError("PNG must be square and 256..4096 pixels")
         elif kind == b"IDAT":
             compressed.extend(payload)
@@ -225,18 +227,24 @@ def validate_registry(root, manifests):
         url(source["license_url"])
     used = set()
     for id, record in icons.items():
-        fields(record, "path source_id source_url sha256 format width height trademark_owner usage", ("source_sha256", "transformation"))
+        fields(record, "path source_id source_url sha256 format width height trademark_owner usage", ("source_sha256", "source_path", "transformation"))
         if "transformation" in record:
             text(record["transformation"])
-        original = root / "extensions" / id / "assets/icon-source.svg"
-        if original.exists() or original.is_symlink() or "source_sha256" in record:
-            original = contained_file(root / "extensions" / id, "assets/icon-source.svg")
+        source_path = record.get("source_path", "assets/icon-source.svg")
+        if not isinstance(source_path, str) or not re.fullmatch(r"assets/icon-source\.(?:png|svg)", source_path):
+            raise ValueError("icon source_path must identify the original PNG or SVG asset")
+        original = root / "extensions" / id / source_path
+        if original.exists() or original.is_symlink() or "source_sha256" in record or "source_path" in record:
+            original = contained_file(root / "extensions" / id, source_path)
             if not 0 < original.stat().st_size <= MAX_BYTES:
-                raise ValueError("source SVG must be nonempty and at most 2 MiB")
+                raise ValueError("source image must be nonempty and at most 2 MiB")
             original_data = original.read_bytes()
-            svg_size(original_data, square=False)
+            if source_path.endswith(".svg"):
+                svg_size(original_data, square=False)
+            else:
+                png_size(original_data, square=False)
             if "source_sha256" in record and record["source_sha256"] != hashlib.sha256(original_data).hexdigest():
-                raise ValueError("icon registry source_sha256 does not match source SVG bytes")
+                raise ValueError("icon registry source_sha256 does not match source image bytes")
         if record["source_id"] not in sources:
             raise ValueError("icon registry references unknown source_id")
         used.add(record["source_id"])

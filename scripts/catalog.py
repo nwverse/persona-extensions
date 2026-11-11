@@ -67,8 +67,8 @@ def entry_inventory(entry):
 
 
 def valid_icon_path(value):
-    return isinstance(value, str) and len(value) <= 256 and re.fullmatch(
-        r"assets/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_-]+\.(?:png|svg)", value) is not None
+    return isinstance(value, str) and len(value) <= 240 and re.fullmatch(
+        r"assets/(?:[A-Za-z0-9_-][A-Za-z0-9._-]*/)*[A-Za-z0-9_-][A-Za-z0-9._-]*\.(?:png|svg)", value) is not None
 
 
 def icon_url(extension_id, icon, commit):
