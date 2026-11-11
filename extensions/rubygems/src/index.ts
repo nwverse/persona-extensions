@@ -11,6 +11,9 @@ export { page, loadPage, readState, transition, gemTransition, encodeState } fro
 export { snapshotPage } from "./snapshot.ts";
 export type { PageState, PageProps, Loaded } from "./page.tsx";
 export const sourceManifest = { ...released, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/rubygems.mjs", sha256: "" } } };
+// Source-owned catalog metadata is not part of the strict runtime manifest.
+delete (sourceManifest as { icon?: string }).icon;
+delete (sourceManifest as { replaces?: string }).replaces;
 export function createProgram(fetch: FetchAdapter = (input, init) => globalThis.fetch(input, init), options: ServiceOptions = {}): Program {
   let service: RubyGems | undefined;
   const current = () => { if (!service) throw new Error("RubyGems has not been initialized"); return service; };
