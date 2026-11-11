@@ -101,7 +101,7 @@ class BoundedTarInfo(tarfile.TarInfo):
         return member
 
 
-def scan_archive(data, extension_id, capture=()):
+def scan_archive(data, extension_id, capture=(), image_capture=()):
     if len(data) > PACKAGE_MOST:
         raise ValueError("archive exceeds compressed byte limit")
     files, saved, names = {}, {}, set()
@@ -136,9 +136,11 @@ def scan_archive(data, extension_id, capture=()):
                         files[rel] = (member.mode, member.size)
                         if rel in ("persona-extension.json", "persona-plugin.json") and member.size > MANIFEST_MOST:
                             raise ValueError("archive manifest exceeds 256 KiB")
-                        # Keep bounded JSON references only, never binaries or arbitrary file contents.
+                        # Keep bounded JSON/referenced text and explicit icon bytes,
+                        # never runtime binaries or arbitrary archive contents.
                         if ((rel.endswith(".json") and member.size <= MANIFEST_MOST) or
-                                (rel in capture and member.size <= (icons.MAX_BYTES if rel.endswith((".png", ".svg")) else MANIFEST_MOST))):
+                                (rel in capture and member.size <= MANIFEST_MOST) or
+                                (rel in image_capture and member.size <= icons.MAX_BYTES)):
                             saved[rel] = archive.extractfile(member).read()
                     else:
                         raise ValueError("archive member is not an ordinary file or directory")
@@ -236,7 +238,7 @@ def check_entry_archive(data, entry, strict=False, platform="any"):
     if icon:
         if not catalog.valid_icon_path(icon):
             raise ValueError("archive icon path is unsafe")
-        _, _, saved = scan_archive(data, m["id"], capture={icon})
+        _, _, saved = scan_archive(data, m["id"], image_capture={icon})
         if icon not in saved:
             raise ValueError("archive is missing its icon or icon exceeds size limit")
         icons.validate_image(saved[icon], icon)

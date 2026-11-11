@@ -114,6 +114,13 @@ class PublisherTests(CatalogFixture, unittest.TestCase):
         token_call = next(c for c in self.server.calls if "/token?" in c[1])
         self.assertNotIn("Authorization", token_call[2])
 
+    def test_image_capture_does_not_raise_the_json_gate_limit(self):
+        payload = b" " * (publisher.MANIFEST_MOST + 1)
+        data = archive(self.candidate["manifest"], [("assistant/gate.png", payload, 0o644), ("assets/icon.png", payload, 0o644)])
+        _, _, saved = publisher.scan_archive(data, "demo", capture={"assistant/gate.png"}, image_capture={"assets/icon.png"})
+        self.assertNotIn("assistant/gate.png", saved)
+        self.assertIn("assets/icon.png", saved)
+
     def test_anonymous_archive_icon_matches_trusted_source_bytes(self):
         icon_tests = load("test_icons", "test-icons.py")
         expected = icon_tests.png()
