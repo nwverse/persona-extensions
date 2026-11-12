@@ -322,6 +322,17 @@
       "trademark_owner": "Feishu / Lark",
       "usage": "Exact Raycast extension icon used to identify the corresponding public service."
     },
+    "lark-bridge": {
+      "path": "assets/icon.png",
+      "source_id": "raycast",
+      "source_url": "https://raw.githubusercontent.com/raycast/extensions/dfa15bf5d53b5c97722f9d4df1b1e0af939a81ab/extensions/lark/assets/logo.png",
+      "sha256": "50fd95485ea08de428ca0c1e61133dbe8a23580f8b09c1ceba721d1d4a26b330",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "Feishu / Lark",
+      "usage": "Exact Raycast extension icon used to identify the corresponding public service."
+    },
     "foodfacts": {
       "path": "assets/icon.png",
       "source_id": "foodfacts",
