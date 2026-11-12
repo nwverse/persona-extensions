@@ -95,17 +95,24 @@ func (a *app) picker(r *ext.UIRequest, st pageState) wire.Section {
 // page is the weather for one city; what went wrong is drawn, with a way to try again, never as a page of zeros.
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, refresh bool) *wire.View {
 	c := a.selected(st)
-	loc := locFor(c)
 	v := &wire.View{Title: "天气", State: ext.EncodeState(st), RefreshAfter: 600}
 	if p := a.picker(r, st); len(p.Items) > 0 {
 		v.Sections = append(v.Sections, p)
 	}
 	if len(a.badCities) > 0 {
 		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{
-			text(clip("这些城市没填对，没有读："+badCityNames(a.badCities)+"。要写名字、纬度（-90 到 90）、经度（-180 到 180）", 1900), wire.TextStyleSecondary)}})
+			text(clip("这些城市没填对，没有读："+badCityNames(a.badCities)+"。每项写一个城市名；重名的在后面写上「纬度,经度」，纬度 -90 到 90、经度 -180 到 180", 1900), wire.TextStyleSecondary)}})
 	}
 
 	u, w := a.cfg.tempUnit(), a.cfg.windUnit()
+	located, err := a.locate(ctx, c)
+	if err != nil {
+		v.Sections = append(v.Sections, wire.Section{Title: c.Name, Items: []wire.Component{
+			text(clip(oneLine(err.Error())+"。换个写法，或在名字后写上「纬度,经度」", 1900), wire.TextStyleSecondary), button("重试", "refresh")}})
+		return v
+	}
+	c = located
+	loc := locFor(c)
 	f, rd, err := a.readForecast(ctx, c, freshness(refresh))
 	if err != nil {
 		v.Sections = append(v.Sections, wire.Section{Title: c.Name, Items: []wire.Component{
