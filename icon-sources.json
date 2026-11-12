@@ -65,6 +65,14 @@
       "license_file": "assets/LICENSE",
       "attribution": "Copyright (c) 2026 nwverse. Official Persona app icon for Persona-native tools and packs."
     },
+    "raycast-podcasts": {
+      "repository": "https://github.com/raycast/extensions",
+      "revision": "f8fb22d44a8381675ebbe36fd9ec6ab87ddb4292",
+      "license": "MIT",
+      "license_url": "https://raw.githubusercontent.com/raycast/extensions/f8fb22d44a8381675ebbe36fd9ec6ab87ddb4292/LICENSE",
+      "license_file": "assets/LICENSE",
+      "attribution": "Copyright (c) 2021 Raycast. Exact podcast-directory artwork copied from the MIT-licensed extensions repository; Apple trademarks are separately owned."
+    },
     "raycast": {
       "repository": "https://github.com/raycast/extensions",
       "revision": "dfa15bf5d53b5c97722f9d4df1b1e0af939a81ab",
@@ -745,6 +753,17 @@
       "height": 512,
       "trademark_owner": "Paperless-ngx project",
       "usage": "Exact Raycast extension icon used to identify the corresponding public service."
+    },
+    "podcasts": {
+      "path": "assets/icon.png",
+      "source_id": "raycast-podcasts",
+      "source_url": "https://raw.githubusercontent.com/raycast/extensions/f8fb22d44a8381675ebbe36fd9ec6ab87ddb4292/extensions/podcasts/assets/icon.png",
+      "sha256": "c3fb75ef2bf36c9a74d55d1549fb94997239e035c172dcc88456f35c75b63cf3",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "Apple Inc.; Raycast extension contributors (artwork)",
+      "usage": "Exact MIT-licensed extension artwork from the pinned source, used solely to identify the public podcast directory integration. Apple trademarks remain separately owned; no affiliation or endorsement is implied."
     },
     "pinboard": {
       "path": "assets/icon.png",
