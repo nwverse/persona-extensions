@@ -68,10 +68,13 @@ type app struct {
 	dataDir  string
 	hub      *hubAPI
 	watch    *watcher
+	// done remembers the answers of actions.do by request id: the hub may ask again for the same one.
+	doneMu sync.Mutex
+	done   map[string]string
 }
 
 func newApp(logf func(string, ...any)) *app {
-	a := &app{logf: logf, ha: newHA("", "", false)}
+	a := &app{logf: logf, ha: newHA("", "", false), done: map[string]string{}}
 	a.watch = newWatcher(a)
 	return a
 }
