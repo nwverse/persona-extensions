@@ -20,6 +20,8 @@ type opAPI interface {
 	listVaults(ctx context.Context) ([]op.VaultOverview, error)
 	listItems(ctx context.Context, vaultID string) ([]op.ItemOverview, error)
 	getItem(ctx context.Context, vaultID, itemID string) (op.Item, error)
+	// resolve is a reference's value (secrets.resolve): the only way a value leaves 1Password through this program.
+	resolve(ctx context.Context, reference string) (string, error)
 }
 
 type connectFunc func(ctx context.Context, token string) (opAPI, error)
@@ -39,9 +41,21 @@ func (s sdkAPI) getItem(ctx context.Context, vaultID, itemID string) (op.Item, e
 	return s.c.Items().Get(ctx, vaultID, itemID)
 }
 
+func (s sdkAPI) resolve(ctx context.Context, reference string) (string, error) {
+	return s.c.Secrets().Resolve(ctx, reference)
+}
+
 // sdkMu makes one SDK client at a time: the SDK keeps its core in a package variable it sets without a lock, and a
 // settings check can sign in while a tool call does.
 var sdkMu sync.Mutex
+
+// validateSDK is 1Password's own parser of a reference (local: no request, no sign-in), so the extension takes
+// exactly the references 1Password resolves. Under sdkMu: its first use makes the SDK's core.
+func validateSDK(ctx context.Context, reference string) error {
+	sdkMu.Lock()
+	defer sdkMu.Unlock()
+	return op.Secrets.ValidateSecretReference(ctx, reference)
+}
 
 // connectSDK signs in to 1Password with a service account token. The SDK's core is WebAssembly compiled on the first
 // client, which takes a second or two and is why the extension connects only when something needs it.

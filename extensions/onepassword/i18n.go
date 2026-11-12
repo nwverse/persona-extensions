@@ -10,6 +10,11 @@ type texts struct {
 	noVaultsDetail, unreachable, unreachableGuide, refused, refusedGuide string
 	rateLimited, rateLimitedGuide, timedOut                              string
 	checkNotToken, checkRefused, says                                    string
+	// the secret provider (secrets.go): its errors, and the page's list of uses
+	secretNoToken, secretNotFound, secretEmpty, secretInvalid string
+	usesTitle, usesFooter, noUses, noUsesDetail               string
+	useExtension, useLauncher, useAgent, useOn                string
+	bySettings, byRule, byDevice                              string
 }
 
 var locales = map[string]*texts{
@@ -43,6 +48,21 @@ var locales = map[string]*texts{
 		says:             "1Password says: %s",
 		checkNotToken:    "This is not a 1Password service account token: those start with ops_.",
 		checkRefused:     "1Password did not accept this token: %s",
+		secretNoToken:    "No 1Password service account token is set: add one in the 1Password extension's settings.",
+		secretNotFound:   "1Password has no such vault, item or field for this service account: %s",
+		secretEmpty:      "This field is empty in 1Password.",
+		secretInvalid:    "This is not a 1Password reference Persona can read: write it as op://vault/item/field.",
+		usesTitle:        "Used by Persona",
+		usesFooter:       "The uses Persona reported since this extension last started, newest first. A key Persona answers again from its own short memory is not reported twice. Values are never kept here; Persona keeps its own record.",
+		noUses:           "Not used yet",
+		noUsesDetail:     "Turn on Use a reference in another extension's secret or a model provider's key and enter op://vault/item/field. Persona then asks this extension for the value each time it is used.",
+		useExtension:     "Extension secret · %s",
+		useLauncher:      "Model provider key · %s",
+		useAgent:         "For an Agent run · %s",
+		useOn:            " on %s",
+		bySettings:       "saved in Settings",
+		byRule:           "an Always rule",
+		byDevice:         "approved on a device",
 	},
 	"ja": {
 		connection: "接続", connected: "接続済み",
@@ -74,6 +94,21 @@ var locales = map[string]*texts{
 		says:             "1Password からのメッセージ：%s",
 		checkNotToken:    "1Password のサービスアカウントトークンではありません（ops_ で始まります）。",
 		checkRefused:     "1Password がこのトークンを受け付けませんでした：%s",
+		secretNoToken:    "1Password のサービスアカウントトークンが設定されていません。1Password 拡張機能の設定で入力してください。",
+		secretNotFound:   "このサービスアカウントでは、該当する保管庫・アイテム・フィールドが 1Password に見つかりません：%s",
+		secretEmpty:      "このフィールドは 1Password で空です。",
+		secretInvalid:    "Persona が読める 1Password の参照ではありません。op://保管庫/アイテム/フィールド の形で書いてください。",
+		usesTitle:        "Persona による使用",
+		usesFooter:       "この拡張機能の前回の起動以降に Persona から報告された使用です（新しい順）。Persona が短時間の記憶から再利用したキーは重ねて報告されません。値はここに保存されません。Persona 側にも記録があります。",
+		noUses:           "まだ使用されていません",
+		noUsesDetail:     "ほかの拡張機能のシークレットやモデルプロバイダのキーで「参照を使う」をオンにし、op://保管庫/アイテム/フィールド を入力してください。使われるたびに Persona がこの拡張機能に値を問い合わせます。",
+		useExtension:     "拡張機能のシークレット · %s",
+		useLauncher:      "モデルプロバイダのキー · %s",
+		useAgent:         "Agent の実行用 · %s",
+		useOn:            "（%s）",
+		bySettings:       "設定で保存",
+		byRule:           "「常に許可」ルール",
+		byDevice:         "デバイスで承認",
 	},
 	"zh-Hans": {
 		connection: "连接", connected: "已连接",
@@ -105,6 +140,21 @@ var locales = map[string]*texts{
 		says:             "1Password 的原话：%s",
 		checkNotToken:    "这不是 1Password 服务账号令牌（应以 ops_ 开头）。",
 		checkRefused:     "1Password 不接受这个令牌：%s",
+		secretNoToken:    "还没有填 1Password 服务账号令牌：去 1Password 扩展的设置里填一个。",
+		secretNotFound:   "这个服务账号在 1Password 里找不到对应的保险库、条目或字段：%s",
+		secretEmpty:      "这个字段在 1Password 里是空的。",
+		secretInvalid:    "这不是 Persona 能读的 1Password 引用：写成 op://保险库/条目/字段。",
+		usesTitle:        "Persona 的取用",
+		usesFooter:       "这个扩展这次启动以来 Persona 报来的取用，最新的在前。Persona 从自己短时间的记忆里再次用到的 Key 不会重复报。值从不在这里保存；Persona 自己也有记录。",
+		noUses:           "还没有取用",
+		noUsesDetail:     "在别的扩展的密钥或模型服务商的 Key 里打开「使用引用」，填 op://保险库/条目/字段。之后每次用到，Persona 都会向这个扩展取值。",
+		useExtension:     "扩展密钥 · %s",
+		useLauncher:      "模型服务商 Key · %s",
+		useAgent:         "交给 Agent 运行 · %s",
+		useOn:            "（%s）",
+		bySettings:       "设置里保存的",
+		byRule:           "「始终允许」规则",
+		byDevice:         "在设备上批准",
 	},
 }
 

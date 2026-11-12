@@ -9,7 +9,8 @@ export const oneLine = (text: string) => text.replace(/\s+/gu, " ").trim();
 export function packageName(value: unknown): string {
   if (typeof value !== "string" || /[\u0000-\u001f\u007f]/u.test(value)) throw new ReadError("invalid");
   const name = value.trim();
-  if (name.length > 214 || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(name) || /(?:^|[.\/])(?:node_modules|favicon\.ico)(?:$|[.\/])/.test(name)) throw new ReadError("invalid");
+  // npm has refused new uppercase names since 2014, but the registry still serves the older ones (JSONStream, Base64), so accept them.
+  if (name.length > 214 || !/^(?:@[a-zA-Z0-9][a-zA-Z0-9._-]*\/)?[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name) || /(?:^|[.\/])(?:node_modules|favicon\.ico)(?:$|[.\/])/.test(name)) throw new ReadError("invalid");
   return name;
 }
 export function queryText(value: unknown): string {

@@ -2,16 +2,17 @@
 
 [Documentation](../README.md) · [Source](../../extensions/onepassword/)
 
-This extension (id `onepassword`) connects Persona to the 1Password vaults you grant to a 1Password [service account](https://developer.1password.com/docs/service-accounts/). The assistant gets three read-only tools: the vaults the service account can read, item search by title, tag or website, and one item's fields with each field's `op://` [secret reference](https://developer.1password.com/docs/cli/secret-reference-syntax/). No tool returns a secret value, and nothing the extension does changes your vaults.
+This extension (id `onepassword`) connects Persona to the 1Password vaults you grant to a 1Password [service account](https://developer.1password.com/docs/service-accounts/). The assistant gets three read-only tools: the vaults the service account can read, item search by title, tag or website, and one item's fields with each field's `op://` [secret reference](https://developer.1password.com/docs/cli/secret-reference-syntax/). No tool returns a secret value, and nothing the extension does changes your vaults. It is also Persona's secret provider for `op://` references: when one of Persona's settings holds a reference, or you approve handing one to an Agent run, Persona's manager asks this extension for the value.
 
-This page describes version 0.1.0. When the manifest shown in the install preview disagrees with this page, the manifest wins.
+This page describes version 0.2.0. When the manifest shown in the install preview disagrees with this page, the manifest wins.
 
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |
 | `connectors` | `onepassword` (1Password) | Capabilities `status` and `tools`; no actions, no Inbox. No `agent_tools`: only the assistant gets the tools, not coding agents. |
 | `ui` | `connection` (连接, `extension_page`) | The connection page, a row in the extension's details. |
+| `secret_providers` | `vault` (1Password, scheme `op`) | Describes and resolves `op://` references for Persona's manager; see [Secret provider](#secret-provider). |
 
-It also declares `settings_check`, so the hub asks the extension before it saves a new token, and one secret, `service_account_token`. It needs a hub built on or after 2026-11-06 15:02 UTC (`engines.persona` `>=202611061502`), the first with settings checks.
+It also declares `settings_check`, so the hub asks the extension before it saves a new token, and one secret, `service_account_token`. It needs a hub built on or after 2026-11-06 15:02 UTC (`engines.persona` `>=202611061502`), the first with settings checks. Secret references need a hub with the secret provider extension point (nwverse/persona#3962, from 2026-11-11); an older hub installs the extension and leaves `secret_providers` unused.
 
 ## Architecture
 
@@ -56,14 +57,27 @@ Changing or deleting the token restarts the extension with the new one. To stop 
 
 Each field's reference names the vault and the item by ID, so it keeps working after either is renamed. The section and the field are named by their names when the name is unique (a field outside any section among all the item's fields, one in a section among that section's) and uses only the characters 1Password allows in a reference (ASCII letters and digits, `-`, `_`, `.` and spaces); otherwise by ID. For example `op://<vault ID>/<item ID>/password` or `op://<vault ID>/<item ID>/Backup/recovery code`.
 
-This version only shows references. Persona cannot use them yet: entering a reference wherever Persona takes a key, and handing a value to an Agent's run after a phone approval, need host support (nwverse/persona#3962).
+These references are what Persona's settings take (below).
+
+## Secret provider
+
+Persona's manager, and nothing else, calls the `secrets` methods (Persona's `docs/extensions/secret-providers.md` describes the host side: which settings take a reference, the approval of a hand-off to an Agent run, and Persona's own record of each use).
+
+| Method | What it does |
+| --- | --- |
+| `secrets.describe` | Names what a reference points at for people: the title is `item › field` (`item › section › field` when another field of the item has the same name, so the card you approve tells them apart) and the detail only the vault, at most 40 characters, which fits a card's line on a phone. The names come from the item as 1Password has it, scrubbed of its values as the tools' are; a reference written with IDs is looked up to its names. When the reference cannot be looked up (no token, not found, a name two vaults or fields share), the reference's own names are used. A reference 1Password's own parser refuses (a `%` escape, an unknown `?attribute=`) is answered `invalid`, so nothing names what `secrets.resolve` would refuse. Never a value. |
+| `secrets.resolve` | The value of one reference, through the service account (`Secrets().Resolve` in 1Password's SDK). |
+| `secrets.used` | An event Persona sends after each resolution it asked for (the reference, what it was for, when, and whether Settings, an Always rule or a device approved it). The last 20, ordered by when they happened, are kept in memory and listed on the connection page as **Used by Persona**; they are gone when the extension restarts. A key Persona reuses from its own short-lived memory is not reported again, and Persona keeps its own record. |
+
+Both check the reference with 1Password's own parser first (it runs locally, without a request). A failed resolution answers with Persona's codes, in the hub's language: `not_signed_in` (no token, or 1Password refused it), `rate_limited` with `retry_after` 600 seconds, `not_found` (no such vault, item, section or field for this service account), `refused` (an empty field, a reference that matches more than one item or field, or one the parser refuses), and otherwise a failure in 1Password's words, redacted and on one line. Each call gives 1Password up to 9 seconds, under the manager's 10; a call that first waits behind another (a sign-in, a tool's request) can still run out the manager's time.
 
 ## Keeping values out
 
-- Only `onepassword_item` reads a whole item, since 1Password's SDK has no call that returns an item's fields without their values. The values exist in the extension's memory only while that answer is turned into metadata: field values, notes, one-time codes and field details are dropped there, and any of those values that also appears in a name the extension keeps (a title, a tag, a website, a field or section name) is replaced by `[hidden]` first. Searches and vault lists read overviews only, which carry no values.
+- A value leaves the extension only as the answer to the manager's `secrets.resolve`. It is never kept, logged, put in an error or shown on the page, and the assistant's tools never return one.
+- Only `onepassword_item` and `secrets.describe` read a whole item, since 1Password's SDK has no call that returns an item's fields without their values. The values exist in the extension's memory only while that answer is turned into metadata: field values, notes, one-time codes and field details are dropped there, and any of those values that also appears in a name the extension keeps (a title, a tag, a website, a field or section name) is replaced by `[hidden]` first. Searches and vault lists read overviews only, which carry no values.
 - A saved website keeps only its scheme, host and path: a user name, password, query or fragment in a saved URL can carry a credential, so they are left out.
 - Every tool result, error, status line and page is redacted before it leaves the program: the service account token, its first or last 12 characters, and anything shaped like a service account token become `[hidden]`. Errors are cut to one line of at most 300 characters.
-- Nothing is written to disk, and the extension logs nothing about vaults, items or the token.
+- Nothing is written to disk, and the extension logs nothing about vaults, items, references or the token.
 
 ## Status and the connection page
 
@@ -72,18 +86,17 @@ The connector's status answers from memory, as the hub asks every 30 seconds: `n
 Settings › Extensions › 1Password › 连接 signs in (if this run has not yet), lists the vaults, and shows:
 
 - **Not set up**: how to create the service account and where to paste the token.
-- **Connected**: the number of vaults and each vault with its item count, plus what the assistant can and cannot do.
+- **Connected**: the number of vaults and each vault with its item count, the recent uses of references by Persona (**Used by Persona**: the reference, what it was for, who approved it and when), plus what the assistant can and cannot do.
 - **Can't reach 1Password**, **1Password refused the token** or **rate limit reached**: the redacted reason, what to do, and **Check again**.
 
 The page is drawn in English, Japanese and Simplified Chinese, following the app's language.
 
 ## Service account limits
 
-1Password limits how many requests a service account may make per hour and per day, depending on the account type. A search without `vault` makes one request for the vault list and one per vault; `onepassword_item` makes three (vaults, the vault's items, the item). When 1Password refuses for the limit, the tools answer with the `rate_limited` code and the status says so.
+1Password limits how many requests a service account may make per hour and per day, depending on the account type. A search without `vault` makes one request for the vault list and one per vault; `onepassword_item` makes three (vaults, the vault's items, the item), and so does `secrets.describe` (Persona keeps each description for 10 minutes); `secrets.resolve` makes one. When 1Password refuses for the limit, the tools answer with the `rate_limited` code and the status says so.
 
 ## Not in this version
 
-- References in Persona's settings, the approved hand-off of a value to an Agent's run, and a record of each use (reference, time, who; never the value): nwverse/persona#3962, then this extension.
 - Connecting through the `op` CLI on one of your computers, signed in through the 1Password desktop app: nwverse/persona-extensions#376.
 - Creating or editing items, browser autofill, and 1Password's SSH agent or Git signing.
 
@@ -94,4 +107,4 @@ go -C extensions/onepassword test ./...
 scripts/package.sh onepassword
 ```
 
-The tests use a fake 1Password that answers the SDK's own types, with synthetic secret values in its items, and check that no tool result, error, status or page carries any of them or the token. They also run the SDK's process-protocol conformance checks and validate the connection page's views. No test needs a real 1Password account.
+The tests use a fake 1Password that answers the SDK's own types, with synthetic secret values in its items, and check that no tool result, description, error, status or page carries any of them or the token; that a reference resolves to its value by names or IDs and fails with the right codes; and that the page lists uses newest first, at most 20. They also run the SDK's process-protocol conformance checks and validate the connection page's views. No test needs a real 1Password account.

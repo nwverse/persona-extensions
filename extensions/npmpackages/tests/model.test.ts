@@ -10,7 +10,9 @@ test("registry requests bound search input and encode scoped package names", () 
   assert.equal(url.searchParams.get("size"), "12");
   assert.equal(packagePath("@babel/preset-typescript"), "/@babel%2Fpreset-typescript/latest");
   assert.equal(downloadsPath("@babel/preset-typescript"), "/downloads/point/last-week/%40babel%2Fpreset-typescript");
-  for (const name of ["", "UPPERCASE", "@scope", "@scope/", "a/b/c", "a b", "../secret", "a\n", 42]) assert.throws(() => packageName(name), ReadError);
+  for (const name of ["", "@scope", "@scope/", "a/b/c", "a b", "../secret", "a\n", 42]) assert.throws(() => packageName(name), ReadError);
+  // Legacy uppercase names are still served by the registry.
+  for (const name of ["JSONStream", "Base64", "@Scope/Pkg", "a.B-C_d"]) assert.equal(packageName(name), name);
   for (const value of ["", "x\n", 42, "x".repeat(201)]) assert.throws(() => queryText(value), ReadError);
 });
 

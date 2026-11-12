@@ -763,7 +763,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "npmpackages", name: "npm Packages", version: "0.1.2", icon: "assets/icon.png", description: "Search public npm packages, compare latest versions, release dates, licenses, download activity and canonical repository links. Get an exact-version install command without executing it. Anonymous, read-only official registry access.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/npmpackages/README.md", tags: ["Development", "JavaScript", "npm", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/npmpackages.mjs", sha256: "" } }, contributes: { connectors: [{ id: "npmpackages", name: "npm Packages", capabilities: ["status", "tools"], hosts: ["registry.npmjs.org", "api.npmjs.org"], agent_tools: ["npmpackages_*"] }], ui: [{ id: "packages", title: "npm Packages", placement: "nav_page", icon: "code" }] }, permissions: { network: ["registry.npmjs.org", "api.npmjs.org"] } };
+var persona_extension_default = { manifest_version: 1, id: "npmpackages", name: "npm Packages", version: "0.1.3", icon: "assets/icon.png", description: "Search public npm packages, compare latest versions, release dates, licenses, download activity and canonical repository links. Get an exact-version install command without executing it. Anonymous, read-only official registry access.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/npmpackages/README.md", tags: ["Development", "JavaScript", "npm", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/npmpackages.mjs", sha256: "" } }, contributes: { connectors: [{ id: "npmpackages", name: "npm Packages", capabilities: ["status", "tools"], hosts: ["registry.npmjs.org", "api.npmjs.org"], agent_tools: ["npmpackages_*"] }], ui: [{ id: "packages", title: "npm Packages", placement: "nav_page", icon: "code" }] }, permissions: { network: ["registry.npmjs.org", "api.npmjs.org"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 1 << 20, fresh: 15 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 250 });
@@ -779,7 +779,7 @@ var oneLine = (text) => text.replace(/\s+/gu, " ").trim();
 function packageName(value) {
   if (typeof value !== "string" || /[\u0000-\u001f\u007f]/u.test(value)) throw new ReadError("invalid");
   const name = value.trim();
-  if (name.length > 214 || !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(name) || /(?:^|[.\/])(?:node_modules|favicon\.ico)(?:$|[.\/])/.test(name)) throw new ReadError("invalid");
+  if (name.length > 214 || !/^(?:@[a-zA-Z0-9][a-zA-Z0-9._-]*\/)?[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name) || /(?:^|[.\/])(?:node_modules|favicon\.ico)(?:$|[.\/])/.test(name)) throw new ReadError("invalid");
   return name;
 }
 function queryText(value) {
