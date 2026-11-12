@@ -78,7 +78,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 // resolveCity finds the city to read: a configured one by name, the default when the name is empty, or a search.
 func (a *app) resolveCity(ctx context.Context, name string) (City, error) {
 	if c, ok := cityByName(a.cities, name); ok {
-		return c, nil
+		return a.locate(ctx, c)
 	}
 	rd, err := a.read(ctx, a.client.geo, geoURL(name), cacheFor)
 	if err != nil {
