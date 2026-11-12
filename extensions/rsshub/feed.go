@@ -404,6 +404,10 @@ func numericZone(s string) string {
 	if off, ok := rfc822Zones[zone]; ok {
 		return s[:i+1] + off
 	}
+	// Some feeds write the RFC 3339 offset with a colon (+08:00) in an RFC 822 date; drop the colon.
+	if len(zone) == 6 && (zone[0] == '+' || zone[0] == '-') && zone[3] == ':' {
+		return s[:i+1] + zone[:3] + zone[4:]
+	}
 	for _, p := range []string{"GMT", "UTC"} {
 		rest, ok := strings.CutPrefix(zone, p)
 		if !ok || len(rest) < 2 || (rest[0] != '+' && rest[0] != '-') {
