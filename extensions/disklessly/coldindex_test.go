@@ -598,9 +598,11 @@ func TestReferenceProbeShell(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer f.Close()
+	// Each sh stays a process whose argv is the faked agent's: with one simple command, bash (macOS's
+	// /bin/sh) would exec sleep in place and drop that argv, so a second command follows it.
 	for _, args := range [][]string{
-		{"-c", "sleep 30", "claude", "--resume", argUUID},
-		{"-c", "sleep 30", "codex", "exec", "resume", codexUUID},
+		{"-c", "sleep 30; :", "claude", "--resume", argUUID},
+		{"-c", "sleep 30; :", "codex", "exec", "resume", codexUUID},
 	} {
 		p := exec.Command("sh", args...)
 		if err := p.Start(); err != nil {
