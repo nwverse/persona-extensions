@@ -28,6 +28,16 @@ test("untrusted product URLs, wrong barcodes and malformed metadata are rejected
   assert.equal(duplicate.products.length, 1);
 });
 
+test("a search result without a product name is left out, not a failed search", () => {
+  // The twelve results for 可口可乐 include 6901939621608, which has no product_name.
+  const original = searchResponse.products[0];
+  const { product_name: _, ...nameless } = { ...original, code: "6901939621608" };
+  const result = parseSearch({ count: 3, products: [nameless, { ...nameless, code: "6901939621609", product_name: "  " }, original] }, 0);
+  assert.deepEqual(result.products.map(product => product.code), [original.code]);
+  assert.equal(result.total, 3);
+  assert.throws(() => parseProduct({ ...productResponse, product: nameless }, "6901939621608", 0), ReadError);
+});
+
 test("a UPC-A barcode reads the product Open Food Facts answers as its EAN-13", () => {
   // GET /api/v2/product/737628064502 answers "code": "0737628064502".
   const upc = { status: 1, status_verbose: "product found", product: { ...productResponse.product, code: "0737628064502", url: undefined } };

@@ -83,6 +83,10 @@ export function parseSearch(raw: unknown, at: number): SearchResult {
   if (!Array.isArray(root.products) || typeof root.count !== "number" || !Number.isSafeInteger(root.count) || root.count < 0 || root.count > 10_000_000) throw new ReadError("bad_answer");
   const seen = new Set<string>(), products: Product[] = [];
   for (const rawProduct of root.products.slice(0, 20)) {
+    // A crowd-sourced entry may have no name yet (one of the twelve for 可口可乐 has none): it is left out of the search, not
+    // a failure of it. A product looked up by its barcode still needs one.
+    const name = object(rawProduct).product_name;
+    if (name == null || (typeof name === "string" && !name.trim())) continue;
     const item = product(rawProduct);
     if (seen.has(item.code)) continue;
     seen.add(item.code); products.push(item);
