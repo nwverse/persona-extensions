@@ -20,10 +20,17 @@ test("search keeps bounded metadata and rejects duplicate or invalid crates", ()
   assert.equal(result.crates[0].recentDownloads, 420047065);
   assert.equal(result.crates[0].repository, "https://github.com/serde-rs/serde");
   assert.equal(result.crates[0].license, "See details");
-  for (const change of [{ name: "bad/name" }, { repository: "javascript:alert(1)" }, { documentation: "http://docs.rs/serde" }, { recent_downloads: -1 }, { default_version: "1.0.0\n" }]) {
+  for (const change of [{ name: "bad/name" }, { recent_downloads: -1 }, { default_version: "1.0.0\n" }]) {
     assert.throws(() => parseSearch({ crates: [{ ...serde, ...change }], meta: { total: 1 } }, 0), ReadError);
   }
   assert.throws(() => parseSearch({ crates: [serde, serde], meta: { total: 2 } }, 0), ReadError);
+  // Older crates still link http (nickel: http://nickel-org.github.io/, objc: http://github.com/SSheldon/rust-objc).
+  const withHttp = { ...serde, repository: "http://github.com/SSheldon/rust-objc", homepage: "http://nickel-org.github.io/", documentation: "http://ssheldon.github.io/rust-objc/objc/" };
+  const parsed = parseSearch({ crates: [withHttp], meta: { total: 1 } }, 0);
+  assert.equal(parsed.crates[0].repository, undefined);
+  assert.equal(parsed.crates[0].homepage, undefined);
+  assert.equal(parsed.crates[0].documentation, undefined);
+  assert.equal(parsed.crates[0].url, "https://crates.io/crates/serde");
 });
 
 test("default version selects exactly one matching release with its license and yanked state", () => {
