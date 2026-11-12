@@ -22,7 +22,7 @@ const (
 	rateWindow = 10 * time.Minute
 )
 
-var errNotConfigured = errors.New("no 1Password service account token is set")
+var errNotConfigured = errors.New("1Password is not set up: no service account token and no computer with op")
 
 type app struct {
 	connect  connectFunc
@@ -32,9 +32,13 @@ type app struct {
 	connMu sync.Mutex // one sign-in at a time; held across the network, so never with mu
 	mu     sync.Mutex
 	token  string
-	locale string // the hub's language, for the words of a settings check
-	api    opAPI
-	lastOK time.Time
+	// machine is the computer whose op the extension uses instead of the token, when one is picked (#376); nodes
+	// reaches its program there.
+	machine string
+	nodes   nodeCaller
+	locale  string // the hub's language, for the words of a settings check
+	api     opAPI
+	lastOK  time.Time
 	// lastErr is the last error 1Password answered, already redacted; errAt when.
 	lastErr error
 	errKind errKind
@@ -47,21 +51,41 @@ func newApp(connect connectFunc) *app {
 	return &app{connect: connect, validate: validateSDK, now: time.Now}
 }
 
-func (a *app) init(_ context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
+// config is the extension's configuration: the computer whose op to use, if any (at most one).
+type config struct {
+	Machines []string `json:"machines"`
+}
+
+func (a *app) init(_ context.Context, in *ext.Init, hub *ext.Hub) (map[string]any, error) {
+	var c config
+	if err := in.Config(&c); err != nil {
+		return nil, err
+	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.token = strings.TrimSpace(in.Secrets[tokenSecret])
 	a.locale = in.Hub.Locale
-	a.mu.Unlock()
+	a.machine = ""
+	if len(c.Machines) > 0 {
+		a.machine = strings.TrimSpace(c.Machines[0])
+	}
+	if a.nodes == nil && hub != nil {
+		a.nodes = hubNodeCaller(hub)
+	}
 	return nil, nil
 }
 
-// client signs in on first use and keeps the client for the rest of the run (a new token restarts the program).
+// client is op on the picked computer when there is one; otherwise it signs in with the token on first use and keeps
+// the client for the rest of the run (a new token or computer restarts the program).
 func (a *app) client(ctx context.Context) (opAPI, error) {
 	a.connMu.Lock()
 	defer a.connMu.Unlock()
 	a.mu.Lock()
-	api, token := a.api, a.token
+	api, token, machine, nodes := a.api, a.token, a.machine, a.nodes
 	a.mu.Unlock()
+	if machine != "" && nodes != nil {
+		return nodeAPI{call: nodes, machine: machine}, nil
+	}
 	if api != nil {
 		return api, nil
 	}
@@ -98,6 +122,9 @@ func (a *app) clean(err error) error {
 		return context.DeadlineExceeded // its words carry nothing secret, and the page tells it apart
 	}
 	msg := oneLine(redact(err.Error(), a.token), 300)
+	if c := opCode(err); c != "" && c != codeRateLimited { // op on a computer: its code tells the page what to say
+		return &ext.Error{Code: c, Message: msg}
+	}
 	if kindOf(err) == errRate {
 		return &ext.Error{Code: "rate_limited", Message: "1Password rate limit reached: " + msg}
 	}
@@ -108,13 +135,21 @@ func (a *app) status() map[string]any {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	out := map[string]any{"state": "ok", "account": "1Password service account", "via": "service account token"}
+	if a.machine != "" {
+		out["account"], out["via"] = "1Password account of op on a computer", "op on a computer"
+	}
 	switch {
-	case a.token == "":
+	case a.token == "" && a.machine == "":
 		out["state"] = "not_configured"
 		out["guide"] = []string{
 			"Create a service account on 1Password.com (Developer in the sidebar), with read access to the vaults Persona may look into.",
 			"Paste its token into this extension's settings (Settings › Extensions › 1Password).",
+			"Or pick a computer in those settings where the 1Password CLI (op) is signed in through the 1Password app.",
 		}
+	case a.lastErr != nil && a.errKind == errAuth && a.machine != "":
+		out["state"] = "not_signed_in"
+		out["error"] = a.lastErr.Error()
+		out["guide"] = []string{"Unlock the 1Password app on that computer, check that Integrate with 1Password CLI is on in its Developer settings, and approve op when it asks."}
 	case a.lastErr != nil && a.errKind == errAuth:
 		out["state"] = "not_signed_in"
 		out["error"] = a.lastErr.Error()

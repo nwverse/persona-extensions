@@ -94,8 +94,13 @@ type itemDetail struct {
 	HasNotes bool
 }
 
+// vaultFromSDK keeps a vault's name and size; Items is -1 when op on a computer did not say (unknownCount).
 func vaultFromSDK(v op.VaultOverview) vaultInfo {
-	return vaultInfo{ID: v.ID, Title: v.Title, Items: int(v.ActiveItemCount), Updated: v.UpdatedAt}
+	items := int(v.ActiveItemCount)
+	if v.ActiveItemCount == unknownCount {
+		items = -1
+	}
+	return vaultInfo{ID: v.ID, Title: v.Title, Items: items, Updated: v.UpdatedAt}
 }
 
 func itemFromOverview(it op.ItemOverview) itemInfo {
@@ -286,9 +291,15 @@ const (
 
 func kindOf(err error) errKind {
 	var rate *op.RateLimitExceededError
-	var coded *ext.Error // a rate limit after clean
-	if errors.As(err, &rate) || errors.As(err, &coded) && coded.Code == "rate_limited" {
+	var coded *ext.Error // a rate limit after clean, or an error of op on a computer (node.go)
+	if errors.As(err, &rate) || errors.As(err, &coded) && coded.Code == codeRateLimited {
 		return errRate
+	}
+	if coded != nil {
+		switch coded.Code {
+		case codeMissing, codeNotSignedIn, codeLocked:
+			return errAuth
+		}
 	}
 	msg := strings.ToLower(err.Error())
 	for _, s := range []string{"service account token", "unauthorized", "authentication", "invalid token", "token is expired", "revoked"} {

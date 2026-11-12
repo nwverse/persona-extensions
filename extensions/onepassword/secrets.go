@@ -253,7 +253,8 @@ func (a *app) resolve(ctx context.Context, reference string) (string, error) {
 	return value, nil
 }
 
-// secretError is how a failed resolution reads to Persona: no token or one 1Password refuses is not_signed_in, its
+// secretError is how a failed resolution reads to Persona: nothing set up, a token 1Password refuses, or op on the
+// computer missing, without an account or locked is not_signed_in, its
 // rate limit rate_limited (retry_after: as long as the page says so), a vault, item, section or field it has not
 // not_found, a reference that matches more than one, or that its parser refuses, refused; anything else is a failure
 // in 1Password's words, redacted and on one line.
@@ -263,20 +264,32 @@ func (a *app) secretError(err error, t *texts) error {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		says = oneLine(redact(err.Error(), a.token), 200)
 	}
+	onComputer := a.machine != ""
 	a.mu.Unlock()
+	rateGuide := t.rateLimitedGuide
+	if onComputer {
+		rateGuide = t.opRateLimitedGuide
+	}
 	switch {
 	case errors.Is(err, errNotConfigured):
 		return &ext.Error{Code: "not_signed_in", Message: t.secretNoToken}
+	case errors.Is(err, context.DeadlineExceeded) && onComputer: // most likely op waiting for the user to approve it
+		return errors.New(t.timedOut + " " + t.opLockedGuide)
 	case errors.Is(err, context.DeadlineExceeded):
 		return errors.New(t.timedOut)
+	case opCode(err) == "offline":
+		return errors.New(t.opOffline + ". " + t.opOfflineGuide)
 	case kindOf(err) == errAuth:
+		if title, guide, ok := opWords(t, err); ok {
+			return &ext.Error{Code: "not_signed_in", Message: title + ". " + guide}
+		}
 		return &ext.Error{Code: "not_signed_in", Message: t.refused + ". " + t.refusedGuide}
 	case kindOf(err) == errRate:
-		return &ext.Error{Code: "rate_limited", Message: t.rateLimited + ". " + t.rateLimitedGuide,
+		return &ext.Error{Code: "rate_limited", Message: t.rateLimited + ". " + rateGuide,
 			Data: json.RawMessage(fmt.Sprintf(`{"retry_after":%d}`, int(rateWindow.Seconds())))}
 	case hasAny(err, "more than one"):
 		return &ext.Error{Code: "refused", Message: fmt.Sprintf(t.says, says)}
-	case notFound(err):
+	case notFound(err) || opCode(err) == codeNotFound:
 		return &ext.Error{Code: "not_found", Message: fmt.Sprintf(t.secretNotFound, says)}
 	case hasAny(err, "could not be parsed", "invalid character", "invalid query parameter", "invalid format"):
 		return &ext.Error{Code: "refused", Message: t.secretInvalid}
