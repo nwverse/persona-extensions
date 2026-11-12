@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,11 @@ type app struct {
 	errAt   time.Time
 	// uses are the last uses of references Persona told of (secrets.used), newest first, for the page.
 	uses []secretUse
+
+	// meta is the metadata kept for metaTTL (cache.go), under metaMu; metaGen counts the times it was emptied.
+	metaMu  sync.Mutex
+	meta    metaCache
+	metaGen uint64
 }
 
 func newApp(connect connectFunc) *app {
@@ -72,6 +78,7 @@ func (a *app) init(_ context.Context, in *ext.Init, hub *ext.Hub) (map[string]an
 	if a.nodes == nil && hub != nil {
 		a.nodes = hubNodeCaller(hub)
 	}
+	a.forgetMeta() // a new start keeps nothing (locks: mu, then metaMu; never the other way)
 	return nil, nil
 }
 
@@ -246,50 +253,78 @@ func (a *app) settings(ctx context.Context, method string, raw json.RawMessage) 
 	return map[string]any{"ok": true}, nil
 }
 
-// listVaults reads the vaults the service account can see.
+// listVaults reads the vaults Persona can see, or answers what was kept of them (cache.go).
 func (a *app) listVaults(ctx context.Context) ([]vaultInfo, error) {
-	api, err := a.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := api.listVaults(ctx)
-	if err != nil {
-		return nil, a.record(err)
-	}
-	a.record(nil)
-	out := make([]vaultInfo, 0, len(raw))
-	for _, v := range raw {
-		out = append(out, vaultFromSDK(v))
-	}
-	return out, nil
+	vs, err := cachedRead(a, func(c *metaCache) (kept[[]vaultInfo], bool) { return c.getVaults() },
+		func(c *metaCache, k kept[[]vaultInfo]) { c.vaults = &k },
+		func() ([]vaultInfo, error) {
+			api, err := a.client(ctx)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := api.listVaults(ctx)
+			if err != nil {
+				return nil, a.record(err)
+			}
+			a.record(nil)
+			out := make([]vaultInfo, 0, len(raw))
+			for _, v := range raw {
+				out = append(out, vaultFromSDK(v))
+			}
+			return out, nil
+		})
+	return slices.Clone(vs), err
 }
 
+// listItems reads a vault's item overviews, or answers what was kept of them.
 func (a *app) listItems(ctx context.Context, vaultID string) ([]itemInfo, error) {
-	api, err := a.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := api.listItems(ctx, vaultID)
-	if err != nil {
-		return nil, a.record(err)
-	}
-	a.record(nil)
-	out := make([]itemInfo, 0, len(raw))
-	for _, it := range raw {
-		out = append(out, itemFromOverview(it))
-	}
-	return out, nil
+	its, err := cachedRead(a, func(c *metaCache) (kept[[]itemInfo], bool) { k, ok := c.items[vaultID]; return k, ok },
+		func(c *metaCache, k kept[[]itemInfo]) {
+			if c.items == nil {
+				c.items = map[string]kept[[]itemInfo]{}
+			}
+			c.items[vaultID] = k
+		},
+		func() ([]itemInfo, error) {
+			api, err := a.client(ctx)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := api.listItems(ctx, vaultID)
+			if err != nil {
+				return nil, a.record(err)
+			}
+			a.record(nil)
+			out := make([]itemInfo, 0, len(raw))
+			for _, it := range raw {
+				out = append(out, itemFromOverview(it))
+			}
+			return out, nil
+		})
+	return slices.Clone(its), err
 }
 
+// getItem reads an item's structure (no values: itemFromSDK drops them before anything is kept), or answers what was
+// kept of it.
 func (a *app) getItem(ctx context.Context, vaultID, itemID string) (itemDetail, error) {
-	api, err := a.client(ctx)
-	if err != nil {
-		return itemDetail{}, err
-	}
-	raw, err := api.getItem(ctx, vaultID, itemID)
-	if err != nil {
-		return itemDetail{}, a.record(err)
-	}
-	a.record(nil)
-	return itemFromSDK(raw), nil
+	key := vaultID + "/" + itemID
+	return cachedRead(a, func(c *metaCache) (kept[itemDetail], bool) { k, ok := c.details[key]; return k, ok },
+		func(c *metaCache, k kept[itemDetail]) {
+			if c.details == nil {
+				c.details = map[string]kept[itemDetail]{}
+			}
+			c.details[key] = k
+		},
+		func() (itemDetail, error) {
+			api, err := a.client(ctx)
+			if err != nil {
+				return itemDetail{}, err
+			}
+			raw, err := api.getItem(ctx, vaultID, itemID)
+			if err != nil {
+				return itemDetail{}, a.record(err)
+			}
+			a.record(nil)
+			return itemFromSDK(raw), nil
+		})
 }

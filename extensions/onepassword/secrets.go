@@ -14,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	op "github.com/1password/onepassword-sdk-go"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
 )
@@ -145,7 +144,10 @@ func joinNames(item, section, field string) string {
 // field's section when another field of the item has its name (two "password" fields in two sections read alike
 // otherwise on the card the user approves).
 func (a *app) lookup(ctx context.Context, r reference) (vault, item, section, field string, ok bool) {
-	vaults, err := a.listVaults(ctx)
+	// Through the cache (cache.go): a name the kept answers lack is looked up again once, as it may be new.
+	vaults, err := a.vaultsHaving(ctx, func(v vaultInfo) bool {
+		return v.ID == r.vault || strings.EqualFold(strings.TrimSpace(v.Title), r.vault)
+	})
 	if err != nil {
 		return "", "", "", "", false
 	}
@@ -153,7 +155,9 @@ func (a *app) lookup(ctx context.Context, r reference) (vault, item, section, fi
 	if !found {
 		return "", "", "", "", false
 	}
-	items, err := a.listItems(ctx, v.ID)
+	items, err := a.itemsHaving(ctx, v.ID, func(it itemInfo) bool {
+		return it.ID == r.item || strings.EqualFold(strings.TrimSpace(it.Title), r.item)
+	})
 	if err != nil {
 		return "", "", "", "", false
 	}
@@ -161,26 +165,19 @@ func (a *app) lookup(ctx context.Context, r reference) (vault, item, section, fi
 	if !found {
 		return "", "", "", "", false
 	}
-	api, err := a.client(ctx)
+	inSection := func(f fieldInfo) bool {
+		return r.section == "" || f.SectionID != "" && (f.SectionID == r.section || strings.EqualFold(strings.TrimSpace(f.Section), r.section))
+	}
+	d, err := a.itemHaving(ctx, v.ID, it.ID, func(f fieldInfo) bool {
+		return inSection(f) && (f.ID == r.field || strings.EqualFold(strings.TrimSpace(f.Title), r.field))
+	})
 	if err != nil {
 		return "", "", "", "", false
 	}
-	raw, err := api.getItem(ctx, v.ID, it.ID)
-	if a.record(err) != nil {
-		return "", "", "", "", false
-	}
-	d := itemFromSDK(raw) // its names scrubbed of the item's values; its fields in raw's order
-	sections := map[string]op.ItemSection{}
-	for _, sec := range raw.Sections {
-		sections[sec.ID] = sec
-	}
 	match := -1
-	for i, f := range raw.Fields {
-		if r.section != "" {
-			sid := sectionOf(f, sections)
-			if sid == "" || sid != r.section && !strings.EqualFold(strings.TrimSpace(sections[sid].Title), r.section) {
-				continue
-			}
+	for i, f := range d.Fields {
+		if !inSection(f) {
+			continue
 		}
 		if f.ID == r.field {
 			match = i
@@ -193,12 +190,12 @@ func (a *app) lookup(ctx context.Context, r reference) (vault, item, section, fi
 			match = i
 		}
 	}
-	if match < 0 || match >= len(d.Fields) {
+	if match < 0 {
 		return "", "", "", "", false
 	}
 	named := 0
-	for _, f := range raw.Fields {
-		if strings.EqualFold(strings.TrimSpace(f.Title), strings.TrimSpace(raw.Fields[match].Title)) {
+	for _, f := range d.Fields {
+		if strings.EqualFold(strings.TrimSpace(f.Title), strings.TrimSpace(d.Fields[match].Title)) {
 			named++
 		}
 	}

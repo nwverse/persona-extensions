@@ -83,8 +83,11 @@ type itemInfo struct {
 	Updated                      time.Time
 }
 
+// fieldInfo is a field's name, type, section and reference; ID and SectionID (1Password's own, never values) let a
+// reference that names them by ID be matched against what was kept.
 type fieldInfo struct {
 	Title, Type, Section, Reference string
+	ID, SectionID                   string
 }
 
 type itemDetail struct {
@@ -152,7 +155,7 @@ func itemFromSDK(it op.Item) itemDetail {
 	}
 	for _, f := range it.Fields {
 		sid := sectionOf(f, sections)
-		fi := fieldInfo{Title: s.clean(f.Title), Type: string(f.FieldType)}
+		fi := fieldInfo{Title: s.clean(f.Title), Type: string(f.FieldType), ID: f.ID, SectionID: sid}
 		ref := "op://" + it.VaultID + "/" + it.ID + "/"
 		if sid != "" {
 			sec := sections[sid]

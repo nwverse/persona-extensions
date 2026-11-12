@@ -27,6 +27,9 @@ func (a *app) page() ext.Page {
 			if r.Action != "refresh" {
 				return nil, fmt.Errorf("unknown page action %q", r.Action)
 			}
+			if limited, _ := a.limited(); !limited { // Check again asks 1Password anew, unless its limit holds
+				a.forgetMeta()
+			}
 			return &wire.ActionResult{View: a.view(ctx, r)}, nil
 		},
 	}
