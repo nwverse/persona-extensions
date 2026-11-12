@@ -2,7 +2,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { budget, Nuget, ReadError } from "../src/service.ts";
 import { callTool } from "../src/tools.ts";
-import { catalogPath, catalogResponse, Fixture, leafPath, leafResponse, nuspecResponse, search20Path, searchPathFixture, until } from "./fixtures.ts";
+import { searchPath } from "../src/model.ts";
+import { catalogPath, catalogResponse, Fixture, leafPath, leafResponse, nuspecResponse, search20Path, searchPathFixture, searchResponse, until } from "./fixtures.ts";
 const make = (fixture = new Fixture(), options = {}) => new Nuget(fixture.fetch, {}, { now: () => fixture.clock, monotonic: () => fixture.clock, limits: { gap: 0 }, locale: "en", ...options });
 
 test("anonymous search, exact registration leaf and catalog use validated requests", async () => {
@@ -22,6 +23,14 @@ test("anonymous search, exact registration leaf and catalog use validated reques
     assert.equal(request.url.searchParams.has("access_token"), false);
   }
   assert.equal(service.status().state, "ok");
+});
+
+test("an ID in another letter case reads the package under its own spelling", async () => {
+  const fixture = new Fixture(); fixture.put(searchPath("newtonsoft.json", 20), searchResponse);
+  const result = await make(fixture).package("newtonsoft.json");
+  assert.equal(result.package.id, "Newtonsoft.Json");
+  assert.equal(result.package.install, "dotnet add package Newtonsoft.Json --version 13.0.4");
+  assert.equal(result.package.url, "https://www.nuget.org/packages/Newtonsoft.Json/13.0.4");
 });
 
 test("transient failures return only previously validated stale data", async () => {

@@ -126,6 +126,8 @@ export class Nuget {
     const found = await this.search(id, 20, refresh, signal);
     const exact = found.packages.find(pkg => pkg.id.toLowerCase() === id.toLowerCase());
     if (!exact) throw new ReadError("not_found");
+    // IDs are case-insensitive: read on under the package's own spelling, which its nuspec, page and install command use.
+    id = exact.id;
     const leaf = await this.read("https://api.nuget.org", registrationPath(id, exact.version), refresh ? 0 : this.limits.fresh, signal, raw => { parseLeaf(raw, id, exact.version); });
     const selected = parseLeaf(leaf.raw, id, exact.version);
     const metadata = await this.read("https://api.nuget.org", nuspecPath(id, exact.version), refresh ? 0 : this.limits.fresh, signal, raw => { if (typeof raw !== "string") throw new ReadError("bad_answer"); parseNuspec(raw, id, exact.version, selected.listed); }, true);
