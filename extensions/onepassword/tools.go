@@ -104,7 +104,7 @@ func (a *app) vaultsTool(ctx context.Context) (string, error) {
 
 // findVault is a vault by ID, or by name (case aside) when exactly one has it.
 func (a *app) findVault(ctx context.Context, want string) (vaultInfo, error) {
-	vaults, err := a.listVaults(ctx)
+	vaults, err := a.vaultsHaving(ctx, func(v vaultInfo) bool { return v.ID == want || strings.EqualFold(strings.TrimSpace(v.Title), want) })
 	if err != nil {
 		return vaultInfo{}, err
 	}
@@ -223,7 +223,7 @@ func (a *app) itemTool(ctx context.Context, vault, item string) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	items, err := a.listItems(ctx, v.ID)
+	items, err := a.itemsHaving(ctx, v.ID, func(it itemInfo) bool { return it.ID == item || strings.EqualFold(strings.TrimSpace(it.Title), item) })
 	if err != nil {
 		return "", err
 	}

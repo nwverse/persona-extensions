@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -39,12 +40,21 @@ type app struct {
 	locale  string // the hub's language, for the words of a settings check
 	api     opAPI
 	lastOK  time.Time
+	// rateErr is 1Password's last refusal for its rate limit and rateAt when, kept apart from lastErr so another
+	// error meanwhile does not end the window early (cache.go); a request that succeeds ends it.
+	rateErr error
+	rateAt  time.Time
 	// lastErr is the last error 1Password answered, already redacted; errAt when.
 	lastErr error
 	errKind errKind
 	errAt   time.Time
 	// uses are the last uses of references Persona told of (secrets.used), newest first, for the page.
 	uses []secretUse
+
+	// meta is the metadata kept for metaTTL (cache.go), under metaMu; metaGen counts the times it was emptied.
+	metaMu  sync.Mutex
+	meta    metaCache
+	metaGen uint64
 }
 
 func newApp(connect connectFunc) *app {
@@ -72,6 +82,7 @@ func (a *app) init(_ context.Context, in *ext.Init, hub *ext.Hub) (map[string]an
 	if a.nodes == nil && hub != nil {
 		a.nodes = hubNodeCaller(hub)
 	}
+	a.forgetMeta() // a new start keeps nothing (locks: mu, then metaMu; never the other way)
 	return nil, nil
 }
 
@@ -107,11 +118,14 @@ func (a *app) record(err error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err == nil {
-		a.lastOK, a.lastErr = a.now(), nil
+		a.lastOK, a.lastErr, a.rateErr, a.rateAt = a.now(), nil, nil, time.Time{}
 		return nil
 	}
 	clean := a.clean(err)
 	a.lastErr, a.errKind, a.errAt = clean, kindOf(err), a.now()
+	if a.errKind == errRate {
+		a.rateErr, a.rateAt = clean, a.errAt
+	}
 	return clean
 }
 
@@ -246,50 +260,92 @@ func (a *app) settings(ctx context.Context, method string, raw json.RawMessage) 
 	return map[string]any{"ok": true}, nil
 }
 
-// listVaults reads the vaults the service account can see.
-func (a *app) listVaults(ctx context.Context) ([]vaultInfo, error) {
-	api, err := a.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := api.listVaults(ctx)
-	if err != nil {
-		return nil, a.record(err)
-	}
-	a.record(nil)
-	out := make([]vaultInfo, 0, len(raw))
-	for _, v := range raw {
-		out = append(out, vaultFromSDK(v))
-	}
-	return out, nil
+// listVaults reads the vaults Persona can see, or answers what was kept of them (cache.go).
+func (a *app) listVaults(ctx context.Context) ([]vaultInfo, error) { return a.readVaults(ctx, false) }
+
+// readVaults is listVaults; again asks 1Password even when what is kept is fresh (the page, a miss).
+func (a *app) readVaults(ctx context.Context, again bool) ([]vaultInfo, error) {
+	vs, err := cachedRead(a, again, func(c *metaCache) (kept[[]vaultInfo], bool) { return c.getVaults() },
+		func(c *metaCache, k kept[[]vaultInfo]) { c.vaults = &k },
+		func() ([]vaultInfo, error) {
+			api, err := a.client(ctx)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := api.listVaults(ctx)
+			if err != nil {
+				return nil, a.record(err)
+			}
+			a.record(nil)
+			out := make([]vaultInfo, 0, len(raw))
+			for _, v := range raw {
+				out = append(out, vaultFromSDK(v))
+			}
+			return out, nil
+		})
+	return slices.Clone(vs), err
 }
 
+// listItems reads a vault's item overviews, or answers what was kept of them. What it answers shares Tags and
+// Websites with the cache: read-only.
 func (a *app) listItems(ctx context.Context, vaultID string) ([]itemInfo, error) {
-	api, err := a.client(ctx)
-	if err != nil {
-		return nil, err
-	}
-	raw, err := api.listItems(ctx, vaultID)
-	if err != nil {
-		return nil, a.record(err)
-	}
-	a.record(nil)
-	out := make([]itemInfo, 0, len(raw))
-	for _, it := range raw {
-		out = append(out, itemFromOverview(it))
-	}
-	return out, nil
+	return a.readItems(ctx, vaultID, false)
 }
 
+func (a *app) readItems(ctx context.Context, vaultID string, again bool) ([]itemInfo, error) {
+	its, err := cachedRead(a, again, func(c *metaCache) (kept[[]itemInfo], bool) { k, ok := c.items[vaultID]; return k, ok },
+		func(c *metaCache, k kept[[]itemInfo]) {
+			if c.items == nil {
+				c.items = map[string]kept[[]itemInfo]{}
+			}
+			c.items[vaultID] = k
+		},
+		func() ([]itemInfo, error) {
+			api, err := a.client(ctx)
+			if err != nil {
+				return nil, err
+			}
+			raw, err := api.listItems(ctx, vaultID)
+			if err != nil {
+				return nil, a.record(err)
+			}
+			a.record(nil)
+			out := make([]itemInfo, 0, len(raw))
+			for _, it := range raw {
+				out = append(out, itemFromOverview(it))
+			}
+			return out, nil
+		})
+	return slices.Clone(its), err
+}
+
+// getItem reads an item's structure (no values: itemFromSDK drops them before anything is kept), or answers a copy of
+// what was kept of it.
 func (a *app) getItem(ctx context.Context, vaultID, itemID string) (itemDetail, error) {
-	api, err := a.client(ctx)
-	if err != nil {
-		return itemDetail{}, err
-	}
-	raw, err := api.getItem(ctx, vaultID, itemID)
-	if err != nil {
-		return itemDetail{}, a.record(err)
-	}
-	a.record(nil)
-	return itemFromSDK(raw), nil
+	return a.readItem(ctx, vaultID, itemID, false)
+}
+
+func (a *app) readItem(ctx context.Context, vaultID, itemID string, again bool) (itemDetail, error) {
+	key := vaultID + "/" + itemID
+	d, err := cachedRead(a, again, func(c *metaCache) (kept[itemDetail], bool) { k, ok := c.details[key]; return k, ok },
+		func(c *metaCache, k kept[itemDetail]) {
+			if c.details == nil {
+				c.details = map[string]kept[itemDetail]{}
+			}
+			c.details[key] = k
+		},
+		func() (itemDetail, error) {
+			api, err := a.client(ctx)
+			if err != nil {
+				return itemDetail{}, err
+			}
+			raw, err := api.getItem(ctx, vaultID, itemID)
+			if err != nil {
+				return itemDetail{}, a.record(err)
+			}
+			a.record(nil)
+			return itemFromSDK(raw), nil
+		})
+	d.Tags, d.Websites, d.Fields = slices.Clone(d.Tags), slices.Clone(d.Websites), slices.Clone(d.Fields)
+	return d, err
 }

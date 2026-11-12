@@ -4,7 +4,7 @@
 
 This extension (id `onepassword`) connects Persona to your 1Password vaults, either those you grant to a 1Password [service account](https://developer.1password.com/docs/service-accounts/) or those of the account the [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) is signed in to on one of your computers. The assistant gets three read-only tools: the vaults it can read, item search by title, tag or website, and one item's fields with each field's `op://` [secret reference](https://developer.1password.com/docs/cli/secret-reference-syntax/). No tool returns a secret value, and nothing the extension does changes your vaults. It is also Persona's secret provider for `op://` references: when one of Persona's settings holds a reference, or you approve handing one to an Agent run, Persona's manager asks this extension for the value.
 
-This page describes version 0.3.0. When the manifest shown in the install preview disagrees with this page, the manifest wins.
+This page describes version 0.3.1. When the manifest shown in the install preview disagrees with this page, the manifest wins.
 
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |
@@ -120,7 +120,17 @@ The page is drawn in English, Japanese and Simplified Chinese, following the app
 
 ## Service account limits
 
-1Password limits how many requests a service account may make per hour and per day, depending on the account type. A search without `vault` makes one request for the vault list and one per vault; `onepassword_item` makes three (vaults, the vault's items, the item), and so does `secrets.describe` (Persona keeps each description for 10 minutes); `secrets.resolve` makes one. When 1Password refuses for the limit, the tools answer with the `rate_limited` code and the status says so.
+1Password limits how many requests a service account may make per hour (per token) and per day (per account), depending on the account type. Without the cache below, a search without `vault` makes one request for the vault list and one per vault; `onepassword_item` makes three (vaults, the vault's items, the item), and so does `secrets.describe` (Persona keeps each description for 10 minutes); `secrets.resolve` makes one. When 1Password refuses for the limit, the tools answer with the `rate_limited` code and the status says so.
+
+### What the extension keeps in memory
+
+Since 0.3.1 the extension keeps 1Password's metadata in its own memory, for both connections (the service account and `op` on a computer):
+
+- **What**: the vault list, each vault's item overviews and each item's field structure, as the extension keeps them anyway: names, IDs, categories, tags, cleaned websites, field names, types, sections and `op://` references. Never a value, a note or a one-time code: those are dropped before anything is kept (on the computer, for `op`). A field or section name that held a value is kept scrubbed, beside a keyed hash of the original (the key is random and lives only in the process), so a reference that spells it out still finds it and its description never shows the value. Nothing is written to disk.
+- **For how long**: 5 minutes from when it was asked for. Within them, a describe, a search, a vault list or an item look answers from memory: describing a reference again, or another field of an item already read, makes no request. A vault, item or field named that a kept answer lacks is looked up again once when that answer is older than 30 seconds (it may have just been made). The connection page asks for the vault list afresh each time it is drawn.
+- **Emptied**: when the program starts, which the hub does whenever the token, the computer or a setting changes, or the extension is upgraded or switched on again; and by **Check again** on the connection page (except while the rate limit holds). A read that was under way when it was emptied keeps nothing it got.
+- **Under the rate limit** (the 10 minutes after 1Password refused for it, ended early only by a request that succeeds, such as a resolve): reads answer from what is kept, however old, and ask 1Password nothing; one that finds nothing kept answers the limit at once. A refresh or a second look that 1Password refuses for the limit answers with what was kept, which stays. The connection page then shows the limit above the vaults it kept, never **Connected**.
+- **Never for values**: `secrets.resolve` asks 1Password every time. Persona's manager keeps a resolved model provider key for 10 minutes on its own side (Persona's `docs/extensions/secret-providers.md`, "Launcher keys"); the extension keeps none.
 
 ## Not in this version
 
