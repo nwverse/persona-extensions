@@ -39,6 +39,15 @@ test("titles cannot select another URL authority", () => {
   assert.equal(titleKey("A normal title"), "A_normal_title");
   assert.equal(articleURL("en", "https://evil.invalid"), "https://en.wikipedia.org/wiki/https%3A//evil.invalid");
 });
+test("a feed without a section its wiki or day lacks reads that section as empty", () => {
+  const without = (key: string) => Object.fromEntries(Object.entries(feed).filter(([name]) => name !== key));
+  const japanese = parseFeed(without("onthisday"), "ja", "2026-11-09", 0); // ja.wikipedia has no onthisday
+  assert.deepEqual(japanese.events, []);
+  assert.equal(japanese.popular.length, 1);
+  const early = parseFeed(without("mostread"), "en", "2026-11-09", 0); // today's feed before its most-read counts
+  assert.deepEqual(early.popular, []);
+  assert.equal(early.events.length, 1);
+});
 test("public request paths reject malformed dates, queries and service responses", () => {
   assert.equal(feedPath("2026-11-09"), "/api/rest_v1/feed/featured/2026/11/09");
   for (const date of ["2026-02-30", "2020-13-01", "2015-01-01", "2026-1-01", "2026-01-01T00:00:00Z"]) assert.throws(() => feedPath(date), ReadError);
