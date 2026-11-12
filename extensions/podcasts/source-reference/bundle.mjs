@@ -827,7 +827,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "podcasts", name: "Podcasts \u64AD\u5BA2", version: "0.1.0", icon: "assets/icon.png", description: "\u641C\u7D22\u516C\u5F00\u64AD\u5BA2\uFF0C\u67E5\u770B\u8282\u76EE\u548C\u8FD1\u671F\u5355\u96C6\uFF0C\u628A\u60F3\u542C\u7684\u8282\u76EE\u4FDD\u5B58\u5230\u672C\u5730\u6536\u542C\u6E05\u5355\u3002\u901A\u8FC7 Apple \u516C\u5F00\u76EE\u5F55\u83B7\u53D6\u5143\u6570\u636E\uFF0C\u65E0\u9700\u8D26\u53F7\uFF1B\u4E0D\u4E0B\u8F7D\u5A92\u4F53\uFF0C\u4E0D\u63A7\u5236\u64AD\u653E\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/podcasts/README.md", tags: ["\u64AD\u5BA2", "\u5355\u96C6", "\u6536\u542C\u6E05\u5355", "Apple Podcasts"], engines: { persona: ">=202611101800", extension_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/podcasts.mjs", sha256: "" } }, contributes: { connectors: [{ id: "podcasts", name: "Podcasts", capabilities: ["status", "tools"], hosts: ["itunes.apple.com"], agent_tools: ["podcasts_*"] }], ui: [{ id: "discover", title: "\u53D1\u73B0\u64AD\u5BA2", placement: "nav_page", icon: "music" }] }, permissions: { network: ["itunes.apple.com"], storage: { keys: ["subscriptions"] } } };
+var persona_extension_default = { manifest_version: 1, id: "podcasts", name: "Podcasts \u64AD\u5BA2", version: "0.1.1", icon: "assets/icon.png", description: "\u641C\u7D22\u516C\u5F00\u64AD\u5BA2\uFF0C\u67E5\u770B\u8282\u76EE\u548C\u8FD1\u671F\u5355\u96C6\uFF0C\u628A\u60F3\u542C\u7684\u8282\u76EE\u4FDD\u5B58\u5230\u672C\u5730\u6536\u542C\u6E05\u5355\u3002\u901A\u8FC7 Apple \u516C\u5F00\u76EE\u5F55\u83B7\u53D6\u5143\u6570\u636E\uFF0C\u65E0\u9700\u8D26\u53F7\uFF1B\u4E0D\u4E0B\u8F7D\u5A92\u4F53\uFF0C\u4E0D\u63A7\u5236\u64AD\u653E\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/podcasts/README.md", tags: ["\u64AD\u5BA2", "\u5355\u96C6", "\u6536\u542C\u6E05\u5355", "Apple Podcasts"], engines: { persona: ">=202611101800", extension_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/podcasts.mjs", sha256: "" } }, contributes: { connectors: [{ id: "podcasts", name: "Podcasts", capabilities: ["status", "tools"], hosts: ["itunes.apple.com"], agent_tools: ["podcasts_*"] }], ui: [{ id: "discover", title: "\u53D1\u73B0\u64AD\u5BA2", placement: "nav_page", icon: "music" }] }, permissions: { network: ["itunes.apple.com"], storage: { keys: ["subscriptions"] } } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 18e3, tool: 18e3, response: 2 << 20, fresh: 15 * 6e4, cache: 48, cacheBytes: 2 << 20, gap: 350 });
@@ -1176,7 +1176,13 @@ var Podcasts = class {
   lastError;
   cached(path, fresh) {
     const item = this.cache.get(path);
-    return item && this.monotonic() - item.used < fresh ? { raw: item.raw, at: item.at } : void 0;
+    if (item && this.monotonic() - item.used < fresh) {
+      this.cache.delete(path);
+      item.used = this.monotonic();
+      this.cache.set(path, item);
+      return { raw: item.raw, at: item.at };
+    }
+    return void 0;
   }
   save(path, raw, at) {
     const bytes = new TextEncoder().encode(JSON.stringify(raw)).byteLength;
@@ -1251,7 +1257,7 @@ var Podcasts = class {
       throw new ReadError("bad_answer");
     }
   }
-  async read(path, fresh, signal) {
+  async read(path, fresh, signal, validate) {
     checkSignal(signal);
     const cached = this.cached(path, fresh);
     if (cached) return cached;
@@ -1275,6 +1281,7 @@ var Podcasts = class {
       const request = budget(signal, this.limits.request);
       try {
         const raw = await this.response(path, request.signal);
+        validate(raw);
         const at = this.now();
         this.save(path, raw, at);
         this.lastOK = at;
@@ -1314,15 +1321,24 @@ var Podcasts = class {
     };
   }
   async search(query, limit2 = 20, refresh = false, signal) {
-    const rd = await this.read(searchPath(query, limit2), refresh ? 0 : this.limits.fresh, signal);
+    const rd = await this.read(searchPath(query, limit2), refresh ? 0 : this.limits.fresh, signal, (raw) => {
+      parseSearch(raw, 0);
+    });
     return { ...parseSearch(rd.raw, rd.at), stale: rd.stale };
   }
   async episodes(show, limit2 = 20, refresh = false, signal) {
-    const rd = await this.read(lookupPath(show, limit2), refresh ? 0 : this.limits.fresh, signal);
+    const rd = await this.read(lookupPath(show, limit2), refresh ? 0 : this.limits.fresh, signal, (raw) => {
+      parseEpisodes(raw, show, 0);
+    });
     return { ...parseEpisodes(rd.raw, show, rd.at), stale: rd.stale };
   }
   async show(show, signal) {
-    const path = showPath(show), rd = await this.read(path, this.limits.fresh, signal);
+    const path = showPath(show), rd = await this.read(path, this.limits.fresh, signal, (raw) => {
+      const results2 = raw.results;
+      const item2 = results2?.find((raw2) => !!raw2 && typeof raw2 === "object" && raw2.wrapperType === "track");
+      if (!item2) throw new ReadError("not_found");
+      parseShow(item2);
+    });
     const results = rd.raw.results;
     const item = results?.find((raw) => !!raw && typeof raw === "object" && raw.wrapperType === "track");
     if (!item) throw new ReadError("not_found");
@@ -1393,7 +1409,9 @@ async function callTool(service, name, raw = {}, signal, exact) {
     if (name === "podcasts_search") {
       if (typeof args.query !== "string") throw new ReadError("invalid");
       const result = await service.search(args.query, limit(args.limit), false, request.signal);
-      return clip(result.shows.length ? result.shows.map(showLine).join("\n").trim() : fmt(t.results, { query: args.query }) + "\n" + t.empty, 29999);
+      const stale = result.stale ? `
+${errorText(result.stale, service.locale)} \xB7 ${fmt(t.readAt, { at: readTime(result.at, "Local", service.locale) })}` : "";
+      return clip((result.shows.length ? result.shows.map(showLine).join("\n").trim() : fmt(t.results, { query: args.query }) + "\n" + t.empty) + stale, 29999);
     }
     if (name === "podcasts_episodes") {
       const show = podcastID(args.show), result = await service.episodes(show, limit(args.limit), false, request.signal);
@@ -1402,7 +1420,8 @@ ${result.show.publisher}
 ${result.show.url}
 
 `;
-      return clip(prefix + (result.episodes.length ? result.episodes.map(episodeLine).join("\n") : t.noEpisodes), 29999);
+      return clip(prefix + (result.episodes.length ? result.episodes.map(episodeLine).join("\n") : t.noEpisodes) + (result.stale ? `
+${errorText(result.stale, service.locale)} \xB7 ${fmt(t.readAt, { at: readTime(result.at, "Local", service.locale) })}` : ""), 29999);
     }
     throw unknownMethod(`connector.tools.${name}`);
   } finally {
@@ -1478,7 +1497,7 @@ function transition(state, id2, values = {}) {
     const query = clip(raw.trim(), 200);
     return query ? { v: "search", q: query, k: 0 } : state;
   }
-  if (kind === "library") return { v: "library", q: "", k: 0 };
+  if (kind === "library") return { ...state, v: "library", k: 0, from: void 0, b: void 0 };
   if (kind === "back") return state.from === "library" ? { v: "library", q: "", k: 0 } : state.q ? { v: "search", q: state.q, k: 0 } : initialState;
   if (kind === "home") return initialState;
   return state;
@@ -1594,9 +1613,10 @@ function Root(options) {
           setRefresh((previous) => previous + 1);
           return;
         }
+        if (id2 === "back" && state.v === "show" && (options.uiVersion ?? 0) >= 3) return { pop: true };
         if (id2.startsWith("show:")) {
           const show = result?.loaded.kind === "search" ? result.loaded.result.shows.find((show2) => show2.id === Number(id2.slice(5))) : result?.loaded.kind === "library" ? result.loaded.shows.find((show2) => show2.id === Number(id2.slice(5))) : void 0;
-          if (show) setState({ v: "show", q: state.q, k: show.id, b: show });
+          if (show) setState({ v: "show", q: state.q, k: show.id, from: state.v === "library" ? "library" : void 0, b: show });
           return;
         }
         if (id2.startsWith("save:") || id2.startsWith("remove:")) {
@@ -1640,15 +1660,17 @@ function encodeList(list) {
   return value;
 }
 var ListeningStore = class {
+  constructor(hub, now = Date.now) {
+    this.now = now;
+    this.storage = new ExtensionStorage(hub);
+  }
   list = emptyList();
   loaded = false;
   loading;
   revision;
   serial = Promise.resolve();
+  pending;
   storage;
-  constructor(hub) {
-    this.storage = new ExtensionStorage(hub);
-  }
   snapshot() {
     return structuredClone(this.list);
   }
@@ -1683,23 +1705,60 @@ var ListeningStore = class {
   mutate(change) {
     const work = this.serial.then(async () => {
       if (!this.loaded) await this.load();
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (this.pending) {
+          const pending = this.pending;
+          if (this.now() - pending.at > 5 * 6e4) {
+            this.pending = void 0;
+            this.loaded = false;
+            await this.load();
+            continue;
+          }
+          try {
+            const result = await this.storage.transaction(pending.request);
+            const item = result.items.find((item2) => item2.key === "subscriptions");
+            if (!item || item.deleted || typeof item.revision !== "string") throw new ReadError("storage");
+            this.pending = void 0;
+            this.list = decodeList(pending.request.operations[0].data ?? "");
+            this.revision = item.revision;
+          } catch (error) {
+            if (["storage_unknown", "storage_timeout", "storage_canceled"].includes(error?.code ?? "")) throw new ReadError("storage");
+            if (error?.code === "storage_expired") {
+              this.pending = void 0;
+              this.loaded = false;
+              await this.load();
+              continue;
+            }
+            this.pending = void 0;
+            if (error?.code !== "storage_conflict") throw error;
+            this.loaded = false;
+            await this.load();
+          }
+          continue;
+        }
         const next = { schema_version: 1, shows: change(this.snapshot()) };
         if (next.shows.length > 50) throw new ReadError("storage");
         const { request_id } = await this.storage.request();
+        const request = { request_id, operations: [{ kind: "put", key: "subscriptions", revision: this.revision ?? "", data: encodeList(next) }] };
         try {
-          const result = await this.storage.transaction({ request_id, operations: [{ kind: "put", key: "subscriptions", revision: this.revision ?? "", data: encodeList(next) }] });
+          const result = await this.storage.transaction(request);
           const item = result.items.find((item2) => item2.key === "subscriptions");
           if (!item || item.deleted || typeof item.revision !== "string") throw new ReadError("storage");
           this.list = next;
           this.revision = item.revision;
           return;
         } catch (error) {
-          if (error?.code !== "storage_conflict" || attempt === 1) throw error;
+          const code = error?.code;
+          if (["storage_unknown", "storage_timeout", "storage_canceled"].includes(code ?? "")) {
+            this.pending = { request, at: this.now(), change };
+            throw new ReadError("storage");
+          }
+          if (code !== "storage_conflict" || attempt === 2) throw error;
           this.loaded = false;
           await this.load();
         }
       }
+      throw new ReadError("storage");
     });
     this.serial = work.catch(() => {
     });

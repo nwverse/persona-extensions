@@ -31,7 +31,12 @@ export class Podcasts {
   }
   private cached(path: string, fresh: number): { raw: unknown; at: number } | undefined {
     const item = this.cache.get(path);
-    return item && this.monotonic() - item.used < fresh ? { raw: item.raw, at: item.at } : undefined;
+    if (item && this.monotonic() - item.used < fresh) {
+      // Recency belongs to actual cache use; `at` remains the original read time.
+      this.cache.delete(path); item.used = this.monotonic(); this.cache.set(path, item);
+      return { raw: item.raw, at: item.at };
+    }
+    return undefined;
   }
   private save(path: string, raw: unknown, at: number) {
     const bytes = new TextEncoder().encode(JSON.stringify(raw)).byteLength;
@@ -75,7 +80,7 @@ export class Podcasts {
     if (response.status !== 200) throw new ReadError("http", response.status);
     try { return JSON.parse(text); } catch { throw new ReadError("bad_answer"); }
   }
-  private async read(path: string, fresh: number, signal?: AbortSignal): Promise<{ raw: unknown; at: number; stale?: ReadError }> {
+  private async read(path: string, fresh: number, signal: AbortSignal | undefined, validate: (raw: unknown) => void): Promise<{ raw: unknown; at: number; stale?: ReadError }> {
     checkSignal(signal);
     const cached = this.cached(path, fresh); if (cached) return cached;
     const run = this.queue.then(async () => {
@@ -90,6 +95,8 @@ export class Podcasts {
       const request = budget(signal, this.limits.request);
       try {
         const raw = await this.response(path, request.signal);
+        // Never put a syntactically valid but semantically invalid response in cache.
+        validate(raw);
         const at = this.now(); this.save(path, raw, at); this.lastOK = at; this.lastError = undefined;
         return { raw, at };
       } catch (error) {
@@ -117,15 +124,20 @@ export class Podcasts {
       ...(this.lastError ? { error: t[this.lastError.code] } : {}) };
   }
   async search(query: string, limit = 20, refresh = false, signal?: AbortSignal): Promise<SearchResult> {
-    const rd = await this.read(searchPath(query, limit), refresh ? 0 : this.limits.fresh, signal);
+    const rd = await this.read(searchPath(query, limit), refresh ? 0 : this.limits.fresh, signal, raw => { parseSearch(raw, 0); });
     return { ...parseSearch(rd.raw, rd.at), stale: rd.stale };
   }
   async episodes(show: unknown, limit = 20, refresh = false, signal?: AbortSignal): Promise<EpisodesResult> {
-    const rd = await this.read(lookupPath(show, limit), refresh ? 0 : this.limits.fresh, signal);
+    const rd = await this.read(lookupPath(show, limit), refresh ? 0 : this.limits.fresh, signal, raw => { parseEpisodes(raw, show, 0); });
     return { ...parseEpisodes(rd.raw, show, rd.at), stale: rd.stale };
   }
   async show(show: unknown, signal?: AbortSignal): Promise<Show> {
-    const path = showPath(show), rd = await this.read(path, this.limits.fresh, signal);
+    const path = showPath(show), rd = await this.read(path, this.limits.fresh, signal, raw => {
+      const results = (raw as { results?: unknown[] }).results;
+      const item = results?.find(raw => !!raw && typeof raw === "object" && (raw as { wrapperType?: unknown }).wrapperType === "track");
+      if (!item) throw new ReadError("not_found");
+      parseShow(item);
+    });
     const results = (rd.raw as { results?: unknown[] }).results;
     const item = results?.find(raw => !!raw && typeof raw === "object" && (raw as { wrapperType?: unknown }).wrapperType === "track");
     if (!item) throw new ReadError("not_found");

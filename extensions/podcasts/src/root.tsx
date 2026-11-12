@@ -21,10 +21,11 @@ export function Root(options: RootOptions): Node {
       }
       return callback(async values => {
         if (id === "refresh") { setRefresh(previous => previous + 1); return; }
+        if (id === "back" && state.v === "show" && (options.uiVersion ?? 0) >= 3) return { pop: true };
         if (id.startsWith("show:")) {
           const show = result?.loaded.kind === "search" ? result.loaded.result.shows.find(show => show.id === Number(id.slice(5)))
             : result?.loaded.kind === "library" ? result.loaded.shows.find(show => show.id === Number(id.slice(5))) : undefined;
-          if (show) setState({ v: "show", q: state.q, k: show.id, b: show });
+          if (show) setState({ v: "show", q: state.q, k: show.id, from: state.v === "library" ? "library" : undefined, b: show });
           return;
         }
         if (id.startsWith("save:") || id.startsWith("remove:")) {

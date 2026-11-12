@@ -39,7 +39,7 @@ export function transition(state: PageState, id: string, values: unknown = {}): 
     const query = clip(raw.trim(), 200);
     return query ? { v: "search", q: query, k: 0 } : state;
   }
-  if (kind === "library") return { v: "library", q: "", k: 0 };
+  if (kind === "library") return { ...state, v: "library", k: 0, from: undefined, b: undefined };
   if (kind === "back") return state.from === "library" ? { v: "library", q: "", k: 0 } : state.q ? { v: "search", q: state.q, k: 0 } : initialState;
   if (kind === "home") return initialState;
   return state;
@@ -83,7 +83,7 @@ export function page(props: PageProps): Node {
   if (state.v === "library") {
     if (loaded.kind !== "library") throw new ReadError("invalid");
     return <View key="podcasts" title={t.library} state={encodeState(state)}>{navigation}
-      <Section key="library-shows" title={t.library}>{loaded.shows.length ? loaded.shows.map(show => <Row key={`library-${show.id}`} title={show.title} subtitle={[show.publisher, show.genre].filter(Boolean).join(" · ")} action={act(`show:${show.id}`, { v: "show", q: "", k: show.id, from: "library", b: show }, show.title)} />) : text("library-empty", t.libraryEmpty)}</Section>
+      <Section key="library-shows" title={t.library}>{loaded.shows.length ? loaded.shows.map(show => <Row key={`library-${show.id}`} title={show.title} subtitle={[show.publisher, show.genre].filter(Boolean).join(" · ")} action={act(`show:${show.id}`, { v: "show", q: "", k: show.id, from: "library" as const, b: show }, show.title)} />) : text("library-empty", t.libraryEmpty)}</Section>
       <Section key="library-note">{text("library-note-text", t.libraryHint, "caption")}</Section>
     </View>;
   }

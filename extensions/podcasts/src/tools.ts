@@ -1,6 +1,6 @@
 import { ExtError, noContribution, unknownMethod, withExactParams, type ExactJSON, type Handler } from "@persona/extension";
 import { clip, podcastID, ReadError, type Episode, type Show } from "./model.ts";
-import { errorText, fmt, textsFor } from "./i18n.ts";
+import { errorText, fmt, readTime, textsFor } from "./i18n.ts";
 import { budget, Podcasts } from "./service.ts";
 export function toolsFor(locale = "en") {
   const t = textsFor(locale);
@@ -51,12 +51,13 @@ export async function callTool(service: Podcasts, name: string, raw: unknown = {
     if (name === "podcasts_search") {
       if (typeof args.query !== "string") throw new ReadError("invalid");
       const result = await service.search(args.query, limit(args.limit), false, request.signal);
-      return clip(result.shows.length ? result.shows.map(showLine).join("\n").trim() : fmt(t.results, { query: args.query }) + "\n" + t.empty, 29_999);
+      const stale = result.stale ? `\n${errorText(result.stale, service.locale)} · ${fmt(t.readAt, { at: readTime(result.at, "Local", service.locale) })}` : "";
+      return clip((result.shows.length ? result.shows.map(showLine).join("\n").trim() : fmt(t.results, { query: args.query }) + "\n" + t.empty) + stale, 29_999);
     }
     if (name === "podcasts_episodes") {
       const show = podcastID(args.show), result = await service.episodes(show, limit(args.limit), false, request.signal);
       const prefix = `${result.show.title}\n${result.show.publisher}\n${result.show.url}\n\n`;
-      return clip(prefix + (result.episodes.length ? result.episodes.map(episodeLine).join("\n") : t.noEpisodes), 29_999);
+      return clip(prefix + (result.episodes.length ? result.episodes.map(episodeLine).join("\n") : t.noEpisodes) + (result.stale ? `\n${errorText(result.stale, service.locale)} · ${fmt(t.readAt, { at: readTime(result.at, "Local", service.locale) })}` : ""), 29_999);
     }
     throw unknownMethod(`connector.tools.${name}`);
   } finally { request.dispose(); }

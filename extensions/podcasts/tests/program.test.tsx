@@ -75,6 +75,8 @@ test("show search, episode links, navigation and local saving use native server 
         await h.call("ui.page.event", { session: child, ticket: "host-ticket", interaction: interaction(detail, "show-save") });
         detail = await settled(h, child, "Saved to your listening list.");
         assert.ok(body(detail).includes("Remove from listening list"));
+        const back = await h.call("ui.page.event", { session: child, ticket: "host-ticket", interaction: interaction(detail, "show-back") });
+        assert.equal(back.result.result.pop, true);
         await h.call("ui.page.dispose", { session: child });
       } else {
         let detail = await settled(h, session, "A useful conversation");

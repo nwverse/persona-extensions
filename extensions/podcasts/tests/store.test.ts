@@ -9,7 +9,9 @@ class FakeHub {
   revision = 0;
   requests = 0;
   reads = 0;
+  unknownEvery = false;
   conflict = false;
+  receipts = new Map<string, any>();
   calls: { method: string; params: any }[] = [];
   async call<T>(method: string, params: any): Promise<T> {
     this.calls.push({ method, params });
@@ -21,12 +23,20 @@ class FakeHub {
     }
     if (method === "storage.request") return { request_id: `request-${++this.requests}` } as T;
     if (method === "storage.transaction") {
+      const receipt = this.receipts.get(params.request_id);
+      if (receipt !== undefined) {
+        assert.equal(JSON.stringify(receipt.request), JSON.stringify(params));
+        if (this.unknownEvery) throw Object.assign(new Error("commit reply lost again"), { code: "storage_unknown" });
+        return { items: [{ key: "subscriptions", revision: `r${receipt.revision}` }] } as T;
+      }
       assert.equal(params.request_id, `request-${this.requests}`);
       const operation = params.operations[0];
       assert.equal(operation.key, "subscriptions");
       if (this.conflict || operation.revision !== (this.revision ? `r${this.revision}` : "")) throw Object.assign(new Error("conflict"), { code: "storage_conflict" });
       decodeList(operation.data);
       this.data = operation.data; this.revision++;
+      this.receipts.set(params.request_id, { request: structuredClone(params), revision: this.revision });
+      if (this.unknownEvery) throw Object.assign(new Error("commit reply lost"), { code: "storage_unknown" });
       return { items: [{ key: "subscriptions", revision: `r${this.revision}` }] } as T;
     }
     throw new Error("unexpected method");
@@ -69,6 +79,20 @@ test("CAS conflicts retain committed state and reject the stale mutation", async
   assert.equal(decodeList(hub.data!).shows.length, 1);
   hub.conflict = false;
   await store.remove(sampleShow.collectionId);
+  assert.equal(decodeList(hub.data!).shows.length, 0);
+});
+test("an unknown committed save replays the identical request before another mutation", async () => {
+  const hub = new FakeHub(), store = new ListeningStore(hub), show = parseShow(sampleShow);
+  hub.unknownEvery = true;
+  await assert.rejects(store.save(show), ReadError);
+  hub.unknownEvery = false;
+  assert.equal(store.has(show.id), false);
+  await store.remove(show.id);
+  assert.equal(store.has(show.id), false);
+  const transactions = hub.calls.filter(call => call.method === "storage.transaction");
+  assert.equal(transactions.length, 3);
+  assert.equal(JSON.stringify(transactions[0].params), JSON.stringify(transactions[1].params));
+  assert.notEqual(JSON.stringify(transactions[1].params), JSON.stringify(transactions[2].params));
   assert.equal(decodeList(hub.data!).shows.length, 0);
 });
 test("a CAS conflict reloads the committed list and retries once", async () => {

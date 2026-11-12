@@ -1,4 +1,4 @@
-import { ExtensionStorage, storageBytes, storageValue, type Hub } from "@persona/extension";
+import { ExtensionStorage, storageBytes, storageValue, type Hub, type StorageTransactionParams } from "@persona/extension";
 import { parseStoredShow, ReadError, type Show } from "./model.ts";
 export interface ListeningList { schema_version: 1; shows: Show[] }
 export interface Storage {
@@ -33,8 +33,9 @@ export class ListeningStore implements Storage {
   private loading: Promise<ListeningList> | undefined;
   private revision: string | undefined;
   private serial: Promise<unknown> = Promise.resolve();
+  private pending: { request: StorageTransactionParams; at: number; change: (list: ListeningList) => Show[] } | undefined;
   private readonly storage: ExtensionStorage;
-  constructor(hub: Pick<Hub, "call">) { this.storage = new ExtensionStorage(hub); }
+  constructor(hub: Pick<Hub, "call">, private readonly now: () => number = Date.now) { this.storage = new ExtensionStorage(hub); }
   snapshot() { return structuredClone(this.list); }
   has(id: number) { return this.list.shows.some(show => show.id === id); }
   async load() {
@@ -57,25 +58,55 @@ export class ListeningStore implements Storage {
   private mutate(change: (list: ListeningList) => Show[]): Promise<void> {
     const work = this.serial.then(async () => {
       if (!this.loaded) await this.load();
-      // Another page can commit its own change between our read and write. A
-      // conflict is known failure, not an unknown external effect: refresh once
-      // and reapply the user's intent to the committed list with a fresh host ID.
-      for (let attempt = 0; attempt < 2; attempt++) {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (this.pending) {
+          const pending = this.pending;
+          // A lost reply may follow a committed write. Only the identical
+          // request/payload may recover its receipt; never invent a new write.
+          if (this.now() - pending.at > 5 * 60_000) {
+            this.pending = undefined; this.loaded = false;
+            await this.load();
+            continue;
+          }
+          try {
+            const result = await this.storage.transaction(pending.request);
+            const item = result.items.find(item => item.key === "subscriptions");
+            if (!item || item.deleted || typeof item.revision !== "string") throw new ReadError("storage");
+            this.pending = undefined;
+            this.list = decodeList(pending.request.operations[0].data ?? ""); this.revision = item.revision;
+          } catch (error) {
+            if (["storage_unknown", "storage_timeout", "storage_canceled"].includes((error as { code?: string })?.code ?? "")) throw new ReadError("storage");
+            if ((error as { code?: string })?.code === "storage_expired") {
+              this.pending = undefined; this.loaded = false; await this.load(); continue;
+            }
+            this.pending = undefined;
+            if ((error as { code?: string })?.code !== "storage_conflict") throw error;
+            this.loaded = false; await this.load();
+          }
+          continue;
+        }
         const next = { schema_version: 1 as const, shows: change(this.snapshot()) };
         if (next.shows.length > 50) throw new ReadError("storage");
         const { request_id } = await this.storage.request();
+        const request = { request_id, operations: [{ kind: "put", key: "subscriptions", revision: this.revision ?? "", data: encodeList(next) }] };
         try {
-          const result = await this.storage.transaction({ request_id, operations: [{ kind: "put", key: "subscriptions", revision: this.revision ?? "", data: encodeList(next) }] });
+          const result = await this.storage.transaction(request);
           const item = result.items.find(item => item.key === "subscriptions");
           if (!item || item.deleted || typeof item.revision !== "string") throw new ReadError("storage");
           this.list = next; this.revision = item.revision;
           return;
         } catch (error) {
-          if ((error as { code?: string })?.code !== "storage_conflict" || attempt === 1) throw error;
+          const code = (error as { code?: string })?.code;
+          if (["storage_unknown", "storage_timeout", "storage_canceled"].includes(code ?? "")) {
+            this.pending = { request, at: this.now(), change };
+            throw new ReadError("storage");
+          }
+          if (code !== "storage_conflict" || attempt === 2) throw error;
           this.loaded = false;
           await this.load();
         }
       }
+      throw new ReadError("storage");
     });
     this.serial = work.catch(() => {});
     return work;
