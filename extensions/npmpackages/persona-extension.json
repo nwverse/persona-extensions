@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "npmpackages",
   "name": "npm Packages",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "icon": "assets/icon.png",
   "description": "Search public npm packages, compare latest versions, release dates, licenses, download activity and canonical repository links. Get an exact-version install command without executing it. Anonymous, read-only official registry access.",
   "publisher": "nwverse",
@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/npmpackages.mjs",
-      "sha256": "ed8f6dfa1d2d044a8c169f17f46e748a6fd1012d35f883a42191672e8f9e9358"
+      "sha256": "f25669f6c0ef0c0e486b81b13959808ce95bd5473e1500c08c996bb0e829c7c0"
     }
   },
   "contributes": {
