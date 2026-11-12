@@ -41,8 +41,10 @@ function validCodepoint(n: number) { return n >= 32 && n <= 0x10ffff && !(n >= 0
 export function titleKey(value: unknown): string {
   if (typeof value !== "string") throw new ReadError("invalid");
   const title = plain(value).trim();
-  if (/[<>&]/.test(value)) throw new ReadError("invalid");
-  if (!title || title.length > 255 || /[\u0000-\u001f\u007f#?<>[\]{}|]/.test(title) || Array.from(title).length > 255) throw new ReadError("invalid");
+  // MediaWiki refuses # < > [ ] { } | and controls in a title, and an & only where it forms an HTML entity: ? and a plain &
+  // belong to titles such as "What Is Life?" and "AT&T". Paths and links percent-encode both.
+  if (/[<>]|&(#[0-9]+|#x[0-9a-fA-F]+|[A-Za-z][A-Za-z0-9]*);/.test(value)) throw new ReadError("invalid");
+  if (!title || title.length > 255 || /[\u0000-\u001f\u007f#<>[\]{}|]/.test(title) || Array.from(title).length > 255) throw new ReadError("invalid");
   return title.replaceAll(" ", "_");
 }
 export function articleURL(language: Language, title: string) {

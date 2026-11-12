@@ -28,6 +28,15 @@ test("untrusted product URLs, wrong barcodes and malformed metadata are rejected
   assert.equal(duplicate.products.length, 1);
 });
 
+test("a UPC-A barcode reads the product Open Food Facts answers as its EAN-13", () => {
+  // GET /api/v2/product/737628064502 answers "code": "0737628064502".
+  const upc = { status: 1, status_verbose: "product found", product: { ...productResponse.product, code: "0737628064502", url: undefined } };
+  const found = parseProduct(upc, "737628064502", 0);
+  assert.equal(found.code, "0737628064502");
+  assert.equal(found.url, "https://world.openfoodfacts.org/product/0737628064502");
+  assert.throws(() => parseProduct({ ...upc, product: { ...upc.product, code: "0737628064503" } }, "737628064502", 0), ReadError);
+});
+
 test("query and barcode validation rejects controls and unbounded input", () => {
   for (const query of ["", " ", "x".repeat(121), "bad\n"]) assert.throws(() => queryText(query), ReadError);
   assert.equal(queryText(" dark chocolate "), "dark chocolate");

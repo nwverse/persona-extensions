@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "wikipedia",
   "name": "Wikipedia 每日阅读",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "icon": "assets/icon.png",
   "description": "在 Persona 中读 Wikipedia 今日精选、热门条目和历史上的今天，搜索并阅读条目摘要。内容由 hub 通过公开 API 获取，无需账号。",
   "publisher": "nwverse",
@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/wikipedia.mjs",
-      "sha256": "e5320f88d1577a35bf9c4e4d7e75d76a18e7a77ccf6dc0b212b8aa7c6cca7718"
+      "sha256": "b111337e7bf414ef18004efb5d8e7fa7c408878ee6b9a981bcfb3140840b2ea8"
     }
   },
   "contributes": {
