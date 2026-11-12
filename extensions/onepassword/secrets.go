@@ -270,6 +270,23 @@ func (a *app) secretError(err error, t *texts) error {
 	if onComputer {
 		rateGuide = t.opRateLimitedGuide
 	}
+	retry := json.RawMessage(fmt.Sprintf(`{"retry_after":%d}`, int(rateWindow.Seconds())))
+	if code := opCode(err); onComputer && code != "" { // from the computer (or the hub about it): by its code alone
+		title, guide, needsUser := opWords(t, err)
+		switch {
+		case code == "offline":
+			return errors.New(title + ". " + guide)
+		case needsUser:
+			return &ext.Error{Code: "not_signed_in", Message: title + ". " + guide}
+		case code == codeNotFound:
+			return &ext.Error{Code: "not_found", Message: fmt.Sprintf(t.secretNotFound, says)}
+		case code == codeRateLimited:
+			return &ext.Error{Code: "rate_limited", Message: t.rateLimited + ". " + rateGuide, Data: retry}
+		case code == codeRefused, code == "invalid":
+			return &ext.Error{Code: "refused", Message: fmt.Sprintf(t.says, says)}
+		}
+		return fmt.Errorf(t.says, says)
+	}
 	switch {
 	case errors.Is(err, errNotConfigured):
 		return &ext.Error{Code: "not_signed_in", Message: t.secretNoToken}
@@ -277,19 +294,15 @@ func (a *app) secretError(err error, t *texts) error {
 		return errors.New(t.timedOut + " " + t.opLockedGuide)
 	case errors.Is(err, context.DeadlineExceeded):
 		return errors.New(t.timedOut)
-	case opCode(err) == "offline":
-		return errors.New(t.opOffline + ". " + t.opOfflineGuide)
+	case onComputer: // no code: the hub could not reach the program there
+		return fmt.Errorf(t.says, says)
 	case kindOf(err) == errAuth:
-		if title, guide, ok := opWords(t, err); ok {
-			return &ext.Error{Code: "not_signed_in", Message: title + ". " + guide}
-		}
 		return &ext.Error{Code: "not_signed_in", Message: t.refused + ". " + t.refusedGuide}
 	case kindOf(err) == errRate:
-		return &ext.Error{Code: "rate_limited", Message: t.rateLimited + ". " + rateGuide,
-			Data: json.RawMessage(fmt.Sprintf(`{"retry_after":%d}`, int(rateWindow.Seconds())))}
+		return &ext.Error{Code: "rate_limited", Message: t.rateLimited + ". " + rateGuide, Data: retry}
 	case hasAny(err, "more than one"):
 		return &ext.Error{Code: "refused", Message: fmt.Sprintf(t.says, says)}
-	case notFound(err) || opCode(err) == codeNotFound:
+	case notFound(err):
 		return &ext.Error{Code: "not_found", Message: fmt.Sprintf(t.secretNotFound, says)}
 	case hasAny(err, "could not be parsed", "invalid character", "invalid query parameter", "invalid format"):
 		return &ext.Error{Code: "refused", Message: t.secretInvalid}

@@ -285,21 +285,27 @@ type errKind int
 
 const (
 	errOther errKind = iota
-	errAuth
+	errAuth          // the token refused, or op on the computer missing or without an account: the tools go
 	errRate
+	errLocked // the 1Password app on the computer locked or op not approved: said, but the tools stay
 )
 
 func kindOf(err error) errKind {
 	var rate *op.RateLimitExceededError
 	var coded *ext.Error // a rate limit after clean, or an error of op on a computer (node.go)
-	if errors.As(err, &rate) || errors.As(err, &coded) && coded.Code == codeRateLimited {
+	if errors.As(err, &rate) {
 		return errRate
 	}
-	if coded != nil {
+	if errors.As(err, &coded) && coded.Code != "" { // decided by the code alone: its words quote item names
 		switch coded.Code {
-		case codeMissing, codeNotSignedIn, codeLocked:
+		case codeRateLimited:
+			return errRate
+		case codeMissing, codeNotSignedIn:
 			return errAuth
+		case codeLocked:
+			return errLocked
 		}
+		return errOther
 	}
 	msg := strings.ToLower(err.Error())
 	for _, s := range []string{"service account token", "unauthorized", "authentication", "invalid token", "token is expired", "revoked"} {

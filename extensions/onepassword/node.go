@@ -20,9 +20,12 @@ import (
 	"os/user"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	op "github.com/1password/onepassword-sdk-go"
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -42,6 +45,7 @@ const (
 	codeLocked      = "locked"        // the app is locked, or the user dismissed or never answered its prompt
 	codeNotFound    = "not_found"     // no such vault, item or field
 	codeRateLimited = "rate_limited"
+	codeRefused     = "refused" // a value op gives that Persona can't take (not text)
 	codeFailed      = "failed"
 )
 
@@ -70,13 +74,18 @@ type nodeParams struct {
 	Vault     string `json:"vault"`
 	Item      string `json:"item"`
 	Reference string `json:"reference"`
+	// WithinMS is how long the hub program still waits for the answer: op gets no longer, so nothing (a value least
+	// of all) is read for a caller that has given up.
+	WithinMS int64 `json:"within_ms"`
 }
 
-// nodeStatus is op.status's answer: whether op is there and has an account, without asking the app anything.
+// handoffMargin is the part of the caller's time kept for the answer's way back through the node and the hub.
+const handoffMargin = 500 * time.Millisecond
+
+// nodeStatus is op.status's answer: whether op is installed (op --version, which asks the 1Password app nothing).
 type nodeStatus struct {
 	Installed bool   `json:"installed"`
 	Version   string `json:"version,omitempty"`
-	Accounts  int    `json:"accounts"`
 	Error     string `json:"error,omitempty"`
 	Code      string `json:"code,omitempty"`
 }
@@ -88,13 +97,23 @@ func (n *nodeApp) handle(ctx context.Context, method string, raw json.RawMessage
 			return nil, &ext.Error{Code: "invalid", Message: "invalid op parameters"}
 		}
 	}
-	ctx, cancel := context.WithTimeout(ctx, opTimeout)
+	limit := opTimeout
+	if in.WithinMS > 0 {
+		limit = min(limit, time.Duration(in.WithinMS)*time.Millisecond-handoffMargin)
+	}
+	if limit <= 0 {
+		return nil, &ext.Error{Code: codeLocked, Message: "no time left to ask op"}
+	}
+	ctx, cancel := context.WithTimeout(ctx, limit)
 	defer cancel()
 	if method == "status" { // asks the app nothing, so it never waits behind a prompt
 		return n.status(ctx), nil
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if ctx.Err() != nil { // waited behind another op call until the caller gave up
+		return nil, &ext.Error{Code: codeLocked, Message: "op was busy with an earlier request that waited for the 1Password app"}
+	}
 	switch method {
 	case "vaults":
 		return n.vaults(ctx)
@@ -116,6 +135,10 @@ func (n *nodeApp) handle(ctx context.Context, method string, raw json.RawMessage
 		if err != nil {
 			return nil, err
 		}
+		if !utf8.Valid(out) { // a file's bytes, say: JSON would mangle them, so none is handed on
+			clear(out)
+			return nil, &ext.Error{Code: codeRefused, Message: "this field's value is not text"}
+		}
 		return map[string]string{"value": string(out)}, nil
 	}
 	return nil, ext.UnknownMethod("op." + method)
@@ -126,17 +149,7 @@ func (n *nodeApp) status(ctx context.Context) nodeStatus {
 	if err != nil {
 		return statusOf(nodeStatus{}, err)
 	}
-	st := nodeStatus{Installed: true, Version: clip(strings.TrimSpace(string(out)), 40)}
-	out, err = n.run(ctx, "account", "list", "--format", "json")
-	if err != nil {
-		return statusOf(st, err)
-	}
-	var accounts []json.RawMessage // their addresses and e-mails stay here: the page needs only how many
-	if json.Unmarshal(out, &accounts) != nil {
-		return statusOf(st, &ext.Error{Code: codeFailed, Message: "op's account list could not be read"})
-	}
-	st.Accounts = len(accounts)
-	return st
+	return nodeStatus{Installed: true, Version: clip(strings.TrimSpace(string(out)), 40)}
 }
 
 func statusOf(st nodeStatus, err error) nodeStatus {
@@ -175,12 +188,12 @@ type cliItem struct {
 		Label string `json:"label"`
 	} `json:"sections"`
 	Fields []struct {
-		ID      string `json:"id"`
-		Type    string `json:"type"`
-		Purpose string `json:"purpose"`
-		Label   string `json:"label"`
-		Value   string `json:"value"`
-		TOTP    string `json:"totp"`
+		ID      string          `json:"id"`
+		Type    string          `json:"type"`
+		Purpose string          `json:"purpose"`
+		Label   string          `json:"label"`
+		Value   json.RawMessage `json:"value"`
+		TOTP    string          `json:"totp"`
 		Section *struct {
 			ID string `json:"id"`
 		} `json:"section"`
@@ -261,8 +274,9 @@ func (n *nodeApp) item(ctx context.Context, vault, item string) (op.Item, error)
 	return scrubItem(full, codes...), nil
 }
 
-// itemFromCLI is op's item as the SDK's type, values included (scrubItem drops them before it leaves), and the
-// current one-time codes op adds to its one-time password fields, which are values too.
+// itemFromCLI is op's item as the SDK's type, values included (scrubItem drops them before it leaves), and other
+// values to scrub for: the current one-time codes op adds to its one-time password fields, and the parts of a value
+// that is not one string (an address).
 func itemFromCLI(it cliItem) (op.Item, []string) {
 	out := op.Item{ID: it.ID, Title: it.Title, Category: cliCategory(it.Category), VaultID: it.Vault.ID, Tags: it.Tags,
 		Version: it.Version, CreatedAt: it.CreatedAt.Time, UpdatedAt: it.UpdatedAt.Time}
@@ -274,11 +288,13 @@ func itemFromCLI(it cliItem) (op.Item, []string) {
 	}
 	var otps []string
 	for _, f := range it.Fields {
+		value, parts := cliValue(f.Value)
+		otps = append(otps, parts...)
 		if f.Purpose == "NOTES" {
-			out.Notes = f.Value
+			out.Notes = value
 			continue
 		}
-		field := op.ItemField{ID: f.ID, Title: f.Label, FieldType: cliFieldType(f.Type), Value: f.Value}
+		field := op.ItemField{ID: f.ID, Title: f.Label, FieldType: cliFieldType(f.Type), Value: value}
 		if f.Section != nil && f.Section.ID != "" {
 			sid := f.Section.ID
 			field.SectionID = &sid
@@ -290,6 +306,39 @@ func itemFromCLI(it cliItem) (op.Item, []string) {
 	}
 	out.Files = make([]op.ItemFile, len(it.Files))
 	return out, otps
+}
+
+// cliValue is a field's value as text, and when op wrote it as something other than a string (an address is an
+// object), every string and number in it, each a value to scrub for.
+func cliValue(raw json.RawMessage) (string, []string) {
+	var s string
+	if len(raw) == 0 || json.Unmarshal(raw, &s) == nil {
+		return s, nil
+	}
+	var v any
+	if json.Unmarshal(raw, &v) != nil {
+		return string(raw), nil
+	}
+	var parts []string
+	var walk func(any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case string:
+			parts = append(parts, x)
+		case float64:
+			parts = append(parts, strconv.FormatFloat(x, 'f', -1, 64))
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range x {
+				walk(e)
+			}
+		}
+	}
+	walk(v)
+	return strings.Join(parts, "\n"), parts
 }
 
 // scrubItem is an item as it may leave the computer: what itemFromSDK keeps, and nothing it drops. Any value that also
@@ -419,11 +468,15 @@ func runOp(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, &ext.Error{Code: codeMissing, Message: "op (the 1Password CLI) is not installed on this computer"}
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
-	cmd.Env = opEnv(os.Environ())
+	cmd.Env = opEnv(os.Environ(), runtime.GOOS, os.Getuid(), exists)
 	var stdout, stderr limitedBuffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.WaitDelay = 2 * time.Second
 	err := cmd.Run()
+	if err == nil && stdout.over {
+		clear(stdout.Bytes())
+		return nil, &ext.Error{Code: codeFailed, Message: "op's answer was too large"}
+	}
 	if err == nil {
 		return stdout.Bytes(), nil
 	}
@@ -447,35 +500,55 @@ func findOp() string {
 }
 
 // opEnv is the environment op runs in: the node's, without what would make op sign in some other way, and with HOME
-// (op keeps its settings there and finds the app through it).
-func opEnv(env []string) []string {
-	out := make([]string, 0, len(env)+1)
-	home := false
+// (op keeps its settings there and finds the app through it). On Linux op reaches the 1Password app through the
+// user's session, which the node's clean environment leaves out: XDG_RUNTIME_DIR and the session bus are added from
+// /run/user/<uid> when they are there (not tried with a real app yet).
+func opEnv(env []string, goos string, uid int, exists func(string) bool) []string {
+	out := make([]string, 0, len(env)+3)
+	have := map[string]bool{}
 	for _, kv := range env {
 		k, _, _ := strings.Cut(kv, "=")
 		switch k {
 		case "OP_SERVICE_ACCOUNT_TOKEN", "OP_CONNECT_HOST", "OP_CONNECT_TOKEN", "OP_SESSION", "OP_FORMAT":
 			continue
-		case "HOME":
-			home = true
 		}
 		if strings.HasPrefix(k, "OP_SESSION_") {
 			continue
 		}
+		have[k] = true
 		out = append(out, kv)
 	}
-	if !home {
+	if !have["HOME"] {
 		if u, err := user.Current(); err == nil && u.HomeDir != "" {
 			out = append(out, "HOME="+filepath.Clean(u.HomeDir))
+		}
+	}
+	if goos == "linux" {
+		run := "/run/user/" + strconv.Itoa(uid)
+		if !have["XDG_RUNTIME_DIR"] && exists(run) {
+			out = append(out, "XDG_RUNTIME_DIR="+run)
+		}
+		if !have["DBUS_SESSION_BUS_ADDRESS"] && exists(run+"/bus") {
+			out = append(out, "DBUS_SESSION_BUS_ADDRESS=unix:path="+run+"/bus")
 		}
 	}
 	return out
 }
 
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // errorPrefix is op's "[ERROR] 2026/01/02 15:04:05 " in front of each message.
 var errorPrefix = regexp.MustCompile(`^\[ERROR\]\s+\d{4}/\d{2}/\d{2}\s+\d{2}:\d{2}:\d{2}\s+`)
 
-// opError is what op wrote to stderr as an error with a code the hub program reads: its last message, one line.
+// quoted is what op's messages name in quotes, and references: an item called "Rate limit key" or "Google
+// Authentication" must not decide what kind of error it is.
+var quoted = regexp.MustCompile(`"[^"]*"|'[^']*'|“[^”]*”|op://\S+`)
+
+// opError is what op wrote to stderr as an error with a code the hub program reads: its last message, one line. The
+// code comes from op's own fixed words, with whatever it quotes left out, not-found ones first.
 func opError(stderr string) error {
 	msg := ""
 	for _, line := range strings.Split(strings.TrimSpace(stderr), "\n") {
@@ -487,7 +560,7 @@ func opError(stderr string) error {
 		msg = "op failed without saying why"
 	}
 	msg = oneLine(msg, 300)
-	low := strings.ToLower(msg)
+	low := strings.ToLower(quoted.ReplaceAllString(msg, `""`))
 	has := func(words ...string) bool {
 		for _, w := range words {
 			if strings.Contains(low, w) {
@@ -498,31 +571,40 @@ func opError(stderr string) error {
 	}
 	code := codeFailed
 	switch {
-	case has("too many requests", "rate limit"):
-		code = codeRateLimited
-	case has("locked", "authorization prompt dismissed", "authorization timeout", "authorization was denied",
-		"connecting to desktop app", "connect to the 1password app", "cannot connect to 1password"):
-		code = codeLocked
-	case has("not currently signed in", "not signed in", "no account found", "no accounts configured", "account is not signed in",
-		"sign in", "signin"):
-		code = codeNotSignedIn
-	case has("isn't an item", "isn't a vault", "isn't a field", "not found", "could not find", "no item", "no vault",
-		"no field", "does not exist"):
+	case has("isn't an item", "isn't a vault", "isn't a field", "isn't a section", "does not have a field",
+		"doesn't have a field", "no item matched", "could not find", "not found", "does not exist", "doesn't exist"):
 		code = codeNotFound
+	case has("too many requests", "rate limit exceeded", "rate-limited"):
+		code = codeRateLimited
+	case has("authorization prompt dismissed", "authorization timeout", "authorization was denied", "app is locked",
+		"1password is locked", "connecting to desktop app", "cannot connect to 1password", "connect to the 1password app"):
+		code = codeLocked
+	case has("not currently signed in", "account is not signed in", "no accounts configured", "no account found",
+		"not signed in"):
+		code = codeNotSignedIn
 	}
 	return &ext.Error{Code: code, Message: msg}
 }
 
-// limitedBuffer keeps the first mostOpOutput bytes a command writes and drops the rest.
-type limitedBuffer struct{ bytes.Buffer }
+// limitedBuffer keeps the first mostOpOutput bytes a command writes, drops the rest and notes that it did.
+type limitedBuffer struct {
+	bytes.Buffer
+	over bool
+}
 
 func (b *limitedBuffer) Write(p []byte) (int, error) {
-	if room := mostOpOutput - b.Len(); room > 0 {
-		if len(p) > room {
-			b.Buffer.Write(p[:room])
+	room := mostOpOutput - b.Len()
+	if len(p) > room {
+		b.over = true
+		p2 := p
+		if room > 0 {
+			p2 = p[:room]
 		} else {
-			b.Buffer.Write(p)
+			p2 = nil
 		}
+		b.Buffer.Write(p2)
+		return len(p), nil
 	}
+	b.Buffer.Write(p)
 	return len(p), nil
 }

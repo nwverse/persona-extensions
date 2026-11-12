@@ -149,7 +149,10 @@ func (a *app) status() map[string]any {
 	case a.lastErr != nil && a.errKind == errAuth && a.machine != "":
 		out["state"] = "not_signed_in"
 		out["error"] = a.lastErr.Error()
-		out["guide"] = []string{"Unlock the 1Password app on that computer, check that Integrate with 1Password CLI is on in its Developer settings, and approve op when it asks."}
+		out["guide"] = []string{"In the 1Password app on that computer, turn on Integrate with 1Password CLI (Settings › Developer) and sign in."}
+		if opCode(a.lastErr) == codeMissing {
+			out["guide"] = []string{"Install the 1Password CLI (op) on that computer, then turn on Integrate with 1Password CLI in the 1Password app's Developer settings."}
+		}
 	case a.lastErr != nil && a.errKind == errAuth:
 		out["state"] = "not_signed_in"
 		out["error"] = a.lastErr.Error()

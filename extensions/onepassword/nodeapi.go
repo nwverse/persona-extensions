@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"time"
 
 	op "github.com/1password/onepassword-sdk-go"
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -26,32 +27,44 @@ type nodeAPI struct {
 	machine string
 }
 
+// ask calls method on the computer with params and how long this side still waits (within_ms), so op there gives up
+// when the caller does rather than finishing (reading a value, say) for nobody.
+func (n nodeAPI) ask(ctx context.Context, method string, params map[string]any, out any) error {
+	if params == nil {
+		params = map[string]any{}
+	}
+	if d, ok := ctx.Deadline(); ok {
+		params["within_ms"] = max(time.Until(d).Milliseconds(), 1)
+	}
+	return n.call(ctx, n.machine, method, params, out)
+}
+
 func (n nodeAPI) listVaults(ctx context.Context) ([]op.VaultOverview, error) {
 	var out []op.VaultOverview
-	return out, n.call(ctx, n.machine, "op.vaults", map[string]any{}, &out)
+	return out, n.ask(ctx, "op.vaults", nil, &out)
 }
 
 func (n nodeAPI) listItems(ctx context.Context, vaultID string) ([]op.ItemOverview, error) {
 	var out []op.ItemOverview
-	return out, n.call(ctx, n.machine, "op.items", map[string]any{"vault": vaultID}, &out)
+	return out, n.ask(ctx, "op.items", map[string]any{"vault": vaultID}, &out)
 }
 
 func (n nodeAPI) getItem(ctx context.Context, vaultID, itemID string) (op.Item, error) {
 	var out op.Item
-	return out, n.call(ctx, n.machine, "op.item", map[string]any{"vault": vaultID, "item": itemID}, &out)
+	return out, n.ask(ctx, "op.item", map[string]any{"vault": vaultID, "item": itemID}, &out)
 }
 
 func (n nodeAPI) resolve(ctx context.Context, reference string) (string, error) {
 	var out struct {
 		Value string `json:"value"`
 	}
-	return out.Value, n.call(ctx, n.machine, "op.read", map[string]any{"reference": reference}, &out)
+	return out.Value, n.ask(ctx, "op.read", map[string]any{"reference": reference}, &out)
 }
 
-// opStatus asks the computer whether op is installed and has an account (asking the 1Password app nothing).
+// opStatus asks the computer whether op is installed (op --version: asking the 1Password app nothing).
 func (n nodeAPI) opStatus(ctx context.Context) (nodeStatus, error) {
 	var out nodeStatus
-	return out, n.call(ctx, n.machine, "op.status", map[string]any{}, &out)
+	return out, n.ask(ctx, "op.status", nil, &out)
 }
 
 // opCode is the code of an error from the computer's program, or from the hub about that computer ("offline").
@@ -63,8 +76,8 @@ func opCode(err error) string {
 	return ""
 }
 
-// opWords are the title and guide the page and the secret provider give for an error of op on a computer; ok is
-// false for an error that is not about op (then the usual words apply).
+// opWords are the title and guide the page and the secret provider give for an error of op on a computer that needs
+// the user (op missing, no account, locked or not approved, the computer offline); ok is false for any other error.
 func opWords(t *texts, err error) (title, guide string, ok bool) {
 	switch opCode(err) {
 	case codeMissing:

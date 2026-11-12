@@ -204,8 +204,11 @@ func TestTheComputerDropsValuesBeforeAnswering(t *testing.T) {
 	// Status asks the app nothing and keeps the accounts' addresses on the computer.
 	res, _ = n.handle(context.Background(), "status", nil)
 	b, _ = json.Marshal(res)
-	if st := res.(nodeStatus); !st.Installed || st.Accounts != 1 || st.Version != "2.30.3" || strings.Contains(string(b), "example.com") {
+	if st := res.(nodeStatus); !st.Installed || st.Version != "2.30.3" {
 		t.Fatalf("status: %s", b)
+	}
+	if ran := cli.ran(); ran[len(ran)-1] != "--version" {
+		t.Fatalf("status ran %q", ran)
 	}
 }
 
@@ -247,6 +250,11 @@ func TestOpErrorsCarryCodes(t *testing.T) {
 		{"[ERROR] 2026/01/02 03:04:05 connecting to desktop app: 1Password is locked", codeLocked, ""},
 		{"[ERROR] 2026/01/02 03:04:05 \"x\" isn't an item. Specify the item with its UUID, name, or domain.", codeNotFound, ""},
 		{"[ERROR] 2026/01/02 03:04:05 Too many requests", codeRateLimited, ""},
+		// What op quotes (item and vault names, references) never decides the kind.
+		{`[ERROR] 2026/01/02 03:04:05 could not read secret 'op://Work/Google Authentication/password': "Google Authentication" isn't an item in the "Locked box" vault`, codeNotFound, ""},
+		{`[ERROR] 2026/01/02 03:04:05 "Rate limit key" isn't an item. Specify the item with its UUID, name, or domain.`, codeNotFound, ""},
+		{`[ERROR] 2026/01/02 03:04:05 item 'Apple sign in' does not have a field 'otp'`, codeNotFound, ""},
+		{`[ERROR] 2026/01/02 03:04:05 "Not signed in yet" failed for another reason`, codeFailed, ""},
 		{"warning: something\n[ERROR] 2026/01/02 03:04:05 something else broke", codeFailed, "something else broke"},
 		{"", codeFailed, "op failed without saying why"},
 	} {
@@ -258,10 +266,19 @@ func TestOpErrorsCarryCodes(t *testing.T) {
 }
 
 func TestOpRunsInTheAppsSignIn(t *testing.T) {
-	env := opEnv([]string{"PATH=/bin", "OP_SERVICE_ACCOUNT_TOKEN=" + testToken, "OP_CONNECT_TOKEN=x", "OP_SESSION_my=abc", "OP_FORMAT=human", "LANG=en_US.UTF-8"})
-	joined := strings.Join(env, "\n")
-	if strings.Contains(joined, "OP_") || !strings.Contains(joined, "LANG=en_US.UTF-8") || !strings.Contains(joined, "HOME=") {
-		t.Fatalf("env: %q", env)
+	base := []string{"PATH=/bin", "OP_SERVICE_ACCOUNT_TOKEN=" + testToken, "OP_CONNECT_TOKEN=x", "OP_SESSION_my=abc", "OP_FORMAT=human", "LANG=en_US.UTF-8"}
+	all := func(string) bool { return true }
+	joined := strings.Join(opEnv(base, "darwin", 501, all), "\n")
+	if strings.Contains(joined, "OP_") || !strings.Contains(joined, "LANG=en_US.UTF-8") || !strings.Contains(joined, "HOME=") || strings.Contains(joined, "XDG_") {
+		t.Fatalf("env: %q", joined)
+	}
+	// Linux: the user's session, which the node leaves out, when it is there.
+	joined = strings.Join(opEnv(base, "linux", 1000, all), "\n")
+	if !strings.Contains(joined, "XDG_RUNTIME_DIR=/run/user/1000") || !strings.Contains(joined, "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus") {
+		t.Fatalf("linux env: %q", joined)
+	}
+	if joined = strings.Join(opEnv(append(base, "XDG_RUNTIME_DIR=/x"), "linux", 1000, func(string) bool { return false }), "\n"); strings.Count(joined, "XDG_RUNTIME_DIR") != 1 || strings.Contains(joined, "DBUS") {
+		t.Fatalf("linux env kept: %q", joined)
 	}
 
 	dir := t.TempDir()
@@ -366,7 +383,7 @@ func TestTheComputersTroublesAreSaidOnce(t *testing.T) {
 		if codeOf(err) != "not_signed_in" || !strings.Contains(err.Error(), "1Password on that computer is locked") {
 			t.Fatalf("resolve: %v", err)
 		}
-		if st := a.status(); st["state"] != "not_signed_in" || !strings.Contains(fmt.Sprint(st["guide"]), "Unlock the 1Password app") {
+		if st := a.status(); st["state"] != "ok" { // a dismissed prompt is routine: the tools stay offered
 			t.Fatalf("status: %v", st)
 		}
 		vaults := 0
@@ -453,5 +470,105 @@ func TestTheComputerIsPickedInTheSettings(t *testing.T) {
 	p := m.Configuration.Properties[m.Node.Machines]
 	if strings.Join(m.Node.Args, " ") != "node" || p.MaxItems != 1 || p.Items.Format != "machine" || len(p.Items.OS) != 2 || m.Secrets[0].Required {
 		t.Fatalf("manifest: %+v", m)
+	}
+}
+
+func TestTheComputersCodeDecidesNotItsWords(t *testing.T) {
+	// The computer said not_found; its words quote an item named like an error of another kind.
+	cli := newFakeCLI()
+	cli.fail["read --no-newline -- op://Dev/Google Authentication/password"] = opError(
+		`[ERROR] 2026/01/02 03:04:05 "Google Authentication" isn't an item in the "Dev" vault`)
+	cli.fail["read --no-newline -- op://Dev/Unauthorized revoked/password"] = &ext.Error{Code: codeFailed, Message: "unauthorized: revoked"}
+	a, _ := onComputer(t, cli)
+	_, err := secretsCall(t, a, "resolve", map[string]any{"reference": "op://Dev/Google Authentication/password"})
+	if codeOf(err) != "not_found" {
+		t.Fatalf("resolve: %s %v", codeOf(err), err)
+	}
+	if st := a.status(); st["state"] != "ok" {
+		t.Fatalf("a missing item withdrew the tools: %v", st)
+	}
+	// A failure in words that sound like a refused token is not the token's words on the computer.
+	_, err = secretsCall(t, a, "resolve", map[string]any{"reference": "op://Dev/Unauthorized revoked/password"})
+	if codeOf(err) != "" || strings.Contains(err.Error(), textsFor("en").refusedGuide) {
+		t.Fatalf("resolve: %s %v", codeOf(err), err)
+	}
+	if st := a.status(); st["state"] != "ok" {
+		t.Fatalf("status: %v", st)
+	}
+	// Missing op does withdraw them, and says why.
+	a.record(&ext.Error{Code: codeMissing, Message: "op (the 1Password CLI) is not installed on this computer"})
+	if st := a.status(); st["state"] != "not_signed_in" || !strings.Contains(fmt.Sprint(st["guide"]), "Install the 1Password CLI") {
+		t.Fatalf("status: %v", st)
+	}
+}
+
+func TestOpGetsOnlyTheCallersTime(t *testing.T) {
+	var left time.Duration
+	n := &nodeApp{run: func(ctx context.Context, _ ...string) ([]byte, error) {
+		d, _ := ctx.Deadline()
+		left = time.Until(d)
+		return []byte(secretValues[1]), nil
+	}}
+	if _, err := n.handle(context.Background(), "read", json.RawMessage(`{"reference":"op://Dev/GitHub token/credential","within_ms":2000}`)); err != nil {
+		t.Fatal(err)
+	}
+	if left <= 0 || left > 1600*time.Millisecond {
+		t.Fatalf("op got %v of the caller's 2 s", left)
+	}
+	if _, err := n.handle(context.Background(), "read", json.RawMessage(`{"reference":"op://Dev/GitHub token/credential","within_ms":300}`)); codeOf(err) != codeLocked {
+		t.Fatalf("no time left: %v", err)
+	}
+	// The hub program sends how long it waits.
+	var params map[string]any
+	api := nodeAPI{machine: "m1", call: func(_ context.Context, _, _ string, p, _ any) error {
+		params = p.(map[string]any)
+		return nil
+	}}
+	ctx, cancel := context.WithTimeout(context.Background(), 9*time.Second)
+	defer cancel()
+	_, _ = api.resolve(ctx, "op://Dev/GitHub token/credential")
+	if ms, _ := params["within_ms"].(int64); ms < 8000 || ms > 9000 {
+		t.Fatalf("within_ms: %v", params["within_ms"])
+	}
+}
+
+func TestValuesOpCannotHandOnWhole(t *testing.T) {
+	cli := newFakeCLI()
+	cli.answers["read --no-newline -- op://Dev/GitHub token/credential"] = "\xff\xfe binary"
+	a, _ := onComputer(t, cli)
+	_, err := secretsCall(t, a, "resolve", map[string]any{"reference": "op://Dev/GitHub token/credential"})
+	if codeOf(err) != "refused" {
+		t.Fatalf("binary value: %s %v", codeOf(err), err)
+	}
+	var b limitedBuffer
+	_, _ = b.Write(make([]byte, mostOpOutput))
+	if b.over {
+		t.Fatal("over at the limit")
+	}
+	_, _ = b.Write([]byte{1})
+	if !b.over || b.Len() != mostOpOutput {
+		t.Fatalf("past the limit: over %v, %d bytes", b.over, b.Len())
+	}
+}
+
+func TestAFieldOpWritesAsAnObjectIsScrubbedToo(t *testing.T) {
+	it := cliItem{ID: fixItem, Title: "Home 12 Example Street"}
+	it.Vault.ID = fixVault
+	it.Fields = append(it.Fields, struct {
+		ID      string          `json:"id"`
+		Type    string          `json:"type"`
+		Purpose string          `json:"purpose"`
+		Label   string          `json:"label"`
+		Value   json.RawMessage `json:"value"`
+		TOTP    string          `json:"totp"`
+		Section *struct {
+			ID string `json:"id"`
+		} `json:"section"`
+	}{ID: "address", Type: "ADDRESS", Label: "address", Value: json.RawMessage(`{"street": "12 Example Street", "zip": 12345, "country": "xx"}`)})
+	full, extra := itemFromCLI(it)
+	out := scrubItem(full, extra...)
+	b, _ := json.Marshal(out)
+	if strings.Contains(string(b), "12 Example Street") || strings.Contains(string(b), "12345") || out.Title != "Home "+hidden {
+		t.Fatalf("item: %s", b)
 	}
 }

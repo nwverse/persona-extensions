@@ -73,7 +73,7 @@ func (a *app) view(ctx context.Context, r *ext.UIRequest) *wire.View {
 			guide, says = t.timedOut+" "+unreachableGuide, ""
 		case onOp:
 			title, guide = opTitle, opGuide
-		case kindOf(err) == errAuth:
+		case kindOf(err) == errAuth && machine == "":
 			title, guide = t.refused, t.refusedGuide
 		case kindOf(err) == errRate:
 			title, guide = t.rateLimited, rateGuide
