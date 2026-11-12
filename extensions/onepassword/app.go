@@ -40,6 +40,10 @@ type app struct {
 	locale  string // the hub's language, for the words of a settings check
 	api     opAPI
 	lastOK  time.Time
+	// rateErr is 1Password's last refusal for its rate limit and rateAt when, kept apart from lastErr so another
+	// error meanwhile does not end the window early (cache.go); a request that succeeds ends it.
+	rateErr error
+	rateAt  time.Time
 	// lastErr is the last error 1Password answered, already redacted; errAt when.
 	lastErr error
 	errKind errKind
@@ -114,11 +118,14 @@ func (a *app) record(err error) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err == nil {
-		a.lastOK, a.lastErr = a.now(), nil
+		a.lastOK, a.lastErr, a.rateErr, a.rateAt = a.now(), nil, nil, time.Time{}
 		return nil
 	}
 	clean := a.clean(err)
 	a.lastErr, a.errKind, a.errAt = clean, kindOf(err), a.now()
+	if a.errKind == errRate {
+		a.rateErr, a.rateAt = clean, a.errAt
+	}
 	return clean
 }
 
@@ -254,8 +261,11 @@ func (a *app) settings(ctx context.Context, method string, raw json.RawMessage) 
 }
 
 // listVaults reads the vaults Persona can see, or answers what was kept of them (cache.go).
-func (a *app) listVaults(ctx context.Context) ([]vaultInfo, error) {
-	vs, err := cachedRead(a, func(c *metaCache) (kept[[]vaultInfo], bool) { return c.getVaults() },
+func (a *app) listVaults(ctx context.Context) ([]vaultInfo, error) { return a.readVaults(ctx, false) }
+
+// readVaults is listVaults; again asks 1Password even when what is kept is fresh (the page, a miss).
+func (a *app) readVaults(ctx context.Context, again bool) ([]vaultInfo, error) {
+	vs, err := cachedRead(a, again, func(c *metaCache) (kept[[]vaultInfo], bool) { return c.getVaults() },
 		func(c *metaCache, k kept[[]vaultInfo]) { c.vaults = &k },
 		func() ([]vaultInfo, error) {
 			api, err := a.client(ctx)
@@ -276,9 +286,14 @@ func (a *app) listVaults(ctx context.Context) ([]vaultInfo, error) {
 	return slices.Clone(vs), err
 }
 
-// listItems reads a vault's item overviews, or answers what was kept of them.
+// listItems reads a vault's item overviews, or answers what was kept of them. What it answers shares Tags and
+// Websites with the cache: read-only.
 func (a *app) listItems(ctx context.Context, vaultID string) ([]itemInfo, error) {
-	its, err := cachedRead(a, func(c *metaCache) (kept[[]itemInfo], bool) { k, ok := c.items[vaultID]; return k, ok },
+	return a.readItems(ctx, vaultID, false)
+}
+
+func (a *app) readItems(ctx context.Context, vaultID string, again bool) ([]itemInfo, error) {
+	its, err := cachedRead(a, again, func(c *metaCache) (kept[[]itemInfo], bool) { k, ok := c.items[vaultID]; return k, ok },
 		func(c *metaCache, k kept[[]itemInfo]) {
 			if c.items == nil {
 				c.items = map[string]kept[[]itemInfo]{}
@@ -304,11 +319,15 @@ func (a *app) listItems(ctx context.Context, vaultID string) ([]itemInfo, error)
 	return slices.Clone(its), err
 }
 
-// getItem reads an item's structure (no values: itemFromSDK drops them before anything is kept), or answers what was
-// kept of it.
+// getItem reads an item's structure (no values: itemFromSDK drops them before anything is kept), or answers a copy of
+// what was kept of it.
 func (a *app) getItem(ctx context.Context, vaultID, itemID string) (itemDetail, error) {
+	return a.readItem(ctx, vaultID, itemID, false)
+}
+
+func (a *app) readItem(ctx context.Context, vaultID, itemID string, again bool) (itemDetail, error) {
 	key := vaultID + "/" + itemID
-	return cachedRead(a, func(c *metaCache) (kept[itemDetail], bool) { k, ok := c.details[key]; return k, ok },
+	d, err := cachedRead(a, again, func(c *metaCache) (kept[itemDetail], bool) { k, ok := c.details[key]; return k, ok },
 		func(c *metaCache, k kept[itemDetail]) {
 			if c.details == nil {
 				c.details = map[string]kept[itemDetail]{}
@@ -327,4 +346,6 @@ func (a *app) getItem(ctx context.Context, vaultID, itemID string) (itemDetail, 
 			a.record(nil)
 			return itemFromSDK(raw), nil
 		})
+	d.Tags, d.Websites, d.Fields = slices.Clone(d.Tags), slices.Clone(d.Websites), slices.Clone(d.Fields)
+	return d, err
 }

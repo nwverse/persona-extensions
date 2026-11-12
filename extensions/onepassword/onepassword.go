@@ -83,11 +83,13 @@ type itemInfo struct {
 	Updated                      time.Time
 }
 
-// fieldInfo is a field's name, type, section and reference; ID and SectionID (1Password's own, never values) let a
-// reference that names them by ID be matched against what was kept.
+// fieldInfo is a field's name, type, section and reference; ID and SectionID (1Password's own, never values) and the
+// keys of its and its section's names as 1Password has them (nameKey) let a reference be matched against what was
+// kept, also by a name that held a value and is kept scrubbed.
 type fieldInfo struct {
 	Title, Type, Section, Reference string
 	ID, SectionID                   string
+	TitleKey, SectionKey            string
 }
 
 type itemDetail struct {
@@ -155,7 +157,10 @@ func itemFromSDK(it op.Item) itemDetail {
 	}
 	for _, f := range it.Fields {
 		sid := sectionOf(f, sections)
-		fi := fieldInfo{Title: s.clean(f.Title), Type: string(f.FieldType), ID: f.ID, SectionID: sid}
+		fi := fieldInfo{Title: s.clean(f.Title), Type: string(f.FieldType), ID: f.ID, SectionID: sid, TitleKey: nameKey(f.Title)}
+		if sid != "" {
+			fi.SectionKey = nameKey(sections[sid].Title)
+		}
 		ref := "op://" + it.VaultID + "/" + it.ID + "/"
 		if sid != "" {
 			sec := sections[sid]

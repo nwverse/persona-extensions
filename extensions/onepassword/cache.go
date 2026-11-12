@@ -11,7 +11,12 @@ package main
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -34,12 +39,13 @@ type metaCache struct {
 	details map[string]kept[itemDetail] // by vault ID + "/" + item ID
 }
 
-// limited says whether 1Password's rate limit holds, and the error it answered then.
+// limited says whether 1Password's rate limit holds (rateWindow after it refused, until a request succeeds), and the
+// error it answered then.
 func (a *app) limited() (bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.lastErr != nil && a.errKind == errRate && a.now().Sub(a.errAt) < rateWindow {
-		return true, a.lastErr
+	if a.rateErr != nil && a.now().Sub(a.rateAt) < rateWindow {
+		return true, a.rateErr
 	}
 	return false, nil
 }
@@ -52,16 +58,17 @@ func (a *app) forgetMeta() {
 	a.metaGen++
 }
 
-// cachedRead answers what get finds kept while it is fresh, or at any age under the rate limit; otherwise it fetches,
-// keeps the answer with put (unless the cache was emptied meanwhile) and answers it.
-func cachedRead[T any](a *app, get func(*metaCache) (kept[T], bool), put func(*metaCache, kept[T]), fetch func() (T, error)) (T, error) {
+// cachedRead answers what get finds kept while it is fresh (unless again asks for a new answer), or at any age under
+// the rate limit; otherwise it fetches, keeps the answer with put (unless the cache was emptied meanwhile) and answers
+// it. A fetch refused for the rate limit answers what was kept, if anything was.
+func cachedRead[T any](a *app, again bool, get func(*metaCache) (kept[T], bool), put func(*metaCache, kept[T]), fetch func() (T, error)) (T, error) {
 	now := a.now()
 	limited, limitErr := a.limited()
 	a.metaMu.Lock()
 	k, ok := get(&a.meta)
 	gen := a.metaGen
 	a.metaMu.Unlock()
-	if ok && (limited || now.Sub(k.at) < metaTTL) {
+	if ok && (limited || !again && now.Sub(k.at) < metaTTL) {
 		return k.v, nil
 	}
 	var zero T
@@ -83,9 +90,9 @@ func cachedRead[T any](a *app, get func(*metaCache) (kept[T], bool), put func(*m
 	return v, nil
 }
 
-// dropIfOlder forgets what get finds kept when it is older than missAgain, so the next read asks again; false when it
-// is younger, missing, or the rate limit holds (then nothing is asked anyway).
-func dropIfOlder[T any](a *app, get func(*metaCache) (kept[T], bool), drop func(*metaCache)) bool {
+// worthAgain says a miss in what get finds kept is worth one more request: it is older than missAgain (what was
+// named may have just been made) and the rate limit does not hold.
+func worthAgain[T any](a *app, get func(*metaCache) (kept[T], bool)) bool {
 	if limited, _ := a.limited(); limited {
 		return false
 	}
@@ -93,11 +100,7 @@ func dropIfOlder[T any](a *app, get func(*metaCache) (kept[T], bool), drop func(
 	a.metaMu.Lock()
 	defer a.metaMu.Unlock()
 	k, ok := get(&a.meta)
-	if !ok || now.Sub(k.at) < missAgain {
-		return false
-	}
-	drop(&a.meta)
-	return true
+	return ok && now.Sub(k.at) >= missAgain
 }
 
 func (c *metaCache) getVaults() (kept[[]vaultInfo], bool) {
@@ -107,43 +110,48 @@ func (c *metaCache) getVaults() (kept[[]vaultInfo], bool) {
 	return *c.vaults, true
 }
 
-func (a *app) keptVaults(c *metaCache) (kept[[]vaultInfo], bool) { return c.getVaults() }
-
 // vaultsHaving is the vault list, asked again once when a kept one has no vault has(…) accepts.
 func (a *app) vaultsHaving(ctx context.Context, has func(vaultInfo) bool) ([]vaultInfo, error) {
-	vaults, err := a.listVaults(ctx)
-	if err != nil || slices.ContainsFunc(vaults, has) {
+	vaults, err := a.readVaults(ctx, false)
+	if err != nil || slices.ContainsFunc(vaults, has) || !worthAgain(a, (*metaCache).getVaults) {
 		return vaults, err
 	}
-	if dropIfOlder(a, a.keptVaults, func(c *metaCache) { c.vaults = nil }) {
-		return a.listVaults(ctx)
-	}
-	return vaults, nil
+	return a.readVaults(ctx, true)
 }
 
 // itemsHaving is a vault's item list, asked again once when a kept one has no item has(…) accepts.
 func (a *app) itemsHaving(ctx context.Context, vaultID string, has func(itemInfo) bool) ([]itemInfo, error) {
-	items, err := a.listItems(ctx, vaultID)
-	if err != nil || slices.ContainsFunc(items, has) {
+	items, err := a.readItems(ctx, vaultID, false)
+	get := func(c *metaCache) (kept[[]itemInfo], bool) { k, ok := c.items[vaultID]; return k, ok }
+	if err != nil || slices.ContainsFunc(items, has) || !worthAgain(a, get) {
 		return items, err
 	}
-	get := func(c *metaCache) (kept[[]itemInfo], bool) { k, ok := c.items[vaultID]; return k, ok }
-	if dropIfOlder(a, get, func(c *metaCache) { delete(c.items, vaultID) }) {
-		return a.listItems(ctx, vaultID)
-	}
-	return items, nil
+	return a.readItems(ctx, vaultID, true)
 }
 
 // itemHaving is an item's structure, asked again once when a kept one has no field has(…) accepts.
 func (a *app) itemHaving(ctx context.Context, vaultID, itemID string, has func(fieldInfo) bool) (itemDetail, error) {
-	d, err := a.getItem(ctx, vaultID, itemID)
-	if err != nil || slices.ContainsFunc(d.Fields, has) {
-		return d, err
-	}
+	d, err := a.readItem(ctx, vaultID, itemID, false)
 	key := vaultID + "/" + itemID
 	get := func(c *metaCache) (kept[itemDetail], bool) { k, ok := c.details[key]; return k, ok }
-	if dropIfOlder(a, get, func(c *metaCache) { delete(c.details, key) }) {
-		return a.getItem(ctx, vaultID, itemID)
+	if err != nil || slices.ContainsFunc(d.Fields, has) || !worthAgain(a, get) {
+		return d, err
 	}
-	return d, nil
+	return a.readItem(ctx, vaultID, itemID, true)
 }
+
+// nameKey is a name as lookups compare it (case and surrounding spaces aside), keyed with a secret of this process:
+// itemFromSDK keeps it beside a field's or section's name, so a reference that names one whose name held a value
+// (and is kept scrubbed) still finds it, and what is kept carries no form of that value anyone can read back.
+func nameKey(name string) string {
+	m := hmac.New(sha256.New, nameSecret[:])
+	m.Write([]byte(strings.ToLower(strings.TrimSpace(name))))
+	return hex.EncodeToString(m.Sum(nil)[:16])
+}
+
+var nameSecret = func() (k [32]byte) {
+	if _, err := rand.Read(k[:]); err != nil {
+		panic(err)
+	}
+	return k
+}()

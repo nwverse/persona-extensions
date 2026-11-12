@@ -438,9 +438,8 @@ func TestPage(t *testing.T) {
 			t.Fatalf("connected: want %q in %s", want, raw)
 		}
 	}
-	// Each case below empties the cache first, as Check again does: a page drawn again answers from it (cache.go).
+	// The page asks 1Password afresh each time it is drawn (cache.go keeps the rest).
 	f.failAll = errors.New("dial tcp: lookup example.1password.com: no such host " + testToken)
-	a.forgetMeta()
 	_, raw = render(a, "ja")
 	if !strings.Contains(raw, "1Password に接続できません") || !strings.Contains(raw, "refresh") {
 		t.Fatalf("unreachable: %s", raw)
@@ -449,13 +448,11 @@ func TestPage(t *testing.T) {
 		t.Fatalf("unreachable shows 1Password's words: %s", raw)
 	}
 	f.failAll = context.DeadlineExceeded
-	a.forgetMeta()
 	_, raw = render(a, "en")
 	if !strings.Contains(raw, "1Password did not answer in time.") || strings.Contains(raw, "1Password says") {
 		t.Fatalf("timed out: %s", raw)
 	}
 	f.failAll = &op.RateLimitExceededError{}
-	a.forgetMeta()
 	_, raw = render(a, "en")
 	if !strings.Contains(raw, "1Password's rate limit reached") {
 		t.Fatalf("rate limited: %s", raw)

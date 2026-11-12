@@ -165,11 +165,13 @@ func (a *app) lookup(ctx context.Context, r reference) (vault, item, section, fi
 	if !found {
 		return "", "", "", "", false
 	}
+	// Names compare by their keys (nameKey): the kept names may be scrubbed of a value the reference spells out.
+	sectionKey, fieldKey := nameKey(r.section), nameKey(r.field)
 	inSection := func(f fieldInfo) bool {
-		return r.section == "" || f.SectionID != "" && (f.SectionID == r.section || strings.EqualFold(strings.TrimSpace(f.Section), r.section))
+		return r.section == "" || f.SectionID != "" && (f.SectionID == r.section || f.SectionKey == sectionKey)
 	}
 	d, err := a.itemHaving(ctx, v.ID, it.ID, func(f fieldInfo) bool {
-		return inSection(f) && (f.ID == r.field || strings.EqualFold(strings.TrimSpace(f.Title), r.field))
+		return inSection(f) && (f.ID == r.field || f.TitleKey == fieldKey)
 	})
 	if err != nil {
 		return "", "", "", "", false
@@ -183,7 +185,7 @@ func (a *app) lookup(ctx context.Context, r reference) (vault, item, section, fi
 			match = i
 			break
 		}
-		if strings.EqualFold(strings.TrimSpace(f.Title), r.field) {
+		if f.TitleKey == fieldKey {
 			if match >= 0 {
 				return "", "", "", "", false // two fields of that name: 1Password would not resolve it either
 			}
@@ -195,7 +197,7 @@ func (a *app) lookup(ctx context.Context, r reference) (vault, item, section, fi
 	}
 	named := 0
 	for _, f := range d.Fields {
-		if strings.EqualFold(strings.TrimSpace(f.Title), strings.TrimSpace(d.Fields[match].Title)) {
+		if f.TitleKey == d.Fields[match].TitleKey {
 			named++
 		}
 	}

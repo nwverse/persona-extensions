@@ -223,9 +223,13 @@ func TestTheCacheKeepsNoValues(t *testing.T) {
 func TestTheComputersReadsAreKeptToo(t *testing.T) {
 	cli := newFakeCLI()
 	a, _ := onComputer(t, cli)
-	describe(t, a, "op://Dev/GitHub token/credential")
+	if got := describe(t, a, "op://Dev/GitHub token/credential"); got["title"] != "GitHub token › credential" || got["detail"] != "Dev" {
+		t.Fatalf("describe through op: %v", got)
+	}
 	n := len(cli.ran())
-	describe(t, a, "op://Dev/GitHub token/credential")
+	if got := describe(t, a, "op://"+fixVault+"/"+fixItem+"/credential"); got["title"] != "GitHub token › credential" {
+		t.Fatalf("describe by IDs from what was kept: %v", got)
+	}
 	callTool(t, a, "onepassword_item", `{"vault":"Dev","item":"GitHub token"}`)
 	if more := cli.ran()[n:]; len(more) != 0 {
 		t.Fatalf("op on the computer was asked again: %q", more)
@@ -233,5 +237,125 @@ func TestTheComputersReadsAreKeptToo(t *testing.T) {
 	_, _ = secretsCall(t, a, "resolve", map[string]any{"reference": "op://Dev/GitHub token/credential"})
 	if more := cli.ran()[n:]; len(more) != 1 || !strings.HasPrefix(more[0], "read ") {
 		t.Fatalf("resolve on the computer: %q", more)
+	}
+}
+
+func TestARecheckRefusedForTheLimitKeepsWhatWasKept(t *testing.T) {
+	a, f, wait := clocked(t)
+	describe(t, a, refByName)
+	wait(time.Minute) // fresh, but old enough for a miss to look again
+	f.failAll = &op.RateLimitExceededError{}
+	n := f.count()
+	// A typo: Dev's items are asked again, 1Password refuses for its limit, and the kept list answers that very call
+	// (the item is not in it), rather than the limit.
+	_, err := a.callTool(context.Background(), "onepassword_item", json.RawMessage(`{"vault":"Dev","item":"GitHub tokn"}`))
+	if err == nil || !strings.Contains(err.Error(), `no item "GitHub tokn"`) {
+		t.Fatalf("the miss under the limit: %v", err)
+	}
+	if more := f.since(n); strings.Join(more, ",") != "items "+vaultDev {
+		t.Fatalf("the miss asked %q", more)
+	}
+	// What was kept of Dev's items still answers: the limit's window asks nothing, and the list was not dropped.
+	if text := callTool(t, a, "onepassword_item", `{"vault":"Dev","item":"GitHub token"}`); !strings.Contains(text, "credential") {
+		t.Fatalf("item: %s", text)
+	}
+	if more := f.since(n); len(more) != 1 {
+		t.Fatalf("under the limit 1Password was asked %q", more)
+	}
+}
+
+func TestMissesLookAgainAtEachLevel(t *testing.T) {
+	a, f, wait := clocked(t)
+	describe(t, a, refByName)
+	wait(missAgain)
+	n := f.count()
+	describe(t, a, "op://Nowhere/GitHub token/credential") // a vault the kept list lacks
+	if more := f.since(n); strings.Join(more, ",") != "vaults" {
+		t.Fatalf("a missing vault asked %q", more)
+	}
+	wait(missAgain)
+	n = f.count()
+	describe(t, a, "op://Dev/GitHub token/no such field") // a field the kept item lacks
+	if more := f.since(n); strings.Join(more, ",") != "item "+vaultDev+"/itmgithub" {
+		t.Fatalf("a missing field asked %q", more)
+	}
+	n = f.count()
+	describe(t, a, "op://Dev/GitHub token/no such field") // again at once: the miss stands
+	if more := f.since(n); len(more) != 0 {
+		t.Fatalf("a fresh miss asked %q", more)
+	}
+}
+
+func TestANameThatHeldAValueStillMatchesWithoutShowingIt(t *testing.T) {
+	// The field is called "PIN <its own value>": kept as "PIN [hidden]", found by its key.
+	a, f, wait := clocked(t)
+	got := describe(t, a, "op://Dev/GitHub token/sec2/PIN "+secretValues[5])
+	if got["title"] != "GitHub token › PIN "+hidden {
+		t.Fatalf("describe: %v", got)
+	}
+	assertNoSecrets(t, "describe", got["title"]+got["detail"])
+	// Found in what was kept, so no miss: later it is not looked up again.
+	wait(missAgain)
+	n := f.count()
+	describe(t, a, "op://Dev/GitHub token/sec2/PIN "+secretValues[5])
+	if more := f.since(n); len(more) != 0 {
+		t.Fatalf("a kept field named with a value was looked up again: %q", more)
+	}
+}
+
+func TestAReadAcrossAClearKeepsNothing(t *testing.T) {
+	a, _, _ := clocked(t)
+	_, err := cachedRead(a, false, func(c *metaCache) (kept[[]vaultInfo], bool) { return c.getVaults() },
+		func(c *metaCache, k kept[[]vaultInfo]) { c.vaults = &k },
+		func() ([]vaultInfo, error) {
+			a.forgetMeta() // Check again, or a start, while 1Password answers
+			return []vaultInfo{{ID: "v1", Title: "Old"}}, nil
+		})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.metaMu.Lock()
+	defer a.metaMu.Unlock()
+	if a.meta.vaults != nil {
+		t.Fatalf("a read that began before the clear refilled it: %+v", a.meta.vaults)
+	}
+}
+
+func TestTheLimitsWindow(t *testing.T) {
+	a, f, wait := clocked(t)
+	describe(t, a, refByName)
+	wait(metaTTL)
+	f.failAll = &op.RateLimitExceededError{}
+	if vs, err := a.listVaults(context.Background()); err != nil || len(vs) != 3 { // refused: the kept list answers, the window opens
+		t.Fatalf("refused refresh: %v %v", vs, err)
+	}
+	f.failAll = nil
+	// The page under the limit says so above what was kept (asking nothing); it never says Connected then.
+	n := f.count()
+	text := viewText(a.view(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Locale: "en"}}))
+	if !strings.Contains(text, "1Password's rate limit reached") || strings.Contains(text, `"title":"Connected"`) || !strings.Contains(text, `"title":"Dev"`) {
+		t.Fatalf("page under the limit: %s", text)
+	}
+	if more := f.since(n); len(more) != 0 {
+		t.Fatalf("the page under the limit asked %q", more)
+	}
+	// Another error meanwhile does not end the window.
+	a.record(context.DeadlineExceeded)
+	wait(9 * time.Minute)
+	n = f.count()
+	_, _ = a.listVaults(context.Background())
+	if more := f.since(n); len(more) != 0 {
+		t.Fatalf("at 9 minutes the window asked %q", more)
+	}
+	// A request that succeeds (a resolve, which always asks) ends it.
+	if _, err := secretsCall(t, a, "resolve", map[string]any{"reference": refByName}); err != nil {
+		t.Fatal(err)
+	}
+	n = f.count()
+	if _, err := a.listVaults(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if more := f.since(n); strings.Join(more, ",") != "vaults" {
+		t.Fatalf("after a success the vault list asked %q", more)
 	}
 }

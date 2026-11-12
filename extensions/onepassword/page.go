@@ -64,7 +64,7 @@ func (a *app) view(ctx context.Context, r *ext.UIRequest) *wire.View {
 	var vaults []vaultInfo
 	err := a.opReady(ctx, machine, nodes)
 	if err == nil {
-		vaults, err = a.listVaults(ctx)
+		vaults, err = a.readVaults(ctx, true) // the page asks afresh (cache.go), unless the rate limit holds
 	}
 	if err != nil {
 		title, guide, says := t.unreachable, unreachableGuide, fmt.Sprintf(t.says, clip(err.Error(), 300))
@@ -101,6 +101,13 @@ func (a *app) view(ctx context.Context, r *ext.UIRequest) *wire.View {
 		{Type: wire.ComponentRow, Title: t.connected, Subtitle: fmt.Sprintf(connectedDetail, len(vaults)), Icon: "check", Tone: "positive"},
 		{Type: wire.ComponentButton, Title: t.checkAgain, Action: &wire.Action{ID: "refresh"}},
 	}}
+	if limited, _ := a.limited(); limited { // the vaults below are what was kept: 1Password is not asked meanwhile
+		conn.Items = []wire.Component{
+			{Type: wire.ComponentRow, Title: t.rateLimited, Icon: "warning", Tone: "danger"},
+			{Type: wire.ComponentText, Text: rateGuide},
+			{Type: wire.ComponentButton, Title: t.checkAgain, Action: &wire.Action{ID: "refresh"}},
+		}
+	}
 	list := wire.Section{Title: t.vaultsTitle, Footer: vaultsFooter}
 	for i, vault := range vaults {
 		if i == mostVaultRows {
