@@ -62,9 +62,12 @@ func TestDescribeNamesItemFieldAndVault(t *testing.T) {
 		// not found, or a name that matches two (two vaults are called "home", two fields "code"): the reference's
 		// own names, never a guess
 		{refMissing, "Nothing here › password", "Dev"},
+		{"op://Dev/Nothing here/Old keys/password", "Nothing here › Old keys › password", "Dev"},
 		{"op://home/Router/password", "Router › password", "home"},
-		{"op://Dev/GitHub token/Backup/code", "GitHub token › code", "Dev"},
-		{"op://Dev/GitHub%20token/credential?attribute=type", "GitHub token › credential", "Dev"},
+		{"op://Dev/GitHub token/Backup/code", "GitHub token › Backup › code", "Dev"},
+		// another field of the item has its name: the section tells them apart on the card
+		{"op://Dev/GitHub token/sec1/code1", "GitHub token › Backup › code", "Dev"},
+		{"op://Dev/GitHub token/credential?attribute=otp", "GitHub token › credential", "Dev"},
 	} {
 		out, err := secretsCall(t, a, "describe", map[string]string{"contribution": providerID, "reference": c.ref})
 		if err != nil {
@@ -99,8 +102,11 @@ func TestDescribeNeverCarriesAValue(t *testing.T) {
 	if d := out.(map[string]string)["detail"]; len([]rune(d)) > describeDetailMost || !strings.HasSuffix(d, "…") {
 		t.Fatalf("detail %q", d)
 	}
-	if _, err := secretsCall(t, a, "describe", map[string]string{"reference": "https://example.com/a/b"}); codeOf(err) != "invalid" {
-		t.Fatalf("not a reference: %v", err)
+	// What 1Password's own parser refuses is not described either, so no card names what resolve would refuse.
+	for _, ref := range []string{"https://example.com/a/b", "op://Dev/GitHub%20token/credential", "op://Dev/GitHub token/credential?attribute=type"} {
+		if _, err := secretsCall(t, a, "describe", map[string]string{"reference": ref}); codeOf(err) != "invalid" {
+			t.Fatalf("%s: %v", ref, err)
+		}
 	}
 }
 
@@ -118,6 +124,7 @@ func TestResolveGivesTheValueAndCodedErrors(t *testing.T) {
 		{refEmpty, "refused"},
 		{refLimited, "rate_limited"},
 		{"op://Dev/only-two-parts", "refused"},
+		{"op://Dev/GitHub%20token/credential", "refused"}, // 1Password's parser takes no escapes
 	} {
 		_, err := secretsCall(t, a, "resolve", map[string]any{"reference": c.ref})
 		if codeOf(err) != c.code {
@@ -176,6 +183,8 @@ func TestUsesAreListedNewestFirstAndBounded(t *testing.T) {
 	used(3, map[string]string{"kind": "launcher", "id": "gateway", "machine": "laptop"}, "rule")
 	// not a reference: not listed
 	_, _ = secretsCall(t, a, "used", map[string]any{"reference": "plain text"})
+	// an event that arrives late still sits by its time; an approver Persona did not name is left out
+	used(0, map[string]string{"kind": "extension", "id": "late"}, "")
 
 	sec := a.usesSection(locales["en"], "Asia/Tokyo")
 	var rows []string
@@ -186,6 +195,7 @@ func TestUsesAreListedNewestFirstAndBounded(t *testing.T) {
 		"op://Dev/Item 3/credential | Model provider key · gateway on laptop · an Always rule · 2026-11-12 10:33",
 		"op://Dev/Item 2/credential | For an Agent run · GH_TOKEN on laptop · approved on a device · 2026-11-12 10:32",
 		"op://Dev/Item 1/credential | Extension secret · example-notes · saved in Settings · 2026-11-12 10:31",
+		"op://Dev/Item 0/credential | Extension secret · late · 2026-11-12 10:30",
 	}
 	if strings.Join(rows, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("rows:\n%s\nwant:\n%s", strings.Join(rows, "\n"), strings.Join(want, "\n"))

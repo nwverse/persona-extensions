@@ -49,6 +49,14 @@ func (s sdkAPI) resolve(ctx context.Context, reference string) (string, error) {
 // settings check can sign in while a tool call does.
 var sdkMu sync.Mutex
 
+// validateSDK is 1Password's own parser of a reference (local: no request, no sign-in), so the extension takes
+// exactly the references 1Password resolves. Under sdkMu: its first use makes the SDK's core.
+func validateSDK(ctx context.Context, reference string) error {
+	sdkMu.Lock()
+	defer sdkMu.Unlock()
+	return op.Secrets.ValidateSecretReference(ctx, reference)
+}
+
 // connectSDK signs in to 1Password with a service account token. The SDK's core is WebAssembly compiled on the first
 // client, which takes a second or two and is why the extension connects only when something needs it.
 func connectSDK(ctx context.Context, token string) (opAPI, error) {

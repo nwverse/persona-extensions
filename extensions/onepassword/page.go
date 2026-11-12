@@ -105,9 +105,16 @@ func (a *app) usesSection(t *texts, tz string) wire.Section {
 	if tz == "" || err != nil {
 		loc = time.UTC
 	}
+	a.mu.Lock()
+	token := a.token
+	a.mu.Unlock()
 	for _, u := range a.recentUses() {
-		parts := []string{purposeText(t, u.Purpose), approvedText(t, u.ApprovedBy), u.At.In(loc).Format("2006-01-02 15:04")}
-		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentRow, Title: clip(u.Reference, 120),
+		parts := []string{purposeText(t, u.Purpose)}
+		if by := approvedText(t, u.ApprovedBy); by != "" {
+			parts = append(parts, by)
+		}
+		parts = append(parts, u.At.In(loc).Format("2006-01-02 15:04"))
+		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentRow, Title: clip(redact(u.Reference, token), 120),
 			Subtitle: strings.Join(parts, " · "), Icon: "lock"})
 	}
 	if len(sec.Items) == 0 {
@@ -135,14 +142,17 @@ func purposeText(t *texts, p secretPurpose) string {
 	return s
 }
 
+// approvedText: settings, rule or device:<id>, as Persona sends them; anything else is left out rather than guessed.
 func approvedText(t *texts, by string) string {
-	switch by {
-	case "settings":
+	switch {
+	case by == "settings":
 		return t.bySettings
-	case "rule":
+	case by == "rule":
 		return t.byRule
+	case strings.HasPrefix(by, "device:"):
+		return t.byDevice
 	}
-	return t.byDevice
+	return ""
 }
 
 func steps(lines []string) []wire.Component {

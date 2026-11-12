@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -67,12 +66,12 @@ func (a *app) secrets(ctx context.Context, method string, raw json.RawMessage) (
 	}
 	switch method {
 	case "describe":
-		ref, ok := parseReference(in.Reference)
-		if !ok {
-			return nil, &ext.Error{Code: "invalid", Message: "not a 1Password reference (op://vault/item/field)"}
-		}
 		ctx, cancel := context.WithTimeout(ctx, secretTimeout)
 		defer cancel()
+		ref, ok := parseReference(in.Reference)
+		if !ok || a.validate(ctx, in.Reference) != nil {
+			return nil, &ext.Error{Code: "invalid", Message: "not a 1Password reference (op://vault/item/[section/]field)"}
+		}
 		title, detail := a.describe(ctx, ref)
 		return map[string]string{"title": title, "detail": detail}, nil
 	case "resolve":
@@ -91,7 +90,8 @@ func (a *app) secrets(ctx context.Context, method string, raw json.RawMessage) (
 }
 
 // reference is an op:// reference's parts: op://vault/item/field or op://vault/item/section/field, each a name or an
-// ID, and an optional query (?attribute=otp) that only resolving reads.
+// ID, and an optional query (?attribute=otp) that only resolving reads. parseReference only splits it; whether
+// 1Password takes it is a.validate's (1Password's own parser), so describe never names what resolve would refuse.
 type reference struct {
 	vault, item, section, field string
 }
@@ -107,9 +107,6 @@ func parseReference(s string) (reference, bool) {
 		return reference{}, false
 	}
 	for i, p := range parts {
-		if u, err := url.PathUnescape(p); err == nil {
-			p = u
-		}
 		if p = strings.TrimSpace(p); p == "" {
 			return reference{}, false
 		}
@@ -126,9 +123,9 @@ func parseReference(s string) (reference, bool) {
 // come from the item as 1Password has it (scrubbed of every value, as the tools' are), or from the reference itself when
 // it cannot be looked up (not signed in, not found, no answer): Persona shows these, it never decides anything by them.
 func (a *app) describe(ctx context.Context, r reference) (title, detail string) {
-	title, detail = r.item+" › "+r.field, r.vault
-	if vault, item, field, ok := a.lookup(ctx, r); ok {
-		title, detail = item+" › "+field, vault
+	title, detail = joinNames(r.item, r.section, r.field), r.vault
+	if vault, item, section, field, ok := a.lookup(ctx, r); ok {
+		title, detail = joinNames(item, section, field), vault
 	}
 	a.mu.Lock()
 	token := a.token
@@ -136,31 +133,41 @@ func (a *app) describe(ctx context.Context, r reference) (title, detail string) 
 	return oneLine(redact(title, token), describeTitleMost), oneLine(redact(detail, token), describeDetailMost)
 }
 
-// lookup finds a reference's vault, item and field by ID or by name (case aside; a name must match one only).
-func (a *app) lookup(ctx context.Context, r reference) (vault, item, field string, ok bool) {
+// joinNames is "item › field", or "item › section › field" when the section is needed to tell the field from another.
+func joinNames(item, section, field string) string {
+	if section == "" {
+		return item + " › " + field
+	}
+	return item + " › " + section + " › " + field
+}
+
+// lookup finds a reference's vault, item and field by ID or by name (case aside; a name must match one only), and the
+// field's section when another field of the item has its name (two "password" fields in two sections read alike
+// otherwise on the card the user approves).
+func (a *app) lookup(ctx context.Context, r reference) (vault, item, section, field string, ok bool) {
 	vaults, err := a.listVaults(ctx)
 	if err != nil {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	v, found := pick(vaults, r.vault, func(v vaultInfo) (string, string) { return v.ID, v.Title })
 	if !found {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	items, err := a.listItems(ctx, v.ID)
 	if err != nil {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	it, found := pick(items, r.item, func(it itemInfo) (string, string) { return it.ID, it.Title })
 	if !found {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	api, err := a.client(ctx)
 	if err != nil {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	raw, err := api.getItem(ctx, v.ID, it.ID)
 	if a.record(err) != nil {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
 	d := itemFromSDK(raw) // its names scrubbed of the item's values; its fields in raw's order
 	sections := map[string]op.ItemSection{}
@@ -181,15 +188,24 @@ func (a *app) lookup(ctx context.Context, r reference) (vault, item, field strin
 		}
 		if strings.EqualFold(strings.TrimSpace(f.Title), r.field) {
 			if match >= 0 {
-				return "", "", "", false // two fields of that name: 1Password would not resolve it either
+				return "", "", "", "", false // two fields of that name: 1Password would not resolve it either
 			}
 			match = i
 		}
 	}
 	if match < 0 || match >= len(d.Fields) {
-		return "", "", "", false
+		return "", "", "", "", false
 	}
-	return clip(redact(v.Title, ""), describeDetailMost), d.Title, d.Fields[match].Title, true
+	named := 0
+	for _, f := range raw.Fields {
+		if strings.EqualFold(strings.TrimSpace(f.Title), strings.TrimSpace(raw.Fields[match].Title)) {
+			named++
+		}
+	}
+	if named > 1 {
+		section = d.Fields[match].Section
+	}
+	return clip(redact(v.Title, ""), describeDetailMost), d.Title, section, d.Fields[match].Title, true
 }
 
 // pick is the one entry whose ID is want, else the only one whose name is want (case aside).
@@ -218,7 +234,7 @@ func (a *app) resolve(ctx context.Context, reference string) (string, error) {
 	a.mu.Lock()
 	t := textsFor(a.locale)
 	a.mu.Unlock()
-	if _, ok := parseReference(reference); !ok {
+	if _, ok := parseReference(reference); !ok || a.validate(ctx, reference) != nil {
 		return "", &ext.Error{Code: "refused", Message: t.secretInvalid}
 	}
 	api, err := a.client(ctx)
@@ -238,8 +254,9 @@ func (a *app) resolve(ctx context.Context, reference string) (string, error) {
 }
 
 // secretError is how a failed resolution reads to Persona: no token or one 1Password refuses is not_signed_in, its
-// rate limit rate_limited (retry_after: as long as the page says so), a vault, item or field it has not not_found, an
-// unreadable reference refused; anything else is a failure in 1Password's words, redacted and on one line.
+// rate limit rate_limited (retry_after: as long as the page says so), a vault, item, section or field it has not
+// not_found, a reference that matches more than one, or that its parser refuses, refused; anything else is a failure
+// in 1Password's words, redacted and on one line.
 func (a *app) secretError(err error, t *texts) error {
 	a.mu.Lock()
 	says := ""
@@ -257,21 +274,20 @@ func (a *app) secretError(err error, t *texts) error {
 	case kindOf(err) == errRate:
 		return &ext.Error{Code: "rate_limited", Message: t.rateLimited + ". " + t.rateLimitedGuide,
 			Data: json.RawMessage(fmt.Sprintf(`{"retry_after":%d}`, int(rateWindow.Seconds())))}
+	case hasAny(err, "more than one"):
+		return &ext.Error{Code: "refused", Message: fmt.Sprintf(t.says, says)}
 	case notFound(err):
 		return &ext.Error{Code: "not_found", Message: fmt.Sprintf(t.secretNotFound, says)}
-	case unreadable(err):
+	case hasAny(err, "could not be parsed", "invalid character", "invalid query parameter", "invalid format"):
 		return &ext.Error{Code: "refused", Message: t.secretInvalid}
 	}
 	return fmt.Errorf(t.says, says)
 }
 
+// notFound: 1Password's words for a vault, item, section or field this service account has not ("no item matched the
+// secret reference query", "no section matched the secret reference", …).
 func notFound(err error) bool {
-	return hasAny(err, "not found", "cannot be found", "could not find", "couldn't find", "no item", "no vault", "no field",
-		"no matching", "does not exist", "doesn't exist", "too many")
-}
-
-func unreadable(err error) bool {
-	return hasAny(err, "invalid secret reference", "parsing", "invalid reference", "malformed")
+	return hasAny(err, "matched the secret reference", "not found", "cannot be found", "could not find", "does not exist")
 }
 
 func hasAny(err error, words ...string) bool {
@@ -284,7 +300,8 @@ func hasAny(err error, words ...string) bool {
 	return false
 }
 
-// noteUse keeps one use for the page, newest first, the last mostUses of them.
+// noteUse keeps one use for the page, newest first by when Persona used it (events may arrive out of order: the SDK
+// hands each to its own goroutine), the last mostUses of them.
 func (a *app) noteUse(in secretsParams) {
 	if _, ok := parseReference(in.Reference); !ok {
 		return
@@ -296,7 +313,11 @@ func (a *app) noteUse(in secretsParams) {
 	if use.At.IsZero() {
 		use.At = a.now()
 	}
-	a.uses = append([]secretUse{use}, a.uses...)
+	i := 0
+	for i < len(a.uses) && !a.uses[i].At.Before(use.At) {
+		i++
+	}
+	a.uses = append(a.uses[:i], append([]secretUse{use}, a.uses[i:]...)...)
 	if len(a.uses) > mostUses {
 		a.uses = a.uses[:mostUses]
 	}

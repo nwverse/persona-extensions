@@ -25,8 +25,9 @@ const (
 var errNotConfigured = errors.New("no 1Password service account token is set")
 
 type app struct {
-	connect connectFunc
-	now     func() time.Time
+	connect  connectFunc
+	validate func(ctx context.Context, reference string) error // validateSDK
+	now      func() time.Time
 
 	connMu sync.Mutex // one sign-in at a time; held across the network, so never with mu
 	mu     sync.Mutex
@@ -42,7 +43,9 @@ type app struct {
 	uses []secretUse
 }
 
-func newApp(connect connectFunc) *app { return &app{connect: connect, now: time.Now} }
+func newApp(connect connectFunc) *app {
+	return &app{connect: connect, validate: validateSDK, now: time.Now}
+}
 
 func (a *app) init(_ context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
 	a.mu.Lock()
