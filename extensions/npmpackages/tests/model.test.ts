@@ -10,7 +10,9 @@ test("registry requests bound search input and encode scoped package names", () 
   assert.equal(url.searchParams.get("size"), "12");
   assert.equal(packagePath("@babel/preset-typescript"), "/@babel%2Fpreset-typescript/latest");
   assert.equal(downloadsPath("@babel/preset-typescript"), "/downloads/point/last-week/%40babel%2Fpreset-typescript");
-  for (const name of ["", "UPPERCASE", "@scope", "@scope/", "a/b/c", "a b", "../secret", "a\n", 42]) assert.throws(() => packageName(name), ReadError);
+  for (const name of ["", "@scope", "@scope/", "a/b/c", "a b", "../secret", "a\n", 42]) assert.throws(() => packageName(name), ReadError);
+  // Legacy uppercase names are still served by the registry.
+  for (const name of ["JSONStream", "Base64", "@Scope/Pkg", "a.B-C_d"]) assert.equal(packageName(name), name);
   for (const value of ["", "x\n", 42, "x".repeat(201)]) assert.throws(() => queryText(value), ReadError);
 });
 
@@ -22,12 +24,30 @@ test("search keeps bounded metadata and rejects duplicate or malicious packages"
   for (const change of [
     { links: { npm: "https://attacker.invalid/package/typescript" } },
     { links: { npm: "https://www.npmjs.com.evil.invalid/package/typescript" } },
-    { repository: { url: "javascript:alert(1)" } },
     { name: "../secret" },
     { version: "1.0.0\n" },
     { license: { type: ["MIT"] } }
   ]) assert.throws(() => parseSearch({ objects: [{ package: { ...typescript, ...change } }], total: 1 }, 0), ReadError);
   assert.throws(() => parseSearch({ objects: [{ package: typescript }, { package: typescript }], total: 2 }, 0), ReadError);
+});
+
+test("a git+ssh, git or scp-style repository is shown as https, and an unreadable link is left out, not a failed search", () => {
+  // As @socket.io/redis-adapter links it in GET /-/v1/search?text=socket.io.
+  const links = (repository: unknown, homepage?: unknown) => ({ ...typescript, repository, homepage, links: { npm: typescript.links.npm } });
+  const result = parseSearch({ objects: [
+    { package: { ...links("git+ssh://git@github.com/socketio/socket.io-redis-adapter.git", "http://socket.io/"), name: "a" } },
+    { package: { ...links("ssh://git@gitlab.com/group/project.git"), name: "b" } },
+    { package: { ...links("git://github.com/owner/old.git"), name: "c" } },
+    { package: { ...links("git@github.com:owner/scp.git"), name: "d" } },
+    { package: { ...links({ url: "javascript:alert(1)" }, "javascript:alert(1)"), name: "e" } },
+  ], total: 5 }, 0);
+  assert.deepEqual(result.packages.map(pkg => [pkg.name, pkg.repository, pkg.homepage]), [
+    ["a", "https://github.com/socketio/socket.io-redis-adapter", undefined],
+    ["b", "https://gitlab.com/group/project", undefined],
+    ["c", "https://github.com/owner/old", undefined],
+    ["d", "https://github.com/owner/scp", undefined],
+    ["e", undefined, undefined],
+  ]);
 });
 
 test("latest package metadata produces a precise install command without executing anything", () => {

@@ -12,7 +12,7 @@ test("legacy JSON callback values are decoded before searching or navigation", (
 });
 
 import assert from "node:assert/strict";
-import { articleURL, configFrom, dateAt, feedPath, languageFor, parseArticle, parseFeed, parseSearch, plain, ReadError, searchPath, titleKey } from "../src/model.ts";
+import { articleURL, configFrom, dateAt, feedPath, languageFor, parseArticle, parseFeed, parseSearch, plain, ReadError, searchPath, summaryPath, titleKey } from "../src/model.ts";
 import { syntheticArticle, feed } from "./fixtures.ts";
 test("configuration and language selection are bounded", () => {
   assert.deepEqual(configFrom(undefined), {}); assert.deepEqual(configFrom({ language: "auto" }), { language: "auto" });
@@ -35,7 +35,14 @@ test("HTML snippets stay plain data with bounded entities", () => {
 test("titles cannot select another URL authority", () => {
   assert.equal(titleKey("Hello world"), "Hello_world");
   assert.equal(articleURL("en", "Hello world"), "https://en.wikipedia.org/wiki/Hello_world");
-  for (const title of ["a#fragment", "a?query", "a<b", "x".repeat(256)]) assert.throws(() => titleKey(title), ReadError);
+  for (const title of ["a#fragment", "a<b", "a[b]", "a|b", "C&amp;A", "x".repeat(256)]) assert.throws(() => titleKey(title), ReadError);
+  // MediaWiki titles may hold ? and a plain &: searching "What Is Life" or "C++" answers such titles.
+  assert.equal(titleKey("What Is Life?"), "What_Is_Life?");
+  assert.equal(titleKey("AT&T"), "AT&T");
+  assert.equal(summaryPath("What Is Life?"), "/api/rest_v1/page/summary/What_Is_Life%3F");
+  assert.equal(summaryPath("AT&T"), "/api/rest_v1/page/summary/AT%26T");
+  assert.equal(articleURL("en", "Johnson & Johnson"), "https://en.wikipedia.org/wiki/Johnson_%26_Johnson");
+  assert.deepEqual(parseSearch({ pages: [{ key: "C&A", title: "C&A" }, { key: "What_Is_Life?", title: "What Is Life?" }] }, "en").map(article => article.title), ["C&A", "What_Is_Life?"]);
   assert.equal(titleKey("A normal title"), "A_normal_title");
   assert.equal(articleURL("en", "https://evil.invalid"), "https://en.wikipedia.org/wiki/https%3A//evil.invalid");
 });

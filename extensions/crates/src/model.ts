@@ -40,11 +40,14 @@ function integer(value: unknown, maximum = 2_000_000_000_000): number {
   return value;
 }
 function boolean(value: unknown): boolean { if (typeof value !== "boolean") throw new ReadError("bad_answer"); return value; }
+// Optional third-party links are omitted when they cannot be read as https. crates.io still serves plain-http
+// repository, homepage and documentation links for older crates (nickel, objc, block), and one such link must not fail
+// the lookup or the search.
 function httpsURL(value: unknown): string | undefined {
   if (value == null || value === "") return undefined;
   let url: URL;
-  try { url = new URL(string(value)); } catch { throw new ReadError("bad_answer"); }
-  if (url.protocol !== "https:" || url.username || url.password || url.port) throw new ReadError("bad_answer");
+  try { url = new URL(string(value)); } catch { return undefined; }
+  if (url.protocol !== "https:" || url.username || url.password || url.port) return undefined;
   return url.href;
 }
 function license(value: unknown, fallback = "Unspecified"): string {

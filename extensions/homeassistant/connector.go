@@ -9,7 +9,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -387,32 +386,26 @@ func serviceText(domain, service string) string {
 	return domain + "." + service
 }
 
-// done remembers the answers of actions.do by request id: the hub may ask again for the same one.
-var (
-	doneMu sync.Mutex
-	done   = map[string]string{}
-)
-
 func (a *app) do(ctx context.Context, requestID string, w write) (any, error) {
 	if requestID == "" || len(requestID) > 256 {
 		return nil, bad("没有 request_id")
 	}
-	doneMu.Lock()
-	if text, ok := done[requestID]; ok {
-		doneMu.Unlock()
+	a.doneMu.Lock()
+	if text, ok := a.done[requestID]; ok {
+		a.doneMu.Unlock()
 		return map[string]any{"text": text}, nil
 	}
-	doneMu.Unlock()
+	a.doneMu.Unlock()
 	text, err := w.run(ctx, a)
 	if err != nil {
 		return nil, err
 	}
-	doneMu.Lock()
-	if len(done) > 500 {
-		done = map[string]string{}
+	a.doneMu.Lock()
+	if len(a.done) > 500 {
+		a.done = map[string]string{}
 	}
-	done[requestID] = text
-	doneMu.Unlock()
+	a.done[requestID] = text
+	a.doneMu.Unlock()
 	return map[string]any{"text": text}, nil
 }
 
