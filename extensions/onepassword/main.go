@@ -2,7 +2,9 @@
 // extension's secret, checked with 1Password before the hub saves it), the connector "onepassword" gives the
 // assistant three read-only tools: the vaults the service account can read, item search by title, tag or website,
 // and one item's fields with their op:// references. No tool ever returns a secret value: the official SDK's item
-// answers are turned into metadata at once, and everything leaving the program is redacted.
+// answers are turned into metadata at once, and everything leaving the program is redacted. As a secret provider
+// (secrets.go) it gives Persona's manager, and only it, the value of an op:// reference a setting holds or the user
+// approved for one Agent run.
 package main
 
 import (
@@ -35,5 +37,5 @@ func main() {
 func program(a *app) ext.Program {
 	return ext.Program{ID: about.ID, Version: about.Version, Init: a.init,
 		UI:         map[string]ext.Page{uiConnection: a.page()},
-		Namespaces: map[string]ext.Handler{"connector": a.connector, "settings": a.settings}}
+		Namespaces: map[string]ext.Handler{"connector": a.connector, "settings": a.settings, "secrets": a.secrets}}
 }

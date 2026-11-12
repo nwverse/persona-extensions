@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -12,7 +13,7 @@ import (
 
 // The connection page: contributes.ui "connection", an extension_page under the extension's details (Settings ›
 // Extensions › 1Password › 连接). Whether the token is set and 1Password takes it, the vaults the service account can
-// read, and what the assistant can and cannot do with them. Opening it signs in if nothing has yet, so it is also
+// read, the last uses of its op:// references by Persona, and what the assistant can and cannot do with them. Opening it signs in if nothing has yet, so it is also
 // where a user checks a new token. Only components of UI version 3, which every app draws.
 
 const mostVaultRows = 100
@@ -69,6 +70,7 @@ func (a *app) view(ctx context.Context, r *ext.UIRequest) *wire.View {
 		items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.checkAgain, Action: &wire.Action{ID: "refresh"}})
 		v.Sections = []wire.Section{
 			{Items: items},
+			a.usesSection(t, r.TZ),
 			{Title: t.canTitle, Items: steps(t.can)},
 		}
 		return v
@@ -91,8 +93,56 @@ func (a *app) view(ctx context.Context, r *ext.UIRequest) *wire.View {
 		list.Items = []wire.Component{{Type: wire.ComponentEmpty, Title: t.noVaults, Detail: t.noVaultsDetail, Icon: "folder"}}
 		list.Footer = ""
 	}
-	v.Sections = []wire.Section{conn, list, {Title: t.canTitle, Items: steps(t.can)}}
+	v.Sections = []wire.Section{conn, list, a.usesSection(t, r.TZ), {Title: t.canTitle, Items: steps(t.can)}}
 	return v
+}
+
+// usesSection lists the uses Persona told of (secrets.used), newest first: the reference, what it was for and who
+// approved it, and when, in the viewer's time zone. Never a value: the program never has one to show.
+func (a *app) usesSection(t *texts, tz string) wire.Section {
+	sec := wire.Section{Title: t.usesTitle, Footer: t.usesFooter}
+	loc, err := time.LoadLocation(tz)
+	if tz == "" || err != nil {
+		loc = time.UTC
+	}
+	for _, u := range a.recentUses() {
+		parts := []string{purposeText(t, u.Purpose), approvedText(t, u.ApprovedBy), u.At.In(loc).Format("2006-01-02 15:04")}
+		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentRow, Title: clip(u.Reference, 120),
+			Subtitle: strings.Join(parts, " · "), Icon: "lock"})
+	}
+	if len(sec.Items) == 0 {
+		sec.Items = []wire.Component{{Type: wire.ComponentEmpty, Title: t.noUses, Detail: t.noUsesDetail, Icon: "lock"}}
+		sec.Footer = ""
+	}
+	return sec
+}
+
+func purposeText(t *texts, p secretPurpose) string {
+	var s string
+	switch p.Kind {
+	case "extension":
+		s = fmt.Sprintf(t.useExtension, p.ID)
+	case "launcher":
+		s = fmt.Sprintf(t.useLauncher, p.ID)
+	case "agent_run":
+		s = fmt.Sprintf(t.useAgent, p.ID)
+	default:
+		s = p.Kind
+	}
+	if p.Machine != "" {
+		s += fmt.Sprintf(t.useOn, p.Machine)
+	}
+	return s
+}
+
+func approvedText(t *texts, by string) string {
+	switch by {
+	case "settings":
+		return t.bySettings
+	case "rule":
+		return t.byRule
+	}
+	return t.byDevice
 }
 
 func steps(lines []string) []wire.Component {

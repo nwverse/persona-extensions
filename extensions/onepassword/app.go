@@ -38,6 +38,8 @@ type app struct {
 	lastErr error
 	errKind errKind
 	errAt   time.Time
+	// uses are the last uses of references Persona told of (secrets.used), newest first, for the page.
+	uses []secretUse
 }
 
 func newApp(connect connectFunc) *app { return &app{connect: connect, now: time.Now} }

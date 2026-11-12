@@ -20,6 +20,8 @@ type opAPI interface {
 	listVaults(ctx context.Context) ([]op.VaultOverview, error)
 	listItems(ctx context.Context, vaultID string) ([]op.ItemOverview, error)
 	getItem(ctx context.Context, vaultID, itemID string) (op.Item, error)
+	// resolve is a reference's value (secrets.resolve): the only way a value leaves 1Password through this program.
+	resolve(ctx context.Context, reference string) (string, error)
 }
 
 type connectFunc func(ctx context.Context, token string) (opAPI, error)
@@ -37,6 +39,10 @@ func (s sdkAPI) listItems(ctx context.Context, vaultID string) ([]op.ItemOvervie
 
 func (s sdkAPI) getItem(ctx context.Context, vaultID, itemID string) (op.Item, error) {
 	return s.c.Items().Get(ctx, vaultID, itemID)
+}
+
+func (s sdkAPI) resolve(ctx context.Context, reference string) (string, error) {
+	return s.c.Secrets().Resolve(ctx, reference)
 }
 
 // sdkMu makes one SDK client at a time: the SDK keeps its core in a package variable it sets without a lock, and a
