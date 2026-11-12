@@ -80,8 +80,12 @@ export function parseRepository(raw: unknown, name: string): ImageDetail {
 export function parseTags(raw: unknown, repository: string): ImageTag[] {
   const root = object(raw);
   return array(root.results).slice(0, 10).map(value => {
-    const item = object(value), name = string(item.name);
-    if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$/.test(name) || item.content_type !== "image" || item.tag_status !== "active") throw new ReadError("bad_answer");
+    const item = object(value);
+    // Signatures, attestations and metadata are listed as tags too (content_type "unrecognized"): nothing to pull, so they
+    // are left out, not a failure of the repository.
+    if (item.content_type !== "image" || item.tag_status !== "active") return undefined;
+    const name = string(item.name);
+    if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$/.test(name)) throw new ReadError("bad_answer");
     const digest = string(item.digest);
     if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new ReadError("bad_answer");
     const platforms = array(item.images).slice(0, 64).map(value => {
@@ -97,5 +101,5 @@ export function parseTags(raw: unknown, repository: string): ImageTag[] {
     }).filter((value): value is string => value !== undefined);
     if (repositoryName(repository).length > 130) throw new ReadError("bad_answer");
     return { name, digest, updated: date(item.last_updated), platforms: [...new Set(platforms)] };
-  });
+  }).filter((tag): tag is ImageTag => tag !== undefined);
 }

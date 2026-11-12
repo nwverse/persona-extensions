@@ -65,9 +65,17 @@ function license(value: unknown): string {
   if (!license || /[\u0000-\u001f\u007f]/u.test(license)) throw new ReadError("bad_answer");
   return license;
 }
+// optionalLink is a repository or homepage link as https, or nothing. Package metadata often writes the repository as
+// git+ssh://git@host/path, ssh://git@host/path, git://host/path or git@host:path, shown as https://host/path as on
+// npmjs.com; a link that still cannot be read as https is left out rather than failing the search or the lookup.
+function optionalLink(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value.trim()) return undefined;
+  const text = value.trim().replace(/^(?:git\+)?(?:ssh:\/\/git@|git:\/\/)([^/:@]+)[:/]/, "https://$1/").replace(/^git@([^/:@]+):/, "https://$1/");
+  try { return httpsURL(text); } catch { return undefined; }
+}
 function repository(value: unknown): string | undefined {
   if (value && typeof value === "object" && !Array.isArray(value)) value = (value as Record<string, unknown>).url;
-  return httpsURL(value);
+  return optionalLink(value);
 }
 function summary(value: unknown): PackageSummary {
   const item = object(value), name = packageName(item.name), version = versionText(item.version);
@@ -76,7 +84,7 @@ function summary(value: unknown): PackageSummary {
   if (!url) throw new ReadError("bad_answer");
   const published = item.date == null ? undefined : item.date;
   if (published !== undefined && (typeof published !== "string" || !Number.isFinite(Date.parse(published)))) throw new ReadError("bad_answer");
-  return { name, version, description: clip(oneLine(string(item.description, "")), 500), license: license(item.license), url, ...(repository(item.repository ?? links.repository) ? { repository: repository(item.repository ?? links.repository) } : {}), ...(httpsURL(item.homepage ?? links.homepage) ? { homepage: httpsURL(item.homepage ?? links.homepage) } : {}), ...(published ? { published: published as string } : {}) };
+  return { name, version, description: clip(oneLine(string(item.description, "")), 500), license: license(item.license), url, ...(repository(item.repository ?? links.repository) ? { repository: repository(item.repository ?? links.repository) } : {}), ...(optionalLink(item.homepage ?? links.homepage) ? { homepage: optionalLink(item.homepage ?? links.homepage) } : {}), ...(published ? { published: published as string } : {}) };
 }
 export function parseSearch(raw: unknown, at: number): SearchResult {
   const root = object(raw), objects = array(root.objects), total = integer(root.total, 1_000_000_000_000), seen = new Set<string>();

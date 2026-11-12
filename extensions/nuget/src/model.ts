@@ -116,7 +116,7 @@ export function parseNuspec(raw: string, id: string, version: string, listed: bo
     const match = metadata.match(new RegExp(`<${name}\\b[^>]*>([\\s\\S]*?)<\\/${name}>`, "i"));
     return match ? match[1].trim() : undefined;
   };
-  if (field("id") !== id || field("version") !== version) throw new ReadError("bad_answer");
+  if (field("id")?.toLowerCase() !== id.toLowerCase() || field("version")?.toLowerCase() !== version.toLowerCase()) throw new ReadError("bad_answer");
   const result = summary({ id, version, description: field("description"), projectUrl: field("projectUrl"), licenseUrl: field("licenseUrl"), licenseExpression: field("licenseExpression") ?? field("license"), published: field("published") });
   const dependenciesBlock = field("dependencies") ?? "";
   const groups = Array.from(dependenciesBlock.matchAll(/<group\b[^>]*targetFramework="([^"]+)"[^>]*>/gi)).map(match => {

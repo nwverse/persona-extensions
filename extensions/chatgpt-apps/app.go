@@ -40,6 +40,8 @@ type App struct {
 	now  func() time.Time
 	// loadTimeout is how long a call waits for the tokens to come from the hub after a start.
 	loadTimeout time.Duration
+	// answerMost is the most of one ChatGPT answer read (maxAnswer; tests make it small).
+	answerMost int64
 
 	mu      sync.Mutex
 	ctx     context.Context // the program's, from Init
@@ -73,6 +75,7 @@ func newApp(ep endpoints) *App {
 		http:        &http.Client{Timeout: 110 * time.Second}, // HTTPS_PROXY from the environment: the hub's egress
 		now:         time.Now,
 		loadTimeout: 8 * time.Second,
+		answerMost:  maxAnswer,
 		text:        zhHans,
 		loaded:      make(chan struct{}),
 		plugins:     map[string]pluginDetail{},
@@ -93,10 +96,10 @@ func (a *App) program() ext.Program {
 			ext.ConnectorNamespace: ext.Methods{
 				"status":           ext.Method(a.status),
 				"tools.list":       ext.Method(func(context.Context, wire.ConnectorParams) (wire.ConnectorTools, error) { return readTools(), nil }),
-				"tools.call":       ext.Method(a.callRead),
+				"tools.call":       ext.Method(whole(a.callRead)),
 				"actions.list":     ext.Method(func(context.Context, wire.ConnectorParams) (wire.ConnectorTools, error) { return writeTools(), nil }),
 				"actions.describe": ext.Method(a.describe),
-				"actions.do":       ext.Method(a.do),
+				"actions.do":       ext.Method(whole(a.do)),
 			}.For(connectorID),
 		},
 		UI: map[string]ext.Page{uiPlugins: a.pluginsPage()},

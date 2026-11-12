@@ -38,7 +38,12 @@ test("tag digest is distinct from validated platform image digests", () => {
   assert.equal(tags[0].digest, "sha256:e2355aa95529a7999dad94ddcb45a8768abf6fb0b204c93b1a3ffce477d7b893");
   assert.deepEqual(tags[0].platforms, ["linux/amd64", "linux/arm64/v8"]);
   assert.equal(tags[0].platforms.includes("unknown/unknown"), false);
-  for (const change of [{ digest: "latest" }, { tag_status: "inactive" }, { name: "../latest" }, { content_type: "filesystem" }]) assert.throws(() => parseTags({ results: [{ ...tag, ...change }] }, "library/nginx"), ReadError);
+  for (const change of [{ digest: "latest" }, { name: "../latest" }]) assert.throws(() => parseTags({ results: [{ ...tag, ...change }] }, "library/nginx"), ReadError);
+  // A signature, attestation or metadata artifact (as bitnami/redis lists them) or an inactive tag is left out, not a failure.
+  const artifact = { name: "sha256-59078af5aec997137eb95f34fed376487b471e05c9a244c2812a13598c434950.metadata", content_type: "unrecognized", tag_status: "active", digest: "sha256:" + "1".repeat(64), images: [] };
+  for (const other of [artifact, { ...artifact, name: "latest-metadata" }, { ...tag, name: "old", tag_status: "inactive" }, { ...tag, name: "fs", content_type: "filesystem" }]) {
+    assert.deepEqual(parseTags({ results: [other, tag] }, "library/nginx").map(value => value.name), [tag.name]);
+  }
   assert.throws(() => parseTags({ results: [{ ...tag, images: [{ ...tag.images[0], size: -1 }] }] }, "library/nginx"), ReadError);
 });
 
