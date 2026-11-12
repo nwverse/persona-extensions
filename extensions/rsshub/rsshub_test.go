@@ -247,6 +247,8 @@ func TestParseTimeZoneNames(t *testing.T) {
 		"Tue, 03 Nov 2026 18:30:00 UTC+8:30": time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC),
 		"Tue, 03 Nov 2026 05:00:00 GMT-05":   time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC),
 		"Tue, 03 Nov 2026 10:00:00 GMT":      time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC),
+		"Tue, 03 Nov 2026 10:00:00 UT":       time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC),
+		"Tue, 03 Nov 2026 10:00:00 Z":        time.Date(2026, 11, 3, 10, 0, 0, 0, time.UTC),
 	} {
 		if got := parseTime(s); !got.Equal(want) {
 			t.Errorf("parseTime(%q) = %v, want %v", s, got, want)
