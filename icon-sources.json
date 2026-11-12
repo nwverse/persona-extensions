@@ -300,6 +300,17 @@
       "trademark_owner": "Persona / nwverse",
       "usage": "Official Persona app branding for this Persona-native tool or pack, not the logo of an external data provider."
     },
+    "domains": {
+      "path": "assets/icon.png",
+      "source_id": "raycast",
+      "source_url": "https://raw.githubusercontent.com/raycast/extensions/dfa15bf5d53b5c97722f9d4df1b1e0af939a81ab/extensions/whois/assets/extension_icon.png",
+      "sha256": "993f365868b783b2260fcb1d8cfd68ad69f8016906b7ada4e3b7379cc0addca8",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "Raycast extension contributors (artwork)",
+      "usage": "Exact MIT-licensed domain lookup artwork from the pinned extensions repository, used solely to identify this public RDAP integration. No registry endorsement is implied."
+    },
     "dockerhub": {
       "path": "assets/icon.png",
       "source_id": "raycast",
