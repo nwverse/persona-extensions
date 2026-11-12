@@ -63,8 +63,9 @@ export interface Entry {
   stale?: ReadError;
 }
 export function parseEntry(raw: unknown, language: Language, value: string, at: number): Entry {
-  const source = object(raw), groups: SenseGroup[] = [];
-  for (const key of Object.keys(source).sort()) {
+  const source = object(raw), groups: SenseGroup[] = [], keys = Object.keys(source).sort();
+  // Senses come keyed by language code: the reader's language first, then the rest in order.
+  for (const key of [...keys.filter(key => key === language), ...keys.filter(key => key !== language)]) {
     const group = array(source[key]).slice(0, 20).map(rawGroup => {
       const item = object(rawGroup), partOfSpeech = clip(plain(string(item.partOfSpeech)), 100), label = clip(plain(string(item.language)), 100);
       if (!partOfSpeech) throw new ReadError("bad_answer");
