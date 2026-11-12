@@ -763,7 +763,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "dockerhub", name: "Docker Hub", version: "0.1.1", icon: "assets/icon.png", description: "Search public Docker Hub images. Check official status, publisher namespaces, pull activity, selected tag digests and supported platforms. Get an exact docker pull command as text without pulling or running images.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/dockerhub/README.md", tags: ["Development", "Docker", "Containers", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/dockerhub.mjs", sha256: "" } }, contributes: { connectors: [{ id: "dockerhub", name: "Docker Hub", capabilities: ["status", "tools"], hosts: ["hub.docker.com"], agent_tools: ["dockerhub_*"] }], ui: [{ id: "dockerhub", title: "Docker Hub", placement: "nav_page", icon: "code" }] }, permissions: { network: ["hub.docker.com"] } };
+var persona_extension_default = { manifest_version: 1, id: "dockerhub", name: "Docker Hub", version: "0.1.2", icon: "assets/icon.png", description: "Search public Docker Hub images. Check official status, publisher namespaces, pull activity, selected tag digests and supported platforms. Get an exact docker pull command as text without pulling or running images.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/dockerhub/README.md", tags: ["Development", "Docker", "Containers", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/dockerhub.mjs", sha256: "" } }, contributes: { connectors: [{ id: "dockerhub", name: "Docker Hub", capabilities: ["status", "tools"], hosts: ["hub.docker.com"], agent_tools: ["dockerhub_*"] }], ui: [{ id: "dockerhub", title: "Docker Hub", placement: "nav_page", icon: "code" }] }, permissions: { network: ["hub.docker.com"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 1 << 20, fresh: 15 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 250 });
@@ -850,8 +850,10 @@ function parseRepository(raw, name) {
 function parseTags(raw, repository) {
   const root2 = object(raw);
   return array(root2.results).slice(0, 10).map((value) => {
-    const item = object(value), name = string(item.name);
-    if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$/.test(name) || item.content_type !== "image" || item.tag_status !== "active") throw new ReadError("bad_answer");
+    const item = object(value);
+    if (item.content_type !== "image" || item.tag_status !== "active") return void 0;
+    const name = string(item.name);
+    if (!/^[a-zA-Z0-9_][a-zA-Z0-9_.-]{0,127}$/.test(name)) throw new ReadError("bad_answer");
     const digest = string(item.digest);
     if (!/^sha256:[a-f0-9]{64}$/.test(digest)) throw new ReadError("bad_answer");
     const platforms = array(item.images).slice(0, 64).map((value2) => {
@@ -867,7 +869,7 @@ function parseTags(raw, repository) {
     }).filter((value2) => value2 !== void 0);
     if (repositoryName(repository).length > 130) throw new ReadError("bad_answer");
     return { name, digest, updated: date(item.last_updated), platforms: [...new Set(platforms)] };
-  });
+  }).filter((tag) => tag !== void 0);
 }
 
 // src/locales/en.json
