@@ -107,6 +107,9 @@ class Connector:
         self._ready = threading.Event()
         self._boot_error = ""
         self._lock = threading.Lock()
+        # Serialize backend authentication changes; logout also cancels startup restoration before taking this lock.
+        self._session_lock = threading.RLock()
+        self._restore_cancel = threading.Event()
         self._account_id = ""
         self._account = ""
         self._signed_in = False
@@ -141,25 +144,40 @@ class Connector:
             self._boot_error = str(e) or type(e).__name__
             self._ready.set()
             return
-        self.backend.on_credentials(self._save_credentials)
-        try:
-            saved = self._load_credentials()
-        except Exception as e:
-            self._log("reading the sign-in failed: %s" % type(e).__name__)
-            saved = None
-        while saved:
+        with self._session_lock:
+            if self._restore_cancel.is_set():
+                self._ready.set()
+                return
+            self.backend.on_credentials(self._save_credentials)
             try:
-                self._begin(self.backend.restore(saved))
+                saved = self._load_credentials()
+            except Exception as e:
+                self._log("reading the sign-in failed: %s" % type(e).__name__)
+                saved = None
+        while saved and not self._restore_cancel.is_set():
+            try:
+                with self._session_lock:
+                    if self._restore_cancel.is_set():
+                        break
+                    account = self.backend.restore(saved)
+                    # A logout can cancel an in-flight restore while waiting for the backend operation to finish.
+                    if self._restore_cancel.is_set():
+                        self.backend.logout()
+                        break
+                    self._begin(account)
                 break
             except self.backend.Expired:
-                self._expired = True
+                if not self._restore_cancel.is_set():
+                    self._expired = True
                 break
             except Exception as e:
+                if self._restore_cancel.is_set():
+                    break
                 # Feishu cannot be reached, which says nothing about the session: keep it and try again.
                 self._log("restoring the sign-in failed: %s" % type(e).__name__)
                 self._unreachable = True
                 self._ready.set()
-                time.sleep(RESTORE_RETRY_SECONDS)
+                self._restore_cancel.wait(RESTORE_RETRY_SECONDS)
         self._unreachable = False
         self._ready.set()
 
@@ -680,6 +698,12 @@ class Connector:
             raise RpcError("运行环境还没准备好，等一两分钟再试。")
         if self._boot_error:
             raise RpcError("运行环境没装好：" + self._boot_error[:200])
+        # An explicit QR sign-in supersedes the saved startup session, even while its restore is retrying.
+        self._restore_cancel.set()
+        with self._session_lock:
+            return self._login_step(p)
+
+    def _login_step(self, p):
         if not p.get("step"):
             return self._new_qr()
         try:
@@ -715,15 +739,17 @@ class Connector:
         return prompt
 
     def logout(self, _):
-        self._stop.set()
-        self.backend.logout()
-        self.hub.call(SECRETS + "delete", {"contribution": ID})
-        with self._lock:
-            self._signed_in = False
-            self._expired = False
-            self._link_up = False
-            self._account = ""
-            self._account_id = ""
+        self._restore_cancel.set()
+        with self._session_lock:
+            self._stop.set()
+            self.backend.logout()
+            self.hub.call(SECRETS + "delete", {"contribution": ID})
+            with self._lock:
+                self._signed_in = False
+                self._expired = False
+                self._link_up = False
+                self._account = ""
+                self._account_id = ""
         return {}
 
 

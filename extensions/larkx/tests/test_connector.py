@@ -6,8 +6,10 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
@@ -407,6 +409,89 @@ class ConnectorTest(unittest.TestCase):
         self.c.logout({})
         self.assertTrue(self.hub.deleted)
         self.assertEqual(self.c.status({})["state"], "not_signed_in")
+
+    def test_logout_during_restore_does_not_activate_the_old_session(self):
+        self.hub.saved = base64.b64encode(b'{"cookies": {"session": "s"}}').decode()
+        self.addCleanup(lambda: self.c._stop.set())
+
+        def restore(saved):
+            self.backend.restored.append(saved)
+            self.c.logout({})
+            return {"id": ME, "name": "Synthetic account"}
+
+        self.backend.restore = restore
+        with mock.patch.object(self.backend, "listen", wraps=self.backend.listen) as listen:
+            self.c._boot()
+            self.assertEqual(self.c.status({})["state"], "not_signed_in")
+            self.assertIsNone(self.hub.saved)
+            listen.assert_not_called()
+
+    def test_logout_cancels_a_saved_session_retry(self):
+        import larkx_persona.connector as module
+        self.hub.saved = base64.b64encode(b'{"cookies": {"session": "s"}}').decode()
+        self.backend.restore_error = ConnectionError("synthetic network failure")
+        self.hub.log = lambda line: self.c.logout({})
+        self.addCleanup(lambda: self.c._stop.set())
+        with mock.patch.object(module, "RESTORE_RETRY_SECONDS", 0):
+            self.c._boot()
+        self.assertEqual(len(self.backend.restored), 1)
+        self.assertEqual(self.c.status({})["state"], "not_signed_in")
+        self.assertIsNone(self.hub.saved)
+
+    def test_logout_waits_for_an_inflight_restore_without_reactivating_it(self):
+        self.hub.saved = base64.b64encode(b'{"cookies": {"session": "s"}}').decode()
+        entered, release = threading.Event(), threading.Event()
+        errors = []
+
+        def restore(saved):
+            entered.set()
+            if not release.wait(2):
+                raise TimeoutError("synthetic restore timed out")
+            return {"id": ME, "name": "Synthetic account"}
+
+        def run(action):
+            try:
+                action()
+            except Exception as error:
+                errors.append(error)
+
+        self.backend.restore = restore
+        boot = threading.Thread(target=run, args=(self.c._boot,), daemon=True)
+        logout = threading.Thread(target=run, args=(lambda: self.c.logout({}),), daemon=True)
+        self.addCleanup(lambda: self.c._stop.set())
+        self.addCleanup(release.set)
+        with mock.patch.object(self.backend, "listen", wraps=self.backend.listen) as listen:
+            boot.start()
+            self.assertTrue(entered.wait(2))
+            logout.start()
+            self.assertTrue(self.c._restore_cancel.wait(2))
+            release.set()
+            boot.join(2)
+            logout.join(2)
+            self.assertFalse(boot.is_alive())
+            self.assertFalse(logout.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(self.c.status({})["state"], "not_signed_in")
+            self.assertIsNone(self.hub.saved)
+            listen.assert_not_called()
+
+    def test_a_new_scan_supersedes_the_saved_session_retry(self):
+        import larkx_persona.connector as module
+        self.hub.saved = base64.b64encode(b'{"cookies": {"session": "s"}}').decode()
+        self.backend.restore_error = ConnectionError("synthetic network failure")
+        self.backend.poll = "done"
+        self.addCleanup(lambda: self.c._stop.set())
+
+        def scan(line):
+            self.c._ready.set()
+            self.assertTrue(self.c.login_step({"step": "scan"})["done"])
+
+        self.hub.log = scan
+        with mock.patch.object(module, "RESTORE_RETRY_SECONDS", 0):
+            self.c._boot()
+        self.assertEqual(len(self.backend.restored), 1)
+        self.assertEqual(self.c.status({})["state"], "ok")
+        self.assertFalse(self.hub.deleted)
 
     def test_an_expired_session_asks_to_scan_again(self):
         self.sign_in()
