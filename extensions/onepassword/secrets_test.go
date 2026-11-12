@@ -38,10 +38,23 @@ func (f *fakeOP) resolve(_ context.Context, ref string) (string, error) {
 	return "", errors.New("error resolving secret reference: no item matched the secret reference query")
 }
 
+// secretsCall sends params as the manager does and reads the answer as it would: through its JSON.
 func secretsCall(t *testing.T, a *app, method string, params any) (any, error) {
 	t.Helper()
 	raw, _ := json.Marshal(params)
-	return a.secrets(context.Background(), method, raw)
+	out, err := a.secrets(context.Background(), method, raw)
+	if err != nil || out == nil {
+		return out, err
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answer map[string]string
+	if err := json.Unmarshal(b, &answer); err != nil {
+		t.Fatal(err)
+	}
+	return answer, nil
 }
 
 func codeOf(err error) string {
@@ -239,8 +252,8 @@ func TestProgramAnswersTheSecretsNamespace(t *testing.T) {
 		t.Fatal("no secrets namespace")
 	}
 	out, err := h(context.Background(), "resolve", json.RawMessage(`{"contribution":"vault","reference":"`+refByName+`","purpose":{"kind":"extension","id":"example-notes"}}`))
-	if err != nil || out.(map[string]string)["value"] != secretValues[1] {
-		t.Fatalf("resolve: %v %v", out, err)
+	if res, ok := out.(wire.SecretsResolveResult); err != nil || !ok || res.Value != secretValues[1] {
+		t.Fatalf("resolve: %T %v", out, err)
 	}
 	if _, err := h(context.Background(), "write", nil); err == nil {
 		t.Fatal("an unknown method answered")

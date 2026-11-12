@@ -16,6 +16,7 @@ import (
 
 	op "github.com/1password/onepassword-sdk-go"
 	"github.com/nwverse/persona/sdk/go/ext"
+	"github.com/nwverse/persona/sdk/go/wire"
 )
 
 const (
@@ -29,43 +30,21 @@ const (
 	secretTimeout = 9 * time.Second
 )
 
-// The secrets namespace's messages, as Persona's wire package names them (wire.SecretPurpose, wire.SecretsDescribeParams,
-// wire.SecretsResolveParams, wire.SecretsUsedEvent); the SDK copied into this repository predates them.
-type secretPurpose struct {
-	Kind    string `json:"kind"`
-	ID      string `json:"id"`
-	Machine string `json:"machine,omitempty"`
-	Session string `json:"session,omitempty"`
-}
-
-type secretsParams struct {
-	Contribution string        `json:"contribution"`
-	Reference    string        `json:"reference"`
-	Purpose      secretPurpose `json:"purpose"`
-	At           time.Time     `json:"at"`
-	ApprovedBy   string        `json:"approved_by"`
-}
-
 // secretUse is one use the manager told of (secrets.used): never a value.
 type secretUse struct {
 	Reference  string
-	Purpose    secretPurpose
+	Purpose    wire.SecretPurpose
 	At         time.Time
 	ApprovedBy string
 }
 
 func (a *app) secrets(ctx context.Context, method string, raw json.RawMessage) (any, error) {
-	var in secretsParams
-	if len(raw) > 0 {
-		if err := json.Unmarshal(raw, &in); err != nil {
-			return nil, &ext.Error{Code: "invalid", Message: "invalid secrets parameters"}
-		}
-	}
-	if in.Contribution != "" && in.Contribution != providerID {
-		return nil, ext.NoContribution(in.Contribution)
-	}
 	switch method {
 	case "describe":
+		var in wire.SecretsDescribeParams
+		if err := readSecrets(raw, &in, &in.Contribution); err != nil {
+			return nil, err
+		}
 		ctx, cancel := context.WithTimeout(ctx, secretTimeout)
 		defer cancel()
 		ref, ok := parseReference(in.Reference)
@@ -73,20 +52,41 @@ func (a *app) secrets(ctx context.Context, method string, raw json.RawMessage) (
 			return nil, &ext.Error{Code: "invalid", Message: "not a 1Password reference (op://vault/item/[section/]field)"}
 		}
 		title, detail := a.describe(ctx, ref)
-		return map[string]string{"title": title, "detail": detail}, nil
+		return wire.SecretsDescribeResult{Title: title, Detail: detail}, nil
 	case "resolve":
+		var in wire.SecretsResolveParams
+		if err := readSecrets(raw, &in, &in.Contribution); err != nil {
+			return nil, err
+		}
 		ctx, cancel := context.WithTimeout(ctx, secretTimeout)
 		defer cancel()
 		value, err := a.resolve(ctx, in.Reference)
 		if err != nil {
 			return nil, err
 		}
-		return map[string]string{"value": value}, nil
+		return wire.SecretsResolveResult{Value: value}, nil
 	case "used": // an event: no answer goes back
+		var in wire.SecretsUsedEvent
+		if err := readSecrets(raw, &in, &in.Contribution); err != nil {
+			return nil, err
+		}
 		a.noteUse(in)
 		return nil, nil
 	}
 	return nil, ext.UnknownMethod("secrets." + method)
+}
+
+// readSecrets decodes a secrets message's parameters into in, and refuses one meant for another contribution.
+func readSecrets(raw json.RawMessage, in any, contribution *string) error {
+	if len(raw) > 0 {
+		if err := json.Unmarshal(raw, in); err != nil {
+			return &ext.Error{Code: "invalid", Message: "invalid secrets parameters"}
+		}
+	}
+	if *contribution != "" && *contribution != providerID {
+		return ext.NoContribution(*contribution)
+	}
+	return nil
 }
 
 // reference is an op:// reference's parts: op://vault/item/field or op://vault/item/section/field, each a name or an
@@ -302,12 +302,12 @@ func hasAny(err error, words ...string) bool {
 
 // noteUse keeps one use for the page, newest first by when Persona used it (events may arrive out of order: the SDK
 // hands each to its own goroutine), the last mostUses of them.
-func (a *app) noteUse(in secretsParams) {
+func (a *app) noteUse(in wire.SecretsUsedEvent) {
 	if _, ok := parseReference(in.Reference); !ok {
 		return
 	}
 	use := secretUse{Reference: clip(strings.TrimSpace(in.Reference), 300), At: in.At, ApprovedBy: clip(in.ApprovedBy, 80),
-		Purpose: secretPurpose{Kind: clip(in.Purpose.Kind, 40), ID: clip(in.Purpose.ID, 120), Machine: clip(in.Purpose.Machine, 120)}}
+		Purpose: wire.SecretPurpose{Kind: clip(in.Purpose.Kind, 40), ID: clip(in.Purpose.ID, 120), Machine: clip(in.Purpose.Machine, 120)}}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if use.At.IsZero() {

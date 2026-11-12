@@ -124,7 +124,7 @@ func (a *app) usesSection(t *texts, tz string) wire.Section {
 	return sec
 }
 
-func purposeText(t *texts, p secretPurpose) string {
+func purposeText(t *texts, p wire.SecretPurpose) string {
 	var s string
 	switch p.Kind {
 	case "extension":
