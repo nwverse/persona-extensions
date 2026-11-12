@@ -35,6 +35,7 @@ python3 -I scripts/source-rebuild.py plan
 step manifests
 scripts/manifest.py check
 python3 -I scripts/test-manifest.py
+python3 -I scripts/test-config-form.py
 python3 -I scripts/test-icons.py
 
 step gofmt
