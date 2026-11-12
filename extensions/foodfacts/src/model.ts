@@ -69,7 +69,8 @@ export function parseProduct(raw: unknown, expectedCode: string, at: number): Pr
 }
 function product(raw: unknown, expectedCode?: string): Product {
   const item = object(raw), code = barcode(item.code);
-  if (expectedCode && code !== expectedCode) throw new ReadError("bad_answer");
+  // Open Food Facts answers a 12-digit UPC-A as its EAN-13, with a leading zero: the same product.
+  if (expectedCode && code.replace(/^0+/, "") !== expectedCode.replace(/^0+/, "")) throw new ReadError("bad_answer");
   const name = string(item.product_name, 300);
   if (!name) throw new ReadError("bad_answer");
   return { code, name, brands: string(item.brands, 300), quantity: string(item.quantity, 100),
