@@ -61,6 +61,15 @@ for m in $modules; do go -C "$m" vet ./...; done
 step test
 for m in $modules; do go -C "$m" test -race ./...; done
 
+step python
+# Each Python extension (a requirements.txt next to its manifest) runs its own tests with unittest and the standard
+# library only: what the program installs on first start is not needed by its tests.
+for id in $(scripts/manifest.py ids); do
+  [ -f "extensions/$id/requirements.txt" ] || continue
+  (cd "extensions/$id" && python3 -I -B -m unittest discover -s tests)
+  echo "$id: python tests ok"
+done
+
 step build
 for id in $(scripts/manifest.py ids); do
   scripts/package.sh "$id" >/dev/null
