@@ -763,7 +763,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "npmpackages", name: "npm Packages", version: "0.1.1", icon: "assets/icon.png", description: "Search public npm packages, compare latest versions, release dates, licenses, download activity and canonical repository links. Get an exact-version install command without executing it. Anonymous, read-only official registry access.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/npmpackages/README.md", tags: ["Development", "JavaScript", "npm", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/npmpackages.mjs", sha256: "" } }, contributes: { connectors: [{ id: "npmpackages", name: "npm Packages", capabilities: ["status", "tools"], hosts: ["registry.npmjs.org", "api.npmjs.org"], agent_tools: ["npmpackages_*"] }], ui: [{ id: "packages", title: "npm Packages", placement: "nav_page", icon: "code" }] }, permissions: { network: ["registry.npmjs.org", "api.npmjs.org"] } };
+var persona_extension_default = { manifest_version: 1, id: "npmpackages", name: "npm Packages", version: "0.1.2", icon: "assets/icon.png", description: "Search public npm packages, compare latest versions, release dates, licenses, download activity and canonical repository links. Get an exact-version install command without executing it. Anonymous, read-only official registry access.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/npmpackages/README.md", tags: ["Development", "JavaScript", "npm", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/npmpackages.mjs", sha256: "" } }, contributes: { connectors: [{ id: "npmpackages", name: "npm Packages", capabilities: ["status", "tools"], hosts: ["registry.npmjs.org", "api.npmjs.org"], agent_tools: ["npmpackages_*"] }], ui: [{ id: "packages", title: "npm Packages", placement: "nav_page", icon: "code" }] }, permissions: { network: ["registry.npmjs.org", "api.npmjs.org"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 1 << 20, fresh: 15 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 250 });
@@ -837,9 +837,18 @@ function license(value) {
   if (!license2 || /[\u0000-\u001f\u007f]/u.test(license2)) throw new ReadError("bad_answer");
   return license2;
 }
+function optionalLink(value) {
+  if (typeof value !== "string" || !value.trim()) return void 0;
+  const text = value.trim().replace(/^(?:git\+)?(?:ssh:\/\/git@|git:\/\/)([^/:@]+)[:/]/, "https://$1/").replace(/^git@([^/:@]+):/, "https://$1/");
+  try {
+    return httpsURL(text);
+  } catch {
+    return void 0;
+  }
+}
 function repository(value) {
   if (value && typeof value === "object" && !Array.isArray(value)) value = value.url;
-  return httpsURL(value);
+  return optionalLink(value);
 }
 function summary(value) {
   const item = object(value), name = packageName(item.name), version = versionText(item.version);
@@ -848,7 +857,7 @@ function summary(value) {
   if (!url) throw new ReadError("bad_answer");
   const published = item.date == null ? void 0 : item.date;
   if (published !== void 0 && (typeof published !== "string" || !Number.isFinite(Date.parse(published)))) throw new ReadError("bad_answer");
-  return { name, version, description: clip(oneLine(string(item.description, "")), 500), license: license(item.license), url, ...repository(item.repository ?? links.repository) ? { repository: repository(item.repository ?? links.repository) } : {}, ...httpsURL(item.homepage ?? links.homepage) ? { homepage: httpsURL(item.homepage ?? links.homepage) } : {}, ...published ? { published } : {} };
+  return { name, version, description: clip(oneLine(string(item.description, "")), 500), license: license(item.license), url, ...repository(item.repository ?? links.repository) ? { repository: repository(item.repository ?? links.repository) } : {}, ...optionalLink(item.homepage ?? links.homepage) ? { homepage: optionalLink(item.homepage ?? links.homepage) } : {}, ...published ? { published } : {} };
 }
 function parseSearch(raw, at) {
   const root2 = object(raw), objects = array(root2.objects), total = integer(root2.total, 1e12), seen = /* @__PURE__ */ new Set();
