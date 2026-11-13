@@ -39,6 +39,8 @@ test("parent and episode records are strictly separated and bounded", () => {
   assert.throws(() => parseEpisodes({ resultCount: 2, results: [sampleShow, { ...sampleEpisode, kind: "podcastEpisode" }] }, sampleShow.collectionId, 0), ReadError);
   assert.throws(() => parseEpisodes({ resultCount: 1, results: [sampleEpisode] }, 42, 0), ReadError);
   assert.throws(() => parseEpisodes({ resultCount: 2, results: [sampleShow, { ...sampleEpisode, collectionId: 42 }] }, sampleShow.collectionId, 0), ReadError);
+  // Date.parse would roll this into October; an episode date must be a real calendar day.
+  assert.throws(() => parseEpisodes({ resultCount: 2, results: [sampleShow, { ...sampleEpisode, releaseDate: "2026-02-30T00:00:00Z" }] }, sampleShow.collectionId, 0), ReadError);
   for (const raw of [null, [], {}, { resultCount: -1, results: [] }, { resultCount: 1 }, { resultCount: 1, results: [null] }]) assert.throws(() => parseSearch(raw, 0), ReadError);
 });
 
