@@ -16,10 +16,8 @@ named without machines, projects, products, people, protocols or dates. Examples
 - "when planning a trip" covers choosing flights, picking where to stay and deciding what to pack;
 - "when a release is about to go out" covers waiting or not for a slow check, what to verify first and who signs
   off.
-A kind may hold several classes, but only classes in which the user does the same thing: a broad occasion that
-calls for different ways ("when deploying, either clean credentials first or test in a low-risk place or export a
-backup") is several kinds. A class goes into a kind of its own when no other class is the same kind of occasion
-with the same way.
+Prefer few, broad kinds: a kind should usually hold several classes. A class goes into a kind of its own only when
+no other class is the same kind of occasion.
 
 Step 2. For each kind, list in `classes` the ids of the classes that are one class under `rule`. For kinds of
 situation (judgements, ways of handling things) classes whose choices point the same way are one class even when

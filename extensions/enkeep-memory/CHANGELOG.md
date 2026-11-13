@@ -1,5 +1,13 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.12 (pre-release)
+
+- **Classes merge as broadly as before.** 0.2.0-beta.11 asked the merge for narrow kinds, and far fewer classes
+  merged (machines-and-tools classes of the same pitfall stayed apart and never became stable). The merge prompt is
+  back to broad kinds; the program still refuses, in ①③④⑥, a merge whose sentence needs two or more alternatives.
+- **The AI's lines supply no detail.** When a fact's detail is in another line of the conversation, only the people's
+  lines are cited for it, never the assistant's or an agent's draft, which a fact never rests on.
+
 ## 0.2.0-beta.11 (pre-release)
 
 - **The user as a person has a test of its own.** A ⑥ line is not asked at which moment the assistant would act

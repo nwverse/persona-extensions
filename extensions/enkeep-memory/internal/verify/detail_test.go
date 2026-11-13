@@ -7,6 +7,7 @@ import (
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/voice"
 )
 
 func TestDetails(t *testing.T) {
@@ -91,5 +92,14 @@ func TestDetailsNumeralsAndCommonWords(t *testing.T) {
 	}
 	if _, rej := w.Supply("先执行前3步", ev); rej != DetailNotInEvidence || w.Missing != "3" {
 		t.Fatalf("a number no line has: %q %q", rej, w.Missing)
+	}
+}
+
+func TestSupplySkipsTheAIsLines(t *testing.T) {
+	w := detailWindow()
+	w.All[5], w.Shown[5] = norm.Line{N: 5, Speaker: voice.AI, Body: "那台主机叫 host-a"}, true
+	ev := []store.Evidence{{Chat: w.Chat, Day: w.Day, N: 3, Speaker: norm.Me, Quote: "好，就这么做"}}
+	if _, rej := w.Supply("那台主机叫 host-a", ev); rej != DetailNotInEvidence {
+		t.Fatalf("a detail only the AI said: %q", rej)
 	}
 }
