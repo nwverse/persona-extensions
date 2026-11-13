@@ -1,5 +1,5 @@
 import type { FetchAdapter } from "@persona/extension/ui";
-import { limits, lookupPath, parseEpisodes, parseSearch, ReadError, searchPath, showPath, parseShow, type EpisodesResult, type LimitOptions, type SearchResult, type Show } from "./model.ts";
+import { limits, lookupPath, parseEpisodes, parseSearch, ReadError, searchPath, showPath, parseShow, id, podcastID, type EpisodesResult, type LimitOptions, type SearchResult, type Show } from "./model.ts";
 import { textsFor } from "./i18n.ts";
 export { limits, ReadError } from "./model.ts";
 export interface ServiceOptions { now?: () => number; monotonic?: () => number; limits?: LimitOptions; locale?: string }
@@ -31,7 +31,7 @@ export class Podcasts {
   }
   private cached(path: string, fresh: number): { raw: unknown; at: number } | undefined {
     const item = this.cache.get(path);
-    if (item && this.monotonic() - item.used < fresh) {
+    if (item && this.monotonic() - item.at < fresh) {
       // Recency belongs to actual cache use; `at` remains the original read time.
       this.cache.delete(path); item.used = this.monotonic(); this.cache.set(path, item);
       return { raw: item.raw, at: item.at };
@@ -136,6 +136,7 @@ export class Podcasts {
       const results = (raw as { results?: unknown[] }).results;
       const item = results?.find(raw => !!raw && typeof raw === "object" && (raw as { wrapperType?: unknown }).wrapperType === "track");
       if (!item) throw new ReadError("not_found");
+      if (id((item as { collectionId?: unknown }).collectionId) !== podcastID(show)) throw new ReadError("not_found");
       parseShow(item);
     });
     const results = (rd.raw as { results?: unknown[] }).results;
