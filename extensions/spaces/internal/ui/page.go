@@ -47,8 +47,8 @@ func New(st kernel.Storage) *App {
 func (a *App) SetHub(n Notifier) { a.hub = n }
 
 // state is the page's own state, sent back with every request. The fields name what is shown: the space, the type
-// tab, the view, the search text, the extra pages loaded, the entity page, the schema editor for a type and the one
-// open fold.
+// tab, the view, the search text, the extra pages loaded, the entity page, the schema editor for a type, the one
+// open fold and the new space being created.
 type state struct {
 	S string `json:"s,omitempty"` // space
 	T string `json:"t,omitempty"` // type; "" = the space overview
@@ -58,6 +58,7 @@ type state struct {
 	E string `json:"e,omitempty"` // entity page
 	D string `json:"d,omitempty"` // schema editor for this type ("+" = a new type)
 	F string `json:"f,omitempty"` // the one open fold
+	C string `json:"c,omitempty"` // a new space: its template's key ("?" = the template list)
 }
 
 // ctx is one request: its state, the time, the time zone and, once a base is read, the space and entity shown.
@@ -87,6 +88,8 @@ var actions = map[string]func(c *ctx, arg string) (*wire.ActionResult, error){
 	"more":   actMore,
 	"fold":   actFold,
 	"space":  actSpace,
+	"new":    actNew,
+	"cancel": actCancel,
 	"create": actCreate,
 	"add":    actAdd,
 	"save":   actSave,
@@ -241,13 +244,16 @@ func location(name string) *time.Location {
 	return time.UTC
 }
 
-// route chooses the screen from the state and the data: no space is the welcome; an entity is its page; a schema
-// editor is shown for a type that exists or for a new one; else the space's overview or the type's tab. A stale id
-// falls through to the next screen.
+// route chooses the screen from the state and the data: an entity is its page; a new space is the template list or
+// its form; no space is the welcome; a schema editor is shown for a type that exists or for a new one; else the
+// space's overview or the type's tab. A stale id falls through to the next screen.
 func (c *ctx) route() (*wire.View, error) {
 	c.resolve()
 	if c.e != nil {
 		return c.entityPage()
+	}
+	if v := c.newSpacePage(); v != nil {
+		return v, nil
 	}
 	if c.sp == nil {
 		return c.welcome(), nil
@@ -391,9 +397,35 @@ func actSpace(c *ctx, arg string) (*wire.ActionResult, error) {
 	return nil, nil
 }
 
-// actCreate creates a space from a template, with its samples.
+// actNew opens the template list of a new space, or the form of the template the argument names.
+func actNew(c *ctx, arg string) (*wire.ActionResult, error) {
+	if arg == "" {
+		arg = pickSlot
+	} else if _, ok := templates.Get(arg); !ok {
+		return nil, fmt.Errorf("没有模板「%s」", arg)
+	}
+	c.st.C = arg
+	return nil, nil
+}
+
+// actCancel leaves the new space unmade: the page shown before it is drawn again.
+func actCancel(c *ctx, _ string) (*wire.ActionResult, error) {
+	c.st.C = ""
+	return nil, nil
+}
+
+// actCreate creates a space from the template the argument names, with the name and the samples choice of its form.
+// An empty name is the default one; samples come unless the form turned them off. The new space's overview is shown.
 func actCreate(c *ctx, arg string) (*wire.ActionResult, error) {
-	sp, err := templates.Apply(c.b, arg, "", true, c.now)
+	t, ok := templates.Get(arg)
+	if !ok {
+		return nil, fmt.Errorf("没有模板「%s」", arg)
+	}
+	name := strings.TrimSpace(c.r.Values["name"])
+	if name == "" {
+		name = c.defaultName(t)
+	}
+	sp, err := templates.Apply(c.b, t.Key, name, c.r.Values["samples"] != "false", c.now)
 	if err != nil {
 		return nil, err
 	}
