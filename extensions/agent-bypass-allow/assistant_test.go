@@ -104,6 +104,12 @@ func TestAssistantWritesOnAllowsListedDirectories(t *testing.T) {
 			t.Errorf("mode %q: %q, want allow", mode, got)
 		}
 	}
+	// A manager's own assistant directory (assistant-m-<hex>) is one too.
+	req := e.assistantCall("Write", e.charter())
+	req["transcript_path"] = filepath.Join(e.home, ".claude", "projects", "-home-u--persona-assistant-m-3f2a", "5a1d0c2e.jsonl")
+	if got := e.run(t, req, assistantProcess); got != allowOutput {
+		t.Errorf("a manager's assistant project: %q, want allow", got)
+	}
 	// The old name's variable alone counts (an older node mirrors both).
 	jarvisOnly := func(k string) string {
 		if k == "JARVIS_ASSISTANT" {
@@ -177,6 +183,12 @@ func TestAssistantWritesOnAsksOutsideTheList(t *testing.T) {
 			t.Errorf("%s: answered %q, should stay silent", c.name, got)
 		}
 	}
+	// Only a PermissionRequest.
+	pre := e.assistantCall("Write", e.charter())
+	pre["hook_event_name"] = "PreToolUse"
+	if got := e.run(t, pre, assistantProcess); got != "" {
+		t.Errorf("PreToolUse: %q", got)
+	}
 	// Plan mode writes nothing.
 	req := e.assistantCall("Write", e.charter())
 	req["permission_mode"] = "plan"
@@ -217,6 +229,12 @@ func TestAssistantWritesOnAsksForOtherAgents(t *testing.T) {
 		req["transcript_path"] = filepath.Join(e.home, ".claude", "projects", "-home-u--jarvis-health", "5a1d0c2e.jsonl")
 		return req
 	}
+	project := func(name string) func(map[string]any) map[string]any {
+		return func(req map[string]any) map[string]any {
+			req["transcript_path"] = filepath.Join(e.home, ".claude", "projects", name, "5a1d0c2e.jsonl")
+			return req
+		}
+	}
 	noTranscript := func(req map[string]any) map[string]any { delete(req, "transcript_path"); return req }
 	for _, c := range []struct {
 		name   string
@@ -228,6 +246,14 @@ func TestAssistantWritesOnAsksForOtherAgents(t *testing.T) {
 		{"a process that inherited the variable, elsewhere", other(e.assistantCall("Write", e.charter())), assistantProcess},
 		{"the health space", health(e.assistantCall("Write", e.charter())), assistantProcess},
 		{"no transcript", noTranscript(e.assistantCall("Write", e.charter())), assistantProcess},
+		{"a directory that only ends like the assistant's", project("-tmp-x-persona-assistant")(e.assistantCall("Write", e.charter())), assistantProcess},
+		{"a directory under the assistant's", project("-home-u--persona-assistant-sub")(e.assistantCall("Write", e.charter())), assistantProcess},
+		{"a guest conversation", e.assistantCall("Write", e.charter()), func(k string) string {
+			if k == "PERSONA_GUEST" {
+				return "meeting"
+			}
+			return assistantProcess(k)
+		}},
 		{"PERSONA_ASSISTANT=0", e.assistantCall("Write", e.charter()), func(k string) string {
 			if k == "PERSONA_ASSISTANT" {
 				return "0"

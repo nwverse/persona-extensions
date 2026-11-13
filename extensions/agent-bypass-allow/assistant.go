@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -59,17 +60,26 @@ func isAssistantSession(req hookInput, getenv func(string) string) bool {
 	if getenv("PERSONA_ASSISTANT") != "1" && getenv("JARVIS_ASSISTANT") != "1" {
 		return false
 	}
+	if getenv("PERSONA_GUEST") != "" || getenv("JARVIS_GUEST") != "" { // a guest conversation is not the user's assistant
+		return false
+	}
 	if req.TranscriptPath == "" {
 		return false
 	}
-	project := filepath.Base(filepath.Dir(req.TranscriptPath))
-	return strings.Contains(project, "-persona-assistant") || strings.Contains(project, "-jarvis-assistant")
+	return assistantProject.MatchString(filepath.Base(filepath.Dir(req.TranscriptPath)))
 }
+
+// assistantProject is the project Claude Code names after an assistant directory: …/.persona/assistant becomes
+// …--persona-assistant (the / and the . both turn into -), and a manager's own …/.persona/assistant-m-<hex>. A
+// directory that only ends the same way (/tmp/x-persona-assistant) has one dash, and is not one.
+var assistantProject = regexp.MustCompile(`--(persona|jarvis)-assistant(-m-[0-9a-f]+)?$`)
 
 // refuseAssistantWrite says why the hook leaves a Write or Edit to Claude Code ("" lets it allow), and the note for
 // the audit log when it allows.
 func refuseAssistantWrite(a hookArgs, req hookInput, o options, now time.Time) (why, note string) {
 	switch {
+	case req.HookEventName != "" && req.HookEventName != "PermissionRequest":
+		return "not a PermissionRequest", ""
 	case !o.AssistantWrites:
 		return "assistant writes are off", ""
 	case req.PermissionMode == "plan":
