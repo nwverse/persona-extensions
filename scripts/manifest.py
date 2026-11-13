@@ -177,15 +177,18 @@ def selected(args):
 
 def referenced(m):
     """The package paths a manifest references, as (what, path, kind): kind "skill" is a directory with SKILL.md,
-    "file" a file. The hub refuses a package without them at install (nwverse/persona server/internal/extension)."""
+    "file" a file. The hub refuses a package without them at install (nwverse/persona server/internal/extension).
+    A skill or instructions with "source": "data" lives in the extension's data directory, which the extension
+    writes at run time, so the package does not carry it."""
     c = m.get("contributes") or {}
     out = []
     if "icon" in m:
         out.append(("icon", m["icon"], "icon"))
     for s in c.get("skills") or []:
-        out.append(("skills %s: dir" % s.get("id"), s.get("dir"), "skill"))
+        if s.get("source") != "data":
+            out.append(("skills %s: dir" % s.get("id"), s.get("dir"), "skill"))
     for p in c.get("prompts") or []:
-        if p.get("kind") == "instructions":
+        if p.get("kind") == "instructions" and p.get("source") != "data":
             out.append(("prompts %s: file" % p.get("id"), p.get("file"), "file"))
     for a in c.get("assistant") or []:
         for sk in a.get("skills") or []:

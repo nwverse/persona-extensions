@@ -5,6 +5,7 @@
 ## Using extensions
 
 - [Installation](installation.md): register the public market, install local packages and handle older hubs.
+- [enkeep memory](extensions/enkeep-memory.md): learns how you work with the AI, how the AI works with your machines and tools, your default judgements, how you handle kinds of tasks, your world and you as a person, plus cards for the people you deal with, each entry sourced and editable; what it learns reaches the assistant through instructions, skills, agent and inbox context and the knowledge base.
 - [GitHub](extensions/github.md): the inbox, knowledge-base archive, assistant tools and sign-in of the GitHub connector (moved out of the hub), and a GitHub page: what needs you, repositories and their code, and PR / issue review.
 - [Home Assistant](extensions/homeassistant.md): areas, devices, controls and history from your own Home Assistant; the logbook, statistics and energy, automations, calls by area, speakers, cameras, watch rules that notify or wake the assistant, confirmed assistant writes, writable domains and the sandbox.
 - [Hacker News](extensions/hackernews.md): public Top, New, Best, Ask HN and Show HN stories, top-level comments, filtering, the localized app view and assistant tools.
