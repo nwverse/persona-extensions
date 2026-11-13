@@ -582,7 +582,11 @@ func (c *Curator) ingest(b *graph.Builder, u *Unit, d triage.Decision, owner []s
 				rej = verify.TierNotAllowed
 			}
 			if rej != "" {
-				c.reject(done, class, rej, it.Claim, u.Day)
+				claim := it.Claim
+				if rej == verify.DetailNotInEvidence {
+					claim = withMissing(claim, w.Missing)
+				}
+				c.reject(done, class, rej, claim, u.Day)
 				run.Counts["rejected"]++
 				if rej == verify.TierNotAllowed {
 					run.Counts["rejected_tier"]++

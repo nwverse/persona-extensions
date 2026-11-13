@@ -1,5 +1,29 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.11 (pre-release)
+
+- **The user as a person has a test of its own.** A ⑥ line is not asked at which moment the assistant would act
+  differently (understanding has no such moment) but whether it is a specific fact about this user: background, role,
+  what they work on or aim at, their circumstances, a specific view or habit. Lines true of almost anyone are kept
+  out as before (`emptiness/3`; the acceptance tool judges ⑥ lines the same way). A line saying how the user
+  handles a kind of task or chooses at a fork is no longer held back for stating "no behaviour of the assistant's":
+  the assistant follows it when it does, helps with or plans that kind of task.
+- **One plain statement is enough for a fact.** A ⑥ fact the user states about themself (role, responsibility,
+  situation, current work, a goal, the background) and a ⑤′ fact or promise on the person's or the user's own line
+  are stable at once; views, values, preferences, habits, evaluations and readings still need a second sighting.
+  The per-turn instructions take such ⑥ facts as well as classes.
+- **Details checked further.** One-digit numbers count as details too (a quote's Chinese numerals match: "两" carries
+  "2"); common words of software work ("issue", "release", "URL"…) do not, since a claim uses them for a quote's own
+  wording. A rejected item's log line names the detail no line has. CJK descriptions are not checked word by word:
+  a clause check refused mostly correct facts in other words.
+- **No "A or B or C" classes.** In the facets of situations and ways (①③④⑥), merging classes whose shared sentence
+  needs two or more alternatives is refused: the classes stay apart instead of becoming one class that says nothing
+  the assistant can act on. The merge prompt no longer asks for few, broad kinds.
+- **Extraction (`daily/14`).** An item says no more than its quotes, a question, wish, complaint or guess is not read
+  as a statement, and a short guide says which facet a line goes to when two seem to fit (a standing request to the
+  AI is interaction, a conditional choice is a judgement, an evaluation of a thing is a world fact).
+- Acceptance tool: with `-agents-dir`, the fact judge also sees the titles of the agent sessions a fact cites.
+
 ## 0.2.0-beta.10 (pre-release)
 
 - **A fact states no more than its lines.** A name in Latin letters, a number of two or more digits or a time of day

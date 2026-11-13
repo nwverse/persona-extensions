@@ -11,12 +11,12 @@ import (
 
 func TestDetails(t *testing.T) {
 	got := Details("project-x 在 2026-11-08 发布 build42，每天 09:00 跑，需要 15 张卡，前 4 步，11月8日")
-	for _, want := range []string{"project-x", "build42", "09:00", "15"} {
+	for _, want := range []string{"project-x", "build42", "09:00", "15", "4"} {
 		if !slices.Contains(got, want) {
 			t.Errorf("Details missing %q: %v", want, got)
 		}
 	}
-	for _, not := range []string{"2026", "11", "08", "4", "8"} {
+	for _, not := range []string{"2026", "11", "08", "8"} {
 		if slices.Contains(got, not) {
 			t.Errorf("Details has %q: %v", not, got)
 		}
@@ -40,7 +40,7 @@ func TestSupplyAddsANearbyLine(t *testing.T) {
 	w := detailWindow()
 	ev := []store.Evidence{{Chat: w.Chat, Day: w.Day, N: 3, Speaker: norm.Me, Quote: "好，就这么做"}}
 	got, rej := w.Supply("附件保留期用 attachment_days 配置", ev)
-	if rej != "" || len(got) != 2 || got[1].N != 2 {
+	if rej != "" || !slices.ContainsFunc(got, func(e store.Evidence) bool { return e.N == 2 }) {
 		t.Fatalf("Supply = %v, %q; want line 2 added", got, rej)
 	}
 }
@@ -79,5 +79,17 @@ func TestSupplyTakesAFarLineAndTheUnitsNames(t *testing.T) {
 	got, rej := w.Supply("project-x 的定时任务每天 09:00 跑", ev)
 	if rej != "" || len(got) != 2 || got[1].N != 20 {
 		t.Fatalf("Supply = %+v, %q; want line 20 added and project-x taken from the unit's names", got, rej)
+	}
+}
+
+func TestDetailsNumeralsAndCommonWords(t *testing.T) {
+	w := detailWindow()
+	w.All[4], w.Shown[4] = norm.Line{N: 4, Speaker: "user-a", Body: "先做前两步，#12 已经关了"}, true
+	ev := []store.Evidence{{Chat: w.Chat, Day: w.Day, N: 4, Speaker: "user-a", Quote: "先做前两步，#12 已经关了"}}
+	if _, rej := w.Supply("Issue #12 已关闭，先执行前2步", ev); rej != "" {
+		t.Fatalf("两 for 2, and a common word for the quote's wording: rejected %q (%s)", rej, w.Missing)
+	}
+	if _, rej := w.Supply("先执行前3步", ev); rej != DetailNotInEvidence || w.Missing != "3" {
+		t.Fatalf("a number no line has: %q %q", rej, w.Missing)
 	}
 }
