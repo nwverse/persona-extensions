@@ -556,3 +556,70 @@ func TestEmptyTalkWithheld(t *testing.T) {
 		t.Fatal("a withheld line with the same basis was asked about again")
 	}
 }
+
+func TestUnderExportedDropsAClassesBehaviourMembers(t *testing.T) {
+	class := &entry.Entry{ID: "i-class", Grain: entry.Class, Origin: entry.Behavior}
+	member := &entry.Entry{ID: "i-member", Grain: entry.Action, Parent: "i-class", Origin: entry.Behavior}
+	pinned := &entry.Entry{ID: "i-pinned", Grain: entry.Action, Parent: "i-class", Origin: entry.Behavior, Pinned: true}
+	orphan := &entry.Entry{ID: "i-orphan", Grain: entry.Action, Parent: "i-elsewhere", Origin: entry.Behavior}
+	got := underExported([]*entry.Entry{class, member, pinned, orphan})
+	var ids []string
+	for _, e := range got {
+		ids = append(ids, e.ID)
+	}
+	if strings.Join(ids, ",") != "i-class,i-pinned,i-orphan" {
+		t.Fatalf("underExported = %v", ids)
+	}
+}
+
+// lineEmpty rewrites every item as it is, with a moment, and then, asked the empty-talk question of the line alone,
+// answers no for lines containing "（泛）".
+type lineEmpty struct{ steps []string }
+
+func (m *lineEmpty) Complete(_ context.Context, r model.Request) (model.Response, error) {
+	m.steps = append(m.steps, r.Step)
+	var in struct {
+		Items []struct {
+			I    int    `json:"i"`
+			Text string `json:"text"`
+			Line string `json:"line"`
+		} `json:"items"`
+	}
+	_ = json.Unmarshal([]byte(r.User), &in)
+	var out []map[string]any
+	for _, it := range in.Items {
+		if r.Step == "export_emptiness" {
+			out = append(out, map[string]any{"i": it.I, "answerable": !strings.Contains(it.Line, "（泛）"), "moment": "", "difference": ""})
+		} else {
+			out = append(out, map[string]any{"i": it.I, "text": it.Text, "changes": "回复时：照做而不是忽略"})
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"items": out})
+	return model.Response{Text: string(b)}, nil
+}
+
+// The rewrite names a moment for every item, but the line alone answers the empty-talk question for one only: the
+// other is withheld. The user's own words are not asked.
+func TestEmptinessOfTheLineAlone(t *testing.T) {
+	dir := t.TempDir()
+	st := &store.State{Entries: map[string]*entry.Entry{}}
+	vague := ent("i-vague", entry.Interaction, entry.Class, "汇报前认真核实（泛）")
+	vague.Impact = entry.Impact{Moment: "report", Action: "核实"}
+	sharp := ent("i-sharp", entry.Interaction, entry.Class, "列选项时写出每个选项的完整内容（占位）")
+	sharp.Impact = entry.Impact{Moment: "ask", Action: "写全"}
+	own := ent("i-own", entry.Interaction, entry.Class, "回复要简短（泛）")
+	own.Origin = entry.FromOnboarding
+	own.Impact = entry.Impact{Moment: "every_turn", Action: "简短"}
+	st.Entries[vague.ID], st.Entries[sharp.ID], st.Entries[own.ID] = vague, sharp, own
+	m := &lineEmpty{}
+	if _, err := Compile(context.Background(), st, Options{Dir: dir, Model: m, Lang: "zh-Hans", Loc: time.UTC, Now: func() time.Time { return now }}); err != nil {
+		t.Fatal(err)
+	}
+	a := read(t, dir, InstructionsPath)
+	if strings.Contains(a, "认真核实") || !strings.Contains(a, "完整内容") || !strings.Contains(a, "回复要简短") {
+		t.Fatalf("instructions:\n%s", a)
+	}
+	if vague.Export == nil || !vague.Export.Withheld {
+		t.Fatalf("not recorded as withheld: %+v", vague.Export)
+	}
+}

@@ -48,7 +48,7 @@ const (
 
 // RejectCodes and FlagCodes, in order, for reports.
 var (
-	RejectCodes = []string{Schema, NoEvidence, AnchorNotFound, OutOfScope, QuoteNotFound, QuoteWrongLine, QuoteWrongSpeaker, SpeakerMismatch, EntityNotInEvidence, NotAboutOwner, PrivateFinance, TierNotAllowed, AssistantSource}
+	RejectCodes = []string{Schema, NoEvidence, AnchorNotFound, OutOfScope, QuoteNotFound, QuoteWrongLine, QuoteWrongSpeaker, SpeakerMismatch, EntityNotInEvidence, DetailNotInEvidence, NotAboutOwner, PrivateFinance, TierNotAllowed, AssistantSource}
 	FlagCodes   = []string{DateMismatch, SelfAmbiguous, Partial, LongQuote, FromBot, LowConfidence, SingleSource, ConflictsPin}
 )
 
@@ -64,6 +64,10 @@ type Window struct {
 	Shown    map[int]bool
 	Owner    []string // the owner's names (from kb.owner and the configuration)
 	BotNames []string // speakers known to be automated
+	// Names the unit itself goes by (its name, its ref, its aliases, its members' names): a claim may use them without
+	// a line spelling them out. Not the projects the knowledge base files the unit under: that a chat is filed under a
+	// project does not make every line in it about that project.
+	Names []string
 }
 
 // OwnerSpoke says whether the owner wrote in the window.

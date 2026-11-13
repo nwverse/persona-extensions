@@ -138,7 +138,11 @@ func TestAutoK2OnlyOnReversibleCards(t *testing.T) {
 // is filled from another facet.
 func TestComputeEveryFacetSeparately(t *testing.T) {
 	st := typedState(20)
-	st.Corrections = []entry.Correction{{ID: "x", Day: day, Entry: "j-3"}}
+	// One correction after the recommendation was taken (an overturn), one before it (not one).
+	st.Corrections = []entry.Correction{
+		{ID: "x", Day: day, At: at.Add(time.Hour).Format(time.RFC3339), Entry: "j-3"},
+		{ID: "y", Day: day, At: at.Add(-time.Hour).Format(time.RFC3339), Entry: "j-3"},
+	}
 	st.Entries["w-1"] = &entry.Entry{ID: "w-1", Facet: entry.World, Grain: entry.Action, Verdicts: []entry.Verdict{{Mark: "right", By: "user"}}}
 	st.Entries["p-c"] = &entry.Entry{ID: "p-c", Facet: entry.People, Part: entry.PartCommitment, Commitment: &entry.Commitment{What: "send the draft", Due: day}}
 	rs, err := Compute(Input{St: st, Dir: t.TempDir(), Day: day, Loc: time.UTC, Cards: typedCards(20, 18, yes()),

@@ -14,7 +14,7 @@ func TestGoldenSignals(t *testing.T) {
 	for v, p := range map[string]struct {
 		text   string
 		schema []byte
-	}{CorrectPrompt: {Correct, CorrectSchema}, IssuesPrompt: {Issues, IssuesSchema}, DigPrompt: {Dig, DigSchema}, MinePrompt: {Mine, MineSchema}, ExportPrompt: {Export, ExportSchema}} {
+	}{CorrectPrompt: {Correct, CorrectSchema}, IssuesPrompt: {Issues, IssuesSchema}, DigPrompt: {Dig, DigSchema}, MinePrompt: {Mine, MineSchema}, ExportPrompt: {Export, ExportSchema}, EmptyPrompt: {Emptiness, EmptinessSchema}} {
 		var x any
 		if err := json.Unmarshal(p.schema, &x); err != nil {
 			t.Errorf("%s schema: %v", v, err)

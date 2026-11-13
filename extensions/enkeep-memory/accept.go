@@ -226,6 +226,7 @@ type factItem struct {
 	Text     string           `json:"text"`
 	Evidence []entry.Evidence `json:"evidence"`
 	Context  []string         `json:"context,omitempty"`
+	Sources  []string         `json:"sources,omitempty"` // the names of the chats it cites (a group's name is evidence too)
 	Verdict  string           `json:"verdict,omitempty"` // right | wrong | unsupported
 	Reason   string           `json:"reason,omitempty"`
 }
@@ -393,15 +394,35 @@ func sampleFacts(ctx context.Context, in acceptInput) []factItem {
 	var out []factItem
 	for _, e := range pickFacts(in.St, in.Day) {
 		it := factItem{ID: e.ID, Facet: e.Facet, Person: e.Person, Text: e.Shown(), Evidence: e.Evidence}
-		if len(it.Evidence) > 3 {
-			it.Evidence = it.Evidence[:3]
+		if len(it.Evidence) > 5 {
+			it.Evidence = it.Evidence[:5]
 		}
 		for _, ev := range it.Evidence {
-			it.Context = append(it.Context, around(ctx, in.Src, ev.Ref, ev.Day, ev.N, 2)...)
+			it.Context = append(it.Context, around(ctx, in.Src, ev.Ref, ev.Day, ev.N, 3)...)
+			if n := sourceName(ctx, in.Src, ev.Ref); n != "" && !slices.Contains(it.Sources, n) {
+				it.Sources = append(it.Sources, n)
+			}
 		}
 		out = append(out, it)
 	}
 	return out
+}
+
+// sourceName is the name a cited unit goes by in the knowledge base ("" when it has none to give).
+func sourceName(ctx context.Context, src kbsrc.Source, ref string) string {
+	kind, id, ok := strings.Cut(ref, "/")
+	if src == nil || !ok || kind != "chats" {
+		return ""
+	}
+	d, err := src.Get(ctx, kind, id)
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(d.Meta, &m)
+	return m.Name
 }
 
 // around is the lines n-k…n+k of a chat's day as the knowledge base shows them (nothing for other units).
@@ -640,8 +661,8 @@ func (j *judger) abstract(ctx context.Context, xs []abstractItem) {
 
 const schemaFacts = `{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"verdict":{"type":"string","enum":["right","wrong","unsupported"]},"reason":{"type":"string"}},"required":["id","verdict","reason"]}}},"required":["items"]}`
 
-const promptFacts = `Each item is a fact a curator wrote into one user's knowledge base, with the source lines it cites (original words, "quotes") and, where available, the lines around them ("context").
-Judge each fact against those lines only, without outside knowledge:
+const promptFacts = `Each item is a fact a curator wrote into one user's knowledge base, with the source lines it cites (original words, "quotes"), where available the lines around them ("context") and the names of the chats they come from ("sources": a group's name says what the group is).
+Judge each fact against those lines only, without outside knowledge. An item without "context" is judged on its quotes alone; the quotes are the evidence.
 - right: the lines state it or clearly imply it;
 - wrong: the lines contradict it (wrong person, wrong thing, wrong time, reversed relation…);
 - unsupported: the lines do not say it.
@@ -661,7 +682,16 @@ func (j *judger) facts(ctx context.Context, xs []factItem) {
 			}
 			quotes = append(quotes, s)
 		}
-		items = append(items, map[string]any{"id": xs[i].ID, "fact": xs[i].Text, "quotes": quotes, "context": xs[i].Context})
+		item := map[string]any{"id": xs[i].ID, "fact": xs[i].Text, "quotes": quotes}
+		if len(xs[i].Sources) > 0 {
+			item["sources"] = xs[i].Sources
+		}
+		if len(xs[i].Context) > 0 {
+			// Left out when there is none: a "context": null read as "no evidence at all" and judged a supported
+			// fact unsupported.
+			item["context"] = xs[i].Context
+		}
+		items = append(items, item)
 	}
 	j.ask(ctx, "f1", promptFacts, schemaFacts, items, func(id string, raw json.RawMessage) {
 		var a struct {

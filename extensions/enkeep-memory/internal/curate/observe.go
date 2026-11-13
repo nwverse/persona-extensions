@@ -11,6 +11,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
+	srcs "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/sources"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/triage"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/verify"
@@ -195,6 +196,13 @@ func aiUnit(u *Unit) bool {
 		return true
 	}
 	return slices.ContainsFunc(u.Lines, func(l norm.Line) bool { return l.Speaker == voice.AI })
+}
+
+// agentReport: in an agent's session, the agent's own text and its folded work (sources.SpeakerAgent,
+// sources.SpeakerWork). They read as "another person" to voice.Role, which knows chat speakers only, but they are
+// an agent's report of what a machine did: what a ② entry may rest on.
+func agentReport(u *Unit, l norm.Line) bool {
+	return unitCode(u) == entry.SrcAgent && (l.Speaker == srcs.SpeakerAgent || l.Speaker == srcs.SpeakerWork)
 }
 
 // whoOf is who a line is by (3.2): Unit.Who when the speaker resolution (P4) filled it; until then the user's own
@@ -509,6 +517,16 @@ func (c *Curator) checkObservation(w *verify.Window, u *Unit, k *known, tier str
 	if rej != "" {
 		return bad(rej)
 	}
+	if f == entry.People {
+		// A person card's names, numbers and times are in the lines it cites (F1, 9.5).
+		var names []string
+		if p := personOf(u, k, o.Person); p != "" {
+			names = append(names, personName(k, p), o.Person)
+		}
+		if cited, rej = w.Supply(o.Text, cited, names...); rej != "" {
+			return bad(rej)
+		}
+	}
 	ev := c.attributeEvidence(u, k, w, cited)
 	e := &entry.Entry{Facet: f, Grain: entry.Action, Type: strings.TrimSpace(o.Type), Text: strings.TrimSpace(o.Text),
 		Situation: strings.TrimSpace(o.Situation), Choice: strings.TrimSpace(o.Choice), Rejected: strings.TrimSpace(o.Rejected),
@@ -556,7 +574,8 @@ func (c *Curator) checkObservation(w *verify.Window, u *Unit, k *known, tier str
 		// The user's word, the AI's or an agent's report of what a machine did, a bot's alert: any attributable line.
 		// Another person's line that cannot be told whose it is goes.
 		for _, x := range ev {
-			if x.who != "" || x.Role == voice.RoleAssistant || x.Role == voice.RoleAgentDraft || x.Role == voice.RoleBot || origin != entry.Behavior {
+			if x.who != "" || x.Role == voice.RoleAssistant || x.Role == voice.RoleAgentDraft || x.Role == voice.RoleBot || origin != entry.Behavior ||
+				agentReport(u, w.All[x.N]) {
 				kept = append(kept, x)
 			}
 		}

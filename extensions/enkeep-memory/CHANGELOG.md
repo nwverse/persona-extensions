@@ -1,5 +1,24 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.10 (pre-release)
+
+- **A fact states no more than its lines.** A name in Latin letters, a number of two or more digits or a time of day
+  in a fact or a person card must be in a line it cites. When it is in another line of the same conversation, that
+  line is cited too; when the conversation does not have it anywhere (the unit's own name and its members' names
+  count, the projects it is filed under do not), the item is rejected (`DETAIL_NOT_IN_EVIDENCE`).
+- **Exit lines answer the empty-talk question on their own.** After the rewrite, each line the assistant will read is
+  asked, alone, at which moment the assistant would act differently without it; a line with no answer is kept off
+  the exits (`emptiness/1`). The rewrite (`export/4`) now says what the assistant would otherwise do, and writes an
+  interaction entry as an instruction, not as a judgement. The user's own words go out as before.
+- **No member twice.** The per-turn instructions leave out an action entry whose class is already there, so the
+  section's budget goes to different things.
+- **Agents' reports count for machines and tools.** In an agent's session, the agent's own text and its folded work
+  are what a machines-and-tools entry may rest on; they were read as an unknown person's and dropped.
+- Acceptance tool: the fact judge sees the names of the cited chats and is not handed an empty context.
+- R4.overturn counts adoptions overturned: a recommendation taken, then a correction of that fork type's judgements
+  before the next one taken, each adoption once. It counted every correction of a judgement entry, and could exceed
+  the adoptions it is read against.
+
 ## 0.2.0-beta.9 (pre-release)
 
 - **Moved to the public extension repository.** The extension now lives in `nwverse/persona-extensions` and is

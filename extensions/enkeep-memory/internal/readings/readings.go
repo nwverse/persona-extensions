@@ -26,6 +26,7 @@ package readings
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -83,9 +84,13 @@ func Compute(in Input) ([]entry.Reading, error) {
 			sessions += s.Sessions
 		}
 	}
+	// ③ R4 from the cards.
+	r4 := R4Of(st, in.Cards, in.Loc, inPeriod)
 	// Corrections by the facet of the entry they were filed against.
 	byFacet := map[entry.Facet]int{}
-	overturn := map[string]int{} // fork type → corrections of a judgement entry
+	// fork type → adoptions of a recommendation that a correction of that type's judgement entries came after: what
+	// was done as recommended, overturned. A correction with no adoption before it is not an overturn.
+	corrected := map[string][]time.Time{}
 	for _, c := range st.Corrections {
 		if !inPeriod[c.Day] || c.Entry == "" {
 			continue
@@ -96,11 +101,12 @@ func Compute(in Input) ([]entry.Reading, error) {
 		}
 		byFacet[e.Facet]++
 		if e.Facet == entry.Judgement {
-			overturn[TypeOf(st, e)]++
+			if at, err := time.Parse(time.RFC3339, c.At); err == nil {
+				corrected[TypeOf(st, e)] = append(corrected[TypeOf(st, e)], at)
+			}
 		}
 	}
-	// ③ R4 from the cards.
-	r4 := R4Of(st, in.Cards, in.Loc, inPeriod)
+	overturn := r4.Overturned(corrected)
 	note := fmt.Sprintf("有建议的卡片 %d 张：用户亲答 %d（采纳 %d，含过期后补答 %d）；助手代答 %d、到期默认 %d（都不算采纳）；未答 %d",
 		r4.WithRecommend, r4.User.Den, r4.User.Num, r4.Late, r4.Assistant, r4.Default, r4.Unanswered)
 	if in.CardsMissing != "" {
@@ -111,7 +117,7 @@ func Compute(in Input) ([]entry.Reading, error) {
 	for _, n := range overturn {
 		totalOver += n
 	}
-	out = append(out, reading("R4.overturn", in.Day, totalOver, r4.User.Num, 1, "对默认判断条目的纠正（按建议办后被推翻），分母是采纳次数"))
+	out = append(out, reading("R4.overturn", in.Day, totalOver, r4.User.Num, 1, "按建议办后被推翻的采纳次数（之后对同类默认判断有纠正），分母是采纳次数"))
 	for _, typ := range sortedKeys(r4.ByType) {
 		c := r4.ByType[typ]
 		rev := r4.Reversible[typ]
@@ -189,6 +195,27 @@ type R4Result struct {
 	Unanswered    int
 	ByType        map[string]Ratio // fork type → adoptions out of the user's answers
 	Reversible    map[string]Ratio // the same, cards marked reversible only (what K2 may act on)
+	// AdoptedAt is, per fork type, when the user took a recommendation, in order: an adoption is overturned when a
+	// correction of that type's judgement entries follows it, before the next adoption of the type (R4.overturn).
+	AdoptedAt map[string][]time.Time
+}
+
+// Overturned counts, per fork type, the adoptions a correction (its time) came after, each adoption once.
+func (r R4Result) Overturned(corrections map[string][]time.Time) map[string]int {
+	out := map[string]int{}
+	for typ, ads := range r.AdoptedAt {
+		ads = slices.Clone(ads)
+		slices.SortFunc(ads, func(a, b time.Time) int { return a.Compare(b) })
+		for i, a := range ads {
+			for _, c := range corrections[typ] {
+				if !c.Before(a) && (i+1 == len(ads) || c.Before(ads[i+1])) {
+					out[typ]++
+					break
+				}
+			}
+		}
+	}
+	return out
 }
 
 // AnsweredByUser says whether a card's answer is the user's own choice (hub #5876): answered_by absent or "user",
@@ -223,7 +250,7 @@ func R4Of(st *store.State, cards []hubapi.Interaction, loc *time.Location, days 
 	if loc == nil {
 		loc = time.UTC
 	}
-	r := R4Result{ByType: map[string]Ratio{}, Reversible: map[string]Ratio{}}
+	r := R4Result{ByType: map[string]Ratio{}, Reversible: map[string]Ratio{}, AdoptedAt: map[string][]time.Time{}}
 	idx := newCardIndex(st)
 	for _, c := range cards {
 		day := c.At.In(loc).Format("2006-01-02")
@@ -261,6 +288,7 @@ func R4Of(st *store.State, cards []hubapi.Interaction, loc *time.Location, days 
 		r.User.Den++
 		if ok {
 			r.User.Num++
+			r.AdoptedAt[typ] = append(r.AdoptedAt[typ], c.At)
 		}
 		add(r.ByType)
 		if c.Reversible != nil && *c.Reversible {

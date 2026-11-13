@@ -300,7 +300,8 @@ func (c *Curator) applyTag(u *Unit, d *triage.Decision, admit, category, reason 
 }
 
 func (c *Curator) window(u *Unit, shown map[int]bool, owner []string) *verify.Window {
-	w := &verify.Window{Chat: u.Ref, Day: u.Day, Kind: u.Meta.Kind, All: map[int]norm.Line{}, Shown: shown, Owner: owner}
+	w := &verify.Window{Chat: u.Ref, Day: u.Day, Kind: u.Meta.Kind, All: map[int]norm.Line{}, Shown: shown, Owner: owner,
+		Names: append([]string{u.Meta.Name, u.Ref}, u.Meta.Aliases...)}
 	for _, l := range u.Lines {
 		w.All[l.N] = l
 	}
@@ -507,6 +508,11 @@ func (c *Curator) ingest(b *graph.Builder, u *Unit, d triage.Decision, owner []s
 		rewritten = c.fixWording(&out, owner, fix, run)
 	}
 	w := c.window(u, d.Shown, owner)
+	if k != nil {
+		for _, p := range u.Meta.People {
+			w.Names = append(w.Names, k.people[p])
+		}
+	}
 	dg := &store.Digest{Chat: u.Ref, Day: u.Day, Key: done.Key}
 	tier := d.Tier
 	if tier == "" {
@@ -567,6 +573,9 @@ func (c *Curator) ingest(b *graph.Builder, u *Unit, d triage.Decision, owner []s
 			}
 			if rej == "" && class == store.Fact && current {
 				rej = factCheck(it) // a fact that changes nothing the assistant does is not kept
+			}
+			if rej == "" {
+				ev, rej = w.Supply(it.Claim, ev) // its names, numbers and times are in the lines it cites (F1, 9.5)
 			}
 			if rej == "" && tier == triage.TierCode && class == store.Fact {
 				// A pull request's progress (opened, approved, merged) is the forge's own record and soon over.

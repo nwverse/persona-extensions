@@ -174,6 +174,24 @@ func (c *compiler) lifted(e *entry.Entry) bool {
 
 func notHandwritten(e *entry.Entry) bool { return e.Origin != entry.Handwritten }
 
+// underExported drops an action entry whose class is in the same list: the class says it already, and the member's
+// line, written from one or two moments, tends to be the class again in vaguer words. What the user stated or
+// pinned stays.
+func underExported(es []*entry.Entry) []*entry.Entry {
+	in := map[string]bool{}
+	for _, e := range es {
+		in[e.ID] = true
+	}
+	var out []*entry.Entry
+	for _, e := range es {
+		if e.Grain == entry.Action && e.Parent != "" && in[e.Parent] && !e.Pinned && (e.Origin == entry.Behavior || e.Origin == "") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 func openCommitment(e *entry.Entry) bool { return e.Commitment != nil && e.Commitment.Done == "" }
 
 type project struct {
@@ -198,7 +216,7 @@ func (c *compiler) plan() *plan {
 
 	// Exit A (K1). People (⑤′) never; the hand-written memory is in the assistant's context already.
 	if c.on(entry.K1PerTurnBlock) {
-		p.a["interaction"] = c.entries(entry.Interaction, notHandwritten)
+		p.a["interaction"] = underExported(c.entries(entry.Interaction, notHandwritten))
 		p.a["judgement"] = c.entries(entry.Judgement, func(e *entry.Entry) bool { return notHandwritten(e) && c.lifted(e) })
 		var work []*entry.Entry
 		top := false

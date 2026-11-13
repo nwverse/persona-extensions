@@ -83,7 +83,8 @@ func mixedEnglish(text, lang string) bool {
 func Basis(e *entry.Entry, mode string) string {
 	h := sha1.New()
 	for _, p := range []string{string(e.Facet), string(e.Grain), e.Text, e.Situation, e.Choice, e.Rejected, e.Why,
-		e.Exception, e.Object, e.Pitfall, e.Fix, e.Default, strings.Join(e.Situations, "|"), e.Part, mode, prompts.ExportPrompt} {
+		e.Exception, e.Object, e.Pitfall, e.Fix, e.Default, strings.Join(e.Situations, "|"), e.Part, mode, prompts.ExportPrompt,
+		prompts.EmptyPrompt} {
 		h.Write([]byte(p))
 		h.Write([]byte{0})
 	}
@@ -289,7 +290,51 @@ func (c *compiler) rewrite(ctx context.Context, ws []want) ([]string, []bool) {
 			withheld[it.I] = it.Changes != nil && strings.TrimSpace(*it.Changes) == ""
 		}
 	}
+	c.emptiness(ctx, ws, out, withheld)
 	return out, withheld
+}
+
+// emptiness asks the empty-talk question (5.0, 9.4) of each plain line on its own, apart from the rewrite: the
+// rewrite sees the entry's fields and can always name a moment for them; the line is what the assistant reads.
+// A line it cannot answer for is withheld. The user's own words go out as they put them.
+func (c *compiler) emptiness(ctx context.Context, ws []want, out []string, withheld []bool) {
+	type item struct {
+		I    int    `json:"i"`
+		Line string `json:"line"`
+	}
+	var in struct {
+		Items []item `json:"items"`
+	}
+	for i, w := range ws {
+		if !withheld[i] && w.mode == ModePlain && strings.TrimSpace(out[i]) != "" && !ownWords(w.e) {
+			in.Items = append(in.Items, item{I: i, Line: strings.TrimSpace(out[i])})
+		}
+	}
+	if len(in.Items) == 0 {
+		return
+	}
+	user, _ := json.Marshal(in)
+	resp, err := c.o.Model.Complete(ctx, model.Request{Step: "export_emptiness", Tier: c.o.Tier, System: prompts.Emptiness,
+		User: string(user), MaxTokens: 3000, Schema: prompts.EmptinessSchema})
+	if err != nil {
+		c.logf("export: emptiness: %v", err) // not asked: the rewrite's own answer stands
+		return
+	}
+	var got struct {
+		Items []struct {
+			I          int   `json:"i"`
+			Answerable *bool `json:"answerable"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal([]byte(resp.Text), &got); err != nil {
+		c.logf("export: emptiness answer: %v", err)
+		return
+	}
+	for _, it := range got.Items {
+		if it.I >= 0 && it.I < len(withheld) && it.Answerable != nil && !*it.Answerable { // only an explicit no
+			withheld[it.I] = true
+		}
+	}
 }
 
 // ownWords: what the user said or wrote themself, or pinned: it goes out as the user put it, without the empty-talk
