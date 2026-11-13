@@ -112,6 +112,14 @@
       "license_url": "https://raw.githubusercontent.com/zulip/zulip/4a7fbdea0fa8b3425acdf3ad8590656c32053649/LICENSE",
       "license_file": "assets/LICENSE",
       "attribution": "Zulip project / Kandra Labs, Inc.. Official icon asset, with the upstream repository license notice preserved in each package. Trademark rights are separate from copyright licensing."
+    },
+    "dify-official-plugins": {
+      "repository": "https://github.com/langgenius/dify-official-plugins",
+      "revision": "60804e30f6fa41fbe890c02c9849b0bdbe28d13a",
+      "license": "Apache-2.0",
+      "license_url": "https://raw.githubusercontent.com/langgenius/dify-official-plugins/60804e30f6fa41fbe890c02c9849b0bdbe28d13a/LICENSE",
+      "license_file": "assets/LICENSE",
+      "attribution": "Copyright LangGenius, Inc. Service icon assets from the Apache-2.0 licensed Dify official plugins repository; service trademarks are separately owned."
     }
   },
   "icons": {
@@ -1111,6 +1119,18 @@
       "height": 512,
       "trademark_owner": "Zulip project / Kandra Labs, Inc.",
       "usage": "Official published service icon, used solely to identify this integration. The upstream PNG bytes are unchanged."
+    },
+    "wecom": {
+      "path": "assets/icon.png",
+      "source_id": "dify-official-plugins",
+      "source_url": "https://raw.githubusercontent.com/langgenius/dify-official-plugins/60804e30f6fa41fbe890c02c9849b0bdbe28d13a/tools/wecom/_assets/icon.svg",
+      "sha256": "da23a88d05b22fa482fc8f858b2385c6605db1a0b5b562734898bd733721b4ad",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "Tencent (WeCom)",
+      "usage": "Service icon used solely to identify this integration. The upstream 40x40 SVG rasterized with Google Chrome 147.0.7727.56 at 512x512, preserving its artwork and aspect ratio.",
+      "transformation": "The upstream 40x40 SVG rasterized with Google Chrome 147.0.7727.56 at 512x512, preserving its artwork and aspect ratio."
     }
   }
 }
