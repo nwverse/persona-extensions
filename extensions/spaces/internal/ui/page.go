@@ -397,25 +397,30 @@ func actSpace(c *ctx, arg string) (*wire.ActionResult, error) {
 	return nil, nil
 }
 
-// actNew opens the template list of a new space, or the form of the template the argument names.
+// actNew opens the template list of a new space, or the form of the template the argument names. Like a change of
+// space it starts from the overview of the space shown: the type tab, the view, the search and the fold are dropped,
+// so that leaving the flow returns to the page that holds the button.
 func actNew(c *ctx, arg string) (*wire.ActionResult, error) {
 	if arg == "" {
 		arg = pickSlot
 	} else if _, ok := templates.Get(arg); !ok {
 		return nil, fmt.Errorf("没有模板「%s」", arg)
 	}
-	c.st.C = arg
+	c.st = state{S: c.st.S, C: arg}
 	return nil, nil
 }
 
-// actCancel leaves the new space unmade: the page shown before it is drawn again.
+// actCancel leaves the new space unmade and shows the overview of the space the flow started from, whatever else the
+// state it is sent with holds.
 func actCancel(c *ctx, _ string) (*wire.ActionResult, error) {
-	c.st.C = ""
+	c.st = state{S: c.st.S}
 	return nil, nil
 }
 
 // actCreate creates a space from the template the argument names, with the name and the samples choice of its form.
-// An empty name is the default one; samples come unless the form turned them off. The new space's overview is shown.
+// An empty name is the default one. The examples come only when the template has some and the form's switch says
+// "true", which is what the form sends untouched; a request without the switch creates none, and any other value is
+// refused. The new space's overview is shown.
 func actCreate(c *ctx, arg string) (*wire.ActionResult, error) {
 	t, ok := templates.Get(arg)
 	if !ok {
@@ -425,12 +430,35 @@ func actCreate(c *ctx, arg string) (*wire.ActionResult, error) {
 	if name == "" {
 		name = c.defaultName(t)
 	}
-	sp, err := templates.Apply(c.b, t.Key, name, c.r.Values["samples"] != "false", c.now)
+	samples, err := samplesChoice(&t, c.r.Values)
+	if err != nil {
+		return nil, err
+	}
+	sp, err := templates.Apply(c.b, t.Key, name, samples, c.now)
 	if err != nil {
 		return nil, err
 	}
 	c.st = state{S: sp.ID}
 	return &wire.ActionResult{Toast: "已创建「" + sp.Name + "」"}, nil
+}
+
+// samplesChoice reads the samples switch of the create form. The form has the switch only for a template with
+// samples, so for any other template the answer is false whatever was sent.
+func samplesChoice(t *templates.Template, values map[string]string) (bool, error) {
+	if len(t.Samples) == 0 {
+		return false, nil
+	}
+	v, ok := values["samples"]
+	if !ok {
+		return false, nil
+	}
+	switch v {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	return false, fmt.Errorf("「带示例记录」只能是 true 或 false，收到「%s」", v)
 }
 
 // actAdd creates an entity of the type tab's type with the title of the quick-add fold. It starts at the first stage.

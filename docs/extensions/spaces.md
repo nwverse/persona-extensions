@@ -128,7 +128,7 @@ The assistant reaches the spaces through the `spaces` MCP server. The tools are 
 | `entity_derive` | write | Derives a record of another type. The source is unchanged. |
 | `delete` | write, destructive | Deletes a record, a type with its records, or a space with all its content. It cannot be undone. |
 
-The tools take what the assistant naturally knows: a space by its id or its name, a type by its key or its name, and a related record by its id or its exact title, in values and in conditions. A name or title that matches nothing, or more than one thing, is refused. A refusal says what would be accepted: the spaces, the types of the space, the stages of the lifecycle or the options of the property.
+The tools take what the assistant naturally knows: a space by its id or its name, a type by its key or its name, and a related record by its id or its exact title, in values and in `eq`, `ne` and `has` conditions (other operators and empty operands are read by the kernel as they are). A name or title that matches nothing, or more than one thing, is refused. A refusal says what would be accepted: the spaces, the types of the space, the stages of the lifecycle or the options of the property.
 
 The assistant's skill asks it to read `schema` first, to offer a template for a new space, and to agree on the types with the user before it defines them.
 

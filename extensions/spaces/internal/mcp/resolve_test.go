@@ -558,3 +558,49 @@ func TestToolListSchemasArePlain(t *testing.T) {
 		t.Errorf("space description = %q", d)
 	}
 }
+
+// Only eq, ne and has with a non-empty string or a list of non-empty strings are read as titles. Anything else on a
+// relation reaches the kernel as it was sent: null means unset, and the other operators and operands get the
+// kernel's own answer, not a title lookup.
+func TestRelationConditionsLeaveOtherOperandsToTheKernel(t *testing.T) {
+	s, space := projectSpace(t, store.Open(""))
+	defer s.finish()
+	all := get(t, s.done("query", fmt.Sprintf(`{"space":%q,"type":"task"}`, space)), "total").(float64)
+	unset := get(t, s.done("query", fmt.Sprintf(`{"space":%q,"type":"task","where":[{"field":"goal","op":"empty"}]}`, space)), "total").(float64)
+
+	text := func(where string) string {
+		t.Helper()
+		res := get(t, s.tool("query", fmt.Sprintf(`{"space":%q,"type":"task","where":[%s]}`, space, where)), "result")
+		return asStr(t, get(t, res, "content", 0, "text"))
+	}
+	count := func(where string) float64 {
+		t.Helper()
+		return get(t, s.done("query", fmt.Sprintf(`{"space":%q,"type":"task","where":[%s]}`, space, where)), "total").(float64)
+	}
+	if got := count(`{"field":"goal","op":"eq","value":null}`); got != unset {
+		t.Errorf("eq null: total = %v, want %v", got, unset)
+	}
+	if got := count(`{"field":"goal","op":"eq"}`); got != unset {
+		t.Errorf("eq without a value: total = %v, want %v", got, unset)
+	}
+	if got := count(`{"field":"goal","op":"ne","value":null}`); got != all-unset {
+		t.Errorf("ne null: total = %v, want %v", got, all-unset)
+	}
+	if got := count(`{"field":"goal","op":"eq","value":""}`); got != unset {
+		t.Errorf("eq empty string: total = %v, want %v", got, unset)
+	}
+	// A string that is no record's title is not looked up outside eq, ne and has, or inside a mixed list.
+	for _, where := range []string{
+		`{"field":"goal","op":"gt","value":"没有这条"}`,
+		`{"field":"goal","op":"le","value":"没有这条"}`,
+		`{"field":"goal","op":"empty","value":"没有这条"}`,
+		`{"field":"goal","op":"eq","value":["没有这条",7]}`,
+		`{"field":"goal","op":"has","value":["没有这条",""]}`,
+		`{"field":"goal","op":"has","value":[]}`,
+		`{"field":"goal","op":"eq","value":7}`,
+	} {
+		if got := text(where); strings.Contains(got, "没有标题为") {
+			t.Errorf("%s: read as a title: %s", where, got)
+		}
+	}
+}

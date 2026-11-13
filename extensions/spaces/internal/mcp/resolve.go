@@ -242,13 +242,15 @@ func targetID(sp *kernel.Space, p *kernel.Prop, s string) (string, error) {
 }
 
 // relatedConds returns the conditions with every relation operand given by a title replaced by its id, for a query
-// of one type. Conditions on other fields, and "empty", are kept as they are.
+// of one type. Only "eq", "ne" and "has" with a non-empty string or a list of non-empty strings are read as titles;
+// conditions on other fields, other operators and other operands (null, an empty string, a number) go to the kernel
+// as they are, which accepts or refuses them by its own rules.
 func relatedConds(sp *kernel.Space, t *kernel.Type, where []kernel.Cond) ([]kernel.Cond, error) {
 	out := slices.Clone(where)
 	for i := range out {
 		c := &out[i]
 		p, ok := propByKey(t, c.Field)
-		if !ok || p.Kind != kernel.KindRelation || c.Op == "empty" {
+		if !ok || p.Kind != kernel.KindRelation || !titleOp(c.Op) || !titleOperand(c.Value) {
 			continue
 		}
 		v, err := targetIDs(sp, &p, c.Value)
@@ -258,4 +260,23 @@ func relatedConds(sp *kernel.Space, t *kernel.Type, where []kernel.Cond) ([]kern
 		c.Value = v
 	}
 	return out, nil
+}
+
+// titleOp reports whether a condition's operator compares a relation with records, which may then be given by title.
+func titleOp(op string) bool { return op == "eq" || op == "ne" || op == "has" }
+
+// titleOperand reports whether v is a non-empty string or a non-empty list of non-empty strings.
+func titleOperand(v any) bool {
+	switch x := v.(type) {
+	case string:
+		return strings.TrimSpace(x) != ""
+	case []any:
+		for _, item := range x {
+			if s, ok := item.(string); !ok || strings.TrimSpace(s) == "" {
+				return false
+			}
+		}
+		return len(x) > 0
+	}
+	return false
 }

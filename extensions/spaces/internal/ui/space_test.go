@@ -197,14 +197,23 @@ func TestCreateFromTheForm(t *testing.T) {
 	}{
 		{"custom name without samples", map[string]string{"name": " 我的空间 ", "samples": "false"}, false},
 		{"with samples", map[string]string{"name": "我的空间", "samples": "true"}, true},
-		{"samples by default", map[string]string{"name": "我的空间"}, true},
+		{"the untouched form", nil, true},
+		{"no samples switch sent", map[string]string{"name": "我的空间"}, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			st := storeWith(t, false, "blank")
 			a := newApp(st)
 			before := state{S: firstSpace(t, st), C: tp.Key}
-			res := act(t, a, before, "create:"+tp.Key, tc.values)
+			values := tc.values
+			if values == nil {
+				// What a client sends for the form as drawn: every field with its value, the switch on.
+				values = formOf(drawPage(t, a, before, 5), map[string]string{"name": "我的空间"})
+				if values["samples"] != "true" {
+					t.Fatalf("the form's samples default = %q", values["samples"])
+				}
+			}
+			res := act(t, a, before, "create:"+tp.Key, values)
 			sp := spaceNamed(t, st, "我的空间")
 			if sp == nil {
 				t.Fatal("no space created")
@@ -307,5 +316,67 @@ func TestNewSpaceAtEveryVersion(t *testing.T) {
 				t.Fatalf("v%d: created %+v, state %+v", version, sp, decode(t, res.View))
 			}
 		})
+	}
+}
+
+// A samples value that is neither "true" nor "false" is refused and nothing is created; a template without samples
+// has no switch, so a value sent for it is not read.
+func TestCreateReadsTheSamplesSwitchStrictly(t *testing.T) {
+	tp := withSamples(t)
+	for _, v := range []string{"", "1", "yes", "TRUE", "on"} {
+		st := storeWith(t, false, "blank")
+		a := newApp(st)
+		before := state{S: firstSpace(t, st), C: tp.Key}
+		res := act(t, a, before, "create:"+tp.Key, map[string]string{"name": "我的空间", "samples": v})
+		if !strings.Contains(res.Toast, "只能是 true 或 false") || decode(t, res.View) != before {
+			t.Fatalf("samples %q: toast %q, state %+v", v, res.Toast, decode(t, res.View))
+		}
+		if spaceNamed(t, st, "我的空间") != nil {
+			t.Fatalf("samples %q: a space was created", v)
+		}
+	}
+	blank, ok := templates.Get("blank")
+	if !ok || len(blank.Samples) != 0 {
+		t.Fatalf("blank template = %+v", blank)
+	}
+	st := storeWith(t, false, "blank")
+	a := newApp(st)
+	act(t, a, state{S: firstSpace(t, st), C: blank.Key}, "create:"+blank.Key, map[string]string{"name": "另一个", "samples": "yes"})
+	if sp := spaceNamed(t, st, "另一个"); sp == nil || len(sp.Entities) != 0 {
+		t.Fatalf("blank space = %+v", sp)
+	}
+}
+
+// The flow of a new space starts from the overview and cancel returns there, also when the state it is entered or
+// left with holds a type tab, a view, a search, loaded pages or an open fold.
+func TestNewSpaceFlowDropsTheStateBelowTheSpace(t *testing.T) {
+	st := storeWith(t, true, "project")
+	a := newApp(st)
+	id := firstSpace(t, st)
+	tp := withSamples(t)
+	stale := state{S: id, T: "task", V: 1, Q: "周", N: 2, F: "add"}
+	for _, action := range []string{"new", "new:" + tp.Key} {
+		want := state{S: id, C: pickSlot}
+		if action != "new" {
+			want.C = tp.Key
+		}
+		res := act(t, a, stale, action, nil)
+		if got := decode(t, res.View); got != want {
+			t.Fatalf("%s from a type tab: state = %+v, want %+v", action, got, want)
+		}
+		res = act(t, a, decode(t, res.View), "cancel", nil)
+		if got := decode(t, res.View); got != (state{S: id}) {
+			t.Fatalf("cancel after %s: state = %+v", action, got)
+		}
+	}
+	// A cancel that arrives with lower state still set (an older page) lands on the overview too.
+	withC := stale
+	withC.C = pickSlot
+	res := act(t, a, withC, "cancel", nil)
+	if got := decode(t, res.View); got != (state{S: id}) {
+		t.Fatalf("cancel with stale state = %+v", got)
+	}
+	if _, ok := buttonTitled(res.View, "新建空间"); !ok {
+		t.Fatal("cancel did not land on the overview, which holds the button")
 	}
 }
