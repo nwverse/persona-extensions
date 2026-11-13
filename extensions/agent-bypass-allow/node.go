@@ -23,6 +23,8 @@ type config struct {
 	Machines         []string `json:"machines"`
 	ConfigDirs       []string `json:"config_dirs"`
 	AllowDestructive bool     `json:"allow_destructive"`
+	AssistantWrites  bool     `json:"assistant_writes"`
+	AssistantDirs    []string `json:"assistant_write_dirs"`
 }
 
 func (c config) dirs() []string {
@@ -102,7 +104,8 @@ func (n *node) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]a
 		}
 		n.bin = bin
 	}
-	opts, err := json.Marshal(options{AllowDestructive: c.AllowDestructive})
+	o := options{AllowDestructive: c.AllowDestructive, AssistantWrites: c.AssistantWrites, AssistantWriteDirs: c.AssistantDirs}
+	opts, err := json.Marshal(o)
 	if err != nil {
 		return nil, err
 	}
@@ -111,7 +114,7 @@ func (n *node) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]a
 	}
 	n.beat()
 	n.mu.Lock()
-	n.install(c.dirs())
+	n.install(c.dirs(), matcherFor(o))
 	n.mu.Unlock()
 	n.beatWG.Add(1)
 	go func() {
@@ -140,7 +143,7 @@ func (n *node) beat() {
 }
 
 // install puts the entry into each directory that has Claude Code's config.
-func (n *node) install(dirs []string) {
+func (n *node) install(dirs []string, matcher string) {
 	n.dirs = n.dirs[:0]
 	for _, d := range dirs {
 		s := dirState{Dir: d}
@@ -152,7 +155,7 @@ func (n *node) install(dirs []string) {
 			s.Error = "no such directory"
 		default:
 			s.Settings = settingsPath(abs)
-			if _, err := installHook(s.Settings, hookCommand(n.bin, abs, n.data)); err != nil {
+			if _, err := installHook(s.Settings, hookCommand(n.bin, abs, n.data), matcher); err != nil {
 				s.Error = err.Error()
 			} else {
 				s.Installed = true

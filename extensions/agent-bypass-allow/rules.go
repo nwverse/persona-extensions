@@ -85,10 +85,16 @@ func ruleTool(r string) string {
 // readers are the tools a Read rule also covers: Claude Code applies Read rules to every tool that reads files.
 var readers = map[string]bool{"Read": true, "Glob": true, "Grep": true, "LS": true, "NotebookRead": true}
 
+// editors are the tools that edit files; a rule for any of them is taken to be about all of them.
+var editors = map[string]bool{"Edit": true, "Write": true, "MultiEdit": true, "NotebookEdit": true}
+
 // sameTool says whether a rule for ruleName is about tool; Agent was called Task before, and a Read rule is about
 // every tool that reads files.
 func sameTool(ruleName, tool string) bool {
 	if ruleName == "Read" && readers[tool] {
+		return true
+	}
+	if editors[ruleName] && editors[tool] { // Claude Code applies Edit rules to every tool that edits files
 		return true
 	}
 	alias := func(s string) string {

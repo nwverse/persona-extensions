@@ -38,9 +38,13 @@ func settingsPath(dir string) string {
 }
 
 // installHook puts the entry with cmd into the settings file at path (created when missing), replacing ours from
-// before; changed says whether the file was written.
-func installHook(path, cmd string) (changed bool, err error) {
-	want, err := marshalPlain(map[string]any{"matcher": hookMatcher, "hooks": []any{map[string]any{"type": "command", "command": cmd, "timeout": hookTimeout}}})
+// before; changed says whether the file was written. matcher is the entry's (matcherFor), hookMatcher when omitted.
+func installHook(path, cmd string, matcher ...string) (changed bool, err error) {
+	m := hookMatcher
+	if len(matcher) > 0 && matcher[0] != "" {
+		m = matcher[0]
+	}
+	want, err := marshalPlain(map[string]any{"matcher": m, "hooks": []any{map[string]any{"type": "command", "command": cmd, "timeout": hookTimeout}}})
 	if err != nil {
 		return false, err
 	}

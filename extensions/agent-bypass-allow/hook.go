@@ -18,7 +18,9 @@ import (
 // hook) decides as if it were not there:
 //
 //   - the session's permission mode is bypassPermissions, and the tool is one of allowedTools (Bash, the read-only
-//     tools and Agent): never one that writes files, publishes, or comes from an MCP server;
+//     tools and Agent): never one that writes files, publishes, or comes from an MCP server; the one exception is
+//     the assistant_writes setting, a Write or Edit of a Persona assistant conversation inside its directories
+//     (assistant_writes.go), in its own modes;
 //   - for Bash, the command is not one that stays with a person (guard.go): deletion, overwriting data, a forced
 //     push, a permission change. A deletion or overwrite whose targets are all scratch (scratch.go) goes through,
 //     and with the allow_destructive setting every deletion and overwrite does;
@@ -173,16 +175,29 @@ func refuse(a hookArgs, req hookInput, now time.Time) (string, []string) {
 }
 
 func refuseWhy(a hookArgs, req hookInput, now time.Time) string {
-	switch {
-	case req.HookEventName != "" && req.HookEventName != "PermissionRequest":
+	if req.HookEventName != "" && req.HookEventName != "PermissionRequest" {
 		return "not a PermissionRequest"
+	}
+	if isWriteTool(req.ToolName) { // assistant_writes (assistant_writes.go), in any session that asks for it
+		if why := refuseAssistantWrite(a, readOptions(a.Data), req, os.Getenv); why != "" {
+			return why
+		}
+		return refuseCommon(a, req, now)
+	}
+	switch {
 	case req.PermissionMode != "bypassPermissions":
 		return "not bypassPermissions"
 	case !isAllowedTool(req.ToolName):
 		return "not a tool the hook answers for: " + req.ToolName
 	case req.ToolName == "Bash" && strings.TrimSpace(req.ToolInput.Command) == "":
 		return "no command"
-	case a.Data == "" || !alive(filepath.Join(a.Data, heartbeatFile), now):
+	}
+	return refuseCommon(a, req, now)
+}
+
+// refuseCommon is what every allow needs: the node program running, and no rule of the user's about the call.
+func refuseCommon(a hookArgs, req hookInput, now time.Time) string {
+	if a.Data == "" || !alive(filepath.Join(a.Data, heartbeatFile), now) {
 		return "the node program is not running"
 	}
 	if r := matchingRule(userRules(a.ConfigDir, req.Cwd), req.ToolName, req.ToolInput.Command); r != "" {
@@ -224,7 +239,9 @@ type auditEntry struct {
 const optionsFile = "options.json"
 
 type options struct {
-	AllowDestructive bool `json:"allow_destructive"`
+	AllowDestructive   bool     `json:"allow_destructive"`
+	AssistantWrites    bool     `json:"assistant_writes,omitempty"`     // assistant_writes.go
+	AssistantWriteDirs []string `json:"assistant_write_dirs,omitempty"` // empty: defaultAssistantWriteDirs
 }
 
 func readOptions(data string) options {

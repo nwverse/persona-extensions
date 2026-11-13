@@ -55,12 +55,25 @@ The audit entry says why: `scratch: rm` for a deletion in these directories, `se
 
 In a session that Persona started, Persona's hook also receives each `PermissionRequest` and puts a card on your phone. Claude Code does not stop that hook when another hook allows the call, so the card would stay up and the agent would be shown as waiting for you even though the command already ran. After each allow, this hook therefore tells Persona's node on that computer through its socket (`~/.persona/node.sock`, kind `hook.decided`, with the same request input). A node that knows `hook.decided` (nwverse/persona#2648) then shows no card, or withdraws the card it already showed. On an older node, the card stays until it is answered or times out; the command runs either way.
 
+## Persona assistant file writes
+
+Persona's assistant conversations (the main chat and the supervisor) do not run in bypassPermissions, so each `Write` or `Edit` of their own files (memory, charters) puts a permission card on the owner's phone. Persona's card offers "Always allow in this session" for a file's directory, but that grant still needs one tap per conversation and directory, and ends with the conversation. With the `assistant_writes` setting on, this hook allows those writes instead, when all of these hold:
+
+- The session is an assistant conversation. Persona's node starts the assistant's Claude Code with `PERSONA_ASSISTANT=1`, and the hook inherits it from Claude Code. The node unsets it for the Agents it starts, and a guest conversation (`PERSONA_GUEST=1`) has no file tools. A Claude Code started by hand from the assistant's own Bash inherits the variable too and gets the same allowance, inside the same directories.
+- The tool is `Write` or `Edit` (not `MultiEdit` or `NotebookEdit`), and the permission mode is `default` or `acceptEdits` (not `plan`).
+- The file path is absolute and, with every symlink in its existing part resolved, inside one of `assistant_write_dirs` (default `~/.jarvis/assistant` and `~/.persona/assistant`). A path with a `..` part, a path in a `.claude` or `.git` directory there or a `.mcp.json` (in any letter case, as macOS file systems ignore it), and the hook's own config directory and data directory, even inside a wide list, still ask: those change the session's own permissions, hooks and MCP servers, or a repository's hooks. Other managers' directories (`assistant-m-…`) are outside the default list; add them to allow them too.
+- The node program runs and no ask or deny rule of yours is about the tool (a rule for `Edit`, `Write`, `MultiEdit` or `NotebookEdit` counts for all of them), as for every allow.
+
+Deletions, paths outside the list and network writes (Bash, WebFetch, MCP tools) keep asking. The entry's matcher gets `|Write|Edit` only while the setting is on. The hook is in the config directories of `config_dirs` only: add the directory the assistant's Claude Code uses (by default `<Persona data dir>/profiles/<launcher>`, for example `~/.persona/profiles/claude`). Each allow is logged like the others (`Write <path>`), and Persona's card is withdrawn the same way.
+
 ## Settings and switches
 
 | Setting | Meaning |
 | --- | --- |
 | `machines` | The computers where the hook is installed, one switch per macOS or Linux computer. No computer is on after installation; turning one on asks for confirmation first. |
 | `allow_destructive` | 删除和覆盖也自动允许 (Auto-allow deleting and overwriting too). Off by default. When on, Bash commands that delete or overwrite data go through wherever their targets are. Forced pushes, permission changes, disk formatting and your own ask and deny rules still ask. The program writes it to `options.json` in its data directory when it starts; the hub restarts it when the setting changes. |
+| `assistant_writes` | Persona 助手对话的文件写入也自动允许 (Auto-allow file writes of Persona assistant conversations). Off by default. See [Persona assistant file writes](#persona-assistant-file-writes). |
+| `assistant_write_dirs` | The directories `assistant_writes` allows. Defaults to `~/.jarvis/assistant` and `~/.persona/assistant`; `~` is that computer's home directory. |
 | `config_dirs` | Claude Code config directories that receive the hook. Defaults to `~/.claude`; `~` is that computer's home directory. Add each directory you use with `CLAUDE_CONFIG_DIR`. A missing directory is skipped and shown on the extension page. |
 
 The extension does nothing until a computer is switched on. You can turn it off for one computer with its switch, or for every computer by disabling the extension. In either case, the program removes its entry as it stops. Uninstalling or upgrading does the same.
@@ -68,6 +81,8 @@ The extension does nothing until a computer is switched on. You can turn it off 
 ## The settings entry
 
 The program adds one group to `hooks.PermissionRequest` in `<config dir>/settings.json`. If the file is a symlink, it edits the file the link points to:
+
+With `assistant_writes` on, the matcher ends in `|Write|Edit`.
 
 ```json
 {"matcher": "Bash|Read|Glob|Grep|LS|NotebookRead|Agent|Task", "hooks": [{"type": "command", "timeout": 10,
