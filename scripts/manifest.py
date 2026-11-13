@@ -26,7 +26,7 @@ NEW, OLD = "persona-extension.json", "persona-plugin.json"
 # What a hub takes as a market entry's tags (nwverse/persona server/internal/extension/market.go).
 TAGS_MOST, TAG_LONGEST = 16, 24
 # The directories scripts/package.sh copies into a package besides the manifest and the program.
-PACKAGED_DIRS = ("skills", "assistant", "looks", "assets")
+PACKAGED_DIRS = ("skills", "assistant", "looks", "l10n", "assets")
 # macOS/editor junk by basename: AppleDouble ._* and .DS_Store (a stray ._* at the package root is a second
 # top-level entry, so the hub finds no manifest) and Python's __pycache__/. scripts/package.sh excludes the same
 # names from the tar; failing here names the file to remove before a package is ever built.
@@ -68,6 +68,32 @@ def tags(id):
 
 def replaces(id):
     return load(id).get("replaces", "")
+
+
+def l10n(id):
+    """The extension's l10n/<language>.json files by language, for the signed catalog entry: a market shows them
+    before downloading anything (persona server/internal/extension/market_index.go L10n). Each is a JSON object of at
+    most 64 KiB, the size the hub reads; a bad file is an error here rather than a translation silently left out."""
+    directory = os.path.join(ROOT, "extensions", id, "l10n")
+    out = {}
+    if not os.path.isdir(directory):
+        return out
+    for name in sorted(os.listdir(directory)):
+        p = os.path.join(directory, name)
+        if not name.endswith(".json") or not os.path.isfile(p):
+            continue
+        with open(p, "rb") as f:
+            raw = f.read()
+        if len(raw) > 64 << 10:
+            raise ValueError("l10n/%s: larger than 64 KiB" % name)
+        try:
+            value = json.loads(raw, object_pairs_hook=_no_duplicate_keys)
+        except ValueError as e:
+            raise ValueError("l10n/%s: %s" % (name, e))
+        if not isinstance(value, dict):
+            raise ValueError("l10n/%s: not a JSON object" % name)
+        out[name[:-len(".json")]] = value
+    return out
 
 
 def icon(id):
@@ -296,7 +322,7 @@ def check():
         if not catalog.valid_version(m.get("version", "")):
             bad.append("extensions/%s: version %r is not MAJOR.MINOR.PATCH" % (id, m.get("version")))
         try:
-            inventory.append(catalog.source_entry(m))
+            inventory.append(catalog.source_entry(m, l10n=l10n(id)))
         except ValueError as e:
             bad.append("extensions/%s: %s" % (id, e))
         # A hub refuses a manifest whose configuration its forms can't draw, and drops it from the catalog (#494).
