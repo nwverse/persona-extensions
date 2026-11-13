@@ -604,3 +604,61 @@ func TestRelationConditionsLeaveOtherOperandsToTheKernel(t *testing.T) {
 		}
 	}
 }
+
+// A batch writes to one space. Without a space it is the space of the records the batch changes, and the items that
+// create land there, also when the base holds other spaces; records of several spaces, or a record outside the
+// given space, are refused and nothing is saved.
+func TestBatchWritesToOneSpace(t *testing.T) {
+	s, project := projectSpace(t, store.Open(""))
+	defer s.finish()
+	reading := asStr(t, get(t, s.done("space_write", `{"template":"reading","samples":true}`), "id"))
+	task := s.idByTitle(project, "task", "写第 2 篇")
+	book := asStr(t, asMap(t, asList(t, get(t, s.done("query", fmt.Sprintf(`{"space":%q,"type":"book","limit":1}`, reading)), "entities"))[0])["id"])
+	total := func(space string) float64 {
+		t.Helper()
+		return get(t, s.done("query", fmt.Sprintf(`{"space":%q}`, space)), "total").(float64)
+	}
+	inProject, inReading := total(project), total(reading)
+
+	// An update and a create, no space: the create goes beside the record that is changed, in either order.
+	for i, items := range []string{
+		fmt.Sprintf(`{"id":%q,"values":{"priority":"高"}},{"type":"task","title":"跟着改的任务 1"}`, task),
+		fmt.Sprintf(`{"type":"task","title":"跟着改的任务 2"},{"id":%q,"values":{"priority":"低"}}`, task),
+	} {
+		out := asList(t, get(t, s.done("entity_write", `{"entities":[`+items+`]}`), "entities"))
+		if len(out) != 2 {
+			t.Fatalf("batch %d answered %d records", i, len(out))
+		}
+		if got := total(project); got != inProject+float64(i+1) {
+			t.Errorf("batch %d: project total = %v, want %v", i, got, inProject+float64(i+1))
+		}
+		if got := total(reading); got != inReading {
+			t.Errorf("batch %d: reading total = %v, want %v", i, got, inReading)
+		}
+	}
+	inProject = total(project)
+
+	// Only creates and no space: refused as a single create is, naming the spaces.
+	res := get(t, s.tool("entity_write", `{"entities":[{"type":"task","title":"没有空间"}]}`), "result")
+	if got := asStr(t, get(t, res, "content", 0, "text")); !strings.Contains(got, "有多个空间，请用 space 指定") {
+		t.Errorf("creates without a space: %s", got)
+	}
+	// Records of two spaces in one batch.
+	res = get(t, s.tool("entity_write", fmt.Sprintf(`{"entities":[{"id":%q,"values":{"priority":"中"}},{"id":%q,"title":"改名"},{"type":"task","title":"夹在中间"}]}`, task, book)), "result")
+	if got := asStr(t, get(t, res, "content", 0, "text")); !strings.Contains(got, "分属 2 个空间") || !strings.Contains(got, "一次批量只写一个空间") {
+		t.Errorf("two spaces: %s", got)
+	}
+	// A record outside the given space.
+	res = get(t, s.tool("entity_write", fmt.Sprintf(`{"space":%q,"entities":[{"type":"book","title":"新书"},{"id":%q,"values":{"priority":"中"}}]}`, reading, task)), "result")
+	if got := asStr(t, get(t, res, "content", 0, "text")); !strings.Contains(got, "第 2 条「写第 2 篇」：记录在空间「项目与目标」，不在「阅读与知识」") {
+		t.Errorf("record outside the given space: %s", got)
+	}
+	if total(project) != inProject || total(reading) != inReading {
+		t.Errorf("a refused batch saved something: project %v (was %v), reading %v (was %v)", total(project), inProject, total(reading), inReading)
+	}
+	// With the space given, updates and creates of that space pass.
+	out := asList(t, get(t, s.done("entity_write", fmt.Sprintf(`{"space":"阅读与知识","entities":[{"id":%q,"title":"改名的书"},{"type":"book","title":"新书"}]}`, book)), "entities"))
+	if len(out) != 2 || total(reading) != inReading+1 || total(project) != inProject {
+		t.Errorf("batch in the given space: %v", out)
+	}
+}

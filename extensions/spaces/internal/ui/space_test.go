@@ -198,7 +198,8 @@ func TestCreateFromTheForm(t *testing.T) {
 		{"custom name without samples", map[string]string{"name": " 我的空间 ", "samples": "false"}, false},
 		{"with samples", map[string]string{"name": "我的空间", "samples": "true"}, true},
 		{"the untouched form", nil, true},
-		{"no samples switch sent", map[string]string{"name": "我的空间"}, false},
+		// A client that sends only the edited fields: the form's switch was drawn on, so the examples come.
+		{"only the name sent from the form", map[string]string{"name": "我的空间"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -378,5 +379,34 @@ func TestNewSpaceFlowDropsTheStateBelowTheSpace(t *testing.T) {
 	}
 	if _, ok := buttonTitled(res.View, "新建空间"); !ok {
 		t.Fatal("cancel did not land on the overview, which holds the button")
+	}
+}
+
+// A create that does not come from a template's form (the state names no template, or another one) and sends no
+// samples value creates no examples: there was no switch drawn on to stand for.
+func TestDirectCreateWithoutTheSwitchHasNoSamples(t *testing.T) {
+	tp := withSamples(t)
+	other := ""
+	for _, k := range templateKeys() {
+		if k != tp.Key {
+			other = k
+			break
+		}
+	}
+	for i, from := range []state{{}, {C: pickSlot}, {C: other}} {
+		st := storeWith(t, false, "blank")
+		a := newApp(st)
+		from.S = firstSpace(t, st)
+		name := fmt.Sprintf("直接创建 %d", i)
+		act(t, a, from, "create:"+tp.Key, map[string]string{"name": name})
+		sp := spaceNamed(t, st, name)
+		if sp == nil || len(sp.Types) != len(tp.Types) || len(sp.Entities) != 0 {
+			t.Fatalf("from %+v: space = %+v", from, sp)
+		}
+		// The explicit value still decides.
+		act(t, a, from, "create:"+tp.Key, map[string]string{"name": name + " 带示例", "samples": "true"})
+		if sp := spaceNamed(t, st, name+" 带示例"); sp == nil || len(sp.Entities) == 0 {
+			t.Fatalf("from %+v with samples true: space = %+v", from, sp)
+		}
 	}
 }

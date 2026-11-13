@@ -124,7 +124,7 @@ The assistant reaches the spaces through the `spaces` MCP server. The tools are 
 | `query` | read, runs without asking | Records of a type, or across types with built-in fields only; filters, sorts, groups, aggregates and paging. A record id reads that one record. `brief` answers each record with its title, status and values only. |
 | `space_write` | write | Creates a space, optionally from a template and with its examples, or changes a space's name, icon or description. |
 | `type_write` | write | Adds a type or replaces it as a whole. A replacement migrates existing records and is refused as a whole when one does not fit. With `merge` only the given parts change: properties are merged by key and the rest is kept. |
-| `entity_write` | write | Creates a record or changes it. Properties are merged; `null` clears one; the status moves one step at a time. `entities` writes up to 50 records in one call, all or none. |
+| `entity_write` | write | Creates a record or changes it. Properties are merged; `null` clears one; the status moves one step at a time. `entities` writes up to 50 records in one call, all or none. A batch writes to one space: the given one, else the space of the records it changes, where its new records are created too. |
 | `entity_derive` | write | Derives a record of another type. The source is unchanged. |
 | `delete` | write, destructive | Deletes a record, a type with its records, or a space with all its content. It cannot be undone. |
 

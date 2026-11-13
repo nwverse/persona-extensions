@@ -836,7 +836,7 @@ func entityWriteInput() map[string]any {
 	props["space"] = spaceProp()
 	props["entities"] = map[string]any{"type": "array", "minItems": 1, "maxItems": maxBatch, "items": object(entityProps()),
 		"description": "批量写入，每项的字段和单条写入相同；不能和顶层的 id、type、title、status、values 一起用。" +
-			"按顺序执行，有一条失败则全部不保存；返回每条记录的 id、type、title、status 和 values"}
+			"按顺序执行，有一条失败则全部不保存；一次只写一个空间：给了 space 就是它，没给时是要修改的记录所在的空间，新建的记录也建在那里；返回每条记录的 id、type、title、status 和 values"}
 	return object(props)
 }
 
@@ -859,9 +859,13 @@ func runEntityWrite(b *kernel.Base, now time.Time, raw json.RawMessage) (any, er
 	if len(a.Entities) == 0 || len(a.Entities) > maxBatch {
 		return nil, fmt.Errorf("entities 需要 1 到 %d 条记录", maxBatch)
 	}
+	space, err := batchSpace(b, a.Space, a.Entities)
+	if err != nil {
+		return nil, err
+	}
 	ids := make([]string, 0, len(a.Entities))
 	for i, in := range a.Entities {
-		_, e, err := writeEntity(b, a.Space, in, now)
+		_, e, err := writeEntity(b, space, in, now)
 		if err != nil {
 			return nil, fmt.Errorf("第 %d 条%s：%w", i+1, itemLabel(b, in), err)
 		}
@@ -880,6 +884,46 @@ func runEntityWrite(b *kernel.Base, now time.Time, raw json.RawMessage) (any, er
 		out.Entities = append(out.Entities, briefOf(entityOf(sp, worlds[sp], e)))
 	}
 	return out, nil
+}
+
+// batchSpace is the one space a batch writes to, as writeEntity takes it. With a space given it is that space, and an
+// item that changes a record of another space is refused. Without one it is the space of the records the batch
+// changes, so the items that create land beside them; records of several spaces are refused. A batch that only
+// creates, or whose ids are unknown, answers "" and each item is resolved as a single write is.
+func batchSpace(b *kernel.Base, space string, items []kernel.EntityInput) (string, error) {
+	var given *kernel.Space
+	if space != "" {
+		sp, err := spaceOf(b, space)
+		if err != nil {
+			return "", err
+		}
+		given = sp
+	}
+	var found []*kernel.Space
+	for i, in := range items {
+		if in.ID == "" {
+			continue
+		}
+		sp, _, err := b.Find(in.ID)
+		if err != nil {
+			continue // the item's own write refuses it, with its position
+		}
+		if given != nil && sp != given {
+			return "", fmt.Errorf("第 %d 条%s：记录在空间「%s」，不在「%s」；一次批量只写一个空间", i+1, itemLabel(b, in), sp.Name, given.Name)
+		}
+		if !slices.Contains(found, sp) {
+			found = append(found, sp)
+		}
+	}
+	switch {
+	case given != nil:
+		return given.ID, nil
+	case len(found) == 1:
+		return found[0].ID, nil
+	case len(found) > 1:
+		return "", fmt.Errorf("entities 里要修改的记录分属 %d 个空间（%s）；一次批量只写一个空间，请分开写", len(found), spaceList(found))
+	}
+	return "", nil
 }
 
 // members are the names of the members of a JSON object; none when raw is not an object.

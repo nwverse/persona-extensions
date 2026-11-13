@@ -418,9 +418,10 @@ func actCancel(c *ctx, _ string) (*wire.ActionResult, error) {
 }
 
 // actCreate creates a space from the template the argument names, with the name and the samples choice of its form.
-// An empty name is the default one. The examples come only when the template has some and the form's switch says
-// "true", which is what the form sends untouched; a request without the switch creates none, and any other value is
-// refused. The new space's overview is shown.
+// An empty name is the default one. The examples come only when the template has some: by the form's switch when it
+// is sent ("true" or "false", anything else is refused), and by where the request comes from when it is not. From
+// the template's form, whose switch is drawn on, a missing value is that default, for a client that sends only the
+// fields that were edited; a create that does not come from the form creates none. The new space's overview is shown.
 func actCreate(c *ctx, arg string) (*wire.ActionResult, error) {
 	t, ok := templates.Get(arg)
 	if !ok {
@@ -430,7 +431,7 @@ func actCreate(c *ctx, arg string) (*wire.ActionResult, error) {
 	if name == "" {
 		name = c.defaultName(t)
 	}
-	samples, err := samplesChoice(&t, c.r.Values)
+	samples, err := samplesChoice(&t, c.r.Values, c.st.C == t.Key)
 	if err != nil {
 		return nil, err
 	}
@@ -443,14 +444,15 @@ func actCreate(c *ctx, arg string) (*wire.ActionResult, error) {
 }
 
 // samplesChoice reads the samples switch of the create form. The form has the switch only for a template with
-// samples, so for any other template the answer is false whatever was sent.
-func samplesChoice(t *templates.Template, values map[string]string) (bool, error) {
+// samples, so for any other template the answer is false whatever was sent. Without a value the answer is the form's
+// default (on) when the request comes from the template's form, and false otherwise.
+func samplesChoice(t *templates.Template, values map[string]string, fromForm bool) (bool, error) {
 	if len(t.Samples) == 0 {
 		return false, nil
 	}
 	v, ok := values["samples"]
 	if !ok {
-		return false, nil
+		return fromForm, nil
 	}
 	switch v {
 	case "true":
