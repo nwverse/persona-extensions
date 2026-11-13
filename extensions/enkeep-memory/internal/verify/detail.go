@@ -128,8 +128,8 @@ func (w *Window) Supply(claim string, ev []store.Evidence, known ...string) ([]s
 		found := false
 		for _, n := range near {
 			l := w.All[n]
-			if !carries(l.Body, d) {
-				continue
+			if r := voice.Role(l, w.Kind); r == voice.RoleAssistant || r == voice.RoleAgentDraft || !carries(l.Body, d) {
+				continue // the AI's text is context, never what a fact or a card rests on
 			}
 			quote := strings.TrimSpace(l.Body)
 			if utf8.RuneCountInString(quote) > MaxQuote {
