@@ -71,7 +71,7 @@ export class Domains {
     if (response.status !== 200) throw new ReadError("http", response.status);
     try { return JSON.parse(text); } catch { throw new ReadError("bad_answer"); }
   }
-  private async read(path: string, fresh: number, signal?: AbortSignal): Promise<{ raw: unknown; at: number; stale?: ReadError }> {
+  private async read(path: string, fresh: number, signal?: AbortSignal, validate?: (raw: unknown) => void): Promise<{ raw: unknown; at: number; stale?: ReadError }> {
     checkSignal(signal);
     const cached = this.cached(path, fresh); if (cached) return cached;
     const run = this.queue.then(async () => {
@@ -86,6 +86,7 @@ export class Domains {
       const request = budget(signal, this.limits.request);
       try {
         const raw = await this.response(path, request.signal);
+        validate?.(raw); // a semantically invalid answer must not replace a validated cached record
         const at = this.now(); this.save(path, raw, at); this.lastOK = at; this.lastError = undefined;
         return { raw, at };
       } catch (error) {
@@ -115,14 +116,14 @@ export class Domains {
       ...(this.lastError ? { error: t[this.lastError.code] } : {}) };
   }
   async bootstrap(signal?: AbortSignal): Promise<RDAPService> {
-    const rd = await this.read("https://data.iana.org/rdap/dns.json", this.limits.bootstrap, signal);
+    const rd = await this.read("https://data.iana.org/rdap/dns.json", this.limits.bootstrap, signal, raw => { rdapService(raw, "example.com"); });
     return rdapService(rd.raw, "example.com");
   }
   async lookup(domain: string, refresh = false, signal?: AbortSignal): Promise<Registration> {
     const name = domainName(domain);
-    const bootstrap = await this.read("https://data.iana.org/rdap/dns.json", this.limits.bootstrap, signal);
+    const bootstrap = await this.read("https://data.iana.org/rdap/dns.json", this.limits.bootstrap, signal, raw => { rdapService(raw, name.ascii); });
     const service = rdapService(bootstrap.raw, name.ascii), url = lookupURL(service, name.ascii);
-    const rd = await this.read(url, refresh ? 0 : this.limits.fresh, signal);
+    const rd = await this.read(url, refresh ? 0 : this.limits.fresh, signal, raw => { parseRegistration(raw, name.ascii, this.now()); });
     return { ...parseRegistration(rd.raw, name.ascii, rd.at), stale: rd.stale };
   }
   cacheStats() { return { entries: this.cache.size, bytes: this.bytes }; }
