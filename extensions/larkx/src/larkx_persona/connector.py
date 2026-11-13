@@ -305,7 +305,7 @@ class Connector:
         with self._lock:
             signed_in, me = self._signed_in, self._account_id
         request = self.store.message(p.get("reply_to") or "") if p.get("reply_to") else None
-        if not signed_in or request is None or request["sender"] != me:
+        if not signed_in or request is None or request["sender"] != me or agent_request(request["text"]) is None or request["text"].rstrip().endswith(AGENT_SUFFIX):
             # Only an answer to one of the user's own /agent goes out: nothing in a chat they did not ask in.
             raise RpcError("没有可以回复的 /agent 消息", CANNOT_SEND)
         key = "channel:" + ref

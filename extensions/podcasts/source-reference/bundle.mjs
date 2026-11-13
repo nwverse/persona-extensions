@@ -827,7 +827,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "podcasts", name: "Podcasts \u64AD\u5BA2", version: "0.1.1", icon: "assets/icon.png", description: "\u641C\u7D22\u516C\u5F00\u64AD\u5BA2\uFF0C\u67E5\u770B\u8282\u76EE\u548C\u8FD1\u671F\u5355\u96C6\uFF0C\u628A\u60F3\u542C\u7684\u8282\u76EE\u4FDD\u5B58\u5230\u672C\u5730\u6536\u542C\u6E05\u5355\u3002\u901A\u8FC7 Apple \u516C\u5F00\u76EE\u5F55\u83B7\u53D6\u5143\u6570\u636E\uFF0C\u65E0\u9700\u8D26\u53F7\uFF1B\u4E0D\u4E0B\u8F7D\u5A92\u4F53\uFF0C\u4E0D\u63A7\u5236\u64AD\u653E\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/podcasts/README.md", tags: ["\u64AD\u5BA2", "\u5355\u96C6", "\u6536\u542C\u6E05\u5355", "Apple Podcasts"], engines: { persona: ">=202611101800", extension_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/podcasts.mjs", sha256: "" } }, contributes: { connectors: [{ id: "podcasts", name: "Podcasts", capabilities: ["status", "tools"], hosts: ["itunes.apple.com"], agent_tools: ["podcasts_*"] }], ui: [{ id: "discover", title: "\u53D1\u73B0\u64AD\u5BA2", placement: "nav_page", icon: "music" }] }, permissions: { network: ["itunes.apple.com"], storage: { keys: ["subscriptions"] } } };
+var persona_extension_default = { manifest_version: 1, id: "podcasts", name: "Podcasts \u64AD\u5BA2", version: "0.1.2", icon: "assets/icon.png", description: "\u641C\u7D22\u516C\u5F00\u64AD\u5BA2\uFF0C\u67E5\u770B\u8282\u76EE\u548C\u8FD1\u671F\u5355\u96C6\uFF0C\u628A\u60F3\u542C\u7684\u8282\u76EE\u4FDD\u5B58\u5230\u672C\u5730\u6536\u542C\u6E05\u5355\u3002\u901A\u8FC7 Apple \u516C\u5F00\u76EE\u5F55\u83B7\u53D6\u5143\u6570\u636E\uFF0C\u65E0\u9700\u8D26\u53F7\uFF1B\u4E0D\u4E0B\u8F7D\u5A92\u4F53\uFF0C\u4E0D\u63A7\u5236\u64AD\u653E\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/podcasts/README.md", tags: ["\u64AD\u5BA2", "\u5355\u96C6", "\u6536\u542C\u6E05\u5355", "Apple Podcasts"], engines: { persona: ">=202611101800", extension_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/podcasts.mjs", sha256: "" } }, contributes: { connectors: [{ id: "podcasts", name: "Podcasts", capabilities: ["status", "tools"], hosts: ["itunes.apple.com"], agent_tools: ["podcasts_*"] }], ui: [{ id: "discover", title: "\u53D1\u73B0\u64AD\u5BA2", placement: "nav_page", icon: "music" }] }, permissions: { network: ["itunes.apple.com"], storage: { keys: ["subscriptions"] } } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 18e3, tool: 18e3, response: 2 << 20, fresh: 15 * 6e4, cache: 48, cacheBytes: 2 << 20, gap: 350 });
@@ -887,7 +887,9 @@ function date(value) {
   if (value == null) return void 0;
   const raw = string(value);
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/.test(raw) || !Number.isFinite(Date.parse(raw))) throw new ReadError("bad_answer");
-  return new Date(Date.parse(raw)).toISOString();
+  const [y, m, d] = raw.slice(0, 10).split("-").map(Number), parsed = new Date(raw);
+  if (parsed.getUTCFullYear() !== y || parsed.getUTCMonth() !== m - 1 || parsed.getUTCDate() !== d) throw new ReadError("bad_answer");
+  return parsed.toISOString();
 }
 function queryText(value) {
   if (typeof value !== "string") throw new ReadError("invalid");
@@ -1176,7 +1178,7 @@ var Podcasts = class {
   lastError;
   cached(path, fresh) {
     const item = this.cache.get(path);
-    if (item && this.monotonic() - item.used < fresh) {
+    if (item && this.monotonic() - item.at < fresh) {
       this.cache.delete(path);
       item.used = this.monotonic();
       this.cache.set(path, item);
@@ -1337,6 +1339,7 @@ var Podcasts = class {
       const results2 = raw.results;
       const item2 = results2?.find((raw2) => !!raw2 && typeof raw2 === "object" && raw2.wrapperType === "track");
       if (!item2) throw new ReadError("not_found");
+      if (id(item2.collectionId) !== podcastID(show)) throw new ReadError("not_found");
       parseShow(item2);
     });
     const results = rd.raw.results;
