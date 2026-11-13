@@ -70,6 +70,17 @@ red"), money notices (bank, payroll, balance, card, transfer) and anything that 
 Each observation is one thing seen in this unit, for one facet. text is one sentence that stands on its own. Fill the
 fields the facet uses, leave the others empty.
 
+Which facet, when two seem to fit:
+- something the user asks of the AI, again and again or as a standing request ("list my calendars merged by time"),
+  or corrects in it: interaction, not workflow;
+- a choice between options, also a conditional one ("agrees to a cache when it carries no security risk"):
+  judgement; workflow is the steps of a kind of task, not one choice;
+- a view or an evaluation of a thing, a service or an option with no choice of the user's in it ("overseas
+  accounts are harder to ban"): a world fact of kind evaluation, not a judgement;
+- how a meeting, a timeline or a hand-off is arranged for a kind of task: workflow, not judgement;
+- persona's type names what the line is (a preference is preference, not current_work); a technical choice is
+  judgement, not persona.
+
 **interaction** (how the user and the AI work together). From the user's own lines in a conversation where an AI
 answers or is addressed: what the user wants the AI to do or not do when it speaks to them, asks them, reports to
 them, takes on or hands out work, or should not disturb them; corrections of the AI; repeated asks; impatience; a way
@@ -191,6 +202,12 @@ pleasantry ("thanks, boss", "master", "sir") is not a relation.
 
 - Every item cites at least one line: n is the line number, quote copies at least 4 characters of that line exactly
   ("……" may skip words within the same line). Quote the words that carry the point, not just a name.
+- An item says no more than its quotes: every name, number, time and description in it is in a line it cites. When a
+  detail comes from another line, cite that line too; a detail no line says (a type of hardware, a project name, a
+  cause) is left out, not guessed.
+- Read what a line asserts, not what it presupposes or asks: a question, a wish, a complaint or a guess is not a
+  statement that something is so ("why is there no model X here?" does not say the speaker uses X; "can this run on
+  the NAS?" does not say it runs there).
 - interaction, judgement, workflow and persona rest on the user's own lines (speaker "我"): at least one quote is the
   user saying something of their own. A bare agreement ("好", "可以", "ok") with what someone else proposed does not
   count: the proposal is theirs. Words that appear only in the AI's text are never the user's.

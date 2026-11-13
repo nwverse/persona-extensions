@@ -16,8 +16,10 @@ named without machines, projects, products, people, protocols or dates. Examples
 - "when planning a trip" covers choosing flights, picking where to stay and deciding what to pack;
 - "when a release is about to go out" covers waiting or not for a slow check, what to verify first and who signs
   off.
-Prefer few, broad kinds: a kind should usually hold several classes. A class goes into a kind of its own only when
-no other class is the same kind of occasion.
+A kind may hold several classes, but only classes in which the user does the same thing: a broad occasion that
+calls for different ways ("when deploying, either clean credentials first or test in a low-risk place or export a
+backup") is several kinds. A class goes into a kind of its own when no other class is the same kind of occasion
+with the same way.
 
 Step 2. For each kind, list in `classes` the ids of the classes that are one class under `rule`. For kinds of
 situation (judgements, ways of handling things) classes whose choices point the same way are one class even when
@@ -26,7 +28,7 @@ keeps different points apart (rules for the assistant, facts about an object or 
 different things the assistant must each remember (one about the language of reports, one about not asking before
 acting) are not one class: put them in separate kinds with the same situation, one kind each. List in `conflicting` the ids of classes in the same kind
 where the user did the opposite of the others; those are kept apart. A merged `text` that needs a list of unrelated
-points is a sign the classes were not one.
+points, or "A or B or C", is a sign the classes were not one: such a merge is refused by the program.
 
 For each kind give `situation` (the kind, as above), `text` (one sentence: in this kind of situation the user does
 X, not Y. Keep what is particular to the user: the concrete choices the classes share and what the user avoids, in

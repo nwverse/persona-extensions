@@ -231,7 +231,9 @@ func (c *compiler) plan() *plan {
 		p.a["workflow"] = work
 		p.a["world"] = c.entries(entry.World, openCommitment)
 		if c.on(entry.K4Persona) {
-			p.a["persona"] = c.entries(entry.Persona, func(e *entry.Entry) bool { return notHandwritten(e) && c.lifted(e) })
+			p.a["persona"] = underExported(c.entries(entry.Persona, func(e *entry.Entry) bool {
+				return notHandwritten(e) && (c.lifted(e) || entry.SelfFact(e))
+			}))
 		}
 		for _, s := range []string{"interaction", "judgement", "workflow", "persona"} {
 			for _, e := range p.a[s] {

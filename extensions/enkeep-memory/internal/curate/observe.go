@@ -475,8 +475,9 @@ func runtimeName(q string) bool {
 
 // observation is one observation checked: the entry to keep, or the rejection.
 type observation struct {
-	e   *entry.Entry
-	rej string
+	e    *entry.Entry
+	rej  string
+	note string // what the rejection is about, for the log (the detail no line has)
 }
 
 // checkObservation runs every check but the wording on one observation and builds its entry.
@@ -517,14 +518,11 @@ func (c *Curator) checkObservation(w *verify.Window, u *Unit, k *known, tier str
 	if rej != "" {
 		return bad(rej)
 	}
-	if f == entry.People {
-		// A person card's names, numbers and times are in the lines it cites (F1, 9.5).
-		var names []string
-		if p := personOf(u, k, o.Person); p != "" {
-			names = append(names, personName(k, p), o.Person)
-		}
-		if cited, rej = w.Supply(o.Text, cited, names...); rej != "" {
-			return bad(rej)
+	if p := personOf(u, k, o.Person); f == entry.People && p != "" {
+		// A person card's names, numbers and times are in the lines it cites (F1, 9.5). Whom it is about is checked
+		// below.
+		if cited, rej = w.Supply(o.Text, cited, personName(k, p), o.Person); rej != "" {
+			return observation{rej: rej, note: w.Missing}
 		}
 	}
 	ev := c.attributeEvidence(u, k, w, cited)
@@ -756,7 +754,7 @@ func problemText(code string) string {
 func (c *Curator) keepObservation(u *Unit, o schema.Observation, r observation, done *store.Done, run *store.Run) {
 	facet := strings.TrimSpace(o.Facet)
 	if r.rej != "" {
-		c.reject(done, "obs:"+facet, r.rej, o.Text, u.Day)
+		c.reject(done, "obs:"+facet, r.rej, withMissing(o.Text, r.note), u.Day)
 		run.Counts["obs_rejected"]++
 		run.Counts["obs_rejected:"+r.rej]++
 		return
@@ -825,4 +823,12 @@ func (c *Curator) storedRewrite(done *store.Done) rewriter {
 		var out schema.RewriteOutput
 		return out, json.Unmarshal(raw, &out) == nil
 	}
+}
+
+// withMissing adds to a rejected claim the detail no line has, so the log says what was not found.
+func withMissing(claim, missing string) string {
+	if missing == "" {
+		return claim
+	}
+	return claim + " [not in the lines: " + missing + "]"
 }

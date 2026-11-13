@@ -68,6 +68,8 @@ type Window struct {
 	// a line spelling them out. Not the projects the knowledge base files the unit under: that a chat is filed under a
 	// project does not make every line in it about that project.
 	Names []string
+	// Missing is the detail the last Supply found in no line (for the rejection log).
+	Missing string
 }
 
 // OwnerSpoke says whether the owner wrote in the window.

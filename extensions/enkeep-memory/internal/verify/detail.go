@@ -21,8 +21,10 @@ var (
 )
 
 // Details are the literal pieces of a claim a citation has to carry: words in Latin letters of three or more
-// characters (names of projects, tools, settings, models), times of day, and numbers of two or more digits. One-digit
-// numbers are left out: a claim's "2" is often a quote's "两". Dates are the date check's business.
+// characters (names of projects, tools, settings, models), but not the common words of software work a claim uses
+// for a quote's own wording (common); times of day and numbers (a quote's Chinese numerals count: "两个" carries
+// "2"). Dates are the date check's business. CJK descriptions are not checked word by word: a claim rewords them
+// (tried: most of what a clause check refused was a correct fact in other words).
 func Details(claim string) []string {
 	seen := map[string]bool{}
 	var out []string
@@ -34,7 +36,7 @@ func Details(claim string) []string {
 		}
 	}
 	for _, w := range detailWord.FindAllString(claim, -1) {
-		if utf8.RuneCountInString(w) >= 3 {
+		if utf8.RuneCountInString(w) >= 3 && !common[strings.ToLower(w)] {
 			add(w)
 		}
 	}
@@ -48,15 +50,32 @@ func Details(claim string) []string {
 				strings.HasPrefix(rest[loc[1]:], "号")) {
 			continue
 		}
-		if strings.Contains(n, ":") || len(strings.ReplaceAll(n, ".", "")) >= 2 {
-			add(n)
-		}
+		add(n)
 	}
 	return out
 }
 
 func carries(text, detail string) bool {
-	return strings.Contains(strings.ToLower(text), strings.ToLower(detail))
+	t := strings.ToLower(text)
+	if strings.Contains(t, strings.ToLower(detail)) {
+		return true
+	}
+	return detailNum.MatchString(detail) && strings.Contains(numerals.Replace(t), detail)
+}
+
+// numerals turns Chinese numerals one to nine into digits, for matching a claim's "2" against a quote's "两".
+var numerals = strings.NewReplacer("一", "1", "二", "2", "两", "2", "三", "3", "四", "4", "五", "5", "六", "6", "七", "7", "八", "8", "九", "9")
+
+// common are words of software work that a claim may use for the quote's own wording ("Issue #12" for "#12 关了").
+var common = map[string]bool{}
+
+func init() {
+	for _, w := range strings.Fields(`issue issues release releases bug bugs commit commits merge merged branch master main
+		session sessions bot bots agent agents token tokens api apis url urls http https ssh pr prs mr mrs repo
+		macos ios android mac app apps web cli docs readme json yaml log logs config test tests ci cd node hub
+		server client bash shell git github`) {
+		common[w] = true
+	}
 }
 
 // Supply checks that every detail of the claim is in a cited line. A detail that is only in another shown line of
@@ -121,6 +140,7 @@ func (w *Window) Supply(claim string, ev []store.Evidence, known ...string) ([]s
 			break
 		}
 		if !found {
+			w.Missing = d
 			return nil, DetailNotInEvidence
 		}
 	}
