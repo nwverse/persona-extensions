@@ -107,8 +107,8 @@ func assistantWritable(p string, dirs []string) string {
 		return ""
 	}
 	clean, ok := physical(p)
-	if !ok {
-		return ""
+	if !ok || danglingLink(clean) {
+		return "" // a Write through a link that leads nowhere yet would land outside the listed directory
 	}
 	real := resolve(clean, true) // a Write to a link writes where it leads
 	for _, d := range dirs {
@@ -117,7 +117,7 @@ func assistantWritable(p string, dirs []string) string {
 			continue
 		}
 		root := resolve(abs, true)
-		if real == root || !within(real, root) {
+		if root == "/" || real == root || !within(real, root) {
 			continue
 		}
 		rel := strings.TrimPrefix(real, strings.TrimSuffix(root, "/")+"/")
@@ -127,6 +127,23 @@ func assistantWritable(p string, dirs []string) string {
 		return d
 	}
 	return ""
+}
+
+// danglingLink says whether p or one of its parents is a symlink that does not resolve. Such a link inside a listed
+// directory can point outside it even when its target does not exist yet.
+func danglingLink(p string) bool {
+	for d := p; d != "/" && d != "."; d = filepath.Dir(d) {
+		info, err := os.Lstat(d)
+		if err != nil {
+			continue
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			if _, err := filepath.EvalSymlinks(d); err != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // protectedAssistantPath says whether rel (inside a listed directory) is one a conversation must not write without
