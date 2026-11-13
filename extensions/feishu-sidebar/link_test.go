@@ -42,7 +42,7 @@ func TestBuildLink(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%q: %v", path, err)
 		}
-		if !strings.HasPrefix(link, "https://applink.feishu.cn/client/web_url/open?mode=sidebar-semi&url=") {
+		if !strings.HasPrefix(link, "https://applink.feishu.cn/client/web_url/open?mode=appCenter&url=") {
 			t.Errorf("%q: link %q", path, link)
 		}
 		if target != want {
