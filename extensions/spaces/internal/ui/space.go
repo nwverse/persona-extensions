@@ -113,9 +113,24 @@ func (c *ctx) defaultName(t templates.Template) string {
 			taken[sp.Name] = true
 		}
 	}
-	name := t.Name
+	return freeName(t.Name, taken)
+}
+
+// freeName is base, or base followed by " 2", " 3", ... when taken has it. The answer is never longer than a name
+// may be: base is cut to the limit, and cut further to leave room for the suffix, so the name can be saved as it is.
+func freeName(base string, taken map[string]bool) string {
+	r := []rune(strings.TrimSpace(base))
+	if len(r) > kernel.MaxName {
+		r = r[:kernel.MaxName]
+	}
+	name := strings.TrimSpace(string(r))
 	for i := 2; taken[name]; i++ {
-		name = fmt.Sprintf("%s %d", t.Name, i)
+		suffix := fmt.Sprintf(" %d", i)
+		head := r
+		if room := kernel.MaxName - len(suffix); len(head) > room {
+			head = head[:room]
+		}
+		name = strings.TrimSpace(string(head)) + suffix
 	}
 	return name
 }

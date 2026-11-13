@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nwverse/persona/sdk/go/wire"
 
@@ -408,5 +409,62 @@ func TestDirectCreateWithoutTheSwitchHasNoSamples(t *testing.T) {
 		if sp := spaceNamed(t, st, name+" 带示例"); sp == nil || len(sp.Entities) == 0 {
 			t.Fatalf("from %+v with samples true: space = %+v", from, sp)
 		}
+	}
+}
+
+// A default name is never longer than a space's name may be: a base at the limit that is taken gives way to the
+// suffix, and the name saves as it is.
+func TestDefaultNameFitsTheLimit(t *testing.T) {
+	long := strings.Repeat("长", kernel.MaxName)
+	cases := []struct {
+		base  string
+		taken []string
+		want  string
+	}{
+		{"项目", nil, "项目"},
+		{"项目", []string{"项目", "项目 2"}, "项目 3"},
+		{long, nil, long},
+		{long + "超出", nil, long},
+		{long, []string{long}, strings.Repeat("长", kernel.MaxName-2) + " 2"},
+		{long, []string{long, strings.Repeat("长", kernel.MaxName-2) + " 2"}, strings.Repeat("长", kernel.MaxName-2) + " 3"},
+	}
+	for _, tc := range cases {
+		taken := map[string]bool{}
+		for _, n := range tc.taken {
+			taken[n] = true
+		}
+		got := freeName(tc.base, taken)
+		if got != tc.want || got == "" || taken[got] || len([]rune(got)) > kernel.MaxName {
+			t.Errorf("freeName(%d runes, %d taken) = %q (%d runes), want %q", len([]rune(tc.base)), len(tc.taken), got, len([]rune(got)), tc.want)
+		}
+	}
+	// Ten taken names push the suffix to two digits; the name still fits.
+	taken := map[string]bool{long: true}
+	for i := 2; i <= 10; i++ {
+		taken[freeName(long, taken)] = true
+	}
+	if got := freeName(long, taken); len([]rune(got)) != kernel.MaxName || !strings.HasSuffix(got, " 11") {
+		t.Errorf("after ten = %q (%d runes)", got, len([]rune(got)))
+	}
+
+	// End to end: a space at the limit whose name the kernel accepts, then a second one by the default name.
+	st := store.Open("")
+	if err := st.Update(func(b *kernel.Base, _ time.Time) error {
+		name := freeName(long, nil)
+		_, err := b.PutSpace(kernel.SpaceInput{Name: &name})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Update(func(b *kernel.Base, _ time.Time) error {
+		taken := map[string]bool{}
+		for _, sp := range b.Spaces {
+			taken[sp.Name] = true
+		}
+		name := freeName(long, taken)
+		_, err := b.PutSpace(kernel.SpaceInput{Name: &name})
+		return err
+	}); err != nil {
+		t.Fatalf("the default name beside a name at the limit is refused: %v", err)
 	}
 }
