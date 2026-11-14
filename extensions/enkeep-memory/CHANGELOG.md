@@ -1,5 +1,11 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.15 (pre-release)
+
+- **A Persona-started session keeps its speakers straight.** Its first message is labelled Persona rather than the
+  user. Only the actual first item of a session read from the start changes; later user messages and incremental
+  pages keep the user's attribution.
+
 ## 0.2.0-beta.14 (pre-release)
 
 - **Private recordings stay private on direct reads.** `Get("recordings", id)` checks the privacy metadata returned
