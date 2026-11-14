@@ -392,6 +392,22 @@ func TestTodosAboutMemory(t *testing.T) {
 	}
 }
 
+func TestDirectRecordingGetChecksPrivacy(t *testing.T) {
+	k := &kb{meta: map[string]map[string]any{
+		"r-private": {"id": "r-private", "private": true},
+		"r-public":  {"id": "r-public"},
+	}}
+	s := With(k, hubapi.None{}, time.UTC)
+	d, err := s.Get(context.Background(), "recordings", "r-private")
+	if !errors.Is(err, kbsrc.ErrNotFound) {
+		t.Fatalf("private recording returned without a preceding Recent: detail=%+v err=%v", d, err)
+	}
+	d, err = s.Get(context.Background(), "recordings", "r-public")
+	if err != nil || d.Summary != "a recording summary" {
+		t.Fatalf("public recording: detail=%+v err=%v", d, err)
+	}
+}
+
 // Recordings: K11 off leaves them all out; a private one is never read.
 func TestRecordingsSwitchAndPrivate(t *testing.T) {
 	k := &kb{entries: []wire.KBEntry{{Kind: "recordings", ID: "r1", Updated: at(3, 9)}, {Kind: "recordings", ID: "r2", Updated: at(3, 9)}},
