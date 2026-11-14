@@ -1,5 +1,11 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.13 (pre-release)
+
+- **Concurrent tool calls keep their own results.** Signal digging pairs `tool_use` and `tool_result` by the hub's
+  Call ID, so one call's failure and result sequence cannot be attached to another concurrent call. Results without
+  a Call ID keep the existing sequential fallback.
+
 ## 0.2.0-beta.12 (pre-release)
 
 - **Classes merge as broadly as before.** 0.2.0-beta.11 asked the merge for narrow kinds, and far fewer classes

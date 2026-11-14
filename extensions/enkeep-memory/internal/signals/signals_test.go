@@ -491,6 +491,34 @@ func TestReach(t *testing.T) {
 	}
 }
 
+func TestCallsPairConcurrentResultsByCallID(t *testing.T) {
+	got := calls([]hubapi.Item{
+		{Seq: 1, Kind: kToolUse, Tool: "tool-a", Text: "input A", Call: "call-a"},
+		{Seq: 2, Kind: kToolUse, Tool: "tool-b", Text: "input B", Call: "call-b"},
+		{Seq: 3, Kind: kToolResult, Tool: "tool-a", Text: "A failed", Call: "call-a", Err: true},
+		{Seq: 4, Kind: kToolResult, Tool: "tool-b", Text: "B ok", Call: "call-b"},
+	})
+	if len(got) != 2 {
+		t.Fatalf("got %d calls: %+v", len(got), got)
+	}
+	if got[0].Seq != 1 || got[0].ResultSeq != 3 || got[0].Result != "A failed" || !got[0].Error {
+		t.Fatalf("call-a: %+v", got[0])
+	}
+	if got[1].Seq != 2 || got[1].ResultSeq != 4 || got[1].Result != "B ok" || got[1].Error {
+		t.Fatalf("call-b: %+v", got[1])
+	}
+}
+
+func TestCallsWithoutCallIDsPairSequentially(t *testing.T) {
+	got := calls([]hubapi.Item{
+		{Seq: 1, Kind: kToolUse, Tool: "tool-a", Text: "input A"},
+		{Seq: 2, Kind: kToolResult, Tool: "tool-a", Text: "A ok"},
+	})
+	if len(got) != 1 || got[0].ResultSeq != 2 || got[0].Result != "A ok" || got[0].Error {
+		t.Fatalf("sequential call without a Call ID: %+v", got)
+	}
+}
+
 // The daily run: only folded pages and the triggered stretches are requested; every dig records its signal, decision
 // and bytes; every entry it made points back to it.
 func TestDigsPointBackAndReadOnlyWhatIsTriggered(t *testing.T) {

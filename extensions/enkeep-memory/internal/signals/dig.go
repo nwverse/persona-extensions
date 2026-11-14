@@ -366,23 +366,36 @@ type call struct {
 	Error     bool   `json:"error"`
 }
 
-// calls pairs a segment's tool calls with their results, in order, cut short and with credentials redacted.
+// calls pairs a segment's tool calls with their results by Call ID when present, in order, cut short and with
+// credentials redacted. A result without a known Call ID keeps the old hub's most-recent-open pairing.
 func calls(items []hubapi.Item) []call {
 	var out []call
+	byCall := map[string]int{}
 	open := -1
 	for _, it := range items {
 		switch it.Kind {
 		case kToolUse:
 			out = append(out, call{Seq: it.Seq, Tool: it.Tool, Input: verify.Redact(cut(it.Text, 600))})
 			open = len(out) - 1
+			if it.Call != "" {
+				byCall[it.Call] = open
+			}
 		case kToolResult:
 			n := 500
 			if it.Err {
 				n = 1500
 			}
-			if open >= 0 && out[open].Result == "" {
-				out[open].Result, out[open].Error, out[open].ResultSeq = verify.Redact(cut(it.Text, n)), it.Err, it.Seq
-				open = -1
+			i := open
+			if it.Call != "" {
+				if matched, ok := byCall[it.Call]; ok {
+					i = matched
+				}
+			}
+			if i >= 0 && out[i].Result == "" {
+				out[i].Result, out[i].Error, out[i].ResultSeq = verify.Redact(cut(it.Text, n)), it.Err, it.Seq
+				if open == i {
+					open = -1
+				}
 			} else {
 				out = append(out, call{Seq: it.Seq, ResultSeq: it.Seq, Tool: it.Tool, Result: verify.Redact(cut(it.Text, n)), Error: it.Err})
 			}
