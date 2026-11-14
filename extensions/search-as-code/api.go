@@ -160,7 +160,8 @@ func (a *app) apiSearch(w http.ResponseWriter, r *http.Request) {
 		apiFail(w, http.StatusBadRequest, "invalid_program", err.Error())
 		return
 	}
-	res := f.search(r.Context(), scan, prog, a.now(), filterTargets(targets, programMachine(prog)))
+	// The route's computers, as approved: the program's own machine filters were dropped by pinProgram.
+	res := f.search(r.Context(), scan, prog, a.now(), targets)
 	_ = a.db().update(func(st *State, now time.Time) error {
 		st.recordRun(res, now)
 		return nil
@@ -285,7 +286,7 @@ func (a *app) projectName(_ context.Context, targets []target, key string) strin
 			byProject = statsOf(c.Sessions).ByProject
 		}
 		for name := range byProject {
-			if routeKey(name) == key {
+			if projectKey(name) == key {
 				return name
 			}
 		}

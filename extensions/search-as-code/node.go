@@ -120,7 +120,8 @@ func (w *nodeWorker) search(p nodeSearchParams) (*ExecutionResult, error) {
 	}
 	// Repository files are the hub's: scan_files finds nothing here.
 	st.RepoDirs = nil
-	return executeSessions(st, sessions, stats, p.Program, w.now()), nil
+	prog := withLimit(p.Program, programLimit(p.Program))
+	return executeSessions(st, sessions, stats, prog, w.now()), nil
 }
 
 // indexCursor orders sessions by update time, then id, so a page boundary between sessions updated at the same
@@ -182,8 +183,10 @@ func compactSession(s *SessionRecord) *SessionRecord {
 	c := *s
 	c.TextPath, c.StateDir, c.Machine, c.MachineName = "", "", "", ""
 	var turns []SessionTurn
+	fromDropped := false
 	for _, tr := range s.Turns {
 		if tr.IsTool || (tr.Role != "user" && tr.Role != "assistant") {
+			fromDropped = fromDropped || firstLineTitle(tr.Text) == s.Title
 			continue
 		}
 		tr.Text = clipRunes(strings.TrimSpace(tr.Text), maxCachedTurnRunes)
@@ -195,5 +198,10 @@ func compactSession(s *SessionRecord) *SessionRecord {
 		turns = append(turns[:head:head], turns[len(turns)-(maxCachedTurns-head):]...)
 	}
 	c.Turns = turns
+	// A title taken from a dropped turn (a tool's output) would carry it into the index: take it from the kept
+	// turns instead.
+	if fromDropped && !slices.ContainsFunc(turns, func(tr SessionTurn) bool { return firstLineTitle(tr.Text) == s.Title }) {
+		c.Title = conversationTitle(turns, s.SessionID)
+	}
 	return &c
 }

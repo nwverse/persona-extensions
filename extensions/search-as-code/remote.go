@@ -11,6 +11,7 @@ import (
 	"hash/fnv"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -107,6 +108,48 @@ func routeKey(name string) string {
 	return k
 }
 
+// faithfulKey is a name routeKey keeps as it is: lowercase letters and digits, words joined by single dashes.
+var faithfulKey = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+// projectKey is a project's route key: routeKey for a name it spells out exactly, and for any other name (dots,
+// underscores, spaces, capitals, …, which routeKey folds together: acme.web, acme_web and Acme Web all read
+// acme-web) the routeKey followed by a hash of the exact name, so two projects never share a key and an approved
+// key names one project. projectsForKey still refuses a key that more than one project of a computer answers to.
+func projectKey(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if faithfulKey.MatchString(name) {
+		return routeKey(name)
+	}
+	head := strings.Trim(routeKey(name), "-")
+	head = strings.Trim(head[:min(len(head), maxKeyLen-6)], "-")
+	if head == "" {
+		return "x" + hashLetters("project:"+name, 5)
+	}
+	return head + "-" + hashLetters("project:"+name, 5)
+}
+
+// projectsForKey is the one project of sessions whose key is key, or nil when none or several answer to it (a
+// hash collision: the key does not name one project, so it reads none).
+func projectsForKey(sessions []*SessionRecord, key string) map[string]bool {
+	return projectsForKeyFn(sessions, key, projectKey)
+}
+
+func projectsForKeyFn(sessions []*SessionRecord, key string, keyOf func(string) string) map[string]bool {
+	names := map[string]bool{}
+	for _, s := range sessions {
+		if keyOf(s.Project) == key {
+			names[s.Project] = true
+		}
+	}
+	if len(names) != 1 {
+		return nil
+	}
+	return names
+}
+
 // hashLetters is n letters of a hash of s.
 func hashLetters(s string, n int) string {
 	h := fnv.New64a()
@@ -157,22 +200,32 @@ func programMachine(prog SearchProgram) string {
 
 // pinProgram pins every scan_sessions step to scope and, when set, projectKey: what an approved route allows,
 // whatever the code or the inline tokens of the query say.
-func pinProgram(prog SearchProgram, scope, projectKey string) SearchProgram {
-	steps := make([]StepSpec, len(prog.Steps))
-	for i, s := range prog.Steps {
+//
+// The route also names the computers: a machine filter in the code (scan_sessions / where machine=, the machine:
+// token) is dropped, since the computers searched are the route's and nothing else. And a route reads session
+// history only: scan_files (the hub's repository directories) is dropped too.
+func pinProgram(prog SearchProgram, scope, project string) SearchProgram {
+	steps := make([]StepSpec, 0, len(prog.Steps))
+	for _, s := range prog.Steps {
+		if s.Op == "scan_files" {
+			continue
+		}
 		args := map[string]string{}
 		for k, v := range s.Args {
 			args[k] = v
 		}
+		if s.Op == "scan_sessions" || s.Op == "where" {
+			delete(args, "machine")
+		}
 		if s.Op == "scan_sessions" {
 			args["scope"] = scope
-			if projectKey != "" {
-				args["project_key"] = projectKey
+			if project != "" {
+				args["project_key"] = project
 			} else {
 				delete(args, "project_key")
 			}
 		}
-		steps[i] = StepSpec{Op: s.Op, Args: args}
+		steps = append(steps, StepSpec{Op: s.Op, Args: args})
 	}
 	prog.Steps, prog.Scope, prog.CodeListing = steps, scope, formatPipelineCode(steps)
 	return prog
@@ -203,6 +256,8 @@ type target struct {
 	// AliasID and AliasName: the hub's own computer as the hub lists it, when it is among the picked ones. It is
 	// then searched once, directly (not also over nodes.call), and answers to its id and name as well.
 	AliasID, AliasName string
+	// AliasKeys: the keys of AliasID and AliasName that no picked computer has.
+	AliasKeys []string
 }
 
 // fleet is the hub program's view of the computers it searches.
@@ -289,18 +344,68 @@ func (f *fleet) targets(ctx context.Context) []target {
 		}
 		out = append(out, t)
 	}
-	// A key from the name, or from the id when two picked computers share a name.
+	// A key from the name, or from the id when two picked computers share a name; one taken already (by an
+	// earlier computer, or hub / all) gets a hash of the full id, so every key names exactly one computer.
 	names := map[string]int{}
 	for _, t := range out[1:] {
 		names[routeKey(t.Name)]++
 	}
+	used := map[string]bool{hubMachineKey: true, allKey: true}
 	for i := range out[1:] {
 		t := &out[i+1]
 		if t.Key = routeKey(t.Name); names[t.Key] > 1 || t.Key == "" {
 			t.Key = routeKey(t.ID)
 		}
+		t.Key = uniqueKey(t.Key, t.ID, used)
+		used[t.Key] = true
+	}
+	// The hub's computer also answers to its own id and name, unless a picked computer has that key.
+	if out[0].AliasID != "" {
+		for _, k := range []string{routeKey(out[0].AliasName), routeKey(out[0].AliasID)} {
+			if k != "" && !used[k] && !slices.Contains(out[0].AliasKeys, k) {
+				out[0].AliasKeys = append(out[0].AliasKeys, k)
+			}
+		}
 	}
 	return out
+}
+
+// uniqueKey is key when it is free, else the id's key with a hash of the full id (salted further in the unlikely
+// case that is taken too).
+func uniqueKey(key, id string, used map[string]bool) string {
+	if key != "" && !used[key] {
+		return key
+	}
+	head := strings.Trim(routeKey(id), "-")
+	head = strings.Trim(head[:min(len(head), maxKeyLen-6)], "-")
+	for i := 0; ; i++ {
+		salt := "machine:" + id
+		if i > 0 {
+			salt += fmt.Sprintf("#%d", i)
+		}
+		k := hashLetters(salt, 5)
+		if head != "" {
+			k = head + "-" + k
+		} else {
+			k = "x" + k
+		}
+		if !used[k] {
+			return k
+		}
+	}
+}
+
+// pickedRemote is the picked computer (not the hub's own) whose id is machine, if it is picked now.
+func (f *fleet) pickedRemote(ctx context.Context, machine string) (target, bool) {
+	if machine == "" {
+		return target{}, false
+	}
+	for _, t := range f.targets(ctx) {
+		if !t.Local && t.ID == machine {
+			return t, true
+		}
+	}
+	return target{}, false
 }
 
 // isHubComputer reports whether the hub lists m as the computer the hub runs on: the local machine of the hub's
@@ -312,8 +417,8 @@ func (f *fleet) isHubComputer(m hubMachine) bool {
 // matches reports whether a machine filter or route key names t.
 func (t target) matches(filter string) bool {
 	k := strings.ToLower(strings.TrimSpace(filter))
-	return t.Key == k || machineMatches(filter, t.ID, t.Name) ||
-		(t.AliasID != "" && (routeKey(t.AliasName) == k || machineMatches(filter, t.AliasID, t.AliasName)))
+	return t.Key == k || machineMatches(filter, t.ID, t.Name) || slices.Contains(t.AliasKeys, k) ||
+		(t.AliasID != "" && machineMatches(filter, t.AliasID, t.AliasName))
 }
 
 // resolve is the targets a route's machine segment names: all of them, the hub's computer, or the one whose key
@@ -324,8 +429,14 @@ func resolveTargets(all []target, key string) ([]target, error) {
 	case "", allKey:
 		return all, nil
 	}
+	// A computer's own key first: an alias of the hub's computer never takes a picked computer's key.
 	for _, t := range all {
-		if t.Key == key || (t.AliasID != "" && (routeKey(t.AliasName) == key || routeKey(t.AliasID) == key)) {
+		if t.Key == key {
+			return []target{t}, nil
+		}
+	}
+	for _, t := range all {
+		if slices.Contains(t.AliasKeys, key) {
 			return []target{t}, nil
 		}
 	}
@@ -359,16 +470,58 @@ type part struct {
 	run MachineRun
 }
 
-// search runs prog on every target at once and merges the evidence.
+// programLimit is the number of hits a program keeps: its limit step's n (at most maxLimitCap), else maxLimitCap.
+func programLimit(prog SearchProgram) int {
+	n := maxLimitCap
+	for _, s := range prog.Steps {
+		if s.Op == "limit" {
+			if v, err := strconv.Atoi(s.Args["n"]); err == nil && v > 0 {
+				n = min(v, maxLimitCap)
+			}
+		}
+	}
+	return n
+}
+
+// withLimit is prog keeping at most n hits: every limit step capped at n, and one appended when it has none.
+func withLimit(prog SearchProgram, n int) SearchProgram {
+	steps := make([]StepSpec, 0, len(prog.Steps)+1)
+	has := false
+	for _, s := range prog.Steps {
+		if s.Op == "limit" {
+			has = true
+			v, err := strconv.Atoi(s.Args["n"])
+			if err != nil || v <= 0 || v > n {
+				s = StepSpec{Op: "limit", Args: map[string]string{"n": strconv.Itoa(n)}}
+			}
+		}
+		steps = append(steps, s)
+	}
+	if !has {
+		steps = append(steps, StepSpec{Op: "limit", Args: map[string]string{"n": strconv.Itoa(n)}})
+	}
+	prog.Steps = steps
+	return prog
+}
+
+// search runs prog on every target at once and merges the evidence. Each computer runs it with the merged
+// result's limit, and what one answers is cut to it as well, so a response, the merged result and the run the
+// page keeps stay as large as a single computer's.
 func (f *fleet) search(ctx context.Context, st *State, prog SearchProgram, now time.Time, targets []target) *ExecutionResult {
 	start := time.Now()
+	limit := programLimit(prog)
+	sent := withLimit(prog, limit)
 	parts := make([]part, len(targets))
 	var wg sync.WaitGroup
 	for i, t := range targets {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			parts[i] = f.searchOne(ctx, st, prog, now, t)
+			p := f.searchOne(ctx, st, sent, now, t)
+			if p.res != nil && len(p.res.Hits) > limit {
+				p.res.Hits = p.res.Hits[:limit]
+			}
+			parts[i] = p
 		}()
 	}
 	wg.Wait()
@@ -746,24 +899,31 @@ func (f *fleet) syncOne(ctx context.Context, t target) error {
 	return f.saveCache(c)
 }
 
-// syncLoop syncs at start and every nodeSyncInterval until stop closes.
+// syncLoop syncs once shortly after start (5 s) and then once every nodeSyncInterval, until stop closes.
 func (f *fleet) syncLoop(stop chan struct{}) {
+	first := time.NewTimer(5 * time.Second)
+	defer first.Stop()
+	tick := time.NewTicker(nodeSyncInterval)
+	defer tick.Stop()
+	f.runSyncLoop(stop, first.C, tick.C)
+}
+
+// runSyncLoop syncs once when first fires and once per tick of every: the start sync is a one-time timer, and each
+// interval syncs exactly once (syncOne only fetches what changed since the cursor).
+func (f *fleet) runSyncLoop(stop chan struct{}, first, every <-chan time.Time) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go func() {
 		<-stop
 		cancel()
 	}()
-	first := time.NewTimer(5 * time.Second)
-	defer first.Stop()
-	tick := time.NewTicker(nodeSyncInterval)
-	defer tick.Stop()
 	for {
 		select {
 		case <-stop:
 			return
-		case <-first.C:
-		case <-tick.C:
+		case <-first:
+			first = nil // a timer fires once; never select it again
+		case <-every:
 		}
 		f.syncAll(ctx)
 	}
@@ -809,9 +969,16 @@ func (f *fleet) cachedSession(machine, sessionID string) *SessionRecord {
 }
 
 // restore restores an archived session on the computer that holds it.
+//
+// Only a computer picked now (not the hub's own, restored directly) is asked: a page action or route naming one
+// that was removed from the setting since is refused. The computer itself restores only an entry of its own
+// indexes (restoreArchived there), so an entry of another computer is refused by it.
 func (f *fleet) restore(ctx context.Context, machine, entryID string) (*RestoreResult, error) {
 	if f.nodes == nil {
 		return nil, errors.New("no node calls")
+	}
+	if _, ok := f.pickedRemote(ctx, machine); !ok {
+		return nil, fmt.Errorf("%s 不在要检索的电脑里", machine)
 	}
 	cctx, cancel := context.WithTimeout(ctx, nodeRestoreTimeout)
 	defer cancel()
@@ -832,7 +999,7 @@ type projectInfo struct {
 func projectList(byProject map[string]int) []projectInfo {
 	out := make([]projectInfo, 0, len(byProject))
 	for name, n := range byProject {
-		out = append(out, projectInfo{Key: routeKey(name), Name: name, Sessions: n})
+		out = append(out, projectInfo{Key: projectKey(name), Name: name, Sessions: n})
 	}
 	slices.SortFunc(out, func(a, b projectInfo) int {
 		if c := cmp.Compare(b.Sessions, a.Sessions); c != 0 {

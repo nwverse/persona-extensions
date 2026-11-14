@@ -593,6 +593,20 @@ func executeSessions(st *State, sessions []*SessionRecord, stats SourceStats, pr
 	var groups []GroupSummary
 	scannedFiles := 0
 
+	// A route pins its scan_sessions steps to one project (pinProgram); then every other operator (correlate's
+	// candidates, where, exclude_tools) sees only that project's sessions too, so nothing of another project
+	// reaches the result.
+	if key := pinnedProjectKey(prog); key != "" {
+		keep := projectsForKey(sessions, key)
+		var in []*SessionRecord
+		for _, s := range sessions {
+			if keep[s.Project] {
+				in = append(in, s)
+			}
+		}
+		sessions = in
+	}
+
 	for idx, step := range prog.Steps {
 		stepStart := time.Now()
 		inCount := len(working)
@@ -699,6 +713,18 @@ func executeSessions(st *State, sessions []*SessionRecord, stats SourceStats, pr
 	}
 }
 
+// pinnedProjectKey is the project_key a route pinned the program's scan_sessions steps to ("" when none).
+func pinnedProjectKey(prog SearchProgram) string {
+	for _, s := range prog.Steps {
+		if s.Op == "scan_sessions" {
+			if k := strings.TrimSpace(s.Args["project_key"]); k != "" {
+				return k
+			}
+		}
+	}
+	return ""
+}
+
 func evalScanSessions(sessions []*SessionRecord, args map[string]string, now time.Time) []*SearchHit {
 	query := strings.TrimSpace(args["query"])
 	scope := cmp.Or(strings.TrimSpace(args["scope"]), "conversation")
@@ -706,7 +732,11 @@ func evalScanSessions(sessions []*SessionRecord, args map[string]string, now tim
 	harness := strings.ToLower(strings.TrimSpace(args["harness"]))
 	model := strings.ToLower(strings.TrimSpace(args["model"]))
 	machine := strings.TrimSpace(args["machine"])
-	projectKey := strings.TrimSpace(args["project_key"])
+	pinned := strings.TrimSpace(args["project_key"])
+	var pinnedProjects map[string]bool
+	if pinned != "" {
+		pinnedProjects = projectsForKey(sessions, pinned)
+	}
 	sinceTime := parseSince(args["since"], now)
 	terms := splitQueryTerms(query)
 
@@ -715,7 +745,7 @@ func evalScanSessions(sessions []*SessionRecord, args map[string]string, now tim
 		if project != "" && !strings.Contains(strings.ToLower(s.Project), project) && !strings.Contains(strings.ToLower(s.CWD), project) {
 			continue
 		}
-		if projectKey != "" && routeKey(s.Project) != projectKey {
+		if pinned != "" && !pinnedProjects[s.Project] {
 			continue
 		}
 		if machine != "" && !machineMatches(machine, s.Machine, s.MachineName) {

@@ -1276,6 +1276,11 @@ func (a *app) runRemoteRestore(ctx context.Context, r *ext.UIRequest, p page, ma
 		res.Toast = "无法在那台电脑上恢复：它不在要检索的电脑里"
 		return res, nil
 	}
+	// The action carries the computer from when the page was drawn: it must still be a picked one.
+	if _, ok := f.pickedRemote(ctx, machine); !ok {
+		res.Toast = "无法在那台电脑上恢复：它不在要检索的电脑里"
+		return res, nil
+	}
 	title, path := entryID, ""
 	if c := f.loadCache(machine); c != nil {
 		for _, s := range c.Sessions {

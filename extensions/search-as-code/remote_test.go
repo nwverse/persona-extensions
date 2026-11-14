@@ -318,10 +318,16 @@ func TestAPIRoutesNameWhatTheyRead(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("search %d %v", code, out)
 	}
+	// The code's machine filter is dropped: the route's computer is searched, and only it.
 	hits := out["hits"].([]any)
 	raw, _ := json.Marshal(out)
-	if len(hits) != 0 || strings.Contains(string(raw), "TOOL_NOISE") {
+	if strings.Contains(string(raw), "TOOL_NOISE") || strings.Contains(string(raw), "sess-desk") || len(out["machines"].([]any)) != 1 {
 		t.Fatalf("machine=desktop in code must not leave the laptop route: %s", raw)
+	}
+	for _, h := range hits {
+		if h.(map[string]any)["machine"] != "m-1a2b" {
+			t.Fatalf("a hit from outside the laptop route: %s", raw)
+		}
 	}
 	code, out = get(t, h, "GET", "/search/laptop-zc/persona-extensions/conversation?q="+url.QueryEscape("quota scope:all project:other3"))
 	raw, _ = json.Marshal(out)
