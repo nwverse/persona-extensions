@@ -168,6 +168,20 @@ func (m *fakeModel) Complete(_ context.Context, r model.Request) (model.Response
 	return model.Response{}, fmt.Errorf("unexpected step %s", r.Step)
 }
 
+type mineModel struct {
+	*fakeModel
+	respond   func() (model.Response, error)
+	mineCalls int
+}
+
+func (m *mineModel) Complete(ctx context.Context, r model.Request) (model.Response, error) {
+	if r.Step != "signals_mine" {
+		return m.fakeModel.Complete(ctx, r)
+	}
+	m.mineCalls++
+	return m.respond()
+}
+
 func newState() *store.State {
 	return &store.State{Entries: map[string]*entry.Entry{}, Samples: map[string][]string{}}
 }
@@ -488,6 +502,70 @@ func TestReach(t *testing.T) {
 	}
 	if lo, hi := clamp(s, 5, 1, 10); lo != 2 || hi != 7 {
 		t.Errorf("clamp = %d..%d", lo, hi)
+	}
+}
+
+func TestDigMineFailureIsNotRecordedAsDig(t *testing.T) {
+	tests := []struct {
+		name         string
+		respond      func() (model.Response, error)
+		wantDecision string
+		wantReason   []string
+	}{
+		{name: "model error", respond: func() (model.Response, error) {
+			return model.Response{}, fmt.Errorf("sentinel mine failure")
+		}, wantDecision: DecSkip, wantReason: []string{"mine failed", "sentinel mine failure"}},
+		{name: "malformed answer", respond: func() (model.Response, error) {
+			return model.Response{Text: "{not-json"}, nil
+		}, wantDecision: DecSkip, wantReason: []string{"mine answer"}},
+		{name: "valid empty", respond: func() (model.Response, error) {
+			return model.Response{Text: `{"entries":[]}`}, nil
+		}, wantDecision: DecDig, wantReason: []string{"placeholder"}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			h := &fakeHub{full: map[string][]hubapi.Item{
+				"s1": items(0, [2]string{kToolUse, "deploy"}, [2]string{kToolResult, "ERR connection refused"},
+					[2]string{kToolUse, "deploy --retry"}, [2]string{kToolResult, "ok"}),
+			}, sessions: []hubapi.Session{sess("s1", false)}}
+			m := &mineModel{fakeModel: &fakeModel{dig: true}, respond: tc.respond}
+			st := newState()
+			o := opts(t, h, m, st)
+			res, err := Run(context.Background(), st, day, o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Hits[entry.SigRetry] != 1 || m.mineCalls != 1 {
+				t.Fatalf("the case did not reach mining: hits=%v mine calls=%d", res.Hits, m.mineCalls)
+			}
+			if len(st.Digs) != 1 {
+				t.Fatalf("digs: %+v", st.Digs)
+			}
+			d := st.Digs[0]
+			if d.Bytes == 0 || d.FromSeq != 1 || d.ThruSeq != 4 || res.Digs != 1 || res.SegmentBytes != d.Bytes {
+				t.Fatalf("the unfolded read was not accounted for: dig=%+v result=%+v", d, res)
+			}
+			if len(d.Entries) != 0 || len(res.Mined) != 0 {
+				t.Fatalf("unexpected mined entries: dig=%+v result=%+v", d, res)
+			}
+			if d.Decision != tc.wantDecision {
+				t.Errorf("decision=%q, want %q; dig=%+v", d.Decision, tc.wantDecision, d)
+			}
+			for _, want := range tc.wantReason {
+				if !strings.Contains(d.Reason, want) {
+					t.Errorf("reason=%q lacks %q", d.Reason, want)
+				}
+			}
+			if tc.name == "model error" {
+				m.respond = func() (model.Response, error) { return model.Response{Text: `{"entries":[]}`}, nil }
+				if _, err := Run(context.Background(), st, day, o); err != nil {
+					t.Fatal(err)
+				}
+				if m.mineCalls != 1 || len(st.Digs) != 1 {
+					t.Errorf("terminal dig was retried or duplicated: calls=%d digs=%+v", m.mineCalls, st.Digs)
+				}
+			}
+		})
 	}
 }
 
