@@ -1,5 +1,11 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.16 (pre-release)
+
+- **Truncated assistant memory is not read as complete.** Files whose bodies the hub cut or omitted are skipped
+  without caching or advancing a cursor. Complete files in the same response are still read, and a later complete
+  version becomes eligible.
+
 ## 0.2.0-beta.15 (pre-release)
 
 - **A Persona-started session keeps its speakers straight.** Its first message is labelled Persona rather than the

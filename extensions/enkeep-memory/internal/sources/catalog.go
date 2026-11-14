@@ -77,6 +77,10 @@ func (s *Source) memoryEntries(ctx context.Context, since, end time.Time) []wire
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, m := range ms {
+		if m.Truncated {
+			// A partial body is not a complete hand-written memory. Leave its cursor unset so a later full response is read.
+			continue
+		}
 		made := m.Created
 		if made.IsZero() {
 			made = m.Modified
