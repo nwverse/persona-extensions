@@ -83,6 +83,10 @@ type SessionRecord struct {
 	// Unconfirmed: the index has no segment or archive time yet (the upload did not complete), so there is no
 	// confirmed cloud copy to restore.
 	Unconfirmed bool `json:"unconfirmed,omitempty"`
+	// Machine and MachineName: the computer the session is on, set by the hub for another computer's sessions
+	// (empty: the computer this program runs on).
+	Machine     string `json:"machine,omitempty"`
+	MachineName string `json:"machine_name,omitempty"`
 }
 
 // SourceStats summarizes the discovered session and file sources.
