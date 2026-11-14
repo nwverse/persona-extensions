@@ -48,11 +48,15 @@ func at(d, h int) time.Time { return time.Date(2026, 11, d, h, 0, 0, 0, time.UTC
 // hub is a hub with placeholder sessions, cards, to-dos, "about me" and memory, recording the items queries.
 type hub struct {
 	hubapi.None
-	queries []hubapi.ItemsQuery
-	items   []hubapi.Item
+	queries  []hubapi.ItemsQuery
+	items    []hubapi.Item
+	sessions []hubapi.Session
 }
 
 func (h *hub) Sessions(context.Context, time.Time) ([]hubapi.Session, error) {
+	if h.sessions != nil {
+		return h.sessions, nil
+	}
 	return []hubapi.Session{
 		{Machine: "m1", ID: "s1", Title: "project-x", Started: at(3, 8), Updated: at(4, 12)},
 		{Machine: "m1", ID: "s-health", Title: "health", Started: at(3, 8), Updated: at(4, 12), Assistant: true, Health: true},
@@ -254,6 +258,44 @@ func TestAgentsReadFoldedIncrementally(t *testing.T) {
 	}
 	if q := h.queries[len(h.queries)-1]; !q.Fold || q.After != 0 {
 		t.Errorf("rerun query: %+v", q)
+	}
+}
+
+func TestByPersonaFirstMessageSpeaker(t *testing.T) {
+	h := &hub{
+		sessions: []hubapi.Session{{Machine: "m1", ID: "s-persona", Started: at(3, 8), Updated: at(4, 9), ByPersona: true}},
+		items: []hubapi.Item{
+			{Seq: 1, At: at(3, 9), Kind: hubapi.KindUser, Text: "delegated task"},
+			{Seq: 2, At: at(3, 10), Kind: hubapi.KindUser, Text: "my own follow-up"},
+			{Seq: 3, At: at(4, 9), Kind: hubapi.KindUser, Text: "next day's user message"},
+		},
+	}
+	s := With(&kb{}, h, time.UTC)
+	st := &store.State{}
+	ctx := context.Background()
+	s.Begin(st, "2026-11-03")
+	if _, err := s.Recent(ctx, day3, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	lines := dayLines(t, s, "agents/m1/s-persona", "2026-11-03")
+	if len(lines) != 2 {
+		t.Fatalf("day 3 lines: %v", lines)
+	}
+	if !strings.Contains(lines[0], SpeakerPersona+": delegated task") {
+		t.Errorf("the first message is not Persona's: %v", lines[0])
+	}
+	if !strings.Contains(lines[1], SpeakerUser+": my own follow-up") {
+		t.Errorf("the user follow-up changed speaker: %v", lines[1])
+	}
+	s.End(st, "2026-11-03", 1)
+
+	s.Begin(st, "2026-11-04")
+	if _, err := s.Recent(ctx, at(4, 0), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	lines = dayLines(t, s, "agents/m1/s-persona", "2026-11-04")
+	if len(lines) != 1 || !strings.Contains(lines[0], SpeakerUser+": next day's user message") {
+		t.Errorf("an incremental page's first user message changed speaker: %v", lines)
 	}
 }
 
