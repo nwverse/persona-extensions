@@ -141,7 +141,7 @@ func dig(ctx context.Context, o *Options, st *store.State, g *gathered, hits []h
 		if got.err != nil {
 			rec.Decision = DecWaiting
 			if !isWaiting(got.err) {
-				rec.Decision, rec.Reason = DecSkip, "read failed: "+cut(got.err.Error(), 120)
+				rec.Decision, rec.Reason = DecSkip, cut(verify.Redact(got.err.Error()), 120)
 			}
 		}
 		rec.Bytes = got.bytes
@@ -432,14 +432,14 @@ type minedAnswer struct {
 	entries []mined
 	shown   map[int]hubapi.Item // the items the model saw, by seq: what a quote must be in
 	bytes   int
-	err     error // reading the stretch failed
+	err     error // reading or mining the stretch failed
 }
 
 // ask reads the dig's stretch (the only unfolded read) and asks what it teaches. Safe to run concurrently.
 func ask(ctx context.Context, o *Options, s *session, h hit, rec *entry.Dig) minedAnswer {
 	items, err := o.Hub.Items(ctx, s.Machine, s.ID, hubapi.ItemsQuery{From: rec.FromSeq, Through: rec.ThruSeq})
 	if err != nil {
-		return minedAnswer{err: err}
+		return minedAnswer{err: fmt.Errorf("read failed: %w", err)}
 	}
 	var seg []hubapi.Item
 	for _, it := range items {
@@ -481,6 +481,7 @@ func ask(ctx context.Context, o *Options, s *session, h hit, rec *entry.Dig) min
 		MaxTokens: 3000, Schema: prompts.MineSchema})
 	if err != nil {
 		o.logf("signals: mine %s: %v", rec.ID, err)
+		got.err = fmt.Errorf("mine failed: %w", err)
 		return got
 	}
 	var out struct {
@@ -488,6 +489,7 @@ func ask(ctx context.Context, o *Options, s *session, h hit, rec *entry.Dig) min
 	}
 	if err := json.Unmarshal([]byte(resp.Text), &out); err != nil {
 		o.logf("signals: mine %s: answer: %v", rec.ID, err)
+		got.err = fmt.Errorf("mine answer: %w", err)
 		return got
 	}
 	got.entries = out.Entries
