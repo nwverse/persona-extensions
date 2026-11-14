@@ -40,8 +40,10 @@ type node struct {
 	data    string // its data directory: heartbeat and audit log
 	matcher string // the entries' matcher (matcherFor)
 
-	mu   sync.Mutex
-	dirs []dirState
+	mu         sync.Mutex
+	dirs       []dirState
+	configured []string
+	profiles   string // Persona's assistant channel profiles, beside node-plugins
 
 	// beatWG is the heartbeat ticker goroutine. cleanup joins it before it removes the heartbeat, so a beat
 	// already due cannot land during cleanup and recreate the file (a fresh heartbeat with the entry still in
@@ -55,6 +57,7 @@ type dirState struct {
 	Settings  string `json:"settings,omitempty"`
 	Installed bool   `json:"installed"`
 	Error     string `json:"error,omitempty"`
+	auto      bool   // discovered, not an explicit config_dir: revalidate its final component before cleanup
 }
 
 // status is what bypass.status answers: the directories and the newest auto-allows.
@@ -93,6 +96,13 @@ func (n *node) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]a
 	if n.data == "" {
 		return nil, fmt.Errorf("no data directory")
 	}
+	n.configured = c.dirs()
+	// <persona home>/node-plugins/<storage>/data identifies the same Persona
+	// home whose profiles/<launcher> directories the assistant selects. Do not
+	// infer it from HOME: PERSONA_HOME may point somewhere else.
+	if plugins := filepath.Dir(filepath.Dir(n.data)); filepath.Base(n.data) == "data" && filepath.Base(plugins) == "node-plugins" {
+		n.profiles = filepath.Join(filepath.Dir(plugins), "profiles")
+	}
 	if err := os.MkdirAll(n.data, 0o700); err != nil {
 		return nil, err
 	}
@@ -128,7 +138,7 @@ func (n *node) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]a
 			case <-ctx.Done():
 				return
 			case <-t.C:
-				n.beat()
+				n.refresh()
 			}
 		}
 	}()
@@ -144,12 +154,50 @@ func (n *node) beat() {
 	}
 }
 
-// install puts the entry into each directory that has Claude Code's config.
+// refresh is the heartbeat tick: renew freshness, then install newly created
+// profiles and replace stale entries with this executable's current command.
+func (n *node) refresh() {
+	n.beat()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.install(nil)
+}
+
+// install puts the entry into each explicitly configured directory and each
+// existing assistant channel profile. A nil dirs reconciles the initial
+// configuration again. Discovery never creates a profile and does not follow a
+// final-component symlink out of Persona's profiles directory.
 func (n *node) install(dirs []string) {
+	if dirs == nil {
+		dirs = n.configured
+	}
+	configured := append([]string(nil), dirs...)
+	discovered := n.assistantProfiles()
+	explicit := map[string]bool{}
+	for _, d := range configured {
+		if abs, err := expand(d); err == nil {
+			explicit[abs] = true
+		}
+	}
+	automatic := map[string]bool{}
+	for _, d := range discovered {
+		if abs, err := expand(d); err == nil {
+			automatic[abs] = true
+		}
+	}
+	dirs = append(configured, discovered...)
 	n.dirs = n.dirs[:0]
+	seen := map[string]bool{}
 	for _, d := range dirs {
 		s := dirState{Dir: d}
 		abs, err := expand(d)
+		if err == nil {
+			if seen[abs] {
+				continue
+			}
+			seen[abs] = true
+			s.auto = automatic[abs] && !explicit[abs]
+		}
 		switch {
 		case err != nil:
 			s.Error = err.Error()
@@ -170,6 +218,37 @@ func (n *node) install(dirs []string) {
 	}
 }
 
+// assistantProfiles lists the current channel directories. ReadDir sorts them,
+// so status and upgrade order stay stable. A profiles directory that does not
+// exist yet is normal for a node whose assistant has not started.
+func (n *node) assistantProfiles() []string {
+	if n.profiles == "" {
+		return nil
+	}
+	entries, err := os.ReadDir(n.profiles)
+	if err != nil {
+		return nil
+	}
+	var dirs []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			dirs = append(dirs, filepath.Join(n.profiles, entry.Name()))
+		}
+	}
+	return dirs
+}
+
+// realAssistantProfile revalidates an automatically discovered path at cleanup:
+// it is still the same immediate child kind, not a symlink substituted after the
+// last refresh. Lstat never follows that final component.
+func (n *node) realAssistantProfile(dir string) bool {
+	if n.profiles == "" || filepath.Dir(dir) != n.profiles {
+		return false
+	}
+	st, err := os.Lstat(dir)
+	return err == nil && st.IsDir() && st.Mode()&os.ModeSymlink == 0
+}
+
 // check reads again whether each entry is still in (someone may have edited the file).
 func (n *node) check() []dirState {
 	out := make([]dirState, len(n.dirs))
@@ -183,16 +262,43 @@ func (n *node) check() []dirState {
 }
 
 // cleanup takes the entries out and stops the heartbeat; the program is about to exit. ext.Main has returned by
-// then, so the run context is cancelled: join the ticker goroutine (under the node lock, which a beat never
-// takes) before removing the heartbeat, and no beat can afterwards resurrect it.
+// then, so the run context is cancelled: join the ticker goroutine before taking the node lock (a due refresh may be
+// waiting for that lock), then remove the heartbeat and entries. No beat or refresh can afterwards resurrect them.
 func (n *node) cleanup() {
+	n.beatWG.Wait()
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	n.beatWG.Wait()
 	if n.data != "" {
 		_ = os.Remove(filepath.Join(n.data, heartbeatFile))
 	}
+	// A new profile may have been seeded by Persona after the last heartbeat.
+	// Merge current profiles with old states: a previously missing explicit
+	// directory has no Settings yet and must not suppress the cleanup.
+	seen := map[string]int{}
+	for i, s := range n.dirs {
+		if abs, err := expand(s.Dir); err == nil {
+			seen[abs] = i
+		}
+	}
+	for _, d := range n.assistantProfiles() {
+		abs, err := expand(d)
+		if err != nil {
+			continue
+		}
+		if i, ok := seen[abs]; ok {
+			if n.dirs[i].Settings == "" {
+				n.dirs[i].Settings = settingsPath(abs)
+			}
+			continue
+		}
+		n.dirs = append(n.dirs, dirState{Dir: d, Settings: settingsPath(abs), auto: true})
+	}
 	for _, s := range n.dirs {
+		// Only automatic discovery has the no-symlink-escape rule. An explicit
+		// config_dir keeps the extension's existing settings-symlink semantics.
+		if s.auto && !n.realAssistantProfile(s.Dir) {
+			continue
+		}
 		if s.Settings == "" {
 			continue
 		}
