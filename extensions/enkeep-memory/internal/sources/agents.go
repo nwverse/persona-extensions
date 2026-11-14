@@ -41,7 +41,7 @@ func cursorKey(id string) string { return entry.SrcAgent + "/" + id }
 
 // folded is a session's folded page from the last seq read on: read once per pass (fold_work=1, after_seq), kept
 // for the days after. A day before the one the cursor was read through (a rerun) reads the page from the start.
-func (s *Source) folded(ctx context.Context, machine, session, day string) ([]hubapi.Item, error) {
+func (s *Source) folded(ctx context.Context, machine, session, day string) (*foldPage, error) {
 	id := machine + "/" + session
 	s.mu.Lock()
 	page := s.folds[id]
@@ -52,7 +52,7 @@ func (s *Source) folded(ctx context.Context, machine, session, day string) ([]hu
 		after = 0 // read before: the items of that day are behind the cursor
 	}
 	if page != nil && page.base <= after {
-		return page.items, nil
+		return page, nil
 	}
 	items, err := s.Hub.Items(ctx, machine, session, hubapi.ItemsQuery{Fold: true, After: after})
 	if err != nil {
@@ -66,10 +66,11 @@ func (s *Source) folded(ctx context.Context, machine, session, day string) ([]hu
 			break
 		}
 	}
+	page = &foldPage{base: after, items: items}
 	s.mu.Lock()
-	s.folds[id] = &foldPage{base: after, items: items}
+	s.folds[id] = page
 	s.mu.Unlock()
-	return items, nil
+	return page, nil
 }
 
 // agentDay reads an agent session's day: the user's words ("我"), the agent's (head and tail), what Persona sent it,
@@ -83,7 +84,7 @@ func (s *Source) agentDay(ctx context.Context, id, day string) ([]string, error)
 	if err != nil {
 		return nil, err
 	}
-	items, err := s.folded(ctx, machine, session, day)
+	page, err := s.folded(ctx, machine, session, day)
 	if err != nil {
 		s.note(entry.SrcAgent, KindAgents, err)
 		return nil, nil // a session that cannot be read now is left out, not the day
@@ -92,16 +93,19 @@ func (s *Source) agentDay(ctx context.Context, id, day string) ([]string, error)
 		at   time.Time
 		text string
 	}
+	s.mu.Lock()
+	se := s.sessions[id]
+	s.mu.Unlock()
 	var ls []line
 	last := -1
-	for _, it := range items {
+	for i, it := range page.items {
 		if it.At.Before(start) || !it.At.Before(end) {
 			continue
 		}
 		if it.Seq > last {
 			last = it.Seq
 		}
-		if t := s.itemLine(it); t != "" {
+		if t := s.itemLine(it, se.ByPersona && page.base == 0 && i == 0); t != "" {
 			ls = append(ls, line{it.At, t})
 		}
 	}
@@ -112,9 +116,6 @@ func (s *Source) agentDay(ctx context.Context, id, day string) ([]string, error)
 			}
 		}
 	}
-	s.mu.Lock()
-	se := s.sessions[id]
-	s.mu.Unlock()
 	if se.Ended != "" && !se.Updated.Before(start) && se.Updated.Before(end) {
 		ls = append(ls, line{se.Updated, hhmm(se.Updated, s.Loc) + " " + SpeakerEnd + ": " + endText(se.Ended)})
 	}
@@ -135,11 +136,16 @@ func (s *Source) agentDay(ctx context.Context, id, day string) ([]string, error)
 }
 
 // itemLine is one item as a day's line, or "" for what is not read daily (slash commands, notifications).
-func (s *Source) itemLine(it hubapi.Item) string {
+// byPersona is set only for the first item of a Persona-started session read from the beginning.
+func (s *Source) itemLine(it hubapi.Item, byPersona bool) string {
 	at := hhmm(it.At, s.Loc)
 	switch it.Kind {
 	case hubapi.KindUser:
-		return at + " " + SpeakerUser + ": " + oneLine(it.Text)
+		speaker := SpeakerUser
+		if byPersona {
+			speaker = SpeakerPersona
+		}
+		return at + " " + speaker + ": " + oneLine(it.Text)
 	case hubapi.KindAgent:
 		return at + " " + SpeakerAgent + ": " + oneLine(headTail(it.Text, agentHead, agentTail))
 	case hubapi.KindFold:
