@@ -1,5 +1,11 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.17 (pre-release)
+
+- **Mining failures are not successful digs.** A `signals_mine` error or malformed answer is recorded as `DecSkip`
+  with a bounded, redacted reason. The segment's read bytes stay counted, a valid empty answer stays `DecDig`, and
+  the existing terminal Dig ID and waiting-hub behavior are unchanged.
+
 ## 0.2.0-beta.16 (pre-release)
 
 - **Truncated assistant memory is not read as complete.** Files whose bodies the hub cut or omitted are skipped
