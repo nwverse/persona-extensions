@@ -1,5 +1,11 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.18 (pre-release)
+
+- **Cancellation no longer drops correction issues.** After a successful gather, `signals.Run` checkpoints
+  `signals.json` on every later return. A later state save no longer loses those issues to cancellation alone. The
+  original cancellation and checkpoint errors remain visible; gather failures still leave partial cursors unsaved.
+
 ## 0.2.0-beta.17 (pre-release)
 
 - **Mining failures are not successful digs.** A `signals_mine` error or malformed answer is recorded as `DecSkip`
