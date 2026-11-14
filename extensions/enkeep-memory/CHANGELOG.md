@@ -1,5 +1,11 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.14 (pre-release)
+
+- **Private recordings stay private on direct reads.** `Get("recordings", id)` checks the privacy metadata returned
+  by that read even when no `Recent` catalog pass has marked the ID. A private detail returns not found; a public
+  recording still needs only one underlying read.
+
 ## 0.2.0-beta.13 (pre-release)
 
 - **Concurrent tool calls keep their own results.** Signal digging pairs `tool_use` and `tool_result` by the hub's
