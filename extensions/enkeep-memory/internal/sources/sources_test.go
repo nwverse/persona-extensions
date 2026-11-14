@@ -48,9 +48,10 @@ func at(d, h int) time.Time { return time.Date(2026, 11, d, h, 0, 0, 0, time.UTC
 // hub is a hub with placeholder sessions, cards, to-dos, "about me" and memory, recording the items queries.
 type hub struct {
 	hubapi.None
-	queries  []hubapi.ItemsQuery
-	items    []hubapi.Item
-	sessions []hubapi.Session
+	queries     []hubapi.ItemsQuery
+	items       []hubapi.Item
+	sessions    []hubapi.Session
+	memoryFiles []hubapi.MemoryFile
 }
 
 func (h *hub) Sessions(context.Context, time.Time) ([]hubapi.Session, error) {
@@ -110,6 +111,9 @@ func (h *hub) AboutMe(context.Context) (string, error) {
 }
 
 func (h *hub) Memories(context.Context, bool) ([]hubapi.MemoryFile, error) {
+	if h.memoryFiles != nil {
+		return h.memoryFiles, nil
+	}
 	return []hubapi.MemoryFile{
 		{Name: "port.md", Description: "port of machine-a", Type: "reference", Created: at(3, 7), Modified: at(3, 7), Content: "machine-a uses 9090"},
 		{Name: "later.md", Description: "later", Created: at(5, 7), Modified: at(5, 7), Content: "not yet"},
@@ -389,6 +393,63 @@ func TestTodosAboutMemory(t *testing.T) {
 	got = refs(es)
 	if got["about/me"] || got["memory/port.md"] {
 		t.Errorf("unchanged catalogs listed again: %v", got)
+	}
+}
+
+func TestTruncatedMemoryIsSkippedUntilComplete(t *testing.T) {
+	h := &hub{memoryFiles: []hubapi.MemoryFile{
+		{Name: "cut.md", Created: at(3, 7), Modified: at(3, 7), Content: "approved prefix", Truncated: true},
+		{Name: "omitted.md", Description: "metadata only", Created: at(3, 7), Modified: at(3, 7), Truncated: true},
+		{Name: "whole.md", Created: at(3, 7), Modified: at(3, 7), Content: "complete body"},
+	}}
+	s := With(&kb{}, h, time.UTC)
+	st := &store.State{}
+	ctx := context.Background()
+	s.Begin(st, "2026-11-03")
+	es, err := s.Recent(ctx, day3, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := refs(es)
+	if !got["memory/whole.md"] || got["memory/cut.md"] || got["memory/omitted.md"] {
+		t.Errorf("mixed complete and truncated memories: %v", got)
+	}
+	for _, name := range []string{"cut.md", "omitted.md"} {
+		if d, err := s.Day(ctx, "memory/"+name, "2026-11-03"); !errors.Is(err, kbsrc.ErrNotFound) {
+			t.Errorf("truncated %s returned content: %+v, %v", name, d, err)
+		}
+	}
+	if text := strings.Join(dayLines(t, s, "memory/whole.md", "2026-11-03"), "\n"); !strings.Contains(text, "complete body") {
+		t.Errorf("complete memory: %s", text)
+	}
+	s.End(st, "2026-11-03", 1)
+	for _, name := range []string{"cut.md", "omitted.md"} {
+		if st.Cursors["S6/"+name] != "" {
+			t.Errorf("truncated %s committed a cursor: %v", name, st.Cursors)
+		}
+	}
+	if st.Cursors["S6/whole.md"] == "" {
+		t.Errorf("complete memory has no cursor: %v", st.Cursors)
+	}
+
+	h.memoryFiles[0].Content = "approved prefix\ncomplete suffix"
+	h.memoryFiles[0].Modified = at(4, 7)
+	h.memoryFiles[0].Truncated = false
+	s.Begin(st, "2026-11-04")
+	es, err = s.Recent(ctx, at(4, 0), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = refs(es)
+	if !got["memory/cut.md"] || got["memory/omitted.md"] || got["memory/whole.md"] {
+		t.Errorf("later complete memory: %v", got)
+	}
+	if text := strings.Join(dayLines(t, s, "memory/cut.md", "2026-11-04"), "\n"); !strings.Contains(text, "complete suffix") {
+		t.Errorf("later complete memory lacks its suffix: %s", text)
+	}
+	s.End(st, "2026-11-04", 1)
+	if st.Cursors["S6/cut.md"] == "" || st.Cursors["S6/omitted.md"] != "" {
+		t.Errorf("cursors after the complete response: %v", st.Cursors)
 	}
 }
 
