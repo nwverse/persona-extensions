@@ -198,7 +198,15 @@ func RefreshColdIndex(ctx context.Context, runner Runner, st *State, m *Machine,
 		cat.Platform = p
 	}
 	if b, ok := sections["COLD_BREW"]; ok {
-		cat.Brew, cat.BrewKnown = strings.TrimSpace(firstNonEmpty(b)), true
+		// Only a path counts: with no Homebrew the section is empty, and the next marker
+		// (@@COLD_NOCLI) lands in it.
+		cat.Brew, cat.BrewKnown = "", true
+		for _, l := range b {
+			if l = strings.TrimSpace(l); strings.HasPrefix(l, "/") {
+				cat.Brew = l
+				break
+			}
+		}
 	}
 	if err != nil {
 		if _, started := sections["COLD_LIST"]; started || m.IsLocal || isSelfHostAlias(m.Host) {

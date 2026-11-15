@@ -465,6 +465,24 @@ func TestBrewScript(t *testing.T) {
 	}
 }
 
+// TestRefreshWithoutBrewOrCLI: a machine with neither prints an empty COLD_BREW section and then
+// the no-CLI marker; the marker is not taken for Homebrew's path (seen on a real Linux box).
+func TestRefreshWithoutBrewOrCLI(t *testing.T) {
+	noSandbox(t)
+	st := &State{}
+	m := &Machine{ID: "grok", Host: "grok", Name: "grok", Enabled: true}
+	st.Machines = []*Machine{m}
+	out := "@@SECTION:COLD_UNAME\nLinux x86_64\n@@SECTION:COLD_BREW\n\n@@COLD_NOCLI\n"
+	run := func(context.Context, *Machine, string, time.Duration) (string, error) { return out, nil }
+	cat, _ := RefreshColdIndex(context.Background(), run, st, m, t0)
+	if cat.State != ColdNoCLI || cat.Brew != "" || !cat.BrewKnown {
+		t.Fatalf("state %q brew %q known %v", cat.State, cat.Brew, cat.BrewKnown)
+	}
+	if a := coldProblem(st, m, cat, ColdNoCLI); a.brew || !strings.Contains(a.Next, "这台电脑没有 Homebrew") {
+		t.Fatalf("advice %+v", a)
+	}
+}
+
 // TestBrewJob: the Homebrew button runs in the background, then re-reads the machine; a failure
 // is worded for people with Homebrew's output under 详情.
 func TestBrewJob(t *testing.T) {
