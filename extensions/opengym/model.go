@@ -135,8 +135,11 @@ func parseState(raw map[string]json.RawMessage) gymState {
 	var week map[string]json.RawMessage
 	if json.Unmarshal(raw["week"], &week) == nil {
 		for k, v := range week {
+			if len(k) != 1 {
+				continue
+			}
 			d := int(k[0] - '0')
-			if len(k) != 1 || d < 0 || d > 6 {
+			if d < 0 || d > 6 {
 				continue
 			}
 			var one string
@@ -552,8 +555,11 @@ func (s gymState) next(now time.Time, loc *time.Location) *nextSession {
 		r := s.routine(p.IDs[0])
 		return &nextSession{Date: p.Date, Routine: *r, Also: p.IDs[1:], By: p.By}
 	}
-	if p := days[0]; !trained && len(p.IDs) > 0 && p.By == "pinned" {
-		return pick(p)
+	if p := days[0]; !trained && len(p.IDs) > 0 {
+		return pick(p) // an explicit routine or today's ordinary weekday plan outranks the floating coach item
+	}
+	if p := days[0]; !trained && p.By == "rest_override" {
+		return nil // an explicit rest day suppresses the coach item too
 	}
 	if cw := s.coachWeek(now, loc); cw != nil && !cw.Waiting {
 		for _, it := range cw.Items {

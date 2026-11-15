@@ -250,6 +250,9 @@ func (a *app) logWorkout(raw json.RawMessage) (write, error) {
 		return write{}, bad("start_time 还没到")
 	}
 	end := start.Add(time.Duration(dur) * time.Minute)
+	if end.After(now) {
+		return write{}, bad("只能记已经练完的训练：结束时间还没到")
+	}
 	name := firstNonEmpty(cleanText(in.Name, 80), "训练")
 	note := cleanText(in.Note, 280)
 	if len(in.Exercises) == 0 || len(in.Exercises) > 40 {
@@ -278,6 +281,9 @@ func (a *app) logWorkout(raw json.RawMessage) (write, error) {
 			reps, err := inRange(where+"次数", st.Reps, 1, 1000)
 			if err != nil {
 				return write{}, err
+			}
+			if reps != math.Trunc(reps) {
+				return write{}, bad(where + "次数要是整数")
 			}
 			w, err := inRange(where+"重量", st.Weight, 0, maxWeight(unit))
 			if err != nil {
