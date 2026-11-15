@@ -228,10 +228,13 @@ func toolErrorText(err error) string {
 // ---- Homebrew ----
 
 const (
-	brewTap           = "nwverse/tap"
-	brewFormula       = "disklessly-cli"
-	brewInstallCmd    = "brew tap " + brewTap + " && brew install " + brewFormula
-	brewUpgradeCmd    = "brew tap " + brewTap + " && brew upgrade " + brewFormula
+	brewTap     = "nwverse/tap"
+	brewFormula = "disklessly-cli"
+	// brewFQ is the formula's full name: another tap may carry a disklessly-cli too, and then
+	// Homebrew refuses the short name ("Formulae found in multiple taps").
+	brewFQ            = brewTap + "/" + brewFormula
+	brewInstallCmd    = "brew tap " + brewTap + " && brew install " + brewFQ
+	brewUpgradeCmd    = "brew tap " + brewTap + " && brew upgrade " + brewFQ
 	brewSetupComment  = "# 先安装 Homebrew（https://brew.sh），装完按它最后的提示把 brew 加进 PATH"
 	brewSetupCommand  = `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`
 	brewLinuxShellEnv = `eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"`
@@ -254,11 +257,15 @@ func brewManaged(c ColdCLI) bool {
 	return false
 }
 
-// brewScript taps nwverse/tap, installs disklessly-cli (or upgrades it when Homebrew already has
-// it), clears the quarantine flag macOS puts on the unsigned binary, and checks that the new CLI
-// runs and knows sessions status. It reports @@BREW_OP install|upgrade, then @@BREW_OK <version>
-// or @@BREW_FAIL <step> [reason] with Homebrew's last lines as @@BREW_LOG; @@BREW_SHADOW names
-// another CLI the lookup finds first.
+// brewScript taps nwverse/tap, installs nwverse/tap/disklessly-cli (or upgrades it when Homebrew
+// already has it), clears the quarantine flag macOS puts on the unsigned binary, checks that the
+// new CLI runs and knows sessions status, and removes the formula's downloads. A link step that
+// fails (Homebrew's bin/disklessly already belongs to something else, such as the Disklessly app)
+// does not fail the install when the keg's CLI works: it is reported as @@BREW_LINK. It reports
+// @@BREW_OP install|upgrade, then @@BREW_OK <version> @@BREW_KEG <path>, or @@BREW_FAIL <step>
+// [reason] with Homebrew's last lines as @@BREW_LOG; @@BREW_BIN is what Homebrew's bin/disklessly
+// is (what a terminal with Homebrew on PATH runs), @@BREW_SHADOW another CLI the extension's
+// lookup finds first.
 func brewScript() string {
 	return `export HOMEBREW_NO_ENV_HINTS=1 HOMEBREW_NO_INSTALL_CLEANUP=1 HOMEBREW_NO_ANALYTICS=1 NONINTERACTIVE=1
 ` + findBrewScript + `
@@ -266,19 +273,33 @@ if [ -z "$BREW" ]; then echo "@@BREW_FAIL nobrew"; exit 0; fi
 LOG=$(mktemp "${TMPDIR:-/tmp}/disklessly-brew.XXXXXX" 2>/dev/null) || LOG=/dev/null
 fail() { echo "@@BREW_FAIL $1 $2"; if [ "$LOG" != /dev/null ]; then tail -n 20 "$LOG" | sed 's/^/@@BREW_LOG /'; rm -f "$LOG"; fi; exit 0; }
 "$BREW" tap ` + brewTap + ` >>"$LOG" 2>&1 || fail tap
-if "$BREW" list --formula ` + brewFormula + ` >/dev/null 2>&1; then OP=upgrade; else OP=install; fi
+if "$BREW" list --formula ` + brewFQ + ` >/dev/null 2>&1; then OP=upgrade; else OP=install; fi
 echo "@@BREW_OP $OP"
-"$BREW" "$OP" ` + brewFormula + ` >>"$LOG" 2>&1 || fail "$OP"
-PFX=$("$BREW" --prefix ` + brewFormula + ` 2>/dev/null)
+RC=0
+"$BREW" "$OP" ` + brewFQ + ` >>"$LOG" 2>&1 || RC=$?
+PFX=$("$BREW" --prefix ` + brewFQ + ` 2>/dev/null)
 P="$PFX/bin/disklessly"
-if [ -z "$PFX" ] || [ ! -x "$P" ]; then fail verify "Homebrew 装完以后找不到 bin/disklessly"; fi
+if [ -z "$PFX" ] || [ ! -x "$P" ]; then
+  if [ "$RC" != 0 ]; then fail "$OP"; fi
+  fail verify "Homebrew 装完以后找不到 bin/disklessly"
+fi
+if [ "$RC" != 0 ]; then
+  L=$(grep -i -m 2 -E 'symlink|brew link|already exists' "$LOG" 2>/dev/null | tr '\n' ' ')
+  if [ -z "$L" ]; then fail "$OP"; fi
+  echo "@@BREW_LINK $L"
+fi
 if [ "$(uname -s)" = Darwin ]; then xattr -d com.apple.quarantine "$P" "$PFX/bin/disklessly-stub" >/dev/null 2>&1 || true; fi
 V=$("$P" version 2>/dev/null | head -n 1)
 if [ -z "$V" ]; then fail verify "装好的 disklessly 在这台电脑上运行不了"; fi
 S=$("$P" --json sessions status 2>/dev/null | tr '\n' ' ')
 case "$S" in *EX_USAGE*|*"unknown sessions command"*) fail verify "装好的 disklessly 不支持 sessions status" ;; esac
+"$BREW" cleanup -s ` + brewFQ + ` >/dev/null 2>&1 || true
 rm -f "$LOG"
 echo "@@BREW_OK $V"
+echo "@@BREW_KEG $P"
+HB="$(dirname "$(dirname "$BREW")")/bin/disklessly"
+if [ -L "$HB" ]; then echo "@@BREW_BIN $HB -> $(readlink "$HB") $("$HB" version 2>/dev/null | head -n 1)"
+elif [ -x "$HB" ]; then echo "@@BREW_BIN $HB $("$HB" version 2>/dev/null | head -n 1)"; fi
 ` + resolveCLIScript + `
 AV=""
 if [ -n "$DKL" ]; then AV=$("$DKL" version 2>/dev/null | head -n 1); fi
@@ -294,6 +315,9 @@ type brewOutcome struct {
 	ok      bool
 	op      string // install or upgrade
 	version string
+	keg     string // the installed CLI
+	bin     string // Homebrew's bin/disklessly and what it is
+	link    string // why Homebrew could not link it
 	shadow  string
 	step    string
 	reason  string
@@ -315,6 +339,12 @@ func parseBrew(out string) brewOutcome {
 			o.step, o.reason = strings.TrimSpace(o.step), strings.TrimSpace(o.reason)
 		case strings.HasPrefix(line, "@@BREW_LOG "):
 			log = append(log, strings.TrimPrefix(line, "@@BREW_LOG "))
+		case strings.HasPrefix(line, "@@BREW_KEG "):
+			o.keg = strings.TrimSpace(strings.TrimPrefix(line, "@@BREW_KEG "))
+		case strings.HasPrefix(line, "@@BREW_BIN "):
+			o.bin = strings.TrimSpace(strings.TrimPrefix(line, "@@BREW_BIN "))
+		case strings.HasPrefix(line, "@@BREW_LINK "):
+			o.link = strings.TrimSpace(strings.TrimPrefix(line, "@@BREW_LINK "))
 		case strings.HasPrefix(line, "@@BREW_SHADOW "):
 			o.shadow = strings.TrimSpace(strings.TrimPrefix(line, "@@BREW_SHADOW "))
 		}

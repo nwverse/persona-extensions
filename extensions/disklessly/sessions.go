@@ -42,7 +42,7 @@ if [ -n "$DISKLESSLY_BIN" ] && [ -x "$DISKLESSLY_BIN" ] && [ ! -d "$DISKLESSLY_B
 elif command -v disklessly >/dev/null 2>&1; then
   DKL=disklessly
 else
-  for c in "$HOME/.disklessly/bin/disklessly" "$HOME/.local/bin/disklessly" /usr/local/bin/disklessly /opt/homebrew/bin/disklessly /home/linuxbrew/.linuxbrew/bin/disklessly "$HOME/.linuxbrew/bin/disklessly" /Applications/Disklessly.app/Contents/MacOS/disklessly; do
+  for c in "$HOME/.disklessly/bin/disklessly" "$HOME/.local/bin/disklessly" /opt/homebrew/opt/disklessly-cli/bin/disklessly /usr/local/opt/disklessly-cli/bin/disklessly /home/linuxbrew/.linuxbrew/opt/disklessly-cli/bin/disklessly "$HOME/.linuxbrew/opt/disklessly-cli/bin/disklessly" /usr/local/bin/disklessly /opt/homebrew/bin/disklessly /home/linuxbrew/.linuxbrew/bin/disklessly "$HOME/.linuxbrew/bin/disklessly" /Applications/Disklessly.app/Contents/MacOS/disklessly; do
     if [ -x "$c" ] && [ ! -d "$c" ]; then DKL="$c"; break; fi
   done
 fi`

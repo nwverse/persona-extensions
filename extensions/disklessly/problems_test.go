@@ -198,7 +198,7 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 	if brew == nil || brew.Action.ID != "cold-brew" || brew.Action.Values["m"] != "studio-mac" {
 		t.Fatalf("studio-mac: no Homebrew install: %+v", mac)
 	}
-	for _, w := range []string{"studio-mac", "brew tap nwverse/tap && brew install disklessly-cli", "disklessly version"} {
+	for _, w := range []string{"studio-mac", brewInstallCmd, "disklessly version"} {
 		if !strings.Contains(brew.Action.Confirm, w) {
 			t.Fatalf("brew confirm lacks %q: %s", w, brew.Action.Confirm)
 		}
@@ -232,7 +232,7 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 	if d := itemsOf(v2, "bare-box")[0].Detail; strings.Contains(d, "这台电脑没有 Homebrew") || !strings.Contains(d, "重新检查") {
 		t.Fatalf("unknown Homebrew: %q", d)
 	}
-	if cmds := strings.Join(codeIn(bare), "\n"); !strings.Contains(cmds, "brew tap nwverse/tap && brew install disklessly-cli") || !strings.Contains(cmds, "brew.sh") {
+	if cmds := strings.Join(codeIn(bare), "\n"); !strings.Contains(cmds, brewInstallCmd) || !strings.Contains(cmds, "brew.sh") {
 		t.Fatalf("bare-box commands: %q", cmds)
 	}
 	// Unreachable: the retry button and a command to test the connection from the hub.
@@ -326,7 +326,8 @@ func TestSandboxBanner(t *testing.T) {
 
 // fakeBrew writes a Homebrew stand-in to dir/brew that records its arguments in dir/log and,
 // on install or upgrade, puts a disklessly stand-in at prefix/opt/disklessly-cli/bin.
-func fakeBrew(t *testing.T, dir, version string, installed bool, failInstall bool) {
+// mode "fail" fails the download; "link" installs the keg, then fails Homebrew's link step.
+func fakeBrew(t *testing.T, dir, version string, installed bool, mode string) {
 	t.Helper()
 	prefix := filepath.Join(dir, "prefix")
 	cli := filepath.Join(prefix, "opt", "disklessly-cli", "bin")
@@ -342,7 +343,7 @@ func fakeBrew(t *testing.T, dir, version string, installed bool, failInstall boo
 		}
 	}
 	installRC := "0"
-	if failInstall {
+	if mode == "fail" {
 		installRC = "1"
 	}
 	script := `#!/bin/sh
@@ -350,12 +351,13 @@ echo "$*" >> "` + filepath.Join(dir, "log") + `"
 case "$1" in
   tap) exit 0 ;;
   list) exit ` + listRC + ` ;;
-  --prefix) if [ -n "$2" ]; then echo "` + prefix + `/opt/$2"; else echo "` + prefix + `"; fi ;;
+  --prefix) if [ -n "$2" ]; then echo "` + prefix + `/opt/${2##*/}"; else echo "` + prefix + `"; fi ;;
   install|upgrade)
     if [ "` + installRC + `" = 1 ]; then echo "Error: disklessly-cli: Failed to download resource" >&2; exit 1; fi
     cat > "` + filepath.Join(cli, "disklessly") + `" <<'EOF'
 ` + dkl + `EOF
-    chmod +x "` + filepath.Join(cli, "disklessly") + `" ;;
+    chmod +x "` + filepath.Join(cli, "disklessly") + `"
+    if [ "` + mode + `" = link ]; then echo "Error: The brew link step did not complete successfully" >&2; echo "Could not symlink bin/disklessly: Target /opt/homebrew/bin/disklessly already exists." >&2; exit 1; fi ;;
 esac
 `
 	if err := os.WriteFile(filepath.Join(dir, "brew"), []byte(script), 0o755); err != nil {
@@ -378,27 +380,39 @@ func runBrewScript(t *testing.T, dir string) brewOutcome {
 func TestBrewScript(t *testing.T) {
 	// Install: tap, install, verify the new CLI answers.
 	dir := t.TempDir()
-	fakeBrew(t, dir, "0.3.0", false, false)
+	fakeBrew(t, dir, "0.3.0", false, "")
 	o := runBrewScript(t, dir)
 	if !o.ok || o.version != "disklessly 0.3.0" || o.op != "install" {
 		t.Fatalf("install: %+v", o)
 	}
 	log, _ := os.ReadFile(filepath.Join(dir, "log"))
-	if !strings.Contains(string(log), "tap nwverse/tap") || !strings.Contains(string(log), "install disklessly-cli") {
+	if !strings.Contains(string(log), "tap nwverse/tap") || !strings.Contains(string(log), "install nwverse/tap/disklessly-cli") || !strings.Contains(string(log), "cleanup -s nwverse/tap/disklessly-cli") {
 		t.Fatalf("brew calls:\n%s", log)
 	}
 	// Already installed by Homebrew: upgrade.
 	dir = t.TempDir()
-	fakeBrew(t, dir, "0.3.0", true, false)
+	fakeBrew(t, dir, "0.3.0", true, "")
 	if o := runBrewScript(t, dir); !o.ok || o.op != "upgrade" || o.version != "disklessly 0.3.0" {
 		t.Fatalf("upgrade: %+v", o)
 	}
 	// A failed install says which step and keeps Homebrew's last lines for 详情.
 	dir = t.TempDir()
-	fakeBrew(t, dir, "0.3.0", false, true)
+	fakeBrew(t, dir, "0.3.0", false, "fail")
 	o = runBrewScript(t, dir)
 	if o.ok || o.step != "install" || !strings.Contains(o.log, "Failed to download resource") {
 		t.Fatalf("failed install: %+v", o)
+	}
+	// The keg works but Homebrew could not link it over another bin/disklessly: installed, with
+	// the link problem reported.
+	dir = t.TempDir()
+	fakeBrew(t, dir, "0.3.0", false, "link")
+	if o := runBrewScript(t, dir); !o.ok || !strings.Contains(o.link, "already exists") || !strings.HasSuffix(o.keg, "/opt/disklessly-cli/bin/disklessly") {
+		t.Fatalf("link conflict: %+v", o)
+	}
+	// The extension's lookup prefers Homebrew's keg over a shared bin directory, where another
+	// program (the Disklessly app's engine) may hold the name.
+	if k, b := strings.Index(resolveCLIScript, "/opt/homebrew/opt/disklessly-cli/bin/disklessly"), strings.Index(resolveCLIScript, "/opt/homebrew/bin/disklessly"); k < 0 || k > b {
+		t.Fatal("lookup does not try the Homebrew keg before /opt/homebrew/bin")
 	}
 	// No Homebrew at all.
 	dir = t.TempDir()
@@ -407,7 +421,7 @@ func TestBrewScript(t *testing.T) {
 	}
 	// The refresh script reports where Homebrew is.
 	dir = t.TempDir()
-	fakeBrew(t, dir, "0.3.0", false, false)
+	fakeBrew(t, dir, "0.3.0", false, "")
 	cmd := exec.Command("/bin/sh", "-s")
 	cmd.Stdin = strings.NewReader(coldListScript(false, true))
 	cmd.Env = []string{"HOME=" + filepath.Join(dir, "home"), "PATH=" + dir + ":/usr/bin:/bin"}
@@ -598,7 +612,7 @@ func TestMCPStatusSpeaksPlainly(t *testing.T) {
 	}
 	res := out.(map[string]any)["machines"].([]map[string]any)[0]
 	if res["state"] != ColdNoCLI || !strings.Contains(res["message"].(string), "studio-mac") ||
-		!strings.Contains(res["command"].(string), "brew install disklessly-cli") || res["next"] == "" {
+		!strings.Contains(res["command"].(string), "brew install nwverse/tap/disklessly-cli") || res["next"] == "" {
 		t.Fatalf("status: %+v", res)
 	}
 	out, err = srv.call(context.Background(), "disklessly_sessions_status", []byte(`{"machine":"far-box"}`))

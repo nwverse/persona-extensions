@@ -413,6 +413,14 @@ func brewInstall(ctx context.Context, runner Runner, sc *scratch, now time.Time)
 		return "", brewFailure(name, o)
 	}
 	note := "已用 Homebrew " + brewVerb(o.op) + " " + cmp.Or(o.version, "disklessly")
+	if o.keg != "" {
+		note += "（" + o.keg + "）"
+	}
+	if o.bin != "" && !strings.Contains(o.bin, "/Cellar/"+brewFormula+"/") && !strings.Contains(o.bin, "/opt/"+brewFormula+"/") {
+		// Homebrew's bin/disklessly is someone else's (the Disklessly app's engine, say): a
+		// terminal with Homebrew on PATH runs that one; the extension's lookup prefers the keg.
+		note += "；终端里（PATH 含 Homebrew 的 bin）用的仍是 " + o.bin + "，扩展用的是 Homebrew 装的这个；想让终端也用它，运行 brew link --overwrite " + brewFQ
+	}
 	switch o.shadow {
 	case "":
 	case "?":

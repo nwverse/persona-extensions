@@ -173,7 +173,7 @@ var tools = []tool{
 		required: []string{"machine"},
 		props: map[string]any{
 			"machine": str("要安装或升级 disklessly CLI 的机器 ID 或 SSH Host 别名"),
-			"method":  map[string]any{"type": "string", "enum": []string{"brew", "copy"}, "description": "brew：在这台机器上运行 brew tap nwverse/tap && brew install（或 upgrade）disklessly-cli；copy：从同系统同架构、装有可用 CLI 的另一台机器复制。不填时有 Homebrew 用 brew，否则 copy"},
+			"method":  map[string]any{"type": "string", "enum": []string{"brew", "copy"}, "description": "brew：在这台机器上运行 brew tap nwverse/tap && brew install（或 upgrade）nwverse/tap/disklessly-cli；copy：从同系统同架构、装有可用 CLI 的另一台机器复制。不填时有 Homebrew 用 brew，否则 copy"},
 		},
 		description: "给未安装或版本过旧的机器安装 / 升级 disklessly CLI（优先 Homebrew），装好后运行 disklessly version 确认，再重新读取这台机器的会话索引，返回新的状态。会在目标机器上安装软件，需要确认。",
 	},
