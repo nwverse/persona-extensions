@@ -47,9 +47,6 @@ func (c *Curator) RunDaily(ctx context.Context, day string, dry bool) (*store.Ru
 	if err != nil {
 		return nil, err
 	}
-	if !dry {
-		c.collectEnd(day, len(units))
-	}
 	var m model.Model
 	var metered *model.Metered
 	if c.Model != nil {
@@ -214,6 +211,11 @@ func (c *Curator) RunDaily(ctx context.Context, day string, dry bool) (*store.Ru
 	c.expire()
 	c.markCommitments(day, run)
 	c.afterDaily(ctx, m, day, run, dry) // signals and the ledger, then the exits (curate/exits.go)
+	if !dry {
+		// Commit source cursors and ActiveDays only after the whole day completed. In particular, the model-down return
+		// above leaves them untouched so a retry rereads everything the model could not summarize.
+		c.collectEnd(day, len(units))
+	}
 	if metered != nil {
 		run.Counts["model_calls"] = metered.Calls
 	}
