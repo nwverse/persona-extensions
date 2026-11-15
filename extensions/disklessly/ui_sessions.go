@@ -309,9 +309,16 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 		a.Raw = cat.Detail
 	case ColdBackendDown:
 		b := cat.Backend
-		a.Reason = name + "的备份后端 " + cmp.Or(b.ID, b.Type, "（未命名）") + " 连不上，云端位置暂时显示为「未知」，不会当作丢失。"
+		id := cmp.Or(b.ID, b.Type, "（未命名）")
+		a.Reason = name + "的备份后端 " + id + " 连不上，云端位置暂时显示为「未知」，不会当作丢失。"
 		a.Next = "确认网盘、NAS 或 rclone 远端在线后点「重新检查」；在这台电脑上运行下面的命令可以看到具体原因。"
 		a.Command = "disklessly doctor"
+		if strings.Contains(b.Error, "repo.json is not in") {
+			// The backend answers, but holds no Disklessly repository.
+			a.Reason = name + "当前用的备份后端 " + id + " 能连上，但里面还没有 Disklessly 仓库（找不到 repo.json），云端位置暂时显示为「未知」。"
+			a.Next = "在这台电脑上用下面的命令看看配置了哪些后端：选错了就切换到正确的那个；这个目录确实是要新建的仓库，就在那里初始化。然后点「重新检查」。"
+			a.Command = "disklessly backend list\ndisklessly backend use <后端 ID>   # 切换到已有仓库的后端\ndisklessly init                    # 或者：在当前后端里新建仓库"
+		}
 		a.Raw = strings.TrimSpace(fmt.Sprintf("%s（%s，%d ms）", b.Error, cmp.Or(b.Type, "backend"), b.LatencyMs))
 	case ColdOffline:
 		errText := m.LastError

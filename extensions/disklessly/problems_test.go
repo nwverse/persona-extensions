@@ -57,6 +57,8 @@ func TestSSHProblems(t *testing.T) {
 		{name: "host key", raw: "SSH 连接 mm-2 失败：Host key verification failed.", cause: causeHostKey, reason: "指纹", command: "ssh dev@mm-2", wantRetry: true},
 		{name: "refused", raw: "SSH 连接 mm-2 失败：ssh: connect to host mm-2 port 22: Connection refused", cause: causeRefused, reason: "拒绝了连接", wantRetry: true, wantEditor: true},
 		{name: "dns", raw: "SSH 连接 mm-2 失败：ssh: Could not resolve hostname mm-2: Name or service not known", cause: causeDNS, reason: "找不到", command: "ssh -G mm-2", wantRetry: true, wantEditor: true},
+		// The machine is a port forward on the hub, and nothing listens there.
+		{name: "tunnel down", raw: "SSH 连接 mm-2 失败：ssh: connect to host 127.0.0.1 port 2222: Connection refused", cause: causeRefused, reason: "127.0.0.1:2222", command: "ssh -o BatchMode=yes", wantRetry: true},
 		{name: "network", raw: "SSH 连接 mm-2 失败：ssh: connect to host mm-2 port 22: No route to host", cause: causeNetwork, reason: "网络不通", wantRetry: true},
 		// The hub's own OpenSSH config is unreadable: outside a sandbox that is a file to fix on the hub.
 		{name: "hub ssh config", raw: "SSH 连接 mm-2 失败：Bad owner or permissions on /etc/ssh/ssh_config.d/50-redhat.conf", cause: causeSSHConfig, reason: "/etc/ssh/ssh_config.d/50-redhat.conf", command: "sudo chmod 644 /etc/ssh/ssh_config.d/50-redhat.conf", wantRetry: true},
@@ -93,6 +95,14 @@ func TestSSHProblems(t *testing.T) {
 				t.Fatalf("retry %v edit %v", p.Retry, p.Edit)
 			}
 		})
+	}
+	// A copyable command keeps ~/ expandable.
+	if got := sshTarget(&Machine{Host: "muse", User: "root", Port: 2222, IdentityFile: "~/.ssh/id_ed25519"}); got != "-p 2222 -i ~/'.ssh/id_ed25519' root@muse" && got != "-p 2222 -i ~/.ssh/id_ed25519 root@muse" {
+		t.Fatalf("target %q", got)
+	}
+	// A refused connection on a Linux machine says how to start sshd there.
+	if p := sshProblem(&Machine{ID: "gcp", Host: "gcp", Platform: "linux-amd64"}, "SSH 连接 gcp 失败：ssh: connect to host gcp port 22: Connection refused"); !strings.Contains(p.Next, "systemctl") || strings.Contains(p.Next, "macOS") {
+		t.Fatalf("linux refused: %q", p.Next)
 	}
 	// A failed local command is not an SSH problem.
 	p := sshProblem(&Machine{ID: "local", Name: "local (devbox)", IsLocal: true}, "本地探测命令执行失败：exit status 2")
@@ -259,6 +269,20 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 	opened := itemsOf(res.View, "old-box")
 	if !strings.Contains(strings.Join(codeIn(opened), "\n"), "unknown sessions command list") || buttonIn(opened, "收起详情") == nil {
 		t.Fatalf("详情 not shown: %+v", opened)
+	}
+}
+
+// TestBackendWithoutRepository: a backend that answers but holds no repository says so.
+func TestBackendWithoutRepository(t *testing.T) {
+	no := false
+	st := &State{}
+	m := &Machine{ID: "gcp", Host: "gcp", Name: "gcp", Enabled: true, Reachable: true}
+	st.Machines = []*Machine{m}
+	cat := &ColdCatalog{MachineID: "gcp", State: ColdBackendDown, Backend: ColdBackend{ID: "nas", Type: "smb", Reachable: &no,
+		Error: "repo.json is not in the backend; if the repo folder is there and new, run disklessly init"}}
+	a := coldProblem(st, m, cat, ColdBackendDown)
+	if !strings.Contains(a.Reason, "还没有 Disklessly 仓库") || !strings.Contains(a.Command, "disklessly backend use") || !strings.Contains(a.Raw, "repo.json") || english.MatchString(a.text()) {
+		t.Fatalf("%+v", a)
 	}
 }
 
