@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "opengym",
   "name": "openGym",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "icon": "assets/icon.png",
   "description": "接你自建的 openGym 服务器（iPhone / Apple Watch 上的健身记录和 AI 教练）：主导航上多一个「健身」，看本周训练次数和训练量、下一次计划练什么、最近 12 周的训练量趋势、最近的训练和每组的重量次数、体重变化；首页卡片给本周和下一次训练。助手能查训练记录、计划和体重；记一次训练、建议一个训练计划、改某天的安排，每次都在手机上确认。用 openGym 设置里生成的 API 令牌（ogt_…）读写，令牌只存在 hub 的加密密钥里。",
   "publisher": "nwverse",
