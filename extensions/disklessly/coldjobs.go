@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -77,6 +78,9 @@ type scratch struct {
 	orig Machine
 	scan *Scan
 	cold *ColdCatalog
+	// coldBefore is an independent baseline: cold may itself be edited in place by the job, so pointer comparison
+	// cannot distinguish a real change from an untouched scratch copy.
+	coldBefore *ColdCatalog
 }
 
 func scratchOf(st *State, m *Machine) *scratch {
@@ -88,6 +92,7 @@ func scratchOf(st *State, m *Machine) *scratch {
 	}
 	if c := st.cold(m.ID); c != nil {
 		sc.cold = cloneCold(c)
+		sc.coldBefore = cloneCold(c)
 		sc.st.setCold(m.ID, sc.cold)
 	}
 	return sc
@@ -112,8 +117,12 @@ func (sc *scratch) apply(st *State) {
 		}
 		st.Scans[m.ID] = s
 	}
-	if c := sc.st.Cold[m.ID]; c != nil {
-		st.setCold(m.ID, c)
+	if c := sc.st.Cold[m.ID]; !reflect.DeepEqual(c, sc.coldBefore) {
+		if c == nil {
+			st.dropCold(m.ID)
+		} else {
+			st.setCold(m.ID, c)
+		}
 	}
 	if len(sc.st.History) > 0 {
 		st.History = append(slices.Clone(sc.st.History), st.History...)

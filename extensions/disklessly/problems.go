@@ -323,7 +323,10 @@ fi
 if [ "$(uname -s)" = Darwin ]; then xattr -d com.apple.quarantine "$P" "$PFX/bin/disklessly-stub" >/dev/null 2>&1 || true; fi
 V=$("$P" version 2>/dev/null | head -n 1)
 if [ -z "$V" ]; then fail verify "装好的 disklessly 在这台电脑上运行不了"; fi
-S=$("$P" --json sessions status 2>/dev/null | tr '\n' ' ')
+J=$("$P" --json sessions status 2>/dev/null)
+RC=$?
+if [ "$RC" != 0 ] || [ -z "$J" ]; then fail verify "装好的 disklessly sessions status 运行失败"; fi
+S=$(printf '%s' "$J" | tr '\n' ' ')
 case "$S" in *EX_USAGE*|*"unknown sessions command"*) fail verify "装好的 disklessly 不支持 sessions status" ;; esac
 if grep -q -i 'already installed' "$LOG" 2>/dev/null; then echo "@@BREW_SAME"; fi
 "$BREW" cleanup --prune=0 -s ` + brewFQ + ` >/dev/null 2>&1 || true

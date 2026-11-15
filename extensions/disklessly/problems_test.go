@@ -351,7 +351,8 @@ func TestSandboxBanner(t *testing.T) {
 
 // fakeBrew writes a Homebrew stand-in to dir/brew that records its arguments in dir/log and,
 // on install or upgrade, puts a disklessly stand-in at prefix/opt/disklessly-cli/bin.
-// mode "fail" fails the download; "link" installs the keg, then fails Homebrew's link step.
+// mode "fail" fails the download; "link" installs the keg, then fails Homebrew's link step; "status-fail" makes the
+// installed CLI's sessions status exit 1 without printing anything.
 func fakeBrew(t *testing.T, dir, version string, installed bool, mode string) {
 	t.Helper()
 	prefix := filepath.Join(dir, "prefix")
@@ -359,7 +360,7 @@ func fakeBrew(t *testing.T, dir, version string, installed bool, mode string) {
 	if err := os.MkdirAll(cli, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dkl := "#!/bin/sh\ncase \"$*\" in\n  version) echo \"disklessly " + version + "\" ;;\n  *\"sessions status\"*) echo '{\"ok\":true,\"backend\":{\"id\":\"\",\"type\":\"\",\"reachable\":false},\"counts\":{},\"segments\":{}}' ;;\nesac\n"
+	dkl := "#!/bin/sh\ncase \"$*\" in\n  version) echo \"disklessly " + version + "\" ;;\n  *\"sessions status\"*) if [ \"" + mode + "\" = status-fail ]; then exit 1; fi; echo '{\"ok\":true,\"backend\":{\"id\":\"\",\"type\":\"\",\"reachable\":false},\"counts\":{},\"segments\":{}}' ;;\nesac\n"
 	listRC := "1"
 	if installed {
 		listRC = "0"
