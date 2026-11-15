@@ -27,6 +27,7 @@ type inboxState struct {
 	fullAt       time.Time                        // the last read without If-Modified-Since
 	ci           map[string]*ciMeta               // CI items, by thread (rules.go)
 	repos        map[string]repoMeta              // repositories' default branches (rules.go)
+	messages     map[string]inboxMessageRecord
 }
 
 var (
@@ -211,6 +212,9 @@ func (c *Connector) applyNotifications(ctx context.Context, ns []notification, w
 		if thing.Last == "" { // describe's newest comment or review names a PR's or issue's move; else the notification
 			thing.Last = stamp
 		}
+		if err := c.rememberMessageLast(ctx, thread, me, thing.Last); err != nil {
+			continue
+		}
 		thing.Tags = tagsOf(n, run, kind, thing.Sender)
 		st.mu.Lock()
 		st.seen[n.ID] = stamp
@@ -312,6 +316,7 @@ func subjectThread(repo, id string) string { return "subject:" + repo + "@" + id
 
 // move is a comment or a review, for the preview and the context.
 type move struct {
+	id              string
 	who, verb, text string
 	at              time.Time
 	bot             bool
@@ -370,14 +375,16 @@ func (c *Connector) describe(ctx context.Context, n notification, me string) (co
 		}
 		it.Comments = iss.Comments
 	}
-	var moves []move
+	var moves, messages []move
 	var cs []comment
 	page := max(1, (it.Comments+99)/100)
 	if _, err := c.Get(ctx, fmt.Sprintf("/repos/%s/issues/%s/comments?per_page=100&page=%d", repo, number, page), &cs); err != nil {
 		return t, err
 	}
 	for _, cm := range cs {
-		moves = append(moves, move{who: who(cm.User), text: strings.TrimSpace(cm.Body), at: cm.CreatedAt, bot: isBot(cm.User)})
+		message := move{id: fmt.Sprintf("comment:%d", cm.ID), who: who(cm.User), text: strings.TrimSpace(cm.Body), at: cm.CreatedAt, bot: isBot(cm.User)}
+		moves = append(moves, message)
+		messages = append(messages, message)
 	}
 	reviewed := false
 	if pr {
@@ -395,13 +402,18 @@ func (c *Connector) describe(ctx context.Context, n notification, me string) (co
 		}
 		for _, r := range rs {
 			verb := map[string]string{"APPROVED": "批准了", "CHANGES_REQUESTED": "要求修改", "COMMENTED": "评审了"}[r.State]
-			if verb == "" || r.State == "COMMENTED" && strings.TrimSpace(r.Body) == "" {
+			if verb == "" || r.SubmittedAt.IsZero() {
+				continue
+			}
+			message := move{id: fmt.Sprintf("review:%d", r.ID), who: who(r.User), verb: verb, text: strings.TrimSpace(r.Body), at: r.SubmittedAt, bot: isBot(r.User), state: r.State}
+			messages = append(messages, message)
+			if r.State == "COMMENTED" && strings.TrimSpace(r.Body) == "" {
 				continue
 			}
 			if strings.EqualFold(r.User.Login, me) {
 				reviewed = true
 			}
-			moves = append(moves, move{who: who(r.User), verb: verb, text: strings.TrimSpace(r.Body), at: r.SubmittedAt, bot: isBot(r.User), state: r.State})
+			moves = append(moves, message)
 		}
 	}
 	sort.SliceStable(moves, func(i, j int) bool { return moves[i].at.Before(moves[j].at) })
@@ -414,18 +426,24 @@ func (c *Connector) describe(ctx context.Context, n notification, me string) (co
 	t.Title, t.URL = it.Title, it.HTMLURL
 	t.ReplyTo, t.CanReply = "评论到 "+ref+"（仓库可见的人都能看到）", !it.Locked
 	t.Sender, t.Preview = it.User.String(), firstLine(it.Body)
+	lastStamp, newestID := newestMessageLast(messages, c.previousMessageLast(ctx, threadOf(n), me))
+	t.Last = lastStamp
+	var last move
 	if len(moves) > 0 {
-		last := moves[len(moves)-1]
+		last = moves[len(moves)-1]
+		for i := len(moves) - 1; newestID != "" && i >= 0; i-- {
+			if moves[i].id == newestID {
+				last = moves[i]
+				break
+			}
+		}
 		t.Sender, t.Preview = last.who, strings.TrimSpace(last.verb+" "+firstLine(last.text))
-		// The move is the newest comment or review, not the notification: a push, an edit of the body or title, a
-		// label bumps the notification's time but adds no message, and the same Last says so to the hub.
-		t.Last = last.at.UTC().Format(time.RFC3339)
 	}
 
 	switch {
 	case it.Merged || it.State == "closed":
 		t.Done = connector.DoneRead
-	case len(moves) > 0 && strings.EqualFold(strings.TrimSuffix(moves[len(moves)-1].who, " (bot)"), me):
+	case len(moves) > 0 && strings.EqualFold(strings.TrimSuffix(last.who, " (bot)"), me):
 		t.Done = connector.DoneReplied
 	case n.Reason == "review_requested" && len(it.Teams) == 0 && !hasLogin(it.Reviewers, me):
 		// no longer asked: reviewed (answered) or the request withdrawn
