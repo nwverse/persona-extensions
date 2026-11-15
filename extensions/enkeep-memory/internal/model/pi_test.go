@@ -48,3 +48,15 @@ func TestPiRunsTheCommand(t *testing.T) {
 		t.Errorf("the cache was not used: %q", b)
 	}
 }
+
+func TestRateLimited(t *testing.T) {
+	for out, want := range map[string]bool{
+		`429 {"error":{"code":"rate_limit_error","message":"upstream account capacity is temporarily unavailable"}}`: true,
+		`400 {"error":{"message":"bad request"}}`: false,
+		`the answer is not JSON`:                  false,
+	} {
+		if got := rateLimited(out); got != want {
+			t.Errorf("rateLimited(%q) = %v, want %v", out, got, want)
+		}
+	}
+}

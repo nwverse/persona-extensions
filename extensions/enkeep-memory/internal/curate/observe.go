@@ -65,7 +65,7 @@ const (
 const (
 	dailyBatchTokens = 12000
 	dailyMaxTokens   = 6000
-	rewriteMaxTokens = 2000
+	rewriteMaxTokens = 4000
 )
 
 // dailyParts cuts an admitted unit's shown lines into parts that each fit dailyBatchTokens, in line order. A unit
@@ -487,6 +487,11 @@ func (c *Curator) checkObservation(w *verify.Window, u *Unit, k *known, tier str
 	if o.Confidence == "" {
 		o.Confidence = "medium" // a smaller model leaves it out now and then; the schema count still says so
 	}
+	if strings.TrimSpace(o.Text) == "" {
+		// Some models fill a judgement's or a way's fields and leave the sentence out: the sentence is the fields'
+		// own words put together (nothing added); without the fields it stays a schema rejection.
+		o.Text = textFromFields(f, o, c.language())
+	}
 	if !f.Valid() || f == entry.World || strings.TrimSpace(o.Text) == "" || (o.Domain != entry.Work && o.Domain != entry.Life) ||
 		!slices.Contains([]string{"high", "medium", "low"}, o.Confidence) {
 		return bad(verify.Schema)
@@ -831,4 +836,62 @@ func withMissing(claim, missing string) string {
 		return claim
 	}
 	return claim + " [not in the lines: " + missing + "]"
+}
+
+// textFromFields is an observation's sentence made of its own fields when the model left the sentence out: a fork's
+// situation, choice, what was turned down and why; a way's situation and steps; a machine's pitfall and fix. ""
+// when the fields do not say enough.
+func textFromFields(f entry.Facet, o schema.Observation, lang string) string {
+	t := func(x string) string { return strings.TrimRight(strings.TrimSpace(x), "。.；;，, ") }
+	sit, choice, rej, why := t(o.Situation), t(o.Choice), t(o.Rejected), t(o.Why)
+	zh := !strings.HasPrefix(strings.ToLower(lang), "en")
+	switch f {
+	case entry.Judgement, entry.Workflow, entry.Interaction:
+		if choice == "" {
+			return ""
+		}
+		var b strings.Builder
+		if zh {
+			if sit != "" {
+				b.WriteString(sit + "时，")
+			}
+			b.WriteString(choice)
+			if rej != "" {
+				b.WriteString("，而不是" + rej)
+			}
+			if why != "" {
+				b.WriteString("，因为" + why)
+			}
+			b.WriteString("。")
+		} else {
+			if sit != "" {
+				b.WriteString("When " + sit + ": ")
+			}
+			b.WriteString(choice)
+			if rej != "" {
+				b.WriteString(", not " + rej)
+			}
+			if why != "" {
+				b.WriteString(", because " + why)
+			}
+			b.WriteString(".")
+		}
+		return b.String()
+	case entry.Tools:
+		obj, pit, fix := t(o.Object), t(o.Pitfall), t(o.Fix)
+		if obj == "" || (pit == "" && fix == "") {
+			return ""
+		}
+		parts := []string{}
+		for _, x := range []string{pit, fix} {
+			if x != "" {
+				parts = append(parts, x)
+			}
+		}
+		if zh {
+			return obj + "：" + strings.Join(parts, "；") + "。"
+		}
+		return obj + ": " + strings.Join(parts, "; ") + "."
+	}
+	return ""
 }

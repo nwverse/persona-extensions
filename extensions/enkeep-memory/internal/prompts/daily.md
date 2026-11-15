@@ -67,8 +67,9 @@ other teams' business that does not touch the user, one-off actions ("merged it"
 red"), money notices (bank, payroll, balance, card, transfer) and anything that is only a name.
 
 ### observations (one concrete thing seen, for one facet)
-Each observation is one thing seen in this unit, for one facet. text is one sentence that stands on its own. Fill the
-fields the facet uses, leave the others empty.
+Each observation is one thing seen in this unit, for one facet. Every observation has text: one sentence that stands
+on its own, also when the facet's fields (situation, choice, pitfall…) are filled; the fields do not replace it. Fill
+the fields the facet uses, leave the others empty.
 
 Which facet, when two seem to fit:
 - something the user asks of the AI, again and again or as a standing request ("list my calendars merged by time"),

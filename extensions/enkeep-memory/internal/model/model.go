@@ -40,6 +40,9 @@ type Response struct {
 	Model     string
 	InTokens  int
 	OutTokens int
+	// Nonconforming is the hub's account of how Text fails the request's schema, when it returned the reply anyway
+	// (invalid_output): the caller's own checks of each item decide what is kept.
+	Nonconforming string
 }
 
 // Model answers requests.
@@ -102,6 +105,13 @@ func (h Hub) Complete(ctx context.Context, r Request) (Response, error) {
 			if refused(e.Message) {
 				return Response{}, fmt.Errorf("%w: %s", ErrRefused, e.Message)
 			}
+		case wire.ModelErrorCodeInvalidOutput:
+			// The reply did not match the schema after the hub's second try (a model that leaves a field out, say).
+			// The curator checks every item of an answer on its own: take the reply and let those checks keep
+			// what holds, rather than lose the whole unit.
+			if r, ok := fromInvalidOutput(e.Data); ok {
+				return r, nil
+			}
 		}
 	}
 	if err != nil {
@@ -144,4 +154,15 @@ func (m *Metered) Complete(ctx context.Context, r Request) (Response, error) {
 	m.mu.Unlock()
 	m.Usage.Record(m.Day, r.Step, resp.InTokens, resp.OutTokens)
 	return resp, nil
+}
+
+// fromInvalidOutput is the reply an invalid_output error carries (wire.ModelInvalidOutput), when it has one.
+func fromInvalidOutput(data json.RawMessage) (Response, bool) {
+	var bad wire.ModelInvalidOutput
+	if json.Unmarshal(data, &bad) != nil || strings.TrimSpace(bad.Text) == "" {
+		return Response{}, false
+	}
+	u := bad.Usage
+	return Response{Text: bad.Text, InTokens: u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
+		OutTokens: u.OutputTokens, Nonconforming: bad.Problem}, true
 }

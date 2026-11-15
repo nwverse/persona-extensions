@@ -265,6 +265,47 @@ func TestAgentsReadFoldedIncrementally(t *testing.T) {
 	}
 }
 
+func TestAgentsTrailingFoldCursorIncludesThrough(t *testing.T) {
+	h := &hub{items: []hubapi.Item{
+		{Seq: 1, At: at(3, 8), Kind: hubapi.KindUser, Text: "start"},
+		{Seq: 2, At: at(3, 9), Kind: hubapi.KindToolUse, Tool: "Bash", Text: "first", Call: "a"},
+		{Seq: 3, At: at(3, 10), Kind: hubapi.KindToolResult, Tool: "Bash", Text: "ok", Call: "a"},
+	}}
+	s := With(&kb{}, h, time.UTC)
+	st := &store.State{}
+	ctx := context.Background()
+	s.Begin(st, "2026-11-03")
+	if _, err := s.Recent(ctx, day3, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	_ = dayLines(t, s, "agents/m1/s1", "2026-11-03")
+	s.End(st, "2026-11-03", 1)
+	if got := st.Cursors["S3/m1/s1"]; got != "3|2026-11-03" {
+		t.Errorf("a trailing fold left the cursor before its through sequence: %q", got)
+	}
+
+	h.items = append(h.items,
+		hubapi.Item{Seq: 4, At: at(4, 8), Kind: hubapi.KindToolUse, Tool: "Bash", Text: "second", Call: "b"},
+		hubapi.Item{Seq: 5, At: at(4, 9), Kind: hubapi.KindToolResult, Tool: "Bash", Text: "ok", Call: "b"},
+		hubapi.Item{Seq: 6, At: at(4, 10), Kind: hubapi.KindAgent, Text: "done"},
+	)
+	s.Begin(st, "2026-11-04")
+	if _, err := s.Recent(ctx, at(4, 0), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(dayLines(t, s, "agents/m1/s1", "2026-11-04"), "\n")
+	if len(h.queries) != 2 || h.queries[1].After != 3 {
+		t.Errorf("next query starts after the trailing fold: %+v", h.queries)
+	}
+	if !strings.Contains(text, "工作: 1 次工具调用") || !strings.Contains(text, "[seq 4-5]") || !strings.Contains(text, "Agent: done") {
+		t.Errorf("the next day's tool work was folded into the previous day and lost:\n%s", text)
+	}
+	s.End(st, "2026-11-04", 1)
+	if got := st.Cursors["S3/m1/s1"]; got != "6|2026-11-04" {
+		t.Errorf("cursor after the next day: %q", got)
+	}
+}
+
 func TestByPersonaFirstMessageSpeaker(t *testing.T) {
 	h := &hub{
 		sessions: []hubapi.Session{{Machine: "m1", ID: "s-persona", Started: at(3, 8), Updated: at(4, 9), ByPersona: true}},

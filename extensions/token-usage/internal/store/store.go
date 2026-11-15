@@ -119,18 +119,18 @@ func (s *Store) Merge(machine string, buckets []Bucket, loc *time.Location) (int
 	}
 	changed := 0
 	err := s.Update(func(st *State) error {
-		byDay := map[string]*Day{}
+		byDay := map[string]int{}
 		for i := range st.Days {
 			d := &st.Days[i]
 			if d.Machine == machine {
-				byDay[d.Date] = d
+				byDay[d.Date] = i
 			}
 		}
 		index := map[string]map[key]int{}
-		for date, d := range byDay {
+		for date, i := range byDay {
 			m := map[key]int{}
-			for i, b := range d.Buckets {
-				m[keyOf(b)] = i
+			for j, b := range st.Days[i].Buckets {
+				m[keyOf(b)] = j
 			}
 			index[date] = m
 		}
@@ -139,13 +139,14 @@ func (s *Store) Merge(machine string, buckets []Bucket, loc *time.Location) (int
 				continue
 			}
 			date := time.Unix(b.Minute, 0).In(loc).Format("2006-01-02")
-			d := byDay[date]
-			if d == nil {
+			dayIndex, ok := byDay[date]
+			if !ok {
 				st.Days = append(st.Days, Day{Date: date, Machine: machine})
-				d = &st.Days[len(st.Days)-1]
-				byDay[date] = d
+				dayIndex = len(st.Days) - 1
+				byDay[date] = dayIndex
 				index[date] = map[key]int{}
 			}
+			d := &st.Days[dayIndex]
 			k := keyOf(b)
 			if i, ok := index[date][k]; ok {
 				if d.Buckets[i] != b {

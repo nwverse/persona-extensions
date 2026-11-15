@@ -36,8 +36,7 @@ func (h *cancelLedgerHub) Items(_ context.Context, _, session string, _ hubapi.I
 // The daily pass ends with the ledger, the signals and the exits; without a hub every exit waits for its change and
 // nothing fails. A dry run writes no exit.
 func TestDailyEndsWithSignalsAndExits(t *testing.T) {
-	down := stub.Scripted(func(model.Request) (string, error) { return "", model.ErrUnavailable })
-	c, _ := newCurator(t, down, "shadow")
+	c, _ := newCurator(t, nil, "shadow") // no model configured: triage and checks only, the exits still written
 	c.Hub = hubapi.None{}
 	c.St.S.Entries = map[string]*entry.Entry{"i-0000000001": {ID: "i-0000000001", Facet: entry.Interaction, Grain: entry.Class,
 		Text: "汇报时先给结论再给细节（占位）", Status: entry.Stable, Origin: entry.FromOnboarding, Count: 2,

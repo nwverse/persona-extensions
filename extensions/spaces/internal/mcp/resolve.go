@@ -228,7 +228,7 @@ func targetID(sp *kernel.Space, p *kernel.Prop, s string) (string, error) {
 	}
 	var ids []string
 	for _, e := range sp.Entities {
-		if e != nil && e.Type == p.Target && e.Title == s {
+		if e != nil && (p.Target == "" || e.Type == p.Target) && e.Title == s {
 			ids = append(ids, e.ID)
 		}
 	}
@@ -241,15 +241,22 @@ func targetID(sp *kernel.Space, p *kernel.Prop, s string) (string, error) {
 	return "", fmt.Errorf("属性「%s」：有 %d 条目标记录的标题是「%s」，请用编号：%s", p.Name, len(ids), s, strings.Join(ids, "、"))
 }
 
-// relatedConds returns the conditions with every relation operand given by a title replaced by its id, for a query
-// of one type. Only "eq", "ne" and "has" with a non-empty string or a list of non-empty strings are read as titles;
+// relatedConds returns the conditions with every relation operand given by a title replaced by its id, for typed and
+// cross-type queries. Only "eq", "ne" and "has" with a non-empty string or a list of non-empty strings are read as titles;
 // conditions on other fields, other operators and other operands (null, an empty string, a number) go to the kernel
 // as they are, which accepts or refuses them by its own rules.
 func relatedConds(sp *kernel.Space, t *kernel.Type, where []kernel.Cond) ([]kernel.Cond, error) {
 	out := slices.Clone(where)
 	for i := range out {
 		c := &out[i]
-		p, ok := propByKey(t, c.Field)
+		var p kernel.Prop
+		ok := false
+		if c.Field == "origin" {
+			p = kernel.Prop{Key: "origin", Name: "源自", Kind: kernel.KindRelation}
+			ok = true // built-in relation: the source may be any type, so p.Target stays empty
+		} else if t != nil {
+			p, ok = propByKey(t, c.Field)
+		}
 		if !ok || p.Kind != kernel.KindRelation || !titleOp(c.Op) || !titleOperand(c.Value) {
 			continue
 		}

@@ -105,6 +105,9 @@ func (s *Source) agentDay(ctx context.Context, id, day string) ([]string, error)
 		if it.Seq > last {
 			last = it.Seq
 		}
+		if it.Fold != nil && it.Fold.To > last {
+			last = it.Fold.To // Fold.Seq is only the range's start: the next page must resume after Fold.To.
+		}
 		if t := s.itemLine(it, se.ByPersona && page.base == 0 && i == 0); t != "" {
 			ls = append(ls, line{it.At, t})
 		}

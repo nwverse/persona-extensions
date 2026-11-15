@@ -338,7 +338,7 @@ func decide(ctx context.Context, o *Options, s *session, hs []hit) (map[int]deci
 	in.Page = page(s, seqs)
 	user, _ := json.Marshal(in)
 	resp, err := o.Model.Complete(ctx, model.Request{Step: "signals_dig", Tier: o.Tier, System: prompts.Dig, User: string(user),
-		MaxTokens: 2000, Schema: prompts.DigSchema})
+		MaxTokens: 4000, Schema: prompts.DigSchema})
 	if err != nil {
 		return nil, err
 	}

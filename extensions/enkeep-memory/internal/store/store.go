@@ -370,6 +370,18 @@ type State struct {
 	ActiveDays    []string                        `json:"active_days,omitempty"` // sorted days with any source data
 	Cursors       map[string]string               `json:"cursors,omitempty"`     // per source: where incremental reading resumes
 	Backfill      *Backfill                       `json:"backfill,omitempty"`
+	// ModelPause: the model could not be called for a day's pass; the day is kept to run again and passes wait
+	// until NextTry. Cleared by the next pass that reaches the model.
+	ModelPause *ModelPause `json:"model_pause,omitempty"`
+}
+
+// ModelPause is why and since when the passes wait for the model, and when they try again.
+type ModelPause struct {
+	Since   string `json:"since"`    // RFC 3339 of the first failure in a row
+	Reason  string `json:"reason"`   // the hub's message
+	Day     string `json:"day"`      // the day whose pass could not run
+	Fails   int    `json:"fails"`    // passes in a row that found the model unavailable
+	NextTry string `json:"next_try"` // RFC 3339: no pass needing the model starts before it
 }
 
 // Backfill is the first-run replay of the user's history (4.1): the same daily and weekly passes over past days,

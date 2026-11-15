@@ -15,3 +15,16 @@ func TestRefused(t *testing.T) {
 		}
 	}
 }
+
+func TestFromInvalidOutput(t *testing.T) {
+	r, ok := fromInvalidOutput([]byte(`{"problem":"$.observations[0]: missing \"facet\"","text":"{\"observations\":[{}]}","usage":{"input_tokens":10,"output_tokens":5}}`))
+	if !ok || r.Text != `{"observations":[{}]}` || r.InTokens != 10 || r.OutTokens != 5 || r.Nonconforming == "" {
+		t.Fatalf("reply: %+v %v", r, ok)
+	}
+	if _, ok := fromInvalidOutput([]byte(`{"problem":"empty","text":""}`)); ok {
+		t.Fatal("an empty reply is not taken")
+	}
+	if _, ok := fromInvalidOutput(nil); ok {
+		t.Fatal("no data is not a reply")
+	}
+}

@@ -116,7 +116,13 @@ func (p Pi) run(ctx context.Context, mdl string, r Request) (Response, error) {
 	var stdout, stderr bytes.Buffer
 	x.Stdout, x.Stderr = &stdout, &stderr
 	if err := x.Run(); err != nil {
-		return Response{}, fmt.Errorf("%s (%s): %w: %s", cmd, r.Step, err, tail(stderr.String()+stdout.String(), 400))
+		out := tail(stderr.String()+stdout.String(), 400)
+		if rateLimited(out) {
+			// The gateway has no capacity now: the model is unavailable, as the hub says when model.complete is busy,
+			// so a replay stops on the day instead of reading it without the model.
+			return Response{}, fmt.Errorf("%w: %s (%s): %s", ErrUnavailable, cmd, r.Step, out)
+		}
+		return Response{}, fmt.Errorf("%s (%s): %w: %s", cmd, r.Step, err, out)
 	}
 	text, ok := jsonObject(stdout.String())
 	if !ok {
@@ -141,4 +147,9 @@ func jsonObject(s string) (string, bool) {
 		return s[a : b+1], true
 	}
 	return "", false
+}
+
+// rateLimited: the command's output says the gateway refused for capacity (HTTP 429, a rate limit), not the request.
+func rateLimited(out string) bool {
+	return strings.Contains(out, " 429 ") || strings.HasPrefix(strings.TrimSpace(out), "429 ") || strings.Contains(out, "rate_limit_error")
 }

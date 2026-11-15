@@ -97,6 +97,41 @@ func TestMergeSplitsByDayMachineModelLauncher(t *testing.T) {
 	}
 }
 
+func TestMergeRevisitsEarlierDayAfterAppend(t *testing.T) {
+	s := Open("")
+	yesterday := day("2026-11-12", 9, 0)
+	today := day("2026-11-13", 9, 0)
+	n, err := s.Merge("m1", []Bucket{
+		bkt(yesterday, "alpha", "cli", 1, 0),
+		bkt(today, "alpha", "cli", 2, 0),
+		bkt(yesterday, "beta", "cli", 4, 0),
+	}, loc)
+	if err != nil || n != 3 {
+		t.Fatalf("changed=%d, err=%v; want 3 buckets", n, err)
+	}
+	var yesterdayInput, todayInput int64
+	models := map[string]bool{}
+	if err := s.View(func(st *State) error {
+		for _, d := range st.Days {
+			for _, b := range d.Buckets {
+				switch d.Date {
+				case "2026-11-12":
+					yesterdayInput += b.Input
+					models[b.Model] = true
+				case "2026-11-13":
+					todayInput += b.Input
+				}
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if yesterdayInput != 5 || todayInput != 2 || !models["alpha"] || !models["beta"] {
+		t.Fatalf("lost revisited-day buckets: yesterday=%d today=%d models=%v", yesterdayInput, todayInput, models)
+	}
+}
+
 func TestPruneKeeps400Days(t *testing.T) {
 	s := Open("")
 	old := day("2025-01-01", 1, 0)

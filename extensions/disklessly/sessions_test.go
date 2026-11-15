@@ -69,7 +69,7 @@ func TestProbeUsesCLIPlanAndBackendReachability(t *testing.T) {
 	if got := sessionItems(st.Scans["local"]); len(got) != 0 {
 		t.Fatalf("session items with unreachable backend: %+v", got)
 	}
-	if !strings.Contains(st.Scans["local"].Sessions.Note, "timeout") {
+	if !strings.Contains(st.Scans["local"].Sessions.Note, "备份后端连不上") {
 		t.Fatalf("note: %q", st.Scans["local"].Sessions.Note)
 	}
 }
@@ -134,7 +134,7 @@ func TestSessionArchiveRefusalIsAnError(t *testing.T) {
 			if err == nil || rec != nil || len(st.History) != 0 {
 				t.Fatalf("err=%v rec=%+v history=%d", err, rec, len(st.History))
 			}
-			if name == "backend" && !strings.Contains(err.Error(), "备份后端不可达") {
+			if name == "backend" && !strings.Contains(err.Error(), "备份后端连不上") {
 				t.Fatalf("err = %v", err)
 			}
 		})
@@ -191,7 +191,7 @@ func TestSessionArchiveScriptKeepsFilesWhenCLIRefuses(t *testing.T) {
 	if o.refsFound < 1 {
 		t.Fatalf("reference count missing:\n%s", out)
 	}
-	if e := o.err(); e == nil || !strings.Contains(e.Error(), "backend unreachable: no repo") {
+	if e := o.err(); e == nil || !strings.Contains(toolErrorText(e), "backend unreachable: no repo") {
 		t.Fatalf("outcome err = %v\n%s", e, out)
 	}
 	if _, err := os.Stat(old); err != nil {

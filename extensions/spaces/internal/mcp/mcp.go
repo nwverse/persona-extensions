@@ -580,15 +580,16 @@ func runQuery(b *kernel.Base, _ time.Time, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	var t *kernel.Type
 	if a.Type != "" {
-		t, err := typeIn(sp, a.Type)
+		t, err = typeIn(sp, a.Type)
 		if err != nil {
 			return nil, err
 		}
 		a.Type = t.Key
-		if a.Where, err = relatedConds(sp, t, a.Where); err != nil {
-			return nil, err
-		}
+	}
+	if a.Where, err = relatedConds(sp, t, a.Where); err != nil {
+		return nil, err
 	}
 	w := kernel.Open(sp)
 	res, err := w.Run(a.Query)

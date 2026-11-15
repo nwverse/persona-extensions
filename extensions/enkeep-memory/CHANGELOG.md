@@ -1,5 +1,47 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.22 (pre-release)
+
+Ready for a GPT model on the knowledge-base purpose (tried with gpt-6-luna).
+
+- **An observation without its sentence is not lost.** A model that fills a judgement's or a way's fields
+  (situation, choice, rejected, why; a machine's pitfall and fix) and leaves `text` out gets the sentence made of
+  those fields, nothing added. `text` is no longer required by the daily schema, so the hub does not refuse the
+  whole answer for it; an observation whose fields do not say enough is still a schema rejection. The prompt
+  (`daily/15`) says every observation has `text`, also when the fields are filled. On two replayed days gpt-6-luna
+  left `text` out of 35 of 172 answers.
+- **A reply that does not match the schema is read, not dropped.** When the hub returns `invalid_output` after its
+  second try, the reply it carries is taken and each item is checked on its own, as for any answer; before, the
+  whole unit was lost for the day.
+- **Room for a reasoning model.** The smallest answer limits (triage 400, weekly 1500, dig and rewrite 2000 tokens)
+  are 4000: a reasoning model counts its reasoning in `max_completion_tokens` and could be cut off before answering.
+
+## 0.2.0-beta.21 (pre-release)
+
+- **A day the model is unavailable to is not done.** When the hub cannot run the model (model.complete busy or
+  unavailable) before every admitted unit of a day was read, the day's pass ends with `ErrModelDown` instead of
+  finishing on triage alone: no finished run is recorded, the first-run replay stays on that day, and a rerun_range
+  day is not marked rerun. What was read before is kept (the state is saved after every unit). The passes then wait
+  (`model_pause` in the state) 10 minutes, doubling up to 2 hours, and try the same day again; the first pass that
+  reaches the model clears the pause and the replay goes on from there. Before, a replay ran on through days with
+  no model and counted them as read.
+- The plugin page says so: "模型暂时不可用" for the first failures, "模型不可用，暂停中" after three in a row, with
+  the hub's reason, since when, the next try and the day it resumes from.
+- A hub with no model configured for the extension still triages and checks without one, as before.
+- Offline replay: a gateway's 429 (no capacity) through `-pi` counts as the model unavailable, so a replay stops on
+  that day instead of reading on without the model.
+
+## 0.2.0-beta.20 (pre-release)
+
+- **Agent cursors cover trailing folds.** A day ending in `Fold[From..To]` resumes after `To`, so a folded Hub or
+  offline incremental read cannot refold new work into the previous day and skip it.
+
+## 0.2.0-beta.19 (pre-release)
+
+- **Reruns wait for completed days.** `rerun_range` no longer runs today or future dates. Premature or invalid
+  daily/synth records and stale rerun markers no longer block the formal daily recovery or post-rerun synthesis;
+  synthesis must follow the latest valid daily run.
+
 ## 0.2.0-beta.18 (pre-release)
 
 - **Cancellation no longer drops correction issues.** After a successful gather, `signals.Run` checkpoints

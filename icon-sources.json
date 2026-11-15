@@ -41,6 +41,14 @@
       "license_file": "assets/LICENSE",
       "attribution": "OurResearch. Official icon asset, with the upstream repository license notice preserved in each package. Trademark rights are separate from copyright licensing."
     },
+    "opengym": {
+      "repository": "https://github.com/DuarteSantos8/openGym",
+      "revision": "2d70e026effc6602f513555166a97443520f0572",
+      "license": "AGPL-3.0",
+      "license_url": "https://raw.githubusercontent.com/DuarteSantos8/openGym/2d70e026effc6602f513555166a97443520f0572/LICENSE",
+      "license_file": "assets/LICENSE",
+      "attribution": "openGym (Duarte Santos). Official app icon asset, with the upstream repository license notice preserved in each package. Trademark rights are separate from copyright licensing."
+    },
     "openlibrary": {
       "repository": "https://github.com/internetarchive/openlibrary",
       "revision": "3535e6478f5e8e7cb037b9e9d001d3105f1deb36",
@@ -728,6 +736,17 @@
       "height": 500,
       "trademark_owner": "OurResearch",
       "usage": "Official published service icon, used solely to identify this integration. The upstream PNG bytes are unchanged."
+    },
+    "opengym": {
+      "path": "assets/icon.png",
+      "source_id": "opengym",
+      "source_url": "https://raw.githubusercontent.com/DuarteSantos8/openGym/2d70e026effc6602f513555166a97443520f0572/website/icon-512.png",
+      "sha256": "ea39aa27c660688cfe9d23035e24e9f7a3c5a0777e71998b74e4ee793edf2905",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "openGym project",
+      "usage": "Official published app icon, used solely to identify this integration. The upstream PNG bytes are unchanged."
     },
     "openlibrary": {
       "path": "assets/icon.png",

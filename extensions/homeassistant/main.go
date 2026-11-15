@@ -68,9 +68,12 @@ type app struct {
 	dataDir  string
 	hub      *hubAPI
 	watch    *watcher
-	// done remembers the answers of actions.do by request id: the hub may ask again for the same one.
-	doneMu sync.Mutex
-	done   map[string]string
+	// actions.do runs each request id once. In-flight calls stay pinned in running; only completed successful
+	// answers occupy the bounded done LRU.
+	doneMu    sync.Mutex
+	running   map[string]*actionRun
+	done      map[string]string
+	doneOrder []string
 }
 
 func newApp(logf func(string, ...any)) *app {

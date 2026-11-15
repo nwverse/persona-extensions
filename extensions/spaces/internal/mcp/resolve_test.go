@@ -428,6 +428,56 @@ func TestRelationConditionsByTitle(t *testing.T) {
 		"筛选条件：属性「被阻塞」：没有标题为「没有这篇」的目标记录")
 }
 
+func TestOriginConditionsByTitle(t *testing.T) {
+	s := start(t, &memStore{})
+	defer s.finish()
+	space := asStr(t, get(t, s.done("space_write", `{"name":"Synthetic"}`), "id"))
+	s.done("type_write", fmt.Sprintf(`{"space":%q,"type":{"key":"source","name":"Source"}}`, space))
+	s.done("type_write", fmt.Sprintf(`{"space":%q,"type":{"key":"copy","name":"Copy"}}`, space))
+	s.done("type_write", fmt.Sprintf(`{"space":%q,"type":{"key":"other","name":"Other"}}`, space))
+	sourceID := asStr(t, get(t, s.done("entity_write", fmt.Sprintf(`{"space":%q,"type":"source","title":"Source Alpha"}`, space)), "id"))
+	s.done("entity_derive", fmt.Sprintf(`{"id":%q,"type":"copy","title":"Copy Alpha"}`, sourceID))
+	derivedID := s.idByTitle(space, "copy", "Copy Alpha")
+
+	count := func(typ, where string) float64 {
+		t.Helper()
+		args := fmt.Sprintf(`{"space":%q,"where":[%s]}`, space, where)
+		if typ != "" {
+			args = fmt.Sprintf(`{"space":%q,"type":%q,"where":[%s]}`, space, typ, where)
+		}
+		return get(t, s.done("query", args), "total").(float64)
+	}
+	if got := count("copy", fmt.Sprintf(`{"field":"origin","op":"eq","value":%q}`, sourceID)); got != 1 {
+		t.Fatalf("origin by ID = %v, want 1", got)
+	}
+	for _, tc := range []struct {
+		typ   string
+		where string
+		want  float64
+	}{
+		{typ: "copy", where: `{"field":"origin","op":"eq","value":"Source Alpha"}`, want: 1},
+		{typ: "", where: `{"field":"origin","op":"eq","value":"Source Alpha"}`, want: 1},
+		{typ: "copy", where: `{"field":"origin","op":"has","value":"Source Alpha"}`, want: 1},
+		{typ: "", where: `{"field":"origin","op":"has","value":["Source Alpha"]}`, want: 1},
+		{typ: "copy", where: `{"field":"origin","op":"ne","value":"Source Alpha"}`, want: 0},
+		{typ: "", where: `{"field":"origin","op":"ne","value":"Source Alpha"}`, want: 1},
+	} {
+		if got := count(tc.typ, tc.where); got != tc.want {
+			t.Errorf("type=%q %s: total=%v, want %v", tc.typ, tc.where, got, tc.want)
+		}
+	}
+	result := s.done("query", fmt.Sprintf(`{"space":%q,"type":"copy","where":[{"field":"origin","op":"eq","value":"Source Alpha"}]}`, space))
+	if got := asStr(t, get(t, result, "entities", 0, "id")); got != derivedID {
+		t.Errorf("origin title returned %q, want derived record %q", got, derivedID)
+	}
+	s.wantError("query", fmt.Sprintf(`{"space":%q,"type":"copy","where":[{"field":"origin","op":"eq","value":"Missing"}]}`, space),
+		"筛选条件：属性「源自」：没有标题为「Missing」的目标记录")
+
+	otherID := asStr(t, get(t, s.done("entity_write", fmt.Sprintf(`{"space":%q,"type":"other","title":"Source Alpha"}`, space)), "id"))
+	s.wantError("query", fmt.Sprintf(`{"space":%q,"type":"copy","where":[{"field":"origin","op":"eq","value":"Source Alpha"}]}`, space),
+		fmt.Sprintf("筛选条件：属性「源自」：有 2 条目标记录的标题是「Source Alpha」，请用编号：%s、%s", sourceID, otherID))
+}
+
 func TestTypeWriteMerge(t *testing.T) {
 	s, space := projectSpace(t, store.Open(""))
 	defer s.finish()

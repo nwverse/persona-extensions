@@ -229,18 +229,27 @@ func TestChecksRejectBadAnswers(t *testing.T) {
 	}
 }
 
+// The model unavailable to a day's pass: the rules still triage and record what they admitted, but the day is not
+// done: no finished run, ErrModelDown, and the pause says why.
 func TestNoModelStillTriagesAndChecks(t *testing.T) {
-	down := stub.Scripted(func(model.Request) (string, error) { return "", model.ErrUnavailable })
+	down := stub.Scripted(func(model.Request) (string, error) {
+		return "", fmt.Errorf("%w: 并发已满（占位）", model.ErrUnavailable)
+	})
 	c, _ := newCurator(t, down, "shadow")
-	run, err := c.RunDaily(context.Background(), "2026-11-03", false)
-	if err != nil {
-		t.Fatal(err)
+	_, err := c.RunDaily(context.Background(), "2026-11-03", false)
+	if !errors.Is(err, ErrModelDown) {
+		t.Fatalf("err %v, want ErrModelDown", err)
 	}
-	if run.Counts["digested"] != 0 || c.St.S.Funnel["2026-11-03"].Admitted == 0 {
-		t.Fatalf("without a model: digested %d, admitted %d", run.Counts["digested"], c.St.S.Funnel["2026-11-03"].Admitted)
+	if c.St.S.Funnel["2026-11-03"].Admitted == 0 {
+		t.Fatal("the rules' triage is recorded all the same")
 	}
-	if !strings.Contains(run.Report, "模型不可用") {
-		t.Errorf("the report says the model is unavailable:\n%s", run.Report)
+	for _, r := range c.St.S.Runs {
+		if r.Kind == "daily" && r.Period == "2026-11-03" {
+			t.Fatalf("a day without the model recorded as run: %+v", r)
+		}
+	}
+	if p := c.St.S.ModelPause; p == nil || !strings.Contains(p.Reason, "并发已满") {
+		t.Fatalf("pause: %+v", p)
 	}
 }
 
