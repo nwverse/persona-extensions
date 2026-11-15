@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -390,10 +391,26 @@ esac
 	}
 }
 
+// machineWide are the fixed locations the scripts search besides PATH and HOME: Homebrew's prefixes, /usr/local
+// and the Disklessly app (TestHermeticCoversEveryFixedLocation keeps the list complete).
+var machineWide = []string{"/opt/homebrew/", "/usr/local/", "/home/linuxbrew/", "/Applications/"}
+
+// hermetic is script with machineWide moved under root, where nothing exists unless the test puts it there. A test
+// then sees only its own fakes, never a Homebrew or a CLI installed on the machine running it: GitHub's Ubuntu
+// runners have /home/linuxbrew/.linuxbrew, and a developer's Mac /opt/homebrew, where the unchanged script would
+// tap and install for real (#592).
+func hermetic(script, root string) string {
+	var pairs []string
+	for _, p := range machineWide {
+		pairs = append(pairs, p, filepath.Join(root, p)+"/")
+	}
+	return strings.NewReplacer(pairs...).Replace(script)
+}
+
 func runBrewScript(t *testing.T, dir string) brewOutcome {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-s")
-	cmd.Stdin = strings.NewReader(brewScript())
+	cmd.Stdin = strings.NewReader(hermetic(brewScript(), dir))
 	cmd.Env = []string{"HOME=" + filepath.Join(dir, "home"), "PATH=" + dir + ":/usr/bin:/bin", "TMPDIR=" + dir}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -448,20 +465,57 @@ func TestBrewScript(t *testing.T) {
 	if k, b := strings.Index(resolveCLIScript, "/opt/homebrew/opt/disklessly-cli/bin/disklessly"), strings.Index(resolveCLIScript, "/opt/homebrew/bin/disklessly"); k < 0 || k > b {
 		t.Fatal("lookup does not try the Homebrew keg before /opt/homebrew/bin")
 	}
-	// No Homebrew at all.
+	// No Homebrew at all, whatever the machine running the test has.
 	dir = t.TempDir()
 	if o := runBrewScript(t, dir); o.ok || o.step != "nobrew" {
 		t.Fatalf("no brew: %+v", o)
+	}
+	// A Homebrew at one of the fixed prefixes, not on PATH (a non-interactive SSH shell), is found.
+	dir = t.TempDir()
+	fakeBrew(t, dir, "0.3.0", false, "")
+	fixed := filepath.Join(dir, "home", "linuxbrew", ".linuxbrew", "bin")
+	if err := os.MkdirAll(fixed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(dir, "brew"), filepath.Join(fixed, "brew")); err != nil {
+		t.Fatal(err)
+	}
+	if o := runBrewScript(t, dir); !o.ok || o.op != "install" {
+		t.Fatalf("brew at a fixed prefix: %+v", o)
 	}
 	// The refresh script reports where Homebrew is.
 	dir = t.TempDir()
 	fakeBrew(t, dir, "0.3.0", false, "")
 	cmd := exec.Command("/bin/sh", "-s")
-	cmd.Stdin = strings.NewReader(coldListScript(false, true))
+	cmd.Stdin = strings.NewReader(hermetic(coldListScript(false, true), dir))
 	cmd.Env = []string{"HOME=" + filepath.Join(dir, "home"), "PATH=" + dir + ":/usr/bin:/bin"}
 	out, _ := cmd.CombinedOutput()
 	if got := firstNonEmpty(splitSections(string(out))["COLD_BREW"]); got != filepath.Join(dir, "brew") {
 		t.Fatalf("COLD_BREW %q in\n%s", got, out)
+	}
+}
+
+// TestHermeticCoversEveryFixedLocation: every absolute path the scripts search starts with one of machineWide,
+// so hermetic leaves no way to a Homebrew or CLI of the machine running the tests.
+func TestHermeticCoversEveryFixedLocation(t *testing.T) {
+	path := regexp.MustCompile(`(?:^|[\s"'=(])(/[A-Za-z][^\s"';)]*)`)
+	for name, script := range map[string]string{"brew": brewScript(), "cold list": coldListScript(false, true), "resolve": resolveCLIScript} {
+		for _, m := range path.FindAllStringSubmatch(script, -1) {
+			p := m[1]
+			if p == "/dev/null" || strings.HasPrefix(p, "/bin/") || strings.HasPrefix(p, "/usr/bin/") {
+				continue
+			}
+			if !slices.ContainsFunc(machineWide, func(w string) bool { return strings.HasPrefix(p, w) }) {
+				t.Errorf("%s script searches %s, which hermetic does not move", name, p)
+			}
+		}
+		root := t.TempDir()
+		h := hermetic(script, root)
+		for _, w := range machineWide {
+			if n, moved := strings.Count(h, w), strings.Count(h, root+w); n == 0 || n != moved {
+				t.Errorf("%s script: %d of %d mentions of %s moved", name, moved, n, w)
+			}
+		}
 	}
 }
 
