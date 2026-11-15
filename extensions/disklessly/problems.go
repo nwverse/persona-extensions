@@ -325,13 +325,16 @@ V=$("$P" version 2>/dev/null | head -n 1)
 if [ -z "$V" ]; then fail verify "装好的 disklessly 在这台电脑上运行不了"; fi
 S=$("$P" --json sessions status 2>/dev/null | tr '\n' ' ')
 case "$S" in *EX_USAGE*|*"unknown sessions command"*) fail verify "装好的 disklessly 不支持 sessions status" ;; esac
-"$BREW" cleanup -s ` + brewFQ + ` >/dev/null 2>&1 || true
+if grep -q -i 'already installed' "$LOG" 2>/dev/null; then echo "@@BREW_SAME"; fi
+"$BREW" cleanup --prune=0 -s ` + brewFQ + ` >/dev/null 2>&1 || true
 rm -f "$LOG"
 echo "@@BREW_OK $V"
 echo "@@BREW_KEG $P"
 HB="$(dirname "$(dirname "$BREW")")/bin/disklessly"
-if [ -L "$HB" ]; then echo "@@BREW_BIN $HB -> $(readlink "$HB") $("$HB" version 2>/dev/null | head -n 1)"
-elif [ -x "$HB" ]; then echo "@@BREW_BIN $HB $("$HB" version 2>/dev/null | head -n 1)"; fi
+if [ -L "$HB" ] || [ -x "$HB" ]; then
+  T=""; if [ -L "$HB" ]; then T=$(readlink "$HB"); fi
+  printf '@@BREW_BIN %s\t%s\t%s\n' "$HB" "$T" "$("$HB" version 2>/dev/null | head -n 1)"
+fi
 ` + resolveCLIScript + `
 AV=""
 if [ -n "$DKL" ]; then AV=$("$DKL" version 2>/dev/null | head -n 1); fi
@@ -348,7 +351,10 @@ type brewOutcome struct {
 	op      string // install or upgrade
 	version string
 	keg     string // the installed CLI
-	bin     string // Homebrew's bin/disklessly and what it is
+	same    bool   // Homebrew had it at the newest version already
+	bin     string // Homebrew's bin/disklessly
+	binTo   string // what that link points to
+	binVer  string // what it answers to version
 	link    string // why Homebrew could not link it
 	shadow  string
 	step    string
@@ -373,8 +379,14 @@ func parseBrew(out string) brewOutcome {
 			log = append(log, strings.TrimPrefix(line, "@@BREW_LOG "))
 		case strings.HasPrefix(line, "@@BREW_KEG "):
 			o.keg = strings.TrimSpace(strings.TrimPrefix(line, "@@BREW_KEG "))
+		case line == "@@BREW_SAME":
+			o.same = true
 		case strings.HasPrefix(line, "@@BREW_BIN "):
-			o.bin = strings.TrimSpace(strings.TrimPrefix(line, "@@BREW_BIN "))
+			f := strings.SplitN(strings.TrimPrefix(line, "@@BREW_BIN "), "\t", 3)
+			for len(f) < 3 {
+				f = append(f, "")
+			}
+			o.bin, o.binTo, o.binVer = strings.TrimSpace(f[0]), strings.TrimSpace(f[1]), strings.TrimSpace(f[2])
 		case strings.HasPrefix(line, "@@BREW_LINK "):
 			o.link = strings.TrimSpace(strings.TrimPrefix(line, "@@BREW_LINK "))
 		case strings.HasPrefix(line, "@@BREW_SHADOW "):

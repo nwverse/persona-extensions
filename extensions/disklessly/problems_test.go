@@ -377,6 +377,7 @@ case "$1" in
   list) exit ` + listRC + ` ;;
   --prefix) if [ -n "$2" ]; then echo "` + prefix + `/opt/${2##*/}"; else echo "` + prefix + `"; fi ;;
   install|upgrade)
+    if [ "` + mode + `" = same ]; then echo "Warning: nwverse/tap/disklessly-cli 0.3.0 already installed" >&2; exit 0; fi
     if [ "` + installRC + `" = 1 ]; then echo "Error: disklessly-cli: Failed to download resource" >&2; exit 1; fi
     cat > "` + filepath.Join(cli, "disklessly") + `" <<'EOF'
 ` + dkl + `EOF
@@ -410,7 +411,7 @@ func TestBrewScript(t *testing.T) {
 		t.Fatalf("install: %+v", o)
 	}
 	log, _ := os.ReadFile(filepath.Join(dir, "log"))
-	if !strings.Contains(string(log), "tap nwverse/tap") || !strings.Contains(string(log), "install nwverse/tap/disklessly-cli") || !strings.Contains(string(log), "cleanup -s nwverse/tap/disklessly-cli") {
+	if !strings.Contains(string(log), "tap nwverse/tap") || !strings.Contains(string(log), "install nwverse/tap/disklessly-cli") || !strings.Contains(string(log), "cleanup --prune=0 -s nwverse/tap/disklessly-cli") {
 		t.Fatalf("brew calls:\n%s", log)
 	}
 	// Already installed by Homebrew: upgrade.
@@ -425,6 +426,15 @@ func TestBrewScript(t *testing.T) {
 	o = runBrewScript(t, dir)
 	if o.ok || o.step != "install" || !strings.Contains(o.log, "Failed to download resource") {
 		t.Fatalf("failed install: %+v", o)
+	}
+	// Already the newest version: said so, and the formula's downloads are pruned.
+	dir = t.TempDir()
+	fakeBrew(t, dir, "0.3.0", true, "same")
+	if o := runBrewScript(t, dir); !o.ok || !o.same || o.op != "upgrade" {
+		t.Fatalf("up to date: %+v", o)
+	}
+	if log, _ := os.ReadFile(filepath.Join(dir, "log")); !strings.Contains(string(log), "cleanup --prune=0 -s nwverse/tap/disklessly-cli") {
+		t.Fatalf("no prune:\n%s", log)
 	}
 	// The keg works but Homebrew could not link it over another bin/disklessly: installed, with
 	// the link problem reported.
@@ -463,7 +473,8 @@ func TestBrewJob(t *testing.T) {
 	coldFleet(t, a)
 	var mu sync.Mutex
 	var calls []string
-	answer := "@@BREW_OP install\n@@BREW_OK disklessly 0.3.0\n"
+	answer := "@@BREW_OP install\n@@BREW_OK disklessly 0.3.0 (abc, built 2026-11-15) revision 2\n@@BREW_KEG /opt/homebrew/opt/disklessly-cli/bin/disklessly\n" +
+		"@@BREW_BIN /opt/homebrew/bin/disklessly\t/Applications/Disklessly.app/Contents/MacOS/disklessly\tdisklessly 0.2.3 (def) revision 2\n"
 	a.runner = func(ctx context.Context, m *Machine, s string, d time.Duration) (string, error) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -480,7 +491,8 @@ func TestBrewJob(t *testing.T) {
 	}
 	a.waitJobs()
 	j := a.jobSnapshot()["studio-mac"]
-	if j.Err != "" || !strings.Contains(j.Note, "已用 Homebrew 安装 disklessly 0.3.0") {
+	if j.Err != "" || !strings.Contains(j.Note, "已用 Homebrew 安装 disklessly 0.3.0（/opt/homebrew/opt/disklessly-cli/bin/disklessly）") ||
+		!strings.Contains(j.Note, "/opt/homebrew/bin/disklessly → /Applications/Disklessly.app/Contents/MacOS/disklessly（disklessly 0.2.3）") || strings.Contains(j.Note, "revision") {
 		t.Fatalf("job %+v", j)
 	}
 	if len(calls) < 2 || calls[0] != "studio-mac:brew" || calls[1] != "studio-mac:refresh" {
