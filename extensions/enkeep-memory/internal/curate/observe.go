@@ -733,7 +733,9 @@ func (c *Curator) ingestObservations(w *verify.Window, u *Unit, k *known, tier s
 	for i, o := range obs {
 		r := c.checkObservation(w, u, k, tier, o)
 		if r.rej == "" {
-			if rej := wordingCheck(obsFields(&o), lang, owner); rej != "" {
+			checked := o
+			checked.Text = r.e.Text // checkObservation may have synthesized Text from Object/Pitfall/Fix; check that text
+			if rej := wordingCheck(obsFields(&checked), lang, owner); rej != "" {
 				r = observation{rej: rej}
 			} else if rewritten[fmt.Sprintf("o%d", i)] {
 				r.e.Flags = append(r.e.Flags, flagRewritten)
