@@ -21,6 +21,9 @@ func (a *app) startScan(id string) (bool, coldJob, error) {
 		if err != nil {
 			return "", err
 		}
+		if s.Partial {
+			return fmt.Sprintf("水位已更新：根分区已用 %.0f%%；缓存太多，没在 %d 秒内统计完，可回收空间只算了一部分", usedPercent(s), int(probeTimeout/time.Second)), nil
+		}
 		return fmt.Sprintf("扫描完成：根分区已用 %.0f%%，可回收 %s", usedPercent(s), FormatBytes(s.ReclaimableBytes)), nil
 	})
 }
