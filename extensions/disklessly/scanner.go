@@ -655,10 +655,10 @@ func applySessionCLI(sess *SessionSummary, sections map[string][]string) []ScanI
 	sess.CLIReady = planOK && sess.Cloud != nil
 	switch {
 	case !sess.CLIReady:
-		sess.Note = "目标机器没有支持云端归档的 disklessly CLI（需要 sessions status 与 --exclude-from），冷会话保持原样；安装或升级 disklessly 后重新扫描。"
+		sess.Note = "这台电脑上没有能上传冷会话的 disklessly CLI，冷会话保持原样；到「Agent 对话」页用 Homebrew 安装或升级 disklessly 后重新扫描。"
 		return nil
 	case !sess.Cloud.Backend.Reachable:
-		sess.Note = "备份后端不可达，冷会话暂不归档：" + cmpOr(sess.Cloud.Backend.Error, "backend unreachable")
+		sess.Note = "备份后端连不上，冷会话暂不上传；确认后端在线后重新扫描。"
 	}
 
 	kb := map[string]uint64{}

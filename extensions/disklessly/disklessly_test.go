@@ -491,8 +491,8 @@ func TestMCPOverStdio(t *testing.T) {
 	}
 	listRes := rpc("tools/list", map[string]any{})
 	tList, _ := listRes["tools"].([]any)
-	if len(tList) != len(tools) || len(tools) != 10 {
-		t.Fatalf("tools/list count = %d, want 10", len(tList))
+	if len(tList) != len(tools) || len(tools) != 11 {
+		t.Fatalf("tools/list count = %d, want 11", len(tList))
 	}
 
 	// 1. Upsert remote machine armbox

@@ -174,7 +174,7 @@ func copyInstall(ctx context.Context, streamer StreamRunner, src, dst *Machine, 
 		}
 		return o, errors.New(msg)
 	case serr != nil:
-		return o, fmt.Errorf("读取 %s 上的 CLI 失败：%v", machineLabel(src), serr)
+		return o, fmt.Errorf("读取 %s 上的 CLI 失败：%w", machineLabel(src), serr)
 	case terr != nil:
 		return o, terr
 	}

@@ -95,6 +95,10 @@ type ColdCatalog struct {
 	CLI       ColdCLI   `json:"cli,omitzero"`
 	Platform  string    `json:"platform,omitempty"`
 	CheckedAt time.Time `json:"checked_at,omitzero"` // the last refresh attempt, successful or not
+	// Brew is the machine's Homebrew (brew's path) as the last refresh found it, "" without one.
+	Brew string `json:"brew,omitempty"`
+	// BrewKnown: the refresh looked for Homebrew (catalogs of older versions did not).
+	BrewKnown bool `json:"brew_known,omitempty"`
 
 	checked map[string]bool // segments of archived/remote rows, which --check-segments stats
 }
@@ -109,7 +113,7 @@ func coldListScript(digest, status bool) string {
 	}
 	s := ""
 	if status {
-		s = "echo \"@@SECTION:COLD_UNAME\"\nuname -sm 2>/dev/null || true\n"
+		s = "echo \"@@SECTION:COLD_UNAME\"\nuname -sm 2>/dev/null || true\n" + findBrewScript + "\necho \"@@SECTION:COLD_BREW\"\nprintf '%s\\n' \"$BREW\"\n"
 	}
 	s += resolveCLIScript + `
 if [ -z "$DKL" ]; then
@@ -193,6 +197,9 @@ func RefreshColdIndex(ctx context.Context, runner Runner, st *State, m *Machine,
 	if p := parsePlatformString(firstNonEmpty(sections["COLD_UNAME"])); p != "" {
 		cat.Platform = p
 	}
+	if b, ok := sections["COLD_BREW"]; ok {
+		cat.Brew, cat.BrewKnown = strings.TrimSpace(firstNonEmpty(b)), true
+	}
 	if err != nil {
 		if _, started := sections["COLD_LIST"]; started || m.IsLocal || isSelfHostAlias(m.Host) {
 			// The machine answered but the CLI did not finish (or the local shell failed).
@@ -226,7 +233,7 @@ func RefreshColdIndex(ctx context.Context, runner Runner, st *State, m *Machine,
 			return fail(ColdNoBackend, errors.New("disklessly 还没有设置备份后端："+ce.Message))
 		case ce != nil:
 			cat.Detail = firstLine(sections["COLD_LIST"])
-			return fail(ColdUnreadable, errors.New("disklessly sessions list 报错："+cmpOr(ce.Message, ce.Name)))
+			return fail(ColdUnreadable, rawError("disklessly 读取会话索引时报错", cmpOr(ce.Message, ce.Name)))
 		}
 		cat.Detail = firstLine(sections["COLD_LIST"])
 		return fail(ColdUnreadable, errors.New("disklessly sessions list 没有返回可解析的结果"))
@@ -639,7 +646,7 @@ func parseDeepSearch(raw string) ([]cliSearchHit, error) {
 		Error *cliError `json:"error"`
 	}
 	if json.Unmarshal([]byte(raw), &fail) == nil && fail.Error != nil && fail.Error.Message != "" {
-		return nil, errors.New("全文搜索失败：" + fail.Error.Message)
+		return nil, rawError("disklessly 全文搜索报错", fail.Error.Message)
 	}
 	return nil, errors.New("全文搜索没有返回可解析的结果")
 }
@@ -885,9 +892,9 @@ func RestoreCold(ctx context.Context, runner Runner, st *State, m *Machine, entr
 	case rc == cliExitMissing:
 		return nil, "", errors.New("目标机器未安装 disklessly CLI，无法恢复会话")
 	case rc == cliExitBackend:
-		return nil, "", fmt.Errorf("备份后端不可达，无法恢复会话：%s", cmpOr(msg, "backend unreachable"))
+		return nil, "", rawError("备份后端连不上，这个会话暂时恢复不了；确认后端在线后再试", msg)
 	case rc != 0 || !resp.OK:
-		return nil, "", fmt.Errorf("disklessly sessions restore 失败 (exit %d)：%s", rc, cmpOr(msg, "unknown error"))
+		return nil, "", rawError(fmt.Sprintf("disklessly 恢复会话失败（退出码 %d），本地没有改动", rc), msg)
 	}
 	if resp.Path != "" && resp.Path != e.Path {
 		// The CLI restored somewhere the catalog did not know: check that path.

@@ -42,7 +42,8 @@ const usage = `disklessly: Persona Disklessly machine disk watermark, cache clea
                                disklessly_machines_status, disklessly_scan, disklessly_history,
                                disklessly_sessions_search, disklessly_sessions_status,
                                disklessly_clean, disklessly_machine_upsert, disklessly_machine_delete,
-                               disklessly_sessions_offload, disklessly_sessions_restore)
+                               disklessly_sessions_offload, disklessly_sessions_restore,
+                               disklessly_cli_install)
   disklessly manifest          print persona-extension.json
 
 The MCP server finds the data in --data, else PERSONA_DISKLESSLY_DATA, else the directory the hub's

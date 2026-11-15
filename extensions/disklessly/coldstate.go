@@ -241,7 +241,11 @@ func sshCause(msg string) string {
 	switch {
 	case strings.Contains(m, "timed out") || strings.Contains(m, "timeout") || strings.Contains(m, "deadline") || strings.Contains(m, "signal: killed"):
 		return causeTimeout
-	case strings.Contains(m, "permission denied") || strings.Contains(m, "host key verification") || strings.Contains(m, "authentication") ||
+	case strings.Contains(m, "bad owner or permissions on"):
+		return causeSSHConfig
+	case strings.Contains(m, "host key verification") || strings.Contains(m, "remote host identification has changed"):
+		return causeHostKey
+	case strings.Contains(m, "permission denied") || strings.Contains(m, "authentication") ||
 		strings.Contains(m, "publickey") || strings.Contains(m, "too many authentication"):
 		return causeAuth
 	case strings.Contains(m, "connection refused"):
@@ -252,22 +256,6 @@ func sshCause(msg string) string {
 		return causeNetwork
 	}
 	return ""
-}
-
-func sshCauseText(c string) string {
-	switch c {
-	case causeTimeout:
-		return "连接超时，这台电脑可能关机、休眠或不在同一网络"
-	case causeAuth:
-		return "SSH 登录被拒绝，检查用户名和密钥"
-	case causeRefused:
-		return "连接被拒绝，SSH 服务没有开启或端口不对"
-	case causeDNS:
-		return "找不到这个主机名"
-	case causeNetwork:
-		return "网络不通"
-	}
-	return "SSH 连接失败"
 }
 
 // machineLabel is a machine's name for chips and rows, without the network address that

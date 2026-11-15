@@ -348,7 +348,7 @@ func TestRestoreCold(t *testing.T) {
 		if err == nil || len(st.History) != 0 || st.Cold[m.ID].Entries[0].State != "archived" {
 			t.Fatalf("%s: err=%v history=%d", name, err, len(st.History))
 		}
-		if name == "backend" && !strings.Contains(err.Error(), "备份后端不可达") {
+		if name == "backend" && (!strings.Contains(err.Error(), "备份后端连不上") || !strings.Contains(toolErrorText(err), "详情")) {
 			t.Fatalf("backend err: %v", err)
 		}
 	}
@@ -821,7 +821,7 @@ func TestColdIndexReviewFixes(t *testing.T) {
 	if got := deepSearchWords("--resume -home-dev-app - x"); strings.Join(got, "|") != "resume|home-dev-app|x" {
 		t.Fatalf("words %v", got)
 	}
-	if _, err := parseDeepSearch(`{"ok":false,"error":{"code":2,"message":"sessions search requires a query","name":"EX_USAGE"}}`); err == nil || !strings.Contains(err.Error(), "requires a query") {
+	if _, err := parseDeepSearch(`{"ok":false,"error":{"code":2,"message":"sessions search requires a query","name":"EX_USAGE"}}`); err == nil || !strings.Contains(toolErrorText(err), "requires a query") || strings.Contains(err.Error(), "requires a query") {
 		t.Fatalf("cli error: %v", err)
 	}
 	scripts = nil
