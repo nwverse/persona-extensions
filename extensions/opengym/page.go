@@ -123,7 +123,7 @@ func (a *app) page(r *ext.UIRequest, st pageState, syncErr error) *wire.View {
 		return v
 	}
 	loc := a.pageZone(r)
-	if st.Workout != "" {
+	if st.Workout != "" && s.Me.can("workouts", "view") {
 		if w := s.State.workout(st.Workout); w != nil {
 			v.Title = w.title(s.State)
 			v.Sections = a.workoutSections(s.State, *w, loc)

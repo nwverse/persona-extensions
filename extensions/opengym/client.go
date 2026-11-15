@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -307,7 +308,7 @@ func (a *app) read(ctx context.Context) error {
 		if err := a.do(ctx, http.MethodGet, "/api/token/data/rev", nil, &rev); err != nil {
 			return err
 		}
-		if rev.Rev == old.Rev && rev.Wid == old.Wid {
+		if rev.Rev == old.Rev && rev.Wid == old.Wid && maps.Equal(who.Token.Scopes, old.Me.Token.Scopes) {
 			cp := *old
 			cp.Me, cp.At = who, a.now()
 			a.keep(&cp, false)
