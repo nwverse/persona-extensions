@@ -337,7 +337,7 @@ func TestProtocolAndManifest(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatal(err)
 	}
-	if len(m.Contributes.UI) != 2 || m.Contributes.UI[0].ID != "water" || len(h.Init.Contributes) != 1 {
+	if len(m.Contributes.UI) != 2 || m.Contributes.UI[0].ID != "water" || len(h.Init.Contributes) != 2 {
 		t.Fatal("contributions differ")
 	}
 	var ui any

@@ -82,7 +82,7 @@ func program() ext.Program {
 		}
 		return a, nil
 	}
-	return ext.Program{ID: "water", Version: "0.2.0", Manifest: manifest,
+	return ext.Program{ID: "water", Version: "0.3.0", Manifest: manifest,
 		Init: func(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]any, error) {
 			c := defaults()
 			if err := in.Config(&c); err != nil {
@@ -100,7 +100,13 @@ func program() ext.Program {
 			current.Store(a)
 			go a.run(ctx)
 			return m.Contributes, nil
-		}, UI: map[string]ext.Page{"water": {
+		}, Shortcuts: map[string]ext.Shortcut{"log_water": func(ctx context.Context, r *ext.ShortcutRequest) (*wire.ShortcutResult, error) {
+			a, err := get()
+			if err != nil {
+				return nil, err
+			}
+			return a.shortcut(ctx, r)
+		}}, UI: map[string]ext.Page{"water": {
 			Render: func(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 				a, err := get()
 				if err != nil {

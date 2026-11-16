@@ -2,9 +2,9 @@
   "manifest_version": 1,
   "id": "water",
   "name": "喝水提醒",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "icon": "assets/icon.png",
-  "description": "按时提醒喝水，通知上一点就记，随时看今天的进度和最近每天喝了多少，提醒不用模型。表盘和小组件也能看今天的喝水进度。",
+  "description": "按时提醒喝水，通知上一点就记，随时看今天的进度和最近每天喝了多少，提醒不用模型。表盘和小组件也能看今天的喝水进度。也能用快捷指令和 Siri 记一杯水。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/docs/extensions/water.md",
   "tags": ["健康", "喝水", "提醒", "习惯"],
@@ -19,6 +19,8 @@
   "contributes": {"ui": [
     {"id": "water", "title": "喝水", "placement": "nav_page", "icon": "droplet"},
     {"id": "water-today", "title": "今天喝水", "placement": "widget", "families": ["small", "medium", "accessory_circular", "accessory_rectangular", "accessory_inline"], "refresh_minutes": 30, "opens": "water"}
+  ], "shortcuts": [
+    {"id": "log_water", "title": "记一杯水", "description": "记一杯水；填了毫升数就按填的量记。", "params": [{"name": "amount", "title": "毫升", "kind": "number"}], "ui": "water"}
   ]},
   "permissions": {"hub": ["notify"]},
   "configuration": {

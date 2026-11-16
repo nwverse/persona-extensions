@@ -246,10 +246,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 					toast = "请输入 1–3000 毫升"
 					break
 				}
-				s.Sequence++
-				s.Records = append(s.Records, record{ID: fmt.Sprintf("d%d", s.Sequence), At: now, ML: ml})
-				s.Snooze = time.Time{}
-				s.Pending = nil
+				logDrink(s, now, ml)
 				applied = true
 				p.Offset = 0
 				toast = fmt.Sprintf("已记 %d 毫升，%s", ml, progressToast(a.cfg, *s, now))

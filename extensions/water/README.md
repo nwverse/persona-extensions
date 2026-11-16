@@ -9,6 +9,14 @@ Water (喝水提醒) sends timed drink-water reminders without calling a model. 
 
 The package contains the `water` program, started with the hub. It keeps its own schedule and records in the extension data directory. No account is needed.
 
+## Shortcuts and Siri
+
+In Apple's **Shortcuts** app, add Persona's **Run Extension Action** and choose **记一杯水**. Leave the number empty to log one cup (`cup_ml`), or enter a number of milliliters from 1 to 3000. Each run logs a new drink, restarts the reminder interval, and requests a widget refresh. The result reports the amount and today's progress.
+
+Name the shortcut **记一杯水** to run it by saying that name to Siri. On iPhone, you can assign the shortcut to the **Action button**. The same shortcut can run on Mac and Apple Watch; on the watch, Persona uses the watch's own connection to the hub.
+
+Upgrading asks for consent again because the extension adds **Actions in Shortcuts and Siri** (快捷指令和 Siri 里的动作).
+
 ## Watch faces and widgets
 
 On the iPhone Home Screen or Lock Screen, add a **Persona** widget and select **今天喝水**. On Apple Watch, edit a watch face and select the Persona **今天喝水** complication. This requires a hub that supports extension widgets. Tap a widget to open the 喝水 page.

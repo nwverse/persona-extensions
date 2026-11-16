@@ -19,7 +19,7 @@ Change these in **Settings › Extensions › 喝水提醒**:
 | `weekends` | `true` | Also remind on Saturday and Sunday. |
 | `stop_when_done` | `true` | Stop reminders for the day after reaching the goal. |
 
-The plan uses the most recent valid time zone received in a UI context, saved across restarts and shown on the page. Until then, it uses the user's device time zone reported by the hub at each start, falling back to the hub process's local time zone if neither is available. Days follow midnight boundaries in that zone, including daylight-saving changes.
+The plan uses the most recent valid time zone received from a page, widget, or shortcut, saved across restarts and shown on the page. Until then, it uses the user's device time zone reported by the hub at each start, falling back to the hub process's local time zone if neither is available. Days follow midnight boundaries in that zone, including daylight-saving changes.
 
 The first reminder is at the window's start. Logging a drink restarts the interval. **等会儿** postpones the next reminder by 30 minutes; a later drink cancels that postponement. Occurrences outside the window move to the next allowed day's start. After downtime, at most one overdue reminder is sent within the current window. An invalid window disables reminders and shows a warning.
 
@@ -30,6 +30,14 @@ Notifications replace the previous water reminder and offer **喝了一杯**, **
 Reminders use ordinary urgency (P1). With low-distraction mode enabled, they are held for briefings and do not ring; the page shows a warning when the hub reports that mode. Water never raises them to P0. If notification permission is missing, the page explains why reminders cannot be sent and logging remains available.
 
 A connection failure or server error gets at most three attempts in total, 30 seconds apart, then the normal interval resumes. A hub response saying the notification was not sent is recorded without retrying; the page shows the reason. Attempts survive a process restart. An unknown low-distraction status does not prevent using the page.
+
+## Shortcuts and Siri
+
+In Apple's **Shortcuts** app, add Persona's **Run Extension Action** and choose **记一杯水**. Leave the number empty to log one cup (`cup_ml`), or enter a number of milliliters from 1 to 3000. Each run logs a new drink, restarts the reminder interval, and requests a widget refresh. The result reports the amount and today's progress.
+
+Name the shortcut **记一杯水** to run it by saying that name to Siri. On iPhone, you can assign the shortcut to the **Action button**. The same shortcut can run on Mac and Apple Watch; on the watch, Persona uses the watch's own connection to the hub.
+
+Upgrading asks for consent again because the extension adds **Actions in Shortcuts and Siri** (快捷指令和 Siri 里的动作).
 
 ## Watch faces and widgets
 
@@ -45,4 +53,4 @@ Upgrading asks for consent again because the extension requests permission to di
 
 Records and reminder state live only in the hub's extension data directory, in an atomically replaced private file. Records are kept for the most recent 400 calendar days. A damaged file is backed up there and a fresh file is started. Uninstalling the extension deletes its data directory, including backups. No data is sent to an account or health service.
 
-Water includes reminders, notification buttons, the page, settings, widgets, and watch complications. It does not include Shortcuts, assistant skills, MCP tools, overview cards, Apple Health sync, meeting-aware postponement, or translations.
+Water includes reminders, notification buttons, the page, settings, widgets, watch complications, and a Shortcuts and Siri action. It does not include assistant skills, MCP tools, overview cards, Apple Health sync, meeting-aware postponement, or translations.
