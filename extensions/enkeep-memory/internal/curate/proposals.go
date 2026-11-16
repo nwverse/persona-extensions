@@ -58,6 +58,9 @@ func (c *Curator) propose(kind, title, detail, target string, ch Change, items [
 	key := hash(kind, target, string(raw))[:16]
 	for _, p := range c.St.S.Proposals {
 		if p.Key == key {
+			if (p.Status == "accepted" || p.Status == "auto") && c.outgoingChanged(target, ch.Profile) {
+				break // a privacy-release migration needs a new proposal, not the old accepted hash
+			}
 			return p // the same proposal is never made twice, whatever became of the first
 		}
 	}
@@ -70,6 +73,18 @@ func (c *Curator) propose(kind, title, detail, target string, ch Change, items [
 	}
 	c.St.S.Proposals = append(c.St.S.Proposals, p)
 	return p
+}
+
+// outgoingChanged says whether the profile actually left on the hub by an accepted write differs from the payload now
+// allowed. The stored full Change can be identical while the privacy filter changed what may actually be written.
+func (c *Curator) outgoingChanged(target string, now *kbsrc.PersonProfile) bool {
+	last := c.lastProfile(target)
+	if last == nil {
+		return now != nil && !now.Empty()
+	}
+	a, _ := json.Marshal(last)
+	b, _ := json.Marshal(outgoingProfile(now))
+	return string(a) != string(b)
 }
 
 func (c *Curator) proposeMailDowngrade(u *Unit, category string) {
