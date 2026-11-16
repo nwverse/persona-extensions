@@ -19,7 +19,7 @@ Change these in **Settings › Extensions › 喝水提醒**:
 | `weekends` | `true` | Also remind on Saturday and Sunday. |
 | `stop_when_done` | `true` | Stop reminders for the day after reaching the goal. |
 
-The plan uses the most recent valid time zone received when the page is opened or an action is taken. That zone is saved and shown on the page. Until then, the hub process's local time zone is used. Days follow local midnight boundaries, including daylight-saving changes.
+The plan uses the most recent valid time zone received in a UI context, saved across restarts and shown on the page. Until then, it uses the user's device time zone reported by the hub at each start, falling back to the hub process's local time zone if neither is available. Days follow midnight boundaries in that zone, including daylight-saving changes.
 
 The first reminder is at the window's start. Logging a drink restarts the interval. **等会儿** postpones the next reminder by 30 minutes; a later drink cancels that postponement. Occurrences outside the window move to the next allowed day's start. After downtime, at most one overdue reminder is sent within the current window. An invalid window disables reminders and shows a warning.
 
@@ -31,8 +31,18 @@ Reminders use ordinary urgency (P1). With low-distraction mode enabled, they are
 
 A connection failure or server error gets at most three attempts in total, 30 seconds apart, then the normal interval resumes. A hub response saying the notification was not sent is recorded without retrying; the page shows the reason. Attempts survive a process restart. An unknown low-distraction status does not prevent using the page.
 
+## Watch faces and widgets
+
+On the iPhone Home Screen or Lock Screen, add a **Persona** widget and select **今天喝水**. On Apple Watch, edit a watch face and choose the Persona **今天喝水** complication. A hub that supports extension widgets is required. Tapping a widget opens the 喝水 page.
+
+Small widgets show today's total, goal, and approximate cups left. Medium widgets add daily totals for the last seven days. Circular complications show a progress ring, rectangular ones show progress with a short summary, and inline ones show a single sentence. Widgets have no logging buttons and do not show the next reminder time.
+
+Logging or undoing a drink requests a refresh, as does crossing midnight in the plan's time zone. A regular 30-minute refresh is the fallback. The hub limits background refresh notifications to once per device per widget in 15 minutes, and the system can delay updates further, so displayed progress can lag a drink logged from a notification.
+
+Upgrading asks for consent again because the extension requests permission to display content outside the app.
+
 ## Data and scope
 
 Records and reminder state live only in the hub's extension data directory, in an atomically replaced private file. Records are kept for the most recent 400 calendar days. A damaged file is backed up there and a fresh file is started. Uninstalling the extension deletes its data directory, including backups. No data is sent to an account or health service.
 
-This version includes reminders, notification buttons, the page, and settings. It does not include widgets, watch complications, Shortcuts, assistant skills, MCP tools, overview cards, Apple Health sync, meeting-aware postponement, or translations.
+Water includes reminders, notification buttons, the page, settings, widgets, and watch complications. It does not include Shortcuts, assistant skills, MCP tools, overview cards, Apple Health sync, meeting-aware postponement, or translations.

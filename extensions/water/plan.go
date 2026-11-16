@@ -39,6 +39,18 @@ func zone(name string) *time.Location {
 	return time.Local
 }
 
+// location prefers the persisted UI zone, then the device zone read at this start.
+func (s state) location() *time.Location {
+	for _, name := range []string{s.Zone, s.HubZone} {
+		if name != "" {
+			if l, err := time.LoadLocation(name); err == nil {
+				return l
+			}
+		}
+	}
+	return time.Local
+}
+
 func day(t time.Time, l *time.Location) string { return t.In(l).Format("2006-01-02") }
 func at(t time.Time, minutes int) time.Time {
 	return time.Date(t.Year(), t.Month(), t.Day(), minutes/60, minutes%60, 0, 0, t.Location())
@@ -62,7 +74,7 @@ type plan struct {
 // schedule calculates one next occurrence. Overdue occurrences collapse into one send at now.
 // Calendar dates and window boundaries use the saved plan zone, including DST days.
 func schedule(c config, s state, now time.Time) plan {
-	l := zone(s.Zone)
+	l := s.location()
 	now = now.In(l)
 	start, ok := clock(c.Start)
 	end, okEnd := clock(c.End)

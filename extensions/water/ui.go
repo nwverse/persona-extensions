@@ -99,13 +99,13 @@ func (a *app) status(now time.Time) string {
 	case "weekend":
 		return "周末不提醒，周一 " + p.Next.Format("15:04") + " 开始"
 	case "closed":
-		if day(p.Next, zone(a.s.Zone)) == day(now.In(zone(a.s.Zone)).AddDate(0, 0, 1), zone(a.s.Zone)) {
+		if day(p.Next, a.s.location()) == day(now.In(a.s.location()).AddDate(0, 0, 1), a.s.location()) {
 			return "今天的提醒时间过了，明天 " + p.Next.Format("15:04") + " 开始"
 		}
 		return "今天的提醒时间过了，周一 " + p.Next.Format("15:04") + " 开始"
 	}
 	if a.s.Pending != nil {
-		return "下次提醒 " + a.s.Pending.RetryAt.In(zone(a.s.Zone)).Format("15:04")
+		return "下次提醒 " + a.s.Pending.RetryAt.In(a.s.location()).Format("15:04")
 	}
 	return "下次提醒 " + p.Next.Format("15:04")
 }
@@ -114,7 +114,7 @@ func (a *app) status(now time.Time) string {
 // lock was taken; nil means unknown. view never does I/O.
 func (a *app) view(p pageState, version int, now time.Time, ln *bool) *wire.View {
 	c, s := a.cfg, a.s
-	l := zone(s.Zone)
+	l := s.location()
 	now = now.In(l)
 	n := total(s, now, l)
 	detail := fmt.Sprintf("%d / %d 毫升 · 还差约 %d 杯", n, c.Goal, cups(c, n))
@@ -196,7 +196,7 @@ func amount(s string) (int, bool) {
 }
 
 func progressToast(c config, s state, now time.Time) string {
-	n := total(s, now, zone(s.Zone))
+	n := total(s, now, s.location())
 	return fmt.Sprintf("今天 %d / %d 毫升", n, c.Goal)
 }
 
@@ -253,7 +253,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 				applied = true
 				p.Offset = 0
 				toast = fmt.Sprintf("已记 %d 毫升，%s", ml, progressToast(a.cfg, *s, now))
-				if total(*s, now, zone(s.Zone)) >= a.cfg.Goal {
+				if total(*s, now, s.location()) >= a.cfg.Goal {
 					toast = "今天的目标达成了"
 					if a.cfg.Stop {
 						toast += "，今天不再提醒"
@@ -264,13 +264,13 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 				s.Pending = nil
 				applied = true
 				toast = "好的，30 分钟后再提醒你"
-				if day(schedule(a.cfg, *s, now).Next, zone(s.Zone)) != day(now, zone(s.Zone)) {
+				if day(schedule(a.cfg, *s, now).Next, s.location()) != day(now, s.location()) {
 					toast = "今天不再提醒，下个提醒日再提醒你"
 				}
 			case "undo":
 				toast = "这条记录已找不到了"
 				for i, rec := range s.Records {
-					if rec.ID == id && day(rec.At, zone(s.Zone)) == day(now, zone(s.Zone)) {
+					if rec.ID == id && day(rec.At, s.location()) == day(now, s.location()) {
 						s.Records = append(s.Records[:i], s.Records[i+1:]...)
 						toast = "已撤销这条记录"
 						applied = true

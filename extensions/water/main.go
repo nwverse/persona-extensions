@@ -23,26 +23,30 @@ var authorManifest []byte
 var manifest = pluginkit.PackagedManifest(authorManifest)
 
 type app struct {
-	mu   sync.Mutex
-	cfg  config
-	s    state
-	path string
-	hub  *hubClient
-	now  func() time.Time
+	mu         sync.Mutex
+	cfg        config
+	s          state
+	path       string
+	hub        *hubClient
+	now        func() time.Time
+	invalidate func(string) error
+	widgetKey  string
 }
 
-func openApp(path string, c config, h *hubClient, now time.Time) (*app, error) {
+func openApp(path string, c config, h *hubClient, now time.Time, hubZone ...string) (*app, error) {
 	if err := c.validate(); err != nil {
 		return nil, err
 	}
-	s, err := load(path, now)
+	s, err := load(path, now, hubZone...)
 	if err != nil {
 		return nil, err
 	}
 	if err = save(path, s); err != nil {
 		return nil, err
 	}
-	return &app{cfg: c, s: s, path: path, hub: h, now: time.Now}, nil
+	a := &app{cfg: c, s: s, path: path, hub: h, now: time.Now}
+	a.widgetKey = a.progressKey(now)
+	return a, nil
 }
 
 // update commits a private copy, so failed persistence never reports a successful action.
@@ -55,6 +59,7 @@ func (a *app) update(now time.Time, fn func(*state)) error {
 		return err
 	}
 	a.s = s
+	a.refreshWidget(now)
 	return nil
 }
 
@@ -73,8 +78,8 @@ func program() ext.Program {
 		}
 		return a, nil
 	}
-	return ext.Program{ID: "water", Version: "0.1.0", Manifest: manifest,
-		Init: func(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
+	return ext.Program{ID: "water", Version: "0.2.0", Manifest: manifest,
+		Init: func(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]any, error) {
 			c := defaults()
 			if err := in.Config(&c); err != nil {
 				return nil, err
@@ -82,10 +87,11 @@ func program() ext.Program {
 			if in.Info().DataDir == "" {
 				return nil, fmt.Errorf("没有可用的记录目录")
 			}
-			a, err := openApp(filepath.Join(in.Info().DataDir, "water.json"), c, newHub(in.Hub.URL, in.Hub.Token, in.Hub.Scopes), time.Now())
+			a, err := openApp(filepath.Join(in.Info().DataDir, "water.json"), c, newHub(in.Hub.URL, in.Hub.Token, in.Hub.Scopes), time.Now(), in.Hub.Timezone)
 			if err != nil {
 				return nil, err
 			}
+			a.invalidate = hub.Invalidate
 			current.Store(a)
 			go a.run(ctx)
 			return m.Contributes, nil
@@ -104,7 +110,13 @@ func program() ext.Program {
 				}
 				return a.action(ctx, r)
 			},
-		}}}
+		}, "water-today": {Render: func(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
+			a, err := get()
+			if err != nil {
+				return nil, err
+			}
+			return a.renderWidget(ctx, r)
+		}}}}
 }
 
 func (a *app) run(ctx context.Context) {

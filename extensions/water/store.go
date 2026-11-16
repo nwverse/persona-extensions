@@ -22,6 +22,7 @@ type pending struct {
 	RetryAt  time.Time `json:"retry_at"`
 }
 type state struct {
+	HubZone      string               `json:"-"`
 	Zone         string               `json:"zone,omitempty"`
 	Records      []record             `json:"records"`
 	Sequence     uint64               `json:"sequence"`
@@ -47,7 +48,7 @@ func (s state) clone() state {
 }
 
 func (s *state) prune(now time.Time) {
-	l := zone(s.Zone)
+	l := s.location()
 	cut := at(now.In(l), 0).AddDate(0, 0, -399)
 	s.Records = slices.DeleteFunc(s.Records, func(r record) bool { return r.At.Before(cut) })
 	for k, t := range s.Seen {
@@ -57,8 +58,12 @@ func (s *state) prune(now time.Time) {
 	}
 }
 
-func load(path string, now time.Time) (state, error) {
-	var s state
+func load(path string, now time.Time, hubZone ...string) (state, error) {
+	var fallback string
+	if len(hubZone) > 0 {
+		fallback = hubZone[0]
+	}
+	s := state{HubZone: fallback}
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
@@ -85,7 +90,7 @@ func load(path string, now time.Time) (state, error) {
 		if err := os.Rename(path, fmt.Sprintf("%s.corrupt-%d", path, now.UnixNano())); err != nil {
 			return state{}, err
 		}
-		return state{}, nil
+		return state{HubZone: fallback}, nil
 	}
 	s.prune(now)
 	return s, nil

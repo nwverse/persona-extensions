@@ -28,7 +28,7 @@ type notice struct {
 }
 
 func notification(c config, s state, now time.Time) notice {
-	n := total(s, now, zone(s.Zone))
+	n := total(s, now, s.location())
 	body := "今天还没喝水，先来一杯吧"
 	if n > 0 {
 		body = fmt.Sprintf("今天已喝 %d / %d 毫升，还差约 %d 杯", n, c.Goal, cups(c, n))
@@ -165,6 +165,7 @@ func (a *app) due(now time.Time) bool {
 // once more after that save and before the request goes out. There are at most three attempts, thirty
 // seconds apart, including across restarts. Logging cancels the outstanding occurrence.
 func (a *app) tick(ctx context.Context, now time.Time) error {
+	a.refreshWidget(now)
 	pruned := a.s.clone()
 	pruned.prune(now)
 	if len(pruned.Records) != len(a.s.Records) || len(pruned.Seen) != len(a.s.Seen) {
@@ -175,7 +176,7 @@ func (a *app) tick(ctx context.Context, now time.Time) error {
 	if !a.hub.can() {
 		return nil
 	}
-	if a.s.Pending != nil && day(a.s.Pending.At, zone(a.s.Zone)) != day(now, zone(a.s.Zone)) {
+	if a.s.Pending != nil && day(a.s.Pending.At, a.s.location()) != day(now, a.s.location()) {
 		if err := a.update(now, func(s *state) { s.Pending = nil }); err != nil {
 			return err
 		}
