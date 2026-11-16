@@ -41,14 +41,21 @@ func (a *app) remember(r *ext.UIRequest, now time.Time) error {
 	return a.update(now, func(s *state) { s.Zone = r.TZ })
 }
 
+// lowDistraction reads the ln-mode cache. It runs before app.mu is taken, because the hub request can
+// take seconds. The clock here only ages that cache; every state decision reads the clock under app.mu.
+func (a *app) lowDistraction(ctx context.Context) *bool {
+	return a.hub.lowDistraction(ctx, a.now())
+}
+
 func (a *app) render(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
+	ln := a.lowDistraction(ctx)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
 	if err := a.remember(r, now); err != nil {
 		return nil, err
 	}
-	return a.view(ctx, readPage(r.State), r.UIVersion, now), nil
+	return a.view(readPage(r.State), r.UIVersion, now, ln), nil
 }
 
 func text(s string) wire.Component { return wire.Component{Type: "text", Text: s} }
@@ -57,6 +64,27 @@ func caution(s string) wire.Component {
 }
 func button(title, id string) wire.Component {
 	return wire.Component{Type: "button", Title: title, Action: &wire.Action{ID: id}}
+}
+
+// deliveryNote turns a stored delivery reason into the sentence the page shows. Hub codes and
+// status numbers never reach the page.
+func deliveryNote(reason string) string {
+	switch reason {
+	case "no_device":
+		return "暂时没有能收到通知的设备"
+	case "filtered":
+		return "设备的通知设置挡住了这条提醒"
+	case "muted":
+		return "通知被静音了"
+	case reasonUnreachable:
+		return "暂时连不上提醒服务，稍后会再试"
+	case reasonRejected:
+		return "这次提醒没有发出去"
+	case reasonUnconfirmed:
+		return "这次提醒没能确认送出，已停止重试"
+	default:
+		return "提醒没有送达"
+	}
 }
 
 func (a *app) status(now time.Time) string {
@@ -82,7 +110,9 @@ func (a *app) status(now time.Time) string {
 	return "下次提醒 " + p.Next.Format("15:04")
 }
 
-func (a *app) view(ctx context.Context, p pageState, version int, now time.Time) *wire.View {
+// view builds the page and must be called under app.mu. ln is the low-distraction value read before the
+// lock was taken; nil means unknown. view never does I/O.
+func (a *app) view(p pageState, version int, now time.Time, ln *bool) *wire.View {
 	c, s := a.cfg, a.s
 	l := zone(s.Zone)
 	now = now.In(l)
@@ -97,14 +127,14 @@ func (a *app) view(ctx context.Context, p pageState, version int, now time.Time)
 	if !a.hub.can() {
 		today = append(today, caution("没有通知权限，暂时不能发提醒；仍可记录喝水"))
 	}
-	if ln := a.hub.lowDistraction(ctx, now); ln != nil && *ln {
+	if ln != nil && *ln {
 		today = append(today, caution("低打扰模式开着：提醒会攒进简报，不会响"))
 	}
 	if schedule(c, s, now).Reason == "invalid" {
 		today = append(today, caution("开始时间要早于结束时间"))
 	}
 	if s.Reason != "" {
-		today = append(today, caution("上次提醒没有送达："+s.Reason))
+		today = append(today, caution(deliveryNote(s.Reason)))
 	}
 	add := []wire.Component{button(fmt.Sprintf("喝了一杯（%d 毫升）", c.Cup), "drink"), {Type: "field", Name: "amount", Label: "其他量（毫升）", Kind: "number", Placeholder: "比如 300"}, button("记下", "log")}
 	add[2].Action.Submit = true
@@ -171,6 +201,7 @@ func progressToast(c config, s state, now time.Time) string {
 }
 
 func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, error) {
+	ln := a.lowDistraction(ctx)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	now := a.now()
@@ -269,5 +300,5 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil, err
 		}
 	}
-	return &wire.ActionResult{Toast: toast, View: a.view(ctx, p, r.UIVersion, now)}, nil
+	return &wire.ActionResult{Toast: toast, View: a.view(p, r.UIVersion, now, ln)}, nil
 }

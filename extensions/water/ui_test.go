@@ -30,7 +30,10 @@ func TestPageLowDistractionAndRecentTotals(t *testing.T) {
 	a := testApp(t, defaults(), newHub(srv.URL, "test-token", []string{"notify"}), now)
 	a.s.Records = []record{{ID: "today", At: now, ML: 750}, {ID: "yesterday", At: now.AddDate(0, 0, -1), ML: 2000}, {ID: "older", At: now.AddDate(0, 0, -10), ML: 2100}}
 	for _, days := range []int{7, 30} {
-		v := a.view(context.Background(), pageState{Days: days}, 4, now)
+		v, err := a.render(context.Background(), request("", fmt.Sprintf(`{"days":%d}`, days), nil))
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := wire.CheckView(v); err != nil {
 			t.Fatal(err)
 		}
@@ -244,7 +247,7 @@ func TestGoalSnoozeAndWarnings(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := json.Marshal(v)
-	for _, want := range []string{"开始时间要早于结束时间", "caution", "没有通知权限", "上次提醒没有送达：no_device"} {
+	for _, want := range []string{"开始时间要早于结束时间", "caution", "没有通知权限", "暂时没有能收到通知的设备"} {
 		if !strings.Contains(string(b), want) {
 			t.Fatalf("missing %s", want)
 		}
@@ -281,7 +284,7 @@ func TestLargeDayPaginationAndView(t *testing.T) {
 		a.s.Records = append(a.s.Records, record{ID: fmt.Sprint(i), At: now, ML: 1})
 	}
 	for _, version := range []int{1, 2, 4} {
-		v := a.view(context.Background(), pageState{Days: 30}, version, now)
+		v := a.view(pageState{Days: 30}, version, now, nil)
 		if err := wire.CheckView(v); err != nil {
 			t.Fatal(err)
 		}
@@ -318,7 +321,7 @@ func TestConcurrentActionsAndScheduler(t *testing.T) {
 			if _, err := a.action(context.Background(), request("drink", "", nil)); err != nil {
 				t.Error(err)
 			}
-			if err := a.tick(context.Background(), now); err != nil {
+			if err := a.pass(context.Background()); err != nil {
 				t.Error(err)
 			}
 		}()

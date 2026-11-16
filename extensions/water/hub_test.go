@@ -24,6 +24,13 @@ func testApp(t *testing.T, c config, h *hubClient, now time.Time) *app {
 	return a
 }
 
+// tickAt runs one tick at the given time. The clock that the tick reads again before sending is set to
+// the same time, so tests that step through several times see one consistent clock.
+func tickAt(a *app, ctx context.Context, now time.Time) error {
+	a.now = func() time.Time { return now }
+	return a.tick(ctx, now)
+}
+
 func TestNotificationEntireJSON(t *testing.T) {
 	now := instant("2026-11-16T10:00:00Z")
 	for _, tc := range []struct {
@@ -92,7 +99,7 @@ func TestR11DeliveryPolicy(t *testing.T) {
 			now := instant("2026-11-16T10:00:00Z")
 			a := testApp(t, defaults(), newHub(srv.URL, "test-token", []string{"notify"}), now)
 			for _, sec := range []int{0, 1, 29, 30, 31, 59, 60, 61, 120, 180, 300} {
-				if err := a.tick(context.Background(), now.Add(time.Duration(sec)*time.Second)); err != nil {
+				if err := tickAt(a, context.Background(), now.Add(time.Duration(sec)*time.Second)); err != nil {
 					t.Fatal(err)
 				}
 				// Restart after every tick: attempt counts and the completed occurrence survive.
@@ -112,7 +119,7 @@ func TestR11DeliveryPolicy(t *testing.T) {
 				t.Fatalf("reason %s", a.s.Reason)
 			}
 			// After abandonment the next ordinary interval is still eligible.
-			if err := a.tick(context.Background(), a.s.LastReminder.Add(time.Hour)); err != nil {
+			if err := tickAt(a, context.Background(), a.s.LastReminder.Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			if int(calls.Load()) != tc.wantCalls+1 {
@@ -200,7 +207,7 @@ func TestReservedLastAttemptIsNotRepeatedAfterCrash(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := a.tick(context.Background(), now); err != nil {
+	if err := tickAt(a, context.Background(), now); err != nil {
 		t.Fatal(err)
 	}
 	if calls.Load() != 0 || a.s.Pending != nil || a.s.LastReminder.IsZero() {
@@ -244,14 +251,14 @@ func TestLoggingCancelsRetryAndRestartsInterval(t *testing.T) {
 	defer srv.Close()
 	now := instant("2026-11-16T10:00:00Z")
 	a := testApp(t, defaults(), newHub(srv.URL, "test-token", []string{"notify"}), now)
-	if err := a.tick(context.Background(), now); err != nil {
+	if err := tickAt(a, context.Background(), now); err != nil {
 		t.Fatal(err)
 	}
 	if a.s.Pending == nil {
 		t.Fatal("no pending retry")
 	}
 	mustAction(t, a, "drink", "", nil)
-	if err := a.tick(context.Background(), now.Add(30*time.Second)); err != nil {
+	if err := tickAt(a, context.Background(), now.Add(30*time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	if a.s.Pending != nil || calls.Load() != 1 {
@@ -270,7 +277,7 @@ func TestR9CatchupAndR11TransportBound(t *testing.T) {
 	h.client.Transport = countTransport{base: http.DefaultTransport, calls: &calls}
 	a := testApp(t, defaults(), h, now)
 	for _, sec := range []int{0, 1, 30, 31, 60, 61, 300} {
-		if err := a.tick(context.Background(), now.Add(time.Duration(sec)*time.Second)); err != nil {
+		if err := tickAt(a, context.Background(), now.Add(time.Duration(sec)*time.Second)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -303,7 +310,7 @@ func TestRetryCannotEscapeWindow(t *testing.T) {
 	now := instant("2026-11-16T21:00:00Z")
 	a := testApp(t, defaults(), newHub(srv.URL, "test-token", []string{"notify"}), now)
 	for _, s := range []string{"2026-11-16T21:00:00Z", "2026-11-16T21:00:30Z", "2026-11-17T08:59:00Z", "2026-11-17T09:00:00Z"} {
-		if err := a.tick(context.Background(), instant(s)); err != nil {
+		if err := tickAt(a, context.Background(), instant(s)); err != nil {
 			t.Fatal(err)
 		}
 	}

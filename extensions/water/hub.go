@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -48,7 +50,9 @@ type hubClient struct {
 	base, token string
 	scopes      []string
 	client      *http.Client
-	// Low-distraction cache is protected by app.mu, just like the rest of the app.
+	// lnMu guards the low-distraction cache only. It is never held across a request, so a slow hub
+	// read cannot block the scheduler or page actions, which need app.mu instead.
+	lnMu sync.Mutex
 	lnAt time.Time
 	ln   *bool
 }
@@ -65,6 +69,24 @@ type statusError int
 
 func (e statusError) Error() string { return fmt.Sprintf("提醒没有送达（%d）", int(e)) }
 func retryable(err error) bool      { var s statusError; return !errors.As(err, &s) || s >= 500 }
+
+// Reasons kept in state. Hub reason codes are stored as the hub sent them; the constants below are
+// local outcomes. Only deliveryNote (ui.go) turns a stored reason into page text.
+const (
+	reasonUnknown     = "unknown"     // the hub said not sent, with no usable reason
+	reasonUnreachable = "unreachable" // no answer, or a 5xx, and no attempt is left
+	reasonRejected    = "rejected"    // the hub answered 4xx; that is not retried
+	reasonUnconfirmed = "unconfirmed" // an earlier attempt's outcome was lost, so retries stopped
+)
+
+// failureReason classifies a request that failed without a hub decision.
+func failureReason(err error) string {
+	var s statusError
+	if errors.As(err, &s) && int(s) < 500 {
+		return reasonRejected
+	}
+	return reasonUnreachable
+}
 
 func (h *hubClient) call(ctx context.Context, method, path string, in, out any) error {
 	if !h.can() {
@@ -101,29 +123,48 @@ func (h *hubClient) notify(ctx context.Context, n notice) (delivery, error) {
 	err := h.call(ctx, http.MethodPost, "/api/v1/notify", n, &d)
 	return d, err
 }
+
+// lowDistraction returns the cached ln-mode value and refreshes it after three minutes. Callers must not
+// hold app.mu. A caller that arrives during a refresh sees unknown at once instead of waiting for it.
 func (h *hubClient) lowDistraction(ctx context.Context, now time.Time) *bool {
 	if !h.can() {
 		return nil
 	}
+	h.lnMu.Lock()
 	if !h.lnAt.IsZero() && now.Sub(h.lnAt) < 3*time.Minute {
-		return h.ln
+		ln := h.ln
+		h.lnMu.Unlock()
+		return ln
 	}
 	h.lnAt = now
 	h.ln = nil
+	h.lnMu.Unlock()
 	var out struct {
 		Enabled *bool `json:"enabled"`
 	}
+	var ln *bool
 	if h.call(ctx, http.MethodGet, "/api/v1/push/ln-mode", nil, &out) == nil {
-		h.ln = out.Enabled
+		ln = out.Enabled
 	}
-	return h.ln
+	h.lnMu.Lock()
+	defer h.lnMu.Unlock()
+	if h.lnAt.Equal(now) {
+		h.ln = ln
+	}
+	return ln
 }
 
-// tick reserves and persists an attempt before sending. There are at most three attempts,
-// thirty seconds apart, including across restarts. Logging cancels the outstanding occurrence.
+// due reports whether the next reminder is at or before now. It does not look at the retry gap.
+func (a *app) due(now time.Time) bool {
+	p := schedule(a.cfg, a.s, now)
+	return !p.Next.IsZero() && !p.Next.After(now)
+}
+
+// tick runs one scheduling pass. The caller holds app.mu and passes the clock it read while holding it.
+// It reserves and persists an attempt before sending, so a crash cannot repeat it, and checks the window
+// once more after that save and before the request goes out. There are at most three attempts, thirty
+// seconds apart, including across restarts. Logging cancels the outstanding occurrence.
 func (a *app) tick(ctx context.Context, now time.Time) error {
-	a.mu.Lock()
-	defer a.mu.Unlock()
 	pruned := a.s.clone()
 	pruned.prune(now)
 	if len(pruned.Records) != len(a.s.Records) || len(pruned.Seen) != len(a.s.Seen) {
@@ -139,8 +180,7 @@ func (a *app) tick(ctx context.Context, now time.Time) error {
 			return err
 		}
 	}
-	p := schedule(a.cfg, a.s, now)
-	if p.Next.IsZero() || p.Next.After(now) {
+	if !a.due(now) {
 		return nil
 	}
 	if a.s.Pending != nil && now.Before(a.s.Pending.RetryAt) {
@@ -151,9 +191,10 @@ func (a *app) tick(ctx context.Context, now time.Time) error {
 			s.LastReminder = now
 			s.Pending = nil
 			s.Snooze = time.Time{}
-			s.Reason = "上次发送结果未知，已停止重试"
+			s.Reason = reasonUnconfirmed
 		})
 	}
+	prev := a.s.Pending
 	if err := a.update(now, func(s *state) {
 		if s.Pending == nil {
 			s.Pending = &pending{At: now, Notice: notification(a.cfg, *s, now)}
@@ -163,7 +204,16 @@ func (a *app) tick(ctx context.Context, now time.Time) error {
 	}); err != nil {
 		return err
 	}
+	// The clock may have moved past the window while the reservation was being saved.
+	if fresh := a.now(); !a.due(fresh) {
+		return a.update(fresh, func(s *state) { s.Pending = prev })
+	}
 	d, err := a.hub.notify(ctx, a.s.Pending.Notice)
+	if err != nil {
+		log.Printf("喝水提醒发送失败：%v", err)
+	} else if !d.Sent {
+		log.Printf("喝水提醒没有送达：%s", d.Reason)
+	}
 	return a.update(now, func(s *state) {
 		if err != nil && retryable(err) && s.Pending.Attempts < 3 {
 			return
@@ -173,11 +223,11 @@ func (a *app) tick(ctx context.Context, now time.Time) error {
 		s.Pending = nil
 		s.Reason = ""
 		if err != nil {
-			s.Reason = "暂时无法发送，请稍后查看"
+			s.Reason = failureReason(err)
 		} else if !d.Sent {
 			s.Reason = d.Reason
 			if s.Reason == "" {
-				s.Reason = "未送达"
+				s.Reason = reasonUnknown
 			}
 			// Keep external reason strings within the UI text limit.
 			r := []rune(s.Reason)

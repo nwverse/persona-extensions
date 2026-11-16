@@ -46,7 +46,7 @@ func openApp(path string, c config, h *hubClient, now time.Time) (*app, error) {
 }
 
 // update commits a private copy, so failed persistence never reports a successful action.
-// Callers hold mu; network requests and UI actions share that lock.
+// Callers hold mu.
 func (a *app) update(now time.Time, fn func(*state)) error {
 	s := a.s.clone()
 	fn(&s)
@@ -115,12 +115,20 @@ func (a *app) run(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := a.tick(ctx, a.now()); err != nil && ctx.Err() == nil {
+			if err := a.pass(ctx); err != nil && ctx.Err() == nil {
 				log.Printf("喝水提醒：%v", err)
 			}
 			t.Reset(30 * time.Second)
 		}
 	}
+}
+
+// pass runs one scheduling tick. The clock is read only after app.mu is taken, so a tick that waited
+// behind a page action decides with the time it acts at, not the time it started waiting.
+func (a *app) pass(ctx context.Context) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.tick(ctx, a.now())
 }
 
 func main() { log.SetFlags(0); ext.Main(program()) }
