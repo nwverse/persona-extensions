@@ -149,16 +149,19 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, refresh 
 // and today's high and low beside it.
 func (a *app) nowSection(c City, f forecast, u temperatureUnit, w windUnit) wire.Section {
 	cur := f.Current
-	desc, icon := wmo(cur.WeatherCode)
-	big := wire.Component{Type: wire.ComponentMetric, Label: "现在", Value: icon + " " + fmtTemp(cur.Temperature, u), Detail: desc}
+	desc, icon := wmoOptional(cur.WeatherCode)
+	big := wire.Component{Type: wire.ComponentMetric, Label: "现在", Value: icon + " " + tempText(cur.Temperature, u), Detail: desc}
 
 	stats := []wire.Stat{
-		{Label: "体感", Value: fmtTemp(cur.Apparent, u)},
-		{Label: "湿度", Value: fmt.Sprintf("%.0f%%", cur.Humidity)},
+		{Label: "体感", Value: tempText(cur.Apparent, u)},
+		{Label: "湿度", Value: percentText(cur.Humidity)},
 	}
-	if cur.WindSpeed > 0 {
-		stats = append(stats, wire.Stat{Label: windDir(cur.WindDirection), Value: fmtWind(cur.WindSpeed, w)})
-	} else {
+	switch {
+	case !cur.WindSpeed.OK:
+		stats = append(stats, wire.Stat{Label: "风", Value: "未知"})
+	case cur.WindSpeed.Value > 0:
+		stats = append(stats, wire.Stat{Label: windDir(cur.WindDirection.Value), Value: fmtWind(cur.WindSpeed.Value, w)})
+	default:
 		stats = append(stats, wire.Stat{Label: "风", Value: "无风"})
 	}
 	if hi, lo, ok := f.todayHighLow(); ok {
@@ -185,14 +188,14 @@ func (a *app) hoursSection(hours []hourPoint, u temperatureUnit) wire.Section {
 func (a *app) forecastSection(ds []day, u temperatureUnit) wire.Section {
 	sec := wire.Section{Title: "7 天预报"}
 	for _, d := range ds {
-		desc, icon := wmo(d.code)
+		desc, icon := wmoOptional(d.code)
 		title := d.weekday()
 		if title == "" {
 			title = d.date.Format("01-02")
 		}
 		row := wire.Component{Type: wire.ComponentRow,
-			Title:    fmt.Sprintf("%s %s %s / %s", title, icon, fmtTemp(d.max, u), fmtTemp(d.min, u)),
-			Subtitle: fmt.Sprintf("%s · 降水概率 %.0f%%", desc, d.precip)}
+			Title:    fmt.Sprintf("%s %s %s / %s", title, icon, tempText(d.max, u), tempText(d.min, u)),
+			Subtitle: fmt.Sprintf("%s · 降水概率 %s", desc, percentText(d.precip))}
 		sec.Items = append(sec.Items, row)
 	}
 	if len(sec.Items) == 0 {
