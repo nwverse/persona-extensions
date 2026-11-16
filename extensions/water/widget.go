@@ -13,6 +13,9 @@ import (
 
 const widgetID = "water-today"
 
+// progressRing is the progress style from nwverse/persona#9457. The SDK vendored in this repository does not define it yet.
+const progressRing = "ring"
+
 // progressKey includes the calendar date even when both days have no drinks.
 // Widget state is guarded by app.mu; event writes happen outside it.
 func (a *app) progressKey(now time.Time) string {
@@ -107,6 +110,7 @@ func (a *app) widget(family string, now time.Time) (*wire.View, error) {
 		}
 		items = []wire.Component{{Type: "text", Text: summary, Tone: tone}}
 	case wire.WidgetFamilySmall, wire.WidgetFamilyMedium:
+		progress.Style = progressRing
 		items = []wire.Component{{Type: "metric", Label: "今天喝水", Value: fmt.Sprintf("%d / %d 毫升", n, c.Goal), Tone: tone}, progress}
 		if family == wire.WidgetFamilyMedium {
 			points := []wire.ChartPoint{}

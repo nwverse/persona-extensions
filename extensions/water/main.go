@@ -82,7 +82,7 @@ func program() ext.Program {
 		}
 		return a, nil
 	}
-	return ext.Program{ID: "water", Version: "0.3.0", Manifest: manifest,
+	return ext.Program{ID: "water", Version: "0.4.0", Manifest: manifest,
 		Init: func(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]any, error) {
 			c := defaults()
 			if err := in.Config(&c); err != nil {

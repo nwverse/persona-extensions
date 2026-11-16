@@ -94,6 +94,13 @@ func TestWidgetFamiliesProtocol(t *testing.T) {
 						if family == "accessory_rectangular" {
 							wantLabel = summary
 						}
+						wantStyle := ""
+						if family == "small" || family == "medium" {
+							wantStyle = "ring"
+						}
+						if item.Style != wantStyle {
+							t.Fatalf("progress style %q, want %q", item.Style, wantStyle)
+						}
 						if item.Ratio == nil || *item.Ratio != min(1, float64(n)/2000) || item.Detail != detail || item.Label != wantLabel {
 							t.Fatalf("progress %+v", item)
 						}
