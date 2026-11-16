@@ -25,7 +25,7 @@ type parkedHub struct {
 func newParkedHub(t *testing.T) *parkedHub {
 	t.Helper()
 	h := &parkedHub{lnStarted: make(chan struct{}), release: make(chan struct{})}
-	h.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h.srv = fakeServer(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/push/ln-mode":
 			h.lnOnce.Do(func() { close(h.lnStarted) })
@@ -37,7 +37,7 @@ func newParkedHub(t *testing.T) *parkedHub {
 		default:
 			http.NotFound(w, r)
 		}
-	}))
+	})
 	t.Cleanup(func() {
 		h.unblock()
 		h.srv.Close()

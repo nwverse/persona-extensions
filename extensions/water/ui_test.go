@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,7 +23,7 @@ func request(action, state string, values map[string]string) *ext.UIRequest {
 }
 
 func TestPageLowDistractionAndRecentTotals(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"enabled":true}`) }))
+	srv := fakeServer(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, `{"enabled":true}`) })
 	defer srv.Close()
 	now := instant("2026-11-16T10:00:00Z")
 	a := testApp(t, defaults(), newHub(srv.URL, "test-token", []string{"notify"}), now)

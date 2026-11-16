@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"reflect"
 	"sync/atomic"
@@ -43,7 +42,7 @@ func TestNotificationEntireJSON(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := fakeServer(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				if r.Method != "POST" || r.URL.Path != "/api/v1/notify" || r.Header.Get("Authorization") != "Bearer test-token" || r.Header.Get("Content-Type") != "application/json" {
 					t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -58,7 +57,7 @@ func TestNotificationEntireJSON(t *testing.T) {
 					t.Errorf("JSON got %#v want %#v", got, want)
 				}
 				io.WriteString(w, `{"sent":true}`)
-			}))
+			})
 			defer srv.Close()
 			s := state{Zone: "UTC"}
 			if tc.ml > 0 {
@@ -87,14 +86,14 @@ func TestR11DeliveryPolicy(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := fakeServer(func(w http.ResponseWriter, r *http.Request) {
 				if r.URL.Path != "/api/v1/notify" {
 					t.Errorf("path %s", r.URL.Path)
 				}
 				calls.Add(1)
 				w.WriteHeader(tc.status)
 				io.WriteString(w, tc.body)
-			}))
+			})
 			defer srv.Close()
 			now := instant("2026-11-16T10:00:00Z")
 			a := testApp(t, defaults(), newHub(srv.URL, "test-token", []string{"notify"}), now)
@@ -131,7 +130,7 @@ func TestR11DeliveryPolicy(t *testing.T) {
 
 func TestNoScopeNoNetwork(t *testing.T) {
 	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	srv := fakeServer(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) })
 	defer srv.Close()
 	now := instant("2026-11-16T10:00:00Z")
 	h := newHub(srv.URL, "test-token", nil)
@@ -165,14 +164,14 @@ func TestLowDistractionReadAndCache(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls atomic.Int32
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := fakeServer(func(w http.ResponseWriter, r *http.Request) {
 				calls.Add(1)
 				if r.Method != "GET" || r.URL.Path != "/api/v1/push/ln-mode" || r.Header.Get("Authorization") != "Bearer test-token" {
 					t.Errorf("bad ln request")
 				}
 				w.WriteHeader(tc.status)
 				io.WriteString(w, tc.body)
-			}))
+			})
 			defer srv.Close()
 			h := newHub(srv.URL, "test-token", []string{"notify"})
 			now := instant("2026-11-16T10:00:00Z")
@@ -195,7 +194,7 @@ func TestLowDistractionReadAndCache(t *testing.T) {
 
 func TestReservedLastAttemptIsNotRepeatedAfterCrash(t *testing.T) {
 	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); io.WriteString(w, `{"sent":true}`) }))
+	srv := fakeServer(func(w http.ResponseWriter, r *http.Request) { calls.Add(1); io.WriteString(w, `{"sent":true}`) })
 	defer srv.Close()
 	now := instant("2026-11-16T10:00:00Z")
 	a := testApp(t, defaults(), newHub(srv.URL, "test-token", []string{"notify"}), now)
@@ -218,7 +217,7 @@ func TestReservedLastAttemptIsNotRepeatedAfterCrash(t *testing.T) {
 func TestDisabledReminderAndIdlePruning(t *testing.T) {
 	now := instant("2026-11-16T10:00:00Z")
 	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) }))
+	srv := fakeServer(func(w http.ResponseWriter, r *http.Request) { calls.Add(1) })
 	defer srv.Close()
 	for _, scope := range []bool{true, false} {
 		c := defaults()
@@ -240,14 +239,14 @@ func TestDisabledReminderAndIdlePruning(t *testing.T) {
 
 func TestLoggingCancelsRetryAndRestartsInterval(t *testing.T) {
 	var calls atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := fakeServer(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/v1/push/ln-mode" {
 			io.WriteString(w, `{"enabled":false}`)
 			return
 		}
 		calls.Add(1)
 		w.WriteHeader(503)
-	}))
+	})
 	defer srv.Close()
 	now := instant("2026-11-16T10:00:00Z")
 	a := testApp(t, defaults(), newHub(srv.URL, "test-token", []string{"notify"}), now)
@@ -270,7 +269,7 @@ func boolPtr(v bool) *bool { return &v }
 func TestR9CatchupAndR11TransportBound(t *testing.T) {
 	now := instant("2026-11-16T10:00:00Z")
 	// A closed fake listener gives a transport failure without contacting an external service.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	srv := fakeServer(func(w http.ResponseWriter, r *http.Request) {})
 	srv.Close()
 	h := newHub(srv.URL, "test-token", []string{"notify"})
 	var calls atomic.Int32
@@ -299,13 +298,13 @@ func (t countTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 func TestRetryCannotEscapeWindow(t *testing.T) {
 	var calls atomic.Int32
 	var tokens []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := fakeServer(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		var n notice
 		json.NewDecoder(r.Body).Decode(&n)
 		tokens = append(tokens, n.State)
 		w.WriteHeader(503)
-	}))
+	})
 	defer srv.Close()
 	now := instant("2026-11-16T21:00:00Z")
 	a := testApp(t, defaults(), newHub(srv.URL, "test-token", []string{"notify"}), now)

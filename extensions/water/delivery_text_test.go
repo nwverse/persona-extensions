@@ -4,7 +4,6 @@ import (
 	"context"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
@@ -25,7 +24,7 @@ func TestDeliveryOutcomesShownAsPlainChinese(t *testing.T) {
 		{"client error", "403", "denied", "这次提醒没有发出去", "403", []int{0}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			srv := fakeServer(func(w http.ResponseWriter, r *http.Request) {
 				switch {
 				case r.Method == http.MethodGet && r.URL.Path == "/api/v1/push/ln-mode":
 					io.WriteString(w, `{"enabled":false}`)
@@ -36,7 +35,7 @@ func TestDeliveryOutcomesShownAsPlainChinese(t *testing.T) {
 				default:
 					http.NotFound(w, r)
 				}
-			}))
+			})
 			defer srv.Close()
 			base := instant("2026-11-16T10:00:00Z")
 			a := testApp(t, defaults(), newHub(srv.URL, "test-token", []string{"notify"}), base)
