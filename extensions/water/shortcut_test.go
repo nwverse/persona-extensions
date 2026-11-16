@@ -118,6 +118,68 @@ func TestShortcutProtocol(t *testing.T) {
 	}
 }
 
+func TestShortcutAppNumberProtocol(t *testing.T) {
+	var path string
+	h := exttest.StartWith(t, manifest, exttest.Serve(t, program()), func(p *wire.InitializeParams) {
+		path = filepath.Join(p.Extension.DataDir, "water.json")
+		p.Config = json.RawMessage(`{"remind":false}`)
+	})
+	for _, tc := range []struct {
+		value string
+		ml    int
+	}{
+		{"1.0", 1}, {"300.0", 300}, {"3000.0", 3000},
+		{"300.5", 0}, {"0.0", 0}, {"3001.0", 0}, {"-1.0", 0},
+		{"NaN", 0}, {"Inf", 0}, {"", 0}, {"abc", 0},
+		{"300", 300}, {"300ml", 300}, {"300 毫升", 300},
+		{" 300.0 ", 300}, {"3e2", 300},
+		{"-Inf", 0}, {"1e999", 0}, {"0x1p0", 0}, {"3_00.0", 0},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var prior state
+			if err := json.Unmarshal(before, &prior); err != nil {
+				t.Fatal(err)
+			}
+			var res wire.ShortcutResult
+			// Run Extension Action encodes its Swift Double? Number with String($0).
+			if err := h.Call("shortcut.run", wire.ShortcutRunParams{Contribution: "log_water", Values: map[string]string{"amount": tc.value}, Platform: "ios", UIVersion: 4}, &res); err != nil {
+				t.Fatal(err)
+			}
+			after, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.ml == 0 {
+				if res.Text != "请填 1 到 3000 之间的毫升数" || string(before) != string(after) {
+					t.Fatalf("invalid input %q: state changed=%t text=%q", tc.value, string(before) != string(after), res.Text)
+				}
+				t.Logf("amount=%q record_delta=0 text=%s", tc.value, res.Text)
+				return
+			}
+			var s state
+			if err := json.Unmarshal(after, &s); err != nil {
+				t.Fatal(err)
+			}
+			if len(s.Records) != len(prior.Records)+1 || s.Sequence != prior.Sequence+1 {
+				t.Fatalf("amount %q: expected one new record, before=%+v after=%+v text=%q", tc.value, prior, s, res.Text)
+			}
+			r := s.Records[len(s.Records)-1]
+			want := fmt.Sprintf("已记 %d 毫升，今天 %d / 2000", tc.ml, total(s, r.At, time.UTC))
+			if total(s, r.At, time.UTC) >= 2000 {
+				want += "，今天的目标达成了"
+			}
+			if r.ML != tc.ml || res.Text != want {
+				t.Fatalf("amount %q: recorded=%d text=%q, want ml=%d text=%q", tc.value, r.ML, res.Text, tc.ml, want)
+			}
+			t.Logf("amount=%q record_delta=1 ml=%d text=%s", tc.value, r.ML, res.Text)
+		})
+	}
+}
+
 func TestShortcutRestartsReminderProtocol(t *testing.T) {
 	var path string
 	c := defaults()
@@ -170,23 +232,47 @@ func TestShortcutFailedSave(t *testing.T) {
 	}
 }
 
-func TestShortcutUsesPageAmountParser(t *testing.T) {
-	for _, v := range []string{"1", "3000", " 300 ml ", "300 毫升", "0", "5000", "abc", "", "1.5", "1e2"} {
-		t.Run(v, func(t *testing.T) {
+func TestShortcutAmountForms(t *testing.T) {
+	for _, tc := range []struct {
+		value string
+		ml    int
+	}{
+		{"1", 1}, {"3000", 3000}, {" 300 ml ", 300}, {"300 毫升", 300},
+		{"0", 0}, {"5000", 0}, {"abc", 0}, {"", 0}, {"1.5", 0}, {"1e2", 100},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
 			a := testApp(t, defaults(), newHub("", "", nil), instant("2026-11-16T10:00:00Z"))
-			ml, valid := amount(v)
-			res, err := a.shortcut(context.Background(), &ext.ShortcutRequest{ShortcutRunParams: wire.ShortcutRunParams{Values: map[string]string{"amount": v}}})
+			res, err := a.shortcut(context.Background(), &ext.ShortcutRequest{ShortcutRunParams: wire.ShortcutRunParams{Values: map[string]string{"amount": tc.value}}})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if valid {
-				if len(a.s.Records) != 1 || a.s.Records[0].ML != ml {
+			if tc.ml > 0 {
+				if len(a.s.Records) != 1 || a.s.Records[0].ML != tc.ml {
 					t.Fatalf("parser mismatch: %+v", a.s)
 				}
 			} else if len(a.s.Records) != 0 || !strings.Contains(res.Text, "1 到 3000") {
 				t.Fatalf("invalid amount accepted: %+v", res)
 			}
 		})
+	}
+}
+
+func TestShortcutNormalizationDoesNotChangeUIParsing(t *testing.T) {
+	now := instant("2026-11-16T10:00:00Z")
+	for _, source := range []string{"page", "notification"} {
+		for _, value := range []string{"1.0", "300.0", "3000.0", "1e2"} {
+			t.Run(source+"/"+value, func(t *testing.T) {
+				a := testApp(t, defaults(), newHub("", "", nil), now)
+				state := ""
+				if source == "notification" {
+					state = fmt.Sprintf("r=%d", now.UnixMilli())
+				}
+				res := mustAction(t, a, "log", state, map[string]string{"text": value})
+				if len(a.s.Records) != 0 || !strings.Contains(res.Toast, "1–3000") {
+					t.Fatalf("UI accepted shortcut number form %q: %s", value, res.Toast)
+				}
+			})
+		}
 	}
 }
 

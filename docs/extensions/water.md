@@ -33,7 +33,7 @@ A connection failure or server error gets at most three attempts in total, 30 se
 
 ## Shortcuts and Siri
 
-In Apple's **Shortcuts** app, add Persona's **Run Extension Action** and choose **记一杯水**. Leave the number empty to log one cup (`cup_ml`), or enter a number of milliliters from 1 to 3000. Each run logs a new drink, restarts the reminder interval, and requests a widget refresh. The result reports the amount and today's progress.
+In Apple's **Shortcuts** app, add Persona's **Run Extension Action** and choose **记一杯水**. Leave the number empty to log one cup (`cup_ml`), or enter a whole number of milliliters from 1 to 3000. Each run logs a new drink, restarts the reminder interval, and requests a widget refresh. The result reports the amount and today's progress.
 
 Name the shortcut **记一杯水** to run it by saying that name to Siri. On iPhone, you can assign the shortcut to the **Action button**. The same shortcut can run on Mac and Apple Watch; on the watch, Persona uses the watch's own connection to the hub.
 
