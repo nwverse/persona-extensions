@@ -143,6 +143,7 @@ func TestWidgetInvalidateActionsProtocol(t *testing.T) {
 			}
 			checkEvents := func(want int) {
 				t.Helper()
+				awaitWidgetCondition(t, "widget event was not received", func() bool { return len(h.Events()) >= want })
 				events := h.Events()
 				if len(events) != want {
 					t.Fatalf("events %+v, want %d", events, want)
@@ -205,12 +206,18 @@ func TestWidgetInvalidateMidnight(t *testing.T) {
 			a.s.Records = []record{{ID: "d1", At: now, ML: ml}}
 		}
 		a.widgetKey = a.progressKey(now)
-		var events []string
-		a.invalidate = func(id string) error { events = append(events, id); return nil }
+		a.widgetPending = a.widgetKey
+		events := make(chan string, 4)
+		a.invalidate = func(id string) error { events <- id; return nil }
+		startWidgetSender(t, a)
 		for _, at := range []time.Time{now, now, now.Add(time.Second), now.Add(time.Second), now.Add(30 * time.Second)} {
-			if err := a.tick(context.Background(), at); err != nil {
+			a.mu.Lock()
+			err := a.tick(context.Background(), at)
+			a.mu.Unlock()
+			if err != nil {
 				t.Fatal(err)
 			}
+			awaitWidgetClean(t, a)
 			want := 0
 			if at.After(now) {
 				want = 1
@@ -219,8 +226,8 @@ func TestWidgetInvalidateMidnight(t *testing.T) {
 				t.Fatalf("at %s: events %v", at, events)
 			}
 		}
-		if events[0] != widgetID {
-			t.Fatal(events)
+		if id := <-events; id != widgetID {
+			t.Fatal(id)
 		}
 		v, err := a.widget("small", now.Add(time.Second))
 		if err != nil || v.Sections[0].Items[0].Value != "0 / 2000 毫升" {
@@ -230,10 +237,14 @@ func TestWidgetInvalidateMidnight(t *testing.T) {
 		next := now.Add(24*time.Hour + time.Second)
 		a.now = func() time.Time { return next }
 		mustAction(t, a, "drink", "", nil)
-		if err := a.tick(context.Background(), next); err != nil {
+		a.mu.Lock()
+		err = a.tick(context.Background(), next)
+		a.mu.Unlock()
+		if err != nil {
 			t.Fatal(err)
 		}
-		if len(events) != 2 {
+		awaitWidgetClean(t, a)
+		if len(events) != 1 {
 			t.Fatalf("action and tick duplicated: %v", events)
 		}
 	}
@@ -329,13 +340,15 @@ func TestTimezoneSharedCalendar(t *testing.T) {
 func TestWidgetNoInvalidateAfterFailedSave(t *testing.T) {
 	now := instant("2026-11-16T10:00:00Z")
 	a := testApp(t, defaults(), newHub("", "", nil), now)
-	count := 0
-	a.invalidate = func(string) error { count++; return nil }
+	events := make(chan string, 4)
+	a.invalidate = func(id string) error { events <- id; return nil }
+	startWidgetSender(t, a)
 	a.path = filepath.Join(a.path, "child")
 	if _, err := a.action(context.Background(), request("drink", "", nil)); err == nil {
 		t.Fatal("failed save accepted")
 	}
-	if count != 0 {
+	awaitWidgetClean(t, a)
+	if len(events) != 0 {
 		t.Fatal("failed save invalidated widget")
 	}
 }

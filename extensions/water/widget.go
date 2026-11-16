@@ -14,24 +14,55 @@ import (
 const widgetID = "water-today"
 
 // progressKey includes the calendar date even when both days have no drinks.
-// All widget state and event writes are serialized by app.mu.
+// Widget state is guarded by app.mu; event writes happen outside it.
 func (a *app) progressKey(now time.Time) string {
 	l := a.s.location()
 	return fmt.Sprintf("%s/%s/%d", l, day(now, l), total(a.s, now, l))
 }
 
 func (a *app) refreshWidget(now time.Time) {
-	key := a.progressKey(now)
-	if key == a.widgetKey {
-		return
-	}
-	if a.invalidate != nil {
-		if err := a.invalidate(widgetID); err != nil {
-			log.Printf("喝水进度刷新失败：%v", err)
-			return
+	a.widgetPending = a.progressKey(now)
+	a.wakeWidget()
+}
+
+// Callers hold app.mu. A single queued wake coalesces changes without waiting on output.
+func (a *app) wakeWidget() {
+	if a.widgetPending != a.widgetKey {
+		select {
+		case a.widgetWake <- struct{}{}:
+		default:
 		}
 	}
-	a.widgetKey = key
+}
+
+func (a *app) sendWidgets(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-a.widgetWake:
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		a.mu.Lock()
+		key := a.widgetPending
+		clean := key == a.widgetKey
+		a.mu.Unlock()
+		if clean {
+			continue
+		}
+		// The SDK writer can block on the hub's stdout reader. Never hold the state lock here.
+		if err := a.invalidate(widgetID); err != nil {
+			log.Printf("喝水进度刷新失败：%v", err)
+			continue // Keep the pending key dirty; a later tick wakes us again.
+		}
+		a.mu.Lock()
+		// A newer change may have arrived during the write; acknowledge only what we read.
+		a.widgetKey = key
+		a.wakeWidget()
+		a.mu.Unlock()
+	}
 }
 
 func (a *app) renderWidget(_ context.Context, r *ext.UIRequest) (*wire.View, error) {

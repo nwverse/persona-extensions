@@ -35,7 +35,7 @@ A connection failure or server error gets at most three attempts in total, 30 se
 
 On the iPhone Home Screen or Lock Screen, add a **Persona** widget and select **今天喝水**. On Apple Watch, edit a watch face and choose the Persona **今天喝水** complication. A hub that supports extension widgets is required. Tapping a widget opens the 喝水 page.
 
-Small widgets show today's total, goal, and approximate cups left. Medium widgets add daily totals for the last seven days. Circular complications show a progress ring, rectangular ones show progress with a short summary, and inline ones show a single sentence. Widgets have no logging buttons and do not show the next reminder time.
+Small widgets show today's total, goal, and approximate cups left. Medium widgets add daily totals for the last seven days. Circular complications show today's progress as drawn by the app, rectangular ones show progress with a short summary, and inline ones show a single sentence. Widgets have no logging buttons and do not show the next reminder time.
 
 Logging or undoing a drink requests a refresh, as does crossing midnight in the plan's time zone. A regular 30-minute refresh is the fallback. The hub limits background refresh notifications to once per device per widget in 15 minutes, and the system can delay updates further, so displayed progress can lag a drink logged from a notification.
 

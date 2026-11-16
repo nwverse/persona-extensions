@@ -23,14 +23,16 @@ var authorManifest []byte
 var manifest = pluginkit.PackagedManifest(authorManifest)
 
 type app struct {
-	mu         sync.Mutex
-	cfg        config
-	s          state
-	path       string
-	hub        *hubClient
-	now        func() time.Time
-	invalidate func(string) error
-	widgetKey  string
+	mu            sync.Mutex
+	cfg           config
+	s             state
+	path          string
+	hub           *hubClient
+	now           func() time.Time
+	invalidate    func(string) error
+	widgetKey     string
+	widgetPending string
+	widgetWake    chan struct{}
 }
 
 func openApp(path string, c config, h *hubClient, now time.Time, hubZone ...string) (*app, error) {
@@ -46,6 +48,8 @@ func openApp(path string, c config, h *hubClient, now time.Time, hubZone ...stri
 	}
 	a := &app{cfg: c, s: s, path: path, hub: h, now: time.Now}
 	a.widgetKey = a.progressKey(now)
+	a.widgetPending = a.widgetKey
+	a.widgetWake = make(chan struct{}, 1)
 	return a, nil
 }
 
@@ -92,6 +96,7 @@ func program() ext.Program {
 				return nil, err
 			}
 			a.invalidate = hub.Invalidate
+			go a.sendWidgets(ctx)
 			current.Store(a)
 			go a.run(ctx)
 			return m.Contributes, nil
