@@ -17,22 +17,14 @@ import (
 // The data (states, areas, history, the logbook) comes from the helpers in page.go and the connector.
 
 // renderTabs is 家 / 动态 / 自动化, with how many alarms there are on 家.
-func renderTabs(r *ext.UIRequest, st pageState, v *wire.View, alarms int) {
+func renderTabs(r *ext.UIRequest, st pageState, v *wire.View, alarms int, rooms []*Area) {
 	cur := st.Tab
 	if cur == "" {
 		cur = "home"
 	}
 	switch {
 	case r.UIVersion >= 4:
-		t := &wire.Tabs{Name: "tab", Value: cur, Action: wire.Action{ID: "tab"}}
-		for _, c := range tabs {
-			tab := wire.Tab{Value: c.Value, Title: c.Title}
-			if c.Value == "home" && alarms > 0 {
-				tab.Badge = strconv.Itoa(min(alarms, 99))
-			}
-			t.Items = append(t.Items, tab)
-		}
-		v.Tabs = t
+		v.Tabs = &wire.Tabs{Name: "tab", Value: tabValue(st, rooms), Action: wire.Action{ID: "tab"}, Items: tabItems(rooms, alarms)}
 	case r.UIVersion >= 2:
 		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{{Type: "segmented", Name: "tab", Value: cur,
 			Choices: tabs, Action: &wire.Action{ID: "tab"}}}})
@@ -61,7 +53,7 @@ func alarmCount(hm *home, reg *Registry) int {
 }
 
 // roomPage is one area: a header with its figures, then its devices (a section per kind), sensors or everything.
-func (a *app) roomPage(r *ext.UIRequest, hm *home, reg *Registry, st pageState, v *wire.View) {
+func (a *app) roomPage(r *ext.UIRequest, hm *home, reg *Registry, st pageState, v *wire.View, tabbed bool) {
 	ar := hm.areaByID(st.Area)
 	if ar == nil {
 		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{{Type: "text", Text: errNoEntity.Error(), Style: "secondary"}}})
@@ -70,8 +62,15 @@ func (a *app) roomPage(r *ext.UIRequest, hm *home, reg *Registry, st pageState, 
 	v.Title = ar.Name
 	sum := roomSummary(hm, reg, *ar)
 	// the way back to the overview (re-choosing the tab it is on does nothing): a breadcrumb, a 返回 button before UI
-	// version 4
-	v.Sections = append(v.Sections, crumbs(r, []wire.Crumb{{Title: "家", Action: &wire.Action{ID: "home"}}, {Title: ar.Name}}, "home"))
+	// version 4; none when the room has a tab of its own (roomTabs), which is the way back
+	if !tabbed {
+		v.Sections = append(v.Sections, crumbs(r, []wire.Crumb{{Title: "家", Action: &wire.Action{ID: "home"}}, {Title: ar.Name}}, "home"))
+	}
+	if r.UIVersion >= 6 {
+		if row, ok := a.scenesRow(hm, reg, ar); ok {
+			v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{row}})
+		}
+	}
 	if r.UIVersion >= 2 {
 		// the room's air first: that is what one opens a room for; the devices' state follows it
 		var stats []wire.Stat
@@ -81,14 +80,19 @@ func (a *app) roomPage(r *ext.UIRequest, hm *home, reg *Registry, st pageState, 
 		if len(sum.humid) > 0 {
 			stats = append(stats, wire.Stat{Label: "湿度", Value: humidText(avg(sum.humid))})
 		}
-		if len(stats) == 0 {
+		// a room's tab shows its tiles right under it: how many there are and how many are on would only repeat them
+		if len(stats) == 0 && !tabbed {
 			stats = append(stats, wire.Stat{Label: "设备", Value: strconv.Itoa(sum.devices)})
 		}
-		stats = append(stats, wire.Stat{Label: "开着", Value: strconv.Itoa(sum.on), Tone: toneWhen(sum.on > 0, "positive")})
+		if !tabbed {
+			stats = append(stats, wire.Stat{Label: "开着", Value: strconv.Itoa(sum.on), Tone: toneWhen(sum.on > 0, "positive")})
+		}
 		if sum.offline > 0 {
 			stats = append(stats, wire.Stat{Label: "离线", Value: strconv.Itoa(sum.offline), Tone: "caution"})
 		}
-		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{{Type: "stat_grid", Stats: stats}}})
+		if len(stats) > 0 {
+			v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{{Type: "stat_grid", Stats: stats}}})
+		}
 	} else {
 		line := roomLine(sum)
 		if air := airText(sum.temp, sum.humid); air != "" {

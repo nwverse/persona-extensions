@@ -105,6 +105,10 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if arg == "" {
 			arg = r.Values["tab"]
 		}
+		if room, ok := strings.CutPrefix(arg, roomTab); ok { // a room's tab (roomTabs)
+			st = pageState{Area: room, Kind: st.Kind}
+			break
+		}
 		st = pageState{Tab: arg, Kind: st.Kind}
 		st.clean()
 	case "area":
@@ -172,6 +176,14 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if h, _, _ := a.client(); h != nil {
 			h.tryAgain()
 		}
+	case "alloff": // 全关 (scenesRow): the area's lights, switches and fans that are on, or the home's
+		msg, err := a.allOff(ctx, r.Values["area"])
+		if err != nil {
+			toast = err.Error()
+		} else {
+			toast = msg
+		}
+		fresh = 0
 	case "do": // a row's own call: a light or a switch on or off, a script or a scene run
 		eid, svc, _ := strings.Cut(arg, "|")
 		if arg == "" { // an entity id too long for the action's id (rowDo)
@@ -384,12 +396,14 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh ti
 	}
 	reg := a.pageRegistry(ctx)
 	hm = hm.named(reg)
+	rooms := roomTabs(r, hm, reg)
+	tabbed := st.Area != "" && slices.ContainsFunc(rooms, func(ar *Area) bool { return ar.ID == st.Area })
 	if st.Entity == "" {
-		renderTabs(r, st, v, alarmCount(hm, reg))
+		renderTabs(r, st, v, alarmCount(hm, reg), rooms)
 	}
 	if r.UIVersion >= 3 && st.Entity == "" && st.Tab == "" {
 		v.Search = &wire.Search{Placeholder: "搜设备、传感器：客厅灯、空调、温度", Value: st.Q, Action: wire.Action{ID: "search"}}
-		if len(hm.Areas) >= 1 && len(hm.Areas) <= 19 {
+		if len(hm.Areas) >= 1 && len(hm.Areas) <= 19 && len(rooms) == 0 { // room tabs are the filter
 			f := &wire.Filter{Name: "area", Title: "区域", Value: st.Area, Action: wire.Action{ID: "filter"},
 				Choices: []wire.Choice{{Value: "", Title: "全部区域"}}}
 			if hm.ByType {
@@ -413,7 +427,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh ti
 	case st.Area == "":
 		a.homePage(r, hm, reg, st, v)
 	default:
-		a.roomPage(r, hm, reg, st, v)
+		a.roomPage(r, hm, reg, st, v, tabbed)
 	}
 	v.State = ext.EncodeState(st)
 	return v

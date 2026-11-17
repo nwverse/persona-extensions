@@ -486,6 +486,11 @@ func statItems(r *ext.UIRequest, stats []wire.Stat) []wire.Component {
 // homePage is 家's overview.
 func (a *app) homePage(r *ext.UIRequest, hm *home, reg *Registry, st pageState, v *wire.View) {
 	f := gatherHome(hm, reg)
+	if r.UIVersion >= 6 {
+		if row, ok := a.scenesRow(hm, reg, nil); ok {
+			v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{row}})
+		}
+	}
 	if stats := homeStats(hm, f); len(stats) > 0 {
 		v.Sections = append(v.Sections, wire.Section{Items: statItems(r, stats)})
 	}

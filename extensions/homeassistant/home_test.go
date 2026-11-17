@@ -101,9 +101,12 @@ func TestHomeTiles(t *testing.T) {
 	if want := []string{"需要注意 · 2", "客厅 · 2 开着", "卧室", "调节 · 2", "区域 · 3"}; !slices.Equal(titles(v), want) {
 		t.Errorf("sections %q, want %q:\n%s", titles(v), want, got)
 	}
-	if v.Sections[0].Items[0].Type != "stat_grid" {
-		t.Errorf("the figures come first:\n%s", got)
+	// the scenes row first (全关: what is on), then the figures; the rooms are tabs, so no area filter
+	if v.Sections[0].Items[0].Key != "scenes" || v.Sections[1].Items[0].Type != "stat_grid" || v.Filter != nil {
+		t.Errorf("the scenes row, then the figures, and no filter:\n%s", got)
 	}
+	contains(t, got, `[tabs tab="home" home=全屋 room:living=客厅 room:bedroom=卧室 log=动态 auto=自动化]`,
+		"tile 全关|1 个开着| icon=power/gray →alloff")
 	// alarms before the busiest area; a climate without turn_on / turn_off has no switch
 	if strings.Index(got, "tile 厨房") > strings.Index(got, "tile 客厅|") || strings.Contains(got, "power:climate") {
 		t.Errorf("area order, or a switch a climate cannot take:\n%s", got)
@@ -117,7 +120,10 @@ func TestHomeTiles(t *testing.T) {
 	// an area: its devices as tiles too, its dials, no tap mode
 	res, _ := actV(t, a, 6, pageState{}, "area:living", nil)
 	got = texts(res.View)
-	contains(t, got, "breadcrumb ||||| /家→home /客厅", "## 设备 · 2", "tile 客厅灯||亮度 50% icon=light/amber active ctl(switch power:light.living true",
+	if strings.Contains(got, "breadcrumb") {
+		t.Errorf("a room with a tab has a breadcrumb:\n%s", got)
+	}
+	contains(t, got, `[tabs tab="room:living"`, "## 设备 · 2", "tile 客厅灯||亮度 50% icon=light/amber active ctl(switch power:light.living true",
 		"tile 空调|制冷|设定 26°", "## 调节 · 2", "row 客厅灯|亮度||||", "还有 1 个离线的")
 	if strings.Contains(got, "点按设备") || strings.Contains(got, "|客厅 · ") {
 		t.Errorf("a tap mode next to switches, or the area named in its own page:\n%s", got)
@@ -271,7 +277,7 @@ func TestHomeAlerts(t *testing.T) {
 		"tile 车库|1 车库门开着| icon=car/gray active [开着 caution] →area:garage",
 		"tile 卧室|2 个设备| icon=moon/indigo [2 项 caution] →area:bedroom",
 		"tile 阳台|| icon=leaf/green [开着 caution] →area:balcony")
-	if strings.Contains(got, "门磁电量") || strings.Contains(got, "carousel") {
+	if strings.Contains(got, "门磁电量") || strings.Contains(got, "carousel 其他区域") {
 		t.Errorf("a full battery needs a look, or a quiet area where none is:\n%s", got)
 	}
 	if order := []string{"row 漏水", "row 阳台门", "row 车库门", "row 入户门锁", "row 遥控器电量", "row 3 个设备离线"}; !inOrder(got, order...) {
@@ -550,9 +556,8 @@ func TestHomeEdges(t *testing.T) {
 	if n := alarmCount(a.cachedHome(), a.pageRegistry(context.Background())); n != 2 {
 		t.Errorf("the tab's badge says %d alarms, the overview 2", n)
 	}
-	// the area's page counts as its tile does: the remote is not on
-	_, room := renderV(t, a, 6, pageState{Area: "living"})
-	contains(t, room, "stat 开着=5||positive")
+	// the area's section counts as its tile does: the remote is not on (its tab's page repeats no counts)
+	contains(t, got, "## 客厅 · 5 开着")
 	contains(t, got, "tile 客厅|2 灯、1 开关、1 空调、1 警报器开着|")
 }
 

@@ -287,15 +287,15 @@ func (a *app) roomGrids(hm *home, reg *Registry, f *homeFacts, v *wire.View) {
 		t := a.deviceTile(hm, s, false)
 		if ar := hm.AreaOf[s.EntityID]; ar != nil {
 			by[ar] = append(by[ar], t)
-			if t.Active {
-				on[ar]++
-			}
 		} else {
 			loose = append(loose, t)
-			if t.Active {
-				looseOn++
-			}
 		}
+	}
+	// what is on, counted as the figures and the area tiles count it (a siren too, which has no tile here)
+	looseOn = len(f.on)
+	for _, af := range f.areas {
+		on[af.ar] = len(af.on)
+		looseOn -= len(af.on)
 	}
 	title := func(name string, n int) string {
 		if n > 0 {
