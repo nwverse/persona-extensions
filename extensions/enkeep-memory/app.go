@@ -201,6 +201,34 @@ func (a *app) tick(ctx context.Context) {
 	// After the days of rerun_range are digested with the current prompt, their judgements are filed once.
 	if len(days) > 0 && a.reran(days[len(days)-1]) && !a.synthAfterDaily(days[len(days)-1]) && !a.attempted("synth@"+days[len(days)-1]) {
 		a.start(ctx, "synth", days[len(days)-1])
+		return
+	}
+	if len(days) > 0 && a.reran(days[len(days)-1]) && a.synthAfterDaily(days[len(days)-1]) {
+		a.pruneRerunQueue()
+	}
+}
+
+// pruneRerunQueue takes the days that are done out of the enkeep_rerun queue, once the planned reruns are all
+// digested and filed (the synth after the last one ran). Their markers in State.Reruns stay, so asking for them
+// again still skips them; enkeep_rerun_status then lists only rerun_range's days and what is still waiting.
+func (a *app) pruneRerunQueue() {
+	a.c.St.Lock()
+	queue := slices.Clone(a.c.St.S.RerunQueue)
+	a.c.St.Unlock()
+	var done []string
+	for _, d := range queue {
+		if a.reran(d) {
+			done = append(done, d)
+		}
+	}
+	if len(done) == 0 {
+		return
+	}
+	a.c.St.Lock()
+	defer a.c.St.Unlock()
+	a.c.St.S.RerunQueue = slices.DeleteFunc(a.c.St.S.RerunQueue, func(d string) bool { return slices.Contains(done, d) })
+	if err := a.c.St.Save(); err != nil {
+		log.Printf("enkeep-memory: rerun queue: %v", err)
 	}
 }
 
