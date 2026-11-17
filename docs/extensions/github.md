@@ -2,14 +2,15 @@
 
 [Documentation](../README.md) · [Source](../../extensions/github/)
 
-This extension brings GitHub into Persona. It is the GitHub connector that Persona's hub used to have built in, moved out of the hub, plus a GitHub page: what needs you, your repositories with their code, and full PR and issue review. The connector id is still `github`. A hub that had its own connector therefore keeps its sign-in, inbox items, knowledge-base conversations, connector switches and inbox options when the extension takes over. While the extension is on, its connector stands in for the hub's own. When the extension is switched off or removed, the hub's own connector comes back.
+This extension brings GitHub into Persona. It is the GitHub connector that Persona's hub used to have built in, moved out of the hub, plus a GitHub page: what needs you, your repositories with their code, and full PR and issue review. A card on Overview sums up what needs you and opens the page. The connector id is still `github`. A hub that had its own connector therefore keeps its sign-in, inbox items, knowledge-base conversations, connector switches and inbox options when the extension takes over. While the extension is on, its connector stands in for the hub's own. When the extension is switched off or removed, the hub's own connector comes back.
 
 | Extension point | Contribution | Default | Behavior |
 | --- | --- | --- | --- |
 | `connectors` | `github` | on | Inbox, knowledge-base archive, assistant tools, gated writes, thread pages and sign-in; see [the connector](#the-connector). |
 | `ui` | `github` (`nav_page`) | on | The GitHub page in the apps' navigation; see [the page](#the-page). It can be switched off under Settings → Extensions → GitHub. |
+| `ui` | `github-today` (`overview_card`, opens `github`) | on | A card on Overview with what needs you, opening the page; see [the Overview card](#the-overview-card). It can be switched off under Settings → Extensions → GitHub. |
 
-Switching the extension on turns on what the hub already did before (the connector) and the page. Version 0.1.0 installed the page switched off; a hub that installed 0.1.0 keeps that choice after upgrading, so switch it on there by hand.
+Switching the extension on turns on what the hub already did before (the connector), the page and, from 0.5.0, the card. Version 0.1.0 installed the page switched off; a hub that installed 0.1.0 keeps that choice after upgrading, so switch it on there by hand.
 
 ## The connector
 
@@ -79,6 +80,16 @@ Limits of declarative views:
 - Apps before UI version 4: lines of a diff cannot be tapped, a comment on a line is written with its line number.
 - Images are limited to avatars.
 
+## The Overview card
+
+`github-today` is a card on Overview (web) and above Settings → Extensions (iOS, Android); a tap on it opens the page. Within a card's limits (two sections, twelve items, no fields) it shows:
+
+- A row of counts: PRs waiting for your review; your open PRs, with how many of them failed CI in the danger tone; issues and PRs assigned to you or mentioning you. Each counts the page's list of the same name (待我 review, 我提的, 我参与的), which holds 30 rows, so 30 or more reads `30+`.
+- Under it, at most three of the most pressing: review requests first, then your PRs whose CI failed. A row opens the PR on the page, as the page's own rows do. Apps before UI version 3 cannot push a page, so a row there opens the page as the card does.
+- One line instead of the counts when nothing needs you (all three lists are empty), when GitHub is not connected (还没连上 GitHub, as the page says), or when GitHub cannot be read and nothing was read before (读不到 GitHub, with the reason).
+
+The card has no buttons. It reads the page's own lists through the page's one-minute cache, so drawing it again, or right after the page showed the same tabs, sends nothing to GitHub. A list older than that is read once and cached again, as on the page, and several apps drawing Overview at once share that one read. Signed out, the card sends nothing. A card GitHub is slow for answers with a loading line after 12 seconds, like the page, and is drawn again once read.
+
 ## Configuration
 
 [Manifest and settings schema](../../extensions/github/persona-extension.json)
@@ -120,4 +131,5 @@ The tests cover:
 - the fallback tier and rules on every inbox item;
 - the page's five tabs against a fake GitHub, checked as the apps read views;
 - search, caching and refresh, the detail page, signed-out and older-app views;
+- the Overview card: its counts, the order of its rows, its empty, signed-out, failing and slow states, and no request to GitHub when it is drawn again, right after the page or by several apps at once;
 - manifest/program agreement and the SDK's conformance check.
