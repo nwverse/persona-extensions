@@ -90,15 +90,15 @@ func TestHomeTiles(t *testing.T) {
 	contains(t, got, "stat 开着=2|1 灯 · 1 空调|positive", "stat 温度=27.5°|客厅|", "stat 需注意=2|1 报警 · 1 离线|danger",
 		"row 漏水|厨房|||| [有水 danger] →open:binary_sensor.leak icon=droplet/red",
 		"row 风扇插座|客厅|||| [离线 caution] →open:switch.fan_plug icon=power/gray",
-		"tile 客厅灯|客厅|亮度 50% icon=light/amber active ctl(switch power:light.living true →ctl:power light.living) →open:light.living",
-		"tile 空调|客厅 · 制冷|设定 26° icon=thermometer/blue active →open:climate.living_ac",
-		"tile 卧室灯|卧室| icon=light/amber ctl(switch power:light.bed false →ctl:power light.bed) →open:light.bed",
+		"tile 客厅灯||亮度 50% icon=light/amber active ctl(switch power:light.living true →ctl:power light.living) →open:light.living",
+		"tile 空调|制冷|设定 26° icon=thermometer/blue active →open:climate.living_ac",
+		"tile 卧室灯|| icon=light/amber ctl(switch power:light.bed false →ctl:power light.bed) →open:light.bed",
 		"row 客厅灯|客厅 · 亮度|||| →open:light.living icon=light/amber ctl(slider bri:light.living 50 1–100 step 1 % →ctl:bri light.living)",
 		"row 空调|客厅 · 制冷 · 室温 27.5°|||| →open:climate.living_ac icon=thermometer/blue ctl(stepper temp:climate.living_ac 26 16–30 step 1 °C →ctl:temp climate.living_ac)",
 		"tile 厨房|| icon=home/amber [有水 danger] →area:kitchen",
 		"tile 客厅|1 灯、1 空调开着|27.5° icon=sofa/orange active [1 离线 caution] →area:living",
 		"carousel 其他区域 · 1", "tile 卧室|2 个设备| icon=moon/indigo →area:bedroom")
-	if want := []string{"需要注意 · 2", "设备 · 3", "调节 · 2", "区域 · 3"}; !slices.Equal(titles(v), want) {
+	if want := []string{"需要注意 · 2", "客厅 · 2 开着", "卧室", "调节 · 2", "区域 · 3"}; !slices.Equal(titles(v), want) {
 		t.Errorf("sections %q, want %q:\n%s", titles(v), want, got)
 	}
 	if v.Sections[0].Items[0].Type != "stat_grid" {
@@ -123,7 +123,7 @@ func TestHomeTiles(t *testing.T) {
 		t.Errorf("a tap mode next to switches, or the area named in its own page:\n%s", got)
 	}
 	res, _ = actV(t, a, 6, pageState{Area: "living"}, "offline", nil)
-	contains(t, texts(res.View), "## 设备 · 3", "tile 风扇插座|| icon=power/blue [离线 caution] →open:switch.fan_plug", "不列离线的")
+	contains(t, texts(res.View), "## 设备 · 3", "tile 风扇插座|| icon=plug/blue [离线 caution] →open:switch.fan_plug", "不列离线的")
 }
 
 func TestHomeControls(t *testing.T) {
@@ -147,14 +147,14 @@ func TestHomeControls(t *testing.T) {
 		{"away", "别处", []string{"light.other_home"}}})
 	a := newTestApp(t, f, Config{})
 	_, got := renderV(t, a, 6, nil)
-	contains(t, got, "tile 空调|客厅 · 制冷|设定 26° icon=thermometer/blue active ctl(switch power:climate.living_ac true",
-		"tile 窗帘|卧室 · 开着|开度 40% icon=window/indigo active →open:cover.curtain",
-		"tile 风扇|客厅|风速 60% icon=fan/teal active ctl(switch power:fan.desk true",
+	contains(t, got, "tile 空调|制冷|设定 26° icon=thermometer/blue active ctl(switch power:climate.living_ac true",
+		"tile 窗帘|开着|开度 40% icon=window/indigo active →open:cover.curtain",
+		"tile 风扇||风速 60% icon=fan/teal active ctl(switch power:fan.desk true",
 		"row 风扇|客厅 · 风速|||| →open:fan.desk icon=fan/teal ctl(slider pct:fan.desk 60 0–100 step 20 %",
 		"row 窗帘|卧室 · 开度|||| →open:cover.curtain icon=window/indigo ctl(slider pos:cover.curtain 40 0–100 step 1 %",
 		"tile 卧室|1 窗帘、1 空调开着| icon=moon/indigo active →area:bedroom",
-		"stat 开着=5|1 灯 · 1 风扇 · 1 窗帘 · 2 空调|positive", "tile 空调|卧室 · 制冷|设定 25° icon=thermometer/blue active →open:climate.old_ac\n",
-		"tile 车库门|卧室 · 关着|开度 0% icon=car/indigo →open:cover.garage\n")
+		"stat 开着=5|1 灯 · 1 风扇 · 1 窗帘 · 2 空调|positive", "tile 空调|制冷|设定 25° icon=thermometer/blue active →open:climate.old_ac\n",
+		"tile 车库门|关着|开度 0% icon=car/indigo →open:cover.garage\n")
 	for _, no := range []string{"power:cover", "power:climate.old_ac", "pos:cover.garage"} {
 		if strings.Contains(got, no) {
 			t.Errorf("%s drawn:\n%s", no, got)
@@ -224,7 +224,7 @@ func TestHomeControls(t *testing.T) {
 	// a domain the settings leave out: no switch or dial drawn, a forged one refused
 	b := newTestApp(t, f, Config{Writable: []string{"climate"}})
 	_, got = renderV(t, b, 6, nil)
-	contains(t, got, "tile 卧室灯|卧室 · 开| icon=light/amber active →open:light.bed", "ctl(switch power:climate.living_ac false")
+	contains(t, got, "tile 卧室灯|开| icon=light/amber active →open:light.bed", "ctl(switch power:climate.living_ac false")
 	if strings.Contains(got, "power:light") || strings.Contains(got, "bri:") || strings.Contains(got, "pos:") {
 		t.Errorf("controls for what may not be written:\n%s", got)
 	}
@@ -353,15 +353,16 @@ func TestHomeSparse(t *testing.T) {
 	a := newTestApp(t, f, Config{})
 	v, got := renderV(t, a, 6, nil)
 	contains(t, got, "stat 开着=1|1 灯|positive", "stat 温度=23.7°|书房|", "stat 湿度=38%|书房|",
-		"## 设备 · 17", "tile 主灯|书房|亮度 78% icon=light/amber active ctl(switch power:light.study true",
-		"tile 插座|客厅| icon=plug/blue ctl(switch power:switch.living_plug false", "## 调节 · 1",
+		"## 书房 · 1 开着", "tile 主灯||亮度 78% icon=light/amber active ctl(switch power:light.study true",
+		"tile 插座|| icon=plug/blue ctl(switch power:switch.living_plug false", "## 调节 · 1",
 		"row 主灯|书房 · 亮度|||| →open:light.study icon=light/amber ctl(slider bri:light.study 78 1–100 step 1 %",
 		"## 区域 · 11", "tile 书房|1 灯开着|23.7° · 38% icon=doc/blue active →area:study", "carousel 其他区域 · 10")
-	if want := []string{"设备 · 17", "调节 · 1", "区域 · 11"}; !slices.Equal(titles(v), want) {
+	// a home of fewer devices than a grid takes: room by room, in Home Assistant's order
+	if want := []string{"客厅", "主卧", "次卧", "书房 · 1 开着", "厨房", "餐厅", "卫生间", "阳台", "玄关", "儿童房", "储物间", "调节 · 1", "区域 · 11"}; !slices.Equal(titles(v), want) {
 		t.Errorf("sections %q, want %q:\n%s", titles(v), want, got)
 	}
-	if n := len(tilesOf(v, "devices")); n != 17 || !tilesOf(v, "devices")[0].Active {
-		t.Errorf("%d device tiles, the one on first:\n%s", n, got)
+	if study := tilesOf(v, "room:study"); len(study) != 1 || !study[0].Active || study[0].Title != "主灯" {
+		t.Errorf("the study's tiles: %+v", study)
 	}
 	if lively := tilesOf(v, "areas"); len(lively) != 1 || lively[0].Title != "书房" {
 		t.Errorf("the lively areas: %+v", lively)
@@ -535,18 +536,16 @@ func TestHomeEdges(t *testing.T) {
 	v, got := renderV(t, a, 6, nil)
 	contains(t, got, "stat 开着=6|3 灯 · 1 开关 · 1 空调 · 1 警报器|positive", "stat 需注意=4|2 报警 · 1 电量 · 1 离线|danger",
 		"row 门厅警报器|客厅|||| [响着 danger] →open:siren.hall icon=bell/red", "row 门磁电量|卧室|||| [电量 8% caution]",
-		"row 风扇插座|客厅|||| [离线 caution] →open:switch.fan_plug", "tile 百叶|卧室 · 未知| icon=window/indigo →open:cover.rf_blind",
+		"row 风扇插座|客厅|||| [离线 caution] →open:switch.fan_plug", "tile 百叶|未知| icon=window/indigo →open:cover.rf_blind",
 		"tile 没分区的灯|| icon=light/amber active ctl(switch power:light.loose true")
 	for _, no := range []string{"遥控", "拆掉的插座", "门磁电量低", "辅光", "藏起来的开关"} {
 		if strings.Contains(got, no) {
 			t.Errorf("%s on the overview:\n%s", no, got)
 		}
 	}
-	// the device in no area goes after the areas' devices that are on, and before those off
-	d := tilesOf(v, "devices")
-	i := slices.IndexFunc(d, func(x wire.Tile) bool { return x.Title == "没分区的灯" })
-	if i != 4 || !d[i-1].Active || i+1 >= len(d) || d[i+1].Active {
-		t.Errorf("the device in no area at %d of %+v", i, d)
+	// the device in no area goes in its own section after the areas'
+	if d := tilesOf(v, "room:"); len(d) != 1 || d[0].Title != "没分区的灯" || !slices.Contains(titles(v), "其他 · 1 开着") {
+		t.Errorf("the device in no area: %+v in %q", d, titles(v))
 	}
 	if n := alarmCount(a.cachedHome(), a.pageRegistry(context.Background())); n != 2 {
 		t.Errorf("the tab's badge says %d alarms, the overview 2", n)

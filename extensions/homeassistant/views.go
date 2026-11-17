@@ -233,7 +233,7 @@ func (a *app) roomDevices(r *ext.UIRequest, hm *home, reg *Registry, ar *Area, s
 }
 
 // roomTiles is an area's devices on UI version 6: a tile each, by kind, with its switch (a tap opens it; its settings
-// are folded into it), the dials of what is on, and the offline ones behind a row.
+// are folded into it), its remotes after them (remoteTile), the dials of what is on, and the offline ones behind a row.
 func (a *app) roomTiles(r *ext.UIRequest, hm *home, reg *Registry, ar *Area, st pageState, v *wire.View) {
 	var shown []devRow
 	offline := 0
@@ -266,9 +266,15 @@ func (a *app) roomTiles(r *ext.UIRequest, hm *home, reg *Registry, ar *Area, st 
 			dials = append(dials, row)
 		}
 	}
+	rms := remotes(hm, reg, ar)
+	for _, rm := range rms {
+		if len(tiles) < tilesMost {
+			tiles = append(tiles, a.remoteTile(hm, rm, a.loc()))
+		}
+	}
 	if len(tiles) > 0 {
-		sec := wire.Section{Title: fmt.Sprintf("设备 · %d", len(shown)), Items: []wire.Component{{Type: "grid", Key: "devices", Tiles: tiles, MaxColumns: deviceColumns}}}
-		if len(shown) > len(tiles) {
+		sec := wire.Section{Title: fmt.Sprintf("设备 · %d", len(shown)+len(rms)), Items: []wire.Component{{Type: "grid", Key: "devices", Tiles: tiles, MaxColumns: deviceColumns}}}
+		if len(shown)+len(rms) > len(tiles) {
 			sec.Footer = fmt.Sprintf("只列前 %d 个，用搜索找别的", len(tiles))
 		}
 		v.Sections = append(v.Sections, sec)
@@ -276,7 +282,7 @@ func (a *app) roomTiles(r *ext.UIRequest, hm *home, reg *Registry, ar *Area, st 
 	if len(dials) > 0 {
 		v.Sections = append(v.Sections, wire.Section{Title: fmt.Sprintf("调节 · %d", len(dials)), Items: dials})
 	}
-	if len(shown) == 0 && offline == 0 {
+	if len(shown) == 0 && len(rms) == 0 && offline == 0 {
 		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{emptyItem(r, "这里没有设备", "看看「传感器」「全部」，或者搜索")}})
 	}
 	if more := offlineRow(offline, st.Offline); len(more) > 0 {

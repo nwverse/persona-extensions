@@ -71,7 +71,7 @@ var quickDomains = []string{"light", "switch", "fan", "input_boolean", "humidifi
 var rowServices = map[string][]string{
 	"light": {"turn_on", "turn_off"}, "switch": {"turn_on", "turn_off"}, "fan": {"turn_on", "turn_off"},
 	"input_boolean": {"turn_on", "turn_off"}, "humidifier": {"turn_on", "turn_off"},
-	"script": {"turn_on", "turn_off"}, "scene": {"turn_on"},
+	"script": {"turn_on", "turn_off"}, "scene": {"turn_on"}, "button": {"press"},
 }
 
 func (st *pageState) clean() {
@@ -216,10 +216,15 @@ func (a *app) rowCall(ctx context.Context, eid, svc string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, ok := hm.ByID[eid]; !ok || !hm.visible(eid) {
+	s, ok := hm.ByID[eid]
+	if !ok || !hm.visible(eid) {
 		return "", errNoEntity
 	}
-	return a.tap(ctx, eid, "svc", svc, nil)
+	msg, err := a.tap(ctx, eid, "svc", svc, nil)
+	if err == nil && d == "button" { // a remote's button (remoteTile) has no state to tell: say what was sent
+		msg = "已发送「" + buttonWord(hm.named(a.pageRegistry(ctx)), s) + "」"
+	}
+	return msg, err
 }
 
 // setControl runs a control's change on eid: power (a switch: turn_on or turn_off), bri (a light's brightness in
@@ -378,6 +383,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh ti
 		st.Area = ""
 	}
 	reg := a.pageRegistry(ctx)
+	hm = hm.named(reg)
 	if st.Entity == "" {
 		renderTabs(r, st, v, alarmCount(hm, reg))
 	}
@@ -437,6 +443,9 @@ func (hm *home) visible(e string) bool { return !hm.Hidden[e] || hm.AreaOf[e] !=
 // more are left.
 func shortName(hm *home, s State) string {
 	n := s.Name()
+	if dn, ok := hm.Names[s.EntityID]; ok {
+		n = dn
+	}
 	if area := hm.areaName(s.EntityID); area != "" && !hm.ByType && strings.HasPrefix(n, area) {
 		if rest := strings.TrimSpace(strings.TrimPrefix(n, area)); utf8.RuneCountInString(rest) >= 2 {
 			return rest
