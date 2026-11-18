@@ -371,16 +371,20 @@ func (s *Source) isPrivate(ctx context.Context, e wire.KBEntry) bool {
 	if err != nil {
 		return false
 	}
-	var m struct {
-		Private bool     `json:"private"`
-		Tags    []string `json:"tags"`
-	}
-	_ = json.Unmarshal(d.Meta, &m)
-	priv := m.Private || slices.ContainsFunc(m.Tags, func(t string) bool { return strings.EqualFold(t, "private") || t == "私密" })
+	priv := privateMeta(d.Meta)
 	if priv {
 		s.markPrivate(e.ID)
 	}
 	return priv
+}
+
+func privateMeta(raw json.RawMessage) bool {
+	var m struct {
+		Private bool     `json:"private"`
+		Tags    []string `json:"tags"`
+	}
+	_ = json.Unmarshal(raw, &m)
+	return m.Private || slices.ContainsFunc(m.Tags, func(t string) bool { return strings.EqualFold(t, "private") || t == "私密" })
 }
 
 func (s *Source) markPrivate(id string) {
@@ -400,6 +404,10 @@ func (s *Source) Get(ctx context.Context, kind, id string) (wire.KBDetail, error
 			return wire.KBDetail{}, kbsrc.ErrNotFound
 		}
 		d, err := s.Source.Get(ctx, kind, id)
+		if err == nil && kind == "recordings" && privateMeta(d.Meta) {
+			s.markPrivate(id)
+			return wire.KBDetail{}, kbsrc.ErrNotFound
+		}
 		if err == nil {
 			s.countGet(kind, id, d)
 		}

@@ -124,6 +124,16 @@ class AgentTest(unittest.TestCase):
             self.c.channel_send({"text": "x", "kind": "answer", "reply_to": "m1"})
         self.assertEqual(self.backend.sent, [])
 
+    def test_an_answer_only_goes_to_an_agent_request(self):
+        # A normal message from the user is not an /agent, and our own answer is not one either.
+        self.c.on_message(message("m_plain", "c1", 1, sender=ME, text="ordinary message"))
+        self.c.on_message(message("m_ai", "c1", 2, sender=ME, text="答\n\n" + AGENT_SUFFIX))
+        for mid in ("m_plain", "m_ai"):
+            with self.assertRaises(RpcError) as e:
+                self.c.channel_send({"ref": "r_" + mid, "text": "x", "kind": "answer", "reply_to": mid})
+            self.assertEqual(e.exception.code, "cannot_send")
+        self.assertEqual(self.backend.sent, [])
+
     def test_an_unknown_result_is_never_sent_again(self):
         self.c._on_live(message("m1", "c1", 1, sender=ME, text="/agent 发"))
         self.handed()

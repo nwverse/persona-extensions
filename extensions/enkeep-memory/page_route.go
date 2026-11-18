@@ -6,7 +6,10 @@ import (
 	"strings"
 	"time"
 
+	"fmt"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
 )
@@ -47,7 +50,7 @@ func (a *app) v4List(ctx context.Context, t tr, s page) *wire.View {
 	st, done := a.read()
 	defer done()
 	v := &wire.View{Title: t.s("enkeep 记忆", "enkeep memory")}
-	if head := a.headItems(t); len(head) > 0 {
+	if head := a.headItems(t, st); len(head) > 0 {
 		v.Sections = append(v.Sections, wire.Section{Items: head})
 	}
 	switch s.Tab {
@@ -81,10 +84,13 @@ func (a *app) v4List(ctx context.Context, t tr, s page) *wire.View {
 }
 
 // headItems: the run in progress, another task running, the last error.
-func (a *app) headItems(t tr) []wire.Component {
+func (a *app) headItems(t tr, st *store.State) []wire.Component {
 	var out []wire.Component
 	if p, ok := a.c.Live.Progress(); ok {
 		out = append(out, toned(progressText(p, time.Now())+t.s("。下面是上次整理完的结果，跑完会更新。", ". Below is the last finished result; it updates when the run ends."), wire.ToneCaution))
+	}
+	if text, tone := a.pauseLine(t, st, time.Now()); text != "" {
+		out = append(out, toned(text, tone))
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -95,6 +101,41 @@ func (a *app) headItems(t tr) []wire.Component {
 		out = append(out, toned(t.s("上次运行出错：", "The last run failed: ")+a.lastErr, wire.ToneDanger))
 	}
 	return out
+}
+
+// pauseLine says, while the passes wait for the model (State.ModelPause), why, since when and when they try again.
+// After curate.PausedAfter failures in a row it says the curator is paused; before, that the model is briefly
+// unavailable. "" when nothing waits.
+// st is the state the page is drawn from (the caller holds its lock).
+func (a *app) pauseLine(t tr, st *store.State, now time.Time) (string, string) {
+	if st == nil || st.ModelPause == nil {
+		return "", ""
+	}
+	cp := *st.ModelPause
+	clock := func(rfc string) string {
+		x, err := time.Parse(time.RFC3339, rfc)
+		if err != nil {
+			return rfc
+		}
+		return x.In(a.c.Loc).Format("01-02 15:04")
+	}
+	why := cp.Reason
+	if why == "" {
+		why = t.s("hub 没有给出原因", "the hub gave no reason")
+	}
+	if cp.What == "assistant" {
+		// The assistant's computer was away: its conversations, one of the day's sources, could not be read.
+		return fmt.Sprintf(t.s("助手的电脑没连上（%s），%s 这一天先不算读完，%s 再试。",
+			"The assistant's computer is not connected (%s); %s is not counted as read and will be tried again at %s."),
+			why, cp.Day, clock(cp.NextTry)), wire.ToneCaution
+	}
+	if cp.Fails < curate.PausedAfter {
+		return fmt.Sprintf(t.s("模型暂时不可用（%s），%s 再试 %s 这一天。", "The model is briefly unavailable (%s); %s will be tried again at %s."),
+			why, cp.Day, clock(cp.NextTry)), wire.ToneCaution
+	}
+	return fmt.Sprintf(t.s("模型不可用，暂停中：%s 起连续 %d 次调不到模型（%s）。没读完的日子不算完成，%s 自动再试，恢复后从 %s 接着跑。",
+		"The model is unavailable; paused: since %s, %d tries in a row found no model (%s). Days not read are not counted as done; the next try is at %s, and the run goes on from %s when the model is back."),
+		clock(cp.Since), cp.Fails, why, clock(cp.NextTry), cp.Day), wire.ToneDanger
 }
 
 // logf logs through the curator's logger when it has one.

@@ -287,7 +287,8 @@ func (c *compiler) rewrite(ctx context.Context, ws []want) ([]string, []bool) {
 			out[it.I] = it.Text
 			// An answer that says no moment changes (an empty "changes") is withheld; one that leaves the field out
 			// (an older answer) is not judged.
-			withheld[it.I] = it.Changes != nil && strings.TrimSpace(*it.Changes) == ""
+			// A line about the user as a person (⑥) is understanding, not an instruction: it has its own test below.
+			withheld[it.I] = it.Changes != nil && strings.TrimSpace(*it.Changes) == "" && ws[it.I].e.Facet != entry.Persona
 		}
 	}
 	c.emptiness(ctx, ws, out, withheld)
@@ -296,10 +297,13 @@ func (c *compiler) rewrite(ctx context.Context, ws []want) ([]string, []bool) {
 
 // emptiness asks the empty-talk question (5.0, 9.4) of each plain line on its own, apart from the rewrite: the
 // rewrite sees the entry's fields and can always name a moment for them; the line is what the assistant reads.
-// A line it cannot answer for is withheld. The user's own words go out as they put them.
+// A line it cannot answer for is withheld. A line about the user as a person (⑥) is not asked for a moment, which
+// understanding has none of, but whether it is a specific fact about this user rather than something true of
+// anyone. The user's own words go out as they put them.
 func (c *compiler) emptiness(ctx context.Context, ws []want, out []string, withheld []bool) {
 	type item struct {
 		I    int    `json:"i"`
+		Kind string `json:"kind"` // behaviour | person
 		Line string `json:"line"`
 	}
 	var in struct {
@@ -307,7 +311,11 @@ func (c *compiler) emptiness(ctx context.Context, ws []want, out []string, withh
 	}
 	for i, w := range ws {
 		if !withheld[i] && w.mode == ModePlain && strings.TrimSpace(out[i]) != "" && !ownWords(w.e) {
-			in.Items = append(in.Items, item{I: i, Line: strings.TrimSpace(out[i])})
+			kind := "behaviour"
+			if w.e.Facet == entry.Persona {
+				kind = "person"
+			}
+			in.Items = append(in.Items, item{I: i, Kind: kind, Line: strings.TrimSpace(out[i])})
 		}
 	}
 	if len(in.Items) == 0 {

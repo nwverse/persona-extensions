@@ -122,6 +122,15 @@ func acceptCmd(args []string) error {
 	} else {
 		in.CardsMissing = "no " + filepath.Base(path) + " beside the state"
 	}
+	if *agentsDir != "" {
+		off := &hubapi.Offline{AgentsDir: *agentsDir}
+		if ss, err := off.Sessions(context.Background(), time.Time{}); err == nil {
+			in.Sessions = map[string]string{}
+			for _, se := range ss {
+				in.Sessions["agents/"+se.Machine+"/"+se.ID] = strings.TrimSpace(strings.Join([]string{se.Title, se.Project}, " "))
+			}
+		}
+	}
 	rep, err := runAccept(context.Background(), in)
 	if err != nil {
 		return err
@@ -177,8 +186,10 @@ type acceptInput struct {
 	Cards        []hubapi.Interaction
 	CardsMissing string
 	Src          kbsrc.Source // optional: speaker lines, members, fact context
-	Model        model.Model  // nil: samples drawn, not pre-judged
-	Rand         *rand.Rand
+	// Sessions are the agent sessions' titles by unit ref ("agents/<machine>/<id>"), for the fact judge (optional).
+	Sessions map[string]string
+	Model    model.Model // nil: samples drawn, not pre-judged
+	Rand     *rand.Rand
 }
 
 type acceptReport struct {
@@ -226,7 +237,7 @@ type factItem struct {
 	Text     string           `json:"text"`
 	Evidence []entry.Evidence `json:"evidence"`
 	Context  []string         `json:"context,omitempty"`
-	Sources  []string         `json:"sources,omitempty"` // the names of the chats it cites (a group's name is evidence too)
+	Sources  []string         `json:"sources,omitempty"` // the names of the chats and sessions it cites (a group's name is evidence too)
 	Verdict  string           `json:"verdict,omitempty"` // right | wrong | unsupported
 	Reason   string           `json:"reason,omitempty"`
 }
@@ -399,7 +410,11 @@ func sampleFacts(ctx context.Context, in acceptInput) []factItem {
 		}
 		for _, ev := range it.Evidence {
 			it.Context = append(it.Context, around(ctx, in.Src, ev.Ref, ev.Day, ev.N, 3)...)
-			if n := sourceName(ctx, in.Src, ev.Ref); n != "" && !slices.Contains(it.Sources, n) {
+			n := sourceName(ctx, in.Src, ev.Ref)
+			if n == "" {
+				n = in.Sessions[ev.Ref]
+			}
+			if n != "" && !slices.Contains(it.Sources, n) {
 				it.Sources = append(it.Sources, n)
 			}
 		}
@@ -608,13 +623,14 @@ const promptEmpty = `You check lines that are written into an AI assistant's sta
 For each item answer the fixed question: "If this line were deleted, at which moment would the assistant act differently, and how?"
 Name a concrete moment (for example: when asking the user to choose between options, when touching a named machine or tool, when starting a named kind of task, when replying to a named person) and the concrete difference in what the assistant does.
 Set answerable to false when no such moment can be named: the line would hold for any user, states no behaviour, or is too vague to change anything the assistant does.
+An item of facet "persona" is there so the assistant understands who the user is, not to tell it what to do: for it, answerable means it is a specific fact about this user (background, role or responsibilities, what they work on or aim at over time, their circumstances, a view or habit with something specific to it), false when it would hold for almost anyone ("values efficiency") or is too vague to tell this user from another; moment is what it says about the user, difference empty.
 Judge only from the line itself. Write moment and difference in the line's language, one short sentence each (empty when not answerable).
 Answer with JSON {"items":[{"id","answerable","moment","difference"}]}, one per item, ids as given.`
 
 func (j *judger) empty(ctx context.Context, xs []emptyItem) {
 	var items []map[string]any
 	for _, x := range xs {
-		items = append(items, map[string]any{"id": x.ID, "line": x.Text})
+		items = append(items, map[string]any{"id": x.ID, "facet": x.Facet, "line": x.Text})
 	}
 	idx := map[string]*emptyItem{}
 	for i := range xs {
@@ -661,7 +677,7 @@ func (j *judger) abstract(ctx context.Context, xs []abstractItem) {
 
 const schemaFacts = `{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"verdict":{"type":"string","enum":["right","wrong","unsupported"]},"reason":{"type":"string"}},"required":["id","verdict","reason"]}}},"required":["items"]}`
 
-const promptFacts = `Each item is a fact a curator wrote into one user's knowledge base, with the source lines it cites (original words, "quotes"), where available the lines around them ("context") and the names of the chats they come from ("sources": a group's name says what the group is).
+const promptFacts = `Each item is a fact a curator wrote into one user's knowledge base, with the source lines it cites (original words, "quotes"), where available the lines around them ("context") and the names of the chats or agent sessions they come from ("sources": a group's or a session's name says what it is about).
 Judge each fact against those lines only, without outside knowledge. An item without "context" is judged on its quotes alone; the quotes are the evidence.
 - right: the lines state it or clearly imply it;
 - wrong: the lines contradict it (wrong person, wrong thing, wrong time, reversed relation…);

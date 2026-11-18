@@ -474,3 +474,20 @@ func TestWriteShowcase(t *testing.T) {
 		}
 	}
 }
+
+// A line that starts with a year or another number is not a list item: only a real list marker is stripped.
+func TestLinesKeepsLeadingNumbers(t *testing.T) {
+	if got := lines("2026 年上线 Atlas", 3); len(got) != 1 || got[0] != "2026 年上线 Atlas" {
+		t.Fatalf("a year was stripped: %q", got)
+	}
+	got := lines("1. first\n2、second\n3) third\n- fourth\n• fifth", 0)
+	want := []string{"first", "second", "third", "fourth", "fifth"}
+	if len(got) != len(want) {
+		t.Fatalf("%q", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("%q", got)
+		}
+	}
+}

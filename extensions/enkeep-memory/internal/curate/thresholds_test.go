@@ -118,3 +118,33 @@ func TestSettleDurable(t *testing.T) {
 		t.Errorf("durable, not the user's words: %s", d.Status)
 	}
 }
+
+// One sighting settles a fact the user states about themself, a fact or a promise on a person's or the user's own
+// line, and anything from "about me"; a view, a habit, an evaluation or a reading needs a second.
+func TestSettleOneSightingFacts(t *testing.T) {
+	s := &store.State{ActiveDays: days(3)}
+	d0, today := s.ActiveDays[0], s.ActiveDays[2]
+	own := []entry.Evidence{{Ref: "chats/a", Day: d0, Who: entry.WhoSelf, Role: "user", Quote: "我负责 project-x 的数据管线"}}
+	one := Tally{For: occ(d0), Days: []string{d0}}
+	for _, c := range []struct {
+		name string
+		e    *entry.Entry
+		want entry.Status
+	}{
+		{"self role", &entry.Entry{Facet: entry.Persona, Grain: entry.Action, Origin: entry.Behavior, Type: "responsibility", Evidence: own}, entry.Stable},
+		{"self opinion", &entry.Entry{Facet: entry.Persona, Grain: entry.Action, Origin: entry.Behavior, Type: "opinion", Evidence: own}, entry.Candidate},
+		{"role said by another", &entry.Entry{Facet: entry.Persona, Grain: entry.Action, Origin: entry.Behavior, Type: "role",
+			Evidence: []entry.Evidence{{Ref: "chats/a", Day: d0, Who: "person:b", Role: "other", Quote: "他负责 project-x"}}}, entry.Candidate},
+		{"about me", &entry.Entry{Facet: entry.Persona, Grain: entry.Action, Origin: entry.SelfReport, Type: "values", Evidence: own}, entry.Stable},
+		{"person fact", &entry.Entry{Facet: entry.People, Grain: entry.Action, Origin: entry.Behavior, Part: entry.PartFact, Evidence: own}, entry.Stable},
+		{"person promise", &entry.Entry{Facet: entry.People, Grain: entry.Action, Origin: entry.Behavior, Part: entry.PartCommitment, Evidence: own}, entry.Stable},
+		{"person fact, reported", &entry.Entry{Facet: entry.People, Grain: entry.Action, Origin: entry.Behavior, Part: entry.PartFact, ReportedOnly: true, Evidence: own}, entry.Candidate},
+		{"person evaluation", &entry.Entry{Facet: entry.People, Grain: entry.Action, Origin: entry.Behavior, Part: entry.PartUserEval, Evidence: own}, entry.Candidate},
+		{"person reading", &entry.Entry{Facet: entry.People, Grain: entry.Action, Origin: entry.Behavior, Part: entry.PartInferred, Inferred: true, Evidence: own}, entry.Candidate},
+	} {
+		c.e.Last = d0
+		if d, _ := Settle(s, c.e, one, today); d.Status != c.want {
+			t.Errorf("%s: %s, want %s", c.name, d.Status, c.want)
+		}
+	}
+}

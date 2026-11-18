@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -531,7 +532,7 @@ func (m *noChange) Complete(_ context.Context, r model.Request) (model.Response,
 func TestEmptyTalkWithheld(t *testing.T) {
 	dir := t.TempDir()
 	st := &store.State{Entries: map[string]*entry.Entry{}}
-	vague := ent("u-vague", entry.Persona, entry.Class, "用户注重实际需求（占位）")
+	vague := ent("i-vague", entry.Interaction, entry.Class, "用户注重实际需求（占位）")
 	vague.Impact = entry.Impact{Moment: "every_turn", Action: "注意"}
 	own := ent("i-own", entry.Interaction, entry.Class, "回复里不要用英文缩写（占位）")
 	own.Origin = entry.FromOnboarding
@@ -622,4 +623,53 @@ func TestEmptinessOfTheLineAlone(t *testing.T) {
 	if vague.Export == nil || !vague.Export.Withheld {
 		t.Fatalf("not recorded as withheld: %+v", vague.Export)
 	}
+}
+
+// A line about the user as a person is not withheld for naming no moment (the rewrite's changes), only when, asked as
+// a "person" line, it is no specific fact about this user.
+func TestPersonaHasItsOwnTest(t *testing.T) {
+	dir := t.TempDir()
+	st := &store.State{Entries: map[string]*entry.Entry{}}
+	role := ent("u-role", entry.Persona, entry.Class, "用户负责 project-x 的数据管线（占位）")
+	role.Impact = entry.Impact{Moment: "every_turn", Action: "知道"}
+	generic := ent("u-generic", entry.Persona, entry.Class, "用户重视效率（泛）")
+	generic.Impact = entry.Impact{Moment: "every_turn", Action: "知道"}
+	st.Entries[role.ID], st.Entries[generic.ID] = role, generic
+	m := &personLines{}
+	if _, err := Compile(context.Background(), st, Options{Dir: dir, Model: m, Lang: "zh-Hans", Loc: time.UTC, Now: func() time.Time { return now }}); err != nil {
+		t.Fatal(err)
+	}
+	a := read(t, dir, InstructionsPath)
+	if !strings.Contains(a, "数据管线") || strings.Contains(a, "重视效率") {
+		t.Fatalf("instructions:\n%s", a)
+	}
+	if !slices.Contains(m.kinds, "person") || slices.Contains(m.kinds, "behaviour") {
+		t.Fatalf("kinds asked: %v", m.kinds)
+	}
+}
+
+// personLines rewrites with an empty "changes" (no moment) and answers the line-alone question by its "（泛）" mark.
+type personLines struct{ kinds []string }
+
+func (m *personLines) Complete(_ context.Context, r model.Request) (model.Response, error) {
+	var in struct {
+		Items []struct {
+			I    int    `json:"i"`
+			Text string `json:"text"`
+			Kind string `json:"kind"`
+			Line string `json:"line"`
+		} `json:"items"`
+	}
+	_ = json.Unmarshal([]byte(r.User), &in)
+	var out []map[string]any
+	for _, it := range in.Items {
+		if r.Step == "export_emptiness" {
+			m.kinds = append(m.kinds, it.Kind)
+			out = append(out, map[string]any{"i": it.I, "answerable": !strings.Contains(it.Line, "（泛）"), "moment": "", "difference": ""})
+		} else {
+			out = append(out, map[string]any{"i": it.I, "text": it.Text, "changes": ""})
+		}
+	}
+	b, _ := json.Marshal(map[string]any{"items": out})
+	return model.Response{Text: string(b)}, nil
 }

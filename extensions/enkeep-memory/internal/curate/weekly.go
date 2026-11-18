@@ -194,7 +194,7 @@ func (c *Curator) consolidate(ctx context.Context, m model.Model, week, class st
 	key := hash("weekly", week, schema.Must(in), schema.WeeklyPrompt)[:20]
 	if m != nil && c.St.S.Done[key] == nil {
 		resp, err := m.Complete(ctx, model.Request{Step: "weekly", Tier: tier(c.Cfg.WeeklyTier), System: prompts.Weekly,
-			User: schema.Must(in), MaxTokens: 1500, Schema: prompts.WeeklySchema})
+			User: schema.Must(in), MaxTokens: 4000, Schema: prompts.WeeklySchema})
 		if err == nil && json.Unmarshal([]byte(resp.Text), &out) == nil {
 			raw, _ := c.St.PutRaw(key, []byte(resp.Text))
 			c.St.S.Done[key] = &store.Done{Key: key, Step: "weekly", Day: week, At: c.now().UTC().Format(time.RFC3339), Raw: raw, Prompt: schema.WeeklyPrompt, Ruleset: schema.Ruleset}

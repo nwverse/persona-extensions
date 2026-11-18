@@ -48,11 +48,16 @@ func at(d, h int) time.Time { return time.Date(2026, 11, d, h, 0, 0, 0, time.UTC
 // hub is a hub with placeholder sessions, cards, to-dos, "about me" and memory, recording the items queries.
 type hub struct {
 	hubapi.None
-	queries []hubapi.ItemsQuery
-	items   []hubapi.Item
+	queries     []hubapi.ItemsQuery
+	items       []hubapi.Item
+	sessions    []hubapi.Session
+	memoryFiles []hubapi.MemoryFile
 }
 
 func (h *hub) Sessions(context.Context, time.Time) ([]hubapi.Session, error) {
+	if h.sessions != nil {
+		return h.sessions, nil
+	}
 	return []hubapi.Session{
 		{Machine: "m1", ID: "s1", Title: "project-x", Started: at(3, 8), Updated: at(4, 12)},
 		{Machine: "m1", ID: "s-health", Title: "health", Started: at(3, 8), Updated: at(4, 12), Assistant: true, Health: true},
@@ -106,6 +111,9 @@ func (h *hub) AboutMe(context.Context) (string, error) {
 }
 
 func (h *hub) Memories(context.Context, bool) ([]hubapi.MemoryFile, error) {
+	if h.memoryFiles != nil {
+		return h.memoryFiles, nil
+	}
 	return []hubapi.MemoryFile{
 		{Name: "port.md", Description: "port of machine-a", Type: "reference", Created: at(3, 7), Modified: at(3, 7), Content: "machine-a uses 9090"},
 		{Name: "later.md", Description: "later", Created: at(5, 7), Modified: at(5, 7), Content: "not yet"},
@@ -257,6 +265,85 @@ func TestAgentsReadFoldedIncrementally(t *testing.T) {
 	}
 }
 
+func TestAgentsTrailingFoldCursorIncludesThrough(t *testing.T) {
+	h := &hub{items: []hubapi.Item{
+		{Seq: 1, At: at(3, 8), Kind: hubapi.KindUser, Text: "start"},
+		{Seq: 2, At: at(3, 9), Kind: hubapi.KindToolUse, Tool: "Bash", Text: "first", Call: "a"},
+		{Seq: 3, At: at(3, 10), Kind: hubapi.KindToolResult, Tool: "Bash", Text: "ok", Call: "a"},
+	}}
+	s := With(&kb{}, h, time.UTC)
+	st := &store.State{}
+	ctx := context.Background()
+	s.Begin(st, "2026-11-03")
+	if _, err := s.Recent(ctx, day3, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	_ = dayLines(t, s, "agents/m1/s1", "2026-11-03")
+	s.End(st, "2026-11-03", 1)
+	if got := st.Cursors["S3/m1/s1"]; got != "3|2026-11-03" {
+		t.Errorf("a trailing fold left the cursor before its through sequence: %q", got)
+	}
+
+	h.items = append(h.items,
+		hubapi.Item{Seq: 4, At: at(4, 8), Kind: hubapi.KindToolUse, Tool: "Bash", Text: "second", Call: "b"},
+		hubapi.Item{Seq: 5, At: at(4, 9), Kind: hubapi.KindToolResult, Tool: "Bash", Text: "ok", Call: "b"},
+		hubapi.Item{Seq: 6, At: at(4, 10), Kind: hubapi.KindAgent, Text: "done"},
+	)
+	s.Begin(st, "2026-11-04")
+	if _, err := s.Recent(ctx, at(4, 0), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	text := strings.Join(dayLines(t, s, "agents/m1/s1", "2026-11-04"), "\n")
+	if len(h.queries) != 2 || h.queries[1].After != 3 {
+		t.Errorf("next query starts after the trailing fold: %+v", h.queries)
+	}
+	if !strings.Contains(text, "工作: 1 次工具调用") || !strings.Contains(text, "[seq 4-5]") || !strings.Contains(text, "Agent: done") {
+		t.Errorf("the next day's tool work was folded into the previous day and lost:\n%s", text)
+	}
+	s.End(st, "2026-11-04", 1)
+	if got := st.Cursors["S3/m1/s1"]; got != "6|2026-11-04" {
+		t.Errorf("cursor after the next day: %q", got)
+	}
+}
+
+func TestByPersonaFirstMessageSpeaker(t *testing.T) {
+	h := &hub{
+		sessions: []hubapi.Session{{Machine: "m1", ID: "s-persona", Started: at(3, 8), Updated: at(4, 9), ByPersona: true}},
+		items: []hubapi.Item{
+			{Seq: 1, At: at(3, 9), Kind: hubapi.KindUser, Text: "delegated task"},
+			{Seq: 2, At: at(3, 10), Kind: hubapi.KindUser, Text: "my own follow-up"},
+			{Seq: 3, At: at(4, 9), Kind: hubapi.KindUser, Text: "next day's user message"},
+		},
+	}
+	s := With(&kb{}, h, time.UTC)
+	st := &store.State{}
+	ctx := context.Background()
+	s.Begin(st, "2026-11-03")
+	if _, err := s.Recent(ctx, day3, time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	lines := dayLines(t, s, "agents/m1/s-persona", "2026-11-03")
+	if len(lines) != 2 {
+		t.Fatalf("day 3 lines: %v", lines)
+	}
+	if !strings.Contains(lines[0], SpeakerPersona+": delegated task") {
+		t.Errorf("the first message is not Persona's: %v", lines[0])
+	}
+	if !strings.Contains(lines[1], SpeakerUser+": my own follow-up") {
+		t.Errorf("the user follow-up changed speaker: %v", lines[1])
+	}
+	s.End(st, "2026-11-03", 1)
+
+	s.Begin(st, "2026-11-04")
+	if _, err := s.Recent(ctx, at(4, 0), time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	lines = dayLines(t, s, "agents/m1/s-persona", "2026-11-04")
+	if len(lines) != 1 || !strings.Contains(lines[0], SpeakerUser+": next day's user message") {
+		t.Errorf("an incremental page's first user message changed speaker: %v", lines)
+	}
+}
+
 // A segment of seqs gives back its tool calls and results, unfolded, paired, and counted under S4.
 func TestSegment(t *testing.T) {
 	h := &hub{items: sessionItems()}
@@ -347,6 +434,79 @@ func TestTodosAboutMemory(t *testing.T) {
 	got = refs(es)
 	if got["about/me"] || got["memory/port.md"] {
 		t.Errorf("unchanged catalogs listed again: %v", got)
+	}
+}
+
+func TestTruncatedMemoryIsSkippedUntilComplete(t *testing.T) {
+	h := &hub{memoryFiles: []hubapi.MemoryFile{
+		{Name: "cut.md", Created: at(3, 7), Modified: at(3, 7), Content: "approved prefix", Truncated: true},
+		{Name: "omitted.md", Description: "metadata only", Created: at(3, 7), Modified: at(3, 7), Truncated: true},
+		{Name: "whole.md", Created: at(3, 7), Modified: at(3, 7), Content: "complete body"},
+	}}
+	s := With(&kb{}, h, time.UTC)
+	st := &store.State{}
+	ctx := context.Background()
+	s.Begin(st, "2026-11-03")
+	es, err := s.Recent(ctx, day3, time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := refs(es)
+	if !got["memory/whole.md"] || got["memory/cut.md"] || got["memory/omitted.md"] {
+		t.Errorf("mixed complete and truncated memories: %v", got)
+	}
+	for _, name := range []string{"cut.md", "omitted.md"} {
+		if d, err := s.Day(ctx, "memory/"+name, "2026-11-03"); !errors.Is(err, kbsrc.ErrNotFound) {
+			t.Errorf("truncated %s returned content: %+v, %v", name, d, err)
+		}
+	}
+	if text := strings.Join(dayLines(t, s, "memory/whole.md", "2026-11-03"), "\n"); !strings.Contains(text, "complete body") {
+		t.Errorf("complete memory: %s", text)
+	}
+	s.End(st, "2026-11-03", 1)
+	for _, name := range []string{"cut.md", "omitted.md"} {
+		if st.Cursors["S6/"+name] != "" {
+			t.Errorf("truncated %s committed a cursor: %v", name, st.Cursors)
+		}
+	}
+	if st.Cursors["S6/whole.md"] == "" {
+		t.Errorf("complete memory has no cursor: %v", st.Cursors)
+	}
+
+	h.memoryFiles[0].Content = "approved prefix\ncomplete suffix"
+	h.memoryFiles[0].Modified = at(4, 7)
+	h.memoryFiles[0].Truncated = false
+	s.Begin(st, "2026-11-04")
+	es, err = s.Recent(ctx, at(4, 0), time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = refs(es)
+	if !got["memory/cut.md"] || got["memory/omitted.md"] || got["memory/whole.md"] {
+		t.Errorf("later complete memory: %v", got)
+	}
+	if text := strings.Join(dayLines(t, s, "memory/cut.md", "2026-11-04"), "\n"); !strings.Contains(text, "complete suffix") {
+		t.Errorf("later complete memory lacks its suffix: %s", text)
+	}
+	s.End(st, "2026-11-04", 1)
+	if st.Cursors["S6/cut.md"] == "" || st.Cursors["S6/omitted.md"] != "" {
+		t.Errorf("cursors after the complete response: %v", st.Cursors)
+	}
+}
+
+func TestDirectRecordingGetChecksPrivacy(t *testing.T) {
+	k := &kb{meta: map[string]map[string]any{
+		"r-private": {"id": "r-private", "private": true},
+		"r-public":  {"id": "r-public"},
+	}}
+	s := With(k, hubapi.None{}, time.UTC)
+	d, err := s.Get(context.Background(), "recordings", "r-private")
+	if !errors.Is(err, kbsrc.ErrNotFound) {
+		t.Fatalf("private recording returned without a preceding Recent: detail=%+v err=%v", d, err)
+	}
+	d, err = s.Get(context.Background(), "recordings", "r-public")
+	if err != nil || d.Summary != "a recording summary" {
+		t.Fatalf("public recording: detail=%+v err=%v", d, err)
 	}
 }
 

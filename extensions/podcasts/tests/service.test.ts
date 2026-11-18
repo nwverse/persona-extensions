@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { budget, Podcasts, ReadError } from "../src/service.ts";
 import { callTool } from "../src/tools.ts";
-import { Fixture, lookupToolURL, lookupURL, searchToolURL, searchURL, until } from "./fixtures.ts";
+import { Fixture, lookupToolURL, lookupURL, sampleShow, searchToolURL, searchURL, showURL, until } from "./fixtures.ts";
 const make = (fixture = new Fixture(), options = {}) => new Podcasts(fixture.fetch, {}, { now: () => fixture.clock, monotonic: () => fixture.clock, limits: { gap: 0 }, locale: "en", ...options });
 
 test("search and episode reads share bounded requests and validated cache entries", async () => {
@@ -17,6 +17,26 @@ test("search and episode reads share bounded requests and validated cache entrie
   assert.equal(fixture.requests[0].init.redirect, "error");
   assert.equal(fixture.requests[0].init.headers && (fixture.requests[0].init.headers as Record<string, string>).Authorization, undefined);
   assert.equal(service.status().state, "ok"); assert.deepEqual(service.cacheStats().entries, 2);
+});
+
+test("a frequently used cached answer still expires after its freshness window", async () => {
+  const fixture = new Fixture(), service = make(fixture);
+  await service.search("synthetic");
+  fixture.put(searchURL, { resultCount: 1, results: [{ ...sampleShow, collectionName: "Updated Engineering" }] });
+  fixture.clock += 10 * 60 * 1000;
+  await service.search("synthetic"); // a hit at 10 minutes must not reset the 15-minute window
+  fixture.clock += 10 * 60 * 1000;
+  const result = await service.search("synthetic");
+  assert.equal(result.shows[0].title, "Updated Engineering");
+  assert.equal(fixture.hits.get(searchURL), 2);
+});
+
+test("show refuses a record whose collection id is not the requested show", async () => {
+  const fixture = new Fixture(), service = make(fixture);
+  const result = await service.search("synthetic");
+  const id = result.shows[0].id;
+  fixture.put(showURL, { resultCount: 1, results: [{ ...sampleShow, collectionId: 42 }] });
+  await assert.rejects(service.show(id), (error: unknown) => error instanceof ReadError && error.code === "not_found");
 });
 
 test("failed refresh returns a stale validated answer", async () => {

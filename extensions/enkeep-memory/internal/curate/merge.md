@@ -26,7 +26,7 @@ keeps different points apart (rules for the assistant, facts about an object or 
 different things the assistant must each remember (one about the language of reports, one about not asking before
 acting) are not one class: put them in separate kinds with the same situation, one kind each. List in `conflicting` the ids of classes in the same kind
 where the user did the opposite of the others; those are kept apart. A merged `text` that needs a list of unrelated
-points is a sign the classes were not one.
+points, or "A or B or C", is a sign the classes were not one: such a merge is refused by the program.
 
 For each kind give `situation` (the kind, as above), `text` (one sentence: in this kind of situation the user does
 X, not Y. Keep what is particular to the user: the concrete choices the classes share and what the user avoids, in

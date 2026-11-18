@@ -76,7 +76,10 @@ function registrar(raw: unknown): string | undefined {
 function date(value: unknown): string {
   const raw = string(value);
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(raw) || !Number.isFinite(Date.parse(raw))) throw new ReadError("bad_answer");
-  return new Date(Date.parse(raw)).toISOString();
+  // Date.parse rolls an impossible calendar day into the next month; that is not a valid RDAP date.
+  const [y, m, d] = raw.slice(0, 10).split("-").map(Number), parsed = new Date(raw);
+  if (parsed.getUTCFullYear() !== y || parsed.getUTCMonth() !== m - 1 || parsed.getUTCDate() !== d) throw new ReadError("bad_answer");
+  return parsed.toISOString();
 }
 export function parseRegistration(raw: unknown, domain: string, at: number): Registration {
   const requested = domainName(domain), root = object(raw);

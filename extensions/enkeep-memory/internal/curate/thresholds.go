@@ -120,6 +120,12 @@ func Settle(s *store.State, e *entry.Entry, t Tally, today string) (d Decision, 
 	if e.Grain == entry.Action && oneShot(e) {
 		return Decision{entry.Stable, "proved once by a tool result or a quoted fact"}, false
 	}
+	if e.Grain == entry.Action && entry.SelfFact(e) {
+		return Decision{entry.Stable, "a fact the user stated about themself"}, false
+	}
+	if e.Grain == entry.Action && entry.PersonFact(e) {
+		return Decision{entry.Stable, "a fact or a promise on the person's or the user's own line"}, false
+	}
 	if e.Grain == entry.Action && slices.Contains(e.Flags, "durable") && slices.ContainsFunc(e.Evidence, func(x entry.Evidence) bool { return x.Who == entry.WhoSelf }) {
 		return Decision{entry.Stable, "the user said it holds from now on"}, false
 	}

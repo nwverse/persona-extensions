@@ -1,5 +1,173 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.29 (pre-release)
+
+- **`enkeep_resettle`: settle every entry's status again, as a tool.** The assistant and Agents can call it on the
+  `enkeep` connector. It settles every entry (dormant ones too) as of today on the real active days: an active day the
+  run ledger proves was never read with the model (daily runs, none with a model call) and no entry rests on is not
+  counted, since such days put entries to sleep early before 0.2.0-beta.21. `dry_run` (the default) changes nothing,
+  not even the event log, and reports the five statuses before and after, the stable entries per facet and what
+  would move; `dry_run: false` applies it. A second call moves nothing. It deletes nothing.
+- **Done reruns leave the queue.** Once the queued days are all digested with the current prompt and filed, they are
+  taken out of the `enkeep_rerun` queue; their markers stay, so asking for them again still queues nothing, and
+  `enkeep_rerun_status` lists only `rerun_range`'s days and what still waits.
+
+## 0.2.0-beta.28 (pre-release)
+
+- **The rerun tools reach the assistant and Agents.** In 0.2.0-beta.27 the connector was `enkeepmemory` and its tools
+  `enkeep_rerun` / `enkeep_rerun_status`; the hub keeps only a connector's tools whose names start with its id and
+  "_", so it dropped both and no conversation saw them. The connector is now `enkeep`. A test runs the hub's own
+  connector checks (`exttest.CheckConnectors`), which fail on such a name.
+- The program declares its connector when it starts, as the manifest does; the hub no longer logs that it fell back
+  to the manifest's.
+
+## 0.2.0-beta.27 (pre-release)
+
+- **Reruns are a tool, not only a setting.** The assistant and coding Agents can call `enkeep_rerun` (`from`, `to`:
+  days to read again with the current daily prompt) and `enkeep_rerun_status` (what is done, what waits, what runs
+  now, whether the passes wait for the model or the assistant's computer), through the extension's connector
+  `enkeepmemory` (capability `tools`; `agent_tools: enkeep_*`). A call queues the days in the state and returns at
+  once; they run as `rerun_range`'s do: one at a time in the background, completed days only, each at most once per
+  prompt version, waiting while the model or the assistant's computer is away. At most 31 days per call. A rerun
+  reads the user's own sources again inside the extension, sends nothing and deletes nothing, and what it finds goes
+  through the same thresholds and review as any day's, so it is a tool rather than a gated write. `rerun_range` (the
+  setting) works as before.
+
+## 0.2.0-beta.26 (pre-release)
+
+- **A day the assistant's computer is away for is tried again after a wait.** When the assistant's conversations
+  cannot be read because its computer is not connected, the day's pass ends unfinished and waits like when the model
+  is unavailable (`model_pause`, now with `what: assistant`), then tries the same day again; before, the day was only
+  tried again at the plugin's next start, so a rerun range could pass over it. The page says the assistant's computer
+  is not connected, not that the model is unavailable.
+
+## 0.2.0-beta.25 (pre-release)
+
+- **A unit an upstream turns down is split, not lost.** An OpenAI-style upstream answers some requests with HTTP 400
+  "the request was rejected as invalid" for what they contain (seen with a GPT model on a group chat: the whole unit
+  was lost for the day). That reply, and the hub's `model_refused` code, now count as a refusal: the unit is read
+  again in smaller parts, and a part refused at the smallest size is recorded as skipped, as for any refusal.
+
+## 0.2.0-beta.24 (pre-release)
+
+- **People pages carry the user's own words and the inferred profile too.** The hub's privacy filter
+  (nwverse/persona#6119) keeps a profile's private parts (`[用户原话]`, `[推断·仅供参考]`) out of conversations that
+  write to other people: inbox drafting, the Lark agent and conversations an extension opens. With it, an accepted
+  person card writes its evaluations and inferences to the knowledge base as well, not only facts and commitments
+  (`ProfileViewsReleased`). `engines.persona` asks for a hub built with the filter (`>=202611122324`); a development
+  build (0) is not checked. Not covered by the hub's filter, as #6119 says: a conversation reading `profiles.json`
+  with its own file tools, an extension's own MCP tools, and paraphrases.
+
+## 0.2.0-beta.22 (pre-release)
+
+Ready for a GPT model on the knowledge-base purpose (tried with gpt-6-luna).
+
+- **An observation without its sentence is not lost.** A model that fills a judgement's or a way's fields
+  (situation, choice, rejected, why; a machine's pitfall and fix) and leaves `text` out gets the sentence made of
+  those fields, nothing added. `text` is no longer required by the daily schema, so the hub does not refuse the
+  whole answer for it; an observation whose fields do not say enough is still a schema rejection. The prompt
+  (`daily/15`) says every observation has `text`, also when the fields are filled. On two replayed days gpt-6-luna
+  left `text` out of 35 of 172 answers.
+- **A reply that does not match the schema is read, not dropped.** When the hub returns `invalid_output` after its
+  second try, the reply it carries is taken and each item is checked on its own, as for any answer; before, the
+  whole unit was lost for the day.
+- **Room for a reasoning model.** The smallest answer limits (triage 400, weekly 1500, dig and rewrite 2000 tokens)
+  are 4000: a reasoning model counts its reasoning in `max_completion_tokens` and could be cut off before answering.
+
+## 0.2.0-beta.21 (pre-release)
+
+- **A day the model is unavailable to is not done.** When the hub cannot run the model (model.complete busy or
+  unavailable) before every admitted unit of a day was read, the day's pass ends with `ErrModelDown` instead of
+  finishing on triage alone: no finished run is recorded, the first-run replay stays on that day, and a rerun_range
+  day is not marked rerun. What was read before is kept (the state is saved after every unit). The passes then wait
+  (`model_pause` in the state) 10 minutes, doubling up to 2 hours, and try the same day again; the first pass that
+  reaches the model clears the pause and the replay goes on from there. Before, a replay ran on through days with
+  no model and counted them as read.
+- The plugin page says so: "模型暂时不可用" for the first failures, "模型不可用，暂停中" after three in a row, with
+  the hub's reason, since when, the next try and the day it resumes from.
+- A hub with no model configured for the extension still triages and checks without one, as before.
+- Offline replay: a gateway's 429 (no capacity) through `-pi` counts as the model unavailable, so a replay stops on
+  that day instead of reading on without the model.
+
+## 0.2.0-beta.20 (pre-release)
+
+- **Agent cursors cover trailing folds.** A day ending in `Fold[From..To]` resumes after `To`, so a folded Hub or
+  offline incremental read cannot refold new work into the previous day and skip it.
+
+## 0.2.0-beta.19 (pre-release)
+
+- **Reruns wait for completed days.** `rerun_range` no longer runs today or future dates. Premature or invalid
+  daily/synth records and stale rerun markers no longer block the formal daily recovery or post-rerun synthesis;
+  synthesis must follow the latest valid daily run.
+
+## 0.2.0-beta.18 (pre-release)
+
+- **Cancellation no longer drops correction issues.** After a successful gather, `signals.Run` checkpoints
+  `signals.json` on every later return. A later state save no longer loses those issues to cancellation alone. The
+  original cancellation and checkpoint errors remain visible; gather failures still leave partial cursors unsaved.
+
+## 0.2.0-beta.17 (pre-release)
+
+- **Mining failures are not successful digs.** A `signals_mine` error or malformed answer is recorded as `DecSkip`
+  with a bounded, redacted reason. The segment's read bytes stay counted, a valid empty answer stays `DecDig`, and
+  the existing terminal Dig ID and waiting-hub behavior are unchanged.
+
+## 0.2.0-beta.16 (pre-release)
+
+- **Truncated assistant memory is not read as complete.** Files whose bodies the hub cut or omitted are skipped
+  without caching or advancing a cursor. Complete files in the same response are still read, and a later complete
+  version becomes eligible.
+
+## 0.2.0-beta.15 (pre-release)
+
+- **A Persona-started session keeps its speakers straight.** Its first message is labelled Persona rather than the
+  user. Only the actual first item of a session read from the start changes; later user messages and incremental
+  pages keep the user's attribution.
+
+## 0.2.0-beta.14 (pre-release)
+
+- **Private recordings stay private on direct reads.** `Get("recordings", id)` checks the privacy metadata returned
+  by that read even when no `Recent` catalog pass has marked the ID. A private detail returns not found; a public
+  recording still needs only one underlying read.
+
+## 0.2.0-beta.13 (pre-release)
+
+- **Concurrent tool calls keep their own results.** Signal digging pairs `tool_use` and `tool_result` by the hub's
+  Call ID, so one call's failure and result sequence cannot be attached to another concurrent call. Results without
+  a Call ID keep the existing sequential fallback.
+
+## 0.2.0-beta.12 (pre-release)
+
+- **Classes merge as broadly as before.** 0.2.0-beta.11 asked the merge for narrow kinds, and far fewer classes
+  merged (machines-and-tools classes of the same pitfall stayed apart and never became stable). The merge prompt is
+  back to broad kinds; the program still refuses, in ①③④⑥, a merge whose sentence needs two or more alternatives.
+- **The AI's lines supply no detail.** When a fact's detail is in another line of the conversation, only the people's
+  lines are cited for it, never the assistant's or an agent's draft, which a fact never rests on.
+
+## 0.2.0-beta.11 (pre-release)
+
+- **The user as a person has a test of its own.** A ⑥ line is not asked at which moment the assistant would act
+  differently (understanding has no such moment) but whether it is a specific fact about this user: background, role,
+  what they work on or aim at, their circumstances, a specific view or habit. Lines true of almost anyone are kept
+  out as before (`emptiness/3`; the acceptance tool judges ⑥ lines the same way). A line saying how the user
+  handles a kind of task or chooses at a fork is no longer held back for stating "no behaviour of the assistant's":
+  the assistant follows it when it does, helps with or plans that kind of task.
+- **One plain statement is enough for a fact.** A ⑥ fact the user states about themself (role, responsibility,
+  situation, current work, a goal, the background) and a ⑤′ fact or promise on the person's or the user's own line
+  are stable at once; views, values, preferences, habits, evaluations and readings still need a second sighting.
+  The per-turn instructions take such ⑥ facts as well as classes.
+- **Details checked further.** One-digit numbers count as details too (a quote's Chinese numerals match: "两" carries
+  "2"); common words of software work ("issue", "release", "URL"…) do not, since a claim uses them for a quote's own
+  wording. A rejected item's log line names the detail no line has. CJK descriptions are not checked word by word:
+  a clause check refused mostly correct facts in other words.
+- **No "A or B or C" classes.** In the facets of situations and ways (①③④⑥), merging classes whose shared sentence
+  needs two or more alternatives is refused: the classes stay apart instead of becoming one class that says nothing
+  the assistant can act on. The merge prompt no longer asks for few, broad kinds.
+- **Extraction (`daily/14`).** An item says no more than its quotes, a question, wish, complaint or guess is not read
+  as a statement, and a short guide says which facet a line goes to when two seem to fit (a standing request to the
+  AI is interaction, a conditional choice is a judgement, an evaluation of a thing is a world fact).
+- Acceptance tool: with `-agents-dir`, the fact judge also sees the titles of the agent sessions a fact cites.
+
 ## 0.2.0-beta.10 (pre-release)
 
 - **A fact states no more than its lines.** A name in Latin letters, a number of two or more digits or a time of day

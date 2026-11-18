@@ -141,7 +141,7 @@ func dig(ctx context.Context, o *Options, st *store.State, g *gathered, hits []h
 		if got.err != nil {
 			rec.Decision = DecWaiting
 			if !isWaiting(got.err) {
-				rec.Decision, rec.Reason = DecSkip, "read failed: "+cut(got.err.Error(), 120)
+				rec.Decision, rec.Reason = DecSkip, cut(verify.Redact(got.err.Error()), 120)
 			}
 		}
 		rec.Bytes = got.bytes
@@ -338,7 +338,7 @@ func decide(ctx context.Context, o *Options, s *session, hs []hit) (map[int]deci
 	in.Page = page(s, seqs)
 	user, _ := json.Marshal(in)
 	resp, err := o.Model.Complete(ctx, model.Request{Step: "signals_dig", Tier: o.Tier, System: prompts.Dig, User: string(user),
-		MaxTokens: 2000, Schema: prompts.DigSchema})
+		MaxTokens: 4000, Schema: prompts.DigSchema})
 	if err != nil {
 		return nil, err
 	}
@@ -366,23 +366,36 @@ type call struct {
 	Error     bool   `json:"error"`
 }
 
-// calls pairs a segment's tool calls with their results, in order, cut short and with credentials redacted.
+// calls pairs a segment's tool calls with their results by Call ID when present, in order, cut short and with
+// credentials redacted. A result without a known Call ID keeps the old hub's most-recent-open pairing.
 func calls(items []hubapi.Item) []call {
 	var out []call
+	byCall := map[string]int{}
 	open := -1
 	for _, it := range items {
 		switch it.Kind {
 		case kToolUse:
 			out = append(out, call{Seq: it.Seq, Tool: it.Tool, Input: verify.Redact(cut(it.Text, 600))})
 			open = len(out) - 1
+			if it.Call != "" {
+				byCall[it.Call] = open
+			}
 		case kToolResult:
 			n := 500
 			if it.Err {
 				n = 1500
 			}
-			if open >= 0 && out[open].Result == "" {
-				out[open].Result, out[open].Error, out[open].ResultSeq = verify.Redact(cut(it.Text, n)), it.Err, it.Seq
-				open = -1
+			i := open
+			if it.Call != "" {
+				if matched, ok := byCall[it.Call]; ok {
+					i = matched
+				}
+			}
+			if i >= 0 && out[i].Result == "" {
+				out[i].Result, out[i].Error, out[i].ResultSeq = verify.Redact(cut(it.Text, n)), it.Err, it.Seq
+				if open == i {
+					open = -1
+				}
 			} else {
 				out = append(out, call{Seq: it.Seq, ResultSeq: it.Seq, Tool: it.Tool, Result: verify.Redact(cut(it.Text, n)), Error: it.Err})
 			}
@@ -419,14 +432,14 @@ type minedAnswer struct {
 	entries []mined
 	shown   map[int]hubapi.Item // the items the model saw, by seq: what a quote must be in
 	bytes   int
-	err     error // reading the stretch failed
+	err     error // reading or mining the stretch failed
 }
 
 // ask reads the dig's stretch (the only unfolded read) and asks what it teaches. Safe to run concurrently.
 func ask(ctx context.Context, o *Options, s *session, h hit, rec *entry.Dig) minedAnswer {
 	items, err := o.Hub.Items(ctx, s.Machine, s.ID, hubapi.ItemsQuery{From: rec.FromSeq, Through: rec.ThruSeq})
 	if err != nil {
-		return minedAnswer{err: err}
+		return minedAnswer{err: fmt.Errorf("read failed: %w", err)}
 	}
 	var seg []hubapi.Item
 	for _, it := range items {
@@ -468,6 +481,7 @@ func ask(ctx context.Context, o *Options, s *session, h hit, rec *entry.Dig) min
 		MaxTokens: 3000, Schema: prompts.MineSchema})
 	if err != nil {
 		o.logf("signals: mine %s: %v", rec.ID, err)
+		got.err = fmt.Errorf("mine failed: %w", err)
 		return got
 	}
 	var out struct {
@@ -475,6 +489,7 @@ func ask(ctx context.Context, o *Options, s *session, h hit, rec *entry.Dig) min
 	}
 	if err := json.Unmarshal([]byte(resp.Text), &out); err != nil {
 		o.logf("signals: mine %s: answer: %v", rec.ID, err)
+		got.err = fmt.Errorf("mine answer: %w", err)
 		return got
 	}
 	got.entries = out.Entries

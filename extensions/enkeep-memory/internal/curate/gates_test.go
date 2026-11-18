@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
-	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -380,7 +379,7 @@ func TestCoverageOnlyRunDays(t *testing.T) {
 	if len(c.St.S.Admitted["2026-11-03"]) == 0 {
 		t.Fatal("the run records what it admitted")
 	}
-	c.Model = stub.Scripted(func(model.Request) (string, error) { return "", model.ErrUnavailable })
+	c.Model = nil // no model configured: the day is triaged, nothing digested
 	if _, err := c.RunDaily(ctx, "2026-11-05", true); err != nil {
 		t.Fatal(err)
 	}

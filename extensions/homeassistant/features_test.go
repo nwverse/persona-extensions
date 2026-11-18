@@ -1092,7 +1092,7 @@ func TestPageDevices(t *testing.T) {
 	// the light opened: its device's settings folded into one row, unfolded on a tap
 	res, st = act(t, a, st, "open:light.ceiling", nil)
 	got = texts(res.View)
-	contains(t, got, "header 客厅吸顶灯||||| {开 positive} (类型=灯) (区域=客厅) (变更=01-02 11:04)", "row 「吸顶灯」的设置和其他项 · 2|吸顶灯 辅光开关、吸顶灯 厂商自定义 通电默认状态|", "→sub")
+	contains(t, got, "header 客厅吸顶灯||||| {开 positive} (类型=灯) (区域=客厅) (变更=01-02 11:04)", "row 「吸顶灯」的设置和其他项 · 2|辅光开关、厂商自定义 通电默认状态|", "→sub")
 	res, _ = act(t, a, st, "sub", nil)
 	contains(t, texts(res.View), "## 「吸顶灯」的设置和其他项 · 2", "row 吸顶灯 厂商自定义 通电默认状态|设置 · 开关|", "→open:switch.ceiling_power_default", "收起")
 

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -184,6 +185,13 @@ func (c *Curator) applyMerges(local map[string]*entry.Entry, kinds []mergeKind, 
 		if len(members) == 0 {
 			continue
 		}
+		if len(members) > 1 && waysFacet(members[0].Facet) && listOfPoints(k.Text) {
+			// The kind's sentence strings alternatives together ("A, or B, or C"): what the classes share is not one
+			// default way, and the merged class would say nothing the assistant can act on. They stay apart. (A
+			// machine's or a person's classes may list several points about the same object.)
+			run.Counts["merges_refused_list"]++
+			continue
+		}
 		keep := members[0]
 		for _, e := range members {
 			switch {
@@ -223,4 +231,17 @@ func (c *Curator) applyMerges(local map[string]*entry.Entry, kinds []mergeKind, 
 			run.Counts["classes_generalised"]++
 		}
 	}
+}
+
+var orWord = regexp.MustCompile(`(?i)\bor\b`)
+
+// listOfPoints: a sentence that joins two or more alternatives with "或" / "or" (three ways or more): a list of
+// unrelated points rather than one default way.
+func listOfPoints(text string) bool {
+	return strings.Count(text, "或") >= 2 || len(orWord.FindAllString(text, -1)) >= 2
+}
+
+// waysFacet: a facet whose classes are a kind of situation and one way in it (①③④⑥), not points about an object.
+func waysFacet(f entry.Facet) bool {
+	return f == entry.Interaction || f == entry.Judgement || f == entry.Workflow || f == entry.Persona
 }

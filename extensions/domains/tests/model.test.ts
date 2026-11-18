@@ -34,6 +34,8 @@ test("public registration records retain dates and statuses without inventing av
   assert.throws(() => parseRegistration({ ...registration, ldhName: "attacker.example" }, "example.com", 0), ReadError);
   assert.throws(() => parseRegistration({ ...registration, links: [{ rel: "self", href: "http://localhost/" }] }, "example.com", 0), ReadError);
   assert.throws(() => parseRegistration({ ...registration, events: [{ eventAction: "registration", eventDate: "not-a-date" }] }, "example.com", 0), ReadError);
+  // Date.parse would roll this into March; an RDAP date must be a real calendar day.
+  assert.throws(() => parseRegistration({ ...registration, events: [{ eventAction: "registration", eventDate: "2026-02-30T00:00:00Z" }] }, "example.com", 0), ReadError);
   for (const raw of [null, [], {}, { objectClassName: "entity" }]) assert.throws(() => parseRegistration(raw, "example.com", 0), ReadError);
 });
 test("history is bounded, normalized and independent of external accounts", async () => {

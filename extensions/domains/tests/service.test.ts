@@ -23,6 +23,19 @@ test("transient failure serves a clearly marked old validated record", async () 
   assert.equal(result.registrar, "Example Registrar");
   assert.equal(result.stale?.code, "http");
 });
+test("a semantically invalid 200 answer does not replace a validated cached record", async () => {
+  const fixture = new Fixture(), service = make(fixture);
+  await service.lookup("example.com");
+  fixture.put(registryURL, {});
+  const refreshed = await service.lookup("example.com", true);
+  assert.equal(refreshed.registrar, "Example Registrar");
+  assert.equal(refreshed.stale?.code, "bad_answer");
+  // The invalid answer must not have replaced the valid record: a later lookup still reads it.
+  const result = await service.lookup("example.com");
+  assert.equal(result.registrar, "Example Registrar");
+  assert.equal(result.stale, undefined);
+});
+
 test("malformed, oversized and rate-limited responses are never cached", async () => {
   for (const response of [{ body: "{bad" }, { body: "null" }]) {
     const fixture = new Fixture(); fixture.answers.set(registryURL, response);

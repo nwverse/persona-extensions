@@ -827,7 +827,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "domains", name: "Domains \u57DF\u540D", version: "0.1.0", icon: "assets/icon.png", description: "\u67E5\u8BE2\u5355\u4E2A .com \u6216 .net \u57DF\u540D\u7684\u516C\u5F00 RDAP \u6CE8\u518C\u4FE1\u606F\uFF0C\u67E5\u770B\u6CE8\u518C\u3001\u5230\u671F\u548C\u53D8\u66F4\u65E5\u671F\uFF0C\u4FDD\u7559\u672C\u5730\u6700\u8FD1\u67E5\u8BE2\u3002\u65E0\u9700\u8D26\u53F7\uFF1B\u4E0D\u505A\u6279\u91CF\u626B\u63CF\u3001DNS \u63A2\u6D4B\u6216\u8054\u7CFB\u4EBA\u6536\u96C6\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/domains/README.md", tags: ["\u57DF\u540D", "RDAP", "\u6CE8\u518C\u4FE1\u606F", "\u5230\u671F\u65E5\u671F"], engines: { persona: ">=202611101800", extension_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/domains.mjs", sha256: "" } }, contributes: { connectors: [{ id: "domains", name: "Domains", capabilities: ["status", "tools"], hosts: ["data.iana.org", "rdap.verisign.com"], agent_tools: ["domains_*"] }], ui: [{ id: "lookup", title: "\u57DF\u540D\u67E5\u8BE2", placement: "nav_page", icon: "search" }] }, permissions: { network: ["data.iana.org", "rdap.verisign.com"], storage: { keys: ["history"] } } };
+var persona_extension_default = { manifest_version: 1, id: "domains", name: "Domains \u57DF\u540D", version: "0.1.1", icon: "assets/icon.png", description: "\u67E5\u8BE2\u5355\u4E2A .com \u6216 .net \u57DF\u540D\u7684\u516C\u5F00 RDAP \u6CE8\u518C\u4FE1\u606F\uFF0C\u67E5\u770B\u6CE8\u518C\u3001\u5230\u671F\u548C\u53D8\u66F4\u65E5\u671F\uFF0C\u4FDD\u7559\u672C\u5730\u6700\u8FD1\u67E5\u8BE2\u3002\u65E0\u9700\u8D26\u53F7\uFF1B\u4E0D\u505A\u6279\u91CF\u626B\u63CF\u3001DNS \u63A2\u6D4B\u6216\u8054\u7CFB\u4EBA\u6536\u96C6\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/domains/README.md", tags: ["\u57DF\u540D", "RDAP", "\u6CE8\u518C\u4FE1\u606F", "\u5230\u671F\u65E5\u671F"], engines: { persona: ">=202611101800", extension_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/domains.mjs", sha256: "" } }, contributes: { connectors: [{ id: "domains", name: "Domains", capabilities: ["status", "tools"], hosts: ["data.iana.org", "rdap.verisign.com"], agent_tools: ["domains_*"] }], ui: [{ id: "lookup", title: "\u57DF\u540D\u67E5\u8BE2", placement: "nav_page", icon: "search" }] }, permissions: { network: ["data.iana.org", "rdap.verisign.com"], storage: { keys: ["history"] } } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 18e3, tool: 18e3, response: 1 << 20, bootstrap: 24 * 60 * 6e4, fresh: 15 * 6e4, cache: 48, cacheBytes: 2 << 20, gap: 350 });
@@ -926,7 +926,9 @@ function registrar(raw) {
 function date(value) {
   const raw = string(value);
   if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/u.test(raw) || !Number.isFinite(Date.parse(raw))) throw new ReadError("bad_answer");
-  return new Date(Date.parse(raw)).toISOString();
+  const [y, m, d] = raw.slice(0, 10).split("-").map(Number), parsed = new Date(raw);
+  if (parsed.getUTCFullYear() !== y || parsed.getUTCMonth() !== m - 1 || parsed.getUTCDate() !== d) throw new ReadError("bad_answer");
+  return parsed.toISOString();
 }
 function parseRegistration(raw, domain, at) {
   const requested = domainName(domain), root2 = object(raw);
@@ -1196,7 +1198,7 @@ var Domains = class {
       throw new ReadError("bad_answer");
     }
   }
-  async read(path, fresh, signal) {
+  async read(path, fresh, signal, validate) {
     checkSignal(signal);
     const cached = this.cached(path, fresh);
     if (cached) return cached;
@@ -1220,6 +1222,7 @@ var Domains = class {
       const request = budget(signal, this.limits.request);
       try {
         const raw = await this.response(path, request.signal);
+        validate?.(raw);
         const at = this.now();
         this.save(path, raw, at);
         this.lastOK = at;
@@ -1261,14 +1264,20 @@ var Domains = class {
     };
   }
   async bootstrap(signal) {
-    const rd = await this.read("https://data.iana.org/rdap/dns.json", this.limits.bootstrap, signal);
+    const rd = await this.read("https://data.iana.org/rdap/dns.json", this.limits.bootstrap, signal, (raw) => {
+      rdapService(raw, "example.com");
+    });
     return rdapService(rd.raw, "example.com");
   }
   async lookup(domain, refresh = false, signal) {
     const name = domainName(domain);
-    const bootstrap = await this.read("https://data.iana.org/rdap/dns.json", this.limits.bootstrap, signal);
+    const bootstrap = await this.read("https://data.iana.org/rdap/dns.json", this.limits.bootstrap, signal, (raw) => {
+      rdapService(raw, name.ascii);
+    });
     const service = rdapService(bootstrap.raw, name.ascii), url = lookupURL(service, name.ascii);
-    const rd = await this.read(url, refresh ? 0 : this.limits.fresh, signal);
+    const rd = await this.read(url, refresh ? 0 : this.limits.fresh, signal, (raw) => {
+      parseRegistration(raw, name.ascii, this.now());
+    });
     return { ...parseRegistration(rd.raw, name.ascii, rd.at), stale: rd.stale };
   }
   cacheStats() {

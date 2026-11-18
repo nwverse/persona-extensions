@@ -297,3 +297,31 @@ func TestAssistantWritesMatcher(t *testing.T) {
 		t.Errorf("off still matches Write: %s", b)
 	}
 }
+
+// A Write through a link that leads nowhere yet must not be allowed just because the link itself is inside the listed
+// directory; a listed directory that is a link to / is not a directory to allow writes in.
+func TestAssistantWritableRejectsDanglingAndRootLinks(t *testing.T) {
+	root := t.TempDir()
+	outside := t.TempDir()
+	if err := os.Symlink(filepath.Join(outside, "created-outside"), filepath.Join(root, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	if got := assistantWritable(filepath.Join(root, "dangling"), []string{root}); got != "" {
+		t.Errorf("a dangling link was allowed: %q", got)
+	}
+	if err := os.Symlink("/", filepath.Join(root, "root-link")); err != nil {
+		t.Fatal(err)
+	}
+	if got := assistantWritable("/etc/hosts", []string{filepath.Join(root, "root-link")}); got != "" {
+		t.Errorf("a link to / was allowed as a listed directory: %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(root, "plain"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := assistantWritable(filepath.Join(root, "plain"), []string{root}); got != root {
+		t.Errorf("a plain file was refused: %q", got)
+	}
+	if got := assistantWritable(filepath.Join(root, "new-file"), []string{root}); got != root {
+		t.Errorf("a new file was refused: %q", got)
+	}
+}

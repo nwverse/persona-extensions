@@ -122,7 +122,7 @@ func program(a *app) ext.Program {
 	return ext.Program{
 		ID: m.ID, Version: m.Version, Manifest: manifest,
 		Init:       a.init,
-		Namespaces: map[string]ext.Handler{"event": a.event},
+		Namespaces: map[string]ext.Handler{"event": a.event, "connector": a.connector},
 		UI: map[string]ext.Page{
 			"enkeep-memory":        {Render: a.home, Action: a.homeAction},
 			"enkeep-memory-today":  {Render: a.today},

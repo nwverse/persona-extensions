@@ -226,15 +226,15 @@ Host *.internal !bastion.internal
 		t.Fatalf("devvm machine = %+v", devvm)
 	}
 
-	// Deleting a discovered machine disables it so re-discovery does not re-enable it.
+	// Deleting a discovered machine persists a tombstone so re-discovery cannot add it.
 	if err := st.deleteMachine("armbox"); err != nil {
 		t.Fatal(err)
 	}
 	if st.DiscoverMachines(home, t0) != 0 {
 		t.Fatal("disabled discovered machine must stay disabled on re-discovery")
 	}
-	if st.machine("armbox").Enabled {
-		t.Fatal("armbox should remain disabled")
+	if st.machine("armbox") != nil {
+		t.Fatal("armbox should remain deleted")
 	}
 	if err := st.deleteMachine("local"); err == nil {
 		t.Fatal("local machine must not be deletable")
@@ -383,8 +383,12 @@ func TestUIViewsAndActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(rArch.View)
-	if !strings.Contains(rArch.Toast, "冷会话已上云") || !strings.Contains(rArch.Toast, "保护 1 个被引用会话") {
+	if !strings.Contains(rArch.Toast, "已开始上传") {
 		t.Fatalf("unexpected toast: %s", rArch.Toast)
+	}
+	a.waitJobs()
+	if j := a.jobSnapshot()["local"]; !strings.Contains(j.Note, "冷会话已上云") || !strings.Contains(j.Note, "保护 1 个被引用会话") {
+		t.Fatalf("offload outcome: %+v", j)
 	}
 
 	// 6. Execute safe clean on armbox
@@ -487,8 +491,8 @@ func TestMCPOverStdio(t *testing.T) {
 	}
 	listRes := rpc("tools/list", map[string]any{})
 	tList, _ := listRes["tools"].([]any)
-	if len(tList) != len(tools) || len(tools) != 10 {
-		t.Fatalf("tools/list count = %d, want 10", len(tList))
+	if len(tList) != len(tools) || len(tools) != 11 {
+		t.Fatalf("tools/list count = %d, want 11", len(tList))
 	}
 
 	// 1. Upsert remote machine armbox

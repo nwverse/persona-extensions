@@ -65,7 +65,7 @@ const (
 const (
 	dailyBatchTokens = 12000
 	dailyMaxTokens   = 6000
-	rewriteMaxTokens = 2000
+	rewriteMaxTokens = 4000
 )
 
 // dailyParts cuts an admitted unit's shown lines into parts that each fit dailyBatchTokens, in line order. A unit
@@ -475,8 +475,9 @@ func runtimeName(q string) bool {
 
 // observation is one observation checked: the entry to keep, or the rejection.
 type observation struct {
-	e   *entry.Entry
-	rej string
+	e    *entry.Entry
+	rej  string
+	note string // what the rejection is about, for the log (the detail no line has)
 }
 
 // checkObservation runs every check but the wording on one observation and builds its entry.
@@ -485,6 +486,11 @@ func (c *Curator) checkObservation(w *verify.Window, u *Unit, k *known, tier str
 	bad := func(code string) observation { return observation{rej: code} }
 	if o.Confidence == "" {
 		o.Confidence = "medium" // a smaller model leaves it out now and then; the schema count still says so
+	}
+	if strings.TrimSpace(o.Text) == "" {
+		// Some models fill a judgement's or a way's fields and leave the sentence out: the sentence is the fields'
+		// own words put together (nothing added); without the fields it stays a schema rejection.
+		o.Text = textFromFields(f, o, c.language())
 	}
 	if !f.Valid() || f == entry.World || strings.TrimSpace(o.Text) == "" || (o.Domain != entry.Work && o.Domain != entry.Life) ||
 		!slices.Contains([]string{"high", "medium", "low"}, o.Confidence) {
@@ -517,14 +523,11 @@ func (c *Curator) checkObservation(w *verify.Window, u *Unit, k *known, tier str
 	if rej != "" {
 		return bad(rej)
 	}
-	if f == entry.People {
-		// A person card's names, numbers and times are in the lines it cites (F1, 9.5).
-		var names []string
-		if p := personOf(u, k, o.Person); p != "" {
-			names = append(names, personName(k, p), o.Person)
-		}
-		if cited, rej = w.Supply(o.Text, cited, names...); rej != "" {
-			return bad(rej)
+	if p := personOf(u, k, o.Person); f == entry.People && p != "" {
+		// A person card's names, numbers and times are in the lines it cites (F1, 9.5). Whom it is about is checked
+		// below.
+		if cited, rej = w.Supply(o.Text, cited, personName(k, p), o.Person); rej != "" {
+			return observation{rej: rej, note: w.Missing}
 		}
 	}
 	ev := c.attributeEvidence(u, k, w, cited)
@@ -730,7 +733,9 @@ func (c *Curator) ingestObservations(w *verify.Window, u *Unit, k *known, tier s
 	for i, o := range obs {
 		r := c.checkObservation(w, u, k, tier, o)
 		if r.rej == "" {
-			if rej := wordingCheck(obsFields(&o), lang, owner); rej != "" {
+			checked := o
+			checked.Text = r.e.Text // checkObservation may have synthesized Text from Object/Pitfall/Fix; check that text
+			if rej := wordingCheck(obsFields(&checked), lang, owner); rej != "" {
 				r = observation{rej: rej}
 			} else if rewritten[fmt.Sprintf("o%d", i)] {
 				r.e.Flags = append(r.e.Flags, flagRewritten)
@@ -756,7 +761,7 @@ func problemText(code string) string {
 func (c *Curator) keepObservation(u *Unit, o schema.Observation, r observation, done *store.Done, run *store.Run) {
 	facet := strings.TrimSpace(o.Facet)
 	if r.rej != "" {
-		c.reject(done, "obs:"+facet, r.rej, o.Text, u.Day)
+		c.reject(done, "obs:"+facet, r.rej, withMissing(o.Text, r.note), u.Day)
 		run.Counts["obs_rejected"]++
 		run.Counts["obs_rejected:"+r.rej]++
 		return
@@ -825,4 +830,70 @@ func (c *Curator) storedRewrite(done *store.Done) rewriter {
 		var out schema.RewriteOutput
 		return out, json.Unmarshal(raw, &out) == nil
 	}
+}
+
+// withMissing adds to a rejected claim the detail no line has, so the log says what was not found.
+func withMissing(claim, missing string) string {
+	if missing == "" {
+		return claim
+	}
+	return claim + " [not in the lines: " + missing + "]"
+}
+
+// textFromFields is an observation's sentence made of its own fields when the model left the sentence out: a fork's
+// situation, choice, what was turned down and why; a way's situation and steps; a machine's pitfall and fix. ""
+// when the fields do not say enough.
+func textFromFields(f entry.Facet, o schema.Observation, lang string) string {
+	t := func(x string) string { return strings.TrimRight(strings.TrimSpace(x), "。.；;，, ") }
+	sit, choice, rej, why := t(o.Situation), t(o.Choice), t(o.Rejected), t(o.Why)
+	zh := !strings.HasPrefix(strings.ToLower(lang), "en")
+	switch f {
+	case entry.Judgement, entry.Workflow, entry.Interaction:
+		if choice == "" {
+			return ""
+		}
+		var b strings.Builder
+		if zh {
+			if sit != "" {
+				b.WriteString(sit + "时，")
+			}
+			b.WriteString(choice)
+			if rej != "" {
+				b.WriteString("，而不是" + rej)
+			}
+			if why != "" {
+				b.WriteString("，因为" + why)
+			}
+			b.WriteString("。")
+		} else {
+			if sit != "" {
+				b.WriteString("When " + sit + ": ")
+			}
+			b.WriteString(choice)
+			if rej != "" {
+				b.WriteString(", not " + rej)
+			}
+			if why != "" {
+				b.WriteString(", because " + why)
+			}
+			b.WriteString(".")
+		}
+		return b.String()
+	case entry.Tools:
+		obj, pit, fix := t(o.Object), t(o.Pitfall), t(o.Fix)
+		if obj == "" || (pit == "" && fix == "") {
+			return ""
+		}
+		parts := []string{}
+		for _, x := range []string{pit, fix} {
+			if x != "" {
+				parts = append(parts, x)
+			}
+		}
+		if zh {
+			return obj + "：" + strings.Join(parts, "；") + "。"
+		}
+		return obj + ": " + strings.Join(parts, "; ") + "."
+	}
+	return ""
 }

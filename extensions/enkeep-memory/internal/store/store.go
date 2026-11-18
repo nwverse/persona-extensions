@@ -345,11 +345,14 @@ type State struct {
 	NextTrait   int                   `json:"next_trait,omitempty"`
 	// LegacyMemory is the memory layer of a state written before v4, kept as it was (the layer is gone): the one-off
 	// clean reads it, curate.Migrate moves its entries into Entries, forgetting a source scrubs it.
-	LegacyMemory json.RawMessage     `json:"memory,omitempty"`
-	NextProp     int                 `json:"next_proposal"`
-	NextApplied  int                 `json:"next_applied"`
-	Reruns       []string            `json:"reruns,omitempty"`   // "<day>@<daily prompt>": days a daily run finished with that prompt (rerun_range)
-	Admitted     map[string][]string `json:"admitted,omitempty"` // day → units a daily run (not dry) admitted: what coverage may expect a digest for
+	LegacyMemory json.RawMessage `json:"memory,omitempty"`
+	NextProp     int             `json:"next_proposal"`
+	NextApplied  int             `json:"next_applied"`
+	Reruns       []string        `json:"reruns,omitempty"` // "<day>@<daily prompt>": days a daily run finished with that prompt (rerun_range)
+	// RerunQueue: days the assistant or an Agent asked to digest again with the current daily prompt (the
+	// enkeep_rerun tool), besides rerun_range; each runs once per prompt, as rerun_range's days do.
+	RerunQueue []string            `json:"rerun_queue,omitempty"`
+	Admitted   map[string][]string `json:"admitted,omitempty"` // day → units a daily run (not dry) admitted: what coverage may expect a digest for
 
 	// v4: every facet's entries in one structure (internal/entry), and what feeds and uses them. The event log is
 	// not here: it is append-only in events.jsonl (AppendEvents).
@@ -370,6 +373,20 @@ type State struct {
 	ActiveDays    []string                        `json:"active_days,omitempty"` // sorted days with any source data
 	Cursors       map[string]string               `json:"cursors,omitempty"`     // per source: where incremental reading resumes
 	Backfill      *Backfill                       `json:"backfill,omitempty"`
+	// ModelPause: the model could not be called for a day's pass; the day is kept to run again and passes wait
+	// until NextTry. Cleared by the next pass that reaches the model.
+	ModelPause *ModelPause `json:"model_pause,omitempty"`
+}
+
+// ModelPause is why and since when the passes wait for the model, and when they try again.
+type ModelPause struct {
+	Since   string `json:"since"`    // RFC 3339 of the first failure in a row
+	Reason  string `json:"reason"`   // the hub's message
+	Day     string `json:"day"`      // the day whose pass could not run
+	Fails   int    `json:"fails"`    // passes in a row that found the model unavailable
+	NextTry string `json:"next_try"` // RFC 3339: no pass needing the model starts before it
+	// What was away: "" the model, "assistant" the assistant's computer (its conversations could not be read).
+	What string `json:"what,omitempty"`
 }
 
 // Backfill is the first-run replay of the user's history (4.1): the same daily and weekly passes over past days,
@@ -399,6 +416,8 @@ type Store struct {
 	mu  sync.Mutex
 	S   *State
 	Now func() time.Time
+	// NoEvents: a dry run's copy of the store; AppendEvents writes nothing.
+	NoEvents bool
 }
 
 // Open loads (or starts) the state in dir.
@@ -735,7 +754,7 @@ func (s *Store) Replace(ns *State) {
 
 // AppendEvents adds events to the append-only log events.jsonl (one JSON object a line). Call it with the lock held.
 func (s *Store) AppendEvents(evs ...entry.Event) error {
-	if len(evs) == 0 {
+	if len(evs) == 0 || s.NoEvents {
 		return nil
 	}
 	f, err := os.OpenFile(filepath.Join(s.Dir, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)

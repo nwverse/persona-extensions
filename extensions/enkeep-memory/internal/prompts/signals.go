@@ -10,7 +10,7 @@ const (
 	DigPrompt     = "dig/1"       // does a screened signal deserve a dig, and which folded stretch
 	MinePrompt    = "mine/1"      // what a dug stretch teaches: ② approaches, pitfalls, boundaries; ① and ④ from the user's words
 	ExportPrompt  = "export/4"    // one entry rewritten for an exit (design 6.4)
-	EmptyPrompt   = "emptiness/1" // the empty-talk question asked of an exit line alone (5.0, 9.4)
+	EmptyPrompt   = "emptiness/3" // the empty-talk question asked of an exit line alone (5.0, 9.4); ⑥ lines: a specific fact?
 )
 
 //go:embed correct.md

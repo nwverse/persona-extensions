@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,8 +34,39 @@ type store struct {
 	memCold map[string][]byte
 	seen    stamp
 	// coldCache keeps parsed cold indexes by file stamp; callers get clones.
-	coldCache map[string]coldCached
-	now       func() time.Time
+	coldCache   map[string]coldCached
+	now         func() time.Time
+	shellChecks map[string]shellCheckResult
+}
+
+type shellCheckResult struct {
+	ok bool
+	at time.Time
+}
+
+// Cache the read-only echo probe across renders, including failures so a refresh
+// cannot repeatedly block on an unavailable host. No shell output means no management.
+func (s *store) checkShell(m *Machine) bool {
+	key := connectionKey(cmp.Or(m.Hostname, m.Host), m.Port, m.User)
+	now := s.now()
+	if old, ok := s.shellChecks[key]; ok && now.Sub(old.at) < time.Minute {
+		return old.ok
+	}
+	const marker = "disklessly-shell-probe"
+	out, err := DefaultRunner(context.Background(), m, "echo "+marker+"\n", 5*time.Second)
+	ok := false
+	if err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.TrimSpace(line) == marker {
+				ok = true
+			}
+		}
+	}
+	if s.shellChecks == nil {
+		s.shellChecks = map[string]shellCheckResult{}
+	}
+	s.shellChecks[key] = shellCheckResult{ok, now}
+	return ok
 }
 
 type stamp struct {
@@ -182,9 +215,9 @@ func (s *store) read(f func(st *State)) error {
 }
 
 // update runs f on the current state under an exclusive file lock and saves it when f returns nil.
+// The file lock is taken before the in-process mutex, so renders (read) of this process are not
+// held up while another process (disklessly mcp) holds the file lock.
 func (s *store) update(f func(st *State, now time.Time) error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.dir != "" {
 		if err := os.MkdirAll(s.dir, 0o700); err != nil {
 			return err
@@ -198,6 +231,8 @@ func (s *store) update(f func(st *State, now time.Time) error) error {
 			return err
 		}
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	st, err := s.load()
 	if err != nil {
 		return err
@@ -243,7 +278,7 @@ func (s *store) load() (*State, error) {
 			return nil, err
 		}
 	}
-	st := &State{coldLoad: s.loadCold}
+	st := &State{coldLoad: s.loadCold, shellCheck: s.checkShell}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, st); err != nil {
 			return nil, fmt.Errorf("%s 无法读取（文件保持原样）：%v", s.path(), err)

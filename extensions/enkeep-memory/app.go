@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/convsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/hubapi"
@@ -29,6 +30,7 @@ type app struct {
 	hub       *ext.Hub
 	running   string // the run in progress, if any
 	lastErr   string
+	paused    []string     // a.tried keys of passes that found the model unavailable: tried again after the pause
 	tried     []string     // days a daily run started since this process did
 	member    bool         // a member hub of a group: the curator runs only on the centre
 	changed   int          // kb.changed events since start
@@ -104,7 +106,19 @@ func (a *app) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]
 	if !a.member {
 		go a.schedule(ctx)
 	}
-	return nil, nil
+	// The connector the manifest declares (the rerun tools, tools.go), said back to the hub as the program's own.
+	return map[string]any{"connectors": manifestConnectors()}, nil
+}
+
+// manifestConnectors is the manifest's contributes.connectors, as written there.
+func manifestConnectors() json.RawMessage {
+	var m struct {
+		Contributes struct {
+			Connectors json.RawMessage `json:"connectors"`
+		} `json:"contributes"`
+	}
+	_ = json.Unmarshal(manifest, &m)
+	return m.Contributes.Connectors
 }
 
 // schedule runs the daily pass at daily_at for the day before, and the weekly pass on Mondays at weekly_at for the
@@ -124,7 +138,11 @@ func (a *app) schedule(ctx context.Context) {
 
 func (a *app) tick(ctx context.Context) {
 	c := a.c
-	now := time.Now().In(c.Loc)
+	nowFn := c.Now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn().In(c.Loc)
 	at := func(hhmm string) time.Time {
 		var h, m int
 		fmt.Sscanf(hhmm, "%d:%d", &h, &m)
@@ -132,6 +150,13 @@ func (a *app) tick(ctx context.Context) {
 	}
 	yesterday := now.AddDate(0, 0, -1).Format("2006-01-02")
 	a.releaseProfiles(ctx)
+	// The model was unavailable to the last pass: nothing that needs it starts before the next try (State.ModelPause).
+	// Then the day that could not run is tried again: by the replay from where it stopped, by rerun_range or the
+	// daily pass as their own rules say.
+	if _, wait := c.ModelWait(nowFn()); wait {
+		return
+	}
+	a.retryAfterPause()
 	// The first-run replay of the history (4.1) goes first, a day at a time, oldest first; a day that failed is
 	// tried again on the next start.
 	c.StartBackfill(now.Format("2006-01-02"))
@@ -143,8 +168,20 @@ func (a *app) tick(ctx context.Context) {
 		a.start(ctx, "daily", yesterday)
 		return
 	}
-	// rerun_range: days digested again, one at a time, with the current daily prompt; each only once per prompt.
-	for _, day := range c.Cfg.RerunDays() {
+	// rerun_range: only completed local days are rerun, one at a time with the current daily prompt. An early daily
+	// must not suppress the formal pass after the day ends. Each day runs only once per prompt.
+	// The days asked for by the enkeep_rerun tool (State.RerunQueue) run the same way.
+	c.St.Lock()
+	days := c.RerunPlan()
+	c.St.Unlock()
+	today := now.Format("2006-01-02")
+	for i, day := range days {
+		if day >= today {
+			days = days[:i]
+			break
+		}
+	}
+	for _, day := range days {
 		if !a.reran(day) && !a.attempted(day) {
 			a.start(ctx, "daily", day)
 			return
@@ -162,8 +199,36 @@ func (a *app) tick(ctx context.Context) {
 		log.Printf("enkeep-memory: weekly report: %v", err)
 	}
 	// After the days of rerun_range are digested with the current prompt, their judgements are filed once.
-	if days := c.Cfg.RerunDays(); len(days) > 0 && a.reran(days[len(days)-1]) && !a.ran("synth", days[len(days)-1]) && !a.attempted("synth@"+days[len(days)-1]) {
+	if len(days) > 0 && a.reran(days[len(days)-1]) && !a.synthAfterDaily(days[len(days)-1]) && !a.attempted("synth@"+days[len(days)-1]) {
 		a.start(ctx, "synth", days[len(days)-1])
+		return
+	}
+	if len(days) > 0 && a.reran(days[len(days)-1]) && a.synthAfterDaily(days[len(days)-1]) {
+		a.pruneRerunQueue()
+	}
+}
+
+// pruneRerunQueue takes the days that are done out of the enkeep_rerun queue, once the planned reruns are all
+// digested and filed (the synth after the last one ran). Their markers in State.Reruns stay, so asking for them
+// again still skips them; enkeep_rerun_status then lists only rerun_range's days and what is still waiting.
+func (a *app) pruneRerunQueue() {
+	a.c.St.Lock()
+	queue := slices.Clone(a.c.St.S.RerunQueue)
+	a.c.St.Unlock()
+	var done []string
+	for _, d := range queue {
+		if a.reran(d) {
+			done = append(done, d)
+		}
+	}
+	if len(done) == 0 {
+		return
+	}
+	a.c.St.Lock()
+	defer a.c.St.Unlock()
+	a.c.St.S.RerunQueue = slices.DeleteFunc(a.c.St.S.RerunQueue, func(d string) bool { return slices.Contains(done, d) })
+	if err := a.c.St.Save(); err != nil {
+		log.Printf("enkeep-memory: rerun queue: %v", err)
 	}
 }
 
@@ -179,8 +244,78 @@ func (a *app) backfillNext() string {
 
 func (a *app) reran(day string) bool {
 	a.c.St.Lock()
+	marked := slices.Contains(a.c.St.S.Reruns, day+"@"+schema.DailyPrompt)
+	a.c.St.Unlock()
+	// A marker alone does not prove the day completed after its local day end.
+	return marked && a.ran("daily", day)
+}
+
+// validDailyFinishLocked returns the finish time of a daily that really completed after its local day end.
+// a.c.St must be locked by the caller.
+func (a *app) validDailyFinishLocked(r *store.Run, day string) (time.Time, bool) {
+	if r.Kind != "daily" || r.Period != day || r.Finished == "" || r.DryRun {
+		return time.Time{}, false
+	}
+	started, startErr := time.Parse(time.RFC3339, r.Started)
+	finished, finishErr := time.Parse(time.RFC3339, r.Finished)
+	periodDay, dayErr := time.ParseInLocation("2006-01-02", day, a.c.Loc)
+	if startErr != nil || finishErr != nil || dayErr != nil {
+		return time.Time{}, false
+	}
+	if started.Before(periodDay.AddDate(0, 0, 1)) || finished.Before(started) {
+		return time.Time{}, false
+	}
+	return finished, true
+}
+
+// synthAfterDaily reports whether a synth started after the latest valid daily for day finished.
+func (a *app) synthAfterDaily(day string) bool {
+	a.c.St.Lock()
 	defer a.c.St.Unlock()
-	return slices.Contains(a.c.St.S.Reruns, day+"@"+schema.DailyPrompt)
+	var latest time.Time
+	for _, r := range a.c.St.S.Runs {
+		finished, ok := a.validDailyFinishLocked(r, day)
+		if ok && finished.After(latest) {
+			latest = finished
+		}
+	}
+	if latest.IsZero() {
+		return false
+	}
+	for _, r := range a.c.St.S.Runs {
+		if r.Kind != "synth" || r.Period != day || r.Finished == "" || r.DryRun {
+			continue
+		}
+		started, startErr := time.Parse(time.RFC3339, r.Started)
+		finished, finishErr := time.Parse(time.RFC3339, r.Finished)
+		if startErr == nil && finishErr == nil && !finished.Before(started) && !started.Before(latest) {
+			return true
+		}
+	}
+	return false
+}
+
+// triedKey is the a.tried key of a pass.
+func triedKey(kind, period string) string {
+	switch kind {
+	case "daily":
+		return period
+	case "synth", "backfill":
+		return kind + "@" + period
+	}
+	return kind + " " + period
+}
+
+// retryAfterPause forgets, once the pause is over, that the passes the model was unavailable to were tried: the
+// tick starts them again.
+func (a *app) retryAfterPause() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.paused) == 0 {
+		return
+	}
+	a.tried = slices.DeleteFunc(a.tried, func(k string) bool { return slices.Contains(a.paused, k) })
+	a.paused = nil
 }
 
 // attempted says whether a daily run of the day already started since this process did: a rerun that failed is
@@ -195,9 +330,27 @@ func (a *app) ran(kind, period string) bool {
 	a.c.St.Lock()
 	defer a.c.St.Unlock()
 	for _, r := range a.c.St.S.Runs {
-		if r.Kind == kind && r.Period == period && r.Finished != "" && !r.DryRun {
+		if r.Kind != kind || r.Period != period || r.Finished == "" || r.DryRun {
+			continue
+		}
+		if kind == "daily" {
+			if _, ok := a.validDailyFinishLocked(r, period); !ok {
+				continue
+			}
 			return true
 		}
+		if kind == "synth" {
+			started, startErr := time.Parse(time.RFC3339, r.Started)
+			finished, finishErr := time.Parse(time.RFC3339, r.Finished)
+			day, dayErr := time.ParseInLocation("2006-01-02", period, a.c.Loc)
+			if startErr != nil || finishErr != nil || dayErr != nil {
+				continue // an unknown time does not prove the synth completed
+			}
+			if finished.Before(started) || started.Before(day.AddDate(0, 0, 1)) {
+				continue // an unfinished or inverted run is not the formal completion for this period
+			}
+		}
+		return true
 	}
 	return false
 }
@@ -247,6 +400,9 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 		a.mu.Lock()
 		a.running = ""
 		a.lastErr = ""
+		if errors.Is(err, curate.ErrModelDown) {
+			a.paused = append(a.paused, triedKey(kind, period)) // tried again after the pause, not only at the next start
+		}
 		if err != nil {
 			a.lastErr = kind + " " + period + "：" + err.Error()
 			log.Printf("enkeep-memory %s %s: %v", kind, period, err)

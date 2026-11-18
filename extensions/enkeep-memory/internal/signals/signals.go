@@ -85,16 +85,25 @@ type Result struct {
 }
 
 // Run does a day: gather, ledger, screen, dig. Call it with the store's lock held.
-func Run(ctx context.Context, st *store.State, day string, o Options) (*Result, error) {
+func Run(ctx context.Context, st *store.State, day string, o Options) (res *Result, retErr error) {
 	sd, err := loadSide(o.Dir)
 	if err != nil {
 		return nil, err
 	}
-	res := &Result{Hits: map[string]int{}}
+	res = &Result{Hits: map[string]int{}}
 	g, err := gather(ctx, o, day, sd)
 	if err != nil {
 		return nil, err
 	}
+	// Once gather succeeds, every later exit must checkpoint the side ledger before the caller can save state.json.
+	defer func() {
+		saveErr := sd.save(o.Dir)
+		if retErr == nil {
+			retErr = saveErr
+		} else if saveErr != nil {
+			retErr = errors.Join(retErr, saveErr)
+		}
+	}()
 	res.Missing = g.Missing
 	res.FoldBytes = g.FoldBytes
 	stats := sd.day(day)
@@ -117,7 +126,7 @@ func Run(ctx context.Context, st *store.State, day string, o Options) (*Result, 
 		return nil, err
 	}
 	stats.Segments, stats.SegmentBytes = res.Digs, res.SegmentBytes
-	return res, sd.save(o.Dir)
+	return res, nil
 }
 
 // side is what the package keeps beside the state (signals.json in the state directory): the open issues of the

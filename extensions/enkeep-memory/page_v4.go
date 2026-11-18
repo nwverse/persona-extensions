@@ -708,11 +708,33 @@ func (a *app) onboardingPage(t tr, st *store.State) *wire.View {
 	return &wire.View{Title: t.s("三个问题", "Three questions"), Sections: []wire.Section{{Items: items, Footer: foot}, {Items: acts}}}
 }
 
+// stripListPrefix removes one list marker ("1. ", "2、", "3) ", "- ", "• ") and nothing else: a line that starts
+// with a year or another number is kept as it is.
+func stripListPrefix(s string) string {
+	for _, p := range []string{"- ", "• ", "* ", "· "} {
+		if strings.HasPrefix(s, p) {
+			return strings.TrimSpace(strings.TrimPrefix(s, p))
+		}
+	}
+	for i := 0; i < len(s) && s[i] >= '0' && s[i] <= '9'; i++ {
+		rest := s[i+1:]
+		for _, p := range []string{". ", "、", ") ", "）"} {
+			if strings.HasPrefix(rest, p) {
+				if out := strings.TrimSpace(strings.TrimPrefix(rest, p)); out != "" {
+					return out
+				}
+			}
+		}
+		break
+	}
+	return s
+}
+
 // lines splits a multi-line answer: trimmed, empty lines dropped, duplicates once.
 func lines(s string, most int) []string {
 	var out []string
 	for _, l := range strings.Split(s, "\n") {
-		l = strings.TrimSpace(strings.TrimLeft(strings.TrimSpace(l), "-•*·0123456789.、)） "))
+		l = stripListPrefix(strings.TrimSpace(l))
 		if l != "" && !slices.Contains(out, l) {
 			out = append(out, l)
 		}
