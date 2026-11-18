@@ -13,7 +13,7 @@ import (
 )
 
 const connectorID = "linear"
-const pageUI = "issues"
+const pageUI = "linear"
 
 type app struct {
 	mu       sync.RWMutex
