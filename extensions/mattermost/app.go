@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "mattermost"
-const pageUI = "inbox"
+const pageUI = "mattermost"
 
 type app struct {
 	mu      sync.RWMutex
