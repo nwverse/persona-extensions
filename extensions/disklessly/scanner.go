@@ -66,7 +66,7 @@ func runError(m *Machine, err error, stderr string) error {
 // shellCommand runs /bin/sh with localArgs on this machine, or remote (the command line the
 // remote login shell runs) over OpenSSH with BatchMode=yes.
 func shellCommand(ctx context.Context, m *Machine, remote string, localArgs ...string) (*exec.Cmd, error) {
-	if m == nil || m.IsLocal || isSelfHostAlias(m.Host) {
+	if m == nil || m.IsLocal || isLocalConnection(m.Host, m.Port) {
 		return exec.CommandContext(ctx, "/bin/sh", localArgs...), nil
 	}
 	if !IsConcreteHost(m.Host) {

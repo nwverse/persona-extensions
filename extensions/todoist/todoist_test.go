@@ -300,6 +300,14 @@ func TestLocalizedViewsAndCreateReview(t *testing.T) {
 			if err := wire.CheckView(v); err != nil {
 				t.Fatalf("%s %d: %v", locale, ui, err)
 			}
+			// The create form, as the app draws it again with its state: a hub draws no field without a kind.
+			r.State = ext.EncodeState(pageState{Mode: "create", CreateID: "create-1"})
+			if v, err = a.render(t.Context(), r); err != nil {
+				t.Fatal(err)
+			}
+			if err := wire.CheckView(v); err != nil {
+				t.Fatalf("create form %s %d: %v", locale, ui, err)
+			}
 		}
 	}
 	r := &ext.UIRequest{UIParams: wire.UIParams{Locale: "zh-Hans", UIVersion: 6, Values: map[string]string{

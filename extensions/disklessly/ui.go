@@ -172,7 +172,7 @@ func (d draw) home(p page) *wire.View {
 
 func (d draw) fleetTab(p page, statuses []MachineStatus, selected *Machine) []wire.Section {
 	var totalReclaim, totalSafe, totalFreed uint64
-	var warnCount, critCount int
+	var warnCount, critCount, unscannedCount, offlineCount int
 	for _, ms := range statuses {
 		totalReclaim += ms.ReclaimableBytes
 		totalSafe += ms.SafeBytes
@@ -181,6 +181,10 @@ func (d draw) fleetTab(p page, statuses []MachineStatus, selected *Machine) []wi
 			critCount++
 		case HealthWarning:
 			warnCount++
+		case HealthUnscanned:
+			unscannedCount++
+		case HealthOffline:
+			offlineCount++
 		}
 	}
 	for _, h := range d.st.History {
@@ -195,6 +199,12 @@ func (d draw) fleetTab(p page, statuses []MachineStatus, selected *Machine) []wi
 	} else if warnCount > 0 {
 		alertText = fmt.Sprintf("%d 台橙色预警", warnCount)
 		alertTone = wire.ToneCaution
+	} else if offlineCount > 0 {
+		alertText = fmt.Sprintf("%d 台离线", offlineCount)
+		alertTone = wire.ToneCaution
+	} else if unscannedCount > 0 {
+		alertText = fmt.Sprintf("%d 台未扫描", unscannedCount)
+		alertTone = wire.ToneNeutral
 	}
 
 	top := wire.Section{
@@ -1112,6 +1122,8 @@ func (d draw) machineHeaderComponent(ms MachineStatus, scan *Scan) wire.Componen
 
 func healthBadge(ms MachineStatus) *wire.Badge {
 	switch ms.Level {
+	case HealthUnscanned:
+		return &wire.Badge{Text: "未扫描", Tone: wire.ToneNeutral}
 	case HealthOffline:
 		return &wire.Badge{Text: "离线", Tone: wire.ToneCaution}
 	case HealthCritical:

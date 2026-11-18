@@ -1,5 +1,17 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.29 (pre-release)
+
+- **`enkeep_resettle`: settle every entry's status again, as a tool.** The assistant and Agents can call it on the
+  `enkeep` connector. It settles every entry (dormant ones too) as of today on the real active days: an active day the
+  run ledger proves was never read with the model (daily runs, none with a model call) and no entry rests on is not
+  counted, since such days put entries to sleep early before 0.2.0-beta.21. `dry_run` (the default) changes nothing,
+  not even the event log, and reports the five statuses before and after, the stable entries per facet and what
+  would move; `dry_run: false` applies it. A second call moves nothing. It deletes nothing.
+- **Done reruns leave the queue.** Once the queued days are all digested with the current prompt and filed, they are
+  taken out of the `enkeep_rerun` queue; their markers stay, so asking for them again still queues nothing, and
+  `enkeep_rerun_status` lists only `rerun_range`'s days and what still waits.
+
 ## 0.2.0-beta.28 (pre-release)
 
 - **The rerun tools reach the assistant and Agents.** In 0.2.0-beta.27 the connector was `enkeepmemory` and its tools

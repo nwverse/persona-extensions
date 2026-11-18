@@ -20,8 +20,10 @@ import (
 //   - 需要注意: alarms (a leak, smoke, a jammed lock, a sounding siren), doors, windows and garage doors left open,
 //     locks not locked, batteries running low (once a device), and the devices offline (one row that unfolds when
 //     there are several).
-//   - 设备: the devices one uses (lights, switches, fans, covers, climates, players…), those on first. UI version 6:
-//     a tile each with its switch, a tap opening it; before, a row each that a tap turns on or off (点按查看: opens).
+//   - 设备: the devices one uses (lights, switches, fans, covers, climates, players…). UI version 6: a tile each with
+//     its switch, a tap opening it, room by room in Home Assistant's order with the rooms' remotes (an IR air
+//     conditioner or TV) when the home has no more than a grid's worth (roomGrids), else those on first in one grid;
+//     before, a row each that a tap turns on or off (点按查看: opens).
 //   - 调节 (UI version 6): a slider or a stepper for what is on (a light's brightness, a fan's speed, a climate's
 //     target temperature) and for every curtain or blind that can be set to a position (not a garage door, a gate or
 //     a door: those open on their own page).
@@ -240,8 +242,8 @@ func alertOf(s State) (alert, bool) {
 	return alert{}, false
 }
 
-// airOf is an area's air: its temperature and humidity sensors (not a device's diagnostic or setting, nor what a room
-// cannot be, like a fridge's), else what its climates read.
+// airOf is an area's air: its temperature and humidity sensors (not a device's diagnostic or setting, nor a light's
+// or a switch's own chip (powerDevice), nor what a room cannot be, like a fridge's), else what its climates read.
 func airOf(hm *home, reg *Registry, ar *Area) (temp, humid []float64) {
 	var ctemp, chumid []float64
 	for _, e := range ar.Entities {
@@ -252,7 +254,7 @@ func airOf(hm *home, reg *Registry, ar *Area) (temp, humid []float64) {
 		switch s.Domain() {
 		case "sensor":
 			if reg != nil {
-				if re, ok := reg.Entities[e]; ok && (re.EntityCategory != "" || regHidden(reg, e)) {
+				if re, ok := reg.Entities[e]; ok && (re.EntityCategory != "" || regHidden(reg, e)) || powerDevice(reg, e) {
 					continue
 				}
 			}
@@ -484,6 +486,11 @@ func statItems(r *ext.UIRequest, stats []wire.Stat) []wire.Component {
 // homePage is 家's overview.
 func (a *app) homePage(r *ext.UIRequest, hm *home, reg *Registry, st pageState, v *wire.View) {
 	f := gatherHome(hm, reg)
+	if r.UIVersion >= 6 {
+		if row, ok := a.scenesRow(hm, reg, nil); ok {
+			v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{row}})
+		}
+	}
 	if stats := homeStats(hm, f); len(stats) > 0 {
 		v.Sections = append(v.Sections, wire.Section{Items: statItems(r, stats)})
 	}
@@ -491,7 +498,11 @@ func (a *app) homePage(r *ext.UIRequest, hm *home, reg *Registry, st pageState, 
 		v.Sections = append(v.Sections, sec)
 	}
 	if r.UIVersion >= 6 {
-		a.deviceTiles(hm, f, st, v)
+		if byRoom(hm, f) {
+			a.roomGrids(hm, reg, f, v)
+		} else {
+			a.deviceTiles(hm, f, st, v)
+		}
 		a.dialSection(hm, f, v)
 	} else {
 		a.deviceList(r, hm, f, st, v)
@@ -688,7 +699,8 @@ func (a *app) dialSection(hm *home, f *homeFacts, v *wire.View) {
 // switch does not say (a climate's mode, a cover's state); the figure that matters (brightness, speed, target
 // temperature, position); its switch when it has one and may be written. A tap opens it.
 func (a *app) deviceTile(hm *home, s State, withArea bool) wire.Tile {
-	t := wire.Tile{Key: ref("t:", s.EntityID), Title: clip(shortName(hm, s), 40), Icon: entityIcon(s), Color: entityColor(s),
+	icon, color := lookOf(hm, s)
+	t := wire.Tile{Key: ref("t:", s.EntityID), Title: clip(shortName(hm, s), 40), Icon: icon, Color: color,
 		Active: stateTone(s) == "positive", Action: openAction(s.EntityID)}
 	var sub []string
 	if n := hm.areaName(s.EntityID); withArea && n != "" && !hm.ByType {
@@ -864,8 +876,9 @@ func (a *app) dialRow(hm *home, s State, withArea bool) (wire.Component, bool) {
 		sub = append(sub, n)
 	}
 	sub = append(sub, what)
+	icon, color := lookOf(hm, s)
 	return wire.Component{Type: "row", Key: ref("d:", s.EntityID), Title: clip(shortName(hm, s), 80), Subtitle: strings.Join(sub, " · "),
-		Icon: entityIcon(s), IconColor: entityColor(s), Control: c, Action: openAction(s.EntityID)}, true
+		Icon: icon, IconColor: color, Control: c, Action: openAction(s.EntityID)}, true
 }
 
 // dimmable: a light whose brightness can be set (a color mode other than on / off).

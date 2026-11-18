@@ -307,10 +307,12 @@ func (m *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return nil, err
 		}
 		if in.Refresh {
-			_ = m.store.update(func(st *State, now time.Time) error {
+			if err := m.store.update(func(st *State, now time.Time) error {
 				st.DiscoverMachines(m.store.homeDir, now)
 				return nil
-			})
+			}); err != nil {
+				return nil, err
+			}
 		}
 		err = m.store.read(func(st *State) {
 			statuses := st.statuses()

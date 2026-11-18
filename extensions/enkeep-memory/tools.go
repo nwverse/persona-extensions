@@ -4,7 +4,8 @@ package main
 // again with the current daily prompt, and see how far the reruns got. A rerun is a one-off operation, not a setting:
 // it reads the user's own sources again inside the extension, sends nothing anywhere and deletes nothing; what it finds
 // goes through the same thresholds and review as any day's, and each day runs once per prompt, so asking twice does
-// nothing more. rerun_range (the setting) works as before.
+// nothing more. rerun_range (the setting) works as before. enkeep_resettle settles every entry's status again on the
+// real active days (curate/resettle.go), as a dry run unless asked to apply.
 
 import (
 	"bytes"
@@ -12,9 +13,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona/sdk/go/ext"
 )
 
@@ -41,6 +45,14 @@ var rerunTools = []tool{
 		"or the rerun_range setting), which are done with the current prompt, which are waiting, what is running now, " +
 		"and whether the passes wait for the model or the assistant's computer.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}}},
+	{Name: "enkeep_resettle", Description: "Settle every enkeep memory entry's status (candidate, stable, shifting, dormant, " +
+		"retired) again as of today, counting only the days the extraction really read with the model. Use it to check " +
+		"or repair statuses after reruns, for example when entries went dormant because days without model output were " +
+		"counted. dry_run (default true) only reports the counts before and after and the stable entries per facet; " +
+		"dry_run false applies them. Idempotent: a second call moves nothing. Deletes nothing.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+			"dry_run": map[string]any{"type": "boolean", "default": true, "description": "true: report only; false: apply"},
+		}}},
 }
 
 func (a *app) connector(ctx context.Context, method string, raw json.RawMessage) (any, error) {
@@ -126,6 +138,19 @@ func (a *app) callTool(name string, raw json.RawMessage) (string, error) {
 			fmt.Fprintf(&b, " Paused: %s.", p.Paused)
 		}
 		return b.String(), nil
+	case "enkeep_resettle":
+		in := struct {
+			DryRun *bool `json:"dry_run"`
+		}{}
+		if err := strictDecode(raw, &in); err != nil {
+			return "", err
+		}
+		apply := in.DryRun != nil && !*in.DryRun
+		r, err := a.c.Resettle(a.localDay(), apply)
+		if err != nil {
+			return "", err
+		}
+		return resettleText(r), nil
 	}
 	return "", errors.New("unknown tool " + name)
 }
@@ -156,4 +181,39 @@ func span(days []string) string {
 		return fmt.Sprintf("%s..%s (%d)", days[0], days[len(days)-1], len(days))
 	}
 	return strings.Join(days, ", ")
+}
+
+// resettleText says a resettle's result: the five statuses before and after, the stable entries per facet, and what
+// moved.
+func resettleText(r curate.ResettleReport) string {
+	var b strings.Builder
+	if r.Applied {
+		fmt.Fprintf(&b, "Applied as of %s: %d entr(ies) changed status.", r.AsOf, r.Changed())
+	} else {
+		fmt.Fprintf(&b, "Dry run as of %s (nothing changed): %d entr(ies) would change status.", r.AsOf, r.Changed())
+	}
+	fmt.Fprintf(&b, " Active days: %d", r.ActiveDays)
+	if len(r.DroppedDays) > 0 {
+		fmt.Fprintf(&b, ", not counted (no model output): %s", span(r.DroppedDays))
+	}
+	b.WriteString(".\nStatus (before → after):")
+	for _, s := range []entry.Status{entry.Stable, entry.Candidate, entry.Dormant, entry.Retired, entry.Shifting} {
+		fmt.Fprintf(&b, " %s %d → %d;", s, r.Before[s], r.After[s])
+	}
+	b.WriteString("\nStable per facet (before → after):")
+	for _, f := range entry.Facets {
+		fmt.Fprintf(&b, " %s %d → %d;", f, r.StableBefore[f], r.StableAfter[f])
+	}
+	if len(r.Moves) > 0 {
+		moves := make([]string, 0, len(r.Moves))
+		for m, n := range r.Moves {
+			moves = append(moves, fmt.Sprintf("%s %d", m, n))
+		}
+		sort.Strings(moves)
+		b.WriteString("\nMoves: " + strings.Join(moves, ", ") + ".")
+	}
+	if !r.Applied && r.Changed()+len(r.DroppedDays) > 0 {
+		b.WriteString("\nCall again with dry_run false to apply.")
+	}
+	return b.String()
 }

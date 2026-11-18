@@ -416,6 +416,8 @@ type Store struct {
 	mu  sync.Mutex
 	S   *State
 	Now func() time.Time
+	// NoEvents: a dry run's copy of the store; AppendEvents writes nothing.
+	NoEvents bool
 }
 
 // Open loads (or starts) the state in dir.
@@ -752,7 +754,7 @@ func (s *Store) Replace(ns *State) {
 
 // AppendEvents adds events to the append-only log events.jsonl (one JSON object a line). Call it with the lock held.
 func (s *Store) AppendEvents(evs ...entry.Event) error {
-	if len(evs) == 0 {
+	if len(evs) == 0 || s.NoEvents {
 		return nil
 	}
 	f, err := os.OpenFile(filepath.Join(s.Dir, "events.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)

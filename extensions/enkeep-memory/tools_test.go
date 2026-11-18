@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -45,12 +46,12 @@ func call(t *testing.T, a *app, name string, args any) (string, error) {
 	return out.(map[string]any)["text"].(string), nil
 }
 
-// The tool lists two tools; the rerun tool queues the days once, refuses days not over and more than 31, and the
+// The connector lists three tools; the rerun tool queues the days once, refuses days not over and more than 31, and the
 // status tool says what is done and what waits.
 func TestRerunTool(t *testing.T) {
 	a, st := toolApp(t)
 	list, err := a.connector(t.Context(), "tools.list", nil)
-	if err != nil || len(list.(map[string]any)["tools"].([]tool)) != 2 {
+	if err != nil || len(list.(map[string]any)["tools"].([]tool)) != 3 {
 		t.Fatalf("tools.list: %v %v", list, err)
 	}
 	st.S.Reruns = []string{"2026-11-03@" + schema.DailyPrompt} // done with the current prompt already
@@ -112,9 +113,43 @@ func TestRerunToolDaysRun(t *testing.T) {
 	if runs != 2 {
 		t.Errorf("each queued day once, got %d runs", runs)
 	}
+	// Once they are digested and filed they leave the queue; their markers stay, so asking again queues nothing.
+	if len(st.S.RerunQueue) != 0 {
+		t.Errorf("queue after the reruns: %v", st.S.RerunQueue)
+	}
 	status, _ := call(t, a, "enkeep_rerun_status", map[string]any{})
-	if !strings.Contains(status, "2 day(s) done, 0 waiting") {
+	if !strings.Contains(status, "0 day(s) done, 0 waiting") {
 		t.Errorf("status: %q", status)
+	}
+	if text, _ := call(t, a, "enkeep_rerun", map[string]string{"from": "2026-11-03", "to": "2026-11-04"}); !strings.Contains(text, "Queued 0") {
+		t.Errorf("asked again: %q", text)
+	}
+}
+
+// The resettle tool reports a dry run by default, applies on dry_run false, and refuses unknown arguments.
+func TestResettleTool(t *testing.T) {
+	a, st := toolApp(t)
+	st.S.ActiveDays = []string{"2026-11-01", "2026-11-02"}
+	st.S.Entries = map[string]*entry.Entry{"e": {ID: "e", Grain: entry.Action, Facet: entry.Workflow, Origin: entry.Behavior,
+		Status: entry.Dormant, First: "2026-11-01", Last: "2026-11-02",
+		Evidence: []entry.Evidence{{Ref: "chats/a", Day: "2026-11-01"}, {Ref: "chats/b", Day: "2026-11-02"}}}}
+	text, err := call(t, a, "enkeep_resettle", map[string]any{})
+	if err != nil || !strings.Contains(text, "Dry run as of 2026-11-09") || !strings.Contains(text, "dormant 1 → 0") ||
+		!strings.Contains(text, "workflow 0 → 1") || !strings.Contains(text, "dormant→stable 1") {
+		t.Fatalf("dry run: %q %v", text, err)
+	}
+	if st.S.Entries["e"].Status != entry.Dormant {
+		t.Fatal("the dry run changed the entry")
+	}
+	if text, err = call(t, a, "enkeep_resettle", map[string]any{"dry_run": false}); err != nil || !strings.Contains(text, "Applied") ||
+		st.S.Entries["e"].Status != entry.Stable {
+		t.Fatalf("apply: %q %v", text, err)
+	}
+	if text, _ = call(t, a, "enkeep_resettle", map[string]any{"dry_run": false}); !strings.Contains(text, "0 entr(ies) changed") {
+		t.Fatalf("again: %q", text)
+	}
+	if _, err := call(t, a, "enkeep_resettle", map[string]any{"apply": true}); err == nil {
+		t.Fatal("accepted an unknown argument")
 	}
 }
 
