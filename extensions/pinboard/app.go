@@ -13,7 +13,7 @@ import (
 )
 
 const connectorID = "pinboard"
-const pageUI = "bookmarks"
+const pageUI = "pinboard"
 
 type app struct {
 	mu       sync.RWMutex
