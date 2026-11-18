@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "outline"
-const pageUI = "knowledge"
+const pageUI = "outline"
 
 type app struct {
 	mu       sync.RWMutex
