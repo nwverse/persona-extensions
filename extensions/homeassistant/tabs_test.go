@@ -23,7 +23,7 @@ func TestRoomTabsScenesAndAllOff(t *testing.T) {
 	// 全关 counts what it turns off in the whole home: the lamps (the one in no area too) and the plug, not the lamp's
 	// own switch nor a hidden one
 	row := tilesOf(v, "scenes")
-	if len(row) != 2 || row[0].Title != "全关" || row[0].Subtitle != "4 个开着" || !strings.Contains(row[0].Action.Confirm, "全屋") ||
+	if len(row) != 3 || row[2].Title != "新建" || row[0].Title != "全关" || row[0].Subtitle != "4 个开着" || !strings.Contains(row[0].Action.Confirm, "全屋") ||
 		row[1].Title != "观影" || !strings.HasPrefix(row[1].Action.ID, "do:scene.movie|turn_on") || row[1].Action.Confirm == "" {
 		t.Errorf("the scenes row: %+v", row)
 	}
