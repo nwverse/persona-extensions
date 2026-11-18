@@ -27,5 +27,5 @@ export function snapshotPage(service: HackerNews): Page {
 /** Injectable service pieces for synthetic fixtures and stateless Page consumers. */
 export function services(fetch: FetchAdapter, config: Config = {}) {
   const service = new HackerNews(fetch, config);
-  return { service, namespaces: { connector: connector(service) }, ui: { stories: snapshotPage(service) } };
+  return { service, namespaces: { connector: connector(service) }, ui: { hackernews: snapshotPage(service) } };
 }

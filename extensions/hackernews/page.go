@@ -11,7 +11,7 @@ import (
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
-// The page (ui contribution "stories", a plugin_page): a list and a story opened on top of it (in its place in the
+// The page (ui contribution "hackernews", a plugin_page): a list and a story opened on top of it (in its place in the
 // apps before UI version 3). The state it carries is which list, which story, and whether the filter is set aside.
 
 type pageState struct {

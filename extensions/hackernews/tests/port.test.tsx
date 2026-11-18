@@ -263,7 +263,7 @@ test("rapid feed selection ignores late effects and denied callbacks cannot chan
 test("legacy snapshot downgrade works through the process SDK", async () => {
   const { service } = setup();
   const answers = new Map<string, { error?: unknown; result: any }>();
-  const connection = connect({ id: "hackernews", version: "0.1.0", ui: { stories: snapshotPage(service) } }, line => {
+  const connection = connect({ id: "hackernews", version: "0.1.0", ui: { hackernews: snapshotPage(service) } }, line => {
     const frame = JSON.parse(line); answers.set(frame.id, frame);
   });
   let next = 0;
@@ -275,7 +275,7 @@ test("legacy snapshot downgrade works through the process SDK", async () => {
   try {
     await call("initialize", { protocol: 1, hub: { build: 0, extension_points: {} }, granted: {} });
     for (const ui_version of [1, 2]) {
-      const context = { contribution: "stories", locale: "en", ui_version };
+      const context = { contribution: "hackernews", locale: "en", ui_version };
       const list: View = await call("ui.render", context);
       const story = list.sections.flatMap(section => section.items).find(it => it.key === "story-1");
       assert.ok(story?.type === "row" && story.action); assert.match(story.action.id, /^ext\.push\./);
