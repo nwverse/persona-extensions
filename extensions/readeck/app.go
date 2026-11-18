@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "readeck"
-const pageUI = "reading"
+const pageUI = "readeck"
 
 type app struct {
 	mu       sync.RWMutex

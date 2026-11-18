@@ -13,7 +13,7 @@ import (
 )
 
 const connectorID = "readwise"
-const pageUI = "reading"
+const pageUI = "readwise"
 
 type app struct {
 	mu       sync.RWMutex
