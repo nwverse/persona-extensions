@@ -30,7 +30,7 @@ test("source artifact and package have verified identity and no runtime imports"
   const bytes = await readFile("build/package/" + manifest.runtime.source.bundle);
   assert.equal(manifest.id, "openlibrary"); assert.equal(manifest.runtime.mode, "deno"); assert.equal(manifest.runtime.command, undefined);
   assert.equal(manifest.runtime.source.sha256, createHash("sha256").update(bytes).digest("hex"));
-  assert.equal(manifest.contributes.ui[0].id, "discover"); assert.equal(manifest.contributes.connectors[0].capabilities.includes("actions"), false);
+  assert.equal(manifest.contributes.ui[0].id, "openlibrary"); assert.equal(manifest.contributes.connectors[0].capabilities.includes("actions"), false);
   assert.deepEqual(manifest.permissions.network, ["openlibrary.org"]);
   assert.ok(bytes.length > 0 && bytes.length < (8 << 20));
   const bundle = await import(pathToFileURL(resolve("build/openlibrary.mjs")).href);
@@ -56,7 +56,7 @@ test("book search, detail navigation and public links use native server hooks", 
   try {
     for (const version of [1, 3, 5]) {
       const session = `discover-${version}`;
-      await h.call("ui.page.mount", { session, params: { contribution: "discover", locale: "en", ui_version: version } });
+      await h.call("ui.page.mount", { session, params: { contribution: "openlibrary", locale: "en", ui_version: version } });
       let snapshot = await settled(h, session, "book-welcome-text");
       const searchButton = snapshot.view.sections[0].items.find(item => item.key === "book-search-submit");
       assert.ok(searchButton && "action" in searchButton && searchButton.action?.submit === true, "search submits the current field values");
@@ -65,9 +65,9 @@ test("book search, detail navigation and public links use native server hooks", 
       const result = await h.call("ui.page.event", { session, ticket: "host-ticket", interaction: interaction(snapshot, "book-OL59800W") });
       assert.equal(result.result.status, "accepted");
       if (version >= 3) {
-        assert.equal(result.result.result.push.ui, "discover");
+        assert.equal(result.result.result.push.ui, "openlibrary");
         const child = `work-${version}`;
-        await h.call("ui.page.mount", { session: child, params: { contribution: "discover", locale: "en", ui_version: version, state: result.result.result.push.state } });
+        await h.call("ui.page.mount", { session: child, params: { contribution: "openlibrary", locale: "en", ui_version: version, state: result.result.result.push.state } });
         const detail = await settled(h, child, "A synthetic description of a novel.");
         assert.ok(body(detail).includes("https://openlibrary.org/works/OL59800W"));
         assert.ok(!body(detail).includes("https://attacker.invalid"));
@@ -86,7 +86,7 @@ test("book search, detail navigation and public links use native server hooks", 
 test("shared connector tools and cache, trusted tickets and replay controls", async () => {
   const h = await setup();
   try {
-    await h.call("ui.page.mount", { session: "owned", params: { contribution: "discover", locale: "en", ui_version: 5 } });
+    await h.call("ui.page.mount", { session: "owned", params: { contribution: "openlibrary", locale: "en", ui_version: 5 } });
     const snapshot = await settled(h, "owned", "book-welcome-text"), event = interaction(snapshot, "book-search-submit", { query: "synthetic" });
     assert.ok((await h.call("ui.page.event", { session: "owned", interaction: event })).error);
     const accepted = (await h.call("ui.page.event", { session: "owned", ticket: "host-ticket", interaction: event })).result;
@@ -95,7 +95,7 @@ test("shared connector tools and cache, trusted tickets and replay controls", as
     assert.equal((await h.call("connector.tools.call", { name: "openlibrary_search", args: { query: "synthetic" } })).result.text.includes("Left Hand of Darkness"), true);
     assert.equal(h.fixture.hits.get("/search.json?q=synthetic&limit=20&fields=key%2Ctitle%2Cauthor_name%2Cfirst_publish_year%2Cedition_count%2Cebook_access%2Cpublic_scan_b%2Cia"), 1);
     await h.call("ui.page.dispose", { session: "owned" });
-    const remount: Snapshot = (await h.call("ui.page.mount", { session: "new", params: { contribution: "discover", ui_version: 5 } })).result;
+    const remount: Snapshot = (await h.call("ui.page.mount", { session: "new", params: { contribution: "openlibrary", ui_version: 5 } })).result;
     assert.notEqual(remount.generation, snapshot.generation);
     assert.equal((await h.call("ui.page.event", { session: "new", ticket: "host-ticket", interaction: event })).result.status, "ambiguous");
   } finally { h.p.close(); }
@@ -104,13 +104,13 @@ test("shared connector tools and cache, trusted tickets and replay controls", as
 test("invalid state cannot trigger arbitrary requests; pure snapshots are supported", async () => {
   const h = await setup();
   try {
-    await h.call("ui.page.mount", { session: "bad", params: { contribution: "discover", locale: "zh-Hans", ui_version: 1, state: "not-json" } });
+    await h.call("ui.page.mount", { session: "bad", params: { contribution: "openlibrary", locale: "zh-Hans", ui_version: 1, state: "not-json" } });
     await settled(h, "bad", "发现图书");
     const local = new h.bundle.OpenLibrary(h.fixture.fetch, {}, { locale: "en", now: () => h.fixture.clock, limits: { gap: 0 } });
     const pure = h.bundle.snapshotPage(local);
-    const view = await pure.render({ contribution: "discover", locale: "en", ui_version: 1, hub: {} });
+    const view = await pure.render({ contribution: "openlibrary", locale: "en", ui_version: 1, hub: {} });
     assert.ok(JSON.stringify(view).includes("Discover books"));
-    const searched = await pure.render({ contribution: "discover", locale: "en", ui_version: 1, hub: {}, state: h.bundle.encodeState(h.bundle.transition(h.bundle.readState(undefined), "search", { query: "synthetic" })) });
+    const searched = await pure.render({ contribution: "openlibrary", locale: "en", ui_version: 1, hub: {}, state: h.bundle.encodeState(h.bundle.transition(h.bundle.readState(undefined), "search", { query: "synthetic" })) });
     assert.ok(JSON.stringify(searched).includes("Left Hand of Darkness"));
   } finally { h.p.close(); }
 });

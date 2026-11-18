@@ -21,7 +21,7 @@ export function createProgram(fetch: FetchAdapter = (input, init) => globalThis.
     id: released.id, version: released.version, manifest: sourceManifest,
     init: (init, _hub) => { service = new OpenLibrary(fetch, init.config, { ...options, locale: init.hub?.locale ?? options.locale }); },
     namespaces: { connector: connector(current) },
-    ui: { discover: componentPage(req => root({ service: current(), state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) },
+    ui: { openlibrary: componentPage(req => root({ service: current(), state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) },
   };
 }
 export default createProgram();
