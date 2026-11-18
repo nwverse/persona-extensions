@@ -19,7 +19,8 @@ const cardRows = 3
 // their open PRs with how many failed CI, and what is assigned to them or mentions them; under that the most pressing
 // few, review requests first, then their PRs whose CI failed, each opening on the page as the page's rows do. It
 // reads the page's own lists through their cache (github.Connector.List), so a card drawn soon after the page or
-// another card asks GitHub nothing, and within the page's budget, as the page is drawn. Like every Overview card it
+// another card asks GitHub nothing, and one drawn while a list is being read (the page's, another app version's card)
+// waits for that read; within the page's budget, as the page is drawn. Like every Overview card it
 // only shows: a tap anywhere else opens the page.
 func (p *Page) RenderCard(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 	p.keepHub(r.Hub)

@@ -307,3 +307,67 @@ func TestSlowCardLoadsInTheBackground(t *testing.T) {
 	}
 	has(t, "read", got, "Add the cache", "2 个 CI 失败")
 }
+
+// Cards for apps of different versions at once (the web next to a phone on an older build) are built apart, and still
+// share GitHub's reads: a list one is reading is waited for by the other, not read again (review of #627, P1).
+func TestCardsOfDifferentVersionsShareTheReads(t *testing.T) {
+	f := busy()
+	srv := f.serve(t)
+	release := make(chan struct{})
+	var mu sync.Mutex
+	arrived := 0
+	held := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/user" {
+			mu.Lock()
+			arrived++
+			mu.Unlock()
+			<-release
+		}
+		srv.Config.Handler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(held.Close)
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+	p := signedInTo(t, held)
+	p.budget = 10 * time.Millisecond
+	card(t, p, 6) // loading: its first list waits at GitHub
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		mu.Lock()
+		n := arrived
+		mu.Unlock()
+		if n > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first card never asked GitHub")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	card(t, p, 3)                      // an older app's card, while the first one's read is on its way
+	time.Sleep(100 * time.Millisecond) // time enough for it to ask GitHub too, if it did
+	mu.Lock()
+	waiting := arrived
+	mu.Unlock()
+	if waiting != 1 {
+		t.Fatalf("%d reads at GitHub while the first was on its way, want 1", waiting)
+	}
+	close(release)
+	deadline = time.Now().Add(5 * time.Second)
+	for _, version := range []int{6, 3} {
+		_, got := card(t, p, version)
+		for strings.Contains(got, "正在从 GitHub 读取") && time.Now().Before(deadline) {
+			time.Sleep(20 * time.Millisecond)
+			_, got = card(t, p, version)
+		}
+		has(t, fmt.Sprintf("version %d", version), got, "Add the cache", "2 个 CI 失败")
+	}
+	if n := f.requests(); n != 4 { // 待我 review and 我提的 (GraphQL), 我参与的 (REST: assigned, mentioning)
+		t.Fatalf("two versions' cards: %d requests (%v)", n, f.asked)
+	}
+}
