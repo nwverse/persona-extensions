@@ -763,7 +763,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "wiktionary", name: "Wiktionary \u591A\u8BED\u8BCD\u5178", version: "0.1.3", icon: "assets/icon.png", description: "\u67E5\u8BE2\u82F1\u6587\u3001\u4E2D\u6587\u548C\u65E5\u6587 Wiktionary \u7684\u8BCD\u6027\u3001\u91CA\u4E49\u4E0E\u4F8B\u53E5\uFF0C\u63D0\u4F9B\u539F\u59CB\u6761\u76EE\u94FE\u63A5\u3002\u5185\u5BB9\u7531 hub \u901A\u8FC7\u516C\u5F00 API \u83B7\u53D6\uFF0C\u65E0\u9700\u8D26\u53F7\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/wiktionary/README.md", tags: ["\u8BCD\u5178", "\u8BED\u8A00", "Wiktionary"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/wiktionary.mjs", sha256: "" } }, contributes: { connectors: [{ id: "wiktionary", name: "Wiktionary", capabilities: ["status", "tools"], hosts: ["en.wiktionary.org", "zh.wiktionary.org", "ja.wiktionary.org"], agent_tools: ["wiktionary_*"] }], ui: [{ id: "lookup", title: "\u67E5\u8BCD\u5178", placement: "nav_page", icon: "doc" }] }, configuration: { type: "object", properties: { language: { type: "string", title: "Wiktionary \u8BED\u8A00", default: "auto", description: "auto \u8DDF\u968F Persona \u754C\u9762\u8BED\u8A00\uFF1B\u82F1\u6587\u9009 en\uFF0C\u4E2D\u6587\u9009 zh\uFF0C\u65E5\u6587\u9009 ja", oneOf: [{ const: "auto", title: "\u8DDF\u968F\u754C\u9762\u8BED\u8A00" }, { const: "en", title: "English" }, { const: "zh", title: "\u4E2D\u6587" }, { const: "ja", title: "\u65E5\u672C\u8A9E" }] } } }, permissions: { network: ["en.wiktionary.org", "zh.wiktionary.org", "ja.wiktionary.org"] } };
+var persona_extension_default = { manifest_version: 1, id: "wiktionary", name: "Wiktionary \u591A\u8BED\u8BCD\u5178", version: "0.1.4", icon: "assets/icon.png", description: "\u67E5\u8BE2\u82F1\u6587\u3001\u4E2D\u6587\u548C\u65E5\u6587 Wiktionary \u7684\u8BCD\u6027\u3001\u91CA\u4E49\u4E0E\u4F8B\u53E5\uFF0C\u63D0\u4F9B\u539F\u59CB\u6761\u76EE\u94FE\u63A5\u3002\u5185\u5BB9\u7531 hub \u901A\u8FC7\u516C\u5F00 API \u83B7\u53D6\uFF0C\u65E0\u9700\u8D26\u53F7\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/wiktionary/README.md", tags: ["\u8BCD\u5178", "\u8BED\u8A00", "Wiktionary"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/wiktionary.mjs", sha256: "" } }, contributes: { connectors: [{ id: "wiktionary", name: "Wiktionary", capabilities: ["status", "tools"], hosts: ["en.wiktionary.org", "zh.wiktionary.org", "ja.wiktionary.org"], agent_tools: ["wiktionary_*"] }], ui: [{ id: "wiktionary", title: "\u67E5\u8BCD\u5178", placement: "nav_page", icon: "doc" }] }, configuration: { type: "object", properties: { language: { type: "string", title: "Wiktionary \u8BED\u8A00", default: "auto", description: "auto \u8DDF\u968F Persona \u754C\u9762\u8BED\u8A00\uFF1B\u82F1\u6587\u9009 en\uFF0C\u4E2D\u6587\u9009 zh\uFF0C\u65E5\u6587\u9009 ja", oneOf: [{ const: "auto", title: "\u8DDF\u968F\u754C\u9762\u8BED\u8A00" }, { const: "en", title: "English" }, { const: "zh", title: "\u4E2D\u6587" }, { const: "ja", title: "\u65E5\u672C\u8A9E" }] } } }, permissions: { network: ["en.wiktionary.org", "zh.wiktionary.org", "ja.wiktionary.org"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 2 << 20, fresh: 6 * 60 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 150 });
@@ -1265,7 +1265,7 @@ async function loadPage(service, state, refresh, signal) {
 }
 function page(props) {
   const { service, state, loaded, uiVersion = 0 } = props, t = textsFor(props.locale ?? service.locale), tz = props.tz ?? "Local";
-  const act = (id, next, title) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "lookup", state: encodeState(next), ...title ? { title } : {} } } : { id });
+  const act = (id, next, title) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "wiktionary", state: encodeState(next), ...title ? { title } : {} } } : { id });
   const text2 = (key, value, style = "secondary") => /* @__PURE__ */ jsx(Text, { text: clip(value, 4e3), style }, key);
   const search = /* @__PURE__ */ jsxs(Section, { title: t.lookup, children: [
     /* @__PURE__ */ jsx(Field, { name: "word", label: t.lookup, kind: "text", placeholder: t.searchHint, value: state.q }, "dictionary-word"),
@@ -1322,7 +1322,7 @@ function Root(options) {
     loaded: result?.service === options.service && result.identity === identity ? result.loaded : { kind: "loading" },
     action: (id, next, title) => {
       if (next && (options.uiVersion ?? 0) >= 3) {
-        const push = { ui: "lookup", state: encodeState(next), ...title ? { title } : {} };
+        const push = { ui: "wiktionary", state: encodeState(next), ...title ? { title } : {} };
         return callback(() => ({ push }), { push });
       }
       return callback((values) => {
@@ -1367,7 +1367,7 @@ function createProgram(fetch = (input, init) => globalThis.fetch(input, init), o
       service = new Wiktionary(fetch, init.config, { ...options, locale: init.hub?.locale ?? options.locale });
     },
     namespaces: { connector: connector(current) },
-    ui: { lookup: componentPage((req) => root({ service: current(), state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) }
+    ui: { wiktionary: componentPage((req) => root({ service: current(), state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) }
   };
 }
 var index_default = createProgram();

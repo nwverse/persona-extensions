@@ -51,7 +51,7 @@ export async function loadPage(service: Domains, history: HistoryStorage, state:
 export interface PageProps { service: Domains; history: HistoryStorage; state: PageState; loaded: Loaded; locale?: string; tz?: string; uiVersion?: number; action?: (id: string, next?: PageState, title?: string) => NativeAction | CallbackAction }
 export function page(props: PageProps): Node {
   const { service, state, loaded } = props, t = textsFor(props.locale ?? service.locale), tz = props.tz ?? "Local";
-  const act = (id: string, next?: PageState, title?: string) => props.action?.(id, next, title) ?? (next && (props.uiVersion ?? 0) >= 3 ? { id, push: { ui: "lookup", state: encodeState(next), ...(title ? { title } : {}) } } : { id });
+  const act = (id: string, next?: PageState, title?: string) => props.action?.(id, next, title) ?? (next && (props.uiVersion ?? 0) >= 3 ? { id, push: { ui: "domains", state: encodeState(next), ...(title ? { title } : {}) } } : { id });
   const text = (key: string, value: string, style: "body" | "caption" | "secondary" = "secondary") => <Text key={key} text={clip(value, 1800)} style={style} />;
   const form = <Section key="domain-form" title={t.search}><Field key="domain-input" name="domain" label={t.search} kind="text" placeholder={t.hint} value={state.q} /><Button key="domain-submit" title={t.action} action={act("search")} /></Section>;
   const nav = <Section key="domain-navigation"><Button key="domain-home" title={t.lookup} action={act("lookup")} /><Button key="domain-history" title={t.history} action={act("history")} /></Section>;
