@@ -38,6 +38,8 @@ CANNOT_SEND = "cannot_send"
 # /agent: the user's own message starting with it goes to the assistant; the answer comes back in that chat.
 AGENT_PREFIX = "/agent"
 AGENT_SUFFIX = "🤖 AI 代答，仅供参考"
+# The setting agent_reply_suffix takes its place; the manifest's maxLength is the same.
+AGENT_SUFFIX_MOST = 100
 AGENT_EMPTY = "（只发了 /agent：看上面的上下文和引用的消息，判断要做什么。）"
 AGENT_TYPES = ("TEXT", "POST")
 AGENT_FRESH_SECONDS = 600
@@ -97,11 +99,14 @@ def media_ref(msg_id, key):
 
 
 class Connector:
-    def __init__(self, backend, store, hub, rules=""):
+    def __init__(self, backend, store, hub, rules="", suffix=""):
         self.backend = backend
         # The user's own triage rules (setting triage_rules): handed over with every inbox item, the hub uses them
         # instead of its global ones. The hub reads at most 4000 characters.
         self.rules = (rules or "").strip()[:4000]
+        # The line every /agent answer ends with (setting agent_reply_suffix). Blank keeps AGENT_SUFFIX: an answer is
+        # always marked as written by AI. Stripped after the cut too, since a message is matched against it rstripped.
+        self.suffix = (suffix or "").strip()[:AGENT_SUFFIX_MOST].strip() or AGENT_SUFFIX
         self.store = store
         self.hub = hub
         self._ready = threading.Event()
@@ -261,7 +266,7 @@ class Connector:
         if time.time() - (m.get("at") or 0) > AGENT_FRESH_SECONDS:
             return
         text = m.get("text") or ""
-        if text.rstrip().endswith(AGENT_SUFFIX):
+        if text.rstrip().endswith(self.suffix):
             return
         request = agent_request(text)
         if request is None:
@@ -305,7 +310,7 @@ class Connector:
         with self._lock:
             signed_in, me = self._signed_in, self._account_id
         request = self.store.message(p.get("reply_to") or "") if p.get("reply_to") else None
-        if not signed_in or request is None or request["sender"] != me or agent_request(request["text"]) is None or request["text"].rstrip().endswith(AGENT_SUFFIX):
+        if not signed_in or request is None or request["sender"] != me or agent_request(request["text"]) is None or request["text"].rstrip().endswith(self.suffix):
             # Only an answer to one of the user's own /agent goes out: nothing in a chat they did not ask in.
             raise RpcError("没有可以回复的 /agent 消息", CANNOT_SEND)
         key = "channel:" + ref
@@ -314,7 +319,7 @@ class Connector:
             if result:
                 return {"message_id": result}
             raise RpcError(_UNKNOWN_SEND)
-        text = (p.get("text") or "").rstrip() + "\n\n" + AGENT_SUFFIX
+        text = (p.get("text") or "").rstrip() + "\n\n" + self.suffix
         try:
             msg_id = self.backend.send(request["chat"], text, request.get("root") or request["id"])
         except Exception:

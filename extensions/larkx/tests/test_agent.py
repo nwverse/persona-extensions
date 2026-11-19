@@ -1,5 +1,6 @@
 """/agent: the user's own message goes to the hub as a channel message, and the answer comes back under it.
 Run them: python3 -m unittest discover -s tests, in extensions/larkx."""
+import json
 import os
 import sys
 import tempfile
@@ -12,7 +13,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from test_connector import ME, Backend, Hub, message  # noqa: E402
 
-from larkx_persona.connector import AGENT_SUFFIX, Connector, agent_request  # noqa: E402
+from larkx_persona import main  # noqa: E402
+from larkx_persona.connector import AGENT_SUFFIX, AGENT_SUFFIX_MOST, Connector, agent_request  # noqa: E402
 from larkx_persona.main import Plugin  # noqa: E402
 from larkx_persona.store import Store  # noqa: E402
 from larkx_persona.wire import RpcError  # noqa: E402
@@ -144,6 +146,67 @@ class AgentTest(unittest.TestCase):
         with self.assertRaises(RpcError):
             self.c.channel_send({"ref": "r1", "text": "x", "kind": "answer", "reply_to": "m1"})
         self.assertEqual(self.backend.sent, [])
+
+
+class AgentSuffixTest(unittest.TestCase):
+    """The setting agent_reply_suffix: the line an answer ends with, and what marks a message as an answer."""
+    setUp, handed, nothing_handed = AgentTest.setUp, AgentTest.handed, AgentTest.nothing_handed
+
+    def use(self, suffix):
+        self.c = Connector(self.backend, self.c.store, self.hub, suffix=suffix)
+        self.c._ready.set()
+        self.assertTrue(self.c.login_step({"step": "scan"})["done"])
+        self.addCleanup(self.c._stop.set)
+
+    def test_an_answer_ends_with_the_set_suffix(self):
+        self.use("  🤖 由 AI 助手代答  ")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/agent 总结"))
+        self.handed()
+        self.c.channel_send({"ref": "r1", "text": "这是总结", "kind": "answer", "reply_to": "m1"})
+        self.assertEqual(self.backend.sent, [("c1", "这是总结\n\n🤖 由 AI 助手代答", "m1")])
+
+    def test_a_blank_suffix_keeps_the_default(self):
+        for blank in ("", "   \n ", None):
+            self.assertEqual(Connector(self.backend, self.c.store, self.hub, suffix=blank).suffix, AGENT_SUFFIX)
+
+    def test_a_long_suffix_is_cut_and_still_matches_its_own_answer(self):
+        self.use("A" * (AGENT_SUFFIX_MOST - 1) + " tail")
+        self.assertEqual(self.c.suffix, "A" * (AGENT_SUFFIX_MOST - 1))
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/agent 好的\n\n" + self.c.suffix + " "))
+        self.nothing_handed()
+
+    def test_my_message_ending_with_the_set_suffix_is_an_answer_not_a_request(self):
+        self.use("— AI 代答")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/agent 好的\n\n— AI 代答"))
+        self.nothing_handed()
+        with self.assertRaises(RpcError) as e:
+            self.c.channel_send({"ref": "r1", "text": "x", "kind": "answer", "reply_to": "m1"})
+        self.assertEqual(e.exception.code, "cannot_send")
+        self.assertEqual(self.backend.sent, [])
+
+    def test_the_manifest_setting_matches_the_code(self):
+        with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
+            setting = json.load(f)["configuration"]["properties"]["agent_reply_suffix"]
+        self.assertEqual(setting["default"], AGENT_SUFFIX)
+        self.assertEqual(setting["maxLength"], AGENT_SUFFIX_MOST)
+
+    def test_initialize_hands_the_setting_to_the_connector(self):
+        got = {}
+
+        class Recorder:
+            def __init__(self, backend, store, hub, rules="", suffix=""):
+                got.update(rules=rules, suffix=suffix)
+
+            def start(self):
+                pass
+
+        real = main.Connector
+        main.Connector = Recorder
+        self.addCleanup(setattr, main, "Connector", real)
+        plugin = Plugin({"id": "larkx", "version": "0", "contributes": {}}, lambda *_: None)
+        plugin.initialize({"protocol": main.PROTOCOL, "extension": {"data_dir": self.dir.name},
+                           "config": {"triage_rules": "规则", "agent_reply_suffix": "— AI 代答"}})
+        self.assertEqual(got, {"rules": "规则", "suffix": "— AI 代答"})
 
 
 class PluginRoutingTest(unittest.TestCase):
