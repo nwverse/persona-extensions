@@ -27,6 +27,8 @@ The [manifest](../../extensions/telegram/persona-extension.json) defines `triage
 
 Every item carries `extra.rule_tier: action` as a fallback (`fallback` capability). Items continue arriving as requiring attention if the model is unavailable. Installing the extension does not require configuring the information-filtering model first.
 
+Every item names its conversation's picture in `avatar` (0.1.27, nwverse/persona#10923): the other person's in a direct message, the group's for a mention, the same `a.<peer>.<photo>` media ref its conversation page uses. The hub draws it on the Inbox row through its avatars route, finding the picture from the conversations listed, so the row needs no page opened. A conversation without a picture sends none and its row keeps the initial; a hub without the avatars route ignores the field.
+
 ## Network and sandbox
 
 The hub must reach Telegram data centers by IP over TCP. When the hub's environment sets `HTTPS_PROXY` (or `https_proxy`) to an `http://` proxy and `NO_PROXY` does not exclude the data center, the connection goes through that proxy's HTTP CONNECT tunnel; with no proxy for it, it is direct. A hub that only reaches the internet through such a proxy can sign in this way. A proxy of another scheme (`socks5://`, `https://`) or one that refuses the tunnel is not bypassed: the connection fails at once and the status names the proxy. Persona's sandbox allows egress through its own HTTP(S) proxy only, so this extension cannot run inside that sandbox.

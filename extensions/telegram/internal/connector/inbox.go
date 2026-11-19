@@ -49,6 +49,11 @@ type InboxThing struct {
 	// CanReply: Reply works for this thread.
 	ReplyTo  string `json:"reply_to,omitempty"`
 	CanReply bool   `json:"can_reply,omitempty"`
+	// Avatar is the thread's picture (the host's docs/protocol/protocol.md "Avatars", nwverse/persona#10923): one of the
+	// connector's own media refs (the ref its ThreadChat.Avatar has, its bytes from Media) or an https address, always
+	// naming the same bytes. The other person of a private chat, a group's own; the Inbox row draws it, the initial
+	// without one. At most 2048 bytes. A host without it ignores the field.
+	Avatar string `json:"avatar,omitempty"`
 	// Tier is the tier the connector's rules decide (action, fyi, noise): the item gets it without a model. "" leaves it
 	// to the model (a human's ordinary comment). Why says which rule, for people ("Rule: a person mentioned you").
 	Tier Tier   `json:"tier,omitempty"`

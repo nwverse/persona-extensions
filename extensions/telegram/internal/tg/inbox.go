@@ -64,8 +64,10 @@ func (c *Conn) Collect(context.Context) ([]connector.InboxThing, error) {
 			continue
 		}
 		key := d.Peer.key()
+		// The row's picture is the conversation's own: the other person's in a private chat, the group's for a mention
+		// (none without one: the initial). Media finds it from the conversations listed, without the page opened.
 		t := connector.InboxThing{Thread: key, Title: d.Name, Sender: d.TopFrom, Preview: d.TopText, At: d.TopAt,
-			OpenURL: openURL(d), Tier: connector.TierAction, Context: c.box.contexts[key].text,
+			OpenURL: openURL(d), Avatar: avatarRef(d.Peer, d.Photo), Tier: connector.TierAction, Context: c.box.contexts[key].text,
 			Tags:  []connector.Tag{{Key: connector.TagChat, Value: key, Name: d.Name}},
 			Extra: &connector.ThingExtra{RuleTier: string(connector.TierAction)}}
 		if c.rules != "" {
