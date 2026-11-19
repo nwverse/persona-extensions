@@ -102,7 +102,7 @@
       "agent_reply_suffix": {
         "type": "string",
         "title": "/agent 回复末尾",
-        "description": "助手以你的身份回复 /agent 时加在末尾、标明 AI 代答的一句话。留空用默认的这句，不能去掉。你自己发的消息以这句结尾时不算 /agent。",
+        "description": "助手以你的身份回复 /agent 时加在末尾、标明 AI 代答的一句话。留空或不到 4 个字时用默认的这句，不能去掉。你自己发的消息以这句结尾时不算 /agent。",
         "maxLength": 100,
         "default": "🤖 AI 代答，仅供参考"
       }

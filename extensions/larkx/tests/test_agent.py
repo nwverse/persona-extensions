@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_connector import ME, Backend, Hub, message  # noqa: E402
 
 from larkx_persona import main  # noqa: E402
-from larkx_persona.connector import AGENT_SUFFIX, AGENT_SUFFIX_MOST, Connector, agent_request  # noqa: E402
+from larkx_persona.connector import AGENT_SUFFIX, AGENT_SUFFIX_LEAST, AGENT_SUFFIX_MOST, Connector, agent_request  # noqa: E402
 from larkx_persona.main import Plugin  # noqa: E402
 from larkx_persona.store import Store  # noqa: E402
 from larkx_persona.wire import RpcError  # noqa: E402
@@ -168,6 +168,15 @@ class AgentSuffixTest(unittest.TestCase):
     def test_a_blank_suffix_keeps_the_default(self):
         for blank in ("", "   \n ", None):
             self.assertEqual(Connector(self.backend, self.c.store, self.hub, suffix=blank).suffix, AGENT_SUFFIX)
+
+    def test_a_too_short_suffix_keeps_the_default(self):
+        # "AI" would make "/agent 把这段翻译给 AI" look like an answer and be ignored.
+        for short in ("AI", " AI ", "x" * (AGENT_SUFFIX_LEAST - 1)):
+            self.assertEqual(Connector(self.backend, self.c.store, self.hub, suffix=short).suffix, AGENT_SUFFIX)
+        self.assertEqual(Connector(self.backend, self.c.store, self.hub, suffix="AI代答").suffix, "AI代答")
+        self.use("AI")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/agent 把这段翻译给 AI"))
+        self.assertEqual(self.handed()["message"]["text"], "把这段翻译给 AI")
 
     def test_a_long_suffix_is_cut_and_still_matches_its_own_answer(self):
         self.use("A" * (AGENT_SUFFIX_MOST - 1) + " tail")

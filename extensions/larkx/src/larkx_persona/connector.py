@@ -38,8 +38,11 @@ CANNOT_SEND = "cannot_send"
 # /agent: the user's own message starting with it goes to the assistant; the answer comes back in that chat.
 AGENT_PREFIX = "/agent"
 AGENT_SUFFIX = "🤖 AI 代答，仅供参考"
-# The setting agent_reply_suffix takes its place; the manifest's maxLength is the same.
+# The setting agent_reply_suffix takes its place; the manifest's maxLength is the same. A shorter one than
+# AGENT_SUFFIX_LEAST keeps the default: the user's own message ending with the line is not a request, and a line
+# like "AI" would end too many of them.
 AGENT_SUFFIX_MOST = 100
+AGENT_SUFFIX_LEAST = 4
 AGENT_EMPTY = "（只发了 /agent：看上面的上下文和引用的消息，判断要做什么。）"
 AGENT_TYPES = ("TEXT", "POST")
 AGENT_FRESH_SECONDS = 600
@@ -104,9 +107,11 @@ class Connector:
         # The user's own triage rules (setting triage_rules): handed over with every inbox item, the hub uses them
         # instead of its global ones. The hub reads at most 4000 characters.
         self.rules = (rules or "").strip()[:4000]
-        # The line every /agent answer ends with (setting agent_reply_suffix). Blank keeps AGENT_SUFFIX: an answer is
-        # always marked as written by AI. Stripped after the cut too, since a message is matched against it rstripped.
-        self.suffix = (suffix or "").strip()[:AGENT_SUFFIX_MOST].strip() or AGENT_SUFFIX
+        # The line every /agent answer ends with (setting agent_reply_suffix). Blank or too short keeps AGENT_SUFFIX: an
+        # answer is always marked as written by AI. Stripped after the cut too, since a message is matched against it
+        # rstripped.
+        suffix = (suffix or "").strip()[:AGENT_SUFFIX_MOST].strip()
+        self.suffix = suffix if len(suffix) >= AGENT_SUFFIX_LEAST else AGENT_SUFFIX
         self.store = store
         self.hub = hub
         self._ready = threading.Event()
