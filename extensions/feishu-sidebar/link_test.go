@@ -89,7 +89,7 @@ func TestNormalizeBase(t *testing.T) {
 	for in, want := range map[string]string{
 		"https://persona.example.com":       "https://persona.example.com",
 		"https://persona.example.com/":      "https://persona.example.com",
-		"http://192.168.1.5:8080/":          "http://192.168.1.5:8080",
+		"http://192.0.2.5:8080/":            "http://192.0.2.5:8080",
 		"https://persona.example.com/base/": "https://persona.example.com/base",
 	} {
 		got, err := normalizeBase(in)
