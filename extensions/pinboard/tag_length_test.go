@@ -17,6 +17,7 @@ type countingPinboard struct {
 	mu       sync.Mutex
 	requests int
 	tags     []string
+	titles   []string
 }
 
 func newCountingPinboard(t *testing.T) *countingPinboard {
@@ -26,6 +27,7 @@ func newCountingPinboard(t *testing.T) *countingPinboard {
 		f.mu.Lock()
 		f.requests++
 		f.tags = append(f.tags, r.URL.Query().Get("tags"))
+		f.titles = append(f.titles, r.URL.Query().Get("description"))
 		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]string{"result_code": "done"})
