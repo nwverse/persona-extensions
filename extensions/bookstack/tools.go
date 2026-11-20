@@ -55,6 +55,14 @@ func decode(raw json.RawMessage, out any) error {
 	return nil
 }
 
+// idText is a related object's id as BookStack answers it: the integer, or "none" for null.
+func idText(id *int64) string {
+	if id == nil {
+		return "none"
+	}
+	return fmt.Sprint(*id)
+}
+
 func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (string, error) {
 	var in struct {
 		BookID int64  `json:"book_id"`
@@ -86,7 +94,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		}
 		var b strings.Builder
 		for _, item := range page.Data {
-			fmt.Fprintf(&b, "- Page #%d: %s\n  Book ID: %d | chapter ID: %v | draft: %v | updated: %s\n", item.ID, clipText(item.Name, 500), item.BookID, item.ChapterID, item.Draft, item.UpdatedAt)
+			fmt.Fprintf(&b, "- Page #%d: %s\n  Book ID: %d | chapter ID: %v | draft: %v | updated: %s\n", item.ID, clipText(item.Name, 500), item.BookID, idText(item.ChapterID), item.Draft, item.UpdatedAt)
 		}
 		return listText(&b, len(page.Data), "No pages in this book.", in.Offset+len(page.Data), len(page.Data) == 50), nil
 	case "bookstack_search":
