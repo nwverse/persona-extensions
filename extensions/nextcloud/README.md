@@ -20,7 +20,7 @@ Remote instances require HTTPS. URLs must not contain credentials. The app passw
 
 ## Confirmed notes without overwrites
 
-`PUT /remote.php/dav/files/<username>/<path>` creates a new `.md` note with `If-None-Match: *`. This is important because a normal WebDAV PUT can overwrite an existing file. If the path already exists, the extension reports a conflict instead of overwriting it.
+`PUT /remote.php/dav/files/<username>/<path>` creates a new `.md` note with `If-None-Match: *`. This is important because a normal WebDAV PUT can overwrite an existing file. If the path already exists, the extension reports a conflict instead of overwriting it. Nextcloud refuses a file or folder name longer than 250 bytes, so the extension rejects a path with a longer name before sending anything. Han and other non-ASCII characters take up to three or four bytes each.
 
 The UI reviews the new path and content before writing. Web drafts are capped at 10,000 UTF-8 bytes; agent-created notes at 30,000 bytes. No deletion, moves, shares, existing-file edits or permission changes are exposed.
 
