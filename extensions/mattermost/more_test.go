@@ -14,8 +14,9 @@ import (
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
-// moreMattermost answers the channel posts in batches of 30: the first batch has no before and the batch after batch
-// k is read with before "b<k>". total posts are served, each message with the given number of lines.
+// moreMattermost answers the channel posts in batches of 30, post-1 the newest: the first batch has no before, and a
+// batch read with before post-n holds the posts older than post-n. prev_post_id is the post right before the oldest one
+// of a batch. total posts are served, each message with the given number of lines.
 type moreMattermost struct {
 	srv     *httptest.Server
 	mu      sync.Mutex
@@ -35,12 +36,11 @@ func newMoreMattermost(t *testing.T, total, lines int) *moreMattermost {
 			f.mu.Lock()
 			f.befores = append(f.befores, before)
 			f.mu.Unlock()
-			batch := 1
+			first := 1
 			if before != "" {
-				batch, _ = strconv.Atoi(strings.TrimPrefix(before, "b"))
-				batch++
+				oldest, _ := strconv.Atoi(strings.TrimPrefix(before, "post-"))
+				first = oldest + 1
 			}
-			first := (batch-1)*30 + 1
 			out := postList{Posts: map[string]post{}}
 			for number := first; number < first+30 && number <= f.total; number++ {
 				id := fmt.Sprintf("post-%d", number)
@@ -52,7 +52,7 @@ func newMoreMattermost(t *testing.T, total, lines int) *moreMattermost {
 				out.Posts[id] = post{ID: id, UserID: "user-2", ChannelID: "channel-1", Message: message}
 			}
 			if first+29 < f.total {
-				out.PrevPostID = fmt.Sprintf("b%d", batch)
+				out.PrevPostID = fmt.Sprintf("post-%d", first+30)
 			}
 			_ = json.NewEncoder(w).Encode(out)
 		default:
@@ -133,7 +133,7 @@ func TestLoadMoreStopsAtViewLimit(t *testing.T) {
 	if err := wire.CheckView(v); err != nil {
 		t.Fatal(err)
 	}
-	if f.requested("b5") {
+	if f.requested("post-150") {
 		t.Fatalf("loaded past the cap: %v", f.befores)
 	}
 }
