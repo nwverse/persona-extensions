@@ -144,6 +144,25 @@ func (c *client) album(ctx context.Context, id string) (album, error) {
 	return out, err
 }
 
+// albumAssetsMost is how many of an album's assets immich_album reads.
+const albumAssetsMost = 100
+
+// albumAssets reads the first assets of an album. Immich 3 does not send them with the album (GET /albums/{id}); they
+// are found by searching with the album's ID.
+func (c *client) albumAssets(ctx context.Context, id string) ([]asset, error) {
+	if !validAssetID(id) {
+		return nil, errors.New("invalid Immich album ID")
+	}
+	body := map[string]any{
+		"size": albumAssetsMost, "withExif": true, "withPeople": true,
+		"orderBy": map[string]string{"field": "fileCreatedAt", "direction": "desc"},
+		"filter":  map[string]any{"albumIds": map[string][]string{"any": {id}}},
+	}
+	var out searchResponse
+	err := c.do(ctx, http.MethodPost, "/search/metadata", body, &out)
+	return out.Assets.Items, err
+}
+
 func (c *client) favorite(ctx context.Context, id string, favorite bool) error {
 	if !validAssetID(id) {
 		return errors.New("invalid Immich asset ID")

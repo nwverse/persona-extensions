@@ -34,12 +34,11 @@ type searchResponse struct {
 }
 
 type album struct {
-	ID          string  `json:"id"`
-	AlbumName   string  `json:"albumName"`
-	AssetCount  int     `json:"assetCount"`
-	Description string  `json:"description"`
-	UpdatedAt   string  `json:"updatedAt"`
-	Assets      []asset `json:"assets"`
+	ID          string `json:"id"`
+	AlbumName   string `json:"albumName"`
+	AssetCount  int    `json:"assetCount"`
+	Description string `json:"description"`
+	UpdatedAt   string `json:"updatedAt"`
 }
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
