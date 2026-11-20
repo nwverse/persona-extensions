@@ -183,8 +183,11 @@ func detailView(r *ext.UIRequest, st pageState, item issue) *wire.View {
 	}
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	v := &wire.View{Title: item.Key, State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.issues, Items: items}}}
+	used := len(items)
 	if text := richText(item.Fields.Description); text != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(text)})
+		description := capComponents(textComponents(text), maxDescriptionItems)
+		used += len(description)
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: description})
 	}
 	if len(item.Fields.Comment.Comments) > 0 {
 		section := wire.Section{Title: t.comments}
@@ -192,9 +195,27 @@ func detailView(r *ext.UIRequest, st pageState, item issue) *wire.View {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: c.Author.DisplayName + " · " + c.Created, Style: wire.TextStyleSecondary})
 			section.Items = append(section.Items, textComponents(richText(c.Body))...)
 		}
+		section.Items = capComponents(section.Items, maxViewItems-used)
 		v.Sections = append(v.Sections, section)
 	}
 	return v
+}
+
+const (
+	// maxViewItems keeps the issue view within the SDK's 300 component limit, whatever the issue holds.
+	maxViewItems = 250
+	// maxDescriptionItems leaves the comments room when the description is long.
+	maxDescriptionItems = 100
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func (a *app) createView(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
