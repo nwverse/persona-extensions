@@ -99,13 +99,16 @@ func (c *client) currentUser(ctx context.Context) (user, error) {
 	return out, err
 }
 
+// maxQueryChars is the longest search query: the client, the page clip, the tool schema and the page state check use it.
+const maxQueryChars = 200
+
 func (c *client) tasks(ctx context.Context, username, query string, page int) (taskPage, error) {
 	if page < 1 || page > 100000 {
 		return taskPage{}, errors.New("invalid page number")
 	}
 	q := url.Values{"page": {strconv.Itoa(page)}, "per_page": {"50"}}
 	if query = strings.TrimSpace(query); query != "" {
-		if len([]rune(query)) > 200 {
+		if len([]rune(query)) > maxQueryChars {
 			return taskPage{}, errors.New("search query must be at most 200 characters")
 		}
 		q.Set("s", query)

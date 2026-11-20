@@ -96,5 +96,6 @@ def main():
     plugin = Plugin(manifest, make_backend)
     plugin.peer = Peer(stdin, stdout, plugin.handle)
     plugin.peer.serve()
-    # The hub closed stdin: stop here, whatever the listening threads are doing.
-    os._exit(0)
+    # The hub closed stdin: let history writes finish before the data directory is cleaned up.
+    if plugin.connector is not None:
+        plugin.connector.close()

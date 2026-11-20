@@ -28,7 +28,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Page < 0 || st.TaskID < 0 || st.ProjectID < 0 || len(st.Query) > 250 || len(st.DraftID) > 128 || len(st.Title) > 600 || len(st.Description) > 11000 || len(st.DueDate) > 64 {
+	if err := r.DecodeState(&st); err != nil || st.Page < 0 || st.TaskID < 0 || st.ProjectID < 0 || len([]rune(st.Query)) > maxQueryChars || len(st.DraftID) > 128 || len([]rune(st.Title)) > maxTitleChars || len(st.Description) > 11000 || len(st.DueDate) > 64 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -49,7 +49,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Page = strings.TrimSpace(clipText(r.Values["q"], 200)), 1
+		st.Query, st.Page = strings.TrimSpace(clipText(r.Values["q"], maxQueryChars)), 1
 	case "more":
 		st.Page, err = strconv.Atoi(r.Values["page"])
 		if err != nil || st.Page < 2 {
@@ -189,7 +189,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if item.ID <= 0 || item.Title == "" {
 			continue
 		}
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: fmt.Sprintf("task-%d", item.ID), Title: clipText(item.Title, 1800), Subtitle: clipText(item.Identifier+" · "+item.DueDate, 1800), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": fmt.Sprint(item.ID)}}})
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: fmt.Sprintf("task-%d", item.ID), Title: clipText(item.Title, 1800), Subtitle: clipText(item.subtitle(), 1800), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": fmt.Sprint(item.ID)}}})
 	}
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noTasks})
@@ -225,7 +225,7 @@ func createView(r *ext.UIRequest, st pageState) *wire.View {
 
 func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 	t := textsFor(r.Locale)
-	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(item.Identifier+" · "+item.DueDate, 1800)}}
+	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(item.subtitle(), 1800)}}
 	if !item.Done {
 		items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.complete, Action: &wire.Action{ID: "complete", Confirm: t.complete + "\n" + item.Title}})
 	}

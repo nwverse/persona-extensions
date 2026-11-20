@@ -148,7 +148,7 @@ func (c *client) save(ctx context.Context, rawURL string) (link, error) {
 }
 
 func (c *client) archive(ctx context.Context, id int64) error {
-	return c.do(ctx, http.MethodPost, "/links/"+strconv.FormatInt(id, 10)+"/archive", nil, nil, nil)
+	return c.do(ctx, http.MethodPut, "/links/"+strconv.FormatInt(id, 10)+"/archive", nil, nil, nil)
 }
 
 func clipText(text string, limit int) string {

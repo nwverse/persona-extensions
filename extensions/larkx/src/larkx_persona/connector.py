@@ -3,6 +3,7 @@ LarkAgentX, so the whole of it runs against a fixture backend in the tests."""
 import base64
 import hashlib
 import json
+import queue
 import threading
 import time
 from datetime import datetime, timezone
@@ -152,6 +153,13 @@ class Connector:
         self._last_sync = 0.0
         self._last_prune = 0.0
         self._stop = threading.Event()
+        self._catch_stop = threading.Event()
+        self._catch_queue = queue.Queue()
+        self._catch_pending = False
+        self._worker_lock = threading.Lock()
+        self._workers = set()
+        self._closed = False
+        self._catch_thread = None
         self._dirty = threading.Event()
         self.methods = {
             "status": self.status, "tools.list": self.tools_list, "tools.call": self.tools_call,
@@ -232,11 +240,41 @@ class Connector:
         self._stop = threading.Event()
         self._linked.clear()
         self._dirty.set()
-        threading.Thread(target=self._listen, args=(self._stop,), daemon=True).start()
+        if not self._closed:
+            threading.Thread(target=self._listen, args=(self._stop,), name="larkx-listen", daemon=True).start()
         self._linked.wait(LINK_WAIT_SECONDS)
 
     def _listen(self, stop):
-        self.backend.listen(self._on_live, self._on_link, stop)
+        thread = threading.current_thread()
+        with self._worker_lock:
+            if self._closed:
+                return
+            self._workers.add(thread)
+        try:
+            self.backend.listen(self._on_live, self._on_link, stop)
+        finally:
+            with self._worker_lock:
+                self._workers.discard(threading.current_thread())
+
+    def close(self):
+        """Stop receiving and wait for history writes before closing the store; safe to call more than once."""
+        with self._worker_lock:
+            self._closed = True
+            self._stop.set()
+            self._catch_stop.set()
+            self._catch_queue.put(None)
+        if self._catch_thread is not None:
+            self._catch_thread.join(30)
+            with self._worker_lock:
+                self._workers.discard(self._catch_thread)
+        while True:
+            with self._worker_lock:
+                workers = [w for w in self._workers if w is not threading.current_thread()]
+            if not workers:
+                break
+            for worker in workers:
+                worker.join(30)
+        self.store.close()
 
     def _on_live(self, m):
         """A message pushed on the long connection: kept like any other, and the user's own /agent goes to the assistant.
@@ -253,17 +291,40 @@ class Connector:
                 self._expired = True
         self._linked.set()
         if state == "up":
-            threading.Thread(target=self.catch_up, daemon=True).start()
+            with self._worker_lock:
+                if not self._catch_pending and not self._closed:
+                    self._catch_pending = True
+                    if self._catch_thread is None:
+                        self._catch_thread = threading.Thread(target=self._catch_worker, name="larkx-catch-up", daemon=True)
+                        self._workers.add(self._catch_thread)
+                        self._catch_thread.start()
+                    self._catch_queue.put(True)
+
+    def _catch_worker(self):
+        while True:
+            item = self._catch_queue.get()
+            try:
+                if item is None:
+                    return
+                self.catch_up()
+            finally:
+                with self._worker_lock:
+                    self._catch_pending = False
+                    self._catch_queue.task_done()
 
     def catch_up(self):
-        """Fetches what came in while the connection was down, for the chats that moved last."""
+        """Fetches what came in while the connection was down, stopping with the listener."""
         for chat in self.store.chats(CATCH_UP_CHATS):
+            if self._catch_stop.is_set():
+                return
             try:
                 newest = self.backend.chat_info(chat["id"]).get("last_position") or 0
                 known = self.store.newest_position(chat["id"])
                 if known and newest > known:
                     first = max(known + 1, newest - CATCH_UP_MESSAGES + 1)
                     for m in self.backend.history(chat["id"], list(range(first, newest + 1))):
+                        if self._catch_stop.is_set():
+                            return
                         self.on_message(m)
             except Exception as e:
                 self._log("catching up failed: %s" % type(e).__name__)

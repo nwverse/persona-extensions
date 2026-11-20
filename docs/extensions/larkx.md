@@ -4,7 +4,7 @@
 
 This extension (id `larkx`) reaches Feishu as the user, next to the hub's own `lark-cli` integration (nwverse/persona#1487). It runs [LarkAgentX](https://github.com/cv-cat/LarkAgentX), a Python library for the Feishu web client, as a connector program: the user signs in with a QR code, every message arrives over the web client's long connection, the assistant can send as the user after a confirmation on the phone, and `/agent` in any chat hands a request to the assistant. It is an ordinary connector and channel program (Persona's `docs/connector-protocol.md` and `docs/extensions/channels.md`), so the hub needs no change.
 
-This page describes version 0.2.7. When the manifest shown in the install preview disagrees with this page, the manifest wins.
+This page describes version 0.2.8. When the manifest shown in the install preview disagrees with this page, the manifest wins.
 
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |

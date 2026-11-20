@@ -39,7 +39,7 @@ class SelfMentionTest(unittest.TestCase):
         self.c._ready.set()
         self.backend.poll = "done"
         self.assertTrue(self.c.login_step({"step": "scan"})["done"])
-        self.addCleanup(self.c._stop.set)
+        self.addCleanup(self.c.close)
 
     def live(self, mid, text, *ids, sender=ME, **kwargs):
         m = message(mid, "c1", int(mid[1:]), sender=sender, text=text, **kwargs)
@@ -162,7 +162,7 @@ class MentionSettingsTest(unittest.TestCase):
         with open(os.path.join(root, "persona-extension.json"), encoding="utf-8") as f:
             manifest = json.load(f)
         self.assertIs(manifest["configuration"]["properties"]["agent_mention"]["default"], True)
-        self.assertEqual(manifest["version"], "0.2.7")
+        self.assertEqual(manifest["version"], "0.2.8")
 
 
 class MentionStoreMigrationTest(unittest.TestCase):
@@ -180,6 +180,7 @@ class MentionStoreMigrationTest(unittest.TestCase):
             db.commit()
             db.close()
             store = Store(path)
+            self.addCleanup(store.close)
             self.assertEqual(store.message("m1")["mentions"], [])
             self.assertIsNone(mention_request(store.message("m1")["text"], store.message("m1")["mentions"], ME))
 

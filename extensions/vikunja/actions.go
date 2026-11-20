@@ -17,8 +17,11 @@ type createArgs struct {
 	DueDate     string `json:"due_date,omitempty"`
 }
 
+// maxTitleChars is the longest task title: the validation, the tool schema and the page state check use it.
+const maxTitleChars = 500
+
 func (in createArgs) validate() error {
-	if in.ProjectID <= 0 || strings.TrimSpace(in.Title) == "" || len([]rune(in.Title)) > 500 || len([]rune(in.Description)) > 30000 {
+	if in.ProjectID <= 0 || strings.TrimSpace(in.Title) == "" || len([]rune(in.Title)) > maxTitleChars || len([]rune(in.Description)) > 30000 {
 		return errors.New("a positive project ID, nonempty title and bounded description are required")
 	}
 	if strings.ContainsFunc(in.Title, unicode.IsControl) || strings.ContainsFunc(in.Description, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) {

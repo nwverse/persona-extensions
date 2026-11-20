@@ -106,9 +106,17 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 	return "", fmt.Errorf("no tool %s", name)
 }
 
+// resolvedText is the time an issue was resolved as YouTrack answers it, in milliseconds, or "none" for null.
+func resolvedText(resolved *int64) string {
+	if resolved == nil {
+		return "none"
+	}
+	return fmt.Sprint(*resolved)
+}
+
 func formatIssue(item issue, comments []comment, detail bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "- Issue %s: %s\n  Database ID: %s | project: %s (%s) | updated: %d | resolved: %v\n", item.IDReadable, clipText(item.Summary, 500), item.ID, item.Project.Name, item.Project.ShortName, item.Updated, item.Resolved)
+	fmt.Fprintf(&b, "- Issue %s: %s\n  Database ID: %s | project: %s (%s) | updated: %d | resolved: %v\n", item.IDReadable, clipText(item.Summary, 500), item.ID, item.Project.Name, item.Project.ShortName, item.Updated, resolvedText(item.Resolved))
 	if detail {
 		if item.Description != "" {
 			b.WriteString("\nDescription:\n" + clipText(item.Description, 30000) + "\n")

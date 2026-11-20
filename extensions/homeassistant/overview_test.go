@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -94,6 +96,147 @@ func TestOverviewReadsAXiaomiHome(t *testing.T) {
 	contains(t, room, "tile 空调|遥控 · ", "tile 灯光1|另有 1 项|")
 }
 
+// An IR remote with both power buttons has a switch on its tile (#774): on when 开机 was pressed after 关机, turning it
+// on and off pressing them, and nothing but that remote's own power buttons.
+func TestRemoteTileSwitch(t *testing.T) {
+	const (
+		tvOn   = "button.tv_turn_on"
+		tvOff  = "button.tv_turn_off"
+		tvUp   = "button.tv_volume_up"
+		fanOn  = "button.fan_turn_on" // a remote with one power button: no switch
+		fanSpd = "button.fan_speed"
+	)
+	at := func(ago time.Duration) string { return time.Now().Add(-ago).UTC().Format(time.RFC3339Nano) }
+	r := newRichHA(t)
+	put := func(on, off string) {
+		r.put(State{EntityID: tvOn, State: on, Attributes: map[string]any{"friendly_name": "电视 红外电视控制 开机"}},
+			State{EntityID: tvOff, State: off, Attributes: map[string]any{"friendly_name": "电视 红外电视控制 关机"}})
+	}
+	put("unknown", "unknown")
+	r.put(State{EntityID: tvUp, State: "unknown", Attributes: map[string]any{"friendly_name": "电视 红外电视控制 音量+"}},
+		State{EntityID: fanOn, State: "unknown", Attributes: map[string]any{"friendly_name": "风扇 红外风扇控制 开机"}},
+		State{EntityID: fanSpd, State: "unknown", Attributes: map[string]any{"friendly_name": "风扇 红外风扇控制 风速"}})
+	for _, e := range []struct{ id, dev string }{{tvOn, "tv"}, {tvOff, "tv"}, {tvUp, "tv"}, {fanOn, "fan"}, {fanSpd, "fan"}} {
+		r.ws.entities = append(r.ws.entities, map[string]any{"entity_id": e.id, "device_id": e.dev, "platform": "xiaomi_home"})
+	}
+	r.ws.devices = append(r.ws.devices, map[string]any{"id": "tv", "name": "电视"}, map[string]any{"id": "fan", "name": "风扇"})
+	r.services = strings.TrimSuffix(r.services, "]") + `,{"domain":"button","services":{"press":{}}}]`
+	r.areas = areasJSON([][3]any{{"ke_ting", "客厅", []string{tvOn, tvOff, tvUp, fanOn, fanSpd}}})
+	a := richApp(t, r, Config{})
+	a.marks.load(a.dataDir, t.Logf)
+
+	tile := func() map[string]wire.Tile {
+		t.Helper()
+		h, _, _ := a.client()
+		h.mu.Lock()
+		h.statesAt = time.Time{} // read the buttons' new times
+		h.mu.Unlock()
+		v, _ := renderV(t, a, 6, nil)
+		out := map[string]wire.Tile{}
+		for _, x := range tilesOf(v, "room:ke_ting") {
+			out[x.Title] = x
+		}
+		return out
+	}
+	sw := func(want string) {
+		t.Helper()
+		tv, ok := tile()["电视"]
+		if !ok || tv.Control == nil {
+			t.Fatalf("the TV's tile has no switch: %+v", tv)
+		}
+		if got := controlText(tv.Control); got != want {
+			t.Errorf("switch %s, want %s", got, want)
+		}
+	}
+	off, on := "ctl(switch ir:"+tvOn+" false →ctl:ir "+tvOn+")", "ctl(switch ir:"+tvOn+" true →ctl:ir "+tvOn+")"
+	sw(off) // never pressed
+	put(at(time.Minute), at(time.Hour))
+	sw(on) // 开机 after 关机
+	put(at(time.Hour), at(time.Minute))
+	sw(off) // 关机 after 开机
+	put(at(time.Minute), "unknown")
+	sw(on) // 开机, 关机 never
+	if fan := tile()["风扇"]; fan.Control != nil || len(fan.Actions) == 0 {
+		t.Errorf("a remote with one power button: %+v", fan)
+	}
+
+	press := func(entity, value string) *wire.ActionResult {
+		t.Helper()
+		res, _ := actV(t, a, 6, pageState{}, "ctl:ir", map[string]string{"entity": entity, "ir:" + entity: value})
+		return res
+	}
+	if res := press(tvOn, "true"); r.lastCall() != "button.press ["+tvOn+"] {}" || res.Toast != "已发送「开机」" {
+		t.Errorf("on: %q %q", r.lastCall(), res.Toast)
+	}
+	if res := press(tvOn, "false"); r.lastCall() != "button.press ["+tvOff+"] {}" || res.Toast != "已发送「关机」" {
+		t.Errorf("off: %q %q", r.lastCall(), res.Toast)
+	}
+	for _, c := range []struct{ entity, value, toast string }{
+		{tvUp, "true", errNoEntity.Error()},  // not a remote's 开机
+		{tvOff, "true", errNoEntity.Error()}, // nor its 关机
+		{fanOn, "true", errNoEntity.Error()}, // a remote without a switch
+		{tvOn, "on", errUnknownOp.Error()},
+	} {
+		if res := press(c.entity, c.value); r.lastCall() != "button.press ["+tvOff+"] {}" || res.Toast != c.toast {
+			t.Errorf("%s=%s went through: %q %q", c.entity, c.value, r.lastCall(), res.Toast)
+		}
+	}
+
+	// 标记为已关 (irmarks.go): offered only while the switch is on, it sends nothing and keeps the switch off until 开机
+	// is pressed again, across a restart (the data directory). The menu stays within four entries.
+	titles := func(x wire.Tile) (out []string) {
+		for _, m := range x.Actions {
+			out = append(out, m.Title)
+		}
+		return out
+	}
+	put(at(time.Hour), at(2*time.Hour))
+	sw(on)
+	tv := tile()["电视"]
+	if got := titles(tv); !slices.Equal(got, []string{"开机", "关机", "标记为已关", "音量+"}) {
+		t.Errorf("the menu while on: %q", got)
+	}
+	calls := r.lastCall()
+	res, _ := actV(t, a, 6, pageState{}, tv.Actions[2].Action.ID, tv.Actions[2].Action.Values)
+	if res.Toast != "已标记为关，没有发送信号" || r.lastCall() != calls {
+		t.Errorf("marking off: %q, sent %q", res.Toast, r.lastCall())
+	}
+	sw(off)
+	if got := titles(tile()["电视"]); slices.Contains(got, "标记为已关") {
+		t.Errorf("offered while off: %q", got)
+	}
+	b := newApp(t.Logf)
+	b.marks.load(a.dataDir, t.Logf)
+	if b.marks.get(tvOn).IsZero() {
+		t.Errorf("the mark was not kept in %s", a.dataDir)
+	}
+	put(at(0), at(2*time.Hour))
+	sw(on) // 开机 pressed after the mark
+	for _, eid := range []string{tvUp, tvOff, fanOn, "bad id"} {
+		if res, _ := actV(t, a, 6, pageState{}, "irmark", map[string]string{"entity": eid}); res.Toast == "已标记为关，没有发送信号" {
+			t.Errorf("marked %q", eid)
+		}
+	}
+	if act := irMarkAction("button." + strings.Repeat("x", idMost)); act.ID != "irmark" || act.Values["entity"] == "" {
+		t.Errorf("a long id: %+v", act)
+	}
+}
+
+// Opening an entity pushes its page (#774), so the app's back returns to the page below; an older app calls
+// open:<entity> and gets the page in place (TestPage opens it so).
+func TestOpenPushesTheEntityPage(t *testing.T) {
+	for _, eid := range []string{"light.living", "sensor." + strings.Repeat("x", idMost)} {
+		act := openAction(eid)
+		var st pageState
+		if act.Push == nil || json.Unmarshal([]byte(act.Push.State), &st) != nil || st != (pageState{Entity: eid}) {
+			t.Errorf("%s: push %+v", eid, act.Push)
+		}
+		if act.ID != "open:"+eid && (act.ID != "open" || act.Values["entity"] != eid) {
+			t.Errorf("%s: an older app's action %+v", eid, act)
+		}
+	}
+}
+
 func TestEntityNameKeepsWhatTheUserWrote(t *testing.T) {
 	reg := &Registry{Entities: map[string]RegEntity{}, Devices: map[string]RegDevice{
 		"lamp": {ID: "lamp", Name: "吸顶灯"}, "plug": {ID: "plug", Name: "Desk plug"}, "w": {ID: "w", Name: "Wall", NameByUser: "书房开关"}}}
@@ -109,6 +252,91 @@ func TestEntityNameKeepsWhatTheUserWrote(t *testing.T) {
 		reg.Entities[c.id] = RegEntity{EntityID: c.id, DeviceID: c.dev}
 		if got := entityName(reg, State{EntityID: c.id, Attributes: map[string]any{"friendly_name": c.name}}); got != c.want {
 			t.Errorf("entityName(%q) = %q, want %q", c.name, got, c.want)
+		}
+	}
+}
+
+// An area's device count (#922) takes its remotes too where they are tiles (UI version 6), so 区域 says as many as its
+// section shows; before, an area is rows without remotes and counts its devices only.
+func TestAreaCountsRemotes(t *testing.T) {
+	r := newRichHA(t)
+	r.put(State{EntityID: "light.lamp", State: "off", Attributes: map[string]any{"friendly_name": "吸顶灯"}},
+		State{EntityID: "button.tv_turn_on", State: "unknown", Attributes: map[string]any{"friendly_name": "电视 红外电视控制 开机"}},
+		State{EntityID: "button.tv_turn_off", State: "unknown", Attributes: map[string]any{"friendly_name": "电视 红外电视控制 关机"}},
+		State{EntityID: "button.ac_turn_on", State: "unknown", Attributes: map[string]any{"friendly_name": "空调 红外空调控制 开机"}})
+	ids := []string{"light.lamp", "button.tv_turn_on", "button.tv_turn_off", "button.ac_turn_on"}
+	for i, dev := range []string{"lamp", "tv", "tv", "ac"} {
+		r.ws.entities = append(r.ws.entities, map[string]any{"entity_id": ids[i], "device_id": dev, "platform": "xiaomi_home"})
+	}
+	r.ws.devices = append(r.ws.devices, map[string]any{"id": "lamp", "name": "吸顶灯"}, map[string]any{"id": "tv", "name": "电视"},
+		map[string]any{"id": "ac", "name": "空调"})
+	r.services = strings.TrimSuffix(r.services, "]") + `,{"domain":"button","services":{"press":{}}}]`
+	r.areas = areasJSON([][3]any{{"ke_ting", "客厅", ids}})
+	a := richApp(t, r, Config{})
+
+	v, _ := renderV(t, a, 6, nil)
+	if n := len(tilesOf(v, "room:ke_ting")); n != 3 {
+		t.Fatalf("客厅's section: %d tiles, want the lamp and two remotes", n)
+	}
+	areas := tilesOf(v, "areas")
+	if len(areas) != 1 || areas[0].Subtitle != "3 个设备" {
+		t.Errorf("区域 on UI version 6: %+v", areas)
+	}
+	v, _ = renderV(t, a, 5, nil)
+	var sub []string
+	for _, s := range v.Sections {
+		for _, it := range s.Items {
+			if it.Key == "area:ke_ting" {
+				sub = append(sub, it.Subtitle)
+			}
+		}
+	}
+	if !slices.Equal(sub, []string{"1 个设备"}) {
+		t.Errorf("区域 before UI version 6 (rows, no remotes): %q", sub)
+	}
+}
+
+// 区域 leaves out an area with nothing to show (#923): no device, remote, alert or air, such as a 厨房 Home Assistant
+// made on setup. An area with only a remote or only a room's air is still listed, before UI version 6 too.
+func TestAreasLeaveOutEmptyOnes(t *testing.T) {
+	r := newRichHA(t)
+	r.put(State{EntityID: "light.lamp", State: "off", Attributes: map[string]any{"friendly_name": "吸顶灯"}},
+		State{EntityID: "button.ac_turn_on", State: "unknown", Attributes: map[string]any{"friendly_name": "空调 红外空调控制 开机"}},
+		State{EntityID: "sensor.balcony_temp", State: "22", Attributes: map[string]any{"friendly_name": "阳台温度",
+			"device_class": "temperature", "unit_of_measurement": "°C"}})
+	for _, e := range []struct{ id, dev string }{{"light.lamp", "lamp"}, {"button.ac_turn_on", "ac"}} {
+		r.ws.entities = append(r.ws.entities, map[string]any{"entity_id": e.id, "device_id": e.dev, "platform": "xiaomi_home"})
+	}
+	r.ws.devices = append(r.ws.devices, map[string]any{"id": "lamp", "name": "吸顶灯"}, map[string]any{"id": "ac", "name": "空调"})
+	r.services = strings.TrimSuffix(r.services, "]") + `,{"domain":"button","services":{"press":{}}}]`
+	r.areas = areasJSON([][3]any{{"ke_ting", "客厅", []string{"light.lamp"}}, {"chu_fang", "厨房", []string{}},
+		{"shu_fang", "书房", []string{"button.ac_turn_on"}}, {"yang_tai", "阳台", []string{"sensor.balcony_temp"}}})
+	a := richApp(t, r, Config{})
+
+	listed := func(v *wire.View) (title string, names []string) {
+		for _, s := range v.Sections {
+			if !strings.HasPrefix(s.Title, "区域") {
+				continue
+			}
+			title = s.Title
+			for _, it := range s.Items {
+				for _, x := range it.Tiles {
+					names = append(names, x.Title)
+				}
+				if strings.HasPrefix(it.Key, "area:") {
+					names = append(names, it.Title)
+				}
+			}
+		}
+		sort.Strings(names)
+		return title, names
+	}
+	want := []string{"书房", "客厅", "阳台"}
+	sort.Strings(want)
+	for _, ver := range []int{6, 5} {
+		v, _ := renderV(t, a, ver, nil)
+		if title, names := listed(v); title != "区域 · 3" || !slices.Equal(names, want) {
+			t.Errorf("UI version %d: %q %q, want 区域 · 3 %q", ver, title, names, want)
 		}
 	}
 }

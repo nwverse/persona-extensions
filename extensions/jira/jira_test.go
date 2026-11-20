@@ -57,6 +57,14 @@ func newFakeJira(t *testing.T) *fakeJira {
 		case "/issue":
 			var in map[string]any
 			_ = json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&in)
+			// Jira Cloud's REST v3 takes the description as an Atlassian Document, not a string.
+			if fields, _ := in["fields"].(map[string]any); fields["description"] != nil {
+				if err := checkADF(fields["description"]); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					fmt.Fprint(w, `{"errorMessages":[],"errors":{"description":"The description must be an Atlassian Document: `+err.Error()+`"}}`)
+					break
+				}
+			}
 			f.mu.Lock()
 			f.creates = append(f.creates, in)
 			f.mu.Unlock()
@@ -64,6 +72,12 @@ func newFakeJira(t *testing.T) *fakeJira {
 		case "/issue/ENG-123/comment":
 			var in map[string]any
 			_ = json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&in)
+			// Jira Cloud's REST v3 takes the comment body as an Atlassian Document, not a string.
+			if err := checkADF(in["body"]); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"errorMessages":["The comment body must be an Atlassian Document: `+err.Error()+`"],"errors":{}}`)
+				break
+			}
 			f.mu.Lock()
 			f.comments = append(f.comments, in)
 			f.mu.Unlock()
@@ -159,7 +173,7 @@ func TestCommentReplayAndInvalidWrites(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(f.comments) != 1 || f.comments[0]["body"] != "Keep context" {
+	if len(f.comments) != 1 || adfText(f.comments[0]["body"]) != "Keep context" {
 		t.Fatal(f.comments)
 	}
 	for _, tc := range []struct{ name, args string }{

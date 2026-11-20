@@ -56,7 +56,7 @@ class AgentTest(unittest.TestCase):
         self.c._ready.set()
         self.backend.poll = "done"
         self.assertTrue(self.c.login_step({"step": "scan"})["done"])
-        self.addCleanup(self.c._stop.set)
+        self.addCleanup(self.c.close)
 
     def handed(self):
         self.assertTrue(self.hub.got.wait(2), "nothing was handed to the hub")
@@ -244,7 +244,7 @@ class AgentSuffixTest(unittest.TestCase):
         self.c = Connector(self.backend, self.c.store, self.hub, suffix=suffix)
         self.c._ready.set()
         self.assertTrue(self.c.login_step({"step": "scan"})["done"])
-        self.addCleanup(self.c._stop.set)
+        self.addCleanup(self.c.close)
 
     def test_an_answer_ends_with_the_set_suffix(self):
         self.use("  🤖 由 AI 助手代答  ")

@@ -82,7 +82,11 @@ func (a *app) roomPage(r *ext.UIRequest, hm *home, reg *Registry, st pageState, 
 		}
 		// a room's tab shows its tiles right under it: how many there are and how many are on would only repeat them
 		if len(stats) == 0 && !tabbed {
-			stats = append(stats, wire.Stat{Label: "设备", Value: strconv.Itoa(sum.devices)})
+			n := sum.devices
+			if r.UIVersion >= 6 { // its remotes' tiles follow its devices' (roomTiles, #922)
+				n += len(remotes(hm, reg, ar))
+			}
+			stats = append(stats, wire.Stat{Label: "设备", Value: strconv.Itoa(n)})
 		}
 		if !tabbed {
 			stats = append(stats, wire.Stat{Label: "开着", Value: strconv.Itoa(sum.on), Tone: toneWhen(sum.on > 0, "positive")})
