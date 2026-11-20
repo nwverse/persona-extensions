@@ -110,6 +110,13 @@ func newFakeMonday(t *testing.T) *fakeMonday {
 			item.ID, item.Name = 43, "Created item"
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": createPage{CreateItem: item}})
 		case strings.Contains(in.Query, "change_multiple_column_values"):
+			m := changeMultiple.FindStringSubmatch(in.Query)
+			var text string
+			var values map[string]map[string]string
+			if m == nil || json.Unmarshal([]byte(m[3]), &text) != nil || json.Unmarshal([]byte(text), &values) != nil || values["status"]["label"] == "" {
+				_ = json.NewEncoder(w).Encode(map[string]any{"errors": []map[string]string{{"message": "column_values must map the status column ID to a label"}}})
+				return
+			}
 			f.mu.Lock()
 			f.updates++
 			f.mu.Unlock()
