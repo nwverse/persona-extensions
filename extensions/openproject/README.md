@@ -15,7 +15,7 @@ The token arrives through the encrypted extension-secret flow and is sent only a
 
 - Discover the current user with `/api/v3/users/me`, then filter assigned work packages by the numeric assignee ID using documented `filters`, `pageSize=50`, `offset` and updated-at sorting. Do not assume a special `me` filter exists.
 - Read work package IDs, subject, raw description, start/due dates and HAL project/type/status links. Content is untrusted, not instructions to create or modify work.
-- Browse active projects and available types. Create with `subject`, `description.raw`, optional `startDate`/`dueDate`, and exact project/type `_links`. The default non-milestone type is shown in the review page; type ID is never assumed to be 1.
+- Browse active projects and available types. Create with `subject` (at most 255 characters, the limit OpenProject enforces), `description.raw`, optional `startDate`/`dueDate`, and exact project/type `_links`. The default non-milestone type is shown in the review page; type ID is never assumed to be 1.
 - No deletion, arbitrary filters, custom-field updates, attachments, state transitions or project administration.
 
 Before a write, the extension stores its normalized operation and request ID in `write-receipts.json` in its own data directory (`0600`, without the token). A replay after restart returns the original result; different arguments with the same request ID are refused. Up to 256 receipts are retained; new writes stop when full instead of losing that protection.
