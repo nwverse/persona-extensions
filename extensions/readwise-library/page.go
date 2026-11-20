@@ -31,7 +31,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.BookID < 0 || st.HighlightID < 0 || st.Page < 0 || len(st.BookName) > 1000 || len(st.DraftID) > 128 || len(st.Text) > 9000 || len(st.Title) > 600 || len(st.Author) > 1100 || len(st.Note) > 9000 || len(st.SourceURL) > 2100 || len(st.TagName) > 150 {
+	if err := r.DecodeState(&st); err != nil || st.BookID < 0 || st.HighlightID < 0 || st.Page < 0 || len([]rune(st.BookName)) > maxTitleChars || len(st.DraftID) > 128 || len(st.Text) > 9000 || len([]rune(st.Title)) > maxTitleChars || len([]rune(st.Author)) > maxAuthorChars || len(st.Note) > 9000 || len(st.SourceURL) > 2100 || len([]rune(st.TagName)) > maxTagNameChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -53,7 +53,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	switch r.Action {
 	case "book":
 		id, err := strconv.ParseInt(r.Values["id"], 10, 64)
-		if err != nil || id <= 0 || r.Values["name"] == "" || len(r.Values["name"]) > 511 {
+		if err != nil || id <= 0 || r.Values["name"] == "" || len([]rune(r.Values["name"])) > maxTitleChars {
 			return nil, errors.New("invalid book")
 		}
 		st = pageState{Mode: "highlights", BookID: id, BookName: r.Values["name"], Page: 1}
@@ -99,7 +99,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		st.Note, st.Mode = r.Values["note"], "review-note"
 	case "review-tag":
-		if strings.TrimSpace(r.Values["tag_name"]) == "" || validText(r.Values["tag_name"], 127, false) != nil {
+		if strings.TrimSpace(r.Values["tag_name"]) == "" || validText(r.Values["tag_name"], maxTagNameChars, false) != nil {
 			return nil, errors.New("invalid book tag")
 		}
 		st.TagName, st.Mode = r.Values["tag_name"], "review-tag"
