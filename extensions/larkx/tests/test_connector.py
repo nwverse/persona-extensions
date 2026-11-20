@@ -670,6 +670,16 @@ class NormalizeTest(unittest.TestCase):
         fixed = bytes([2 << 3 | 1]) + b"\x00" * 3  # a fixed64 with only 3 of its 8 bytes
         self.assertEqual(self.text_of(self.rich((6, fixed)), "原文"), "原文")
 
+    def test_an_overlong_varint_ends_the_read_at_once(self):
+        # Review of #570: a run of continuation bytes is not read as one huge number.
+        from larkx_persona.real import _fields
+        overlong = b"\x80" * 100000 + b"\x01"
+        started = time.monotonic()
+        self.assertEqual(_fields(overlong), {})
+        self.assertEqual(_fields(bytes([1 << 3 | 2]) + b"\xff" * 11 + b"\x01"), {})
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(self.text_of(self.rich((1, self.prop((1, "看 "))), (6, overlong)), "看 "), "看 ")
+
     def test_a_linked_post_keeps_its_body_s_leading_lines(self):
         url = "https://example.com/f"
         data = self.rich((1, self.prop((1, "\n  缩进的第一行 "))), (6, self.prop((1, url))))

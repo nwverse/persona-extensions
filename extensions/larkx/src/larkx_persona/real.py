@@ -41,14 +41,14 @@ def _fields(raw):
     def varint():
         nonlocal i
         shift = value = 0
-        while i < n:
+        while i < n and shift < 70:  # protobuf's longest varint is 10 bytes
             b = raw[i]
             i += 1
             value |= (b & 0x7F) << shift
             if not b & 0x80:
                 return value
             shift += 7
-        raise ValueError("truncated varint")
+        raise ValueError("truncated or overlong varint")
 
     try:
         while i < n:
