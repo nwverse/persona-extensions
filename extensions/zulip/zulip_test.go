@@ -42,7 +42,7 @@ func newFakeZulip(t *testing.T) *fakeZulip {
 		switch r.URL.Path {
 		case "/api/v1/users/me/subscriptions":
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": "success", "streams": []stream{{ID: 7, Name: "reading", Description: "Reading and research"}}})
-		case "/api/v1/users/me/subscriptions/7/topics":
+		case "/api/v1/users/me/7/topics":
 			_ = json.NewEncoder(w).Encode(map[string]any{"result": "success", "topics": []topic{{Name: "source context", MaxID: 42}}})
 		case "/api/v1/messages":
 			var narrow []map[string]any
