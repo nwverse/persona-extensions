@@ -41,6 +41,14 @@ func decode(raw json.RawMessage, out any) error {
 	return nil
 }
 
+// idText is a related object's id as Lunch Money answers it: the integer, or "none" for null.
+func idText(id *int64) string {
+	if id == nil {
+		return "none"
+	}
+	return fmt.Sprint(*id)
+}
+
 func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (string, error) {
 	var in struct {
 		StartDate  string `json:"start_date"`
@@ -61,7 +69,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		}
 		var b strings.Builder
 		for _, item := range page.Transactions {
-			fmt.Fprintf(&b, "- Transaction #%d: %s | %s %s | to_base: %g\n  Date: %s | category: %v | status: %s | pending: %v\n", item.ID, clipText(item.Payee, 500), item.Amount, item.Currency, item.ToBase, item.Date, item.CategoryID, item.Status, item.IsPending)
+			fmt.Fprintf(&b, "- Transaction #%d: %s | %s %s | to_base: %g\n  Date: %s | category: %v | status: %s | pending: %v\n", item.ID, clipText(item.Payee, 500), item.Amount, item.Currency, item.ToBase, item.Date, idText(item.CategoryID), item.Status, item.IsPending)
 			if item.Notes != "" {
 				b.WriteString("  Notes: " + clipText(item.Notes, 3000) + "\n")
 			}
@@ -95,7 +103,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		}
 		var b strings.Builder
 		for _, item := range items {
-			fmt.Fprintf(&b, "- Category #%d: %s | group: %v | income: %v | excluded from totals: %v | archived: %v\n", item.ID, clipText(item.Name, 500), item.GroupID, item.IsIncome, item.ExcludeFromTotals, item.Archived)
+			fmt.Fprintf(&b, "- Category #%d: %s | group: %v | income: %v | excluded from totals: %v | archived: %v\n", item.ID, clipText(item.Name, 500), idText(item.GroupID), item.IsIncome, item.ExcludeFromTotals, item.Archived)
 		}
 		return clipText(b.String(), 90000), nil
 	}

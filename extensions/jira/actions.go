@@ -5,8 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 )
+
+// maxTextChars is the longest description or comment Jira accepts (jira.text.field.character.limit, 32,767 on Jira Cloud).
+const maxTextChars = 32767
 
 type createArgs struct {
 	ProjectID   string `json:"project_id"`
@@ -25,8 +29,8 @@ func (in createArgs) validate() error {
 	if len([]rune(in.Summary)) == 0 || strings.TrimSpace(in.Summary) == "" || len([]rune(in.Summary)) > 255 {
 		return errors.New("summary is required and at most 255 characters")
 	}
-	if len([]rune(in.Description)) > 100000 {
-		return errors.New("description is too long")
+	if len([]rune(in.Description)) > maxTextChars {
+		return errors.New("description is too long: Jira accepts at most 32767 characters")
 	}
 	if in.AssigneeID != "" && (len(in.AssigneeID) > 128 || strings.ContainsAny(in.AssigneeID, "\x00\r\n")) {
 		return errors.New("invalid assignee ID")
@@ -54,8 +58,8 @@ func describeAction(name string, raw json.RawMessage) (map[string]any, error) {
 		if err := validKey(in.Key); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(in.Body) == "" || len([]rune(in.Body)) > 100000 {
-			return nil, errors.New("comment body is required and bounded")
+		if strings.TrimSpace(in.Body) == "" || len([]rune(in.Body)) > maxTextChars {
+			return nil, errors.New("comment body is required and at most 32767 characters")
 		}
 		summary = "Comment on Jira issue " + in.Key + ":\n" + in.Body
 	default:
@@ -102,7 +106,11 @@ func (a *app) doAction(ctx context.Context, requestID, name string, raw json.Raw
 		keyData, _ := json.Marshal(map[string]any{"action": name, "fields": fields})
 		key = string(keyData)
 		fn = func() (string, error) {
-			item, err := a.client.create(ctx, map[string]any{"fields": fields})
+			payload := maps.Clone(fields)
+			if in.Description != "" {
+				payload["description"] = adfDocument(in.Description)
+			}
+			item, err := a.client.create(ctx, map[string]any{"fields": payload})
 			if err != nil {
 				return "", err
 			}
@@ -119,8 +127,8 @@ func (a *app) doAction(ctx context.Context, requestID, name string, raw json.Raw
 		if err := validKey(in.Key); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(in.Body) == "" || len([]rune(in.Body)) > 100000 {
-			return nil, errors.New("comment body is required and bounded")
+		if strings.TrimSpace(in.Body) == "" || len([]rune(in.Body)) > maxTextChars {
+			return nil, errors.New("comment body is required and at most 32767 characters")
 		}
 		keyData, _ := json.Marshal(map[string]any{"action": name, "key": in.Key, "body": in.Body})
 		key = string(keyData)

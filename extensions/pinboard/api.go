@@ -135,19 +135,12 @@ func (c *client) add(ctx context.Context, rawURL, title, notes, tags string) err
 		q.Set("tags", tags)
 	}
 	var result struct {
-		Result struct {
-			Code string `json:"code"`
-		} `json:"result"`
-		Code string `json:"code"`
+		ResultCode string `json:"result_code"`
 	}
 	if err := c.do(ctx, "/posts/add", q, &result); err != nil {
 		return err
 	}
-	code := result.Code
-	if code == "" {
-		code = result.Result.Code
-	}
-	if code != "done" {
+	if result.ResultCode != "done" {
 		return errors.New("Pinboard did not add the bookmark; it may already exist or the input was rejected")
 	}
 	return nil

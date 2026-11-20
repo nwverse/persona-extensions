@@ -11,6 +11,9 @@ import (
 	"unicode"
 )
 
+// maxSubjectChars is the longest work package subject OpenProject accepts, counted in characters.
+const maxSubjectChars = 255
+
 type createArgs struct {
 	ProjectHref string `json:"project_href"`
 	TypeHref    string `json:"type_href"`
@@ -29,8 +32,8 @@ func (in createArgs) validate() error {
 	if !projectHrefPattern.MatchString(in.ProjectHref) || !typeHrefPattern.MatchString(in.TypeHref) {
 		return errors.New("project and type must be exact numeric HAL links from OpenProject discovery")
 	}
-	if strings.TrimSpace(in.Subject) == "" || len([]rune(in.Subject)) > 500 || len([]rune(in.Description)) > 30000 {
-		return errors.New("subject must be nonempty and at most 500 characters; description is at most 30000 characters")
+	if strings.TrimSpace(in.Subject) == "" || len([]rune(in.Subject)) > maxSubjectChars || len([]rune(in.Description)) > 30000 {
+		return errors.New("subject must be nonempty and at most 255 characters; description is at most 30000 characters")
 	}
 	for _, r := range in.Subject {
 		if r == 0 || unicode.IsControl(r) {

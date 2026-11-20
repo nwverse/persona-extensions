@@ -16,6 +16,9 @@ type createArgs struct {
 	Body    string `json:"body"`
 }
 
+// maxNameChars is the longest object name: the validation, the tool schema and the page state check use it.
+const maxNameChars = 255
+
 func (in createArgs) validate() error {
 	if err := validObjectID(in.SpaceID); err != nil {
 		return err
@@ -23,7 +26,7 @@ func (in createArgs) validate() error {
 	if in.TypeKey != "page" && in.TypeKey != "note" {
 		return errors.New("type_key must be page or note")
 	}
-	if strings.TrimSpace(in.Name) == "" || len([]rune(in.Name)) > 255 {
+	if strings.TrimSpace(in.Name) == "" || len([]rune(in.Name)) > maxNameChars {
 		return errors.New("object name must be nonempty and at most 255 characters")
 	}
 	for _, r := range in.Name {

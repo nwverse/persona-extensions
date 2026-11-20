@@ -80,7 +80,7 @@ func (in updateArgs) validate() error {
 func (in createArgs) body() map[string]any {
 	out := map[string]any{"name": in.Name}
 	if in.Description != "" {
-		out["description_stripped"] = in.Description
+		out["description_html"] = htmlFromPlain(in.Description)
 	}
 	if in.Priority != "" {
 		out["priority"] = in.Priority

@@ -4,6 +4,7 @@ Run them: python3 -m unittest discover -s tests, in extensions/larkx."""
 import base64
 import json
 import os
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -134,12 +135,13 @@ class ConnectorTest(unittest.TestCase):
         self.backend = Backend()
         self.hub = Hub()
         self.c = Connector(self.backend, Store(os.path.join(self.dir.name, "x.db")), self.hub)
+        self.addCleanup(self.c.close)
 
     def sign_in(self):
         self.c._ready.set()
         self.backend.poll = "done"
         self.assertTrue(self.c.login_step({"step": "scan"})["done"])
-        self.addCleanup(self.c._stop.set)
+        self.addCleanup(lambda: None)
 
     def thing(self, thread):
         return next(t for t in self.c.inbox_collect({})["things"] if t["thread"] == thread)
@@ -330,6 +332,7 @@ class ConnectorTest(unittest.TestCase):
     def test_a_placeholder_name_from_0_1_is_cleared(self):
         path = os.path.join(self.dir.name, "old.db")
         store = Store(path)
+        self.addCleanup(store.close)
         store.touch_chat("c1", "dm", 1)
         store.name_chat("c1", "私聊")
         store.touch_chat("g1", "group", 1)
@@ -397,6 +400,35 @@ class ConnectorTest(unittest.TestCase):
         self.c.catch_up()
         self.assertEqual([m["id"] for m in self.c.store.messages("c1", 0, 10)], ["m1", "m2", "m3"])
 
+    def test_reconnects_do_not_overlap_catch_up_and_close_waits_for_history(self):
+        self.sign_in()
+        self.c.on_message(message("m1", "c1", 1))
+        self.backend.chats["c1"] = {"name": "小明", "last_position": 3}
+        release = threading.Event()
+        entered = threading.Event()
+
+        def history(chat, positions):
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return [self.backend.older[p] for p in positions if p in self.backend.older]
+
+        self.backend.older = {2: message("m2", "c1", 2), 3: message("m3", "c1", 3)}
+        self.backend.history = history
+        first = threading.Thread(target=self.c.catch_up)
+        first.start()
+        self.assertTrue(entered.wait(5))
+        self.c._on_link("up")
+        closing = threading.Thread(target=self.c.close)
+        closing.start()
+        self.assertTrue(closing.is_alive())
+        release.set()
+        first.join(5)
+        self.assertFalse(first.is_alive())
+        closing.join(5)
+        self.assertFalse(closing.is_alive())
+        with self.assertRaises(sqlite3.ProgrammingError):
+            self.c.store.messages("c1", 0, 10)
+
     def test_sign_in_keeps_the_credentials_in_the_hub(self):
         self.sign_in()
         self.assertEqual(json.loads(base64.b64decode(self.hub.saved)), {"cookies": {"session": "s"}})
@@ -439,7 +471,7 @@ class ConnectorTest(unittest.TestCase):
 
     def test_logout_during_restore_does_not_activate_the_old_session(self):
         self.hub.saved = base64.b64encode(b'{"cookies": {"session": "s"}}').decode()
-        self.addCleanup(lambda: self.c._stop.set())
+        self.c._stop.set()
 
         def restore(saved):
             self.backend.restored.append(saved)
@@ -458,7 +490,7 @@ class ConnectorTest(unittest.TestCase):
         self.hub.saved = base64.b64encode(b'{"cookies": {"session": "s"}}').decode()
         self.backend.restore_error = ConnectionError("synthetic network failure")
         self.hub.log = lambda line: self.c.logout({})
-        self.addCleanup(lambda: self.c._stop.set())
+        self.c._stop.set()
         with mock.patch.object(module, "RESTORE_RETRY_SECONDS", 0):
             self.c._boot()
         self.assertEqual(len(self.backend.restored), 1)
@@ -485,7 +517,7 @@ class ConnectorTest(unittest.TestCase):
         self.backend.restore = restore
         boot = threading.Thread(target=run, args=(self.c._boot,), daemon=True)
         logout = threading.Thread(target=run, args=(lambda: self.c.logout({}),), daemon=True)
-        self.addCleanup(lambda: self.c._stop.set())
+        self.c._stop.set()
         self.addCleanup(release.set)
         with mock.patch.object(self.backend, "listen", wraps=self.backend.listen) as listen:
             boot.start()
@@ -507,7 +539,7 @@ class ConnectorTest(unittest.TestCase):
         self.hub.saved = base64.b64encode(b'{"cookies": {"session": "s"}}').decode()
         self.backend.restore_error = ConnectionError("synthetic network failure")
         self.backend.poll = "done"
-        self.addCleanup(lambda: self.c._stop.set())
+        self.c._stop.set()
 
         def scan(line):
             self.c._ready.set()
@@ -533,7 +565,7 @@ class ConnectorTest(unittest.TestCase):
         import larkx_persona.connector as module
         wait, module.RESTORE_RETRY_SECONDS = module.RESTORE_RETRY_SECONDS, 0
         self.addCleanup(setattr, module, "RESTORE_RETRY_SECONDS", wait)
-        self.addCleanup(self.c._stop.set)
+        self.addCleanup(lambda: None)
         self.c._boot()
         self.assertEqual(len(self.backend.restored), 2)
         self.assertEqual(self.c.status({})["state"], "ok")

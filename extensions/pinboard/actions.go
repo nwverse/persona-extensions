@@ -10,6 +10,10 @@ import (
 	"unicode"
 )
 
+// maxTitleChars is the longest bookmark title Pinboard documents: the validation, the tool schema and the page state
+// check use it.
+const maxTitleChars = 255
+
 type addArgs struct {
 	URL   string `json:"url"`
 	Title string `json:"title"`
@@ -22,7 +26,7 @@ func (in addArgs) validate() error {
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {
 		return errors.New("bookmark URL must be a valid HTTPS URL without embedded credentials")
 	}
-	if strings.TrimSpace(in.Title) == "" || len([]rune(in.Title)) > 255 {
+	if strings.TrimSpace(in.Title) == "" || len([]rune(in.Title)) > maxTitleChars {
 		return errors.New("bookmark title must be nonempty and at most 255 characters")
 	}
 	if len([]rune(in.Notes)) > 65536 || len(in.Tags) > 1000 {
@@ -38,8 +42,14 @@ func (in addArgs) validate() error {
 			return errors.New("bookmark notes or tags contain unsupported control characters")
 		}
 	}
-	if len(strings.Fields(in.Tags)) > 100 || strings.Contains(in.Tags, ",") {
+	tags := strings.Fields(in.Tags)
+	if len(tags) > 100 || strings.Contains(in.Tags, ",") {
 		return errors.New("bookmark tags must be space-separated and at most 100 tags")
+	}
+	for _, tag := range tags {
+		if len([]rune(tag)) > 255 {
+			return errors.New("each bookmark tag must be at most 255 characters")
+		}
 	}
 	return nil
 }

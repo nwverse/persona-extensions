@@ -39,7 +39,7 @@ func sampleItem() mediaItem {
 func newFakeJellyfin(t *testing.T) *fakeJellyfin {
 	f := &fakeJellyfin{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Emby-Token") != testToken || r.Header.Get("Authorization") != "" {
+		if r.Header.Get("Authorization") != `MediaBrowser Token="`+testToken+`"` || r.Header.Get("X-Emby-Token") != "" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
