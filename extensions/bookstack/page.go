@@ -162,6 +162,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 				return nil, err
 			}
 		}
+		item.URL = pageLink(a.client.base, st.PageID)
 		st.DraftID = randomID()
 		return detailView(r, st, item, text), nil
 	}
