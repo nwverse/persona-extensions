@@ -29,7 +29,7 @@ downloaded or mirrored in this version.
 - Linkwarden answers the other calls (collections, one link, its highlights, a saved link) with the result in a
   `response` field, which the extension reads.
 - `linkwarden_save` creates a new link after confirmation.
-- `linkwarden_archive` archives one explicitly selected link after confirmation; it is not
+- `linkwarden_archive` archives one explicitly selected link after confirmation (`PUT /api/v1/links/{id}/archive`); it is not
   a bulk delete and does not erase the original public URL.
 
 The page offers save-with-review, collection filtering and per-link archive confirmation.

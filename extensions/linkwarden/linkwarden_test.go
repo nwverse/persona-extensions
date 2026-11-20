@@ -57,10 +57,14 @@ func newFakeLinkwarden(t *testing.T) *fakeLinkwarden {
 			f.mu.Unlock()
 			fmt.Fprint(w, `{"response":{"id":102,"name":"New article","url":"https://example.com/new"}}`)
 		case "/links/101/archive":
+			if r.Method != http.MethodPut {
+				w.WriteHeader(http.StatusMethodNotAllowed)
+				return
+			}
 			f.mu.Lock()
 			f.archives = append(f.archives, 101)
 			f.mu.Unlock()
-			w.WriteHeader(http.StatusNoContent)
+			fmt.Fprint(w, `{"response":"Link is being archived."}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
