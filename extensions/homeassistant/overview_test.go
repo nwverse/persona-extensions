@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -292,5 +293,50 @@ func TestAreaCountsRemotes(t *testing.T) {
 	}
 	if !slices.Equal(sub, []string{"1 个设备"}) {
 		t.Errorf("区域 before UI version 6 (rows, no remotes): %q", sub)
+	}
+}
+
+// 区域 leaves out an area with nothing to show (#923): no device, remote, alert or air, such as a 厨房 Home Assistant
+// made on setup. An area with only a remote or only a room's air is still listed, before UI version 6 too.
+func TestAreasLeaveOutEmptyOnes(t *testing.T) {
+	r := newRichHA(t)
+	r.put(State{EntityID: "light.lamp", State: "off", Attributes: map[string]any{"friendly_name": "吸顶灯"}},
+		State{EntityID: "button.ac_turn_on", State: "unknown", Attributes: map[string]any{"friendly_name": "空调 红外空调控制 开机"}},
+		State{EntityID: "sensor.balcony_temp", State: "22", Attributes: map[string]any{"friendly_name": "阳台温度",
+			"device_class": "temperature", "unit_of_measurement": "°C"}})
+	for _, e := range []struct{ id, dev string }{{"light.lamp", "lamp"}, {"button.ac_turn_on", "ac"}} {
+		r.ws.entities = append(r.ws.entities, map[string]any{"entity_id": e.id, "device_id": e.dev, "platform": "xiaomi_home"})
+	}
+	r.ws.devices = append(r.ws.devices, map[string]any{"id": "lamp", "name": "吸顶灯"}, map[string]any{"id": "ac", "name": "空调"})
+	r.services = strings.TrimSuffix(r.services, "]") + `,{"domain":"button","services":{"press":{}}}]`
+	r.areas = areasJSON([][3]any{{"ke_ting", "客厅", []string{"light.lamp"}}, {"chu_fang", "厨房", []string{}},
+		{"shu_fang", "书房", []string{"button.ac_turn_on"}}, {"yang_tai", "阳台", []string{"sensor.balcony_temp"}}})
+	a := richApp(t, r, Config{})
+
+	listed := func(v *wire.View) (title string, names []string) {
+		for _, s := range v.Sections {
+			if !strings.HasPrefix(s.Title, "区域") {
+				continue
+			}
+			title = s.Title
+			for _, it := range s.Items {
+				for _, x := range it.Tiles {
+					names = append(names, x.Title)
+				}
+				if strings.HasPrefix(it.Key, "area:") {
+					names = append(names, it.Title)
+				}
+			}
+		}
+		sort.Strings(names)
+		return title, names
+	}
+	want := []string{"书房", "客厅", "阳台"}
+	sort.Strings(want)
+	for _, ver := range []int{6, 5} {
+		v, _ := renderV(t, a, ver, nil)
+		if title, names := listed(v); title != "区域 · 3" || !slices.Equal(names, want) {
+			t.Errorf("UI version %d: %q %q, want 区域 · 3 %q", ver, title, names, want)
+		}
 	}
 }

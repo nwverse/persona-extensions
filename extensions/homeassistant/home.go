@@ -71,6 +71,21 @@ func (af *areaFacts) lively() bool {
 	return len(af.on) > 0 || len(af.alerts) > 0 || len(af.temp) > 0 || len(af.humid) > 0
 }
 
+// empty: nothing in it to show, no device, remote, alert or air (an area Home Assistant made on setup and nobody
+// used); 区域 leaves it out, as the room tabs do (#923).
+func (af *areaFacts) empty() bool { return af.devices == 0 && af.remotes == 0 && !af.lively() }
+
+// shownAreas are the areas 区域 lists: all but the empty ones, in Home Assistant's order.
+func shownAreas(f *homeFacts) []*areaFacts {
+	var out []*areaFacts
+	for _, af := range f.areas {
+		if !af.empty() {
+			out = append(out, af)
+		}
+	}
+	return out
+}
+
 // alert is something that needs a look: an alarm (danger) or a door, window or lock left open, a battery running low
 // (caution).
 type alert struct {
@@ -919,8 +934,8 @@ func slider(kind, eid string, v, lo, hi, step float64) *wire.RowControl {
 
 // splitAreas is the areas with something on, something to look at or their air (an alarm first, then the busiest),
 // and the quiet ones, each otherwise in Home Assistant's order (the user's own, which its area settings can change).
-func splitAreas(f *homeFacts) (lively, quiet []*areaFacts) {
-	for _, af := range f.areas {
+func splitAreas(areas []*areaFacts) (lively, quiet []*areaFacts) {
+	for _, af := range areas {
 		if af.lively() {
 			lively = append(lively, af)
 		} else {
@@ -995,13 +1010,14 @@ func areaTile(hm *home, af *areaFacts) wire.Tile {
 // there are more than a carousel takes, one row that unfolds them (st.Rooms) into tiles. With none lively, all are
 // tiles: they are the way into the areas.
 func areaTiles(r *ext.UIRequest, hm *home, f *homeFacts, st pageState, v *wire.View) {
-	sec := wire.Section{Title: areasTitle(hm, len(f.areas))}
-	if len(f.areas) == 0 {
+	areas := shownAreas(f)
+	sec := wire.Section{Title: areasTitle(hm, len(areas))}
+	if len(areas) == 0 {
 		sec.Items = append(sec.Items, emptyItem(r, "还没有区域", "在 Home Assistant 里给设备分好区域，这里就按区域列出"))
 		v.Sections = append(v.Sections, sec)
 		return
 	}
-	lively, quiet := splitAreas(f)
+	lively, quiet := splitAreas(areas)
 	tiles := func(list []*areaFacts) []wire.Tile {
 		if len(list) > tilesMost {
 			list, sec.Footer = list[:tilesMost], fmt.Sprintf("只列前 %d 个，用上面的区域筛选或搜索找别的", tilesMost)
@@ -1048,13 +1064,14 @@ func quietRow(hm *home, quiet []*areaFacts) wire.Component {
 // areaList is 区域 before UI version 6: a row per lively area, the quiet ones one row that unfolds (st.Rooms) when
 // there are more than a few.
 func areaList(r *ext.UIRequest, hm *home, f *homeFacts, st pageState, v *wire.View) {
-	sec := wire.Section{Title: areasTitle(hm, len(f.areas))}
-	if len(f.areas) == 0 {
+	areas := shownAreas(f)
+	sec := wire.Section{Title: areasTitle(hm, len(areas))}
+	if len(areas) == 0 {
 		sec.Items = append(sec.Items, emptyItem(r, "还没有区域", "在 Home Assistant 里给设备分好区域，这里就按区域列出"))
 		v.Sections = append(v.Sections, sec)
 		return
 	}
-	lively, quiet := splitAreas(f)
+	lively, quiet := splitAreas(areas)
 	rows := 0
 	add := func(list []*areaFacts) {
 		for _, af := range list {
