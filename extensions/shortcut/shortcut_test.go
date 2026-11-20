@@ -56,7 +56,7 @@ func newFakeShortcut(t *testing.T) *fakeShortcut {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}
-			page := storyPage{Data: []story{sampleStory()}, Next: "next-token"}
+			page := storyPage{Data: []story{sampleStory()}, Next: "/api/v3/search/stories?next=next-token&page_size=50"}
 			if r.URL.Query().Get("next") == "next-token" {
 				page.Data = nil
 				page.Next = ""
@@ -149,7 +149,7 @@ func TestManifest(t *testing.T) {
 func TestStoriesSearchPaginationAndDetails(t *testing.T) {
 	f := newFakeShortcut(t)
 	a := f.app()
-	text, err := a.callTool(t.Context(), "shortcut_stories", json.RawMessage(`{"next":"next-token"}`))
+	text, err := a.callTool(t.Context(), "shortcut_stories", json.RawMessage(`{"next":"/api/v3/search/stories?next=next-token&page_size=50"}`))
 	if err != nil || !strings.Contains(text, "No incomplete stories") {
 		t.Fatalf("%v %s", err, text)
 	}
