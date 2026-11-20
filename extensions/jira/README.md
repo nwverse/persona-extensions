@@ -35,6 +35,9 @@ token to the configured instance. Redirects are not followed.
 
 - `jira_create`: create with project, issue type, summary and optional description/assignee.
 - `jira_comment`: add an explicitly supplied comment body to an existing issue.
+- A description or comment is at most 32,767 characters, the limit Jira enforces by
+  default (`jira.text.field.character.limit`) and the fixed limit on Jira Cloud. A longer
+  text is refused before any request is sent.
 - The page's create form shows the selected project/type and summary in a review step
   before confirmed creation. No bulk edit, deletion or arbitrary workflow mutation is
   included.
