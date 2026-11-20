@@ -189,7 +189,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if item.ID <= 0 || item.Title == "" {
 			continue
 		}
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: fmt.Sprintf("task-%d", item.ID), Title: clipText(item.Title, 1800), Subtitle: clipText(item.Identifier+" · "+item.DueDate, 1800), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": fmt.Sprint(item.ID)}}})
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: fmt.Sprintf("task-%d", item.ID), Title: clipText(item.Title, 1800), Subtitle: clipText(item.subtitle(), 1800), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": fmt.Sprint(item.ID)}}})
 	}
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noTasks})
@@ -225,7 +225,7 @@ func createView(r *ext.UIRequest, st pageState) *wire.View {
 
 func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 	t := textsFor(r.Locale)
-	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(item.Identifier+" · "+item.DueDate, 1800)}}
+	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(item.subtitle(), 1800)}}
 	if !item.Done {
 		items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.complete, Action: &wire.Action{ID: "complete", Confirm: t.complete + "\n" + item.Title}})
 	}
