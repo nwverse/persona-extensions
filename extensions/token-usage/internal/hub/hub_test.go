@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestPullSplitsByModelAndLauncher(t *testing.T) {
@@ -106,4 +108,31 @@ func series(t, step int64, in, out int64) map[string]any {
 
 func write(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// A hub error body is shown cut to 200 bytes, and the cut never leaves half a character: the 200th byte is inside the
+// 67th Han character, and inside the 50th emoji after one ASCII byte.
+func TestAnErrorBodyIsCutAtACharacterBoundary(t *testing.T) {
+	for _, tt := range []struct{ name, body, want string }{
+		{"han", strings.Repeat("汉", 100), strings.Repeat("汉", 66)},
+		{"emoji", "a" + strings.Repeat("😀", 60), "a" + strings.Repeat("😀", 49)},
+		{"ascii", strings.Repeat("x", 300), strings.Repeat("x", 200)},
+		{"short han", strings.Repeat("汉", 66), strings.Repeat("汉", 66)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, tt.body, http.StatusBadGateway)
+			}))
+			defer srv.Close()
+
+			_, err := New(srv.URL, "tok", nil).Machines(context.Background())
+			if err == nil {
+				t.Fatal("a 502 was not an error")
+			}
+			want := "hub 回了 HTTP 502：" + tt.want
+			if err.Error() != want || !utf8.ValidString(err.Error()) {
+				t.Fatalf("error %q (valid UTF-8 %v), want %q", err.Error(), utf8.ValidString(err.Error()), want)
+			}
+		})
+	}
 }

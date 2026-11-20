@@ -20,6 +20,12 @@ type statusArgs struct {
 	Status string `json:"status"`
 }
 
+// The longest task name and status: the validation, the tool schemas and the page state check use them.
+const (
+	maxNameChars   = 500
+	maxStatusChars = 100
+)
+
 func validText(value string, limit int, multiline bool) error {
 	if len([]rune(value)) > limit {
 		return errors.New("task text exceeds the extension limit")
@@ -36,7 +42,7 @@ func (in createArgs) validate() error {
 	if err := validID(in.ListID); err != nil {
 		return err
 	}
-	if strings.TrimSpace(in.Name) == "" || validText(in.Name, 500, false) != nil || validText(in.Description, 30000, true) != nil {
+	if strings.TrimSpace(in.Name) == "" || validText(in.Name, maxNameChars, false) != nil || validText(in.Description, 30000, true) != nil {
 		return errors.New("task name must be nonempty, one line and at most 500 characters; description is at most 30000 characters")
 	}
 	return nil
@@ -46,7 +52,7 @@ func (in statusArgs) validate() error {
 	if err := validID(in.TaskID); err != nil {
 		return err
 	}
-	if strings.TrimSpace(in.Status) == "" || validText(in.Status, 100, false) != nil {
+	if strings.TrimSpace(in.Status) == "" || validText(in.Status, maxStatusChars, false) != nil {
 		return errors.New("status must be nonempty, one line and at most 100 characters")
 	}
 	return nil

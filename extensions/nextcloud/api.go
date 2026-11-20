@@ -89,6 +89,15 @@ func (c *client) do(ctx context.Context, method, path, contentType string, body 
 	}
 }
 
+// webroot is the decoded path of the instance address, empty when Nextcloud answers at the host root.
+func (c *client) webroot() string {
+	u, err := url.Parse(c.base)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimRight(u.Path, "/")
+}
+
 func (c *client) search(ctx context.Context, username, query string) ([]fileEntry, error) {
 	if username == "" || strings.ContainsAny(username, "/\\\x00\r\n") || len(username) > 128 {
 		return nil, errors.New("invalid Nextcloud username")
@@ -105,11 +114,17 @@ func (c *client) search(ctx context.Context, username, query string) ([]fileEntr
 		return nil, err
 	}
 	prefix := "/remote.php/dav/files/" + username + "/"
+	webroot := c.webroot()
 	var files []fileEntry
 	for _, item := range out.Responses {
 		// WebDAV hrefs are percent-encoded; keep the decoded path so it can be passed back to file().
 		href, err := url.PathUnescape(item.Href)
-		if err != nil || item.IsCollection || !strings.HasPrefix(href, prefix) {
+		if err != nil || item.IsCollection {
+			continue
+		}
+		// An instance installed in a subfolder writes its web root in front of every href.
+		href = strings.TrimPrefix(href, webroot)
+		if !strings.HasPrefix(href, prefix) {
 			continue
 		}
 		if validRemotePath(strings.TrimPrefix(href, prefix)) {

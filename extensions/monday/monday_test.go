@@ -28,6 +28,17 @@ type fakeMonday struct {
 	updates    int
 	failWrite  bool
 	badGraphQL bool
+	extraLabel string // a status label the board has besides the sample ones
+}
+
+// board is sampleBoard with the extra status label, if the test set one.
+func (f *fakeMonday) board() board {
+	b := sampleBoard()
+	if f.extraLabel != "" {
+		label, _ := json.Marshal(f.extraLabel)
+		b.Columns[0].SettingsStr = `{"labels":{"0":"To Do","1":"In Progress","2":"Done","3":` + string(label) + `}}`
+	}
+	return b
 }
 
 func sampleBoard() board {
@@ -70,9 +81,9 @@ func newFakeMonday(t *testing.T) *fakeMonday {
 		case strings.Contains(in.Query, "me { id name }"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": mePage{Me: user{ID: 42, Name: "Reader"}}})
 		case strings.Contains(in.Query, "boards(limit: 50, page: 1) { id name url }"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": boardPage{Boards: []board{sampleBoard()}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": boardPage{Boards: []board{f.board()}}})
 		case strings.Contains(in.Query, "boards(ids: [7])") && !strings.Contains(in.Query, "items_page"):
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": boardPage{Boards: []board{sampleBoard()}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": boardPage{Boards: []board{f.board()}}})
 		case strings.Contains(in.Query, "items(ids:"):
 			// Item 42 and item 60 are on board 7, item 61 is on board 8, every other ID is unknown.
 			answer := []map[string]any{}

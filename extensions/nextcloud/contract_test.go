@@ -30,12 +30,14 @@ func sabreEncodePath(p string) string {
 	return b.String()
 }
 
-func davMultistatus(files []string) string {
+// davMultistatus writes hrefs the way sabre/dav does: the server's web root, empty at the host root and
+// "/nextcloud" in a subfolder install, is part of every href.
+func davMultistatus(webroot string, files []string) string {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" xmlns:oc="http://owncloud.org/ns" xmlns:nc="http://nextcloud.org/ns">`)
 	for i, rel := range files {
 		name := rel[strings.LastIndex(rel, "/")+1:]
-		href := sabreEncodePath("/remote.php/dav/files/" + testUsername + "/" + rel)
+		href := sabreEncodePath(webroot + "/remote.php/dav/files/" + testUsername + "/" + rel)
 		fmt.Fprintf(&b, `<d:response><d:href>%s</d:href><d:propstat><d:prop><d:getlastmodified>Fri, 20 Nov 2026 10:00:00 GMT</d:getlastmodified><d:getcontentlength>12</d:getcontentlength><d:resourcetype/><d:getetag>&quot;etag%d&quot;</d:getetag><d:getcontenttype>text/markdown</d:getcontenttype><oc:fileid>%d</oc:fileid><d:displayname>%s</d:displayname></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>`, href, i, 40+i, name)
 	}
 	b.WriteString(`</d:multistatus>`)
@@ -46,14 +48,26 @@ func davMultistatus(files []string) string {
 // percent-encoded, and the file is only found when the request path encodes the real name exactly once.
 func documentedNextcloud(t *testing.T) *app {
 	t.Helper()
+	return documentedNextcloudAt(t, "")
+}
+
+// documentedNextcloudAt serves the same WebDAV below webroot, as a Nextcloud installed in a subfolder does:
+// nothing answers outside webroot, and the instance address handed to the client carries it.
+func documentedNextcloudAt(t *testing.T, webroot string) *app {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if username, password, ok := r.BasicAuth(); !ok || username != testUsername || password != testPassword {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
+		if !strings.HasPrefix(r.URL.Path, webroot+"/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		path := strings.TrimPrefix(r.URL.Path, webroot)
 		const root = "/remote.php/dav/files/" + testUsername + "/"
-		rel := strings.TrimPrefix(r.URL.Path, root)
-		known := strings.HasPrefix(r.URL.Path, root)
+		rel := strings.TrimPrefix(path, root)
+		known := strings.HasPrefix(path, root)
 		if known {
 			known = false
 			for _, file := range contractFiles {
@@ -61,12 +75,12 @@ func documentedNextcloud(t *testing.T) *app {
 			}
 		}
 		switch {
-		case r.Method == "SEARCH" && r.URL.Path == "/remote.php/dav/":
+		case r.Method == "SEARCH" && path == "/remote.php/dav/":
 			w.WriteHeader(http.StatusMultiStatus)
-			_, _ = w.Write([]byte(davMultistatus(contractFiles)))
+			_, _ = w.Write([]byte(davMultistatus(webroot, contractFiles)))
 		case r.Method == "PROPFIND" && known:
 			w.WriteHeader(http.StatusMultiStatus)
-			_, _ = w.Write([]byte(davMultistatus([]string{rel})))
+			_, _ = w.Write([]byte(davMultistatus(webroot, []string{rel})))
 		case r.Method == http.MethodGet && known:
 			w.Header().Set("Content-Type", "text/markdown")
 			_, _ = w.Write([]byte("# Body of " + rel))
@@ -75,7 +89,7 @@ func documentedNextcloud(t *testing.T) *app {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return &app{client: newClient(srv.URL, testUsername, testPassword), receipts: newWriteStore("")}
+	return &app{client: newClient(srv.URL+webroot, testUsername, testPassword), receipts: newWriteStore("")}
 }
 
 func TestSearchReturnsDecodedPaths(t *testing.T) {

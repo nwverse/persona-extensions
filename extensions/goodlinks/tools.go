@@ -116,9 +116,17 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 	return "", fmt.Errorf("no tool %s", name)
 }
 
+// readAtText is the time a link was marked as read as GoodLinks answers it, or "none" for null.
+func readAtText(readAt *string) string {
+	if readAt == nil || *readAt == "" {
+		return "none"
+	}
+	return *readAt
+}
+
 func formatLink(item link, text string, highlights []highlight, detail bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "- Link %s: %s\n  Author: %s | tags: %s | starred: %v | read at: %v | words: %d\n", item.ID, clipText(item.Title, 500), item.Author, strings.Join(item.Tags, ", "), item.Starred, item.ReadAt, item.WordCount)
+	fmt.Fprintf(&b, "- Link %s: %s\n  Author: %s | tags: %s | starred: %v | read at: %v | words: %d\n", item.ID, clipText(item.Title, 500), item.Author, strings.Join(item.Tags, ", "), item.Starred, readAtText(item.ReadAt), item.WordCount)
 	if detail {
 		if text != "" {
 			b.WriteString("\nCached plaintext content:\n" + clipText(text, 60000) + "\n")

@@ -32,13 +32,13 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "readwise_library_create_highlight", Description: "Create a Readwise Library highlight from user-selected text after explicit confirmation. Uses source_type=persona and category=articles; optional note and HTTPS source URL.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"text", "title"}, "properties": map[string]any{
-			"text": map[string]any{"type": "string", "minLength": 1, "maxLength": 8191}, "title": map[string]any{"type": "string", "minLength": 1, "maxLength": 511},
-			"author": map[string]any{"type": "string", "maxLength": 1024}, "note": map[string]any{"type": "string", "maxLength": 8191}, "source_url": map[string]any{"type": "string", "format": "uri", "maxLength": 2047},
+			"text": map[string]any{"type": "string", "minLength": 1, "maxLength": 8191}, "title": map[string]any{"type": "string", "minLength": 1, "maxLength": maxTitleChars},
+			"author": map[string]any{"type": "string", "maxLength": maxAuthorChars}, "note": map[string]any{"type": "string", "maxLength": 8191}, "source_url": map[string]any{"type": "string", "format": "uri", "maxLength": 2047},
 		}}},
 	{Name: "readwise_library_update_note", Description: "Replace one highlight's annotation note after explicit confirmation. Only the note field is sent, preserving highlight text and source.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"highlight_id", "note"}, "properties": map[string]any{"highlight_id": idSchema, "note": map[string]any{"type": "string", "maxLength": 8191}}}},
 	{Name: "readwise_library_add_book_tag", Description: "Add a tag to a Readwise book after explicit confirmation. The name is sent to the documented book tags endpoint, not a guessed tag ID.",
-		InputSchema: map[string]any{"type": "object", "required": []string{"book_id", "name"}, "properties": map[string]any{"book_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": 127}}}},
+		InputSchema: map[string]any{"type": "object", "required": []string{"book_id", "name"}, "properties": map[string]any{"book_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxTagNameChars}}}},
 }
 
 func decode(raw json.RawMessage, out any) error {

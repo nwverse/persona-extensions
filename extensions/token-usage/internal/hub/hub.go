@@ -14,6 +14,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 
@@ -252,10 +253,7 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 		return err
 	}
 	if resp.StatusCode >= 300 {
-		msg := strings.TrimSpace(string(raw))
-		if len(msg) > 200 {
-			msg = msg[:200]
-		}
+		msg := clipBytes(strings.TrimSpace(string(raw)), 200)
 		return fmt.Errorf("hub 回了 HTTP %d：%s", resp.StatusCode, msg)
 	}
 	if out != nil && len(raw) > 0 {
@@ -312,3 +310,15 @@ func part(total int64, minutes, minute int) int64 {
 }
 
 func pointTotal(p Point) int64 { return p.In + p.CW + p.CR + p.Out }
+
+// clipBytes cuts s to at most n bytes without splitting a UTF-8 sequence: it backs off from byte n to the start of the
+// rune there (at most utf8.UTFMax-1 bytes, so bytes that are not UTF-8 are still cut near n).
+func clipBytes(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for i := 0; i < utf8.UTFMax-1 && n > 0 && !utf8.RuneStart(s[n]); i++ {
+		n--
+	}
+	return s[:n]
+}

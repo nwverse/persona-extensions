@@ -23,7 +23,7 @@ var readTools = []tool{
 }
 
 var actionTools = []tool{
-	{Name: "nextcloud_create_note", Description: "Create a new Markdown note in the current user's Nextcloud files after explicit confirmation. Requires a new safe relative path ending in .md and uses If-None-Match:* so an existing file is never overwritten.",
+	{Name: "nextcloud_create_note", Description: "Create a new Markdown note in the current user's Nextcloud files after explicit confirmation. Requires a new safe relative path ending in .md, with every file and folder name at most 250 UTF-8 bytes, and uses If-None-Match:* so an existing file is never overwritten.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"path", "text"}, "properties": map[string]any{"path": map[string]any{"type": "string", "pattern": "^[^/].*\\.md$", "maxLength": 500}, "text": map[string]any{"type": "string", "minLength": 1, "maxLength": 30000}}}},
 }
 

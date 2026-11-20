@@ -69,6 +69,7 @@ type app struct {
 	hub      *hubAPI
 	rpc      invalidator // the hub's connection: ui.invalidate (nil in tests)
 	watch    *watcher
+	marks    irMarks // remotes marked off without sending (irmarks.go)
 	// actions.do runs each request id once. In-flight calls stay pinned in running; only completed successful
 	// answers occupy the bounded done LRU.
 	doneMu    sync.Mutex
@@ -128,6 +129,7 @@ func (a *app) init(ctx context.Context, in *ext.Init, rpc *ext.Hub) (map[string]
 	}
 	a.mu.Unlock()
 	a.watch.load(a.dataDir)
+	a.marks.load(a.dataDir, a.logf)
 	go a.warm(ctx)
 	go a.watch.run(ctx)
 	return nil, nil

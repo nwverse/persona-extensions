@@ -202,6 +202,17 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			toast = msg
 		}
 		fresh = 0
+	case "irmark": // 标记为已关 on a remote's tile (irmarks.go): nothing is sent
+		if arg == "" {
+			arg = r.Values["entity"]
+		}
+		msg, err := a.markRemoteOff(ctx, arg)
+		if err != nil {
+			toast = err.Error()
+		} else {
+			toast = msg
+		}
+		fresh = 0
 	case "ctl": // a switch, a slider or a stepper of the overview or an area (controlOf): the entity and its value
 		eid := r.Values["entity"]
 		name, _ := controlOf(arg, eid)
@@ -246,13 +257,16 @@ func (a *app) rowCall(ctx context.Context, eid, svc string) (string, error) {
 }
 
 // setControl runs a control's change on eid: power (a switch: turn_on or turn_off), bri (a light's brightness in
-// percent), pct (a fan's speed), temp (a climate's target temperature), pos (a cover's position). Only on an entity the
-// page shows, that the control is drawn for (its domain and what it declares it can do), of a domain the settings
-// allow, with a value in its range; never a lock or an alarm panel (canWrite: those go through their own page, which
+// percent), pct (a fan's speed), temp (a climate's target temperature), pos (a cover's position), ir (a remote's
+// switch: its 开机 or 关机 pressed, remotePower). Only on an entity the page shows, that the control is drawn for (its
+// domain and what it declares it can do), of a domain the settings allow, with a value in its range; never a lock or an alarm panel (canWrite: those go through their own page, which
 // asks first), nor a garage door, a gate or a door's position.
 func (a *app) setControl(ctx context.Context, eid, kind, value string) (string, error) {
 	if !entityRE.MatchString(eid) {
 		return "", errUnknownOp
+	}
+	if kind == "ir" {
+		return a.remotePower(ctx, eid, value)
 	}
 	hm, err := a.home(ctx, statesFor)
 	if err != nil {
