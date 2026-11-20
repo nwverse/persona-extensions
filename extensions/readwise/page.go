@@ -217,8 +217,11 @@ func detailView(r *ext.UIRequest, st pageState, item document, highlights []docu
 		{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}},
 	}
 	v := &wire.View{Title: clipText(item.Title, 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
+	used := len(items)
 	if item.Notes != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: textComponents(item.Notes)})
+		note := capComponents(textComponents(item.Notes), maxNoteItems)
+		used += len(note)
+		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: note})
 	}
 	if len(highlights) > 0 {
 		section := wire.Section{Title: t.highlights}
@@ -226,14 +229,34 @@ func detailView(r *ext.UIRequest, st pageState, item document, highlights []docu
 			section.Items = append(section.Items, textComponents(h.Content)...)
 			section.Items = append(section.Items, textComponents(h.Notes)...)
 		}
+		section.Items = capComponents(section.Items, maxHighlightItems)
+		used += len(section.Items)
 		v.Sections = append(v.Sections, section)
 	}
 	if text != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.read, Items: textComponents(text)})
+		v.Sections = append(v.Sections, wire.Section{Title: t.read, Items: capComponents(textComponents(text), maxViewItems-used)})
 	} else {
 		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{{Type: wire.ComponentText, Text: t.noText, Style: wire.TextStyleSecondary}}})
 	}
 	return v, nil
+}
+
+const (
+	// maxViewItems keeps the document view within the hub's 300 component limit, whatever the document holds.
+	maxViewItems = 250
+	// maxNoteItems and maxHighlightItems leave the article text room when the notes or the highlights are many.
+	maxNoteItems      = 20
+	maxHighlightItems = 120
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func saveView(r *ext.UIRequest, st pageState) *wire.View {
