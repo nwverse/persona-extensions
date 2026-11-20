@@ -36,6 +36,10 @@ class Store:
         self._db.execute("UPDATE chats SET name = '' WHERE kind = 'dm' AND name = '私聊'")
         self._db.commit()
 
+    def close(self):
+        with self._lock:
+            self._db.close()
+
     def _all(self, sql, *args):
         with self._lock:
             return [dict(r) for r in self._db.execute(sql, args).fetchall()]
