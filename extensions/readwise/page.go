@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -203,6 +204,12 @@ func documentRow(item document) wire.Component {
 	return wire.Component{Type: wire.ComponentRow, Key: "document-" + item.ID, Title: clipText(item.Title, 2000), Subtitle: clipText(subtitle, 2000), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID}}}
 }
 
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
 func detailView(r *ext.UIRequest, st pageState, item document, highlights []document) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	text, err := articleText(item.HTMLContent)
@@ -213,9 +220,11 @@ func detailView(r *ext.UIRequest, st pageState, item document, highlights []docu
 		{Type: wire.ComponentText, Text: item.Author + " · " + item.SiteName, Style: wire.TextStyleSecondary},
 		{Type: wire.ComponentProgress, Label: t.progress, Ratio: &item.ReadingProgress},
 		{Type: wire.ComponentButton, Title: t.move, Action: &wire.Action{ID: "shortlist", Confirm: t.move + "\n" + item.Title}},
-		{Type: wire.ComponentLink, Title: t.open, URL: item.SourceURL},
-		{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}},
 	}
+	if httpsLink(item.SourceURL) {
+		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.SourceURL})
+	}
+	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	v := &wire.View{Title: clipText(item.Title, 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
 	used := len(items)
 	if item.Notes != "" {
