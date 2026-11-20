@@ -84,7 +84,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		}
 		var b strings.Builder
 		for _, item := range items {
-			fmt.Fprintf(&b, "- Account #%d: %s | %s %s | to_base: %g | as of: %s | status: %s\n", item.ID, clipText(item.Name, 500), item.Balance, item.Currency, item.ToBase, item.BalanceAsOf, item.Status)
+			fmt.Fprintf(&b, "- Account #%d: %s | %s %s | to_base: %g | as of: %s | status: %s\n", item.ID, clipText(item.Name, 500), item.Balance, item.Currency, item.ToBase, item.asOf(), item.Status)
 		}
 		return clipText(b.String(), 90000), nil
 	case "lunchmoney_categories":
