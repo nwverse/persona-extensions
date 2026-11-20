@@ -136,7 +136,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		Type: wire.ComponentButton, Title: t.save, Action: &wire.Action{ID: "save-form", Push: &wire.Push{State: ext.EncodeState(pageState{Mode: "save", DraftID: randomID()}), Title: t.save}},
 	}}}
 	for _, item := range items {
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "link-" + strconv.FormatInt(item.ID, 10), Title: clipText(item.Name, 2000), Subtitle: item.URL, Action: &wire.Action{ID: "detail", Values: map[string]string{"id": strconv.FormatInt(item.ID, 10)}}})
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "link-" + strconv.FormatInt(item.ID, 10), Title: clipText(linkTitle(item), 2000), Subtitle: item.URL, Action: &wire.Action{ID: "detail", Values: map[string]string{"id": strconv.FormatInt(item.ID, 10)}}})
 	}
 	if len(items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noLinks})
@@ -156,7 +156,7 @@ func detailView(r *ext.UIRequest, st pageState, item link, highlights []highligh
 	}
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.archive, Action: &wire.Action{ID: "archive", Confirm: t.archive + "\n" + item.Name}})
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
-	v := &wire.View{Title: clipText(item.Name, 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
+	v := &wire.View{Title: clipText(linkTitle(item), 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
 	if item.Note != "" {
 		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: textComponents(item.Note)})
 	}
@@ -188,6 +188,17 @@ func reviewSaveView(r *ext.UIRequest, st pageState) *wire.View {
 		{Type: wire.ComponentText, Text: st.SaveURL},
 		{Type: wire.ComponentButton, Title: t.confirm, Action: &wire.Action{ID: "save", Confirm: t.save + "\n" + st.SaveURL}},
 	}}}}
+}
+
+// linkTitle is what a link is called: its name, else its description, else its address, as Linkwarden shows it. A link
+// not named yet, or from a page without a title, has an empty name, and a row needs a title.
+func linkTitle(item link) string {
+	for _, s := range []string{item.Name, item.Description, item.URL} {
+		if s = strings.TrimSpace(s); s != "" {
+			return s
+		}
+	}
+	return "#" + strconv.FormatInt(item.ID, 10)
 }
 
 // httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
