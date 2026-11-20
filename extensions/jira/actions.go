@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 )
 
@@ -105,7 +106,11 @@ func (a *app) doAction(ctx context.Context, requestID, name string, raw json.Raw
 		keyData, _ := json.Marshal(map[string]any{"action": name, "fields": fields})
 		key = string(keyData)
 		fn = func() (string, error) {
-			item, err := a.client.create(ctx, map[string]any{"fields": fields})
+			payload := maps.Clone(fields)
+			if in.Description != "" {
+				payload["description"] = adfDocument(in.Description)
+			}
+			item, err := a.client.create(ctx, map[string]any{"fields": payload})
 			if err != nil {
 				return "", err
 			}

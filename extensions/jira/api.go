@@ -147,7 +147,7 @@ func (c *client) create(ctx context.Context, in map[string]any) (issue, error) {
 }
 
 func (c *client) comment(ctx context.Context, key, body string) error {
-	return c.do(ctx, http.MethodPost, "/issue/"+url.PathEscape(key)+"/comment", nil, map[string]string{"body": body}, nil)
+	return c.do(ctx, http.MethodPost, "/issue/"+url.PathEscape(key)+"/comment", nil, map[string]any{"body": adfDocument(body)}, nil)
 }
 
 func clipText(text string, limit int) string {

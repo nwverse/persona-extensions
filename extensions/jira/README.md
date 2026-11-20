@@ -35,6 +35,9 @@ token to the configured instance. Redirects are not followed.
 
 - `jira_create`: create with project, issue type, summary and optional description/assignee.
 - `jira_comment`: add an explicitly supplied comment body to an existing issue.
+- A description and a comment are sent as Atlassian Documents, the form Jira Cloud's REST v3
+  takes for them: each line of the text is a paragraph with one text node, a blank line is an
+  empty paragraph, and nothing is parsed, so Markdown stays literal text.
 - A description or comment is at most 32,767 characters, the limit Jira enforces by
   default (`jira.text.field.character.limit`) and the fixed limit on Jira Cloud. A longer
   text is refused before any request is sent.
