@@ -206,7 +206,7 @@ func detailView(r *ext.UIRequest, st pageState, item mergeRequest, notes []note,
 	)
 	v := &wire.View{Title: fmt.Sprintf("MR !%d", item.IID), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.reviews, Items: items}}}
 	if item.Description != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Description, 60000))})
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: capComponents(textComponents(clipText(item.Description, 60000)), maxDescriptionItems)})
 	}
 	budget := 250 - viewItemCount(v)
 	if len(item.Reviewers) > 0 {
@@ -249,6 +249,19 @@ func detailView(r *ext.UIRequest, st pageState, item mergeRequest, notes []note,
 	}
 	v.Sections = append(v.Sections, section)
 	return v
+}
+
+// maxDescriptionItems leaves the reviewers and the discussion room in the 250 components a merge request view keeps.
+const maxDescriptionItems = 100
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func authorLabel(user user) string {
