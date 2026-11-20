@@ -99,7 +99,7 @@ func (c *client) topics(ctx context.Context, streamID int64) ([]topic, error) {
 	var out struct {
 		Topics []topic `json:"topics"`
 	}
-	err := c.get(ctx, "/users/me/subscriptions/"+fmt.Sprint(streamID)+"/topics", nil, &out)
+	err := c.get(ctx, "/users/me/"+fmt.Sprint(streamID)+"/topics", nil, &out)
 	return out.Topics, err
 }
 
