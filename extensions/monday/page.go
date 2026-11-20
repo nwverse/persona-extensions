@@ -127,17 +127,12 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if err != nil {
 			return nil, err
 		}
-		items, err := a.client.items(ctx, st.BoardID, "")
+		item, err := a.client.item(ctx, st.BoardID, st.ItemID)
 		if err != nil {
 			return nil, err
 		}
-		for _, item := range items.Items {
-			if item.ID == st.ItemID {
-				st.DraftID = randomID()
-				return detailView(r, st, board, item), nil
-			}
-		}
-		return nil, errors.New("the item is not on the current page; use monday_items with the exact board and item ID")
+		st.DraftID = randomID()
+		return detailView(r, st, board, item), nil
 	}
 	if st.Mode == "items" {
 		page, err := a.client.items(ctx, st.BoardID, st.Cursor)

@@ -129,6 +129,23 @@ func (c *client) items(ctx context.Context, boardID int64, cursor string) (items
 	return out.Boards[0].ItemsPage, nil
 }
 
+// item reads one item by its ID, so an item on any page of the board opens. The query is not scoped to a board, so an ID
+// that belongs to another board is refused.
+func (c *client) item(ctx context.Context, boardID, itemID int64) (item, error) {
+	if boardID <= 0 || itemID <= 0 {
+		return item{}, errors.New("board and item IDs must be positive")
+	}
+	query := fmt.Sprintf(`query { items(ids: [%d]) { id name url created_at updated_at board { id } column_values { id text value } } }`, itemID)
+	var out itemByIDPage
+	if err := c.query(ctx, query, &out); err != nil {
+		return item{}, err
+	}
+	if len(out.Items) != 1 || out.Items[0].Board.ID != boardID {
+		return item{}, errNotFound
+	}
+	return out.Items[0].item, nil
+}
+
 func cursorArgument(cursor string) string {
 	if cursor == "" {
 		return ""

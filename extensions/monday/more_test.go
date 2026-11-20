@@ -15,6 +15,7 @@ import (
 )
 
 var itemsCursor = regexp.MustCompile(`cursor: "([^"]*)"`)
+var itemByID = regexp.MustCompile(`items\(ids: \[(\d+)\]\)`)
 
 // moreMonday serves the items of board 7 in pages of 50: the first page has no cursor, the page after page k is
 // asked for with the cursor "c<k>" the answer before it carried. total items are served.
@@ -36,6 +37,16 @@ func newMoreMonday(t *testing.T, total int) *moreMonday {
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
+		if m := itemByID.FindStringSubmatch(in.Query); m != nil {
+			it := sampleItem()
+			it.Name = "item " + m[1]
+			fields := map[string]any{}
+			raw, _ := json.Marshal(it)
+			_ = json.Unmarshal(raw, &fields)
+			fields["id"], fields["board"] = m[1], map[string]string{"id": "7"}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"items": []map[string]any{fields}}})
+			return
+		}
 		if !strings.Contains(in.Query, "items_page") {
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": boardPage{Boards: []board{sampleBoard()}}})
 			return
@@ -105,8 +116,7 @@ func TestLoadMoreReadsTheNextPage(t *testing.T) {
 	}
 }
 
-// Going back from an item shows the page the item was opened from, and keeps offering the page after it. Item 1 is on
-// the first page, which is the page the item view reads.
+// Going back from an item shows the page the item was opened from, and keeps offering the page after it.
 func TestBackShowsThePageTheItemWasOpenedFrom(t *testing.T) {
 	f := newMoreMonday(t, 101)
 	a := f.app()
@@ -125,7 +135,7 @@ func TestBackShowsThePageTheItemWasOpenedFrom(t *testing.T) {
 		return result.View
 	}
 	v = run("more", v, nil)
-	v = run("detail", v, map[string]string{"id": "1"})
+	v = run("detail", v, map[string]string{"id": "60"})
 	v = run("back", v, nil)
 	items := v.Sections[0].Items
 	if len(items) != 50 || items[0].Title != "item 51" || v.Sections[0].More == nil {
