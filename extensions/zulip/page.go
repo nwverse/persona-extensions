@@ -73,7 +73,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			return nil, err
 		}
 		section := wire.Section{Title: t.topics}
-		for _, item := range items {
+		// Zulip lists the most recent topic first; the view keeps the first maxViewTopics.
+		for _, item := range items[:min(len(items), maxViewTopics)] {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "topic-" + item.Name, Title: clipText(item.Name, 1800), Subtitle: fmt.Sprintf(t.latest, item.MaxID), Action: &wire.Action{ID: "topic", Values: map[string]string{"topic": item.Name}}})
 		}
 		if len(section.Items) == 0 {
@@ -124,6 +125,9 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	}
 	return &wire.View{Title: t.inbox, State: ext.EncodeState(st), Sections: []wire.Section{section}}, nil
 }
+
+// maxViewTopics keeps the topics page within the hub's 300 component limit, whatever the stream holds.
+const maxViewTopics = 250
 
 func parsePositiveID(raw string) (int64, error) {
 	var id int64
