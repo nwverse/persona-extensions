@@ -44,18 +44,18 @@ func newFakeLinkwarden(t *testing.T) *fakeLinkwarden {
 		case "/search":
 			fmt.Fprint(w, `{"data":{"links":[{"id":101,"name":"Reading with context","url":"https://example.com/article","description":"A saved article","note":"Why this matters","collection":{"id":5,"name":"Research"}}],"nextCursor":null},"success":true}`)
 		case "/collections":
-			fmt.Fprint(w, `[{"id":5,"name":"Research"},{"id":8,"name":"Later"}]`)
+			fmt.Fprint(w, `{"response":[{"id":5,"name":"Research"},{"id":8,"name":"Later"}]}`)
 		case "/links/101":
-			fmt.Fprint(w, `{"id":101,"name":"Reading with context","url":"https://example.com/article","description":"A saved article","note":"Why this matters","collection":{"id":5,"name":"Research"}}`)
+			fmt.Fprint(w, `{"response":{"id":101,"name":"Reading with context","url":"https://example.com/article","description":"A saved article","note":"Why this matters","collection":{"id":5,"name":"Research"}}}`)
 		case "/links/101/highlights":
-			fmt.Fprint(w, `[{"id":11,"linkId":101,"text":"A highlighted passage","note":"A note"}]`)
+			fmt.Fprint(w, `{"response":[{"id":11,"linkId":101,"text":"A highlighted passage","note":"A note"}]}`)
 		case "/links":
 			var in map[string]any
 			_ = json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&in)
 			f.mu.Lock()
 			f.posts = append(f.posts, in)
 			f.mu.Unlock()
-			fmt.Fprint(w, `{"id":102,"name":"New article","url":"https://example.com/new"}`)
+			fmt.Fprint(w, `{"response":{"id":102,"name":"New article","url":"https://example.com/new"}}`)
 		case "/links/101/archive":
 			f.mu.Lock()
 			f.archives = append(f.archives, 101)

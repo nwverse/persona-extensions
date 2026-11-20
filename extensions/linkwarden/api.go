@@ -118,28 +118,33 @@ func (c *client) search(ctx context.Context, query string, collectionID int64) (
 	return found.Links, nil
 }
 
+// answer is what Linkwarden answers for a call other than the search: the result in response.
+type answer[T any] struct {
+	Response T `json:"response"`
+}
+
 func (c *client) collections(ctx context.Context) ([]collection, error) {
-	var out []collection
+	var out answer[[]collection]
 	err := c.do(ctx, http.MethodGet, "/collections", nil, nil, &out)
-	return out, err
+	return out.Response, err
 }
 
 func (c *client) link(ctx context.Context, id int64) (link, error) {
-	var out link
+	var out answer[link]
 	err := c.do(ctx, http.MethodGet, "/links/"+strconv.FormatInt(id, 10), nil, nil, &out)
-	return out, err
+	return out.Response, err
 }
 
 func (c *client) highlights(ctx context.Context, id int64) ([]highlight, error) {
-	var out []highlight
+	var out answer[[]highlight]
 	err := c.do(ctx, http.MethodGet, "/links/"+strconv.FormatInt(id, 10)+"/highlights", nil, nil, &out)
-	return out, err
+	return out.Response, err
 }
 
 func (c *client) save(ctx context.Context, rawURL string) (link, error) {
-	var out link
+	var out answer[link]
 	err := c.do(ctx, http.MethodPost, "/links", nil, map[string]string{"url": rawURL}, &out)
-	return out, err
+	return out.Response, err
 }
 
 func (c *client) archive(ctx context.Context, id int64) error {

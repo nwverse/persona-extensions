@@ -25,7 +25,7 @@ func serveCollections(t *testing.T, n int) *app {
 		case "/search":
 			fmt.Fprint(w, `{"data":[],"success":true}`)
 		case "/collections":
-			fmt.Fprintf(w, "[%s]", strings.Join(list, ","))
+			fmt.Fprintf(w, `{"response":[%s]}`, strings.Join(list, ","))
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
