@@ -10,6 +10,9 @@ import (
 	"unicode"
 )
 
+// maxTitleChars is the longest bookmark title: the validation, the tool schema and the page state check use it.
+const maxTitleChars = 1000
+
 type saveArgs struct {
 	URL    string   `json:"url"`
 	Title  string   `json:"title,omitempty"`
@@ -28,7 +31,7 @@ func (in saveArgs) validate() error {
 	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" || u.User != nil || len(in.URL) > 1024 {
 		return errors.New("bookmark URL must be a clean HTTP(S) address of at most 1024 characters")
 	}
-	if len([]rune(in.Title)) > 1000 || strings.ContainsFunc(in.Title, unicode.IsControl) {
+	if len([]rune(in.Title)) > maxTitleChars || strings.ContainsFunc(in.Title, unicode.IsControl) {
 		return errors.New("title must be at most 1000 characters without control characters")
 	}
 	if len(in.Labels) > 20 {

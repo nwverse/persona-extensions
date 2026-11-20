@@ -31,7 +31,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.ID) > 128 || len(st.DraftID) > 128 || len(st.Query) > 250 || len(st.Title) > 1100 || len(st.URL) > 1100 || len(st.Labels) > 2200 || st.Progress < 0 || st.Progress > 100 {
+	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.ID) > 128 || len(st.DraftID) > 128 || len(st.Query) > 250 || len([]rune(st.Title)) > maxTitleChars || len(st.URL) > 1100 || len(st.Labels) > 2200 || st.Progress < 0 || st.Progress > 100 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil

@@ -27,7 +27,7 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "readeck_save_bookmark", Description: "Save an HTTP(S) webpage to Readeck after explicit confirmation. Creation is asynchronous: the returned bookmark ID means Readeck accepted the URL, not that article extraction finished.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"url"}, "properties": map[string]any{
-			"url": map[string]any{"type": "string", "format": "uri", "maxLength": 1024}, "title": map[string]any{"type": "string", "maxLength": 1000}, "labels": map[string]any{"type": "array", "maxItems": 20, "items": map[string]any{"type": "string", "maxLength": 100}},
+			"url": map[string]any{"type": "string", "format": "uri", "maxLength": 1024}, "title": map[string]any{"type": "string", "maxLength": maxTitleChars}, "labels": map[string]any{"type": "array", "maxItems": 20, "items": map[string]any{"type": "string", "maxLength": 100}},
 		}}},
 	{Name: "readeck_update_reading", Description: "After explicit confirmation, update one existing Readeck bookmark's reading progress (0-100), favorite status or personal note. Omitted fields remain unchanged; this cannot delete or archive bookmarks.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"bookmark_id"}, "properties": map[string]any{
