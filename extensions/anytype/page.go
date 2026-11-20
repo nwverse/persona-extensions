@@ -148,13 +148,13 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Mode != "" {
 		return nil, errors.New("invalid knowledge view")
 	}
-	page, err := a.client.spaces(ctx, st.Offset)
+	spaces, more, err := a.collectSpaces(ctx, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
 	section := wire.Section{Title: t.spaces}
-	for _, item := range page.Data {
+	for _, item := range spaces {
 		if item.ID == "" || item.Name == "" {
 			continue
 		}
@@ -163,7 +163,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noSpaces})
 	}
-	if page.Pagination.HasMore {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	return &wire.View{Title: t.knowledge, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}, Sections: []wire.Section{section}}, nil
@@ -179,6 +179,28 @@ func (a *app) collectObjects(ctx context.Context, spaceID string, offset int) ([
 	more := false
 	for pos := 0; pos <= offset && len(out) < maxViewObjects; pos += 50 {
 		batch, err := a.client.objects(ctx, spaceID, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Data...)
+		more = batch.Pagination.HasMore
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewObjects {
+		out = out[:maxViewObjects]
+	}
+	return out, more && len(out) < maxViewObjects, nil
+}
+
+// collectSpaces reads batches from offset 0 through offset so that Load more extends the spaces list instead of
+// replacing it, and reports whether Anytype has more spaces that the cap still leaves room to show.
+func (a *app) collectSpaces(ctx context.Context, offset int) ([]space, bool, error) {
+	var out []space
+	more := false
+	for pos := 0; pos <= offset && len(out) < maxViewObjects; pos += 50 {
+		batch, err := a.client.spaces(ctx, pos)
 		if err != nil {
 			return nil, false, err
 		}
