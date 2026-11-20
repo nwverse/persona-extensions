@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -92,6 +93,12 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	return v, nil
 }
 
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
 func detailView(r *ext.UIRequest, st pageState, item story) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{
@@ -100,10 +107,10 @@ func detailView(r *ext.UIRequest, st pageState, item story) *wire.View {
 	if len(item.Tags) > 0 {
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: strings.Join(item.Tags, ", "), Style: wire.TextStyleSecondary})
 	}
-	if item.URL != "" {
+	if httpsLink(item.URL) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.URL})
 	}
-	if item.CommentsURL != "" {
+	if httpsLink(item.CommentsURL) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.discussion, URL: item.CommentsURL})
 	}
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
