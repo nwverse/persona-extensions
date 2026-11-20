@@ -136,7 +136,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		Type: wire.ComponentButton, Title: t.save, Action: &wire.Action{ID: "save-form", Push: &wire.Push{State: ext.EncodeState(pageState{Mode: "save", DraftID: randomID()}), Title: t.save}},
 	}}}
 	for _, item := range items {
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "link-" + strconv.FormatInt(item.ID, 10), Title: clipText(linkTitle(item), 2000), Subtitle: item.URL, Action: &wire.Action{ID: "detail", Values: map[string]string{"id": strconv.FormatInt(item.ID, 10)}}})
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "link-" + strconv.FormatInt(item.ID, 10), Title: clipText(linkTitle(item), 2000), Subtitle: clipText(item.URL, 2000), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": strconv.FormatInt(item.ID, 10)}}})
 	}
 	if len(items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noLinks})
@@ -185,7 +185,7 @@ func saveView(r *ext.UIRequest, st pageState) *wire.View {
 func reviewSaveView(r *ext.UIRequest, st pageState) *wire.View {
 	t := textsFor(r.Locale)
 	return &wire.View{Title: t.review, State: ext.EncodeState(st), Sections: []wire.Section{{Items: []wire.Component{
-		{Type: wire.ComponentText, Text: st.SaveURL},
+		{Type: wire.ComponentText, Text: clipText(st.SaveURL, 2000)},
 		{Type: wire.ComponentButton, Title: t.confirm, Action: &wire.Action{ID: "save", Confirm: t.save + "\n" + st.SaveURL}},
 	}}}}
 }
