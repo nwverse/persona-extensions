@@ -33,10 +33,10 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "clickup_create_task", Description: "Create a task in an exact ClickUp list after explicit confirmation. Assigned to the current user, with title and description only; no custom fields or arbitrary list changes.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"list_id", "name"}, "properties": map[string]any{
-			"list_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}, "description": map[string]any{"type": "string", "maxLength": 30000},
+			"list_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxNameChars}, "description": map[string]any{"type": "string", "maxLength": 30000},
 		}}},
 	{Name: "clickup_update_status", Description: "Update a ClickUp task's status after explicit confirmation. Only status is sent; no custom fields, assignees or other task properties are changed.",
-		InputSchema: map[string]any{"type": "object", "required": []string{"task_id", "status"}, "properties": map[string]any{"task_id": idSchema, "status": map[string]any{"type": "string", "minLength": 1, "maxLength": 100}}}},
+		InputSchema: map[string]any{"type": "object", "required": []string{"task_id", "status"}, "properties": map[string]any{"task_id": idSchema, "status": map[string]any{"type": "string", "minLength": 1, "maxLength": maxStatusChars}}}},
 }
 
 func decode(raw json.RawMessage, out any) error {
