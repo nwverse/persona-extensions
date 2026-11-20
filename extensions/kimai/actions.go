@@ -88,8 +88,12 @@ func (a *app) doAction(ctx context.Context, requestID, name string, raw json.Raw
 		if err := in.validate(); err != nil {
 			return nil, err
 		}
+		var begin, end string
+		if begin, end, err = a.client.localTimes(ctx, in.Begin, in.End); err != nil {
+			return nil, err
+		}
 		text, err = a.receipts.commit(requestID, string(keyData), func() (string, error) {
-			item, err := a.client.createTimesheet(ctx, in.ProjectID, in.ActivityID, in.Begin, in.End, in.Description)
+			item, err := a.client.createTimesheet(ctx, in.ProjectID, in.ActivityID, begin, end, in.Description)
 			if err != nil {
 				return "", err
 			}
