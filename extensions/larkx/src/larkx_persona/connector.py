@@ -144,7 +144,8 @@ class Connector:
         self._expired = False
         self._link_up = False
         self._linked = threading.Event()
-        # The user's chat with themself, by account: where pushes go.
+        # The user's chat with themself, by account: where pushes go. Emptied at every sign-in and sign-out, so the first
+        # push of each sign-in checks the chat again (_own_chat).
         self._own_chats = {}
         self._unreachable = False
         self._last_event = 0.0
@@ -226,6 +227,7 @@ class Connector:
             self._account = account["name"]
             self._signed_in = True
             self._expired = False
+            self._own_chats = {}
         self._stop.set()
         self._stop = threading.Event()
         self._linked.clear()
@@ -839,6 +841,7 @@ class Connector:
                 self._link_up = False
                 self._account = ""
                 self._account_id = ""
+                self._own_chats = {}
         return {}
 
 

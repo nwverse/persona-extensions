@@ -177,6 +177,25 @@ class AgentPushTest(unittest.TestCase):
             self.assertEqual(e.exception.code, "cannot_send")
         self.assertEqual(self.backend.sent, [])
 
+    def test_every_sign_in_checks_the_own_chat_again(self):
+        # Review of #843: the chat found for one sign-in is not reused after signing out and in again.
+        looked = []
+        self.backend.own_chat = lambda: looked.append(1) or "c_me"
+        self.c.channel_send({"ref": "p1", "text": "一", "kind": "push"})
+        self.c.channel_send({"ref": "p2", "text": "二", "kind": "push"})
+        self.assertEqual(len(looked), 1)
+        self.c.logout({})
+        self.backend.poll = "done"
+        self.assertTrue(self.c.login_step({"step": "scan"})["done"])
+        self.c.channel_send({"ref": "p3", "text": "三", "kind": "push"})
+        self.assertEqual(len(looked), 2)
+        self.backend.own_chat = lambda: None  # the new sign-in's check fails: nothing goes out
+        self.c.logout({})
+        self.assertTrue(self.c.login_step({"step": "scan"})["done"])
+        with self.assertRaises(RpcError) as e:
+            self.c.channel_send({"ref": "p4", "text": "四", "kind": "push"})
+        self.assertEqual(e.exception.code, "cannot_send")
+
     def test_no_push_while_signed_out(self):
         self.c.logout({})
         with self.assertRaises(RpcError) as e:
