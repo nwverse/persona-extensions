@@ -202,6 +202,17 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			toast = msg
 		}
 		fresh = 0
+	case "irmark": // 标记为已关 on a remote's tile (irmarks.go): nothing is sent
+		if arg == "" {
+			arg = r.Values["entity"]
+		}
+		msg, err := a.markRemoteOff(ctx, arg)
+		if err != nil {
+			toast = err.Error()
+		} else {
+			toast = msg
+		}
+		fresh = 0
 	case "ctl": // a switch, a slider or a stepper of the overview or an area (controlOf): the entity and its value
 		eid := r.Values["entity"]
 		name, _ := controlOf(arg, eid)

@@ -227,19 +227,27 @@ func (a *app) remoteTile(hm *home, rm remote, loc *time.Location) wire.Tile {
 	if a.canWrite("button", false) != nil {
 		return t
 	}
+	on := false
 	if rm.off != "" { // a switch (#774): what was sent last, the subtitle saying when; the menu sends either again
 		name, act := controlOf("ir", rm.on)
-		t.Control = &wire.RowControl{Kind: "switch", Name: name, On: remoteOn(hm, rm), Action: act}
+		on = a.remoteOn(hm, rm)
+		t.Control = &wire.RowControl{Kind: "switch", Name: name, On: on, Action: act}
 	}
 	t.Actions = append(t.Actions, wire.RowAction{Title: "开机", Icon: "power", Action: *rowDo(rm.on, "press")})
 	if rm.off != "" {
 		t.Actions = append(t.Actions, wire.RowAction{Title: "关机", Icon: "power", Action: *rowDo(rm.off, "press")})
 	}
-	for _, s := range rm.more[:min(remoteMore, len(rm.more))] {
+	if on { // the switch is wrong when the device went off another way: correct it without sending (irmarks.go)
+		t.Actions = append(t.Actions, wire.RowAction{Title: "标记为已关", Action: *irMarkAction(rm.on)})
+	}
+	for _, s := range rm.more[:min(remoteMore, len(rm.more), tileActionsMost-len(t.Actions))] {
 		t.Actions = append(t.Actions, wire.RowAction{Title: clip(buttonWord(hm, s), 20), Action: *rowDo(s.EntityID, "press")})
 	}
 	return t
 }
+
+// tileActionsMost is how many entries a tile's menu takes (view.schema.json).
+const tileActionsMost = 4
 
 // pressedAt is when a button was last pressed (its state), or zero: never, or offline.
 func pressedAt(hm *home, eid string) time.Time {
@@ -247,37 +255,48 @@ func pressedAt(hm *home, eid string) time.Time {
 	return at
 }
 
-// remoteOn says a remote's 开机 was pressed after its 关机: an IR remote cannot tell whether the device is on, so its
-// switch shows what was sent last.
-func remoteOn(hm *home, rm remote) bool {
-	on := pressedAt(hm, rm.on)
-	return !on.IsZero() && on.After(pressedAt(hm, rm.off))
+// remoteOn says a remote's 开机 was pressed after its 关机 and after it was last marked off: an IR remote cannot tell
+// whether the device is on, so its switch shows what was sent last (irmarks.go).
+func (a *app) remoteOn(hm *home, rm remote) bool {
+	on, off := pressedAt(hm, rm.on), pressedAt(hm, rm.off)
+	if m := a.marks.get(rm.on); m.After(off) {
+		off = m
+	}
+	return !on.IsZero() && on.After(off)
 }
 
-// remotePower runs a remote's switch (ctl:ir): on presses the 开机 button eid, off the same remote's 关机. Only a remote
-// the page draws a switch for (both buttons, in an area), so nothing but its own power buttons can be pressed.
-func (a *app) remotePower(ctx context.Context, eid, value string) (string, error) {
-	if value != "true" && value != "false" {
-		return "", errUnknownOp
-	}
+// switchRemote is the remote whose 开机 is eid, when the page draws a switch for it (both buttons, in an area).
+func (a *app) switchRemote(ctx context.Context, eid string) (remote, error) {
 	reg := a.pageRegistry(ctx)
 	hm, err := a.home(ctx, statesFor)
 	if err != nil {
-		return "", err
+		return remote{}, err
 	}
 	hm = hm.named(reg)
 	for i := range hm.Areas {
 		for _, rm := range remotes(hm, reg, &hm.Areas[i]) {
-			if rm.on != eid || rm.off == "" {
-				continue
+			if rm.on == eid && rm.off != "" {
+				return rm, nil
 			}
-			if value == "false" {
-				eid = rm.off
-			}
-			return a.rowCall(ctx, eid, "press")
 		}
 	}
-	return "", errNoEntity
+	return remote{}, errNoEntity
+}
+
+// remotePower runs a remote's switch (ctl:ir): on presses the 开机 button eid, off the same remote's 关机. Only a remote
+// the page draws a switch for, so nothing but its own power buttons can be pressed.
+func (a *app) remotePower(ctx context.Context, eid, value string) (string, error) {
+	if value != "true" && value != "false" {
+		return "", errUnknownOp
+	}
+	rm, err := a.switchRemote(ctx, eid)
+	if err != nil {
+		return "", err
+	}
+	if value == "false" {
+		eid = rm.off
+	}
+	return a.rowCall(ctx, eid, "press")
 }
 
 // buttonWord is what a remote's button says: the last word of its name (红外空调控制 温度+ → 温度+).

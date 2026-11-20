@@ -122,6 +122,7 @@ func TestRemoteTileSwitch(t *testing.T) {
 	r.services = strings.TrimSuffix(r.services, "]") + `,{"domain":"button","services":{"press":{}}}]`
 	r.areas = areasJSON([][3]any{{"ke_ting", "客厅", []string{tvOn, tvOff, tvUp, fanOn, fanSpd}}})
 	a := richApp(t, r, Config{})
+	a.marks.load(a.dataDir, t.Logf)
 
 	tile := func() map[string]wire.Tile {
 		t.Helper()
@@ -178,6 +179,45 @@ func TestRemoteTileSwitch(t *testing.T) {
 		if res := press(c.entity, c.value); r.lastCall() != "button.press ["+tvOff+"] {}" || res.Toast != c.toast {
 			t.Errorf("%s=%s went through: %q %q", c.entity, c.value, r.lastCall(), res.Toast)
 		}
+	}
+
+	// 标记为已关 (irmarks.go): offered only while the switch is on, it sends nothing and keeps the switch off until 开机
+	// is pressed again, across a restart (the data directory). The menu stays within four entries.
+	titles := func(x wire.Tile) (out []string) {
+		for _, m := range x.Actions {
+			out = append(out, m.Title)
+		}
+		return out
+	}
+	put(at(time.Hour), at(2*time.Hour))
+	sw(on)
+	tv := tile()["电视"]
+	if got := titles(tv); !slices.Equal(got, []string{"开机", "关机", "标记为已关", "音量+"}) {
+		t.Errorf("the menu while on: %q", got)
+	}
+	calls := r.lastCall()
+	res, _ := actV(t, a, 6, pageState{}, tv.Actions[2].Action.ID, tv.Actions[2].Action.Values)
+	if res.Toast != "已标记为关，没有发送信号" || r.lastCall() != calls {
+		t.Errorf("marking off: %q, sent %q", res.Toast, r.lastCall())
+	}
+	sw(off)
+	if got := titles(tile()["电视"]); slices.Contains(got, "标记为已关") {
+		t.Errorf("offered while off: %q", got)
+	}
+	b := newApp(t.Logf)
+	b.marks.load(a.dataDir, t.Logf)
+	if b.marks.get(tvOn).IsZero() {
+		t.Errorf("the mark was not kept in %s", a.dataDir)
+	}
+	put(at(0), at(2*time.Hour))
+	sw(on) // 开机 pressed after the mark
+	for _, eid := range []string{tvUp, tvOff, fanOn, "bad id"} {
+		if res, _ := actV(t, a, 6, pageState{}, "irmark", map[string]string{"entity": eid}); res.Toast == "已标记为关，没有发送信号" {
+			t.Errorf("marked %q", eid)
+		}
+	}
+	if act := irMarkAction("button." + strings.Repeat("x", idMost)); act.ID != "irmark" || act.Values["entity"] == "" {
+		t.Errorf("a long id: %+v", act)
 	}
 }
 
