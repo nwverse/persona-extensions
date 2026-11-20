@@ -178,8 +178,8 @@ func detailView(r *ext.UIRequest, st pageState, item issue) *wire.View {
 	if item.Fields.Assignee != nil {
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: t.assignee + ": " + item.Fields.Assignee.DisplayName})
 	}
-	if item.Self != "" {
-		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.Self})
+	if item.URL != "" {
+		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.URL})
 	}
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	v := &wire.View{Title: item.Key, State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.issues, Items: items}}}

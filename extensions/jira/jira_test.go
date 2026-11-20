@@ -293,7 +293,7 @@ func TestReceiptConflict(t *testing.T) {
 
 func TestDetailBoundsAndNoConfig(t *testing.T) {
 	var item issue
-	item.Key, item.Self = "ENG-123", "https://jira.example.com/browse/ENG-123"
+	item.Key, item.URL = "ENG-123", "https://jira.example.com/browse/ENG-123"
 	item.Fields.Summary = "Task"
 	item.Fields.Description = json.RawMessage(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Details"}]}]}`)
 	v := detailView(&ext.UIRequest{UIParams: wire.UIParams{Locale: "en", UIVersion: 6}}, pageState{IssueKey: "ENG-123", Mode: "detail"}, item)

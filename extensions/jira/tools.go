@@ -143,8 +143,8 @@ func formatIssue(item issue, detail bool) string {
 	if item.Fields.Assignee != nil {
 		b.WriteString(" | assignee: " + item.Fields.Assignee.DisplayName)
 	}
-	if item.Self != "" {
-		b.WriteString("\n  " + item.Self)
+	if item.URL != "" {
+		b.WriteString("\n  " + item.URL)
 	}
 	b.WriteString("\n")
 	if detail {
