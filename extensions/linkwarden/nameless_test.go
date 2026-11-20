@@ -20,7 +20,7 @@ func serveNameless(t *testing.T, links string) *app {
 		case "/search":
 			fmt.Fprintf(w, `{"data":{"links":%s,"nextCursor":null},"success":true}`, links)
 		case "/collections":
-			fmt.Fprint(w, `[{"id":5,"name":"Research"},{"id":8,"name":"Later"}]`)
+			fmt.Fprint(w, `{"response":[{"id":5,"name":"Research"},{"id":8,"name":"Later"}]}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
