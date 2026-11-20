@@ -128,7 +128,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		}
 		section := wire.Section{Title: t.accounts}
 		for _, item := range items {
-			section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: clipText(fmt.Sprintf("%s · %s %s · %s", item.Name, item.Balance, item.Currency, item.BalanceAsOf), 1800)})
+			section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: clipText(fmt.Sprintf("%s · %s %s · %s", item.Name, item.Balance, item.Currency, item.asOf()), 1800)})
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noAccounts})

@@ -175,7 +175,10 @@ func (c *Curator) RunDaily(ctx context.Context, day string, dry bool) (*store.Ru
 			// where it stopped, as when the model is away. Counting the unit as an error and finishing the day would
 			// mark the day read with the current prompt, and a rerun would then skip the unit for good.
 			modelDown, downErr = true, err
-			if errors.Is(err, model.ErrUnavailable) {
+			if h, ok := model.Held(err); ok {
+				// The hub held the model's connection past the call's wait: the unit goes back to the queue, not an error.
+				run.Notes = append(run.Notes, "模型等闸（hub 压闸："+h.Message+"）：没读完的段放回队列，闸开后这一天接着读")
+			} else if errors.Is(err, model.ErrUnavailable) {
 				run.Notes = append(run.Notes, "模型不可用（"+modelReason(err)+"）：只做了分拣和确定性检查")
 			} else {
 				run.Notes = append(run.Notes, fmt.Sprintf("%s：%v（这一天稍后从这里接着读）", u.Meta.Name, err))
@@ -227,7 +230,16 @@ func (c *Curator) RunDaily(ctx context.Context, day string, dry bool) (*store.Ru
 	// 4. Proposals that a day can already make, and the queue's upkeep; commitments past due are flagged (5.4).
 	c.expire()
 	c.markCommitments(day, run)
-	c.afterDaily(ctx, m, day, run, dry) // signals and the ledger, then the exits (curate/exits.go)
+	if err := c.afterDaily(ctx, m, day, run, dry); err != nil { // signals and the ledger, then the exits (curate/exits.go)
+		// The hub held the model past a call's wait (model.ErrPaused): the day stays open, as when a unit could not
+		// be read; the next pass runs it again from here (what was kept is not asked again).
+		perr := c.notePause(day, err)
+		if serr := c.St.Save(); serr != nil {
+			return nil, serr
+		}
+		c.Publish()
+		return nil, perr
+	}
 	if !dry {
 		// Commit source cursors and ActiveDays only after the whole day completed. In particular, the model-down return
 		// above leaves them untouched so a retry rereads everything the model could not summarize.

@@ -19,7 +19,7 @@ Remote instances require HTTPS. URLs must not contain credentials. The token arr
 
 ## Confirmed writes
 
-- `POST /timesheets` creates an entry for the current user with discovered project/activity IDs, an explicit RFC3339 begin timestamp, optional later end timestamp and description. Leaving end empty starts a running timer; the review makes that distinction explicit.
+- `POST /timesheets` creates an entry for the current user with discovered project/activity IDs, an explicit RFC3339 begin timestamp, optional later end timestamp and description. Kimai takes the begin and end of a timesheet as its HTML5 local date and time (`2006-01-02T15:04:05`, no offset) in the timezone of the Kimai user, so the extension reads that timezone from `GET /users/me` and sends the same moment as local time there. Leaving end empty starts a running timer; the review makes that distinction explicit.
 - `PATCH /timesheets/{id}/stop` stops the selected running timer. The UI binds the selected timesheet ID to the confirmed draft before stopping it.
 - No deletion, arbitrary time editing, rate/billable changes, other-user administration or permission updates are exposed.
 

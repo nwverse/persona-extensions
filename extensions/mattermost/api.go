@@ -137,6 +137,16 @@ func (c *client) posts(ctx context.Context, channelID, before string, page int) 
 	return out, err
 }
 
+// olderCursor is the post to read the older messages before: the oldest post of the list. The list's prev_post_id is the
+// post right before it, and `before` selects the posts strictly older than the one it names, so reading before
+// prev_post_id would skip that post.
+func olderCursor(list postList) string {
+	if list.PrevPostID == "" || len(list.Order) == 0 {
+		return ""
+	}
+	return list.Order[len(list.Order)-1]
+}
+
 func clipText(text string, limit int) string {
 	r := []rune(text)
 	if len(r) > limit {

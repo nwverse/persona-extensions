@@ -54,7 +54,8 @@ func (a *app) saveFromPage(ctx context.Context, r *ext.UIRequest, st pageState) 
 	if err != nil {
 		return nil, err
 	}
-	return &wire.ActionResult{Toast: fmt.Sprintf(textsFor(r.Locale).savedHere, collectionLabel(item, textsFor(r.Locale))), Pop: true}, nil
+	cols, _ := a.listCollections(ctx)
+	return &wire.ActionResult{Toast: fmt.Sprintf(textsFor(r.Locale).savedHere, collectionLabel(item, cols, textsFor(r.Locale))), Pop: true}, nil
 }
 
 func splitTags(text string) []string {

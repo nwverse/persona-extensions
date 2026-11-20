@@ -155,6 +155,9 @@ func (a *app) callTool(name string, raw json.RawMessage) (string, error) {
 		if p.Paused != "" {
 			fmt.Fprintf(&b, " Paused: %s.", p.Paused)
 		}
+		for _, l := range p.History {
+			b.WriteString("\nSession history: " + l + ".")
+		}
 		b.WriteString("\n" + a.modelText())
 		return b.String(), nil
 	case "enkeep_resettle":

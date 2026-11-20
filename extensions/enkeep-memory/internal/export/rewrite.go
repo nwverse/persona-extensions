@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"regexp"
 	"strings"
 	"time"
@@ -136,6 +137,9 @@ func (c *compiler) texts(ctx context.Context, ws []want) map[string]string {
 	for i := 0; i < len(need); i += batch {
 		part := need[i:min(i+batch, len(need))]
 		got, withheld := c.rewrite(ctx, part)
+		if c.held != nil { // held: this batch and the rest are rewritten next time
+			break
+		}
 		for j, w := range part {
 			e, text := w.e, strings.TrimSpace(got[j])
 			if withheld[j] && w.mode == ModePlain && !ownWords(e) {
@@ -267,6 +271,10 @@ func (c *compiler) rewrite(ctx context.Context, ws []want) ([]string, []bool) {
 	user, _ := json.Marshal(in)
 	resp, err := c.o.Model.Complete(ctx, model.Request{Step: "export_rewrite", Tier: c.o.Tier, System: prompts.Export,
 		User: string(user), MaxTokens: 4000, Schema: prompts.ExportSchema})
+	if errors.Is(err, model.ErrPaused) {
+		c.held = err
+		return out, withheld
+	}
 	if err != nil {
 		c.logf("export: rewrite: %v", err)
 		return out, withheld
@@ -324,6 +332,10 @@ func (c *compiler) emptiness(ctx context.Context, ws []want, out []string, withh
 	user, _ := json.Marshal(in)
 	resp, err := c.o.Model.Complete(ctx, model.Request{Step: "export_emptiness", Tier: c.o.Tier, System: prompts.Emptiness,
 		User: string(user), MaxTokens: 3000, Schema: prompts.EmptinessSchema})
+	if errors.Is(err, model.ErrPaused) {
+		c.held = err
+		return
+	}
 	if err != nil {
 		c.logf("export: emptiness: %v", err) // not asked: the rewrite's own answer stands
 		return

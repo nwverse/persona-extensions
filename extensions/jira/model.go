@@ -20,6 +20,8 @@ type issue struct {
 			Total    int       `json:"total"`
 		} `json:"comment"`
 	} `json:"fields"`
+	// URL is the issue's page on the site, set by the client: Self names the REST resource, not the page.
+	URL string `json:"-"`
 }
 
 type user struct {

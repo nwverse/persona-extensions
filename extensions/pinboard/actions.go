@@ -38,8 +38,14 @@ func (in addArgs) validate() error {
 			return errors.New("bookmark notes or tags contain unsupported control characters")
 		}
 	}
-	if len(strings.Fields(in.Tags)) > 100 || strings.Contains(in.Tags, ",") {
+	tags := strings.Fields(in.Tags)
+	if len(tags) > 100 || strings.Contains(in.Tags, ",") {
 		return errors.New("bookmark tags must be space-separated and at most 100 tags")
+	}
+	for _, tag := range tags {
+		if len([]rune(tag)) > 255 {
+			return errors.New("each bookmark tag must be at most 255 characters")
+		}
 	}
 	return nil
 }

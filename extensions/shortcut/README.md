@@ -13,7 +13,7 @@ The token arrives through the encrypted extension-secret flow and is sent only i
 
 ## Stories
 
-- List owned incomplete stories with the documented `owner:<mention_name> is:story !is:done` query, `page_size=50`, `detail=slim`, `entity_types=story` and the returned `next` token. Tokens remain opaque.
+- List owned incomplete stories with the documented `owner:<mention_name> is:story !is:done` query, `page_size=50`, `detail=slim`, `entity_types=story` and the returned `next` value, which the API describes as the URL path and query string of the next page: only its `next` page token is sent back, with the extension's own query, and the token remains opaque.
 - Read story IDs, title, description, story type, deadline, workflow/state IDs, owners and non-deleted comments. The original link is shown only for a valid HTTPS `app.shortcut.com` URL.
 - Create a story owned by the current member with a title, description, optional `feature`/`bug`/`chore` type, `YYYY-MM-DD` deadline and workflow state. The state must exist in the current workspace workflows.
 - Move a story using a partial `PUT` containing only `workflow_state_id`; the target state must belong to that story's current workflow. Other fields and comments are not overwritten.
@@ -30,7 +30,7 @@ go -C extensions/shortcut test -race ./...
 scripts/package.sh shortcut
 ```
 
-Synthetic fixtures cover authentication, current-member search, next-token pagination, comments, workflow membership, partial updates, localized pages, replay and a failed final write with an unknown outcome. No real account is used.
+Synthetic fixtures cover authentication, current-member search, next-link pagination, comments, workflow membership, partial updates, localized pages, replay and a failed final write with an unknown outcome. No real account is used.
 
 ## Public API
 

@@ -1,5 +1,33 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.34 (pre-release)
+
+- **Sessions seen before are read on reruns.** A runtime lists only its recent sessions (enkeep: active in the last 7
+  days, at most 80), so a rerun or replay of an older day did not find that day's agent sessions in the hub's list.
+  Every session a pass found in the list is now kept (`seen_sessions` in the state: name, start, last active day) and
+  a day up to its last active day reads it too; sessions read before this version are known from their cursors and the
+  units a day admitted. The hub forwards a session's items to its runtime whether it lists it or not. Any runtime's
+  sessions, not one's in particular. A session no pass ever listed is still not known.
+- **The hub's session history is read** (nwverse/persona#11529: `GET /api/v1/sessions?include_inactive=1&since=…`):
+  every pass also lists the sessions active from the day's start on, archived, finished and offline ones too, every
+  page, and reads them with the live list's and the ones seen before, each once. Scheduled runs (`origin`
+  `automation`, or no message of the user's) are left out; sessions that do not say (the node's own Claude Code and
+  Codex sessions) are read, their speakers told apart as before. A source that did not list the window in full (not
+  honored: unsupported, failed, node_unsupported, offline; or not complete) is recorded for the day and named by
+  `enkeep_rerun_status` (day, machine, source, reason); its sessions are read as far as the live list and the seen
+  ones have them, and a later pass of the day (a rerun) fills them in. A hub without session history (no `history` in
+  its answer, or the query turned down) is read as before, and the status says so. A history row whose items the
+  hub no longer lets the extension read (it keeps that for a day, in memory) is listed again and read once more.
+  A session read from its start is not asked for on days before its first item.
+- **A rerun of a day adds to what it admitted.** Before, it replaced the day's list of admitted units, so the units an
+  earlier run read and the rerun no longer saw were dropped from it. Forgetting a source takes its units off every day.
+- **A hold of the hub (`model_paused`) is a wait, not a failure.** The call waits until the hold lets go (the hub's
+  `until`, at most 5 minutes a wait, 10 minutes a call, ending with the run) and asks the whole chain again, rather
+  than count every candidate as unavailable. A call still held then puts its unit back: the day stays open and runs
+  again when the hold lets go (daily, triage, consolidation, signals and exits alike), with no failure counted and no
+  error logged; the exits stay as they were rather than go out with lines missing. `enkeep_rerun_status` counts holds
+  apart from unanswered calls; the page says the day waits for the hold.
+
 ## 0.2.0-beta.33 (pre-release)
 
 - **A unit the model could not read keeps its day open.** Before, a unit whose call failed with an error other than

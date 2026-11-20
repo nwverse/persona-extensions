@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -148,13 +149,19 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	return v, nil
 }
 
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
 func detailView(r *ext.UIRequest, st pageState, item pullRequest, activities []activity) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{
 		{Type: wire.ComponentText, Text: item.Title},
 		{Type: wire.ComponentText, Text: t.author + ": " + item.Author.User.DisplayName + " · " + item.FromRef.DisplayID + " → " + item.ToRef.DisplayID},
 	}
-	if len(item.Links.Self) > 0 {
+	if len(item.Links.Self) > 0 && httpsLink(item.Links.Self[0].Href) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.openPR, URL: item.Links.Self[0].Href})
 	}
 	items = append(items,
@@ -163,14 +170,19 @@ func detailView(r *ext.UIRequest, st pageState, item pullRequest, activities []a
 		wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}},
 	)
 	v := &wire.View{Title: fmt.Sprintf("PR #%d", item.ID), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.reviews, Items: items}}}
+	used := len(items)
 	if item.Description != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(item.Description)})
+		description := capComponents(textComponents(item.Description), maxDescriptionItems)
+		used += len(description)
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: description})
 	}
 	if len(item.Reviewers) > 0 {
 		section := wire.Section{Title: t.reviewers}
 		for _, reviewer := range item.Reviewers {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Title: reviewer.User.DisplayName, Subtitle: fmt.Sprintf("approved=%v · %s", reviewer.Approved, reviewer.Status)})
 		}
+		section.Items = section.Items[:min(len(section.Items), maxReviewerItems)]
+		used += len(section.Items)
 		v.Sections = append(v.Sections, section)
 	}
 	if len(activities) > 0 {
@@ -182,9 +194,28 @@ func detailView(r *ext.UIRequest, st pageState, item pullRequest, activities []a
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: activity.Comment.Author.DisplayName, Style: wire.TextStyleSecondary})
 			section.Items = append(section.Items, textComponents(activity.Comment.Text)...)
 		}
+		section.Items = capComponents(section.Items, maxViewItems-used)
 		v.Sections = append(v.Sections, section)
 	}
 	return v
+}
+
+const (
+	// maxViewItems keeps the pull request view within the SDK's 300 component limit, whatever the pull request holds.
+	maxViewItems = 250
+	// maxDescriptionItems and maxReviewerItems leave the comments room when the description or the reviewers are many.
+	maxDescriptionItems = 100
+	maxReviewerItems    = 20
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func textComponents(text string) []wire.Component {

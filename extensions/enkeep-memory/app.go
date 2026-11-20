@@ -424,6 +424,12 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 		if errors.Is(err, curate.ErrModelDown) {
 			a.paused = append(a.paused, triedKey(kind, period)) // tried again after the pause, not only at the next start
 		}
+		if errors.Is(err, model.ErrPaused) {
+			// The hub held the model's connection (busy or quota): the day waits for the hold to let go and runs
+			// again; not a failed run (the page says it waits, State.ModelPause).
+			log.Printf("enkeep-memory %s %s: waits for the hub's hold: %v", kind, period, err)
+			err = nil
+		}
 		if err != nil {
 			a.lastErr = kind + " " + period + "：" + err.Error()
 			log.Printf("enkeep-memory %s %s: %v", kind, period, err)

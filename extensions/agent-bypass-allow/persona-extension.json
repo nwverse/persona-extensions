@@ -3,9 +3,9 @@
   "id": "agent-bypass-allow",
   "replaces": "claude-bypass-allow",
   "name": "Bypass 自动允许",
-  "version": "0.2.31",
+  "version": "0.2.32",
   "icon": "assets/icon.png",
-  "description": "Claude Code 或 Antigravity CLI（agy）开着 bypass 模式（Claude Code 的 bypassPermissions / --dangerously-skip-permissions，agy 的 always-proceed）时，有些调用仍会弹确认框（如读工作目录外的文件、开子 Agent、某些命令），无人值守的 Agent 就卡在「在等你」。在你选的电脑上给 Claude Code 和 agy 装一个本地 hook：只在会话是 bypass 模式时，自动允许命令执行（Bash / run_command）、只读工具（Read、Glob、Grep、LS、NotebookRead 等）和子 Agent。删除、覆盖数据的命令，目标都在临时目录或工作目录里（/tmp、会话的工作目录、~/ag-work、~/wt、Claude Code 的 worktree 等）时直接放行，其余的仍然问你；打开「删除和覆盖也自动允许」就都放行。force push、改权限的命令，写文件、Workflow 和 MCP 工具，以及你自己配的 ask / deny 规则，始终问你。每次自动允许都记一条（命令截断、去掉密钥）。别的模式照常问你。另有一个默认关的开关「Persona 助手对话的文件写入也自动允许」：打开后，Persona 的主对话和主管对话用 Write、Edit 写白名单目录（默认 ~/.jarvis/assistant 和 ~/.persona/assistant）里的文件时也直接放行，不论什么模式（计划模式除外）；其余照常问你。",
+  "description": "Claude Code 或 Antigravity CLI（agy）开着 bypass 模式（Claude Code 的 bypassPermissions / --dangerously-skip-permissions，agy 的 always-proceed）时，有些调用仍会弹确认框（如读工作目录外的文件、开子 Agent、某些命令），无人值守的 Agent 就卡在「在等你」。在你选的电脑上给 Claude Code 和 agy 装一个本地 hook：只在会话是 bypass 模式时，自动允许命令执行（Bash / run_command）、只读工具（Read、Glob、Grep、LS、NotebookRead 等）和子 Agent。删除、覆盖数据的命令，目标都在临时目录或工作目录里（/tmp、会话的工作目录、~/ag-work、~/wt、Claude Code 的 worktree 等）时直接放行，其余的仍然问你；打开「删除和覆盖也自动允许」可放行其他删除、覆盖，但删除根目录、家目录或其上级目录，以及动态选择的可执行命令、zsh 的求值展开，仍保留确认。force push、改权限的命令，写文件、Workflow 和 MCP 工具，以及你自己配的 ask / deny 规则，始终问你。每次自动允许都记一条（命令截断、去掉密钥）。别的模式照常问你。另有一个默认关的开关「Persona 助手对话的文件写入也自动允许」：打开后，Persona 的主对话和主管对话用 Write、Edit 写白名单目录（默认 ~/.jarvis/assistant 和 ~/.persona/assistant）里的文件时也直接放行，不论什么模式（计划模式除外）；其余照常问你。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/agent-bypass-allow",
   "tags": ["claude-code", "antigravity", "agents", "permissions"],
@@ -46,7 +46,7 @@
       "allow_destructive": {
         "type": "boolean",
         "title": "删除和覆盖也自动允许",
-        "description": "打开后，bypass 模式下删除、覆盖数据的 Bash 命令（rm、mv、git reset --hard、写进文件的 > 等）不管目标在哪都直接放行，包括家目录和工作目录以外的，删掉的可能找不回来。force push、改权限、格式化磁盘，以及你自己配的 ask / deny 规则仍然问你。关着时，只有目标都在临时目录、工作目录里的才放行。",
+        "description": "打开后，bypass 模式下其他删除、覆盖数据的 Bash 命令（rm、mv、git reset --hard、写进文件的 > 等）可直接放行，包括家目录下的普通子目录，删掉的可能找不回来。删除根目录、整个家目录或其上级目录（含这些目录的通配目标和已解析的链接路径），动态选择的可执行命令、zsh 求值展开、force push、改权限、格式化磁盘，以及你自己配的 ask / deny 规则仍然问你。关着时，只有目标都在临时目录、工作目录里的删除、覆盖才放行。",
         "default": false
       },
       "config_dirs": {

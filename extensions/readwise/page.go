@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -135,6 +136,12 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if err != nil {
 		return nil, err
 	}
+	// A page holds up to 100 documents: the queue is cut to fit the hub's 300 component limit, and then offers no more.
+	if len(page.Results) >= maxViewDocuments {
+		page.Results, page.Cursor = page.Results[:maxViewDocuments], ""
+		page.Count = len(page.Results)
+	}
+	st.Cursor = page.Cursor
 	v := &wire.View{Title: t.new, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}}
 	v.Filter = &wire.Filter{Name: "location", Title: t.read, Value: st.Location, Action: wire.Action{ID: "location"}, Choices: []wire.Choice{
 		{Value: "new", Title: t.new}, {Value: "later", Title: t.later}, {Value: "shortlist", Title: t.shortlist}, {Value: "archive", Title: t.archive}, {Value: "feed", Title: t.feed},
@@ -155,6 +162,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	return v, nil
 }
 
+const maxViewDocuments = 250
+
 func (a *app) readQueue(ctx context.Context, st pageState) (listPage, error) {
 	var out listPage
 	cursor, seen := "", map[string]bool{}
@@ -170,6 +179,7 @@ func (a *app) readQueue(ctx context.Context, st pageState) (listPage, error) {
 			out.Results = append(out.Results, item)
 		}
 		out.Count = len(out.Results)
+		out.Cursor = page.Cursor
 		if page.Cursor == "" {
 			return out, nil
 		}
@@ -177,7 +187,6 @@ func (a *app) readQueue(ctx context.Context, st pageState) (listPage, error) {
 			return listPage{}, errors.New("Readwise repeated its pagination cursor")
 		}
 		seen[page.Cursor], cursor = true, page.Cursor
-		out.Cursor = page.Cursor
 	}
 	out.Count = len(out.Results)
 	if st.Query != "" {
@@ -195,6 +204,12 @@ func documentRow(item document) wire.Component {
 	return wire.Component{Type: wire.ComponentRow, Key: "document-" + item.ID, Title: clipText(item.Title, 2000), Subtitle: clipText(subtitle, 2000), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID}}}
 }
 
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
 func detailView(r *ext.UIRequest, st pageState, item document, highlights []document) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	text, err := articleText(item.HTMLContent)
@@ -205,12 +220,17 @@ func detailView(r *ext.UIRequest, st pageState, item document, highlights []docu
 		{Type: wire.ComponentText, Text: item.Author + " · " + item.SiteName, Style: wire.TextStyleSecondary},
 		{Type: wire.ComponentProgress, Label: t.progress, Ratio: &item.ReadingProgress},
 		{Type: wire.ComponentButton, Title: t.move, Action: &wire.Action{ID: "shortlist", Confirm: t.move + "\n" + item.Title}},
-		{Type: wire.ComponentLink, Title: t.open, URL: item.SourceURL},
-		{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}},
 	}
+	if httpsLink(item.SourceURL) {
+		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.SourceURL})
+	}
+	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	v := &wire.View{Title: clipText(item.Title, 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
+	used := len(items)
 	if item.Notes != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: textComponents(item.Notes)})
+		note := capComponents(textComponents(item.Notes), maxNoteItems)
+		used += len(note)
+		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: note})
 	}
 	if len(highlights) > 0 {
 		section := wire.Section{Title: t.highlights}
@@ -218,14 +238,34 @@ func detailView(r *ext.UIRequest, st pageState, item document, highlights []docu
 			section.Items = append(section.Items, textComponents(h.Content)...)
 			section.Items = append(section.Items, textComponents(h.Notes)...)
 		}
+		section.Items = capComponents(section.Items, maxHighlightItems)
+		used += len(section.Items)
 		v.Sections = append(v.Sections, section)
 	}
 	if text != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.read, Items: textComponents(text)})
+		v.Sections = append(v.Sections, wire.Section{Title: t.read, Items: capComponents(textComponents(text), maxViewItems-used)})
 	} else {
 		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{{Type: wire.ComponentText, Text: t.noText, Style: wire.TextStyleSecondary}}})
 	}
 	return v, nil
+}
+
+const (
+	// maxViewItems keeps the document view within the hub's 300 component limit, whatever the document holds.
+	maxViewItems = 250
+	// maxNoteItems and maxHighlightItems leave the article text room when the notes or the highlights are many.
+	maxNoteItems      = 20
+	maxHighlightItems = 120
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func saveView(r *ext.UIRequest, st pageState) *wire.View {

@@ -78,12 +78,12 @@ func newFakeAnytype(t *testing.T) *fakeAnytype {
 				item := sampleObject()
 				item.ID, item.Name = "created-object", in["name"].(string)
 				w.WriteHeader(http.StatusCreated)
-				_ = json.NewEncoder(w).Encode(item)
+				_ = json.NewEncoder(w).Encode(objectAnswer{Object: item})
 				return
 			}
 			_ = json.NewEncoder(w).Encode(pageOf([]knowledgeObject{sampleObject()}, false))
 		case "/v1/spaces/space-1/objects/object-1":
-			_ = json.NewEncoder(w).Encode(sampleObject())
+			_ = json.NewEncoder(w).Encode(objectAnswer{Object: sampleObject()})
 		case "/v1/spaces/space-1/types":
 			_, _ = w.Write([]byte(`{"data":[{"id":"type-page","key":"page","name":"Page","layout":"basic"},{"id":"type-note","key":"note","name":"Note","layout":"note"}],"pagination":{"offset":0,"limit":50,"total":2,"has_more":false}}`))
 		case "/v1/search":

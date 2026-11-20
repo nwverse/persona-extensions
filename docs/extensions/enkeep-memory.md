@@ -74,7 +74,12 @@ progress. The days run one at a time in the background, each at most once per pr
 call. The `rerun_range` setting does the same and still works. With `force: true` the days are read again even if
 they were already read with the current prompt, for a day that lost a unit to a model error; what was read before is
 reused and only the rest calls the model. A unit the model cannot read keeps its day open: the day waits and runs again
-from where it stopped, as when the model is away.
+from where it stopped, as when the model is away. When the hub holds the model's connection (busy or out of quota) a
+call waits for the hold and asks again; a unit still held goes back to the queue, its day stays open, and nothing is
+counted as failed. A rerun also reads the agent sessions earlier passes found, though their runtime no longer lists
+them, and adds to what the day admitted rather than replace it. On a hub with session history, every pass also lists
+the day's archived, finished and offline sessions (scheduled runs left out); `enkeep_rerun_status` names the days,
+machines and sources the history could not list in full, or says the hub has none.
 
 ## Development
 

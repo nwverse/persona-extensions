@@ -202,12 +202,13 @@ func dangles(p string) bool {
 
 // shellVars is what one command string sets that the scratch check can read.
 type shellVars struct {
-	vars    map[string][]string // the values each readable variable can have
-	from    map[string]int      // the first segment that sets it
-	tainted map[string]bool     // names the command sets or touches some other way
-	off     bool                // no variable is read
-	links   bool                // the command makes links or mounts: what a path leads to may change before the deletion runs
-	cwds    []string            // directories relative targets are read against; none: relative targets are not read
+	vars        map[string][]string // the values each readable variable can have
+	from        map[string]int      // the first segment that sets it
+	tainted     map[string]bool     // names the command sets or touches some other way
+	off         bool                // no variable is read
+	indirectOff bool
+	links       bool     // the command makes links or mounts: what a path leads to may change before the deletion runs
+	cwds        []string // directories relative targets are read against; none: relative targets are not read
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -284,6 +285,19 @@ func readVars(raw string, segs []segment, tail, cwd string, relative bool) *shel
 		}
 		if shellish(words) {
 			sv.off = true
+		}
+		for _, w := range words {
+			switch progName(w) {
+			case "read", "export", "declare", "typeset", "readonly", "local", "unset", "getopts", "mapfile", "readarray", "vared", "let", "source", ".":
+				sv.indirectOff = true
+			case "printf":
+				if hasShort(words, 'v') {
+					sv.indirectOff = true
+				}
+			}
+		}
+		if strings.Contains(raw, "((") {
+			sv.indirectOff = true
 		}
 		for i, w := range words {
 			if i == firstProgram(words) || (i > 0 && wrappers[progName(words[i-1])]) {
@@ -509,7 +523,7 @@ func (sv *shellVars) cd(args []string, k int) {
 const expandMax = 64
 
 // dollar matches $NAME and ${NAME}.
-var dollar = regexp.MustCompile(`\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))`)
+var dollar = regexp.MustCompile(`\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*)|\{\(P\)([A-Za-z_][A-Za-z0-9_]*)\})`)
 
 // expand is the paths word w (in segment k) can be: ~ and the readable variables expanded. ok is false when w has an
 // expansion the check cannot read.
@@ -543,12 +557,34 @@ func (sv *shellVars) expand(w string, k int) (out []string, ok bool) {
 		name := ""
 		if loc[2] >= 0 {
 			name = rest[loc[2]:loc[3]]
-		} else {
+		} else if loc[4] >= 0 {
 			name = rest[loc[4]:loc[5]]
 		}
-		vals, known := sv.value(name, k)
-		if !known {
-			return nil, false
+		var vals []string
+		if loc[6] >= 0 {
+			selectors, known := sv.value(rest[loc[6]:loc[7]], k)
+			if !known || sv.off || sv.indirectOff {
+				return nil, false
+			}
+			for _, selector := range selectors {
+				if !identifier.MatchString(selector) {
+					return nil, false
+				}
+				values, known := sv.value(selector, k)
+				if !known {
+					return nil, false
+				}
+				vals = append(vals, values...)
+				if len(vals) > expandMax {
+					return nil, false
+				}
+			}
+		} else {
+			var known bool
+			vals, known = sv.value(name, k)
+			if !known {
+				return nil, false
+			}
 		}
 		var next []string
 		for _, o := range out {

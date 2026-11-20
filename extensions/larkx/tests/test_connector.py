@@ -74,10 +74,10 @@ class Backend:
         on_link("up")
         stop.wait()
 
-    def send(self, chat, text, root):
+    def send(self, chat, text, root, mentions=()):
         if self.send_error:
             raise self.send_error
-        self.sent.append((chat, text, root))
+        self.sent.append((chat, text, root) if not mentions else (chat, text, root, mentions))
         return self.send_result
 
     def create_chat(self, user):
@@ -93,7 +93,7 @@ class Backend:
         return self.chats.get(chat, {"name": "", "last_position": 0})
 
     def user_name(self, user, chat):
-        return {"u_a": "小明"}.get(user)
+        return {"u_a": "小明", "7001": "小明"}.get(user)
 
     def download(self, msg_id, chat, key, most):
         return "image/png", b"png"
@@ -205,6 +205,33 @@ class ConnectorTest(unittest.TestCase):
         again = self.c.actions_do({"name": "larkx_send", "args": args, "request_id": "r1"})
         self.assertEqual(first, again)
         self.assertEqual(self.backend.sent, [("c1", "三点见", None)])
+
+    def test_explicit_mentions_reach_the_backend_but_a_plain_at_name_does_not(self):
+        self.sign_in()
+        args = {"chat": "c1", "text": "@小明 周五见", "mentions": [{"id": "7001", "name": "小明"}]}
+        self.c.actions_do({"name": "larkx_send", "args": args, "request_id": "r1"})
+        self.assertEqual(self.backend.sent, [("c1", "@小明 周五见", None, args["mentions"])])
+        self.c.actions_do({"name": "larkx_send", "args": {"chat": "c1", "text": "@小明 明天见"}, "request_id": "r2"})
+        self.assertEqual(self.backend.sent[-1], ("c1", "@小明 明天见", None))
+
+    def test_an_unknown_or_unwritten_mention_is_refused_before_sending(self):
+        self.sign_in()
+        for mentions in ([{"id": "ou_wrong", "name": "小明"}], [{"id": "7001", "name": "小亮"}]):
+            args = {"chat": "c1", "text": "@小明 周五见", "mentions": mentions}
+            with self.assertRaises(RpcError):
+                self.c.actions_do({"name": "larkx_send", "args": args, "request_id": "r1"})
+        self.assertEqual(self.backend.sent, [])
+
+    def test_an_agent_reply_mentions_only_a_known_participant(self):
+        self.sign_in()
+        self.c.on_message(message("m0", "g1", 1, sender="7001", text="小明", kind="group"))
+        m = message("m1", "g1", 2, kind="group")
+        m["sender_name"] = "小明"
+        m["sender"] = ME
+        self.c.on_message(m)
+        with mock.patch.object(self.c, "_agent_request", return_value="提醒小明"):
+            self.c.channel_send({"ref": "r1", "reply_to": "m1", "text": "@小明 请确认"})
+        self.assertEqual(self.backend.sent[0][3], [{"id": "7001", "name": "小明"}])
 
     def test_a_send_that_may_have_gone_out_is_never_repeated(self):
         self.sign_in()

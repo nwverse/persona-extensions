@@ -21,7 +21,7 @@ import (
 //     tools and Agent): never one that writes files, publishes, or comes from an MCP server;
 //   - for Bash, the command is not one that stays with a person (guard.go): deletion, overwriting data, a forced
 //     push, a permission change. A deletion or overwrite whose targets are all scratch (scratch.go) goes through,
-//     and with the allow_destructive setting every deletion and overwrite does;
+//     and the allow_destructive setting permits other deletions and overwrites, not protected deletion targets;
 //   - the node program is running (its heartbeat file is fresh): an extension that was switched off, stopped or
 //     uninstalled without the chance to remove the entry allows nothing;
 //   - no ask or deny rule of the user's that the hook can read could be about the call (rules.go): those prompts are

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
@@ -99,6 +100,71 @@ type RerunProgress struct {
 	Waiting []string // planned days still to run
 	Forced  []string // days queued with force that still wait (they run before the others)
 	Paused  string   // why the passes wait, and until when ("" when they do not)
+	// History says which days' agent sessions the hub's session history could not list in full: a line for the days
+	// of a hub without it, and one per day with a source that did not answer or vouch for the window.
+	History []string
+}
+
+// historyMost is how many days with gaps the status names one by one (the newest).
+const historyMost = 10
+
+// historyLines is RerunProgress.History. The caller holds the lock.
+func (c *Curator) historyLines() []string {
+	var none, gaps []string
+	for _, day := range sortedKeys(c.St.S.SessionHistory) {
+		h := c.St.S.SessionHistory[day]
+		switch {
+		case h == nil:
+		case !h.Offered:
+			none = append(none, day)
+		case len(h.Gaps) > 0:
+			gaps = append(gaps, day)
+		}
+	}
+	var out []string
+	if len(none) > 0 {
+		why := c.St.S.SessionHistory[none[len(none)-1]].Why
+		out = append(out, fmt.Sprintf("%d day(s) read from the hub's live session list only, the hub offering no session history (%s): %s",
+			len(none), why, daySpan(none)))
+	}
+	if len(gaps) > historyMost {
+		out = append(out, fmt.Sprintf("%d more day(s) with sources not listed in full, before %s", len(gaps)-historyMost, gaps[len(gaps)-historyMost]))
+		gaps = gaps[len(gaps)-historyMost:]
+	}
+	for _, day := range gaps {
+		var parts []string
+		for _, g := range c.St.S.SessionHistory[day].Gaps {
+			src := g.Source
+			if g.Runtime != "" {
+				src += " " + g.Runtime
+			}
+			what := "not complete"
+			if !g.Honored {
+				what = "not honored"
+			}
+			if g.Reason != "" {
+				what += " (" + g.Reason + ")"
+			}
+			parts = append(parts, fmt.Sprintf("machine %s, source %s: %s", cmpOr(g.Machine, "?"), cmpOr(src, "?"), what))
+		}
+		out = append(out, day+" sessions not listed in full: "+strings.Join(parts, "; ")+" (read as far as the live list and the sessions seen before have them)")
+	}
+	return out
+}
+
+// daySpan is days as a short text: every day when few, else the first and last with the count.
+func daySpan(days []string) string {
+	if len(days) <= 6 {
+		return strings.Join(days, ", ")
+	}
+	return fmt.Sprintf("%s … %s (%d days)", days[0], days[len(days)-1], len(days))
+}
+
+func cmpOr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
 }
 
 // RerunStatus is the progress of rerun_range's and the queue's days. It takes the store's lock.
@@ -113,10 +179,14 @@ func (c *Curator) RerunStatus() RerunProgress {
 			p.Waiting = append(p.Waiting, d)
 		}
 	}
+	p.History = c.historyLines()
 	if mp := c.St.S.ModelPause; mp != nil {
 		what := "the model is unavailable"
-		if mp.What == "assistant" {
+		switch mp.What {
+		case "assistant":
 			what = "the assistant's computer is not connected"
+		case WhatHeld:
+			what = "the hub holds the model's connection (model_paused: busy or quota; waiting, not failing)"
 		}
 		p.Paused = fmt.Sprintf("%s (%s); %s is tried again at %s", what, mp.Reason, mp.Day, mp.NextTry)
 	}

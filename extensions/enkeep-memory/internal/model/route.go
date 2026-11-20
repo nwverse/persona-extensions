@@ -52,7 +52,8 @@ const (
 	ReasonTimeout     = "timeout"     // timeout: the candidate took longer than timeout_seconds
 	ReasonFormat      = "format"      // invalid_output: no match with the schema after the hub's second try
 	ReasonRefused     = "refused"     // model_refused, or model_failed saying the model declined
-	ReasonUnavailable = "unavailable" // model_paused: the hub holds the model for quota or load
+	ReasonUnavailable = "unavailable" // the hub cannot run a model for the extension (assistant offline, no permission)
+	ReasonPaused      = "paused"      // model_paused: the hub holds the connection for quota or load; nothing was sent (pause.go)
 	ReasonNotOffered  = "not_offered" // model_unavailable: no provider the user set up offers the model
 )
 
@@ -170,7 +171,7 @@ func reason(code, msg string) string {
 	case wire.ModelErrorCodeModelRefused:
 		return ReasonRefused
 	case wire.ModelErrorCodeModelPaused:
-		return ReasonUnavailable
+		return ReasonPaused
 	case wire.ModelErrorCodeModelUnavailable:
 		return ReasonNotOffered
 	case wire.ModelErrorCodeModelFailed:
@@ -255,6 +256,7 @@ func (rt *Route) complete(ctx context.Context, r Request, call func(context.Cont
 		return Response{}, err
 	}
 	var attempts []Attempt
+	var held *PausedError // a candidate the hub held: the call waits and is asked again (pause.go)
 	switch e.Code {
 	case wire.ModelErrorCodeInvalidParams:
 		if strings.Contains(e.Message, `"models"`) { // json: unknown field "models"
@@ -272,6 +274,7 @@ func (rt *Route) complete(ctx context.Context, r Request, call func(context.Cont
 		for _, a := range data.Attempts {
 			attempts = append(attempts, failed(a))
 		}
+		held, _ = heldAttempts(data.Attempts, rt.now())
 	default: // one candidate, failing with its own code
 		m := chain[0]
 		var no notOffered
@@ -279,6 +282,7 @@ func (rt *Route) complete(ctx context.Context, r Request, call func(context.Cont
 			m = no.Model
 		}
 		attempts = []Attempt{{Model: m, Reason: reason(e.Code, e.Message), Code: e.Code, Message: cut(e.Message, 160), Secs: secs}}
+		held, _ = pausedOf(e.Code, e.Message, e.Data, rt.now())
 		if e.Code == wire.ModelErrorCodeInvalidOutput {
 			if resp, ok := fromInvalidOutput(e.Data); ok { // the reply the hub returned anyway goes to the step's checks
 				resp.Model = cmpOr(resp.Model, m)
@@ -289,6 +293,11 @@ func (rt *Route) complete(ctx context.Context, r Request, call func(context.Cont
 	}
 	if len(attempts) == 0 {
 		attempts = []Attempt{{Model: strings.Join(chain, "|"), Reason: reason(e.Code, e.Message), Code: e.Code, Message: cut(e.Message, 160), Secs: secs}}
+	}
+	if held != nil {
+		// Held, not failed: no fallback to the old way or anything else; Hub.Complete waits and asks the chain again.
+		rt.held(began, r, est, size, attempts, held)
+		return Response{}, held
 	}
 	switch {
 	case every(attempts, ReasonNotOffered):
@@ -358,11 +367,15 @@ func (rt *Route) old(ctx context.Context, r Request, est int, size string, legac
 	start := rt.now()
 	resp, err := legacy(ctx, r)
 	a := Attempt{Model: cmpOr(resp.Model, "purpose"), Secs: rt.now().Sub(start).Seconds()}
-	if err != nil {
+	p, paused := Held(err)
+	switch {
+	case paused:
+		a.Reason, a.Code, a.Message = ReasonPaused, wire.ModelErrorCodeModelPaused, cut(p.Message, 160)
+	case err != nil:
 		a.Reason, a.Message = ReasonError, cut(err.Error(), 160)
 	}
 	if rt.Stats != nil {
-		c := Call{At: start.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: append(before, a), Legacy: why}
+		c := Call{At: start.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: append(before, a), Legacy: why, Paused: paused}
 		if err == nil {
 			c.Answered = a.Model
 		}
@@ -375,6 +388,20 @@ func (rt *Route) old(ctx context.Context, r Request, est int, size string, legac
 	rt.logf("enkeep-memory: model call %s: est %d tokens (%s), old way (%s): %s", r.Step, est, size, why,
 		strings.Join(append(tried, outcome(a)), ", "))
 	return resp, err
+}
+
+// held counts and logs a call the hub held: not a failure and not an answer; it is asked again after the hold.
+func (rt *Route) held(began time.Time, r Request, est int, size string, attempts []Attempt, p *PausedError) {
+	var tried []string
+	for _, a := range attempts {
+		tried = append(tried, outcome(a))
+	}
+	rt.logf("enkeep-memory: model call %s: est %d tokens (%s): held by the hub until %s; tried %s", r.Step, est, size,
+		p.Until.UTC().Format(time.RFC3339), strings.Join(tried, ", "))
+	if rt.Stats != nil {
+		rt.Stats.add(Call{At: began.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: attempts,
+			Paused: true, Until: p.Until.UTC().Format(time.RFC3339)})
+	}
 }
 
 // done counts and logs a call that went through the chain.
@@ -426,19 +453,21 @@ type Stats struct {
 // Counts is what Stats counted: a plain value, safe to pass around.
 type Counts struct {
 	Since    string                 `json:"since"`
-	Calls    int                    `json:"calls"`     // calls through the chain or the old way
+	Calls    int                    `json:"calls"`     // calls through the chain or the old way (held ones not counted)
 	FellBack int                    `json:"fell_back"` // calls a fallback model answered
-	Failed   int                    `json:"failed"`    // calls no model answered
+	Failed   int                    `json:"failed"`    // calls no model answered (held ones not counted)
 	Legacy   int                    `json:"legacy"`    // calls sent the old way (a hub without models)
+	Paused   int                    `json:"paused"`    // tries the hub held (model_paused): waited out and asked again
 	Models   map[string]*ModelCount `json:"models"`
 	Recent   []Call                 `json:"recent"` // the last recentCalls calls, oldest first
 }
 
-// ModelCount is one model's attempts.
+// ModelCount is one model's attempts. Paused is the tries the hub held (model_paused): not attempts, not failures.
 type ModelCount struct {
 	Attempts int            `json:"attempts"`
 	Answered int            `json:"answered"`
 	AsBackup int            `json:"as_backup"` // answers it gave as a fallback
+	Paused   int            `json:"paused,omitempty"`
 	Failures map[string]int `json:"failures,omitempty"`
 	Secs     float64        `json:"secs"` // the time its attempts took, together
 }
@@ -454,6 +483,8 @@ type Call struct {
 	FellBack bool      `json:"fell_back,omitempty"`
 	Legacy   string    `json:"legacy,omitempty"` // why it went the old way
 	Note     string    `json:"note,omitempty"`   // candidates off, the user's own list, a reply kept though it does not match
+	Paused   bool      `json:"paused,omitempty"` // the hub held it (model_paused): asked again after Until, not a failure
+	Until    string    `json:"until,omitempty"`  // RFC 3339: when the hold lets go
 }
 
 const recentCalls = 50
@@ -483,21 +514,30 @@ func (s *Stats) add(c Call) {
 	if n.Models == nil {
 		n.Models = map[string]*ModelCount{}
 	}
-	n.Calls++
 	switch {
-	case c.Legacy != "":
-		n.Legacy++
-	case c.FellBack && c.Answered != "":
-		n.FellBack++
-	}
-	if c.Answered == "" {
-		n.Failed++
+	case c.Paused:
+		n.Paused++
+	default:
+		n.Calls++
+		switch {
+		case c.Legacy != "":
+			n.Legacy++
+		case c.FellBack && c.Answered != "":
+			n.FellBack++
+		}
+		if c.Answered == "" {
+			n.Failed++
+		}
 	}
 	for i, a := range c.Attempts {
 		m := n.Models[a.Model]
 		if m == nil {
 			m = &ModelCount{}
 			n.Models[a.Model] = m
+		}
+		if a.Reason == ReasonPaused { // nothing was sent: not an attempt of the model's
+			m.Paused++
+			continue
 		}
 		m.Attempts++
 		m.Secs += a.Secs
@@ -564,6 +604,9 @@ func (s Counts) Summary() string {
 	}
 	fmt.Fprintf(&b, "Model calls since %s: %d, answered by a fallback %d (%.1f%%), unanswered %d, sent the old way %d.",
 		s.Since, s.Calls, s.FellBack, rate, s.Failed, s.Legacy)
+	if s.Paused > 0 {
+		fmt.Fprintf(&b, " Held by the hub (model_paused, busy or quota; waited out and asked again, not unanswered): %d.", s.Paused)
+	}
 	names := make([]string, 0, len(s.Models))
 	for n := range s.Models {
 		names = append(names, n)
@@ -572,6 +615,9 @@ func (s Counts) Summary() string {
 	for _, n := range names {
 		m := s.Models[n]
 		fmt.Fprintf(&b, "\n- %s: %d attempt(s), %d answered (%d as fallback)", n, m.Attempts, m.Answered, m.AsBackup)
+		if m.Paused > 0 {
+			fmt.Fprintf(&b, ", held %d", m.Paused)
+		}
 		if len(m.Failures) > 0 {
 			var rs []string
 			for r := range m.Failures {

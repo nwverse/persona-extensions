@@ -209,6 +209,15 @@ func (c *client) updatePage(ctx context.Context, id int64, name, markdown string
 	return out, err
 }
 
+// pageLink is a page's permalink on the instance. A page read from the API has no address of its own, and BookStack's
+// /link/{id} route redirects to the page.
+func pageLink(base string, id int64) string {
+	if id <= 0 {
+		return ""
+	}
+	return safePageLink(base + "/link/" + strconv.FormatInt(id, 10))
+}
+
 func safePageLink(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Hostname() == "" || u.User != nil {

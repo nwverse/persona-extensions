@@ -26,7 +26,7 @@ next one is tried, when:
 | `timeout` | `timeout`: it took longer than `model_timeout` |
 | `format` | `invalid_output`: the answer did not match the step's JSON schema after the hub's second try |
 | `refused` | `model_refused`, or `model_failed` saying the model declined |
-| `unavailable` | `model_paused`: the hub holds that model for quota or load |
+| `paused` | `model_paused`: the hub holds that model's connection for quota or load (nothing is sent); see below |
 | `not_offered` | `model_unavailable`: no provider you set up offers the model (nothing is sent) |
 
 The answer says which candidate answered (`candidate`), which model the upstream named (`model`) and the candidates
@@ -36,6 +36,21 @@ answered, noted "candidates off") or names a candidate of your list (noted "the 
 
 What is not a model's failure stops the call at once, as before: the hub cannot run any model for the extension
 (`assistant_offline`, `permission_denied`, a hub without `model.complete`), or the run itself was cancelled.
+
+### A hold is a wait, not a failure (0.2.0-beta.34)
+
+`model_paused` means the upstream said the account is busy or its quota is used up, and the hub holds the whole
+connection (address and key) for every extension and purpose: first 5 seconds, doubling while it stays busy, at most 5
+minutes; the error says until when (`until`). The route's candidates usually share that connection, so trying the next
+one does not help. When a candidate of the chain was held and none answered, the call is neither a failure nor sent
+the old way: it waits until the hold lets go (`until`; else the seconds the message names; else 10 seconds; at most 5
+minutes a wait) and asks the whole chain again, within 10 minutes of waiting per call, and ends when the run is
+cancelled. A call still held after that comes back as held: the step puts its unit back (the day stays open and runs
+again when the hold lets go, with no failure counted and no error logged). Only a model not offered, a timeout, a reply
+that does not match and the like move on to the next candidate, as above.
+
+`enkeep_rerun_status` counts the holds apart ("Held by the hub ..."; per model, "held N"): they are not in the calls,
+the unanswered ones or a model's attempts.
 
 When no candidate answers (`model_candidates_failed`, or one candidate's own error), the caller gets what it got
 before routes: a refusal (the batch is split into smaller ones), a pause (the day waits for the model), or the error.

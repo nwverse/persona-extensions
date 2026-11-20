@@ -57,6 +57,14 @@ func newFakeJira(t *testing.T) *fakeJira {
 		case "/issue":
 			var in map[string]any
 			_ = json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&in)
+			// Jira Cloud's REST v3 takes the description as an Atlassian Document, not a string.
+			if fields, _ := in["fields"].(map[string]any); fields["description"] != nil {
+				if err := checkADF(fields["description"]); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					fmt.Fprint(w, `{"errorMessages":[],"errors":{"description":"The description must be an Atlassian Document: `+err.Error()+`"}}`)
+					break
+				}
+			}
 			f.mu.Lock()
 			f.creates = append(f.creates, in)
 			f.mu.Unlock()
@@ -64,6 +72,12 @@ func newFakeJira(t *testing.T) *fakeJira {
 		case "/issue/ENG-123/comment":
 			var in map[string]any
 			_ = json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&in)
+			// Jira Cloud's REST v3 takes the comment body as an Atlassian Document, not a string.
+			if err := checkADF(in["body"]); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"errorMessages":["The comment body must be an Atlassian Document: `+err.Error()+`"],"errors":{}}`)
+				break
+			}
 			f.mu.Lock()
 			f.comments = append(f.comments, in)
 			f.mu.Unlock()
@@ -159,7 +173,7 @@ func TestCommentReplayAndInvalidWrites(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(f.comments) != 1 || f.comments[0]["body"] != "Keep context" {
+	if len(f.comments) != 1 || adfText(f.comments[0]["body"]) != "Keep context" {
 		t.Fatal(f.comments)
 	}
 	for _, tc := range []struct{ name, args string }{
@@ -240,7 +254,7 @@ func TestLocalizedViewsAndCreateReview(t *testing.T) {
 }
 
 // /search/jql answers no total and ignores startAt; it pages with nextPageToken, as the fake does. The page's Load more
-// and jira_assigned's page_token reach the second page.
+// extends the view with the second page, and jira_assigned's page_token reaches it.
 func TestPaginationFollowsNextPageToken(t *testing.T) {
 	f := newFakeJira(t)
 	a := f.app()
@@ -266,7 +280,7 @@ func TestPaginationFollowsNextPageToken(t *testing.T) {
 	if err != nil || res.View == nil {
 		t.Fatalf("%v %+v", err, res)
 	}
-	if s := res.View.Sections[0]; s.More != nil || !slices.Equal(rows(s), []string{"issue-ENG-125"}) {
+	if s := res.View.Sections[0]; s.More != nil || !slices.Equal(rows(s), []string{"issue-ENG-123", "issue-ENG-125"}) {
 		t.Fatalf("second page: %v, more %+v", rows(s), s.More)
 	}
 	text, err := a.callTool(t.Context(), "jira_assigned", nil)
@@ -293,7 +307,7 @@ func TestReceiptConflict(t *testing.T) {
 
 func TestDetailBoundsAndNoConfig(t *testing.T) {
 	var item issue
-	item.Key, item.Self = "ENG-123", "https://jira.example.com/browse/ENG-123"
+	item.Key, item.URL = "ENG-123", "https://jira.example.com/browse/ENG-123"
 	item.Fields.Summary = "Task"
 	item.Fields.Description = json.RawMessage(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Details"}]}]}`)
 	v := detailView(&ext.UIRequest{UIParams: wire.UIParams{Locale: "en", UIVersion: 6}}, pageState{IssueKey: "ENG-123", Mode: "detail"}, item)

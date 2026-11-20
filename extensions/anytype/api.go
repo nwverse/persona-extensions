@@ -151,8 +151,9 @@ func (c *client) object(ctx context.Context, spaceID, objectID string) (knowledg
 	if err := validObjectID(objectID); err != nil {
 		return out, err
 	}
-	err := c.do(ctx, http.MethodGet, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects/"+url.PathEscape(objectID), nil, nil, &out)
-	return out, err
+	var answer objectAnswer
+	err := c.do(ctx, http.MethodGet, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects/"+url.PathEscape(objectID), nil, nil, &answer)
+	return answer.Object, err
 }
 
 func (c *client) types(ctx context.Context, spaceID string, offset int) (page[objectType], error) {
@@ -173,9 +174,9 @@ func (c *client) createObject(ctx context.Context, spaceID, name, markdown, type
 		return knowledgeObject{}, err
 	}
 	body := map[string]any{"name": name, "body": markdown, "type_key": typeKey}
-	var out knowledgeObject
-	err := c.do(ctx, http.MethodPost, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects", nil, body, &out)
-	return out, err
+	var answer objectAnswer
+	err := c.do(ctx, http.MethodPost, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects", nil, body, &answer)
+	return answer.Object, err
 }
 
 func objectText(item knowledgeObject) string {

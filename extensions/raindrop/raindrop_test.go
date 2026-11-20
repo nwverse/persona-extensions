@@ -68,7 +68,7 @@ func newFakeRaindrop(t *testing.T) *fakeRaindrop {
 			f.mu.Lock()
 			f.posts = append(f.posts, in)
 			f.mu.Unlock()
-			fmt.Fprint(w, `{"result":true,"item":{"_id":501,"title":"Saved article","link":"https://example.com/new","collection":{"_id":12,"title":"AI"}}}`)
+			fmt.Fprint(w, `{"result":true,"item":{"_id":501,"title":"Saved article","link":"https://example.com/new","collection":{"$id":12}}}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 			fmt.Fprint(w, `{"result":false,"errorMessage":"not found"}`)

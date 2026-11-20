@@ -67,7 +67,9 @@ func (f *fakeHub) call(_ context.Context, params, out any) error {
 		var e *ext.Error
 		errors.As(err, &e)
 		last = err
-		attempts = append(attempts, attempt{Model: m, Code: e.Code, Message: e.Message, Seconds: 2})
+		var held wire.ModelPause
+		_ = json.Unmarshal(e.Data, &held)
+		attempts = append(attempts, attempt{Model: m, Code: e.Code, Message: e.Message, Until: held.Until, Seconds: 2})
 	}
 	if len(models) == 1 {
 		return last
@@ -135,14 +137,17 @@ func TestRoutePrimaryAnswers(t *testing.T) {
 
 // Every kind of failure of the primary hands over to the short or the long model by the call's size, and the reason
 // is counted from the hub's attempts.
+//
+// ReasonPaused: a candidate held on its connection while the next one, on another, answers: the hub handed over within
+// the call, and the answer stands (the hold is counted apart, not as a failure).
 func TestRouteFallsBackByLength(t *testing.T) {
 	for name, primary := range map[string]func() (wire.ModelCompleteResult, error){
-		ReasonError:       fails(wire.ModelErrorCodeModelFailed, "model.complete: 502 upstream"),
-		ReasonEmpty:       fails(wire.ModelErrorCodeModelFailed, "model.complete: the reply was empty"),
-		ReasonTimeout:     fails(wire.ModelErrorCodeTimeout, "model.complete: timed out"),
-		ReasonRefused:     fails(wire.ModelErrorCodeModelRefused, "model.complete: declined"),
-		ReasonFormat:      fails(wire.ModelErrorCodeInvalidOutput, "model.complete: the reply does not match json_schema"),
-		ReasonUnavailable: fails(wire.ModelErrorCodeModelPaused, "model.complete: paused"),
+		ReasonError:   fails(wire.ModelErrorCodeModelFailed, "model.complete: 502 upstream"),
+		ReasonEmpty:   fails(wire.ModelErrorCodeModelFailed, "model.complete: the reply was empty"),
+		ReasonTimeout: fails(wire.ModelErrorCodeTimeout, "model.complete: timed out"),
+		ReasonRefused: fails(wire.ModelErrorCodeModelRefused, "model.complete: declined"),
+		ReasonFormat:  fails(wire.ModelErrorCodeInvalidOutput, "model.complete: the reply does not match json_schema"),
+		ReasonPaused:  fails(wire.ModelErrorCodeModelPaused, "model.complete: paused"),
 	} {
 		for _, c := range []struct {
 			r    Request
@@ -158,7 +163,11 @@ func TestRouteFallsBackByLength(t *testing.T) {
 				t.Fatalf("%s: calls %s", name, joined(f.calls))
 			}
 			s := rt.Stats.Snapshot()
-			if s.Calls != 1 || s.FellBack != 1 || s.Models["flash"].Failures[name] != 1 || s.Models[c.want].AsBackup != 1 {
+			failed := s.Models["flash"].Failures[name]
+			if name == ReasonPaused {
+				failed = s.Models["flash"].Paused
+			}
+			if s.Calls != 1 || s.FellBack != 1 || failed != 1 || s.Models[c.want].AsBackup != 1 {
 				t.Fatalf("%s: stats %+v", name, s)
 			}
 			if got := s.Recent[0]; got.Answered != c.want || !got.FellBack || got.Attempts[0].Reason != name {
@@ -259,7 +268,8 @@ func TestRouteAssistantOffline(t *testing.T) {
 func TestRouteAllFail(t *testing.T) {
 	rt, _ := testRoute(t)
 	f := &fakeHub{answers: answers{"flash": fails(wire.ModelErrorCodeModelPaused, "paused"), "small": fails(wire.ModelErrorCodeModelPaused, "paused")}}
-	if _, err := (Hub{Route: rt, call: f.call}).Complete(context.Background(), shortReq); !errors.Is(err, ErrUnavailable) {
+	// Held past the call's wait (a budget too small for any wait): ErrPaused, which is ErrUnavailable, not a failure.
+	if _, err := (Hub{Route: rt, call: f.call, PauseBudget: time.Nanosecond}).Complete(context.Background(), shortReq); !errors.Is(err, ErrUnavailable) || !errors.Is(err, ErrPaused) {
 		t.Fatalf("paused: %v", err)
 	}
 	f = &fakeHub{answers: answers{"flash": fails(wire.ModelErrorCodeModelFailed, "ai: the model declined to answer"), "small": fails(wire.ModelErrorCodeModelRefused, "declined")}}
@@ -270,7 +280,7 @@ func TestRouteAllFail(t *testing.T) {
 	if _, err := (Hub{Route: rt, call: f.call}).Complete(context.Background(), shortReq); err == nil || errors.Is(err, ErrRefused) || errors.Is(err, ErrUnavailable) {
 		t.Fatalf("errors: %v", err)
 	}
-	if s := rt.Stats.Snapshot(); s.Failed != 3 || s.Models["small"].Failures[ReasonError] != 1 {
+	if s := rt.Stats.Snapshot(); s.Failed != 2 || s.Paused != 1 || s.Models["small"].Failures[ReasonError] != 1 || s.Models["flash"].Failures[ReasonPaused] != 0 {
 		t.Fatalf("stats %+v", s)
 	}
 }

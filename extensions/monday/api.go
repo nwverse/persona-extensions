@@ -92,10 +92,32 @@ func (c *client) me(ctx context.Context) (user, error) {
 	return out.Me, err
 }
 
+// boardsPageSize is the number of boards asked for per page. The boards query returns 25 when `limit` is left out, and
+// `page` starts at 1.
+const boardsPageSize = 50
+
+// maxBoards keeps the board list within the SDK's component limit.
+const maxBoards = 250
+
 func (c *client) boards(ctx context.Context) ([]board, error) {
-	var out boardPage
-	err := c.query(ctx, `query { boards { id name url } }`, &out)
-	return out.Boards, err
+	var boards []board
+	seen := map[int64]bool{}
+	for page := 1; len(boards) < maxBoards; page++ {
+		var out boardPage
+		if err := c.query(ctx, fmt.Sprintf(`query { boards(limit: %d, page: %d) { id name url } }`, boardsPageSize, page), &out); err != nil {
+			return nil, err
+		}
+		for _, item := range out.Boards {
+			if !seen[item.ID] {
+				seen[item.ID] = true
+				boards = append(boards, item)
+			}
+		}
+		if len(out.Boards) < boardsPageSize {
+			break
+		}
+	}
+	return boards[:min(len(boards), maxBoards)], nil
 }
 
 func (c *client) board(ctx context.Context, id int64) (board, error) {
@@ -129,6 +151,23 @@ func (c *client) items(ctx context.Context, boardID int64, cursor string) (items
 	return out.Boards[0].ItemsPage, nil
 }
 
+// item reads one item by its ID, so an item on any page of the board opens. The query is not scoped to a board, so an ID
+// that belongs to another board is refused.
+func (c *client) item(ctx context.Context, boardID, itemID int64) (item, error) {
+	if boardID <= 0 || itemID <= 0 {
+		return item{}, errors.New("board and item IDs must be positive")
+	}
+	query := fmt.Sprintf(`query { items(ids: [%d]) { id name url created_at updated_at board { id } column_values { id text value } } }`, itemID)
+	var out itemByIDPage
+	if err := c.query(ctx, query, &out); err != nil {
+		return item{}, err
+	}
+	if len(out.Items) != 1 || out.Items[0].Board.ID != boardID {
+		return item{}, errNotFound
+	}
+	return out.Items[0].item, nil
+}
+
 func cursorArgument(cursor string) string {
 	if cursor == "" {
 		return ""
@@ -152,7 +191,7 @@ func (c *client) updateStatusColumn(ctx context.Context, boardID, itemID int64, 
 	if boardID <= 0 || itemID <= 0 {
 		return item{}, errors.New("board and item IDs must be positive")
 	}
-	valueObject, _ := json.Marshal(map[string]string{"label": label})
+	valueObject, _ := json.Marshal(map[string]map[string]string{columnID: {"label": label}})
 	valueString, _ := json.Marshal(string(valueObject))
 	query := fmt.Sprintf(`mutation { change_multiple_column_values(board_id: %d, item_id: %d, column_values: %s) { id name url column_values { id text value } } }`, boardID, itemID, valueString)
 	var out updatePage

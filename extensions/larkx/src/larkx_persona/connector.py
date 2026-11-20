@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from .real import mention_parts
 from .wire import RpcError
 
 ID = "larkx"
@@ -59,7 +60,11 @@ SEND_SCHEMA = {
     "type": "object",
     "properties": {
         "chat": {"type": "string", "description": "The chat's id, from larkx_chats or an inbox item."},
-        "text": {"type": "string", "description": "The message, plain text."},
+        "text": {"type": "string", "description": "The message, plain text. Write @name exactly as in mentions."},
+        "mentions": {"type": "array", "maxItems": 100, "description": "People to really @; a plain @name without an entry here is ordinary text.",
+                     "items": {"type": "object", "additionalProperties": False, "required": ["id", "name"],
+                               "properties": {"id": {"type": "string", "description": "The person's id from larkx_search."},
+                                              "name": {"type": "string", "description": "The person's exact display name from larkx_search."}}}},
         "reply_to": {"type": "string", "description": "A message's id, to answer in its topic."},
     },
     "required": ["chat", "text"],
@@ -74,7 +79,7 @@ SEND_DM_SCHEMA = {
 }
 ACTIONS = [
     {"name": "larkx_send", "input_schema": SEND_SCHEMA,
-     "description": "Send a Feishu message to a chat as the user themself, not a bot. The user confirms the full text on the phone first."},
+     "description": "Send a Feishu message to a chat as the user themself, not a bot. To really @ somebody, pass their id and exact name from larkx_search in mentions and write @name in text; @name alone is ordinary text. The user confirms the full text on the phone first."},
     {"name": "larkx_send_dm", "input_schema": SEND_DM_SCHEMA,
      "description": "Send a Feishu direct message to a person as the user themself, not a bot. The user confirms the full text on the phone first."},
 ]
@@ -92,6 +97,16 @@ TOOLS = [
     {"name": "larkx_search", "description": "Find Feishu people and groups by name; gives the ids larkx_send_dm and larkx_messages take.",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
 ]
+
+
+def _mentions(args, text):
+    if not args.get("mentions"):
+        return []
+    try:
+        mention_parts(text, args.get("mentions") or [])
+    except ValueError as e:
+        raise RpcError(str(e), "invalid_params") from e
+    return args.get("mentions") or []
 
 
 def rfc3339(at):
@@ -120,6 +135,8 @@ class Connector:
         # rstripped.
         suffix = (suffix or "").strip()[:AGENT_SUFFIX_MOST].strip()
         self.suffix = suffix if len(suffix) >= AGENT_SUFFIX_LEAST else AGENT_SUFFIX
+        # A fresh message from the signed-in user with a real AT element for that same account is also a request.
+        self.mention = True
         self.store = store
         self.hub = hub
         self._ready = threading.Event()
@@ -269,19 +286,27 @@ class Connector:
 
     # /agent: the channel (docs/extensions/channels.md "Contributing a channel" in Persona)
 
+    def _agent_request(self, m, me):
+        """The request in a user's own message, or None. A real self-mention and /agent share the answer-marker guard,
+        and channel.send uses this same rule as live receipt, so a request can always be answered."""
+        text = m.get("text") or ""
+        if text.rstrip().endswith(self.suffix):
+            return None
+        request = agent_request(text, self.prefix)
+        if request is not None:
+            return request
+        return mention_request(text, m.get("mentions"), me) if self.mention else None
+
     def _maybe_agent(self, m):
-        """Hands the user's own fresh "/agent …" to the hub, which puts it in the assistant's chat and answers through
-        channel.send. Someone else's /agent, an old one, and our own answers never count."""
+        """Hands the user's own fresh "/agent …" or self-mention to the hub, which puts it in the assistant's chat and
+        answers through channel.send. Someone else's request, an old one, and our own answers never count."""
         with self._lock:
             me = self._account_id
         if not me or m.get("sender") != me or m.get("type") not in AGENT_TYPES:
             return
         if time.time() - (m.get("at") or 0) > AGENT_FRESH_SECONDS:
             return
-        text = m.get("text") or ""
-        if text.rstrip().endswith(self.suffix):
-            return
-        request = agent_request(text, self.prefix)
+        request = self._agent_request(m, me)
         if request is None:
             return
         threading.Thread(target=self._hand_over, args=(m, request), daemon=True).start()
@@ -323,8 +348,7 @@ class Connector:
         with self._lock:
             signed_in, me = self._signed_in, self._account_id
         request = self.store.message(p.get("reply_to") or "") if p.get("reply_to") else None
-        if (not signed_in or request is None or request["sender"] != me
-                or agent_request(request["text"], self.prefix) is None or request["text"].rstrip().endswith(self.suffix)):
+        if not signed_in or request is None or request["sender"] != me or self._agent_request(request, me) is None:
             # Only an answer to one of the user's own /agent goes out: nothing in a chat they did not ask in.
             raise RpcError("没有可以回复的 %s 消息" % self.prefix, CANNOT_SEND)
         key = "channel:" + ref
@@ -334,8 +358,9 @@ class Connector:
                 return {"message_id": result}
             raise RpcError(_UNKNOWN_SEND)
         text = (p.get("text") or "").rstrip() + "\n\n" + self.suffix
+        mentions = self._context_mentions(request, text)
         try:
-            msg_id = self.backend.send(request["chat"], text, request.get("root") or request["id"])
+            msg_id = self.backend.send(request["chat"], text, request.get("root") or request["id"], mentions=mentions)
         except Exception:
             msg_id = None
         if not msg_id:
@@ -345,6 +370,30 @@ class Connector:
 
     def channel_typing(self, _):
         return {}
+
+    def _context_mentions(self, request, text):
+        """Known participants' real ids, for a name the assistant wrote. Unrecognized @words stay plain text."""
+        people = {}
+        for m in self.store.messages(request["chat"], 0, CONTEXT_LINES):
+            if "@" + (m.get("sender_name") or "") not in text:
+                continue
+            sender = m.get("sender")
+            if sender and str(sender).isdigit() and not self.store.name(sender):
+                try:
+                    found = self.backend.user_name(sender, request["chat"])
+                except Exception:
+                    found = None
+                if found:
+                    self.store.set_name(sender, found)
+        for m in self.store.messages(request["chat"], 0, CONTEXT_LINES):
+            people[m.get("sender")] = self.store.name(m.get("sender"))
+        targets = [{"id": user_id, "name": name} for user_id, name in people.items()
+                   if user_id and str(user_id).isdigit() and name and "@" + name in text]
+        try:
+            mention_parts(text, targets)
+        except ValueError:
+            return []
+        return targets
 
     def _sender_name(self, m, mine):
         if mine:
@@ -491,7 +540,9 @@ class Connector:
         # Each request's send runs at most once, keyed on its id: without one, every later send would read as that one.
         request_id = _required(p, "request_id")
         if name == "larkx_send":
-            return {"text": self._send_once("action:" + request_id, _required(args, "chat"), _required(args, "text"), args.get("reply_to"))}
+            chat, text = _required(args, "chat"), _required(args, "text")
+            mentions = _mentions(args, text)
+            return {"text": self._send_once("action:" + request_id, chat, text, args.get("reply_to"), mentions)}
         if name == "larkx_send_dm":
             self._need_signed_in()
             user, text = _required(args, "user"), _required(args, "text")
@@ -501,9 +552,9 @@ class Connector:
             return {"text": self._send("action:" + request_id, self.backend.create_chat(user), text, None)}
         raise RpcError("没有这个操作：%s" % name)
 
-    def _send_once(self, key, chat, text, reply_to):
+    def _send_once(self, key, chat, text, reply_to, mentions=()):
         self._need_signed_in()
-        return self._claim(key) or self._send(key, chat, text, reply_to)
+        return self._claim(key) or self._send(key, chat, text, reply_to, mentions)
 
     def _claim(self, key):
         """Takes key for one send: "" when it is this one's to do, else what the first one ended with."""
@@ -514,13 +565,13 @@ class Connector:
             return result
         raise RpcError(_UNKNOWN_SEND)
 
-    def _send(self, key, chat, text, reply_to):
+    def _send(self, key, chat, text, reply_to, mentions=()):
         root = None
         if reply_to:
             quoted = self.store.message(reply_to) or {}
             root = quoted.get("root") or reply_to
         try:
-            msg_id = self.backend.send(chat, text, root)
+            msg_id = self.backend.send(chat, text, root, mentions=mentions)
         except Exception:
             msg_id = None
         if not msg_id:
@@ -806,7 +857,7 @@ def normalize_agent_prefix(value):
         return AGENT_PREFIX
     if not p.startswith("/") or p.startswith("//"):
         return AGENT_PREFIX
-    if any(ch.isspace() or ch in ":：" or ord(ch) < 32 or ord(ch) == 127 for ch in p):
+    if any(ch.isspace() or ch in ":：" or ord(ch) < 32 or 127 <= ord(ch) <= 159 for ch in p):
         return AGENT_PREFIX
     return p
 
@@ -822,6 +873,30 @@ def agent_request(text, prefix=AGENT_PREFIX):
     if rest and not (rest[0].isspace() or rest[0] in ":："):
         return None
     return rest.lstrip(" \t\r\n:：").strip()
+
+
+def mention_request(text, mentions, me):
+    """The request with the signed-in user's real AT element removed, or None when that element is absent. The sender
+    is checked separately; spans, not a name match, decide what to remove. Other mentions remain part of the request."""
+    if not me or not isinstance(mentions, list):
+        return None
+    found = [m for m in mentions if isinstance(m, dict) and str(m.get("id") or "") == str(me)]
+    if not found:
+        return None
+    parts, cursor = [], 0
+    for m in sorted(found, key=lambda x: x.get("start", 0)):
+        start, end = m.get("start"), m.get("end")
+        if not isinstance(start, int) or not isinstance(end, int) or isinstance(start, bool) or isinstance(end, bool):
+            return None
+        if start < cursor or end <= start or end > len(text):
+            return None
+        label = m.get("label")
+        if not isinstance(label, str) or text[start:end] != label:
+            return None
+        parts.append(text[cursor:start])
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts).strip()
 
 
 def _kind_label(kind):

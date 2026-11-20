@@ -265,7 +265,7 @@ class AgentPrefixTest(unittest.TestCase):
             "agent", "ai", "助手",
             "/a b", "/a\tb", "/a\nb",
             "/a:b", "/a：b",
-            "/a\x00b", "/a\x7fb",
+            "/a\x00b", "/a\x7fb", "/a\x80b", "/a\x9fb",
             "/" + "a" * AGENT_PREFIX_MOST,
         ]
         for bad in invalid:

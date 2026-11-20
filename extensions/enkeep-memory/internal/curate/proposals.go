@@ -1063,6 +1063,16 @@ func (c *Curator) forget(from func(ref string) bool) (removed int) {
 			delete(c.St.S.Triage, k)
 		}
 	}
+	// The units a day admitted are kept across reruns (recordAdmitted): a forgotten source's leave with it.
+	for day, refs := range c.St.S.Admitted {
+		if kept := slices.DeleteFunc(slices.Clone(refs), from); len(kept) != len(refs) {
+			if len(kept) == 0 {
+				delete(c.St.S.Admitted, day)
+			} else {
+				c.St.S.Admitted[day] = kept
+			}
+		}
+	}
 	if g := c.St.S.Graph; g != nil {
 		for id, a := range g.Assertions {
 			n := len(a.Evidence)

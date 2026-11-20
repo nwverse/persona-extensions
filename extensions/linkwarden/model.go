@@ -26,10 +26,10 @@ type highlight struct {
 	ID     int64  `json:"id"`
 	LinkID int64  `json:"linkId"`
 	Text   string `json:"text"`
-	Note   string `json:"note"`
+	Note   string `json:"comment"`
 	Color  string `json:"color"`
-	Start  int    `json:"start"`
-	End    int    `json:"end"`
+	Start  int    `json:"startOffset"`
+	End    int    `json:"endOffset"`
 }
 
 type searchPage struct {

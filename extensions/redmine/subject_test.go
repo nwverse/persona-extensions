@@ -1,0 +1,128 @@
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"unicode/utf8"
+
+	"github.com/nwverse/persona/sdk/go/ext"
+	"github.com/nwverse/persona/sdk/go/wire"
+)
+
+// subjectRedmine creates issues the way Redmine's Issue model validates them (app/models/issue.rb:
+// validates_length_of :subject, :maximum => 255, counted in characters): a longer subject is a 422. It counts every
+// request, so a test can tell that a subject was refused before anything was sent.
+type subjectRedmine struct {
+	srv      *httptest.Server
+	mu       sync.Mutex
+	requests int
+	subjects []string
+}
+
+func newSubjectRedmine(t *testing.T) *subjectRedmine {
+	t.Helper()
+	f := &subjectRedmine{}
+	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		f.mu.Lock()
+		f.requests++
+		f.mu.Unlock()
+		if r.Header.Get("X-Redmine-API-Key") != testToken {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/projects/7.json":
+			_ = json.NewEncoder(w).Encode(map[string]any{"project": namedResource{ID: 7, Name: "Reading"}})
+		case r.Method == http.MethodPost && r.URL.Path == "/issues.json":
+			var in struct {
+				Issue struct {
+					Subject string `json:"subject"`
+				} `json:"issue"`
+			}
+			if json.NewDecoder(r.Body).Decode(&in) != nil || in.Issue.Subject == "" {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				return
+			}
+			if utf8.RuneCountInString(in.Issue.Subject) > 255 {
+				w.WriteHeader(http.StatusUnprocessableEntity)
+				_ = json.NewEncoder(w).Encode(map[string]any{"errors": []string{"Subject is too long (maximum is 255 characters)"}})
+				return
+			}
+			f.mu.Lock()
+			f.subjects = append(f.subjects, in.Issue.Subject)
+			f.mu.Unlock()
+			item := sampleIssue()
+			item.ID, item.Subject = 43, in.Issue.Subject
+			w.WriteHeader(http.StatusCreated)
+			_ = json.NewEncoder(w).Encode(map[string]any{"issue": item})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *subjectRedmine) app() *app {
+	return &app{client: newClient(f.srv.URL, testToken), receipts: newWriteStore("")}
+}
+
+func subjectArgs(subject string) []byte {
+	raw, _ := json.Marshal(map[string]any{"project_id": 7, "subject": subject})
+	return raw
+}
+
+func TestSubjectOf255CharactersIsCreated(t *testing.T) {
+	for name, subject := range map[string]string{"ascii": strings.Repeat("a", 255), "han": strings.Repeat("字", 255)} {
+		f := newSubjectRedmine(t)
+		if _, err := f.app().doAction(t.Context(), "create-"+name, "redmine_create_issue", subjectArgs(subject)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		if len(f.subjects) != 1 || f.subjects[0] != subject {
+			t.Fatalf("%s: the server received %d subjects", name, len(f.subjects))
+		}
+	}
+}
+
+func TestSubjectOver255CharactersIsRefusedBeforeAnyRequest(t *testing.T) {
+	for name, subject := range map[string]string{"ascii": strings.Repeat("a", 256), "han": strings.Repeat("字", 256)} {
+		f := newSubjectRedmine(t)
+		a := f.app()
+		if _, err := describeAction("redmine_create_issue", subjectArgs(subject)); err == nil {
+			t.Fatalf("%s: describeAction accepted a subject of 256 characters", name)
+		}
+		if _, err := a.doAction(t.Context(), "create-"+name, "redmine_create_issue", subjectArgs(subject)); err == nil {
+			t.Fatalf("%s: doAction accepted a subject of 256 characters", name)
+		}
+		r := &ext.UIRequest{UIParams: wire.UIParams{Locale: "en", UIVersion: 6, Action: "review-create", State: ext.EncodeState(pageState{Mode: "create", ProjectID: 7, DraftID: "draft-1"}), Values: map[string]string{"subject": subject}}}
+		if _, err := a.action(t.Context(), r); err == nil {
+			t.Fatalf("%s: the review step accepted a subject of 256 characters", name)
+		}
+		if f.requests != 0 {
+			t.Fatalf("%s: %d requests were sent for a subject Redmine refuses", name, f.requests)
+		}
+	}
+}
+
+// The reviewed draft travels in the page state, and a Han character is three bytes there.
+func TestWebFlowCreatesA255CharacterSubject(t *testing.T) {
+	f := newSubjectRedmine(t)
+	a := f.app()
+	subject := strings.Repeat("字", 255)
+	review, err := a.action(t.Context(), &ext.UIRequest{UIParams: wire.UIParams{Locale: "zh-Hans", UIVersion: 6, Action: "review-create", State: ext.EncodeState(pageState{Mode: "create", ProjectID: 7, DraftID: "draft-1"}), Values: map[string]string{"subject": subject, "description": "保留来源上下文。"}}})
+	if err != nil || review.View == nil || wire.CheckView(review.View) != nil {
+		t.Fatalf("review: %v %+v", err, review)
+	}
+	confirm, err := a.action(t.Context(), &ext.UIRequest{UIParams: wire.UIParams{Locale: "zh-Hans", UIVersion: 6, Action: "confirm-create", State: review.View.State}})
+	if err != nil || !confirm.Pop {
+		t.Fatalf("confirm: %v %+v", err, confirm)
+	}
+	if len(f.subjects) != 1 || f.subjects[0] != subject {
+		t.Fatalf("the server received %d subjects", len(f.subjects))
+	}
+}

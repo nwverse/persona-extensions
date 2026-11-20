@@ -36,7 +36,7 @@ Ask the assistant, for example:
 - “What did I highlight in that bookmark?”
 - “Save `https://example.com/article` to Research / AI with the tags `reading` and `local-first`.”
 
-`raindrop_search` returns numeric bookmark IDs and URLs. `raindrop_read` reads notes and
+`raindrop_search` returns numeric bookmark IDs, URLs and each bookmark's collection ID (Raindrop gives a bookmark's collection as `collection.$id`; the saved toast names it from the collection list). `raindrop_read` reads notes and
 highlights without fetching a third-party page. `raindrop_collections` resolves full parent
 paths before a named destination is used. Exact tag filters use Raindrop's quoted tag syntax.
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -92,6 +93,12 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	return v, nil
 }
 
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
 func detailView(r *ext.UIRequest, st pageState, item story) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{
@@ -100,16 +107,19 @@ func detailView(r *ext.UIRequest, st pageState, item story) *wire.View {
 	if len(item.Tags) > 0 {
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: strings.Join(item.Tags, ", "), Style: wire.TextStyleSecondary})
 	}
-	if item.URL != "" {
+	if httpsLink(item.URL) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.URL})
 	}
-	if item.CommentsURL != "" {
+	if httpsLink(item.CommentsURL) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.discussion, URL: item.CommentsURL})
 	}
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	v := &wire.View{Title: clipText(item.Title, 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
+	used := len(items)
 	if item.DescriptionPlain != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(item.DescriptionPlain)})
+		description := capComponents(textComponents(item.DescriptionPlain), maxDescriptionItems)
+		used += len(description)
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: description})
 	}
 	if len(item.Comments) > 0 {
 		section := wire.Section{Title: t.comments}
@@ -120,9 +130,27 @@ func detailView(r *ext.UIRequest, st pageState, item story) *wire.View {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: strings.Repeat("  ", min(c.Depth, 8)) + c.User + " · " + fmt.Sprint(c.Score), Style: wire.TextStyleSecondary})
 			section.Items = append(section.Items, textComponents(c.Text)...)
 		}
+		section.Items = capComponents(section.Items, maxViewItems-used)
 		v.Sections = append(v.Sections, section)
 	}
 	return v
+}
+
+const (
+	// maxViewItems keeps the story view within the SDK's 300 component limit, whatever the discussion holds.
+	maxViewItems = 250
+	// maxDescriptionItems leaves the comments room when the description is long.
+	maxDescriptionItems = 100
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func textComponents(text string) []wire.Component {

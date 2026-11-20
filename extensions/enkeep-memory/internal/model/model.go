@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -53,7 +54,8 @@ type Model interface {
 
 // ErrUnavailable: the hub cannot run a model for the extension now: a hub without model.complete (older than
 // nwverse/persona#6102), the permission not granted, nothing set up for the extension's purpose, or the connection
-// held for quota or load. The curator then runs only its deterministic steps; the wrapped message says which.
+// held for quota or load past the call's wait (a *PausedError, which is ErrPaused as well). The curator then runs
+// only its deterministic steps; the wrapped message says which.
 var ErrUnavailable = errors.New("model unavailable to extensions")
 
 // ErrRefused: the model declined this input (the Messages API's stop_reason "refusal", a safety classifier). The
@@ -86,8 +88,16 @@ type Hub struct {
 	H         *ext.Hub
 	Extension string
 	Route     *Route // nil, or without models: every call on the purpose's model, as before 0.2.0-beta.30
+	// PauseBudget is how long one call waits in all for the hub's holds (model_paused, pause.go); 0:
+	// PauseBudgetDefault.
+	PauseBudget time.Duration
+	// Logf logs the waits; nil: the route's.
+	Logf func(format string, args ...any)
 	// call makes one model.complete and decodes its result into out (tests replace it); nil: H.Call.
 	call func(ctx context.Context, params, out any) error
+	// now and sleep are the clock and the wait (tests replace them); nil: time.Now, a timer that ends with ctx.
+	now   func() time.Time
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // callTimeout bounds one call, the hub's second try for a reply that does not match the schema included.
@@ -119,7 +129,13 @@ func (h Hub) do(ctx context.Context, params, out any) error {
 	return h.H.Call(ctx, "model.complete", params, out)
 }
 
+// Complete asks for one answer. A call the hub holds (model_paused) waits until the hold lets go and is asked again,
+// within PauseBudget (pause.go); past it the error is a *PausedError.
 func (h Hub) Complete(ctx context.Context, r Request) (Response, error) {
+	return h.waitHeld(ctx, r, h.once)
+}
+
+func (h Hub) once(ctx context.Context, r Request) (Response, error) {
 	if h.Route.Enabled() {
 		return h.Route.complete(ctx, r, h.chained, h.legacy)
 	}
@@ -132,9 +148,12 @@ func (h Hub) legacy(ctx context.Context, r Request) (Response, error) {
 	err := h.do(ctx, h.params(r), &out)
 	var e *ext.Error
 	if errors.As(err, &e) {
+		if p, ok := pausedOf(e.Code, e.Message, e.Data, h.clock()); ok { // held: waited out by Complete
+			return Response{}, p
+		}
 		switch e.Code {
 		case wire.ErrorCodeUnknownMethod, wire.ErrorCodeUnsupported, wire.ErrorCodePermissionDenied,
-			wire.ModelErrorCodeModelUnavailable, wire.ModelErrorCodeModelPaused, wire.ModelErrorCodeAssistantOffline:
+			wire.ModelErrorCodeModelUnavailable, wire.ModelErrorCodeAssistantOffline:
 			return Response{}, fmt.Errorf("%w: %s", ErrUnavailable, e.Message)
 		case wire.ModelErrorCodeModelRefused: // a hub that names a refusal with its own code
 			return Response{}, fmt.Errorf("%w: %s", ErrRefused, e.Message)

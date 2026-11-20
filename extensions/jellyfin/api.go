@@ -35,11 +35,16 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 	if c.token == "" {
 		return errors.New("Jellyfin API key is not configured")
 	}
+	if strings.ContainsAny(c.token, "\",\r\n") {
+		return errors.New("Jellyfin API key contains characters that are not allowed")
+	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, nil)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("X-Emby-Token", c.token)
+	// Jellyfin reads the token from this header; X-Emby-Token only counts when its legacy authorization option is on,
+	// which is off by default.
+	req.Header.Set("Authorization", `MediaBrowser Token="`+c.token+`"`)
 	req.Header.Set("Accept", "application/json")
 	if query != nil {
 		req.URL.RawQuery = query.Encode()
@@ -79,11 +84,13 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 
 func (c *client) currentUser(ctx context.Context) (user, error) {
 	var out user
-	err := c.do(ctx, http.MethodGet, "/Users/Me", nil, &out)
+	if err := c.do(ctx, http.MethodGet, "/Users/Me", nil, &out); err != nil {
+		return user{}, err
+	}
 	if out.ID == "" || !validMediaID(out.ID) {
 		return user{}, errors.New("Jellyfin returned an invalid current user ID")
 	}
-	return out, err
+	return out, nil
 }
 
 func (c *client) items(ctx context.Context, userID, view, query string, start int) (itemPage, error) {
