@@ -72,8 +72,10 @@ func newFakeImmich(t *testing.T) *fakeImmich {
 				}
 				if _, ok := filter["isFavorite"]; !ok {
 					if _, ok := filter["originalFileName"]; !ok {
-						w.WriteHeader(http.StatusBadRequest)
-						return
+						if _, ok := filter["albumIds"]; !ok {
+							w.WriteHeader(http.StatusBadRequest)
+							return
+						}
 					}
 				}
 			}
@@ -106,7 +108,7 @@ func newFakeImmich(t *testing.T) *fakeImmich {
 		case "/api/albums":
 			_ = json.NewEncoder(w).Encode([]album{{ID: albumID, AlbumName: "Reading trips", AssetCount: 12}})
 		case "/api/albums/" + albumID:
-			_ = json.NewEncoder(w).Encode(album{ID: albumID, AlbumName: "Reading trips", AssetCount: 1, Assets: []asset{sampleAsset()}})
+			_ = json.NewEncoder(w).Encode(album{ID: albumID, AlbumName: "Reading trips", AssetCount: 1})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -166,7 +168,7 @@ func TestSearchSmartSearchAssetAndAlbums(t *testing.T) {
 		t.Fatalf("%v %s", err, text)
 	}
 	text, err = a.callTool(t.Context(), "immich_album", json.RawMessage(`{"album_id":"`+albumID+`"}`))
-	if err != nil || !strings.Contains(text, "Reading trips") {
+	if err != nil || !strings.Contains(text, "Reading trips") || !strings.Contains(text, "reading-trip.jpg") {
 		t.Fatalf("%v %s", err, text)
 	}
 	f.mu.Lock()

@@ -87,7 +87,7 @@ func newFakeGitea(t *testing.T) *fakeGitea {
 				return
 			}
 			var in map[string]any
-			if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["state"] != "APPROVED" {
+			if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["event"] != "APPROVED" {
 				w.WriteHeader(http.StatusBadRequest)
 				return
 			}

@@ -56,6 +56,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+// maxViewPapers is the most papers the client accepts in one response.
+const maxViewPapers = 100
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if st.Mode == "detail" {
@@ -69,7 +72,10 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Mode != "" && st.Mode != "recent" {
 		return nil, errors.New("invalid paper view")
 	}
-	feed, err := a.client.query(ctx, st.Query, st.Mode == "recent" || st.Query == "", st.Start)
+	// Load more answers the whole view, longer: one request for everything from the first paper through the
+	// requested batch, capped at the most entries the client accepts in a response.
+	count := min(st.Start+20, maxViewPapers)
+	feed, err := a.client.queryRange(ctx, st.Query, st.Mode == "recent" || st.Query == "", 0, count)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -90,7 +96,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noPapers})
 	}
-	if len(feed.Entries) == 20 {
+	if len(feed.Entries) == count && count < maxViewPapers {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section, {Title: t.recent, Items: []wire.Component{{Type: wire.ComponentButton, Title: t.recent, Action: &wire.Action{ID: "recent"}}}}}

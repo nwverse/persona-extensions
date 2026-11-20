@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -14,18 +15,19 @@ import (
 )
 
 type pageState struct {
-	View      string `json:"v,omitempty"`
-	Query     string `json:"q,omitempty"`
-	PageToken string `json:"p,omitempty"`
-	MemoID    string `json:"i,omitempty"`
-	Mode      string `json:"m,omitempty"`
-	DraftID   string `json:"d,omitempty"`
-	Content   string `json:"c,omitempty"`
+	View      string   `json:"v,omitempty"`
+	Query     string   `json:"q,omitempty"`
+	PageToken string   `json:"p,omitempty"`
+	History   []string `json:"h,omitempty"`
+	MemoID    string   `json:"i,omitempty"`
+	Mode      string   `json:"m,omitempty"`
+	DraftID   string   `json:"d,omitempty"`
+	Content   string   `json:"c,omitempty"`
 }
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.MemoID) > 80 || len(st.DraftID) > 128 || len(st.Content) > 11000 || len(st.PageToken) > 2048 || len(st.Query) > 300 {
+	if err := r.DecodeState(&st); err != nil || len(st.MemoID) > 80 || len(st.DraftID) > 128 || len(st.Content) > 11000 || len(st.PageToken) > 2048 || len(st.Query) > 300 || len(st.History) >= maxViewPages {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -46,7 +48,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.PageToken = clipText(r.Values["q"], 200), ""
+		st.Query, st.PageToken, st.History = clipText(r.Values["q"], 200), "", nil
 		if strings.TrimSpace(st.Query) != "" {
 			st.View = "search"
 		} else {
@@ -56,11 +58,12 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if r.Values["view"] != "recent" && r.Values["view"] != "pinned" {
 			return nil, errors.New("invalid notes view")
 		}
-		st.View, st.Query, st.PageToken = r.Values["view"], "", ""
+		st.View, st.Query, st.PageToken, st.History = r.Values["view"], "", "", nil
 	case "more":
 		if err := validPageToken(r.Values["token"]); err != nil || r.Values["token"] == "" {
 			return nil, errors.New("invalid next page token")
 		}
+		st.History = append(st.History, st.PageToken)
 		st.PageToken = r.Values["token"]
 	case "detail":
 		if err := validMemoID(r.Values["id"]); err != nil {
@@ -125,6 +128,36 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const (
+	maxViewRecords = 250
+	maxViewPages   = 10
+)
+
+// collectMemos reads the pages the view has gone through, the tokens in History and then PageToken, so that Load more
+// answers the whole list, longer. It stops at maxViewRecords to keep the view within the SDK's component limit, and the
+// page it returns carries a NextPageToken only while another page can be loaded.
+func (a *app) collectMemos(ctx context.Context, st pageState) (memoPage, error) {
+	var out memoPage
+	for _, token := range append(slices.Clone(st.History), st.PageToken) {
+		if len(out.Memos) >= maxViewRecords {
+			break
+		}
+		batch, err := a.client.memos(ctx, a.creator, st.View, st.Query, token)
+		if err != nil {
+			return memoPage{}, err
+		}
+		out.Memos = append(out.Memos, batch.Memos...)
+		out.NextPageToken = batch.NextPageToken
+	}
+	if len(out.Memos) > maxViewRecords {
+		out.Memos = out.Memos[:maxViewRecords]
+	}
+	if len(out.Memos) >= maxViewRecords || len(st.History)+1 >= maxViewPages {
+		out.NextPageToken = ""
+	}
+	return out, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" || a.creator == "" {
@@ -154,7 +187,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.View == "" {
 		st.View = "recent"
 	}
-	page, err := a.client.memos(ctx, a.creator, st.View, st.Query, st.PageToken)
+	page, err := a.collectMemos(ctx, st)
 	a.record(err)
 	if err != nil {
 		return nil, err

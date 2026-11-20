@@ -12,27 +12,30 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/nwverse/persona/sdk/go/ext"
+	"github.com/nwverse/persona/sdk/go/wire"
 )
 
-// Route is the chain of models a call goes through (CHANGELOG 0.2.0-beta.30): the primary models first, in order;
-// when none of them answers, one fallback picked by how long the call is: Long for a call whose estimated size (the
-// input and the room for the answer, Estimate) is above LongAbove, Short for the rest.
+// Route is the chain of models a call goes through (docs/model-routes.md): the primary models first, in order, then
+// one fallback picked by how long the call is: Long for a call whose estimated size (the input and the room for the
+// answer, Estimate) is above LongAbove, Short for the rest.
 //
-// A call names its model with model.complete's "models" field, which a hub adds on the extension's own connection
-// (docs/model-routes.md). A hub without the field turns the call down as invalid params: the route then sends it
-// the old way, on whatever model the extension's purpose has, and asks again after legacyRetry. A nil Route, or one
-// with no models, is the old behaviour.
+// The whole chain goes to the hub in one call, in model.complete's "models" (persona #10398): the hub tries the
+// candidates in order and says which answered (candidate, model) and which failed before it (attempts). The user can
+// switch the list off or replace it on the extension's purpose, so what is counted is what the hub says answered, not
+// what was asked for. A hub without the field turns the call down as invalid params: the route then sends it the old
+// way, on the model of the extension's purpose, and asks again after legacyRetry. A nil Route, or one with no models,
+// is the old behaviour.
 type Route struct {
 	Primary   []string // tried first, in order
 	Long      string   // the fallback of a long call
 	Short     string   // the fallback of a short call
 	LongAbove int      // estimated tokens; a call above it is long
-	// PrimaryTimeout bounds a primary model's attempt, in seconds (0: the step's own limit), so that a slow primary
-	// hands over to the fallback in time; the fallback keeps the step's limit.
-	PrimaryTimeout int
-	Stats          *Stats // nil: nothing counted
-	Logf           func(format string, args ...any)
-	Now            func() time.Time
+	Timeout   int      // seconds each candidate may take (timeout_seconds); 0: the step's own limit
+	Stats     *Stats   // nil: nothing counted
+	Logf      func(format string, args ...any)
+	Now       func() time.Time
 
 	mu          sync.Mutex
 	legacyUntil time.Time // the hub turned "models" down: calls go the old way until then
@@ -42,15 +45,16 @@ type Route struct {
 // restarts the extension anyway, so this only bounds how long a hub that learns the field mid-run is not used.
 const legacyRetry = time.Hour
 
-// Failure reasons: why a model's attempt did not answer (each counted per model in Stats).
+// Failure reasons: why a candidate did not answer (each counted per model in Stats), from the hub's error codes.
 const (
-	ReasonError       = "error"       // model_failed, a network error
-	ReasonTimeout     = "timeout"     // the hub's timeout on the attempt
-	ReasonEmpty       = "empty"       // an answer with no text
-	ReasonFormat      = "format"      // the answer did not match the schema after the hub's second try (invalid_output)
-	ReasonRefused     = "refused"     // the model declined the input
-	ReasonUnavailable = "unavailable" // the hub cannot run this model now (model_paused: quota or load)
-	ReasonNotOffered  = "not_offered" // the extension's connection has no such model (model_unavailable)
+	ReasonError       = "error"       // model_failed: an upstream or network error
+	ReasonEmpty       = "empty"       // model_failed: the reply was empty
+	ReasonTimeout     = "timeout"     // timeout: the candidate took longer than timeout_seconds
+	ReasonFormat      = "format"      // invalid_output: no match with the schema after the hub's second try
+	ReasonRefused     = "refused"     // model_refused, or model_failed saying the model declined
+	ReasonUnavailable = "unavailable" // the hub cannot run a model for the extension (assistant offline, no permission)
+	ReasonPaused      = "paused"      // model_paused: the hub holds the connection for quota or load; nothing was sent (pause.go)
+	ReasonNotOffered  = "not_offered" // model_unavailable: no provider the user set up offers the model
 )
 
 // Size classes of a call.
@@ -96,7 +100,8 @@ func (rt *Route) Size(est int) string {
 	return SizeShort
 }
 
-// models is the chain of a call of the size: the primary models, then the size's fallback; each once.
+// models is the chain of a call of the size: the primary models, then the size's fallback; each once, at most 8 (the
+// hub's limit).
 func (rt *Route) models(size string) []string {
 	var out []string
 	add := func(m string) {
@@ -106,7 +111,7 @@ func (rt *Route) models(size string) []string {
 				return
 			}
 		}
-		if m != "" {
+		if m != "" && len(out) < 8 {
 			out = append(out, m)
 		}
 	}
@@ -119,23 +124,6 @@ func (rt *Route) models(size string) []string {
 		add(rt.Short)
 	}
 	return out
-}
-
-// hasFallback says whether the size's fallback is a model of its own, after the primaries.
-func (rt *Route) hasFallback(size string) bool {
-	f := strings.TrimSpace(rt.Short)
-	if size == SizeLong {
-		f = strings.TrimSpace(rt.Long)
-	}
-	if f == "" {
-		return false
-	}
-	for _, m := range rt.Primary {
-		if strings.TrimSpace(m) == f {
-			return false
-		}
-	}
-	return true
 }
 
 func (rt *Route) now() time.Time {
@@ -163,28 +151,58 @@ func (rt *Route) logf(format string, args ...any) {
 	}
 }
 
-// errNoModels: the hub turned the call down because it does not know "models".
-var errNoModels = errors.New("the hub does not take model.complete's models")
-
-// attemptError is why one model's attempt did not answer.
-type attemptError struct {
-	reason string
-	err    error     // what the caller gets when this is the last failure (ErrRefused, ErrUnavailable wrapped, …)
-	reply  *Response // invalid_output: the reply the hub returned anyway
-	fatal  bool      // nothing else is tried: the hub cannot run a model for the extension at all, or ctx ended
-}
-
-func (e *attemptError) Error() string { return e.err.Error() }
-
-// Attempt is one model's try in a call, as Stats keeps it.
+// Attempt is one candidate's try in a call, as Stats keeps it.
 type Attempt struct {
-	Model  string  `json:"model"`
-	Reason string  `json:"reason,omitempty"` // empty: it answered
-	Secs   float64 `json:"secs"`
+	Model    string  `json:"model"`              // the candidate (the purpose's model, for a call sent the old way)
+	Upstream string  `json:"upstream,omitempty"` // the model the upstream said answered, when it differs
+	Reason   string  `json:"reason,omitempty"`   // empty: it answered
+	Code     string  `json:"code,omitempty"`     // the hub's error code
+	Message  string  `json:"message,omitempty"`  // the hub's message, cut short
+	Secs     float64 `json:"secs"`
 }
 
-// complete runs r through the chain; try makes one attempt on a model, legacy sends the call the old way.
-func (rt *Route) complete(ctx context.Context, r Request, try func(context.Context, Request, string) (Response, error),
+// reason is the failure reason of an error code and message.
+func reason(code, msg string) string {
+	switch code {
+	case wire.ModelErrorCodeTimeout:
+		return ReasonTimeout
+	case wire.ModelErrorCodeInvalidOutput:
+		return ReasonFormat
+	case wire.ModelErrorCodeModelRefused:
+		return ReasonRefused
+	case wire.ModelErrorCodeModelPaused:
+		return ReasonPaused
+	case wire.ModelErrorCodeModelUnavailable:
+		return ReasonNotOffered
+	case wire.ModelErrorCodeModelFailed:
+		if refused(msg) {
+			return ReasonRefused
+		}
+		if strings.Contains(strings.ToLower(msg), "empty") {
+			return ReasonEmpty
+		}
+		return ReasonError
+	}
+	if code == "" {
+		return ReasonError
+	}
+	return code
+}
+
+func failed(a attempt) Attempt {
+	return Attempt{Model: a.Model, Reason: reason(a.Code, a.Message), Code: a.Code, Message: cut(a.Message, 160), Secs: a.Seconds}
+}
+
+func cut(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
+}
+
+// complete sends r with its chain in one call; legacy sends it the old way. call makes model.complete with the
+// models given.
+func (rt *Route) complete(ctx context.Context, r Request, call func(context.Context, Request, []string) (chainResult, error),
 	legacy func(context.Context, Request) (Response, error)) (Response, error) {
 	est := Estimate(r)
 	size := rt.Size(est)
@@ -192,123 +210,235 @@ func (rt *Route) complete(ctx context.Context, r Request, try func(context.Conte
 		return rt.old(ctx, r, est, size, legacy, "hub without models")
 	}
 	chain := rt.models(size)
-	began := rt.now()
-	var attempts []Attempt
-	var last *attemptError
-	var kept *Response
-	primaries := len(chain) - 1 // the last one is the size's fallback, unless it is one of the primaries
-	if !rt.hasFallback(size) {
-		primaries = len(chain)
+	rr := r
+	if rt.Timeout > 0 {
+		rr.Timeout = rt.Timeout
 	}
-	for i, m := range chain {
-		ri := r
-		if i < primaries && rt.PrimaryTimeout > 0 {
-			ri.Timeout = rt.PrimaryTimeout
+	began := rt.now()
+	out, err := call(ctx, rr, chain)
+	secs := rt.now().Sub(began).Seconds()
+	if err == nil {
+		var attempts []Attempt
+		before := 0.0
+		for _, a := range out.Attempts {
+			attempts = append(attempts, failed(a))
+			before += a.Seconds
 		}
-		start := rt.now()
-		resp, err := try(ctx, ri, m)
-		secs := rt.now().Sub(start).Seconds()
-		if err == nil {
-			attempts = append(attempts, Attempt{Model: m, Secs: secs})
-			rt.done(began, r, est, size, attempts, m, i > 0, "")
-			return resp, nil
+		ans := Attempt{Model: out.Candidate, Secs: secs - before}
+		if ans.Secs < 0 {
+			ans.Secs = 0
 		}
-		if errors.Is(err, errNoModels) {
+		if out.Model != out.Candidate {
+			ans.Upstream = out.Model
+		}
+		note := ""
+		switch {
+		case out.Candidate == "": // the user switched the lists off on the purpose: its own model answered
+			ans.Model, ans.Upstream, note = cmpOr(out.Model, "purpose"), "", "candidates off"
+		case !contains(chain, out.Candidate):
+			note = "the user's own list"
+		}
+		if out.StopReason == "refusal" {
+			ans.Reason = ReasonRefused
+			rt.done(began, r, est, size, append(attempts, ans), "", false, note)
+			return Response{}, fmt.Errorf("%w: stop_reason refusal", ErrRefused)
+		}
+		resp := response(r, out.ModelCompleteResult)
+		if resp.Model == "" {
+			resp.Model = ans.Model
+		}
+		rt.done(began, r, est, size, append(attempts, ans), ans.Model, len(attempts) > 0, note)
+		return resp, nil
+	}
+	var e *ext.Error
+	if !errors.As(err, &e) { // the connection to the hub, or ctx: nothing the chain can help with
+		rt.done(began, r, est, size, []Attempt{{Model: strings.Join(chain, "|"), Reason: ReasonError, Message: cut(err.Error(), 160), Secs: secs}}, "", false, "")
+		return Response{}, err
+	}
+	var attempts []Attempt
+	var held *PausedError // a candidate the hub held: the call waits and is asked again (pause.go)
+	switch e.Code {
+	case wire.ModelErrorCodeInvalidParams:
+		if strings.Contains(e.Message, `"models"`) { // json: unknown field "models"
 			rt.setLegacy()
 			return rt.old(ctx, r, est, size, legacy, "hub without models")
 		}
-		var ae *attemptError
-		if !errors.As(err, &ae) {
-			ae = &attemptError{reason: ReasonError, err: err}
+		attempts = []Attempt{{Model: chain[0], Reason: ReasonError, Code: e.Code, Message: cut(e.Message, 160), Secs: secs}}
+	case wire.ErrorCodeUnknownMethod, wire.ErrorCodeUnsupported, wire.ErrorCodePermissionDenied, wire.ModelErrorCodeAssistantOffline:
+		// The hub cannot run any model for the extension: the run waits, as before.
+		rt.done(began, r, est, size, []Attempt{{Model: strings.Join(chain, "|"), Reason: ReasonUnavailable, Code: e.Code, Message: cut(e.Message, 160), Secs: secs}}, "", false, "")
+		return Response{}, fmt.Errorf("%w: %s", ErrUnavailable, e.Message)
+	case codeCandidatesFailed:
+		var data candidatesFailed
+		_ = json.Unmarshal(e.Data, &data)
+		for _, a := range data.Attempts {
+			attempts = append(attempts, failed(a))
 		}
-		if ctx.Err() != nil {
-			ae.fatal = true
+		held, _ = heldAttempts(data.Attempts, rt.now())
+	default: // one candidate, failing with its own code
+		m := chain[0]
+		var no notOffered
+		if e.Code == wire.ModelErrorCodeModelUnavailable && json.Unmarshal(e.Data, &no) == nil && no.Model != "" {
+			m = no.Model
 		}
-		attempts = append(attempts, Attempt{Model: m, Reason: ae.reason, Secs: secs})
-		if ae.fatal {
-			rt.done(began, r, est, size, attempts, "", false, ae.reason)
-			return Response{}, ae.err
+		attempts = []Attempt{{Model: m, Reason: reason(e.Code, e.Message), Code: e.Code, Message: cut(e.Message, 160), Secs: secs}}
+		held, _ = pausedOf(e.Code, e.Message, e.Data, rt.now())
+		if e.Code == wire.ModelErrorCodeInvalidOutput {
+			if resp, ok := fromInvalidOutput(e.Data); ok { // the reply the hub returned anyway goes to the step's checks
+				resp.Model = cmpOr(resp.Model, m)
+				rt.done(began, r, est, size, attempts, resp.Model, false, "reply kept though it does not match")
+				return resp, nil
+			}
 		}
-		if ae.reply != nil {
-			kept = ae.reply
-		}
-		last = ae
 	}
-	if allNotOffered(attempts) {
-		// None of the route's models is on the extension's connection (another user's gateway, say): the route is
-		// no use there, the purpose's own model is.
-		return rt.old(ctx, r, est, size, legacy, "no route model on the connection")
+	if len(attempts) == 0 {
+		attempts = []Attempt{{Model: strings.Join(chain, "|"), Reason: reason(e.Code, e.Message), Code: e.Code, Message: cut(e.Message, 160), Secs: secs}}
 	}
-	if kept != nil {
-		// No model matched the schema: as before the chain, the reply the hub returned anyway goes to the caller's
-		// own checks of each item, rather than lose the whole unit.
-		rt.done(began, r, est, size, attempts, kept.Model, kept.Model != attempts[0].Model, ReasonFormat)
-		return *kept, nil
-	}
-	rt.done(began, r, est, size, attempts, "", false, last.reason)
-	return Response{}, last.err
-}
-
-// old sends the call the old way, on the purpose's model, and counts it.
-func (rt *Route) old(ctx context.Context, r Request, est int, size string, legacy func(context.Context, Request) (Response, error),
-	why string) (Response, error) {
-	start := rt.now()
-	resp, err := legacy(ctx, r)
-	a := Attempt{Model: resp.Model, Secs: rt.now().Sub(start).Seconds()}
-	if a.Model == "" {
-		a.Model = "(purpose)"
-	}
-	if err != nil {
-		a.Reason = ReasonError
-	}
-	if rt.Stats != nil {
-		c := Call{At: start.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: []Attempt{a}, Legacy: why}
-		if err == nil {
-			c.Answered = a.Model
-		}
-		rt.Stats.add(c)
-	}
-	rt.logf("enkeep-memory: model call %s: est %d tokens (%s), old way (%s): %s", r.Step, est, size, why, outcome(a))
-	return resp, err
-}
-
-// done counts and logs a call that went through the chain.
-func (rt *Route) done(began time.Time, r Request, est int, size string, attempts []Attempt, answered string, fellBack bool, failed string) {
-	var tried []string
-	for _, a := range attempts {
-		tried = append(tried, outcome(a))
+	if held != nil {
+		// Held, not failed: no fallback to the old way or anything else; Hub.Complete waits and asks the chain again.
+		rt.held(began, r, est, size, attempts, held)
+		return Response{}, held
 	}
 	switch {
-	case answered != "" && fellBack:
-		rt.logf("enkeep-memory: model call %s: est %d tokens (%s): answered by %s after fallback; tried %s", r.Step, est,
-			size, answered, strings.Join(tried, ", "))
-	case answered != "":
-		rt.logf("enkeep-memory: model call %s: est %d tokens (%s): answered by %s; tried %s", r.Step, est, size, answered,
-			strings.Join(tried, ", "))
-	default:
-		rt.logf("enkeep-memory: model call %s: est %d tokens (%s): no model answered (%s); tried %s", r.Step, est, size,
-			failed, strings.Join(tried, ", "))
+	case every(attempts, ReasonNotOffered):
+		// None of the route's models is offered (another user's providers, say): the purpose's own model is.
+		return rt.old(ctx, r, est, size, legacy, "no route model offered", attempts...)
+	case onlyFormatOrNotOffered(attempts):
+		// No candidate matched the schema (the others were not offered): the reply the hub had is not in the data of
+		// model_candidates_failed, so the old call asks the purpose's model, whose reply comes back even when it does
+		// not match, for the step's own checks of each item, as before routes (0.2.0-beta.33; before, a chain with a
+		// candidate not offered and one not matching failed the call, and the unit went unread).
+		return rt.old(ctx, r, est, size, legacy, "no candidate matched the schema", attempts...)
 	}
-	if rt.Stats != nil {
-		rt.Stats.add(Call{At: began.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: attempts,
-			Answered: answered, FellBack: fellBack})
+	rt.done(began, r, est, size, attempts, "", false, "")
+	last := attempts[len(attempts)-1]
+	switch last.Reason {
+	case ReasonRefused:
+		return Response{}, fmt.Errorf("%w: %s", ErrRefused, e.Message)
+	case ReasonUnavailable, ReasonNotOffered:
+		return Response{}, fmt.Errorf("%w: %s", ErrUnavailable, e.Message)
 	}
+	return Response{}, err
 }
 
-func allNotOffered(attempts []Attempt) bool {
+func contains(list []string, s string) bool {
+	for _, x := range list {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func every(attempts []Attempt, reason string) bool {
 	for _, a := range attempts {
-		if a.Reason != ReasonNotOffered {
+		if a.Reason != reason {
 			return false
 		}
 	}
 	return len(attempts) > 0
 }
 
-func outcome(a Attempt) string {
-	if a.Reason == "" {
-		return fmt.Sprintf("%s ok %.0fs", a.Model, a.Secs)
+// onlyFormatOrNotOffered: every candidate either did not match the schema or was not offered, and one did not match.
+func onlyFormatOrNotOffered(attempts []Attempt) bool {
+	format := false
+	for _, a := range attempts {
+		switch a.Reason {
+		case ReasonFormat:
+			format = true
+		case ReasonNotOffered:
+		default:
+			return false
+		}
 	}
-	return fmt.Sprintf("%s %s %.0fs", a.Model, a.Reason, a.Secs)
+	return format
+}
+
+func cmpOr(a, b string) string {
+	if a != "" {
+		return a
+	}
+	return b
+}
+
+// old sends the call the old way, on the purpose's model, and counts it, after the chain's attempts if there were any.
+func (rt *Route) old(ctx context.Context, r Request, est int, size string, legacy func(context.Context, Request) (Response, error),
+	why string, before ...Attempt) (Response, error) {
+	start := rt.now()
+	resp, err := legacy(ctx, r)
+	a := Attempt{Model: cmpOr(resp.Model, "purpose"), Secs: rt.now().Sub(start).Seconds()}
+	p, paused := Held(err)
+	switch {
+	case paused:
+		a.Reason, a.Code, a.Message = ReasonPaused, wire.ModelErrorCodeModelPaused, cut(p.Message, 160)
+	case err != nil:
+		a.Reason, a.Message = ReasonError, cut(err.Error(), 160)
+	}
+	if rt.Stats != nil {
+		c := Call{At: start.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: append(before, a), Legacy: why, Paused: paused}
+		if err == nil {
+			c.Answered = a.Model
+		}
+		rt.Stats.add(c)
+	}
+	var tried []string
+	for _, b := range before {
+		tried = append(tried, outcome(b))
+	}
+	rt.logf("enkeep-memory: model call %s: est %d tokens (%s), old way (%s): %s", r.Step, est, size, why,
+		strings.Join(append(tried, outcome(a)), ", "))
+	return resp, err
+}
+
+// held counts and logs a call the hub held: not a failure and not an answer; it is asked again after the hold.
+func (rt *Route) held(began time.Time, r Request, est int, size string, attempts []Attempt, p *PausedError) {
+	var tried []string
+	for _, a := range attempts {
+		tried = append(tried, outcome(a))
+	}
+	rt.logf("enkeep-memory: model call %s: est %d tokens (%s): held by the hub until %s; tried %s", r.Step, est, size,
+		p.Until.UTC().Format(time.RFC3339), strings.Join(tried, ", "))
+	if rt.Stats != nil {
+		rt.Stats.add(Call{At: began.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: attempts,
+			Paused: true, Until: p.Until.UTC().Format(time.RFC3339)})
+	}
+}
+
+// done counts and logs a call that went through the chain.
+func (rt *Route) done(began time.Time, r Request, est int, size string, attempts []Attempt, answered string, fellBack bool, note string) {
+	var tried []string
+	for _, a := range attempts {
+		tried = append(tried, outcome(a))
+	}
+	if note != "" {
+		note = " (" + note + ")"
+	}
+	switch {
+	case answered != "" && fellBack:
+		rt.logf("enkeep-memory: model call %s: est %d tokens (%s): answered by %s after fallback%s; tried %s", r.Step, est,
+			size, answered, note, strings.Join(tried, ", "))
+	case answered != "":
+		rt.logf("enkeep-memory: model call %s: est %d tokens (%s): answered by %s%s; tried %s", r.Step, est, size, answered,
+			note, strings.Join(tried, ", "))
+	default:
+		rt.logf("enkeep-memory: model call %s: est %d tokens (%s): no candidate answered%s; tried %s", r.Step, est, size,
+			note, strings.Join(tried, ", "))
+	}
+	if rt.Stats != nil {
+		rt.Stats.add(Call{At: began.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: attempts,
+			Answered: answered, FellBack: fellBack, Note: strings.Trim(note, " ()")})
+	}
+}
+
+func outcome(a Attempt) string {
+	m := a.Model
+	if a.Upstream != "" {
+		m += " (" + a.Upstream + ")"
+	}
+	if a.Reason == "" {
+		return fmt.Sprintf("%s ok %.0fs", m, a.Secs)
+	}
+	return fmt.Sprintf("%s %s %.0fs", m, a.Reason, a.Secs)
 }
 
 // Stats is what the route counted since Since, kept in a file of the extension's data directory
@@ -323,19 +453,21 @@ type Stats struct {
 // Counts is what Stats counted: a plain value, safe to pass around.
 type Counts struct {
 	Since    string                 `json:"since"`
-	Calls    int                    `json:"calls"`     // calls through the chain or the old way
+	Calls    int                    `json:"calls"`     // calls through the chain or the old way (held ones not counted)
 	FellBack int                    `json:"fell_back"` // calls a fallback model answered
-	Failed   int                    `json:"failed"`    // calls no model answered
+	Failed   int                    `json:"failed"`    // calls no model answered (held ones not counted)
 	Legacy   int                    `json:"legacy"`    // calls sent the old way (a hub without models)
+	Paused   int                    `json:"paused"`    // tries the hub held (model_paused): waited out and asked again
 	Models   map[string]*ModelCount `json:"models"`
 	Recent   []Call                 `json:"recent"` // the last recentCalls calls, oldest first
 }
 
-// ModelCount is one model's attempts.
+// ModelCount is one model's attempts. Paused is the tries the hub held (model_paused): not attempts, not failures.
 type ModelCount struct {
 	Attempts int            `json:"attempts"`
 	Answered int            `json:"answered"`
 	AsBackup int            `json:"as_backup"` // answers it gave as a fallback
+	Paused   int            `json:"paused,omitempty"`
 	Failures map[string]int `json:"failures,omitempty"`
 	Secs     float64        `json:"secs"` // the time its attempts took, together
 }
@@ -350,6 +482,9 @@ type Call struct {
 	Answered string    `json:"answered,omitempty"`
 	FellBack bool      `json:"fell_back,omitempty"`
 	Legacy   string    `json:"legacy,omitempty"` // why it went the old way
+	Note     string    `json:"note,omitempty"`   // candidates off, the user's own list, a reply kept though it does not match
+	Paused   bool      `json:"paused,omitempty"` // the hub held it (model_paused): asked again after Until, not a failure
+	Until    string    `json:"until,omitempty"`  // RFC 3339: when the hold lets go
 }
 
 const recentCalls = 50
@@ -379,21 +514,30 @@ func (s *Stats) add(c Call) {
 	if n.Models == nil {
 		n.Models = map[string]*ModelCount{}
 	}
-	n.Calls++
 	switch {
-	case c.Legacy != "":
-		n.Legacy++
-	case c.FellBack && c.Answered != "":
-		n.FellBack++
-	}
-	if c.Answered == "" {
-		n.Failed++
+	case c.Paused:
+		n.Paused++
+	default:
+		n.Calls++
+		switch {
+		case c.Legacy != "":
+			n.Legacy++
+		case c.FellBack && c.Answered != "":
+			n.FellBack++
+		}
+		if c.Answered == "" {
+			n.Failed++
+		}
 	}
 	for i, a := range c.Attempts {
 		m := n.Models[a.Model]
 		if m == nil {
 			m = &ModelCount{}
 			n.Models[a.Model] = m
+		}
+		if a.Reason == ReasonPaused { // nothing was sent: not an attempt of the model's
+			m.Paused++
+			continue
 		}
 		m.Attempts++
 		m.Secs += a.Secs
@@ -460,6 +604,9 @@ func (s Counts) Summary() string {
 	}
 	fmt.Fprintf(&b, "Model calls since %s: %d, answered by a fallback %d (%.1f%%), unanswered %d, sent the old way %d.",
 		s.Since, s.Calls, s.FellBack, rate, s.Failed, s.Legacy)
+	if s.Paused > 0 {
+		fmt.Fprintf(&b, " Held by the hub (model_paused, busy or quota; waited out and asked again, not unanswered): %d.", s.Paused)
+	}
 	names := make([]string, 0, len(s.Models))
 	for n := range s.Models {
 		names = append(names, n)
@@ -468,6 +615,9 @@ func (s Counts) Summary() string {
 	for _, n := range names {
 		m := s.Models[n]
 		fmt.Fprintf(&b, "\n- %s: %d attempt(s), %d answered (%d as fallback)", n, m.Attempts, m.Answered, m.AsBackup)
+		if m.Paused > 0 {
+			fmt.Fprintf(&b, ", held %d", m.Paused)
+		}
 		if len(m.Failures) > 0 {
 			var rs []string
 			for r := range m.Failures {

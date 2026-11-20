@@ -28,13 +28,18 @@ func newClient(base string) *client {
 }
 
 func (c *client) query(ctx context.Context, query string, recent bool, start int) (feed, error) {
+	return c.queryRange(ctx, query, recent, start, 20)
+}
+
+// queryRange asks for count papers from start in one request.
+func (c *client) queryRange(ctx context.Context, query string, recent bool, start, count int) (feed, error) {
 	if len([]rune(query)) > 200 || strings.ContainsRune(query, 0) {
 		return feed{}, errors.New("search text must be at most 200 characters")
 	}
 	if start < 0 {
 		return feed{}, errors.New("start must not be negative")
 	}
-	q := url.Values{"start": {strconv.Itoa(start)}, "max_results": {"20"}}
+	q := url.Values{"start": {strconv.Itoa(start)}, "max_results": {strconv.Itoa(count)}}
 	if recent {
 		q.Set("search_query", "all:"+query)
 		q.Set("sortBy", "submittedDate")

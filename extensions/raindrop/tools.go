@@ -172,8 +172,8 @@ func normalizeSave(in *saveArgs) error {
 func formatBookmark(item raindrop) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n- %s\n  %s\n  ID: %d", clipText(item.Title, 300), item.Link, item.ID)
-	if item.Collection.Title != "" {
-		fmt.Fprintf(&b, " | collection: %s", clipText(item.Collection.Title, 100))
+	if item.Collection.ID != 0 {
+		fmt.Fprintf(&b, " | collection ID: %d", item.Collection.ID)
 	}
 	if len(item.Tags) > 0 {
 		fmt.Fprintf(&b, " | tags: %s", strings.Join(item.Tags, ", "))

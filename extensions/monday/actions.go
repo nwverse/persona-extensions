@@ -21,6 +21,12 @@ type statusArgs struct {
 	Label    string `json:"label"`
 }
 
+// The longest item name and status label: the validation, the tool schemas and the page state check use them.
+const (
+	maxNameChars  = 500
+	maxLabelChars = 100
+)
+
 func validText(value string, limit int) error {
 	if strings.TrimSpace(value) == "" || len([]rune(value)) > limit {
 		return errors.New("text must be nonempty and within the extension limit")
@@ -37,7 +43,7 @@ func (in createArgs) validate() error {
 	if in.BoardID <= 0 {
 		return errors.New("board ID must be positive")
 	}
-	return validText(in.Name, 500)
+	return validText(in.Name, maxNameChars)
 }
 
 func (in statusArgs) validate() error {
@@ -47,7 +53,7 @@ func (in statusArgs) validate() error {
 	if err := validText(in.ColumnID, 100); err != nil {
 		return err
 	}
-	return validText(in.Label, 100)
+	return validText(in.Label, maxLabelChars)
 }
 
 func describeAction(name string, raw json.RawMessage) (map[string]any, error) {

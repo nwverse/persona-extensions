@@ -126,7 +126,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Page < 1 {
 		st.Page = 1
 	}
-	items, err := a.client.pullRequests(ctx, st.Owner, st.Repo, st.Page)
+	items, more, err := a.collectPullRequests(ctx, st.Owner, st.Repo, st.Page)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -142,11 +142,35 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noPRs})
 	}
-	if len(items) == 50 {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section}
 	return v, nil
+}
+
+const maxViewRecords = 250
+
+// collectPullRequests reads page 1 through current so that Load more answers the whole list, longer. It stops at
+// maxViewRecords to keep the view within the SDK's component limit, and reports whether another page can be loaded.
+func (a *app) collectPullRequests(ctx context.Context, owner, repo string, current int) ([]pullRequest, bool, error) {
+	var out []pullRequest
+	last := 0
+	for page := 1; page <= current && len(out) < maxViewRecords; page++ {
+		batch, err := a.client.pullRequests(ctx, owner, repo, page)
+		if err != nil {
+			return nil, false, err
+		}
+		last = len(batch)
+		out = append(out, batch...)
+		if last < 50 {
+			break
+		}
+	}
+	if len(out) > maxViewRecords {
+		out = out[:maxViewRecords]
+	}
+	return out, last == 50 && len(out) < maxViewRecords, nil
 }
 
 func detailView(r *ext.UIRequest, st pageState, item pullRequest, comments []comment) *wire.View {
@@ -165,8 +189,9 @@ func detailView(r *ext.UIRequest, st pageState, item pullRequest, comments []com
 	)
 	v := &wire.View{Title: fmt.Sprintf("PR #%d", item.Number), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.reviews, Items: items}}}
 	if item.Body != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Body, 60000))})
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: capComponents(textComponents(clipText(item.Body, 60000)), maxDescriptionItems)})
 	}
+	budget := maxViewItems - viewItemCount(v)
 	section := wire.Section{Title: t.comments}
 	for _, comment := range comments {
 		if comment.Body == "" {
@@ -175,11 +200,37 @@ func detailView(r *ext.UIRequest, st pageState, item pullRequest, comments []com
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: clipText(comment.User.FullName+" (@"+comment.User.Login+")", 1800), Style: wire.TextStyleSecondary})
 		section.Items = append(section.Items, textComponents(clipText(comment.Body, 12000))...)
 	}
+	section.Items = capComponents(section.Items, budget)
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.noComments, Style: wire.TextStyleSecondary})
 	}
 	v.Sections = append(v.Sections, section)
 	return v
+}
+
+const (
+	// maxViewItems keeps the pull request view within the hub's 300 component limit, whatever the comments hold.
+	maxViewItems = 250
+	// maxDescriptionItems leaves the comments room in it.
+	maxDescriptionItems = 100
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
+}
+
+func viewItemCount(v *wire.View) int {
+	n := 0
+	for _, section := range v.Sections {
+		n += len(section.Items)
+	}
+	return n
 }
 
 func commentView(r *ext.UIRequest, st pageState) *wire.View {

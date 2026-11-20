@@ -31,7 +31,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.ID) > 128 || len(st.DraftID) > 128 || len(st.Query) > 250 || len(st.Title) > 1100 || len(st.URL) > 1100 || len(st.Labels) > 2200 || st.Progress < 0 || st.Progress > 100 {
+	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.ID) > 128 || len(st.DraftID) > 128 || len([]rune(st.Query)) > maxQueryChars || len([]rune(st.Title)) > maxTitleChars || len(st.URL) > 1100 || len([]rune(st.Labels)) > maxLabelsStateChars || st.Progress < 0 || st.Progress > 100 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -52,7 +52,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Offset = clipText(r.Values["q"], 200), 0
+		st.Query, st.Offset = clipText(r.Values["q"], maxQueryChars), 0
 		if strings.TrimSpace(st.Query) != "" {
 			st.View = "search"
 		} else {
@@ -129,6 +129,34 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const maxViewRecords = 250
+
+// collectBookmarks reads the batches from the start through the one at offset, following Readeck's next links, so that
+// Load more answers the whole list, longer. It stops at maxViewRecords to keep the view within the SDK's component
+// limit, and HasMore (with NextPage) reports whether another batch can be loaded.
+func (a *app) collectBookmarks(ctx context.Context, view, query string, offset int) (bookmarkPage, error) {
+	var out bookmarkPage
+	for pos := 0; len(out.Items) < maxViewRecords; {
+		batch, err := a.client.bookmarks(ctx, view, query, pos)
+		if err != nil {
+			return bookmarkPage{}, err
+		}
+		out.Items = append(out.Items, batch.Items...)
+		out.Total, out.HasMore, out.NextPage = batch.Total, batch.HasMore, batch.NextPage
+		if !batch.HasMore || pos >= offset {
+			break
+		}
+		pos = batch.NextPage
+	}
+	if len(out.Items) > maxViewRecords {
+		out.Items = out.Items[:maxViewRecords]
+	}
+	if len(out.Items) >= maxViewRecords {
+		out.HasMore = false
+	}
+	return out, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -166,7 +194,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.View == "" {
 		st.View = "unread"
 	}
-	page, err := a.client.bookmarks(ctx, st.View, st.Query, st.Offset)
+	page, err := a.collectBookmarks(ctx, st.View, st.Query, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -223,7 +251,7 @@ func saveView(r *ext.UIRequest, st pageState) *wire.View {
 func detailView(r *ext.UIRequest, st pageState, item bookmark, article string, highlights []highlight) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(fmt.Sprintf("%s · %d %s · %s", item.SiteName, item.ReadingTime, t.minutes, strings.Join(item.Labels, ", ")), 1800)}}
-	if link := safeArticleLink(item.URL); link != "" {
+	if link := safeArticleLink(item.URL); httpsLink(link) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
 	items = append(items,
@@ -260,6 +288,12 @@ func safeArticleLink(raw string) string {
 		return ""
 	}
 	return u.String()
+}
+
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
 func splitLabels(raw string) []string {

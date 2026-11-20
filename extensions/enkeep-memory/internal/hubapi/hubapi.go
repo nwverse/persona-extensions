@@ -74,6 +74,11 @@ type Session struct {
 	Status    string    `json:"status,omitempty"` // the hub's: idle | working | blocked | done | interrupted…
 	// ByPersona: Persona started it (a task, a relay): its first message is Persona's, not the user's.
 	ByPersona bool `json:"by_persona,omitempty"`
+	// Archived, HistorySource and HistoryRuntime: a row of session history (History): archived in its runtime, and
+	// the source that listed it (claude, codex or runtime) with the runtime's id.
+	Archived       bool   `json:"archived,omitempty"`
+	HistorySource  string `json:"history_source,omitempty"`
+	HistoryRuntime string `json:"history_runtime,omitempty"`
 }
 
 // ItemsQuery reads a session's items. Daily reading asks Fold (work folded to counts and file names) and After

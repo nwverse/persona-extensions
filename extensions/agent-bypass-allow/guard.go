@@ -144,7 +144,11 @@ type guard struct {
 
 // newGuard is the guard for a session in cwd.
 func newGuard(cwd string, allowDestructive bool) *guard {
-	return &guard{allowDestructive: allowDestructive, roots: scratchRoots(cwd), cwd: cwd}
+	return newGuardWithWorkspaces(cwd, nil, allowDestructive)
+}
+
+func newGuardWithWorkspaces(cwd string, workspaces []string, allowDestructive bool) *guard {
+	return &guard{allowDestructive: allowDestructive, roots: scratchRootsWithWorkspaces(cwd, workspaces), cwd: cwd}
 }
 
 // personOnly says why cmd must stay with a person ("" when it need not).
@@ -184,6 +188,9 @@ func (g *guard) stays(why string) string {
 }
 
 func (g *guard) personOnlyDepth(cmd string, depth int) string {
+	if evaluatedZshExpansion(stripHeredocsWith(cmd, true)) {
+		return "unclear: evaluated zsh parameter expansion"
+	}
 	all, _ := scan(cmd)
 	for _, words := range all {
 		for _, w := range words {
@@ -401,6 +408,10 @@ func (g *guard) nested(words []string, cmd string, depth int) string {
 // the command's words end on (a quote or a backslash-newline carries them on), and a shell anywhere in those words
 // keeps the bodies. Where the scan is unsure it finds no heredoc, so a body is read as commands: that asks more.
 func stripHeredocs(cmd string) string {
+	return stripHeredocsWith(cmd, false)
+}
+
+func stripHeredocsWith(cmd string, quotedOnly bool) string {
 	lines := strings.Split(cmd, "\n")
 	var out []string
 	var st heredocScan
@@ -449,7 +460,7 @@ func stripHeredocs(cmd string) string {
 					out = append(out, lines[i])
 					break
 				}
-				if keep {
+				if keep || (quotedOnly && !h.quoted) {
 					out = append(out, lines[i])
 				}
 			}
@@ -462,9 +473,10 @@ func stripHeredocs(cmd string) string {
 // heredocStart is a heredoc operator: its delimiter, whether it was <<- (leading tabs stripped from the body), and
 // how many command substitutions it is inside.
 type heredocStart struct {
-	delim string
-	dash  bool
-	depth int
+	delim  string
+	dash   bool
+	depth  int
+	quoted bool
 }
 
 // heredocScan reads a command line by line for heredoc operators, carrying quotes, backticks and arithmetic across
@@ -592,7 +604,9 @@ func heredocWord(rs []rune, i int) (int, heredocStart) {
 			quote = 0
 		case quote == 0 && (r == '\'' || r == '"'):
 			quote = r
+			h.quoted = true
 		case r == '\\' && quote != '\'':
+			h.quoted = true
 			if i+1 == len(rs) {
 				unsure = true // a backslash-newline: the word goes on on the next line
 				break
@@ -758,6 +772,18 @@ func scanFull(cmd string) (segs []segment, redirects []redirect, tail string) {
 				// part of a word: brace expansion makes it several words ({rm,-rf,x} is rm -rf x)
 				cur.WriteRune(map[rune]rune{'{': braceOpen, '}': braceClose}[r])
 				inWord = true
+			}
+		case r == '(' && param > 0 && i > 0 && rs[i-1] == '{':
+			end := i + 1
+			for end < len(rs) && (rs[end] >= 'a' && rs[end] <= 'z' || rs[end] >= 'A' && rs[end] <= 'Z') {
+				end++
+			}
+			if end < len(rs) && rs[end] == ')' {
+				cur.WriteString(string(rs[i : end+1]))
+				i = end
+			} else {
+				endSegment()
+				sep.WriteRune(r)
 			}
 		case r == ',' && !single && !double:
 			cur.WriteRune(braceComma)
@@ -932,6 +958,9 @@ func (g *guard) segmentPersonOnly(words []string, depth int) string {
 // segmentFrom is segmentPersonOnly for words that come after pre in the simple command (a globbed program's).
 func (g *guard) segmentFrom(pre, words []string, depth int) string {
 	first, wrapped := len(pre) == 0, len(pre) > 0
+	if dynamicExecutable(words) {
+		return "unclear: dynamically selected executable"
+	}
 	for i, w := range words {
 		if name, val, ok := strings.Cut(w, "="); ok && (first || wrapped) && commandVars[strings.TrimSuffix(name, "+")] && depth < 3 {
 			if why := g.personOnlyDepth(val, depth+1); why != "" {
@@ -969,6 +998,9 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 		rest := words[i+1:]
 		if why, ok := alwaysPerson[name]; ok {
 			r := why + ": " + name
+			if why == "deletion" && g.protectedTargets(rest) {
+				return "protected deletion target: " + name
+			}
 			if name == "dd" && ddDisk(rest) {
 				return "disk overwrite: dd"
 			}
@@ -1003,6 +1035,9 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 			}
 		case "find": // what -exec runs is checked as the words after it
 			if has(rest, "-delete") {
+				if g.protectedTargets(rest) || (findDefaultStart(rest) && g.protectedTargets([]string{"."})) {
+					return "protected deletion target: find -delete"
+				}
 				why = "deletion: find -delete"
 			}
 			if f := findOutputs(rest); f != "" {

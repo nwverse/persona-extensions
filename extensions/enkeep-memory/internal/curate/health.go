@@ -102,11 +102,19 @@ func (c *Curator) health(ctx context.Context, owner []string, today string, run 
 
 // recordAdmitted keeps, for a daily run that is not a dry run, which units it admitted (include or window) on day:
 // the days and units the coverage check may hold the curator to.
+//
+// A run of a day adds to what earlier runs of it admitted (0.2.0-beta.34): a rerun may no longer see a unit an
+// earlier run read (a source that lists only recent units, a session archived since), and replacing the list lost
+// it. The one reason to take a unit off is that its source is gone: Forget removes the forgotten source's units
+// from every day with the rest of what came from it.
 func (c *Curator) recordAdmitted(day string, admitted []triage.Decision, dry bool) {
 	if dry {
 		return
 	}
-	refs := []string{}
+	refs := slices.Clone(c.St.S.Admitted[day])
+	if refs == nil {
+		refs = []string{}
+	}
 	for _, d := range admitted {
 		if !slices.Contains(refs, d.Chat) {
 			refs = append(refs, d.Chat)

@@ -127,3 +127,50 @@ func TestAssistantAwayKeepsTheDay(t *testing.T) {
 		t.Fatal("no wait before the next try")
 	}
 }
+
+// broken is the stub model, failing every daily call with an error that is not the model being unavailable (every
+// fallback model failed, say) while broken is set.
+type broken struct {
+	stub.Model
+	broken bool
+}
+
+func (f *broken) Complete(ctx context.Context, r model.Request) (model.Response, error) {
+	if f.broken && r.Step == "daily" {
+		return model.Response{}, errors.New("model.complete: every candidate failed")
+	}
+	return f.Model.Complete(ctx, r)
+}
+
+// A unit the model could not read is not counted and passed over (0.2.0-beta.33): the day is not done, as when the
+// model is away, so it is not marked read with the current prompt and its unit is read when the model answers again.
+func TestUnreadUnitKeepsTheDay(t *testing.T) {
+	m := &broken{broken: true}
+	c, _ := newCurator(t, m, "shadow")
+	c.Cfg.BackfillDays = 3
+	c.StartBackfill("2026-11-05") // 11-02 … 11-04
+	ctx := context.Background()
+	if done, err := c.BackfillStep(ctx); done || err != nil { // 11-02: nothing to read
+		t.Fatalf("empty day: done %v err %v", done, err)
+	}
+	if done, err := c.BackfillStep(ctx); done || !errors.Is(err, ErrModelDown) {
+		t.Fatalf("a unit failed: done %v err %v, want ErrModelDown", done, err)
+	}
+	if c.St.S.Backfill.Next != "2026-11-03" || strings.Join(dailyRuns(c.St.S), ",") != "2026-11-02" {
+		t.Fatalf("the day counted as run: next %s runs %v", c.St.S.Backfill.Next, dailyRuns(c.St.S))
+	}
+	if p := c.St.S.ModelPause; p == nil || !strings.Contains(p.Reason, "every candidate failed") {
+		t.Fatalf("pause: %+v", p)
+	}
+	// The model answers again: the same day runs, the replay goes on, the pause is cleared.
+	m.broken = false
+	if err := c.RunBackfill(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(dailyRuns(c.St.S), ","); got != "2026-11-02,2026-11-03,2026-11-04" {
+		t.Errorf("daily runs after recovery: %s", got)
+	}
+	if c.St.S.ModelPause != nil || !c.BackfillDone() {
+		t.Errorf("after recovery: pause %+v, done %v", c.St.S.ModelPause, c.BackfillDone())
+	}
+}

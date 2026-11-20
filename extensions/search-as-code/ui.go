@@ -1169,11 +1169,13 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return res, err
 }
 
-func (a *app) card(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
+// card is the Overview card: the first recipes and one line about the last run that was stored. Drawing it never runs
+// a pipeline: the hub draws the card every time Overview opens, and a scan of every session there (what
+// activeExecution does when the last run had a query) took seconds and held the store's read lock meanwhile.
+func (a *app) card(_ context.Context, _ *ext.UIRequest) (*wire.View, error) {
 	var items []wire.Component
 	err := a.db().read(func(st *State) {
-		d := a.drawer(ctx, st, r)
-		res := d.activeExecution(page{})
+		res := st.LastRun
 		for i, rec := range st.allRecipes()[:min(len(st.allRecipes()), 3)] {
 			items = append(items, wire.Component{
 				Type:     wire.ComponentRow,

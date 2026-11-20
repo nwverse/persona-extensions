@@ -133,6 +133,7 @@ func TestPersonOnly(t *testing.T) {
 		`RM -rf "$t"`, "cd view && /bin/Rm -f sub/*", "sudo RM -rf /var/x", "SUDO rm -rf /var/x", "Git reset --hard",
 		"CHMOD 777 ~/.ssh", "/bin/R? -rf v", "BASH -c 'rm -rf v'", `PSQL -c "DROP TABLE users"`, "MKFS.ext4 /dev/sdb1",
 		"ſudo rm -rf /var/x", "ſhred ~/f", "/bin/ſh -c 'rm -rf v'", "\u212Aubectl delete ns x",
+		`eval "$(ssh-agent -s)"`,
 		"CSH -c 'rm -rf v'", "/bin/Tcsh -c 'rm -rf v'", "PWSH -c 'rm -rf v'", "SUDO -s <<EOF\nrm -rf v\nEOF",
 		"Doas -s <<EOF\nrm -rf v\nEOF", "Git -C d clean -fd", "GIT --namespace n reset --hard", "Git -c alias.x=clean x -fdx",
 	}
@@ -165,8 +166,7 @@ func TestPersonOnly(t *testing.T) {
 		"ssh host ls -la", "ssh host git status", "ssh host kubectl get pods", "ssh -p 2222 user@host docker ps",
 		"ssh user@host", "ssh host git push origin feat/x", "ssh host kubectl apply -f app.yaml",
 		"ssh -L 8080:localhost:80 -N host", "ssh host 'echo chmod 755 in text'",
-		// benign words after the other wrappers still go through (eval "$(ssh-agent)" is a common shell init line)
-		"eval echo hi", "busybox ls -la", "busybox true", "autossh -M 0 host", `eval "$(ssh-agent -s)"`,
+		"eval echo hi", "busybox ls -la", "busybox true", "autossh -M 0 host",
 		"toybox ls -la", "torsocks curl -s https://example.com", "proxychains curl -s https://example.com",
 		"proxychains4 curl -s https://example.com", "firejail ls -la", "bwrap --ro-bind / / -- ls -la",
 		// git options that are not shortenings of a destructive one, and a checkout of one branch or commit

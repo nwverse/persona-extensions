@@ -13,7 +13,7 @@ CREATE TABLE IF NOT EXISTS messages (
   sender TEXT NOT NULL DEFAULT '', sender_name TEXT NOT NULL DEFAULT '', mine INTEGER NOT NULL DEFAULT 0,
   type TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '', at REAL NOT NULL DEFAULT 0,
   root TEXT NOT NULL DEFAULT '', parent TEXT NOT NULL DEFAULT '', at_me INTEGER NOT NULL DEFAULT 0,
-  media TEXT NOT NULL DEFAULT '[]');
+  media TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]');
 CREATE INDEX IF NOT EXISTS messages_chat ON messages (chat, position);
 CREATE TABLE IF NOT EXISTS names (id TEXT PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sends (key TEXT PRIMARY KEY, result TEXT);
@@ -28,6 +28,10 @@ class Store:
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA)
+        # Databases from before self-mentions have no mention metadata column. Keep those messages inert.
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(messages)")}
+        if "mentions" not in columns:
+            self._db.execute("ALTER TABLE messages ADD COLUMN mentions TEXT NOT NULL DEFAULT '[]'")
         # 0.1 named a direct chat it saw only through the user's own messages 私聊 ("direct chat") for good.
         self._db.execute("UPDATE chats SET name = '' WHERE kind = 'dm' AND name = '私聊'")
         self._db.commit()
@@ -49,11 +53,12 @@ class Store:
     def add_message(self, m, sender_name, mine):
         """Keeps a message once; True when it is new."""
         return self._do(
-            "INSERT OR IGNORE INTO messages (id, chat, position, sender, sender_name, mine, type, text, at, root, parent, at_me, media)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO messages (id, chat, position, sender, sender_name, mine, type, text, at, root, parent, at_me, media, mentions)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             m["id"], m["chat"], m.get("position") or 0, m.get("sender") or "", sender_name, 1 if mine else 0,
             m.get("type") or "", m.get("text") or "", m.get("at") or 0, m.get("root") or "", m.get("parent") or "",
-            1 if m.get("at_me") else 0, json.dumps(m.get("media") or [], ensure_ascii=False)) > 0
+            1 if m.get("at_me") else 0, json.dumps(m.get("media") or [], ensure_ascii=False),
+            json.dumps(m.get("mentions") or [], ensure_ascii=False)) > 0
 
     def touch_chat(self, chat, kind, at):
         self._do("INSERT INTO chats (id, kind, last_at) VALUES (?, ?, ?)"
@@ -126,6 +131,7 @@ def _message(row):
         return None
     row = dict(row)
     row["media"] = json.loads(row.get("media") or "[]")
+    row["mentions"] = json.loads(row.get("mentions") or "[]")
     row["mine"] = bool(row.get("mine"))
     row["at_me"] = bool(row.get("at_me"))
     return row

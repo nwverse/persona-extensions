@@ -306,6 +306,33 @@ func TestBindByQRCode(t *testing.T) {
 	}
 }
 
+// A poll that fails for good (here iLink confirms with a base URL outside weixin.qq.com) must not leave the dead QR
+// in place: asking again with the same code would fail the same way forever.
+func TestFailedPollForgetsThePendingQR(t *testing.T) {
+	r := newRig(t, false)
+	ctx := context.Background()
+	r.ilink.statuses = []map[string]any{{"status": "confirmed", "bot_token": "BT", "ilink_bot_id": "bot@im.bot", "ilink_user_id": owner, "baseurl": "https://ilink.example.com"}}
+	if _, err := r.bot.LoginStep(ctx, "", nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err := r.bot.LoginStep(ctx, "qr", nil)
+	if err == nil || ilink.Retryable(err) {
+		t.Fatalf("want a final error, got %v", err)
+	}
+	r.bot.mu.Lock()
+	pending := r.bot.qr
+	r.bot.mu.Unlock()
+	if pending != nil {
+		t.Fatal("the QR that can no longer succeed is still pending")
+	}
+	if p, err := r.bot.LoginStep(ctx, "qr", nil); err != nil || p.Kind != wire.ConnectorPromptKindQr {
+		t.Fatalf("a new QR should start, got %+v %v", p, err)
+	}
+	if st := r.secrets.state(t); st.Creds != nil {
+		t.Fatalf("credentials from the rejected answer were stored: %+v", st)
+	}
+}
+
 // The owner's message goes to the hub as it is; someone else hears once whose bot it is, and nothing reaches the hub.
 func TestOwnerMessageGoesToTheHubStrangerHearsOnce(t *testing.T) {
 	r := newRig(t, true)

@@ -31,7 +31,7 @@ type fakeBookStack struct {
 }
 
 func samplePage() page {
-	return page{ID: 42, BookID: 7, Name: "Reading context", Slug: "reading-context", Markdown: "# Reading context\n\nKeep source context beside the next step.", UpdatedAt: "2026-11-10T10:00:00Z", URL: "https://docs.example.com/books/reading/page/context"}
+	return page{ID: 42, BookID: 7, Name: "Reading context", Slug: "reading-context", Markdown: "# Reading context\n\nKeep source context beside the next step.", UpdatedAt: "2026-11-10T10:00:00Z"}
 }
 
 func newFakeBookStack(t *testing.T) *fakeBookStack {

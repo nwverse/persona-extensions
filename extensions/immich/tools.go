@@ -138,10 +138,18 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		if item.Description != "" {
 			b.WriteString("Description: " + clipText(item.Description, 5000) + "\n")
 		}
-		for _, asset := range item.Assets {
+		assets, err := a.client.albumAssets(ctx, in.AlbumID)
+		a.record(err)
+		if err != nil {
+			return "", err
+		}
+		for _, asset := range assets {
 			if !asset.IsTrashed {
 				b.WriteString(formatAsset(asset))
 			}
+		}
+		if item.AssetCount > len(assets) {
+			fmt.Fprintf(&b, "Showing the %d most recent of %d assets.\n", len(assets), item.AssetCount)
 		}
 		return clipText(b.String(), 90000), nil
 	}

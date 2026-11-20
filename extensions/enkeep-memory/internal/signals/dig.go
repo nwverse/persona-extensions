@@ -99,14 +99,20 @@ func dig(ctx context.Context, o *Options, st *store.State, g *gathered, hits []h
 	}
 	// The model's decisions, a session at a time (concurrently with Workers > 1).
 	decisions := make([]map[int]decision, len(order))
+	decideErrs := make([]error, len(order))
 	parallel(ctx, o.Workers, len(order), func(i int) {
 		hs := bySession[order[i]]
 		d, err := decide(ctx, o, hs[0].sess, hs)
-		if err != nil {
+		if err != nil && !errors.Is(err, model.ErrPaused) {
 			o.logf("signals: dig decision %s: %v", order[i], err)
 		}
-		decisions[i] = d
+		decisions[i], decideErrs[i] = d, err
 	})
+	// The hub held the model (model_paused) past the call's wait: no record is kept, so the day's next pass asks
+	// again (0.2.0-beta.34); a record would mark the hit done for good.
+	if err := heldIn(decideErrs); err != nil {
+		return err
+	}
 	type job struct {
 		rec *entry.Dig
 		h   hit
@@ -134,6 +140,13 @@ func dig(ctx context.Context, o *Options, st *store.State, g *gathered, hits []h
 	// The stretches read and asked about (concurrently), then kept in order (Observe is single-threaded).
 	parallel(ctx, o.Workers, len(jobs), func(i int) { jobs[i].got = ask(ctx, o, jobs[i].h.sess, jobs[i].h, jobs[i].rec) })
 	if err := ctx.Err(); err != nil {
+		return err
+	}
+	mineErrs := make([]error, len(jobs))
+	for i, j := range jobs {
+		mineErrs[i] = j.got.err
+	}
+	if err := heldIn(mineErrs); err != nil { // as for the decisions: nothing kept, asked again on the next pass
 		return err
 	}
 	for _, j := range jobs {
@@ -206,6 +219,16 @@ func parallel(ctx context.Context, workers, n int, fn func(i int)) {
 }
 
 func isWaiting(err error) bool { return errors.Is(err, hubapi.ErrWaitingHub) }
+
+// heldIn is the first of errs that says the hub held the model (model.ErrPaused), or nil.
+func heldIn(errs []error) error {
+	for _, err := range errs {
+		if errors.Is(err, model.ErrPaused) {
+			return err
+		}
+	}
+	return nil
+}
 
 // folds lists a session's folded stretches.
 func folds(s *session) []hubapi.Fold {
@@ -480,7 +503,9 @@ func ask(ctx context.Context, o *Options, s *session, h hit, rec *entry.Dig) min
 	resp, err := o.Model.Complete(ctx, model.Request{Step: "signals_mine", Tier: o.Tier, System: prompts.Mine, User: string(user),
 		MaxTokens: 3000, Schema: prompts.MineSchema})
 	if err != nil {
-		o.logf("signals: mine %s: %v", rec.ID, err)
+		if !errors.Is(err, model.ErrPaused) {
+			o.logf("signals: mine %s: %v", rec.ID, err)
+		}
 		got.err = fmt.Errorf("mine failed: %w", err)
 		return got
 	}

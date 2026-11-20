@@ -351,8 +351,20 @@ type State struct {
 	Reruns       []string        `json:"reruns,omitempty"` // "<day>@<daily prompt>": days a daily run finished with that prompt (rerun_range)
 	// RerunQueue: days the assistant or an Agent asked to digest again with the current daily prompt (the
 	// enkeep_rerun tool), besides rerun_range; each runs once per prompt, as rerun_range's days do.
-	RerunQueue []string            `json:"rerun_queue,omitempty"`
-	Admitted   map[string][]string `json:"admitted,omitempty"` // day → units a daily run (not dry) admitted: what coverage may expect a digest for
+	RerunQueue []string `json:"rerun_queue,omitempty"`
+	// ForceReruns: days enkeep_rerun queued with force (0.2.0-beta.33): read again although they already carry the
+	// current prompt's marker (a unit lost to a model error, say). A day leaves the list once its daily run completes.
+	ForceReruns []string            `json:"force_reruns,omitempty"`
+	Admitted    map[string][]string `json:"admitted,omitempty"` // day → units a daily run (not dry) admitted: what coverage may expect a digest for
+	// SeenSessions: the agent sessions (S3) a completed pass found in the hub's list, by "<machine>/<session>"
+	// (0.2.0-beta.34). A runtime lists only its recent sessions, so a rerun or replay of an older day would not find
+	// them there; the hub still forwards a session's items to its runtime, so a day up to the session's Last is read
+	// from these as well. Any runtime's sessions, not one's in particular.
+	SeenSessions map[string]*SeenSession `json:"seen_sessions,omitempty"`
+	// SessionHistory: the days whose agent sessions the hub's session history (nwverse/persona#11529) could not
+	// list in full, by day, as the day's last completed pass found it: an older hub without history, or a machine or
+	// source that did not answer or vouch for the whole window. A day listed in full has no entry.
+	SessionHistory map[string]*HistoryRead `json:"session_history,omitempty"`
 
 	// v4: every facet's entries in one structure (internal/entry), and what feeds and uses them. The event log is
 	// not here: it is append-only in events.jsonl (AppendEvents).
@@ -385,8 +397,46 @@ type ModelPause struct {
 	Day     string `json:"day"`      // the day whose pass could not run
 	Fails   int    `json:"fails"`    // passes in a row that found the model unavailable
 	NextTry string `json:"next_try"` // RFC 3339: no pass needing the model starts before it
-	// What was away: "" the model, "assistant" the assistant's computer (its conversations could not be read).
+	// What was away: "" the model, "assistant" the assistant's computer (its conversations could not be read),
+	// "held" the hub held the model's connection (model_paused: busy or quota; not a failure).
 	What string `json:"what,omitempty"`
+}
+
+// SeenSession is what a pass knew of an agent session when the hub listed it: enough to name it and read its days
+// again once the list no longer has it.
+type SeenSession struct {
+	Title     string    `json:"title,omitempty"`
+	Agent     string    `json:"agent,omitempty"`
+	Project   string    `json:"project,omitempty"`
+	Started   time.Time `json:"started,omitempty"`
+	Updated   time.Time `json:"updated"`
+	Ended     string    `json:"ended,omitempty"`
+	ByPersona bool      `json:"by_persona,omitempty"`
+	// Last is the last local day the session was known to be active (its Updated's day when listed): a day after
+	// it has nothing of the session to read, unless the list has it again.
+	Last string `json:"last"`
+	// First is the local day of the session's first item, when a pass read it from the start: a day before it has
+	// nothing of the session to read.
+	First string `json:"first,omitempty"`
+}
+
+// HistoryRead is how a day's pass could list the day's agent sessions from the hub's session history.
+type HistoryRead struct {
+	At      string `json:"at"`      // RFC 3339 of the pass
+	Offered bool   `json:"offered"` // false: the hub has no session history; the live list only was read
+	Why     string `json:"why,omitempty"`
+	// Gaps: the sources that did not list the window in full (machine, source, runtime, reason); their sessions are
+	// read as far as the live list and the sessions seen before have them.
+	Gaps []HistoryGap `json:"gaps,omitempty"`
+}
+
+// HistoryGap is a source of the hub's session history that did not list a window in full.
+type HistoryGap struct {
+	Machine string `json:"machine,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Runtime string `json:"runtime,omitempty"`
+	Honored bool   `json:"honored"`
+	Reason  string `json:"reason,omitempty"`
 }
 
 // Backfill is the first-run replay of the user's history (4.1): the same daily and weekly passes over past days,

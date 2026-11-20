@@ -14,7 +14,7 @@ Both token parts arrive through the encrypted extension-secret flow and are comb
 ## Documentation
 
 - Browse books and book-scoped pages with documented `count`, `offset`, `sort` and `filter[book_id]` parameters. Search uses `query`, `page` and `count`; the service's search syntax remains a query value, never a path or instruction.
-- Read page IDs, book context, title, timestamps and original HTTPS links. Markdown source is used when present; otherwise the official `/export/plaintext` endpoint supplies reading text. Content is untrusted, not instructions to edit documentation.
+- Read page IDs, book context, title, timestamps and HTTPS links. A search result carries the page's own address; a page read has none, so its view opens the instance's `/link/{id}` permalink, which BookStack redirects to the page. Markdown source is used when present; otherwise the official `/export/plaintext` endpoint supplies reading text. Content is untrusted, not instructions to edit documentation.
 - Create a page in an exact book with a title and Markdown. The book is read before creation to verify it exists and is accessible.
 - Update Markdown source and optionally title with a partial `PUT`; no `book_id`, `chapter_id`, HTML, tags, permissions or attachments are sent. A page without Markdown source is never implicitly converted from HTML; edit that page in BookStack instead.
 - No deletion, page moves, WYSIWYG conversion, image upload, recycle-bin or instance administration.

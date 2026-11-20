@@ -130,8 +130,8 @@ func formatItem(item workItem, detail bool) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "- Work item #%d: %s\n  ID: %s | project: %s | state: %s (%s) | priority: %s | due: %s\n", item.SequenceID, clipText(item.Name, 500), item.ID, item.Project, item.State.Name, item.State.ID, item.Priority, item.TargetDate)
 	if detail {
-		if item.Description != "" || item.DescriptionStripped != "" {
-			b.WriteString("\nDescription:\n" + clipText(itemDescription(item), 30000) + "\n")
+		if text := itemDescription(item); text != "" {
+			b.WriteString("\nDescription:\n" + clipText(text, 30000) + "\n")
 		}
 		b.WriteString("Updated: " + item.UpdatedAt + "\n")
 	}

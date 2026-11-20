@@ -29,7 +29,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Page < 0 || len(st.Query) > 250 || len(st.EntityID) > 128 || len(st.EntityTypeID) > 128 || len(st.LocationID) > 128 || len(st.DraftID) > 128 || len(st.Name) > 300 || len(st.Description) > 1100 || st.Quantity < 0 || st.Quantity > 1000000 {
+	if err := r.DecodeState(&st); err != nil || st.Page < 0 || len([]rune(st.Query)) > maxQueryChars || len(st.EntityID) > 128 || len(st.EntityTypeID) > 128 || len(st.LocationID) > 128 || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len([]rune(st.Description)) > maxDescriptionChars || st.Quantity < 0 || st.Quantity > 1000000 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -50,7 +50,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Page = strings.TrimSpace(clipText(r.Values["q"], 200)), 1
+		st.Query, st.Page = strings.TrimSpace(clipText(r.Values["q"], maxQueryChars)), 1
 	case "more":
 		st.Page, err = strconv.Atoi(r.Values["page"])
 		if err != nil || st.Page < 2 {
@@ -94,6 +94,30 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const maxViewRecords = 250
+
+// collectEntities reads page 1 through the current page so that Load more answers the whole list, longer. The page it
+// returns holds every entity read and the paging fields of the last page. It stops at maxViewRecords to keep the view
+// within the SDK's component limit, and reports whether another page can be loaded.
+func (a *app) collectEntities(ctx context.Context, query string, current int) (entityPage, bool, error) {
+	var out entityPage
+	for pageNumber := 1; pageNumber <= current && len(out.Items) < maxViewRecords; pageNumber++ {
+		batch, err := a.client.entities(ctx, query, pageNumber)
+		if err != nil {
+			return entityPage{}, false, err
+		}
+		out.Items = append(out.Items, batch.Items...)
+		out.Page, out.PageSize, out.Total = batch.Page, batch.PageSize, batch.Total
+		if batch.Page*batch.PageSize >= batch.Total {
+			break
+		}
+	}
+	if len(out.Items) > maxViewRecords {
+		out.Items = out.Items[:maxViewRecords]
+	}
+	return out, out.Page*out.PageSize < out.Total && len(out.Items) < maxViewRecords, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -116,7 +140,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Page == 0 {
 		st.Page = 1
 	}
-	page, err := a.client.entities(ctx, st.Query, st.Page)
+	page, more, err := a.collectEntities(ctx, st.Query, st.Page)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -132,7 +156,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noItems})
 	}
-	if page.Page*page.PageSize < page.Total {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"page": fmt.Sprint(page.Page + 1)}}}
 	}
 	create, err := a.createChoices(ctx)

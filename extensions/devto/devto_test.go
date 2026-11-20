@@ -174,6 +174,43 @@ func TestPageLoadsMoreWithoutReplacingArticles(t *testing.T) {
 	}
 }
 
+func TestMoreIsOfferedWhileTheLastBatchIsFullEvenIfFiltersHideArticles(t *testing.T) {
+	batch := func(n int) []map[string]any {
+		items := make([]map[string]any, n)
+		for i := range items {
+			reactions := 0
+			if i == 0 {
+				reactions = 40 // the only article the minimum-reactions filter keeps
+			}
+			items[i] = map[string]any{"id": i + 1, "title": "Article", "url": "https://dev.to/example", "public_reactions_count": reactions, "tag_list": []string{"programming"}}
+		}
+		return items
+	}
+	for _, tc := range []struct {
+		name     string
+		size     int
+		wantMore bool
+	}{{"full batch", 30, true}, {"short batch", 12, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(batch(tc.size))
+			}))
+			defer server.Close()
+			a := &app{client: newClient(server.URL), cfg: config{MinReactions: 10}}
+			v, err := a.render(t.Context(), &ext.UIRequest{UIParams: wire.UIParams{Locale: "en", UIVersion: 6}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := len(v.Sections[0].Items); got != 1 {
+				t.Fatalf("the filter should keep one article, got %d rows", got)
+			}
+			if has := v.Sections[0].More != nil; has != tc.wantMore {
+				t.Fatalf("More offered = %v, want %v", has, tc.wantMore)
+			}
+		})
+	}
+}
+
 func TestDetailBoundsAndStatus(t *testing.T) {
 	item := article{ID: 101, Title: "Article", URL: "https://dev.to/example/article", Description: strings.Repeat("summary ", 2000), BodyMarkdown: strings.Repeat("body ", 2000)}
 	v := detailView(&ext.UIRequest{UIParams: wire.UIParams{Locale: "en", UIVersion: 6}}, pageState{Mode: "detail", ArticleID: 101}, item, nil)

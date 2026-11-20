@@ -28,6 +28,14 @@ type tagArgs struct {
 	Name   string `json:"name"`
 }
 
+// The longest title, author and tag name Readwise documents. The validation, the tool schemas and the page state check
+// use them; a book is opened under its title, so its name is checked against maxTitleChars.
+const (
+	maxTitleChars   = 511
+	maxAuthorChars  = 1024
+	maxTagNameChars = 127
+)
+
 func validText(value string, limit int, multiline bool) error {
 	if len([]rune(value)) > limit {
 		return errors.New("text exceeds the documented Readwise limit")
@@ -44,7 +52,7 @@ func (in createArgs) validate() error {
 	if strings.TrimSpace(in.Text) == "" || validText(in.Text, 8191, true) != nil {
 		return errors.New("highlight text must be nonempty and at most 8191 characters")
 	}
-	if strings.TrimSpace(in.Title) == "" || validText(in.Title, 511, false) != nil || validText(in.Author, 1024, false) != nil || validText(in.Note, 8191, true) != nil {
+	if strings.TrimSpace(in.Title) == "" || validText(in.Title, maxTitleChars, false) != nil || validText(in.Author, maxAuthorChars, false) != nil || validText(in.Note, 8191, true) != nil {
 		return errors.New("highlight title, author or note is invalid")
 	}
 	if in.SourceURL != "" {
@@ -91,7 +99,7 @@ func describeAction(name string, raw json.RawMessage) (map[string]any, error) {
 		if err := validID(in.BookID); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(in.Name) == "" || validText(in.Name, 127, false) != nil {
+		if strings.TrimSpace(in.Name) == "" || validText(in.Name, maxTagNameChars, false) != nil {
 			return nil, errors.New("tag name must be nonempty, one line and at most 127 characters")
 		}
 		summary = fmt.Sprintf("Add tag %q to Readwise book #%d", in.Name, in.BookID)
@@ -143,7 +151,7 @@ func (a *app) doAction(ctx context.Context, requestID, name string, raw json.Raw
 		if err := validID(in.BookID); err != nil {
 			return nil, err
 		}
-		if strings.TrimSpace(in.Name) == "" || validText(in.Name, 127, false) != nil {
+		if strings.TrimSpace(in.Name) == "" || validText(in.Name, maxTagNameChars, false) != nil {
 			return nil, errors.New("tag name must be nonempty, one line and at most 127 characters")
 		}
 		if _, err := a.client.book(ctx, in.BookID); err != nil {

@@ -161,7 +161,7 @@ func (c *client) approve(ctx context.Context, owner, repo string, id int64) erro
 	if err := validRepo(owner, repo); err != nil {
 		return err
 	}
-	return c.do(ctx, http.MethodPost, repoPath(owner, repo)+"/pulls/"+strconv.FormatInt(id, 10)+"/reviews", nil, map[string]string{"state": "APPROVED"}, nil)
+	return c.do(ctx, http.MethodPost, repoPath(owner, repo)+"/pulls/"+strconv.FormatInt(id, 10)+"/reviews", nil, map[string]string{"event": "APPROVED"}, nil)
 }
 
 func safePRLink(raw string) string {

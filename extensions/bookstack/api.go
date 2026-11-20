@@ -142,8 +142,11 @@ func (c *client) pages(ctx context.Context, bookID int64, offset int) (listPage[
 	return out, err
 }
 
+// maxQueryChars is the longest search query: the client, the page clip, the tool schema and the page state check use it.
+const maxQueryChars = 200
+
 func (c *client) search(ctx context.Context, query string, pageNumber int) (listPage[searchResult], error) {
-	if strings.TrimSpace(query) == "" || len([]rune(query)) > 200 || strings.ContainsRune(query, 0) {
+	if strings.TrimSpace(query) == "" || len([]rune(query)) > maxQueryChars || strings.ContainsRune(query, 0) {
 		return listPage[searchResult]{}, errors.New("search text must be nonempty and at most 200 characters")
 	}
 	if pageNumber < 1 {
@@ -207,6 +210,15 @@ func (c *client) updatePage(ctx context.Context, id int64, name, markdown string
 	var out page
 	err := c.do(ctx, http.MethodPut, "/api/pages/"+strconv.FormatInt(id, 10), nil, body, &out)
 	return out, err
+}
+
+// pageLink is a page's permalink on the instance. A page read from the API has no address of its own, and BookStack's
+// /link/{id} route redirects to the page.
+func pageLink(base string, id int64) string {
+	if id <= 0 {
+		return ""
+	}
+	return safePageLink(base + "/link/" + strconv.FormatInt(id, 10))
 }
 
 func safePageLink(raw string) string {

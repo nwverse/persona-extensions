@@ -63,6 +63,7 @@ func (b *Bot) LoginStep(ctx context.Context, step string, values map[string]stri
 		if ilink.Retryable(err) {
 			return p.prompt(b.lang()), nil // asked again in a moment
 		}
+		b.forgetQR(p) // this code cannot succeed any more: the next step starts over with a new one
 		return wire.ConnectorPrompt{}, err
 	}
 	switch st.State {

@@ -107,12 +107,24 @@ func (c *client) search(ctx context.Context, token string) (searchPage, error) {
 	}
 	var out searchPage
 	err := c.do(ctx, http.MethodGet, "/search/jql", q, nil, &out)
+	for i := range out.Issues {
+		out.Issues[i].URL = c.browseURL(out.Issues[i].Key)
+	}
 	return out, err
+}
+
+// browseURL is the page of an issue on the site: the instance URL without the REST path, then /browse/<key>.
+func (c *client) browseURL(key string) string {
+	if key == "" {
+		return ""
+	}
+	return strings.TrimSuffix(c.base, "/rest/api/3") + "/browse/" + url.PathEscape(key)
 }
 
 func (c *client) issue(ctx context.Context, key string) (issue, error) {
 	var out issue
 	err := c.do(ctx, http.MethodGet, "/issue/"+url.PathEscape(key), url.Values{"fields": {"summary,description,status,assignee,project,priority,issuetype,updated,comment"}}, nil, &out)
+	out.URL = c.browseURL(out.Key)
 	return out, err
 }
 
@@ -135,7 +147,7 @@ func (c *client) create(ctx context.Context, in map[string]any) (issue, error) {
 }
 
 func (c *client) comment(ctx context.Context, key, body string) error {
-	return c.do(ctx, http.MethodPost, "/issue/"+url.PathEscape(key)+"/comment", nil, map[string]string{"body": body}, nil)
+	return c.do(ctx, http.MethodPost, "/issue/"+url.PathEscape(key)+"/comment", nil, map[string]any{"body": adfDocument(body)}, nil)
 }
 
 func clipText(text string, limit int) string {

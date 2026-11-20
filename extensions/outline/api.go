@@ -98,13 +98,16 @@ func pageParams(offset int) (map[string]any, error) {
 	return map[string]any{"offset": offset, "limit": 25}, nil
 }
 
+// maxQueryChars is the longest search query, checked by the client, clipped by the page and kept in the page state.
+const maxQueryChars = 200
+
 func (c *client) search(ctx context.Context, query string, offset int) (envelope[[]searchResult], error) {
 	params, err := pageParams(offset)
 	if err != nil {
 		return envelope[[]searchResult]{}, err
 	}
 	query = strings.TrimSpace(query)
-	if query == "" || len([]rune(query)) > 200 {
+	if query == "" || len([]rune(query)) > maxQueryChars {
 		return envelope[[]searchResult]{}, errors.New("search requires at most 200 characters")
 	}
 	params["query"] = query

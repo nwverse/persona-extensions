@@ -9,6 +9,9 @@ import (
 	"unicode"
 )
 
+// maxSubjectChars is the longest issue subject Redmine accepts, counted in characters.
+const maxSubjectChars = 255
+
 type createArgs struct {
 	ProjectID   int64  `json:"project_id"`
 	Subject     string `json:"subject"`
@@ -19,8 +22,8 @@ func (in createArgs) validate() error {
 	if in.ProjectID <= 0 {
 		return errors.New("project ID must be positive")
 	}
-	if strings.TrimSpace(in.Subject) == "" || len([]rune(in.Subject)) > 500 || len([]rune(in.Description)) > 30000 {
-		return errors.New("subject must be nonempty and at most 500 characters; description is at most 30000 characters")
+	if strings.TrimSpace(in.Subject) == "" || len([]rune(in.Subject)) > maxSubjectChars || len([]rune(in.Description)) > 30000 {
+		return errors.New("subject must be nonempty and at most 255 characters; description is at most 30000 characters")
 	}
 	for _, r := range in.Subject {
 		if r == 0 || unicode.IsControl(r) {

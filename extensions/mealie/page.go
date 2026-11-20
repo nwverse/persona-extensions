@@ -90,6 +90,30 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const maxViewRecords = 250
+
+// collectRecipes reads page 1 through the current page so that Load more answers the whole list, longer. The page it
+// returns holds every recipe read and the paging fields of the last page. It stops at maxViewRecords to keep the view
+// within the SDK's component limit, and reports whether another page can be loaded.
+func (a *app) collectRecipes(ctx context.Context, query string, current int) (recipePage, bool, error) {
+	var out recipePage
+	for pageNumber := 1; pageNumber <= current && len(out.Items) < maxViewRecords; pageNumber++ {
+		batch, err := a.client.recipes(ctx, query, pageNumber)
+		if err != nil {
+			return recipePage{}, false, err
+		}
+		out.Items = append(out.Items, batch.Items...)
+		out.Page, out.PerPage, out.Total, out.TotalPages = batch.Page, batch.PerPage, batch.Total, batch.TotalPages
+		if batch.Page >= batch.TotalPages {
+			break
+		}
+	}
+	if len(out.Items) > maxViewRecords {
+		out.Items = out.Items[:maxViewRecords]
+	}
+	return out, out.Page < out.TotalPages && len(out.Items) < maxViewRecords, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -112,7 +136,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Page == 0 {
 		st.Page = 1
 	}
-	page, err := a.client.recipes(ctx, st.Query, st.Page)
+	page, more, err := a.collectRecipes(ctx, st.Query, st.Page)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -128,7 +152,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noRecipes})
 	}
-	if page.Page < page.TotalPages {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"page": fmt.Sprint(page.Page + 1)}}}
 	}
 	v.Sections = []wire.Section{section, {Items: []wire.Component{{Type: wire.ComponentButton, Title: t.importRecipe, Action: &wire.Action{ID: "import", Push: &wire.Push{Title: t.importRecipe, State: ext.EncodeState(pageState{Mode: "import", DraftID: randomID()})}}}}}}

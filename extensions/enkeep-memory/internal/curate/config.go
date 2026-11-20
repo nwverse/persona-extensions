@@ -51,12 +51,12 @@ type Config struct {
 	// The model route (0.2.0-beta.30, docs/model-routes.md): "chain" tries ModelPrimary in order, then ModelLong for
 	// a call estimated above ModelLongAbove tokens (input and room for the answer), else ModelShort; "purpose" is the
 	// behaviour before: every call on the model of the extension's purpose in the hub's model settings.
-	ModelRoute          string   `json:"model_route"`           // chain
-	ModelPrimary        []string `json:"model_primary"`         // none: set it to the connection's fast model
-	ModelLong           string   `json:"model_long"`            // claude-sonnet-5-5
-	ModelShort          string   `json:"model_short"`           // claude-haiku-5-5
-	ModelLongAbove      int      `json:"model_long_above"`      // 16000
-	ModelPrimaryTimeout int      `json:"model_primary_timeout"` // 120 seconds for a primary model's attempt
+	ModelRoute     string   `json:"model_route"`      // chain
+	ModelPrimary   []string `json:"model_primary"`    // none: set it to the connection's fast model
+	ModelLong      string   `json:"model_long"`       // claude-sonnet-5-5
+	ModelShort     string   `json:"model_short"`      // claude-haiku-5-5
+	ModelLongAbove int      `json:"model_long_above"` // 16000
+	ModelTimeout   int      `json:"model_timeout"`    // 180 seconds each candidate may take
 }
 
 // Route is the model route the settings ask for; nil: every call on the purpose's model.
@@ -65,7 +65,7 @@ func (c Config) Route() *model.Route {
 		return nil
 	}
 	rt := &model.Route{Primary: c.ModelPrimary, Long: c.ModelLong, Short: c.ModelShort, LongAbove: c.ModelLongAbove,
-		PrimaryTimeout: c.ModelPrimaryTimeout}
+		Timeout: c.ModelTimeout}
 	if !rt.Enabled() {
 		return nil
 	}
@@ -80,7 +80,7 @@ func Defaults() Config {
 		ActivityDays: 3, Tiers: true, EngagedDays: 30, NoiseMembers: 200, MentionWindow: 15, AdmitAllBelowTokens: 20000, AIMinRelevance: 60,
 		Graph: true, BackfillDays: DefaultBackfillDays, AutoApplyMinPrecision: 0.95, ProposalExpiryDays: 14, StaleDays: 30,
 		ModelRoute: "chain", ModelLong: "claude-sonnet-5-5",
-		ModelShort: "claude-haiku-5-5", ModelLongAbove: 16000, ModelPrimaryTimeout: 120,
+		ModelShort: "claude-haiku-5-5", ModelLongAbove: 16000, ModelTimeout: 180,
 	}
 }
 

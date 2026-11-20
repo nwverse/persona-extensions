@@ -101,7 +101,9 @@
         "tags": {"type": "array", "items": {"type": "string"}},
         "updated": {"type": "string", "format": "date-time"},
         "extra": {"type": "string", "description": "A project's short / long · status, a chat's dm / group…"},
-        "source": {"type": "string", "description": "A chat's source (lark, mail, wechat, github…)."}
+        "source": {"type": "string", "description": "A chat's source (lark, mail, wechat, github…); a document's, meeting's or event's connector (#8872)."},
+        "recording_kind": {"type": "string", "description": "A recording's kind: meeting, note or day (#8870); absent on other kinds and from an older hub."},
+        "meeting_id": {"type": "string", "description": "A recording's imported meeting: the id of the meetings item it overlaps, as the meetings list has it (#8872); absent on other kinds, before a match and from an older hub."}
       },
       "required": ["kind", "id", "name", "relevance", "updated"]
     },
@@ -260,6 +262,7 @@
         "end": {"type": "number"},
         "text": {"type": "string"},
         "n": {"type": "integer", "description": "An all-day recording's line number: the segment's 1-based position in its uploads (docs/assistant/day-recap.md); absent on other recordings."},
+        "source": {"type": "string", "enum": ["hub", "device"], "description": "Whose text the segment is in a meeting transcribed on the hub (docs/assistant/meeting-minutes.md \"The transcript of record\"): hub or device; absent means device."},
         "echo": {"type": "boolean", "description": "The line is Persona's own answer as the meeting's microphone heard it (docs/assistant/meeting-minutes.md \"Persona's echo\"): kept in the transcript but not what the meeting said, so leave it out of anything read as the meeting's words; absent (false) on every other line."}
       },
       "required": ["start", "end", "text"]

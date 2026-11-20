@@ -36,10 +36,13 @@ var rerunTools = []tool{
 	{Name: "enkeep_rerun", Description: "Queue past days to be read again with enkeep memory's current extraction prompt " +
 		"(for example after the model was down or the prompt changed). Days run one at a time in the background, " +
 		"each at most once per prompt version; days already read with the current prompt are skipped. At most 31 days " +
-		"per call, only days before today. Returns what was queued; use enkeep_rerun_status for progress.",
+		"per call, only days before today. force: true reads the days again even if already read with the current prompt " +
+		"(for a day that lost a unit to a model error); units read before are reused, only what was not read calls the " +
+		"model. Returns what was queued; use enkeep_rerun_status for progress.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"from", "to"}, "properties": map[string]any{
-			"from": map[string]any{"type": "string", "pattern": `^\d{4}-\d{2}-\d{2}$`, "description": "first day, YYYY-MM-DD"},
-			"to":   map[string]any{"type": "string", "pattern": `^\d{4}-\d{2}-\d{2}$`, "description": "last day, YYYY-MM-DD, before today"},
+			"from":  map[string]any{"type": "string", "pattern": `^\d{4}-\d{2}-\d{2}$`, "description": "first day, YYYY-MM-DD"},
+			"to":    map[string]any{"type": "string", "pattern": `^\d{4}-\d{2}-\d{2}$`, "description": "last day, YYYY-MM-DD, before today"},
+			"force": map[string]any{"type": "boolean", "default": false, "description": "read the days again even if already read with the current prompt"},
 		}}},
 	{Name: "enkeep_rerun_status", Description: "Show how far enkeep memory's reruns got: the days queued (by enkeep_rerun " +
 		"or the rerun_range setting), which are done with the current prompt, which are waiting, what is running now, " +
@@ -100,22 +103,33 @@ func strictDecode(raw json.RawMessage, out any) error {
 func (a *app) callTool(name string, raw json.RawMessage) (string, error) {
 	switch name {
 	case "enkeep_rerun":
-		var in struct{ From, To string }
+		var in struct {
+			From, To string
+			Force    bool
+		}
 		if err := strictDecode(raw, &in); err != nil {
 			return "", err
 		}
-		r, err := a.c.QueueRerun(strings.TrimSpace(in.From), strings.TrimSpace(in.To), a.localDay())
+		r, err := a.c.QueueRerun(strings.TrimSpace(in.From), strings.TrimSpace(in.To), a.localDay(), in.Force)
 		if err != nil {
 			return "", err
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "Queued %d day(s) to read again with the current prompt", len(r.Queued))
+		if r.Force {
+			fmt.Fprintf(&b, "Queued %d day(s) with force to read again with the current prompt, even if already read with it", len(r.Queued))
+		} else {
+			fmt.Fprintf(&b, "Queued %d day(s) to read again with the current prompt", len(r.Queued))
+		}
 		if len(r.Queued) > 0 {
 			fmt.Fprintf(&b, ": %s", span(r.Queued))
 		}
 		b.WriteString(".")
 		if len(r.Already) > 0 {
-			fmt.Fprintf(&b, " Already done or queued, skipped: %s.", span(r.Already))
+			if r.Force {
+				fmt.Fprintf(&b, " Already queued with force, skipped: %s.", span(r.Already))
+			} else {
+				fmt.Fprintf(&b, " Already done or queued, skipped: %s.", span(r.Already))
+			}
 		}
 		b.WriteString(" They run one at a time in the background; enkeep_rerun_status shows progress.")
 		return b.String(), nil
@@ -129,6 +143,9 @@ func (a *app) callTool(name string, raw json.RawMessage) (string, error) {
 		if len(p.Waiting) > 0 {
 			fmt.Fprintf(&b, " Waiting: %s.", span(p.Waiting))
 		}
+		if len(p.Forced) > 0 {
+			fmt.Fprintf(&b, " Queued with force (read again although already read with this prompt), waiting: %s.", span(p.Forced))
+		}
 		a.mu.Lock()
 		running := a.running
 		a.mu.Unlock()
@@ -137,6 +154,9 @@ func (a *app) callTool(name string, raw json.RawMessage) (string, error) {
 		}
 		if p.Paused != "" {
 			fmt.Fprintf(&b, " Paused: %s.", p.Paused)
+		}
+		for _, l := range p.History {
+			b.WriteString("\nSession history: " + l + ".")
 		}
 		b.WriteString("\n" + a.modelText())
 		return b.String(), nil

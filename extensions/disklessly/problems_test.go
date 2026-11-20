@@ -43,7 +43,7 @@ func codeIn(items []wire.Component) []string {
 // (a command to copy); the raw OpenSSH line is kept for 详情 only.
 func TestSSHProblems(t *testing.T) {
 	noSandbox(t)
-	m := &Machine{ID: "mm-2", Host: "mm-2", Name: "mm-2 (100.64.0.2)", User: "dev", Enabled: true}
+	m := &Machine{ID: "mm-2", Host: "mm-2", Name: "mm-2 (198.51.100.2)", User: "dev", Enabled: true}
 	cases := []struct {
 		name, raw  string
 		cause      string
@@ -53,7 +53,7 @@ func TestSSHProblems(t *testing.T) {
 		wantRetry  bool
 		wantEditor bool
 	}{
-		{name: "timeout", raw: "SSH 连接 mm-2 失败：ssh: connect to host 100.64.0.2 port 22: Connection timed out", cause: causeTimeout, reason: "超时", command: "ssh -o BatchMode=yes", wantRetry: true},
+		{name: "timeout", raw: "SSH 连接 mm-2 失败：ssh: connect to host 198.51.100.2 port 22: Connection timed out", cause: causeTimeout, reason: "超时", command: "ssh -o BatchMode=yes", wantRetry: true},
 		{name: "auth", raw: "SSH 连接 mm-2 失败：dev@mm-2: Permission denied (publickey).", cause: causeAuth, reason: "拒绝了 SSH 登录", command: "ssh-copy-id dev@mm-2", wantRetry: true, wantEditor: true},
 		{name: "host key", raw: "SSH 连接 mm-2 失败：Host key verification failed.", cause: causeHostKey, reason: "指纹", command: "ssh dev@mm-2", wantRetry: true},
 		{name: "refused", raw: "SSH 连接 mm-2 失败：ssh: connect to host mm-2 port 22: Connection refused", cause: causeRefused, reason: "拒绝了连接", wantRetry: true, wantEditor: true},
@@ -74,7 +74,7 @@ func TestSSHProblems(t *testing.T) {
 			if p.Cause != c.cause {
 				t.Fatalf("cause %q, want %q", p.Cause, c.cause)
 			}
-			if !strings.Contains(p.Reason, "mm-2") || strings.Contains(p.Reason, "100.64.0.2") {
+			if !strings.Contains(p.Reason, "mm-2") || strings.Contains(p.Reason, "198.51.100.2") {
 				t.Fatalf("reason must name the machine without its address: %q", p.Reason)
 			}
 			if !strings.Contains(p.Reason, c.reason) {
@@ -127,9 +127,9 @@ func TestHumanize(t *testing.T) {
 		t.Fatalf("plain message changed: %q %q", msg, raw)
 	}
 	// An error carrying its raw part separately.
-	err := rawError("备份后端连不上，没有上传或删除任何会话", "dial tcp 10.0.0.9:443: i/o timeout")
+	err := rawError("备份后端连不上，没有上传或删除任何会话", "dial tcp 203.0.113.9:443: i/o timeout")
 	msg, raw = humanizeErr(err)
-	if msg != "备份后端连不上，没有上传或删除任何会话" || raw != "dial tcp 10.0.0.9:443: i/o timeout" || err.Error() != msg {
+	if msg != "备份后端连不上，没有上传或删除任何会话" || raw != "dial tcp 203.0.113.9:443: i/o timeout" || err.Error() != msg {
 		t.Fatalf("raw error: %q %q %q", err.Error(), msg, raw)
 	}
 	if _, raw := humanizeErr(errors.Join(errors.New("外层"), err)); raw == "" {
@@ -145,7 +145,7 @@ func coldFleet(t *testing.T, a *app) {
 	yes := true
 	err := a.db().update(func(st *State, now time.Time) error {
 		for _, h := range []string{"build-box", "studio-mac", "old-box", "bare-box", "far-box"} {
-			if _, err := st.upsertMachine(MachineInput{Host: h, Name: h + " (100.64.0.9)"}, now); err != nil {
+			if _, err := st.upsertMachine(MachineInput{Host: h, Name: h + " (198.51.100.9)"}, now); err != nil {
 				return err
 			}
 		}
@@ -161,7 +161,7 @@ func coldFleet(t *testing.T, a *app) {
 		st.setCold("bare-box", &ColdCatalog{MachineID: "bare-box", State: ColdNoCLI, Platform: "linux-arm64", CheckedAt: now, BrewKnown: true,
 			Error: "目标机器未安装 disklessly CLI，无法读取云端会话索引"})
 		st.setCold("far-box", &ColdCatalog{MachineID: "far-box", State: ColdOffline, Cause: causeTimeout, CheckedAt: now,
-			Error: "SSH 连接 far-box 失败：ssh: connect to host 100.64.0.9 port 2222: Connection timed out"})
+			Error: "SSH 连接 far-box 失败：ssh: connect to host 198.51.100.9 port 2222: Connection timed out"})
 		return nil
 	})
 	if err != nil {
@@ -191,7 +191,7 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 		if !strings.Contains(row.Detail, id) {
 			t.Fatalf("%s: detail does not name the machine: %q", id, row.Detail)
 		}
-		if english.MatchString(row.Detail) || strings.Contains(row.Detail, "EX_") || strings.Contains(row.Detail, "100.64.0.9") {
+		if english.MatchString(row.Detail) || strings.Contains(row.Detail, "EX_") || strings.Contains(row.Detail, "198.51.100.9") {
 			t.Fatalf("%s: raw text in the row: %q", id, row.Detail)
 		}
 		hasFix := false

@@ -190,3 +190,48 @@ func TestConnectorConformance(t *testing.T) {
 	}
 	exttest.CheckConnectors(t, manifest, exttest.Serve(t, p))
 }
+
+// force queues a day already read with the current prompt; it runs again once, then leaves the force list; the status
+// says which days wait with force.
+func TestRerunToolForce(t *testing.T) {
+	a, st := toolApp(t)
+	st.S.Reruns = []string{"2026-11-03@" + schema.DailyPrompt}
+	if text, _ := call(t, a, "enkeep_rerun", map[string]string{"from": "2026-11-03", "to": "2026-11-03"}); !strings.Contains(text, "Queued 0") {
+		t.Fatalf("without force: %q", text)
+	}
+	text, err := call(t, a, "enkeep_rerun", map[string]any{"from": "2026-11-03", "to": "2026-11-03", "force": true})
+	if err != nil || !strings.Contains(text, "Queued 1 day(s) with force") || !slices.Equal(st.S.ForceReruns, []string{"2026-11-03"}) {
+		t.Fatalf("force: %q %v %v", text, err, st.S.ForceReruns)
+	}
+	if text, _ := call(t, a, "enkeep_rerun", map[string]any{"from": "2026-11-03", "to": "2026-11-03", "force": true}); !strings.Contains(text, "Already queued with force") {
+		t.Fatalf("force twice: %q", text)
+	}
+	if _, err := call(t, a, "enkeep_rerun", map[string]any{"from": "2026-11-09", "to": "2026-11-09", "force": true}); err == nil {
+		t.Fatal("force accepted a day that is not over")
+	}
+	status, _ := call(t, a, "enkeep_rerun_status", map[string]any{})
+	if !strings.Contains(status, "Queued with force (read again although already read with this prompt), waiting: 2026-11-03.") {
+		t.Fatalf("status: %q", status)
+	}
+	for i := 0; i < 8 && len(st.S.ForceReruns) > 0; i++ {
+		a.tick(t.Context())
+		for j := 0; j < 600; j++ {
+			a.mu.Lock()
+			idle := a.running == ""
+			a.mu.Unlock()
+			if idle {
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	}
+	runs := 0
+	for _, r := range st.S.Runs {
+		if r.Kind == "daily" && r.Period == "2026-11-03" {
+			runs++
+		}
+	}
+	if runs != 1 || len(st.S.ForceReruns) != 0 {
+		t.Fatalf("forced day: %d run(s), force list %v", runs, st.S.ForceReruns)
+	}
+}

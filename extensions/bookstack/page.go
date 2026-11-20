@@ -27,9 +27,13 @@ type pageState struct {
 	Markdown   string `json:"c,omitempty"`
 }
 
+// maxBookNameChars is the longest book name BookStack accepts; the page checks the name of a book it opens and keeps in
+// its state against it.
+const maxBookNameChars = 255
+
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.BookID < 0 || st.PageID < 0 || st.Offset < 0 || st.SearchPage < 0 || len(st.BookName) > 1000 || len(st.DraftID) > 128 || len(st.Name) > 300 || len(st.Markdown) > 65000 || len(st.Search) > 250 {
+	if err := r.DecodeState(&st); err != nil || st.BookID < 0 || st.PageID < 0 || st.Offset < 0 || st.SearchPage < 0 || len([]rune(st.BookName)) > maxBookNameChars || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxTitleChars || len(st.Markdown) > 65000 || len([]rune(st.Search)) > maxQueryChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -50,12 +54,12 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Search, st.SearchPage, st.Mode = clipText(r.Values["q"], 200), 1, "search"
+		st.Search, st.SearchPage, st.Mode = clipText(r.Values["q"], maxQueryChars), 1, "search"
 	case "more-search":
 		st.SearchPage++
 	case "book":
 		id, err := strconv.ParseInt(r.Values["id"], 10, 64)
-		if err != nil || id <= 0 || r.Values["name"] == "" || len(r.Values["name"]) > 255 {
+		if err != nil || id <= 0 || r.Values["name"] == "" || len([]rune(r.Values["name"])) > maxBookNameChars {
 			return nil, errors.New("invalid book")
 		}
 		st = pageState{Mode: "pages", BookID: id, BookName: r.Values["name"]}
@@ -162,6 +166,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 				return nil, err
 			}
 		}
+		item.URL = pageLink(a.client.base, st.PageID)
 		st.DraftID = randomID()
 		return detailView(r, st, item, text), nil
 	}

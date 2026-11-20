@@ -140,7 +140,7 @@ func TestManifestDefaults(t *testing.T) {
 	d := curate.Defaults()
 	want := map[string]any{"model_route": d.ModelRoute, "model_primary": []any{}, "model_long": d.ModelLong,
 		"model_short": d.ModelShort, "model_long_above": float64(d.ModelLongAbove),
-		"model_primary_timeout": float64(d.ModelPrimaryTimeout)}
+		"model_timeout": float64(d.ModelTimeout)}
 	if len(d.ModelPrimary) != 0 {
 		t.Errorf("model_primary default %v", d.ModelPrimary)
 	}

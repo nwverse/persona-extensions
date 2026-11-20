@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -31,7 +32,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.WorkID < 0 || st.Offset < 0 || len(st.ProjectHref) > 100 || len(st.ProjectName) > 1000 || len(st.TypeHref) > 100 || len(st.TypeName) > 500 || len(st.DraftID) > 128 || len(st.Subject) > 600 || len(st.Description) > 31000 || len(st.StartDate) > 20 || len(st.DueDate) > 20 {
+	if err := r.DecodeState(&st); err != nil || st.WorkID < 0 || st.Offset < 0 || len(st.ProjectHref) > 100 || len(st.ProjectName) > 1000 || len(st.TypeHref) > 100 || len(st.TypeName) > 500 || len(st.DraftID) > 128 || utf8.RuneCountInString(st.Subject) > maxSubjectChars || len(st.Description) > 31000 || len(st.StartDate) > 20 || len(st.DueDate) > 20 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -137,13 +138,13 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		return nil, err
 	}
 	st.Offset = max(1, st.Offset)
-	page, err := a.client.workPackages(ctx, me.ID, st.Offset)
+	items, more, err := a.collectWorkPackages(ctx, me.ID, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
 	section := wire.Section{Title: t.work}
-	for _, item := range page.Embedded.Elements {
+	for _, item := range items {
 		if item.ID <= 0 || item.Subject == "" {
 			continue
 		}
@@ -152,13 +153,38 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noWork})
 	}
-	if page.Links.NextByOffset.Href != "" {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v := &wire.View{Title: t.work, State: ext.EncodeState(st), Sections: []wire.Section{section, {Title: t.work, Items: []wire.Component{
 		{Type: wire.ComponentButton, Title: t.create, Action: &wire.Action{ID: "projects", Push: &wire.Push{Title: t.projects, State: ext.EncodeState(pageState{Mode: "projects"})}}},
 	}}}}
 	return v, nil
+}
+
+// maxViewWorkPackages keeps the accumulated list within the SDK's component limit.
+const maxViewWorkPackages = 250
+
+// collectWorkPackages reads pages 1 through page so that Load more extends the list instead of replacing it,
+// and reports whether OpenProject has more work packages that the cap still leaves room to show.
+func (a *app) collectWorkPackages(ctx context.Context, userID int64, page int) ([]workPackage, bool, error) {
+	var out []workPackage
+	more := false
+	for pos := 1; pos <= page && len(out) < maxViewWorkPackages; pos++ {
+		batch, err := a.client.workPackages(ctx, userID, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Embedded.Elements...)
+		more = batch.Links.NextByOffset.Href != ""
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewWorkPackages {
+		out = out[:maxViewWorkPackages]
+	}
+	return out, more && len(out) < maxViewWorkPackages, nil
 }
 
 func (a *app) createView(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {

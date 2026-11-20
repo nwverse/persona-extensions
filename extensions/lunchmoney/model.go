@@ -23,17 +23,26 @@ type transactionPage struct {
 }
 
 type account struct {
-	ID              int64   `json:"id"`
-	Name            string  `json:"name"`
-	DisplayName     string  `json:"display_name"`
-	InstitutionName string  `json:"institution_name"`
-	Type            string  `json:"type"`
-	Subtype         string  `json:"subtype"`
-	Balance         string  `json:"balance"`
-	Currency        string  `json:"currency"`
-	ToBase          float64 `json:"to_base"`
-	BalanceAsOf     string  `json:"balance_as_of"`
-	Status          string  `json:"status"`
+	ID                int64   `json:"id"`
+	Name              string  `json:"name"`
+	DisplayName       string  `json:"display_name"`
+	InstitutionName   string  `json:"institution_name"`
+	Type              string  `json:"type"`
+	Subtype           string  `json:"subtype"`
+	Balance           string  `json:"balance"`
+	Currency          string  `json:"currency"`
+	ToBase            float64 `json:"to_base"`
+	BalanceAsOf       string  `json:"balance_as_of"`
+	BalanceLastUpdate string  `json:"balance_last_update"`
+	Status            string  `json:"status"`
+}
+
+// asOf is the date of the balance: balance_as_of for a manual account, balance_last_update for a synced one.
+func (a account) asOf() string {
+	if a.BalanceAsOf != "" {
+		return a.BalanceAsOf
+	}
+	return a.BalanceLastUpdate
 }
 
 type category struct {

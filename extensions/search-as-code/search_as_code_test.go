@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -328,6 +329,67 @@ func TestUIViewsAndActionsPassCheckView(t *testing.T) {
 	})
 	if err != nil || !saveRes.Pop {
 		t.Fatalf("save-recipe failed: %+v, %v", saveRes, err)
+	}
+}
+
+// The Overview card reports the stored last run and never scans: the hub draws it on every visit to Overview.
+func TestCardNeverRunsAPipeline(t *testing.T) {
+	sessionDir, repoDir := seedFixtures(t)
+	a := newApp(t.TempDir())
+	a.now = func() time.Time { return t0 }
+	_ = a.db().update(func(st *State, _ time.Time) error {
+		st.SessionDirs = []string{sessionDir}
+		st.RepoDirs = []string{repoDir}
+		return nil
+	})
+	caption := func() string {
+		t.Helper()
+		v, err := a.card(context.Background(), &ext.UIRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := wire.CheckView(v); err != nil {
+			t.Fatalf("card CheckView: %v", err)
+		}
+		for _, it := range v.Sections[0].Items {
+			if it.Key == "card-summary" {
+				return it.Text
+			}
+		}
+		return ""
+	}
+
+	// nothing was run yet: the sessions are there, but the card does not scan them to say how many
+	if got := caption(); got != "" {
+		t.Fatalf("card before any run: caption %q, want none", got)
+	}
+
+	// a run with a query is stored; the card reports it as it was
+	var stored *ExecutionResult
+	_ = a.db().update(func(st *State, now time.Time) error {
+		prog, err := CompileProgram(CompileInput{Query: "timeout", Scope: "conversation"})
+		if err != nil {
+			return err
+		}
+		stored = ExecuteProgram(st, prog, now)
+		st.recordRun(stored, now)
+		return nil
+	})
+	if stored == nil || stored.ScannedSessions == 0 {
+		t.Fatalf("fixture run scanned nothing: %+v", stored)
+	}
+	want := fmt.Sprintf("已索引 %d 个", stored.ScannedSessions)
+	if got := caption(); !strings.Contains(got, want) || !strings.Contains(got, fmt.Sprintf("命中 %d 条", stored.TotalMatches)) {
+		t.Fatalf("card after a query run: caption %q, want the stored run's (%s…)", got, want)
+	}
+
+	// the sessions are gone since: a fresh scan would find none, the card still reports the stored run
+	_ = a.db().update(func(st *State, _ time.Time) error {
+		st.SessionDirs = []string{t.TempDir()}
+		return nil
+	})
+	if got := caption(); !strings.Contains(got, want) {
+		t.Fatalf("card after the sessions moved: caption %q, want the stored run's (%s…)", got, want)
 	}
 }
 

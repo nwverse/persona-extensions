@@ -105,7 +105,7 @@ func TestUnreadChannelsPostsAndAuthors(t *testing.T) {
 		t.Fatalf("%v %s", err, text)
 	}
 	text, err = a.callTool(t.Context(), "mattermost_posts", json.RawMessage(`{"channel_id":"channel-1","before":"post-older"}`))
-	if err != nil || !strings.Contains(text, "Example Reviewer (reviewer)") || !strings.Contains(text, "Older messages before: post-older") {
+	if err != nil || !strings.Contains(text, "Example Reviewer (reviewer)") || !strings.Contains(text, "Older messages before: post-1\n") {
 		t.Fatalf("%v %s", err, text)
 	}
 	f.mu.Lock()

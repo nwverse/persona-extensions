@@ -96,6 +96,9 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 }
 
+// maxQueryChars is the longest search query: the client, the page clip, the tool schema and the page state check use it.
+const maxQueryChars = 200
+
 func (c *client) bookmarks(ctx context.Context, view, query string, offset int) (bookmarkPage, error) {
 	if offset < 0 || offset > 1000000 {
 		return bookmarkPage{}, errors.New("invalid pagination offset")
@@ -107,7 +110,7 @@ func (c *client) bookmarks(ctx context.Context, view, query string, offset int) 
 	case "favorites":
 		q.Set("is_marked", "true")
 	case "search":
-		if strings.TrimSpace(query) == "" || len([]rune(query)) > 200 {
+		if strings.TrimSpace(query) == "" || len([]rune(query)) > maxQueryChars {
 			return bookmarkPage{}, errors.New("search requires at most 200 characters")
 		}
 		q.Set("search", query)

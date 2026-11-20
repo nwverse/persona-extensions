@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -225,9 +226,18 @@ func compactComponents(items ...wire.Component) []wire.Component {
 		if item.Type == wire.ComponentText && item.Text == "" {
 			continue
 		}
+		if item.Type == wire.ComponentLink && !httpsLink(item.URL) {
+			continue
+		}
 		out = append(out, item)
 	}
 	return out
+}
+
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
 func textComponents(text string) []wire.Component {
@@ -252,12 +262,14 @@ func collectionName(id string, cols []collection, t *texts) string {
 	return t.unsorted
 }
 
-func collectionLabel(item raindrop, t *texts) string {
-	if item.Collection.Title != "" {
-		return item.Collection.Title
-	}
+func collectionLabel(item raindrop, cols []collection, t *texts) string {
 	if item.Collection.ID == -1 {
 		return t.unsorted
+	}
+	for _, c := range cols {
+		if c.ID == item.Collection.ID {
+			return c.Title
+		}
 	}
 	return "Raindrop"
 }

@@ -28,7 +28,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.StoryID < 0 || st.WorkflowStateID < 0 || len(st.DraftID) > 128 || len(st.Name) > 600 || len(st.Description) > 11000 || len(st.Next) > 2048 {
+	if err := r.DecodeState(&st); err != nil || st.StoryID < 0 || st.WorkflowStateID < 0 || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len(st.Description) > 11000 || len(st.Next) > 2048 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -259,8 +259,11 @@ func detailView(r *ext.UIRequest, st pageState, item story, workflows []workflow
 		wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}},
 	)
 	sections := []wire.Section{{Title: fmt.Sprintf("#%d", item.ID), Items: items}}
+	used := len(items)
 	if item.Description != "" {
-		sections = append(sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Description, 60000))})
+		description := capComponents(textComponents(clipText(item.Description, 60000)), maxDescriptionItems)
+		used += len(description)
+		sections = append(sections, wire.Section{Title: t.description, Items: description})
 	}
 	comments := wire.Section{Title: t.comments}
 	for _, comment := range item.Comments {
@@ -269,11 +272,29 @@ func detailView(r *ext.UIRequest, st pageState, item story, workflows []workflow
 		}
 		comments.Items = append(comments.Items, textComponents(clipText(comment.Text, 12000))...)
 	}
+	comments.Items = capComponents(comments.Items, maxViewItems-used)
 	if len(comments.Items) == 0 {
 		comments.Items = append(comments.Items, wire.Component{Type: wire.ComponentText, Text: t.noComments, Style: wire.TextStyleSecondary})
 	}
 	sections = append(sections, comments)
 	return &wire.View{Title: clipText(item.Name, 1800), State: ext.EncodeState(st), Sections: sections}
+}
+
+const (
+	// maxViewItems keeps the story view within the SDK's 300 component limit, whatever the story holds.
+	maxViewItems = 250
+	// maxDescriptionItems leaves the comments room when the description is long.
+	maxDescriptionItems = 100
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func stateChoices(workflows []workflow, workflowID int64) []wire.Choice {

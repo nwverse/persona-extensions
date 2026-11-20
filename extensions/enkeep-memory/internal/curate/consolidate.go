@@ -292,6 +292,10 @@ func (c *Curator) Consolidate(ctx context.Context, m model.Model, day string, ru
 			batch := c.consBatch(as)
 			as = as[len(batch):]
 			if err := c.judgeBatch(ctx, m, f, batch, day, run); err != nil {
+				if errors.Is(err, model.ErrPaused) {
+					run.Notes = append(run.Notes, "整理：模型等闸，新条目留到下次归档")
+					return nil
+				}
 				if errors.Is(err, model.ErrUnavailable) {
 					run.Notes = append(run.Notes, "整理：模型不可用，新条目留到下次归档")
 					return nil

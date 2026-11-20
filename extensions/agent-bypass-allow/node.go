@@ -23,6 +23,7 @@ import (
 type config struct {
 	Machines         []string `json:"machines"`
 	ConfigDirs       []string `json:"config_dirs"`
+	AgyDirs          []string `json:"agy_dirs"`
 	AllowDestructive bool     `json:"allow_destructive"`
 	AssistantWrites  bool     `json:"assistant_writes"`
 	AssistantDirs    []string `json:"assistant_write_dirs"`
@@ -36,9 +37,10 @@ func (c config) dirs() []string {
 }
 
 type node struct {
-	bin     string // this program, as the entries run it
-	data    string // its data directory: heartbeat and audit log
-	matcher string // the entries' matcher (matcherFor)
+	bin        string // this program, as the entries run it
+	data       string // its data directory: heartbeat and audit log
+	matcher    string // the Claude entries' matcher (matcherFor)
+	agyMatcher string // the Antigravity entries' matcher (agyMatcherFor)
 
 	mu   sync.Mutex
 	dirs []dirState
@@ -55,6 +57,7 @@ type dirState struct {
 	Settings  string `json:"settings,omitempty"`
 	Installed bool   `json:"installed"`
 	Error     string `json:"error,omitempty"`
+	agy       bool
 }
 
 // status is what bypass.status answers: the directories and the newest auto-allows.
@@ -107,6 +110,7 @@ func (n *node) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]a
 		n.bin = bin
 	}
 	n.matcher = matcherFor(c.AssistantWrites)
+	n.agyMatcher = agyMatcherFor(c.AssistantWrites)
 	opts, err := json.Marshal(options{AllowDestructive: c.AllowDestructive, AssistantWrites: c.AssistantWrites, AssistantWriteDirs: c.AssistantDirs})
 	if err != nil {
 		return nil, err
@@ -117,6 +121,7 @@ func (n *node) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]a
 	n.beat()
 	n.mu.Lock()
 	n.install(c.dirs())
+	n.installAgy(c.AgyDirs)
 	n.mu.Unlock()
 	n.beatWG.Add(1)
 	go func() {
@@ -170,12 +175,50 @@ func (n *node) install(dirs []string) {
 	}
 }
 
+// installAgy puts the PreToolUse entry into each configured Gemini/Antigravity config directory. When agy_dirs is
+// left at the default ~/.gemini and that directory does not exist on the machine, it is skipped silently so computers
+// that only have Claude Code keep a clean status list.
+func (n *node) installAgy(agyDirs []string) {
+	defaultOnly := len(agyDirs) == 0 || (len(agyDirs) == 1 && strings.TrimSpace(agyDirs[0]) == "~/.gemini")
+	if len(agyDirs) == 0 {
+		agyDirs = []string{"~/.gemini"}
+	}
+	for _, d := range agyDirs {
+		s := dirState{Dir: d, agy: true}
+		abs, err := expand(d)
+		switch {
+		case err != nil:
+			s.Error = err.Error()
+		case !isDir(abs):
+			if defaultOnly {
+				continue
+			}
+			s.Error = "no such directory"
+		default:
+			s.Settings = agyHooksPath(abs)
+			if _, err := installAgyHookWith(s.Settings, cmp.Or(n.agyMatcher, agyHookMatcher), agyHookCommand(n.bin, abs, n.data)); err != nil {
+				s.Error = err.Error()
+			} else {
+				s.Installed = true
+			}
+		}
+		if s.Error != "" {
+			fmt.Fprintf(os.Stderr, "%s: %s: %s\n", currentExtensionID, d, s.Error)
+		}
+		n.dirs = append(n.dirs, s)
+	}
+}
+
 // check reads again whether each entry is still in (someone may have edited the file).
 func (n *node) check() []dirState {
 	out := make([]dirState, len(n.dirs))
 	for i, s := range n.dirs {
 		if s.Settings != "" && s.Error == "" {
-			s.Installed = hasHook(s.Settings)
+			if s.agy {
+				s.Installed = hasAgyHook(s.Settings)
+			} else {
+				s.Installed = hasHook(s.Settings)
+			}
 		}
 		out[i] = s
 	}
@@ -196,7 +239,13 @@ func (n *node) cleanup() {
 		if s.Settings == "" {
 			continue
 		}
-		if _, err := uninstallHook(s.Settings); err != nil {
+		var err error
+		if s.agy {
+			_, err = uninstallAgyHook(s.Settings)
+		} else {
+			_, err = uninstallHook(s.Settings)
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "%s: %s: %v\n", currentExtensionID, s.Dir, err)
 		}
 	}

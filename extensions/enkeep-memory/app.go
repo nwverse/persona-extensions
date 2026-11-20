@@ -190,6 +190,16 @@ func (a *app) tick(ctx context.Context) {
 			break
 		}
 	}
+	// Days queued with force (enkeep_rerun force) run first, although they carry the current prompt's marker.
+	c.St.Lock()
+	forced := slices.Clone(c.St.S.ForceReruns)
+	c.St.Unlock()
+	for _, day := range forced {
+		if day < today && !a.attempted(day) {
+			a.start(ctx, "daily", day)
+			return
+		}
+	}
 	for _, day := range days {
 		if !a.reran(day) && !a.attempted(day) {
 			a.start(ctx, "daily", day)
@@ -395,6 +405,8 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 				if key := period + "@" + schema.DailyPrompt; !slices.Contains(a.c.St.S.Reruns, key) {
 					a.c.St.S.Reruns = append(a.c.St.S.Reruns, key)
 				}
+				// A day queued with force is done once its daily run completes.
+				a.c.St.S.ForceReruns = slices.DeleteFunc(a.c.St.S.ForceReruns, func(d string) bool { return d == period })
 				err = a.c.St.Save()
 				a.c.St.Unlock()
 			}
@@ -411,6 +423,12 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 		a.lastErr = ""
 		if errors.Is(err, curate.ErrModelDown) {
 			a.paused = append(a.paused, triedKey(kind, period)) // tried again after the pause, not only at the next start
+		}
+		if errors.Is(err, model.ErrPaused) {
+			// The hub held the model's connection (busy or quota): the day waits for the hold to let go and runs
+			// again; not a failed run (the page says it waits, State.ModelPause).
+			log.Printf("enkeep-memory %s %s: waits for the hub's hold: %v", kind, period, err)
+			err = nil
 		}
 		if err != nil {
 			a.lastErr = kind + " " + period + "：" + err.Error()

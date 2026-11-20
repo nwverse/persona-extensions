@@ -1,5 +1,7 @@
 package main
 
+import "time"
+
 type user struct {
 	ID       int64  `json:"id"`
 	Name     string `json:"name"`
@@ -40,4 +42,29 @@ type taskPage struct {
 	NextPage  int
 	Total     int
 	PageCount int
+}
+
+// due is the task's due date. Vikunja sends the zero time 0001-01-01T00:00:00Z, not null, for a task that has none;
+// that reads as "".
+func (t task) due() string {
+	if parsed, err := time.Parse(time.RFC3339, t.DueDate); err == nil && parsed.Year() <= 1 {
+		return ""
+	}
+	return t.DueDate
+}
+
+// dueLabel is the due date for the tools, "none" when the task has none.
+func (t task) dueLabel() string {
+	if due := t.due(); due != "" {
+		return due
+	}
+	return "none"
+}
+
+// subtitle is the identifier, followed by the due date when the task has one.
+func (t task) subtitle() string {
+	if due := t.due(); due != "" {
+		return t.Identifier + " · " + due
+	}
+	return t.Identifier
 }

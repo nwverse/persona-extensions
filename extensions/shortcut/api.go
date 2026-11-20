@@ -101,9 +101,24 @@ func validMention(value string) error {
 
 func validNext(value string) error {
 	if len(value) > 2048 || strings.ContainsAny(value, "\x00\r\n") {
-		return errors.New("invalid Shortcut next-page token")
+		return errors.New("invalid Shortcut next-page link")
 	}
 	return nil
+}
+
+// nextToken reads the page token out of the `next` value of a search response. The API describes that value as the URL
+// path and query string of the next page, so the token is its `next` parameter. Only the token is sent back, with the
+// extension's own query.
+func nextToken(value string) (string, error) {
+	u, err := url.Parse(value)
+	if err != nil || u.Scheme != "" || u.Host != "" || !strings.HasSuffix(u.Path, "/search/stories") {
+		return "", errors.New("invalid Shortcut next-page link")
+	}
+	token := u.Query().Get("next")
+	if token == "" {
+		return "", errors.New("invalid Shortcut next-page link")
+	}
+	return token, nil
 }
 
 func (c *client) member(ctx context.Context) (member, error) {
@@ -121,7 +136,11 @@ func (c *client) stories(ctx context.Context, mention, next string) (storyPage, 
 	}
 	q := url.Values{"query": {"owner:" + mention + " is:story !is:done"}, "page_size": {"50"}, "detail": {"slim"}, "entity_types": {"story"}}
 	if next != "" {
-		q.Set("next", next)
+		token, err := nextToken(next)
+		if err != nil {
+			return storyPage{}, err
+		}
+		q.Set("next", token)
 	}
 	var out storyPage
 	err := c.do(ctx, http.MethodGet, "/search/stories", q, nil, &out)

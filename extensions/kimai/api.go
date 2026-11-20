@@ -130,6 +130,41 @@ func (c *client) activities(ctx context.Context, projectID int64) ([]namedResour
 	return out, err
 }
 
+// localTimes writes RFC 3339 timestamps (end may be empty) as Kimai takes the begin and end of a timesheet: the HTML5
+// local date and time (2006-01-02T15:04:05, no offset) in the timezone of the Kimai user, which GET /users/me gives.
+func (c *client) localTimes(ctx context.Context, begin, end string) (string, string, error) {
+	var me struct {
+		Timezone string `json:"timezone"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/users/me", nil, nil, &me); err != nil {
+		return "", "", err
+	}
+	if me.Timezone == "" {
+		return "", "", errors.New("Kimai did not return the timezone of the current user")
+	}
+	loc, err := time.LoadLocation(me.Timezone)
+	if err != nil {
+		return "", "", errors.New("Kimai returned a timezone that is not known here: " + me.Timezone)
+	}
+	local := func(stamp string) (string, error) {
+		at, err := time.Parse(time.RFC3339, stamp)
+		if err != nil {
+			return "", errors.New("time must be an RFC3339 timestamp with a timezone")
+		}
+		return at.In(loc).Format("2006-01-02T15:04:05"), nil
+	}
+	beginLocal, err := local(begin)
+	if err != nil {
+		return "", "", err
+	}
+	if end == "" {
+		return beginLocal, "", nil
+	}
+	endLocal, err := local(end)
+	return beginLocal, endLocal, err
+}
+
+// createTimesheet creates an entry; begin and end are what localTimes gives.
 func (c *client) createTimesheet(ctx context.Context, projectID, activityID int64, begin, end, description string) (timesheet, error) {
 	if projectID <= 0 || activityID <= 0 {
 		return timesheet{}, errors.New("discovered project and activity IDs are required")

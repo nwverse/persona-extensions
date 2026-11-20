@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "enkeep-memory",
   "name": "enkeep 记忆",
-  "version": "0.2.0-beta.30",
+  "version": "0.2.0-beta.34",
   "icon": "assets/icon.png",
   "description": "从你在 Persona 里的对话、Agent 会话、卡片问答和消息来源里，整理你和 AI 怎么打交道、AI 怎么用工具、你的默认判断和做事方式、你的人和事、你自己，以及和你有来往的人；每条都带出处，你可以改、删、点对错。",
   "publisher": "nwverse",
@@ -345,7 +345,7 @@
       "model_route": {
         "type": "string",
         "title": "模型路线",
-        "description": "chain：先用首选模型，失败（报错、超时、返回空、格式不合规、拒答）再按这次调用的长短回退到长 / 短备用模型；hub 不支持按调用选模型时自动按 purpose 走。purpose：和以前一样，全部用 hub 模型设置里本插件用途的模型",
+        "description": "chain：把首选模型和按这次调用长短选的备用模型一起交给 hub 按顺序试，前一个失败（报错、超时、返回空、格式不合规、拒答、暂停）就换下一个；hub 不支持时自动按 purpose 走。purpose：和以前一样，全部用 hub 模型设置里本插件用途的模型",
         "default": "chain",
         "enum": [
           "chain",
@@ -375,19 +375,19 @@
       },
       "model_long_above": {
         "type": "integer",
-        "title": "长短分界（约 token）",
+        "title": "长短分界",
         "description": "估算 = 输入（系统提示、正文、答案格式；英文每 4 字节算 1、其他每字算 1）+ 本次给答案留的长度（max_tokens）。超过它算长调用",
         "default": 16000,
         "minimum": 1000,
         "maximum": 1000000
       },
-      "model_primary_timeout": {
+      "model_timeout": {
         "type": "integer",
-        "title": "首选模型单次超时（秒）",
-        "description": "首选模型一次尝试最多等这么久，超时就交给备用模型；备用模型仍按原来的时限（日级 300 秒、周级 600 秒）",
-        "default": 120,
+        "title": "每个候选模型的超时（秒）",
+        "description": "链上每个模型一次尝试（含格式不对时的第二次）最多等这么久，超时就换下一个；整次调用最长 600 秒",
+        "default": 180,
         "minimum": 10,
-        "maximum": 600
+        "maximum": 300
       }
     }
   },

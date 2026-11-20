@@ -228,7 +228,10 @@ func (a *app) createView(ctx context.Context, r *ext.UIRequest, st pageState) (*
 
 func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 	t := textsFor(r.Locale)
-	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(taskSummary(item), 1800)}}
+	var items []wire.Component
+	if summary := taskSummary(item); summary != "" {
+		items = append(items, wire.Component{Type: wire.ComponentText, Text: clipText(summary, 1800)})
+	}
 	if link := safeTaskLink(item.PermalinkURL); link != "" {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
@@ -238,11 +241,24 @@ func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	sections := []wire.Section{{Title: t.tasks, Items: items}}
 	if item.Notes != "" {
-		sections = append(sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Notes, 60000))})
+		sections = append(sections, wire.Section{Title: t.description, Items: capComponents(textComponents(clipText(item.Notes, 60000)), maxNotesItems)})
 	} else {
 		sections = append(sections, wire.Section{Title: t.description, Items: []wire.Component{{Type: wire.ComponentText, Text: t.noNotes, Style: wire.TextStyleSecondary}}})
 	}
 	return &wire.View{Title: clipText(item.Name, 1800), State: ext.EncodeState(st), Sections: sections}
+}
+
+// maxNotesItems keeps the task view within the hub's 300 component limit, whatever the notes hold.
+const maxNotesItems = 250
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func taskSummary(item task) string {

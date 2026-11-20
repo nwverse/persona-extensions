@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -53,7 +54,8 @@ type Model interface {
 
 // ErrUnavailable: the hub cannot run a model for the extension now: a hub without model.complete (older than
 // nwverse/persona#6102), the permission not granted, nothing set up for the extension's purpose, or the connection
-// held for quota or load. The curator then runs only its deterministic steps; the wrapped message says which.
+// held for quota or load past the call's wait (a *PausedError, which is ErrPaused as well). The curator then runs
+// only its deterministic steps; the wrapped message says which.
 var ErrUnavailable = errors.New("model unavailable to extensions")
 
 // ErrRefused: the model declined this input (the Messages API's stop_reason "refusal", a safety classifier). The
@@ -78,24 +80,24 @@ func refused(msg string) bool {
 
 // Hub calls model.complete on the hub (nwverse/persona#6102, permission "models"). The hub runs it on the
 // extension's own purpose extension.<id> in Settings › Model configuration, which follows the knowledge base's model
-// until the user picks another; the extension never holds a key. With a Route, each call names the model it wants
-// (model.complete's "models", on a hub that takes it) and falls back along the route; without one, or on a hub that
-// does not take "models", the call runs on the purpose's model. There is no budget and no cap: each call's usage
+// until the user picks another; the extension never holds a key. With a Route, each call hands the hub its chain of
+// candidate models (model.complete's "models"), which the hub tries in order; without one, or on a hub that does not
+// take "models", the call runs on the purpose's model. There is no budget and no cap: each call's usage
 // comes back and is recorded per day and step (Metered).
 type Hub struct {
 	H         *ext.Hub
 	Extension string
 	Route     *Route // nil, or without models: every call on the purpose's model, as before 0.2.0-beta.30
-	// call makes one model.complete (tests replace it); nil: H.Call.
-	call func(ctx context.Context, params any, out *wire.ModelCompleteResult) error
-}
-
-// routedParams is model.complete's params with the model a call names (docs/model-routes.md): a hub that takes
-// "models" tries them in order on the extension's connection. The route names one at a time, so that it judges
-// every failure itself and counts each model's attempt.
-type routedParams struct {
-	wire.ModelCompleteParams
-	Models []string `json:"models,omitempty"`
+	// PauseBudget is how long one call waits in all for the hub's holds (model_paused, pause.go); 0:
+	// PauseBudgetDefault.
+	PauseBudget time.Duration
+	// Logf logs the waits; nil: the route's.
+	Logf func(format string, args ...any)
+	// call makes one model.complete and decodes its result into out (tests replace it); nil: H.Call.
+	call func(ctx context.Context, params, out any) error
+	// now and sleep are the clock and the wait (tests replace them); nil: time.Now, a timer that ends with ctx.
+	now   func() time.Time
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // callTimeout bounds one call, the hub's second try for a reply that does not match the schema included.
@@ -120,31 +122,38 @@ func timeout(r Request) int {
 	return callTimeout(r.Tier)
 }
 
-func (h Hub) do(ctx context.Context, params any) (wire.ModelCompleteResult, error) {
-	var out wire.ModelCompleteResult
+func (h Hub) do(ctx context.Context, params, out any) error {
 	if h.call != nil {
-		err := h.call(ctx, params, &out)
-		return out, err
+		return h.call(ctx, params, out)
 	}
-	err := h.H.Call(ctx, "model.complete", params, &out)
-	return out, err
+	return h.H.Call(ctx, "model.complete", params, out)
 }
 
+// Complete asks for one answer. A call the hub holds (model_paused) waits until the hold lets go and is asked again,
+// within PauseBudget (pause.go); past it the error is a *PausedError.
 func (h Hub) Complete(ctx context.Context, r Request) (Response, error) {
+	return h.waitHeld(ctx, r, h.once)
+}
+
+func (h Hub) once(ctx context.Context, r Request) (Response, error) {
 	if h.Route.Enabled() {
-		return h.Route.complete(ctx, r, h.try, h.legacy)
+		return h.Route.complete(ctx, r, h.chained, h.legacy)
 	}
 	return h.legacy(ctx, r)
 }
 
 // legacy is the call on the purpose's model, as before routes.
 func (h Hub) legacy(ctx context.Context, r Request) (Response, error) {
-	out, err := h.do(ctx, h.params(r))
+	var out wire.ModelCompleteResult
+	err := h.do(ctx, h.params(r), &out)
 	var e *ext.Error
 	if errors.As(err, &e) {
+		if p, ok := pausedOf(e.Code, e.Message, e.Data, h.clock()); ok { // held: waited out by Complete
+			return Response{}, p
+		}
 		switch e.Code {
 		case wire.ErrorCodeUnknownMethod, wire.ErrorCodeUnsupported, wire.ErrorCodePermissionDenied,
-			wire.ModelErrorCodeModelUnavailable, wire.ModelErrorCodeModelPaused, wire.ModelErrorCodeAssistantOffline:
+			wire.ModelErrorCodeModelUnavailable, wire.ModelErrorCodeAssistantOffline:
 			return Response{}, fmt.Errorf("%w: %s", ErrUnavailable, e.Message)
 		case wire.ModelErrorCodeModelRefused: // a hub that names a refusal with its own code
 			return Response{}, fmt.Errorf("%w: %s", ErrRefused, e.Message)
@@ -180,66 +189,11 @@ func response(r Request, out wire.ModelCompleteResult) Response {
 		OutTokens: u.OutputTokens}
 }
 
-// try is one attempt on model m: an answer, errNoModels from a hub that does not take "models", or an *attemptError
-// that says why m did not answer.
-func (h Hub) try(ctx context.Context, r Request, m string) (Response, error) {
-	out, err := h.do(ctx, routedParams{ModelCompleteParams: h.params(r), Models: []string{m}})
-	fail := func(reason string, err error) (Response, error) {
-		return Response{}, &attemptError{reason: reason, err: err}
-	}
-	var e *ext.Error
-	if errors.As(err, &e) {
-		switch e.Code {
-		case wire.ModelErrorCodeInvalidParams:
-			if strings.Contains(e.Message, `"models"`) { // json: unknown field "models"
-				return Response{}, errNoModels
-			}
-			return fail(ReasonError, err)
-		case wire.ErrorCodeUnknownMethod, wire.ErrorCodeUnsupported, wire.ErrorCodePermissionDenied,
-			wire.ModelErrorCodeAssistantOffline:
-			// The hub cannot run any model for the extension: no other model would do better.
-			return Response{}, &attemptError{reason: ReasonUnavailable, err: fmt.Errorf("%w: %s", ErrUnavailable, e.Message), fatal: true}
-		case wire.ModelErrorCodeModelUnavailable:
-			return fail(ReasonNotOffered, fmt.Errorf("%w: %s", ErrUnavailable, e.Message))
-		case wire.ModelErrorCodeModelPaused:
-			return fail(ReasonUnavailable, fmt.Errorf("%w: %s", ErrUnavailable, e.Message))
-		case wire.ModelErrorCodeModelRefused:
-			return fail(ReasonRefused, fmt.Errorf("%w: %s", ErrRefused, e.Message))
-		case wire.ModelErrorCodeTimeout:
-			return fail(ReasonTimeout, err)
-		case wire.ModelErrorCodeInvalidOutput:
-			ae := &attemptError{reason: ReasonFormat, err: err}
-			if resp, ok := fromInvalidOutput(e.Data); ok {
-				if resp.Model == "" {
-					resp.Model = m
-				}
-				ae.reply = &resp
-			}
-			return Response{}, ae
-		case wire.ModelErrorCodeModelFailed:
-			if refused(e.Message) {
-				return fail(ReasonRefused, fmt.Errorf("%w: %s", ErrRefused, e.Message))
-			}
-			return fail(ReasonError, err)
-		}
-	}
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
-			return fail(ReasonTimeout, err)
-		}
-		return fail(ReasonError, err)
-	}
-	if out.StopReason == "refusal" {
-		return fail(ReasonRefused, fmt.Errorf("%w: stop_reason refusal", ErrRefused))
-	}
-	resp := response(r, out)
-	if strings.TrimSpace(resp.Text) == "" {
-		return fail(ReasonEmpty, fmt.Errorf("model.complete (%s) on %s: empty answer", r.Step, m))
-	}
-	if resp.Model == "" {
-		resp.Model = m
-	}
-	return resp, nil
+// chained makes model.complete with the route's candidates (persona #10398).
+func (h Hub) chained(ctx context.Context, r Request, models []string) (chainResult, error) {
+	var out chainResult
+	err := h.do(ctx, chainParams{ModelCompleteParams: h.params(r), Models: models}, &out)
+	return out, err
 }
 
 // Usage is what the calls cost in tokens, recorded per day and step for the report (there is no cap: the user

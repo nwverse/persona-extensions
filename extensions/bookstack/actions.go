@@ -21,8 +21,11 @@ type updateArgs struct {
 	Markdown string `json:"markdown"`
 }
 
+// maxTitleChars is the longest page title: the validation, the tool schemas and the page state check use it.
+const maxTitleChars = 255
+
 func validTitle(value string) error {
-	if strings.TrimSpace(value) == "" || len([]rune(value)) > 255 {
+	if strings.TrimSpace(value) == "" || len([]rune(value)) > maxTitleChars {
 		return errors.New("page title must be nonempty and at most 255 characters")
 	}
 	for _, r := range value {
