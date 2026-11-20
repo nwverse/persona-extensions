@@ -24,6 +24,11 @@ type knowledgeObject struct {
 	Blocks   []block    `json:"blocks"`
 }
 
+// objectAnswer is what Anytype answers when one object is read or created (ObjectResponse).
+type objectAnswer struct {
+	Object knowledgeObject `json:"object"`
+}
+
 type block struct {
 	ID   string `json:"id"`
 	Type string `json:"type"`
