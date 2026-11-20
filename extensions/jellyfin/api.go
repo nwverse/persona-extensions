@@ -84,11 +84,13 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 
 func (c *client) currentUser(ctx context.Context) (user, error) {
 	var out user
-	err := c.do(ctx, http.MethodGet, "/Users/Me", nil, &out)
+	if err := c.do(ctx, http.MethodGet, "/Users/Me", nil, &out); err != nil {
+		return user{}, err
+	}
 	if out.ID == "" || !validMediaID(out.ID) {
 		return user{}, errors.New("Jellyfin returned an invalid current user ID")
 	}
-	return out, err
+	return out, nil
 }
 
 func (c *client) items(ctx context.Context, userID, view, query string, start int) (itemPage, error) {
