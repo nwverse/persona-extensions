@@ -56,16 +56,15 @@ def _fields(raw):
             number, wire = key >> 3, key & 7
             if wire == 0:
                 varint()
-            elif wire == 1:
-                i += 8
-            elif wire == 5:
-                i += 4
-            elif wire == 2:
+                continue
+            size = {1: 8, 5: 4}.get(wire)
+            if wire == 2:
                 size = varint()
+            if size is None or i + size > n:
+                break  # an unknown wire type, or a length past the end: what follows is not read as a field
+            if wire == 2:
                 out[number] = raw[i:i + size]  # the last one wins, as protobuf reads a repeated scalar
-                i += size
-            else:
-                break
+            i += size
     except ValueError:
         pass
     return out
@@ -164,7 +163,7 @@ def normalize(msg, extract_key):
     linked = _linked(data.get("richText")) if name in ("TEXT", "POST") and isinstance(data, dict) else None
     if linked and linked[0]:  # an empty rebuild keeps LarkAgentX's text, as its own `extract_rich_text(...) or text` does
         head = "[富文本] %s\n" % data.get("title", "") if name == "POST" else ""
-        text = (head + linked[0]).strip() if head else linked[0]
+        text = (head + linked[0]).rstrip() if head else linked[0]
         # The spans follow the text the connector keeps: shifted past a POST's title line, and none at all when one
         # does not land on its label (the message is then no self-mention, never a wrong one).
         mentions = [dict(m, start=m["start"] + len(head), end=m["end"] + len(head)) for m in linked[1]]

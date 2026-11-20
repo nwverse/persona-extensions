@@ -663,6 +663,20 @@ class NormalizeTest(unittest.TestCase):
         data = self.rich((6, "https://example.com/e"))
         self.assertEqual(self.text_of(data), "原文")
 
+    def test_a_length_past_the_end_reads_no_address(self):
+        # Review of #570: a truncated href is not taken as a shorter one; with no link added LarkAgentX's text stays.
+        truncated = bytes([1 << 3 | 2, 50]) + b"https://ex"
+        self.assertEqual(self.text_of(self.rich((1, self.prop((1, "看 "))), (6, truncated)), "看 "), "看 ")
+        fixed = bytes([2 << 3 | 1]) + b"\x00" * 3  # a fixed64 with only 3 of its 8 bytes
+        self.assertEqual(self.text_of(self.rich((6, fixed)), "原文"), "原文")
+
+    def test_a_linked_post_keeps_its_body_s_leading_lines(self):
+        url = "https://example.com/f"
+        data = self.rich((1, self.prop((1, "\n  缩进的第一行 "))), (6, self.prop((1, url))))
+        data["title"] = "周报"
+        m = normalize({"msg_type": 2, "msg_type_name": "POST", "content": "[富文本] 周报\n\n  缩进的第一行", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "[富文本] 周报\n\n  缩进的第一行 " + url)
+
     def test_an_empty_element_after_a_link_keeps_it_apart_from_the_next_words(self):
         data = self.rich((6, self.prop((1, "https://example.com"))), (6, self.prop((2, ""))), (1, self.prop((1, "next"))))
         self.assertEqual(self.text_of(data), "https://example.com next")
