@@ -381,8 +381,47 @@ class RealBackend:
 
         asyncio.run(until_stopped())
 
-    def send(self, chat, text, root):
-        return self._client.send_msg(text, chat, root_id=root)
+    def send(self, chat, text, root, mentions=()):
+        # The locked LarkAgentX sends every word in one TEXT element. Keep that path unless the caller supplied
+        # explicit mention ids; a plain @name is never enough to mention somebody.
+        if not mentions:
+            return self._client.send_msg(text, chat, root_id=root)
+        parts = mention_parts(text, mentions)
+        from larkx.proto import builders, ids
+        from larkx.proto import lark_all_pb2 as L
+        from larkx.proto import proto_pb2 as P
+        from larkx.proto.ids import generate_long_request_id
+        req = L.messages.PutMessageRequest()
+        req.type = 4
+        req.chatId = str(chat)
+        req.cid = ids.generate_request_cid()
+        req.isNotified = True
+        req.version = 1
+        if root:
+            req.rootId = req.parentId = str(root)
+            if not self._client.is_thread_chat(chat):
+                req.isReplyInThread = True
+        notified = set()
+        for kind, value in parts:
+            element_id = ids.generate_request_cid()
+            element = req.content.richText.elements.dictionary[element_id]
+            if kind == "at":
+                element.tag = 5
+                element.property = P.AtProperty(userId=value["id"], content="@" + value["name"]).SerializeToString()
+                req.content.richText.atIds.append(element_id)
+                # atUserIdList (14) exists in the full generated request, not in the older compact proto.proto.
+                user_id = int(value["id"])
+                if user_id not in notified:
+                    req.atUserIdList.append(user_id)
+                    notified.add(user_id)
+            else:
+                element.tag = 1
+                element.property = P.TextProperty(content=value).SerializeToString()
+            req.content.richText.elementIds.append(element_id)
+        req.content.richText.innerText = text
+        content = self._client._gateway_post(builders.wrap_packet(5, req, generate_long_request_id()))
+        return builders.decode_put_message_response(content)
+
 
     def create_chat(self, user):
         chat = self._client.create_chat(user)
@@ -408,4 +447,37 @@ class RealBackend:
         url = media.message_resource_url(msg_id, key, chat, host=self._auth.region.file_host)
         data, mime = media.download(self._auth, url, max_bytes=most)
         return mime or "application/octet-stream", data
+
+def mention_parts(text, mentions):
+    """Split only exact @name occurrences of explicit, numeric user ids; longest names win at the same position."""
+    if not isinstance(mentions, (list, tuple)) or len(mentions) > 100:
+        raise ValueError("mentions must be a list of at most 100 people")
+    targets = []
+    seen = set()
+    for mention in mentions:
+        if not isinstance(mention, dict):
+            raise ValueError("a mention needs an id and a name")
+        user_id, name = mention.get("id"), mention.get("name")
+        if isinstance(user_id, bool) or not str(user_id or "").isdigit() or int(user_id) <= 0:
+            raise ValueError("a mention id must be the numeric id returned by larkx_search")
+        if not isinstance(name, str) or not name.strip() or "@" in name or "\n" in name or name != name.strip():
+            raise ValueError("a mention name must be one nonempty line without @")
+        user_id = str(user_id)
+        if user_id not in seen:
+            targets.append((user_id, name))
+            seen.add(user_id)
+    if len({name for _, name in targets}) != len(targets):
+        raise ValueError("two mentioned people cannot have the same name")
+    targets.sort(key=lambda target: len(target[1]), reverse=True)
+    import re
+    pattern = re.compile("(" + "|".join("@" + re.escape(name) for _, name in targets) + ")") if targets else None
+    by_name = {name: {"id": user_id, "name": name} for user_id, name in targets}
+    out = []
+    for part in pattern.split(text) if pattern else [text]:
+        if not part:
+            continue
+        out.append(("at", by_name[part[1:]]) if part.startswith("@") and part[1:] in by_name else ("text", part))
+    if not any(kind == "at" for kind, _ in out):
+        raise ValueError("write @name in text for every person to mention")
+    return out
 

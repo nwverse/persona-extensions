@@ -64,7 +64,7 @@ class FixtureBackend:
             _message("m8", "c_done", "dm", 4, ME, "收到"),
         ]
 
-    def send(self, chat, text, root):
+    def send(self, chat, text, root, mentions=()):
         self.sent.append((chat, text, root))
         return "m_sent_%d" % len(self.sent)
 

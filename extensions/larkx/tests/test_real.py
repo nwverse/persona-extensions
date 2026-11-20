@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
 sys.path.insert(0, os.path.join(ROOT, "src"))
@@ -121,6 +122,55 @@ class RealTest(unittest.TestCase):
         content = self.P.TextContent(richText=rich)
         m = self.normalized(self.frame([self.message("9006", 4, content.SerializeToString())]))[0]
         self.assertEqual(m["mentions"], [])
+
+    def test_an_explicit_mention_builds_an_at_element_and_notification_list(self):
+        from larkx_persona.real import RealBackend
+        backend = RealBackend(ROOT, self.home.name, "feishu")
+        backend._client = self.larkx.LarkClient.__new__(self.larkx.LarkClient)
+        backend._client.is_thread_chat = lambda chat: False
+        sent = []
+        backend._client._gateway_post = lambda packet: sent.append(packet) or response.SerializeToString()
+        response = self.P.Packet()
+        response.payload = self.P.PutMessageResponse().SerializeToString()
+        self.assertFalse(backend.send("6001", "@Example @Example hi", None,
+                                      mentions=[{"id": "7001", "name": "Example"}]))
+        req = self.P.PutMessageRequest()
+        req.ParseFromString(sent[0].payload)
+        from larkx.proto import lark_all_pb2 as L
+        full = L.messages.PutMessageRequest()
+        full.ParseFromString(sent[0].payload)
+        self.assertEqual(full.atUserIdList, [7001])
+        self.assertEqual(req.content.richText.innerText, "@Example @Example hi")
+        self.assertEqual(len(req.content.richText.atIds), 2)
+        for key in req.content.richText.elementIds:
+            element = req.content.richText.elements.dictionary[key]
+            if element.tag != 5:
+                continue
+            at = self.P.AtProperty()
+            at.ParseFromString(element.property)
+            self.assertEqual((at.userId, at.content), ("7001", "@Example"))
+        self.assertEqual(req.content.richText.elements.dictionary[req.content.richText.elementIds[-1]].tag, 1)
+
+    def test_an_unwritten_or_unknown_mention_never_posts(self):
+        from larkx_persona.real import RealBackend
+        backend = RealBackend(ROOT, self.home.name, "feishu")
+        backend._client = mock_client = unittest.mock.Mock()
+        with self.assertRaises(ValueError):
+            backend.send("6001", "hello", None, mentions=[{"id": "7001", "name": "Example"}])
+        with self.assertRaises(ValueError):
+            backend.send("6001", "@Example hi", None, mentions=[{"id": "ou_not_numeric", "name": "Example"}])
+        mock_client.send_msg.assert_not_called()
+        mock_client._gateway_post.assert_not_called()
+
+    def test_no_mentions_keeps_the_original_send_path(self):
+        from larkx_persona.real import RealBackend
+        backend = RealBackend(ROOT, self.home.name, "feishu")
+        backend._client = mock_client = unittest.mock.Mock()
+        mock_client.send_msg.return_value = "m1"
+        self.assertEqual(backend.send("6001", "@Example hi", None), "m1")
+        mock_client.send_msg.assert_called_once_with("@Example hi", "6001", root_id=None)
+        for method in ("create_chat", "search", "history", "chat_info", "user_name", "download"):
+            self.assertTrue(callable(getattr(backend, method)), method)
 
     def test_credentials_go_through_the_hub_and_never_a_file(self):
         from larkx_persona.real import RealBackend

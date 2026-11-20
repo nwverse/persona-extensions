@@ -7,6 +7,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from .real import mention_parts
 from .wire import RpcError
 
 ID = "larkx"
@@ -54,7 +55,11 @@ SEND_SCHEMA = {
     "type": "object",
     "properties": {
         "chat": {"type": "string", "description": "The chat's id, from larkx_chats or an inbox item."},
-        "text": {"type": "string", "description": "The message, plain text."},
+        "text": {"type": "string", "description": "The message, plain text. Write @name exactly as in mentions."},
+        "mentions": {"type": "array", "maxItems": 100, "description": "People to really @; a plain @name without an entry here is ordinary text.",
+                     "items": {"type": "object", "additionalProperties": False, "required": ["id", "name"],
+                               "properties": {"id": {"type": "string", "description": "The person's id from larkx_search."},
+                                              "name": {"type": "string", "description": "The person's exact display name from larkx_search."}}}},
         "reply_to": {"type": "string", "description": "A message's id, to answer in its topic."},
     },
     "required": ["chat", "text"],
@@ -69,7 +74,7 @@ SEND_DM_SCHEMA = {
 }
 ACTIONS = [
     {"name": "larkx_send", "input_schema": SEND_SCHEMA,
-     "description": "Send a Feishu message to a chat as the user themself, not a bot. The user confirms the full text on the phone first."},
+     "description": "Send a Feishu message to a chat as the user themself, not a bot. To really @ somebody, pass their id and exact name from larkx_search in mentions and write @name in text; @name alone is ordinary text. The user confirms the full text on the phone first."},
     {"name": "larkx_send_dm", "input_schema": SEND_DM_SCHEMA,
      "description": "Send a Feishu direct message to a person as the user themself, not a bot. The user confirms the full text on the phone first."},
 ]
@@ -87,6 +92,16 @@ TOOLS = [
     {"name": "larkx_search", "description": "Find Feishu people and groups by name; gives the ids larkx_send_dm and larkx_messages take.",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
 ]
+
+
+def _mentions(args, text):
+    if not args.get("mentions"):
+        return []
+    try:
+        mention_parts(text, args.get("mentions") or [])
+    except ValueError as e:
+        raise RpcError(str(e), "invalid_params") from e
+    return args.get("mentions") or []
 
 
 def rfc3339(at):
@@ -335,8 +350,9 @@ class Connector:
                 return {"message_id": result}
             raise RpcError(_UNKNOWN_SEND)
         text = (p.get("text") or "").rstrip() + "\n\n" + self.suffix
+        mentions = self._context_mentions(request, text)
         try:
-            msg_id = self.backend.send(request["chat"], text, request.get("root") or request["id"])
+            msg_id = self.backend.send(request["chat"], text, request.get("root") or request["id"], mentions=mentions)
         except Exception:
             msg_id = None
         if not msg_id:
@@ -346,6 +362,30 @@ class Connector:
 
     def channel_typing(self, _):
         return {}
+
+    def _context_mentions(self, request, text):
+        """Known participants' real ids, for a name the assistant wrote. Unrecognized @words stay plain text."""
+        people = {}
+        for m in self.store.messages(request["chat"], 0, CONTEXT_LINES):
+            if "@" + (m.get("sender_name") or "") not in text:
+                continue
+            sender = m.get("sender")
+            if sender and str(sender).isdigit() and not self.store.name(sender):
+                try:
+                    found = self.backend.user_name(sender, request["chat"])
+                except Exception:
+                    found = None
+                if found:
+                    self.store.set_name(sender, found)
+        for m in self.store.messages(request["chat"], 0, CONTEXT_LINES):
+            people[m.get("sender")] = self.store.name(m.get("sender"))
+        targets = [{"id": user_id, "name": name} for user_id, name in people.items()
+                   if user_id and str(user_id).isdigit() and name and "@" + name in text]
+        try:
+            mention_parts(text, targets)
+        except ValueError:
+            return []
+        return targets
 
     def _sender_name(self, m, mine):
         if mine:
@@ -492,7 +532,9 @@ class Connector:
         # Each request's send runs at most once, keyed on its id: without one, every later send would read as that one.
         request_id = _required(p, "request_id")
         if name == "larkx_send":
-            return {"text": self._send_once("action:" + request_id, _required(args, "chat"), _required(args, "text"), args.get("reply_to"))}
+            chat, text = _required(args, "chat"), _required(args, "text")
+            mentions = _mentions(args, text)
+            return {"text": self._send_once("action:" + request_id, chat, text, args.get("reply_to"), mentions)}
         if name == "larkx_send_dm":
             self._need_signed_in()
             user, text = _required(args, "user"), _required(args, "text")
@@ -502,9 +544,9 @@ class Connector:
             return {"text": self._send("action:" + request_id, self.backend.create_chat(user), text, None)}
         raise RpcError("没有这个操作：%s" % name)
 
-    def _send_once(self, key, chat, text, reply_to):
+    def _send_once(self, key, chat, text, reply_to, mentions=()):
         self._need_signed_in()
-        return self._claim(key) or self._send(key, chat, text, reply_to)
+        return self._claim(key) or self._send(key, chat, text, reply_to, mentions)
 
     def _claim(self, key):
         """Takes key for one send: "" when it is this one's to do, else what the first one ended with."""
@@ -515,13 +557,13 @@ class Connector:
             return result
         raise RpcError(_UNKNOWN_SEND)
 
-    def _send(self, key, chat, text, reply_to):
+    def _send(self, key, chat, text, reply_to, mentions=()):
         root = None
         if reply_to:
             quoted = self.store.message(reply_to) or {}
             root = quoted.get("root") or reply_to
         try:
-            msg_id = self.backend.send(chat, text, root)
+            msg_id = self.backend.send(chat, text, root, mentions=mentions)
         except Exception:
             msg_id = None
         if not msg_id:
