@@ -198,11 +198,18 @@ class AgentPushTest(unittest.TestCase):
         self.nothing_handed()
 
     def test_only_a_one_person_direct_chat_counts_as_my_own(self):
-        self.assertTrue(own_chat_ok({"type": 1, "memberCount": 1}))
-        self.assertTrue(own_chat_ok({"type": "P2P"}))
-        for info in (None, {}, {"type": 2}, {"type": 3}, {"type": "GROUP"}, {"type": 1, "memberCount": 2},
-                     {"type": 1, "userCount": 2}, {"type": 1, "memberCount": "x"}):
-            self.assertFalse(own_chat_ok(info), info)
+        # Fails closed (review of #843): only a direct chat with memberCount 1 owned by the user counts. The user's
+        # chat with themself on a real account reports type 1, memberCount 1 and ownerId the user, and no userCount.
+        self.assertTrue(own_chat_ok({"type": 1, "memberCount": 1, "ownerId": ME}, ME))
+        self.assertTrue(own_chat_ok({"type": "P2P", "memberCount": "1", "ownerId": ME, "userCount": 1}, ME))
+        for info in (None, {}, {"type": "P2P"}, {"type": 1, "ownerId": ME}, {"type": 1, "memberCount": 1},
+                     {"type": 1, "memberCount": 1, "ownerId": "u_other"}, {"type": 1, "memberCount": 2, "ownerId": ME},
+                     {"type": 1, "memberCount": 0, "ownerId": ME}, {"type": 1, "memberCount": True, "ownerId": ME},
+                     {"type": 1, "memberCount": "x", "ownerId": ME}, {"type": 1, "memberCount": 1, "ownerId": ME, "userCount": 2},
+                     {"type": 1, "memberCount": 1, "ownerId": ME, "userCount": None},
+                     {"type": 2, "memberCount": 1, "ownerId": ME}, {"type": "GROUP", "memberCount": 1, "ownerId": ME}):
+            self.assertFalse(own_chat_ok(info, ME), info)
+        self.assertFalse(own_chat_ok({"type": 1, "memberCount": 1, "ownerId": ""}, ""))
 
     def test_the_manifest_declares_push(self):
         with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:

@@ -59,18 +59,27 @@ def normalize(msg, extract_key):
     }
 
 
-def own_chat_ok(info):
-    """Whether a chat's info (chats.PullChatsByIdsRequest) is a direct chat with nobody but the user in it. Pure, for
-    the tests; counts it does not have are not taken as one."""
-    if not isinstance(info, dict) or info.get("type") not in (1, "P2P"):
+def own_chat_ok(info, me):
+    """Whether a chat's info (chats.PullChatsByIdsRequest) proves a direct chat with nobody but the user me in it. Pure,
+    for the tests. It fails closed: only positive evidence counts, a direct chat whose memberCount is exactly 1 and
+    whose ownerId is me (as the user's chat with themself reports both); a missing or unreadable count or owner is no
+    evidence, and so is a userCount over 1."""
+    if not isinstance(info, dict) or info.get("type") not in (1, "P2P") or not me:
         return False
-    for count in ("memberCount", "userCount"):
+
+    def count(name):
+        value = info.get(name)
+        if isinstance(value, bool):
+            return None
         try:
-            if int(info.get(count) or 0) > 1:
-                return False
+            return int(value)
         except (TypeError, ValueError):
-            return False
-    return True
+            return None
+    if count("memberCount") != 1:
+        return False
+    if "userCount" in info and count("userCount") not in (0, 1):
+        return False
+    return str(info.get("ownerId") or "") == str(me)
 
 
 def _mentions(data, text):
@@ -446,8 +455,9 @@ class RealBackend:
     def own_chat(self):
         """The user's chat with themself, where pushes go: the direct chat opened with their own id. Anything else is
         refused, a group or a chat with somebody in it: a push may carry what only the user should read."""
-        chat = self.create_chat(str(self._auth.user_id))
-        return chat if own_chat_ok(self._client.get_chat_info(chat)) else None
+        me = str(self._auth.user_id)
+        chat = self.create_chat(me)
+        return chat if own_chat_ok(self._client.get_chat_info(chat), me) else None
 
     def search(self, query):
         return self._client.search(query)
