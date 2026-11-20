@@ -73,6 +73,21 @@ func newFakeMonday(t *testing.T) *fakeMonday {
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": boardPage{Boards: []board{sampleBoard()}}})
 		case strings.Contains(in.Query, "boards(ids: [7])") && !strings.Contains(in.Query, "items_page"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": boardPage{Boards: []board{sampleBoard()}}})
+		case strings.Contains(in.Query, "items(ids:"):
+			// Item 42 and item 60 are on board 7, item 61 is on board 8, every other ID is unknown.
+			answer := []map[string]any{}
+			for id, boardID := range map[string]string{"42": "7", "60": "7", "61": "8"} {
+				if strings.Contains(in.Query, "items(ids: ["+id+"])") {
+					it := sampleItem()
+					it.Name = "Item " + id
+					fields := map[string]any{}
+					raw, _ := json.Marshal(it)
+					_ = json.Unmarshal(raw, &fields)
+					fields["id"], fields["board"] = id, map[string]string{"id": boardID}
+					answer = append(answer, fields)
+				}
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"items": answer}})
 		case strings.Contains(in.Query, "items_page"):
 			page := itemsPage{Cursor: "next-cursor", Items: []item{sampleItem()}}
 			if strings.Contains(in.Query, "cursor:") {
