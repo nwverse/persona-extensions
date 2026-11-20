@@ -69,7 +69,7 @@ func newFakeMonday(t *testing.T) *fakeMonday {
 		switch {
 		case strings.Contains(in.Query, "me { id name }"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": mePage{Me: user{ID: 42, Name: "Reader"}}})
-		case strings.Contains(in.Query, "boards { id name url }"):
+		case strings.Contains(in.Query, "boards(limit: 50, page: 1) { id name url }"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": boardPage{Boards: []board{sampleBoard()}}})
 		case strings.Contains(in.Query, "boards(ids: [7])") && !strings.Contains(in.Query, "items_page"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": boardPage{Boards: []board{sampleBoard()}}})

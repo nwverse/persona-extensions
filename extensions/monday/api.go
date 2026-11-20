@@ -92,10 +92,32 @@ func (c *client) me(ctx context.Context) (user, error) {
 	return out.Me, err
 }
 
+// boardsPageSize is the number of boards asked for per page. The boards query returns 25 when `limit` is left out, and
+// `page` starts at 1.
+const boardsPageSize = 50
+
+// maxBoards keeps the board list within the SDK's component limit.
+const maxBoards = 250
+
 func (c *client) boards(ctx context.Context) ([]board, error) {
-	var out boardPage
-	err := c.query(ctx, `query { boards { id name url } }`, &out)
-	return out.Boards, err
+	var boards []board
+	seen := map[int64]bool{}
+	for page := 1; len(boards) < maxBoards; page++ {
+		var out boardPage
+		if err := c.query(ctx, fmt.Sprintf(`query { boards(limit: %d, page: %d) { id name url } }`, boardsPageSize, page), &out); err != nil {
+			return nil, err
+		}
+		for _, item := range out.Boards {
+			if !seen[item.ID] {
+				seen[item.ID] = true
+				boards = append(boards, item)
+			}
+		}
+		if len(out.Boards) < boardsPageSize {
+			break
+		}
+	}
+	return boards[:min(len(boards), maxBoards)], nil
 }
 
 func (c *client) board(ctx context.Context, id int64) (board, error) {

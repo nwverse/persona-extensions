@@ -13,7 +13,7 @@ The token arrives through the encrypted extension-secret flow and is sent only i
 
 ## Work
 
-- List accessible boards and their exact IDs. Read `items_page` with `limit=50`, the returned cursor and item IDs/names/status/column values. No arbitrary query or filter is supplied by tools.
+- List accessible boards and their exact IDs, page by page (`boards(limit: 50, page: N)`, since the query answers only 25 boards without a `limit`), up to 250 boards. Read `items_page` with `limit=50`, the returned cursor and item IDs/names/status/column values. No arbitrary query or filter is supplied by tools.
 - Read board columns and status settings before editing. Status updates are limited to an existing label on an existing status column; a new label is never created implicitly.
 - Create an item with only `board_id` and `item_name` after confirming the board. Update a status with `change_multiple_column_values` using the documented JSON string format for status labels.
 - No arbitrary GraphQL, label creation, arbitrary column edits, deletion, board/workspace administration or bulk operations.
