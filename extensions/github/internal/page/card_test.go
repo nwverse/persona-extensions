@@ -7,11 +7,13 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/nwverse/persona-extensions/extensions/github/internal/connector"
 	"github.com/nwverse/persona-extensions/extensions/github/internal/github"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/exttest"
@@ -24,6 +26,7 @@ type cardGitHub struct {
 	review, mine       []string // GraphQL search nodes
 	assigned, mentions []string // REST search items
 	fail               bool     // the lists answer 502
+	userFails          bool     // /user answers 502, with something like a token in its message
 
 	mu    sync.Mutex
 	asked []string
@@ -36,6 +39,11 @@ func (f *cardGitHub) serve(t *testing.T) *httptest.Server {
 			return
 		}
 		if r.URL.Path == "/user" {
+			if f.userFails {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(`{"message":"Server Error at ghp_EXAMPLE0000000000000000000000000000"}`))
+				return
+			}
 			_, _ = w.Write([]byte(`{"login":"octo"}`))
 			return
 		}
@@ -115,7 +123,7 @@ func cardReq(version int) *ext.UIRequest {
 }
 
 // card is the card drawn for an app of version, checked as the apps read a card (at most two sections and twelve
-// items, no fields), and its text.
+// items, no fields, only components the app's UI version has), and its text.
 func card(t *testing.T, p *Page, version int) (*wire.View, string) {
 	t.Helper()
 	v, err := p.RenderCard(context.Background(), cardReq(version))
@@ -132,6 +140,9 @@ func card(t *testing.T, p *Page, version int) (*wire.View, string) {
 	// it only shows: no buttons, and nothing that would call ui.action on the card
 	for _, s := range v.Sections {
 		for _, c := range s.Items {
+			if since, known := wire.ComponentSince[c.Type]; !known || since > version {
+				t.Fatalf("a %s on the card of an app of UI version %d (since %d): %s", c.Type, version, since, raw)
+			}
 			if c.Type == wire.ComponentButton || c.Button != nil || (c.Action != nil && c.Action.Push == nil) {
 				t.Fatalf("an action on the card: %+v", c)
 			}
@@ -214,6 +225,129 @@ func TestCardSignedOut(t *testing.T) {
 	}
 	if n := f.requests(); n != 0 {
 		t.Fatalf("signed out, the card asked GitHub %d times", n)
+	}
+}
+
+// An app before UI version 2 has no stat grid: the counts are a metric each there, with the same labels, values and the
+// failed CI's danger tone, so they show even with no rows under them (review of #627, P1). From UI version 2, the grid.
+func TestCardCountsBeforeUIVersion2(t *testing.T) {
+	p := signedInTo(t, busy().serve(t))
+	v, got := card(t, p, 1)
+	want := []wire.Component{
+		{Type: wire.ComponentMetric, Key: "count-0", Label: "待我 review", Value: "2"},
+		{Type: wire.ComponentMetric, Key: "count-1", Label: "我提的 PR", Value: "4", Detail: "2 个 CI 失败", Tone: wire.ToneDanger},
+		{Type: wire.ComponentMetric, Key: "count-2", Label: "指派、提到我的", Value: "2"},
+	}
+	if len(v.Sections) != 2 || !reflect.DeepEqual(v.Sections[0].Items, want) {
+		t.Fatalf("v1 counts: %s", got)
+	}
+	if len(v.Sections[1].Items) != 3 || strings.Contains(got, `"action"`) { // the rows, opening the page as the card does
+		t.Fatalf("v1 rows: %s", got)
+	}
+
+	// only the user's PRs, all passing: no rows, and still the counts
+	f := &cardGitHub{mine: []string{pull(20, "Speed up the list", "octo", "SUCCESS")}}
+	v, got = card(t, signedInTo(t, f.serve(t)), 1)
+	if len(v.Sections) != 1 || len(v.Sections[0].Items) != 3 ||
+		!reflect.DeepEqual(v.Sections[0].Items[1], wire.Component{Type: wire.ComponentMetric, Key: "count-1", Label: "我提的 PR", Value: "1"}) {
+		t.Fatalf("v1, only passing PRs: %s", got)
+	}
+
+	v, got = card(t, p, 2)
+	if len(v.Sections[0].Items) != 1 || v.Sections[0].Items[0].Type != wire.ComponentStatGrid || len(v.Sections[0].Items[0].Stats) != 3 {
+		t.Fatalf("v2 counts: %s", got)
+	}
+}
+
+// checkedTo is the page of a connector with a token, through cfg, to srv, once its check of the sign-in has ended in
+// something other than signed out; and that status.
+func checkedTo(t *testing.T, cfg github.Config, srv *httptest.Server) (*Page, connector.Status) {
+	c := github.New(cfg, "", nil)
+	c.UseAPI(srv.URL, "https://github.com")
+	c.UseSecrets(&memSecrets{data: []byte(`{"token":"gho_example"}`)})
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	go c.Run(ctx)
+	deadline := time.Now().Add(5 * time.Second)
+	for c.Status(ctx).State == connector.StateNotSignedIn {
+		if time.Now().After(deadline) {
+			t.Fatalf("not checked: %+v", c.Status(ctx))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	p := New(c)
+	p.now = func() time.Time { return now }
+	return p, c.Status(ctx)
+}
+
+// offlineLine is the card's one line while the connector cannot read GitHub, with no list asked for.
+func offlineLine(t *testing.T, p *Page, f *cardGitHub) wire.Component {
+	t.Helper()
+	v, got := card(t, p, 6)
+	if len(v.Sections) != 1 || len(v.Sections[0].Items) != 1 || v.Sections[0].Items[0].Type != wire.ComponentText {
+		t.Fatalf("not one line: %s", got)
+	}
+	if n := f.requests(); n != 0 {
+		t.Fatalf("the card asked GitHub for lists %d times", n)
+	}
+	return v.Sections[0].Items[0]
+}
+
+// The connector's check of the sign-in failing (GitHub down) is not a sign-out: the card says what failed, scrubbed,
+// not to sign in (review of #627, P2).
+func TestCardWhenTheSignInCheckFails(t *testing.T) {
+	f := busy()
+	f.userFails = true
+	p, st := checkedTo(t, github.Config{}, f.serve(t))
+	if st.State != connector.StateError {
+		t.Fatalf("status: %+v", st)
+	}
+	line := offlineLine(t, p, f)
+	if line.Key != "error" || line.Tone != wire.ToneCaution || !strings.Contains(line.Text, "连不上 GitHub") || !strings.Contains(line.Text, "502") ||
+		strings.Contains(line.Text, "登录") || strings.Contains(line.Text, "ghp_") {
+		t.Fatalf("the check failing: %+v", line)
+	}
+}
+
+// A setting that is wrong (a malformed proxy) is not a sign-out either: the card names the setting and its fix.
+func TestCardWhenASettingIsWrong(t *testing.T) {
+	f := busy()
+	p, st := checkedTo(t, github.Config{Egress: connector.Egress{Proxy: "socks5://127.0.0.1:1080"}}, f.serve(t))
+	if st.State != connector.StateNotConfigured {
+		t.Fatalf("status: %+v", st)
+	}
+	line := offlineLine(t, p, f)
+	if line.Key != "error" || line.Text != st.Error || !strings.Contains(line.Text, "代理") || strings.Contains(line.Text, "还没连上") {
+		t.Fatalf("a wrong setting: %+v (status %q)", line, st.Error)
+	}
+}
+
+// Every state the connector cannot read GitHub in has its own line: only signed out says to sign in.
+func TestCardOfflineLines(t *testing.T) {
+	for _, st := range []connector.Status{{State: connector.StateOK}, {State: connector.StateRateLimited, Error: "这个小时的 GitHub 请求额度快用完了"}} {
+		if v := offlineCard(st); v != nil {
+			t.Fatalf("%s: %+v", st.State, v)
+		}
+	}
+	for _, c := range []struct {
+		st        connector.Status
+		key, text string
+	}{
+		{connector.Status{State: connector.StateNotSignedIn, Error: "Mac 上的 gh 登录失效了：在那台机器上运行 gh auth login"}, "signin", "还没连上 GitHub，在 设置 › 连接器 › GitHub 登录"},
+		{connector.Status{State: connector.StateDisabled}, "off", "GitHub 连接器关着，在 设置 › 连接器 › GitHub 打开它"},
+		{connector.Status{State: connector.StateError, Error: "连不上 GitHub：token ghp_EXAMPLE0000000000000000000000000000 refused"}, "error", "连不上 GitHub：token [token] refused"},
+		{connector.Status{State: connector.StateNotConfigured, Error: "选的电脑不在这台 hub 上了：在 设置 › 连接器 › GitHub 重新选一台，或者用设备码登录"}, "error",
+			"选的电脑不在这台 hub 上了：在 设置 › 连接器 › GitHub 重新选一台，或者用设备码登录"},
+		{connector.Status{State: connector.StateNoPermission}, "error", "读不到 GitHub，在 设置 › 连接器 › GitHub 看看它怎么了"},
+	} {
+		v := offlineCard(c.st)
+		if v == nil || len(v.Sections) != 1 || len(v.Sections[0].Items) != 1 {
+			t.Fatalf("%s: %+v", c.st.State, v)
+		}
+		line := v.Sections[0].Items[0]
+		if line.Key != c.key || line.Text != c.text || line.Tone != wire.ToneCaution {
+			t.Errorf("%s: %+v, want %s %q", c.st.State, line, c.key, c.text)
+		}
 	}
 }
 

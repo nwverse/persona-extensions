@@ -80,6 +80,10 @@ type pageList struct {
 // listFresh is how long a list is kept.
 var listFresh = time.Minute
 
+// listLooked, when a test sets it, runs in List between its first look at the cache and taking the lock again to
+// read: where another read of the list can end.
+var listLooked func(tab string)
+
 // List is the tab's entries, from the cache unless fresh is asked for or it is older than listFresh; at is when they
 // were read.
 func (c *Connector) List(ctx context.Context, tab string, fresh bool) (entries []Entry, at time.Time, err error) {
@@ -92,7 +96,17 @@ func (c *Connector) List(ctx context.Context, tab string, fresh bool) (entries [
 	if ok && c.ratesLow() { // save the hour's requests for the inbox
 		return cached.entries, cached.at, nil
 	}
+	if listLooked != nil {
+		listLooked(tab)
+	}
 	c.lists.mu.Lock()
+	// Another read may have ended since the look above: what it read is the newest there is (what a failed read
+	// falls back on), and, for an ask that is not fresh, the answer, rather than reading GitHub again.
+	cached, ok = c.lists.tabs[tab]
+	if ok && !fresh && time.Since(cached.at) < listFresh {
+		c.lists.mu.Unlock()
+		return cached.entries, cached.at, nil
+	}
 	if r, going := c.lists.reading[tab]; going {
 		c.lists.mu.Unlock()
 		select {

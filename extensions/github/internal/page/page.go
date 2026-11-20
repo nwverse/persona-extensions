@@ -372,25 +372,17 @@ func (p *Page) keepHub(h *ext.Hub) {
 
 // unavailable is the page while the connector cannot read GitHub: why, and where to fix it.
 func (p *Page) unavailable(ctx context.Context) (wire.Component, bool) {
-	detail, off := p.offline(ctx)
-	if !off {
-		return wire.Component{}, false
-	}
-	return wire.Component{Type: wire.ComponentEmpty, Key: "signin", Title: "还没连上 GitHub", Icon: wire.NavIconSettings,
-		Detail: clip(detail+"。在 设置 › 连接器 › GitHub 登录（选一台电脑上的 gh 登录，或者用设备码登录）；连接器关着时先把它打开", 2000)}, true
-}
-
-// offline says whether the connector cannot read GitHub now (signed out, switched off, failing), and why.
-func (p *Page) offline(ctx context.Context) (string, bool) {
 	st := p.c.Status(ctx)
 	switch st.State {
 	case connector.StateOK, connector.StateRateLimited:
-		return "", false
+		return wire.Component{}, false
 	}
-	if st.Error == "" {
-		return "GitHub 还没准备好", true
+	detail := st.Error
+	if detail == "" {
+		detail = "GitHub 还没准备好"
 	}
-	return st.Error, true
+	return wire.Component{Type: wire.ComponentEmpty, Key: "signin", Title: "还没连上 GitHub", Icon: wire.NavIconSettings,
+		Detail: clip(detail+"。在 设置 › 连接器 › GitHub 登录（选一台电脑上的 gh 登录，或者用设备码登录）；连接器关着时先把它打开", 2000)}, true
 }
 
 func (p *Page) list(ctx context.Context, r *ext.UIRequest, s state, fresh bool) *wire.View {

@@ -3,7 +3,9 @@ package page
 import (
 	"context"
 	"fmt"
+	"strings"
 
+	"github.com/nwverse/persona-extensions/extensions/github/internal/connector"
 	"github.com/nwverse/persona-extensions/extensions/github/internal/github"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -35,8 +37,8 @@ func (p *Page) RenderCard(ctx context.Context, r *ext.UIRequest) (*wire.View, er
 
 // card is the card as GitHub's lists have it now.
 func (p *Page) card(ctx context.Context, r *ext.UIRequest) *wire.View {
-	if _, off := p.offline(ctx); off {
-		return cardLine("signin", "还没连上 GitHub，在 设置 › 连接器 › GitHub 登录", wire.ToneCaution)
+	if v := offlineCard(p.c.Status(ctx)); v != nil {
+		return v
 	}
 	var lists [3][]github.Entry
 	for i, tab := range []string{github.TabReview, github.TabMine, github.TabInvolved} {
@@ -60,12 +62,8 @@ func (p *Page) card(ctx context.Context, r *ext.UIRequest) *wire.View {
 	if len(failed) > 0 {
 		yours.Detail, yours.Tone = fmt.Sprintf("%d 个 CI 失败", len(failed)), wire.ToneDanger
 	}
-	v := &wire.View{Title: "GitHub", RefreshAfter: refreshAfter, Sections: []wire.Section{{Items: []wire.Component{{
-		Type: wire.ComponentStatGrid, Key: "counts", Stats: []wire.Stat{
-			{Label: "待我 review", Value: many(len(review))},
-			yours,
-			{Label: "指派、提到我的", Value: many(len(involved))},
-		}}}}}}
+	counts := []wire.Stat{{Label: "待我 review", Value: many(len(review))}, yours, {Label: "指派、提到我的", Value: many(len(involved))}}
+	v := &wire.View{Title: "GitHub", RefreshAfter: refreshAfter, Sections: []wire.Section{{Items: countItems(r, counts)}}}
 	var rows []wire.Component
 	seen := map[string]bool{}
 	add := func(e github.Entry, why string) {
@@ -99,10 +97,44 @@ func (p *Page) cardRow(r *ext.UIRequest, e github.Entry) wire.Component {
 	return row
 }
 
+// countItems is the counts as a stat grid; an app before UI version 2 has none (wire.ComponentSince), so a metric each
+// there, with the same label, value, detail and tone.
+func countItems(r *ext.UIRequest, counts []wire.Stat) []wire.Component {
+	if r.UIVersion >= 2 {
+		return []wire.Component{{Type: wire.ComponentStatGrid, Key: "counts", Stats: counts}}
+	}
+	items := make([]wire.Component, 0, len(counts))
+	for i, s := range counts {
+		items = append(items, wire.Component{Type: wire.ComponentMetric, Key: fmt.Sprintf("count-%d", i), Label: s.Label, Value: s.Value,
+			Detail: s.Detail, Tone: s.Tone})
+	}
+	return items
+}
+
+// offlineCard is the card while the connector cannot read GitHub, as one line, and nil while it can. Signed out, it
+// says where to sign in, as the page does; switched off, where to switch it on. Otherwise (GitHub failing, a setting
+// that is wrong, a permission missing) signing in would not help: the line is the connector's own sentence of what is
+// wrong and how to fix it, scrubbed of anything like a token.
+func offlineCard(st connector.Status) *wire.View {
+	switch st.State {
+	case connector.StateOK, connector.StateRateLimited:
+		return nil
+	case connector.StateNotSignedIn:
+		return cardLine("signin", "还没连上 GitHub，在 设置 › 连接器 › GitHub 登录", wire.ToneCaution)
+	case connector.StateDisabled:
+		return cardLine("off", "GitHub 连接器关着，在 设置 › 连接器 › GitHub 打开它", wire.ToneCaution)
+	}
+	why := strings.TrimSpace(github.Scrub(st.Error))
+	if why == "" {
+		why = "读不到 GitHub，在 设置 › 连接器 › GitHub 看看它怎么了"
+	}
+	return cardLine("error", clip(why, 200), wire.ToneCaution)
+}
+
 // ciFailed: the PR's CI rollup failed (the page's 「CI 失败」).
 func ciFailed(e github.Entry) bool { return e.CI == "FAILURE" || e.CI == "ERROR" }
 
-// cardLine is the card as one line of text: signed out, failing, nothing to do, still reading.
+// cardLine is the card as one line of text: signed out, switched off, failing, nothing to do, still reading.
 func cardLine(key, text, tone string) *wire.View {
 	return &wire.View{Title: "GitHub", RefreshAfter: refreshAfter, Sections: []wire.Section{{Items: []wire.Component{
 		{Type: wire.ComponentText, Key: key, Text: text, Tone: tone}}}}}
