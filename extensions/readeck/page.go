@@ -251,7 +251,7 @@ func saveView(r *ext.UIRequest, st pageState) *wire.View {
 func detailView(r *ext.UIRequest, st pageState, item bookmark, article string, highlights []highlight) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(fmt.Sprintf("%s · %d %s · %s", item.SiteName, item.ReadingTime, t.minutes, strings.Join(item.Labels, ", ")), 1800)}}
-	if link := safeArticleLink(item.URL); link != "" {
+	if link := safeArticleLink(item.URL); httpsLink(link) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
 	items = append(items,
@@ -288,6 +288,12 @@ func safeArticleLink(raw string) string {
 		return ""
 	}
 	return u.String()
+}
+
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
 func splitLabels(raw string) []string {
