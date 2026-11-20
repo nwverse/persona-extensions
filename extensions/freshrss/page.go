@@ -14,16 +14,17 @@ import (
 )
 
 type pageState struct {
-	Mode         string `json:"m,omitempty"`
-	View         string `json:"v,omitempty"`
-	Continuation string `json:"c,omitempty"`
-	ArticleID    string `json:"i,omitempty"`
-	DraftID      string `json:"d,omitempty"`
+	Mode         string   `json:"m,omitempty"`
+	View         string   `json:"v,omitempty"`
+	Continuation string   `json:"c,omitempty"`
+	Pages        []string `json:"p,omitempty"`
+	ArticleID    string   `json:"i,omitempty"`
+	DraftID      string   `json:"d,omitempty"`
 }
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.Continuation) > 64 || len(st.ArticleID) > 128 || len(st.DraftID) > 128 || len(st.View) > 30 || len(st.Mode) > 30 {
+	if err := r.DecodeState(&st); err != nil || len(st.Continuation) > 64 || len(st.Pages) >= maxViewPages || len(st.ArticleID) > 128 || len(st.DraftID) > 128 || len(st.View) > 30 || len(st.Mode) > 30 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -47,11 +48,12 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if r.Values["view"] != "unread" && r.Values["view"] != "starred" {
 			return nil, errors.New("invalid reading view")
 		}
-		st.View, st.Continuation = r.Values["view"], ""
+		st.View, st.Continuation, st.Pages = r.Values["view"], "", nil
 	case "more":
 		if r.Values["continuation"] == "" || r.Values["continuation"] != st.Continuation {
 			return nil, errors.New("invalid continuation")
 		}
+		st.Pages = append(st.Pages, st.Continuation)
 	case "detail":
 		if !validItemID(r.Values["id"]) {
 			return nil, errors.New("invalid article ID")
@@ -84,12 +86,12 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		return &wire.View{Sections: []wire.Section{{Items: []wire.Component{{Type: wire.ComponentEmpty, Title: t.missingConfig}}}}}, nil
 	}
 	if st.Mode == "detail" {
-		page, err := a.client.articles(ctx, st.View, "")
+		items, _, err := a.collectArticles(ctx, st.View, st.Pages)
 		a.record(err)
 		if err != nil {
 			return nil, err
 		}
-		for _, item := range page.Items {
+		for _, item := range items {
 			if item.ID == st.ArticleID {
 				st.DraftID = randomID()
 				return detailView(r, st, item), nil
@@ -118,14 +120,15 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.View == "" {
 		st.View = "unread"
 	}
-	page, err := a.client.articles(ctx, st.View, st.Continuation)
+	items, next, err := a.collectArticles(ctx, st.View, st.Pages)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
+	st.Continuation = next
 	v := &wire.View{Title: t.reading, State: ext.EncodeState(st), Filter: &wire.Filter{Name: "view", Title: t.reading, Value: st.View, Action: wire.Action{ID: "view"}, Choices: []wire.Choice{{Value: "unread", Title: t.unread}, {Value: "starred", Title: t.starred}}}}
 	section := wire.Section{Title: t.articles}
-	for _, item := range page.Items {
+	for _, item := range items {
 		if !validItemID(item.ID) || item.Title == "" {
 			continue
 		}
@@ -134,13 +137,43 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noArticles})
 	}
-	if page.Continuation != "" {
-		st.Continuation = page.Continuation
-		v.State = ext.EncodeState(st)
-		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"continuation": st.Continuation}}}
+	if next != "" {
+		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"continuation": next}}}
 	}
 	v.Sections = []wire.Section{section, {Items: []wire.Component{{Type: wire.ComponentButton, Title: t.subscriptions, Action: &wire.Action{ID: "subscriptions", Push: &wire.Push{Title: t.subscriptions, State: ext.EncodeState(pageState{Mode: "subscriptions"})}}}}}}
 	return v, nil
+}
+
+const (
+	maxViewArticles = 250
+	maxViewPages    = 10
+)
+
+// collectArticles reads the pages the view shows: the first, then the ones pages names by their continuation, so that
+// Load more answers the whole list, longer, and an article opened from any page is found. It stops at maxViewArticles to
+// keep the view within the SDK's component limit, and returns the continuation of the page after the last one read only
+// while another page can be loaded.
+func (a *app) collectArticles(ctx context.Context, view string, pages []string) ([]article, string, error) {
+	var out []article
+	next := ""
+	for _, continuation := range append([]string{""}, pages...) {
+		if len(out) >= maxViewArticles {
+			break
+		}
+		batch, err := a.client.articles(ctx, view, continuation)
+		if err != nil {
+			return nil, "", err
+		}
+		out = append(out, batch.Items...)
+		next = batch.Continuation
+	}
+	if len(out) > maxViewArticles {
+		out = out[:maxViewArticles]
+	}
+	if len(out) >= maxViewArticles || len(pages)+1 >= maxViewPages {
+		next = ""
+	}
+	return out, next, nil
 }
 
 func detailView(r *ext.UIRequest, st pageState, item article) *wire.View {
