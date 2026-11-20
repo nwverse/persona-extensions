@@ -162,7 +162,7 @@ class MentionSettingsTest(unittest.TestCase):
         with open(os.path.join(root, "persona-extension.json"), encoding="utf-8") as f:
             manifest = json.load(f)
         self.assertIs(manifest["configuration"]["properties"]["agent_mention"]["default"], True)
-        self.assertEqual(manifest["version"], "0.2.6")
+        self.assertEqual(manifest["version"], "0.2.7")
 
 
 class MentionStoreMigrationTest(unittest.TestCase):
