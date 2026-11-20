@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,5 +33,36 @@ func TestKeyThatBreaksTheHeaderIsRefused(t *testing.T) {
 		if err := newClient("http://127.0.0.1:1", key).do(t.Context(), http.MethodGet, "/Users/Me", nil, nil); err == nil || !strings.Contains(err.Error(), "not allowed") {
 			t.Fatalf("%q: %v", key, err)
 		}
+	}
+}
+
+// TestCurrentUserReportsWhyJellyfinRefused: when GET /Users/Me fails, the answer has no Id, but the error to give is the
+// request's, not that the user ID is invalid.
+func TestCurrentUserReportsWhyJellyfinRefused(t *testing.T) {
+	for _, tc := range []struct {
+		status int
+		want   error
+	}{
+		{http.StatusUnauthorized, errToken},
+		{http.StatusForbidden, errToken},
+		{http.StatusTooManyRequests, errRateLimited},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(tc.status) }))
+		_, err := newClient(srv.URL, testToken).currentUser(t.Context())
+		srv.Close()
+		if !errors.Is(err, tc.want) {
+			t.Fatalf("status %d: got %v, want %v", tc.status, err, tc.want)
+		}
+	}
+}
+
+// An answer with no usable Id is still refused.
+func TestCurrentUserRefusesAnswerWithoutAnID(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"Name": "reader"})
+	}))
+	t.Cleanup(srv.Close)
+	if _, err := newClient(srv.URL, testToken).currentUser(t.Context()); err == nil || !strings.Contains(err.Error(), "invalid current user ID") {
+		t.Fatalf("%v", err)
 	}
 }
