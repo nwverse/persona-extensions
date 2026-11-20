@@ -90,11 +90,15 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		}
 		section := wire.Section{Title: t.messages}
 		var oldest int64
+		var shown [][]wire.Component
 		for _, item := range page.Messages {
 			if oldest == 0 || item.ID < oldest {
 				oldest = item.ID
 			}
-			section.Items = append(section.Items, textComponents(clipText(fmt.Sprintf("%s · %s\n%s", item.SenderFullName, item.Subject, item.Content), 12000))...)
+			shown = append(shown, textComponents(clipText(fmt.Sprintf("%s · %s\n%s", item.SenderFullName, item.Subject, item.Content), 12000)))
+		}
+		for _, message := range fitMessages(shown, maxViewItems) {
+			section.Items = append(section.Items, message...)
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noMessages})
@@ -128,6 +132,33 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 
 // maxViewTopics keeps the topics page within the hub's 300 component limit, whatever the stream holds.
 const maxViewTopics = 250
+
+// maxViewItems keeps the messages page within the hub's 300 component limit, whatever the messages hold.
+const maxViewItems = 250
+
+// fitMessages cuts the longest messages to a common length, so that together they have at most n components and the
+// short ones are whole. A cut message ends with a mark.
+func fitMessages(messages [][]wire.Component, n int) [][]wire.Component {
+	limit := 1
+	for l := 240; l > 1; l-- {
+		total := 0
+		for _, m := range messages {
+			total += min(len(m), l)
+		}
+		if total <= n {
+			limit = l
+			break
+		}
+	}
+	for i, m := range messages {
+		if len(m) > limit {
+			m = m[:limit]
+			m[limit-1].Text = clipText(m[limit-1].Text, 1700) + " […]"
+			messages[i] = m
+		}
+	}
+	return messages
+}
 
 func parsePositiveID(raw string) (int64, error) {
 	var id int64
