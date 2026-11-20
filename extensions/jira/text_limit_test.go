@@ -52,8 +52,14 @@ func newTextLimitJira(t *testing.T) *textLimitJira {
 			}
 			data, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(data, &in)
-			if text, _ := in.Fields["description"].(string); tooLong(text) {
-				return
+			if in.Fields["description"] != nil {
+				if checkADF(in.Fields["description"]) != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				if tooLong(adfText(in.Fields["description"])) {
+					return
+				}
 			}
 			f.mu.Lock()
 			f.created++
@@ -61,11 +67,15 @@ func newTextLimitJira(t *testing.T) *textLimitJira {
 			fmt.Fprint(w, `{"id":"10002","key":"ENG-124","self":"https://jira.example.com/browse/ENG-124"}`)
 		case "/issue/ENG-123/comment":
 			var in struct {
-				Body string `json:"body"`
+				Body any `json:"body"`
 			}
 			data, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(data, &in)
-			if tooLong(in.Body) {
+			if checkADF(in.Body) != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if tooLong(adfText(in.Body)) {
 				return
 			}
 			f.mu.Lock()
