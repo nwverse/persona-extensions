@@ -28,10 +28,10 @@ var readTools = []tool{
 
 var actionTools = []tool{
 	{Name: "monday_create_item", Description: "Create an item in an exact monday board after explicit confirmation. Only board_id and item_name are sent; no arbitrary column values or board changes.",
-		InputSchema: map[string]any{"type": "object", "required": []string{"board_id", "name"}, "properties": map[string]any{"board_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}}}},
+		InputSchema: map[string]any{"type": "object", "required": []string{"board_id", "name"}, "properties": map[string]any{"board_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxNameChars}}}},
 	{Name: "monday_update_status", Description: "Update an existing status column to an existing label after explicit confirmation. Does not create labels or change arbitrary columns.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"board_id", "item_id", "column_id", "label"}, "properties": map[string]any{
-			"board_id": idSchema, "item_id": idSchema, "column_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 100}, "label": map[string]any{"type": "string", "minLength": 1, "maxLength": 100},
+			"board_id": idSchema, "item_id": idSchema, "column_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 100}, "label": map[string]any{"type": "string", "minLength": 1, "maxLength": maxLabelChars},
 		}}},
 }
 
