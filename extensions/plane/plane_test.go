@@ -64,7 +64,7 @@ func newFakePlane(t *testing.T) *fakePlane {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
-				if _, ok := in["description_html"]; ok {
+				if _, ok := in["description_stripped"]; ok {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
