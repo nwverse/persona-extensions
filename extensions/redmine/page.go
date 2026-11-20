@@ -200,8 +200,9 @@ func detailView(r *ext.UIRequest, st pageState, item issue) *wire.View {
 	}
 	v := &wire.View{Title: clipText(item.Subject, 1800), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.issues, Items: items}}}
 	if item.Description != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Description, 60000))})
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: capComponents(textComponents(clipText(item.Description, 60000)), maxDescriptionItems)})
 	}
+	budget := maxViewItems - viewItemCount(v)
 	section := wire.Section{Title: t.journals}
 	for _, item := range item.Journals {
 		if item.Notes == "" {
@@ -210,11 +211,37 @@ func detailView(r *ext.UIRequest, st pageState, item issue) *wire.View {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: clipText(item.User.Name+" · "+item.CreatedOn, 1800), Style: wire.TextStyleSecondary})
 		section.Items = append(section.Items, textComponents(clipText(item.Notes, 12000))...)
 	}
+	section.Items = capComponents(section.Items, budget)
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.noJournals, Style: wire.TextStyleSecondary})
 	}
 	v.Sections = append(v.Sections, section)
 	return v
+}
+
+const (
+	// maxViewItems keeps the issue view within the hub's 300 component limit, whatever the journals hold.
+	maxViewItems = 250
+	// maxDescriptionItems leaves the journals room in it.
+	maxDescriptionItems = 100
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
+}
+
+func viewItemCount(v *wire.View) int {
+	n := 0
+	for _, section := range v.Sections {
+		n += len(section.Items)
+	}
+	return n
 }
 
 func textComponents(text string) []wire.Component {
