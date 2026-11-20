@@ -680,11 +680,11 @@ func isGitHost(host string) bool {
 	}
 	host = strings.TrimSuffix(strings.ToLower(host), ".")
 	switch host {
-	case "code.byted.org", "github.com", "ssh.github.com", "gitlab.com", "altssh.gitlab.com", "bitbucket.org", "ssh.dev.azure.com":
+	case "github.com", "ssh.github.com", "gitlab.com", "altssh.gitlab.com", "bitbucket.org", "codeberg.org", "gitee.com", "ssh.dev.azure.com":
 		return true
 	}
-	first, _, _ := strings.Cut(host, ".")
-	return first == "git" || first == "gitlab" || first == "github"
+	first, _, hasDot := strings.Cut(host, ".")
+	return first == "git" || first == "gitlab" || first == "github" || (hasDot && (first == "code" || first == "gerrit"))
 }
 
 func (st *State) rememberDeleted(m *Machine) {

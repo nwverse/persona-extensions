@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -63,7 +64,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	case "projects":
 		st = pageState{}
 	case "more":
-		if err := validCursor(st.Cursor); err != nil || st.Cursor == "" {
+		if err := validCursor(st.Cursor); err != nil {
 			return nil, errors.New("no valid next cursor")
 		}
 		st.History = append(st.History, st.Cursor)
@@ -136,6 +137,33 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const maxViewRecords = 250
+
+// collectPages reads the pages the view has gone through, the earlier cursors in History and then the current one, so
+// that Load more answers the whole list, longer. It stops at maxViewRecords to keep the view within the SDK's
+// component limit, and the page it returns offers a next page only while the cap is not reached.
+func collectPages[T any](st pageState, fetch func(cursor string) (page[T], error)) (page[T], error) {
+	var out page[T]
+	for _, cursor := range append(slices.Clone(st.History), st.Cursor) {
+		if len(out.Results) >= maxViewRecords {
+			break
+		}
+		batch, err := fetch(cursor)
+		if err != nil {
+			return page[T]{}, err
+		}
+		out.Results = append(out.Results, batch.Results...)
+		out.NextCursor, out.NextPageResults, out.TotalResults = batch.NextCursor, batch.NextPageResults, batch.TotalResults
+	}
+	if len(out.Results) > maxViewRecords {
+		out.Results = out.Results[:maxViewRecords]
+	}
+	if len(out.Results) >= maxViewRecords {
+		out.NextPageResults = false
+	}
+	return out, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" || a.workspace == "" {
@@ -147,7 +175,9 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			return nil, err
 		}
 	default:
-		page, err := a.client.projects(ctx, a.workspace, st.Cursor)
+		page, err := collectPages(st, func(cursor string) (page[project], error) {
+			return a.client.projects(ctx, a.workspace, cursor)
+		})
 		a.record(err)
 		if err != nil {
 			return nil, err
@@ -173,7 +203,9 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		return a.createView(ctx, r, st)
 	}
 	if st.Mode == "items" {
-		page, err := a.client.workItems(ctx, a.workspace, st.ProjectID, st.Cursor)
+		page, err := collectPages(st, func(cursor string) (page[workItem], error) {
+			return a.client.workItems(ctx, a.workspace, st.ProjectID, cursor)
+		})
 		a.record(err)
 		if err != nil {
 			return nil, err

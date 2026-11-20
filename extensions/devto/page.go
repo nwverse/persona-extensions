@@ -74,6 +74,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		return detailView(r, st, item, comments), nil
 	}
 	var items []article
+	full := false // whether the last batch read was full, so another page may exist (before any filter hides articles)
 	for n := 0; n <= st.Page; n++ {
 		batch, err := a.client.articles(ctx, "", n+1)
 		if err != nil {
@@ -81,7 +82,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			return nil, err
 		}
 		items = append(items, batch...)
-		if len(batch) < 30 {
+		if full = len(batch) == 30; !full {
 			break
 		}
 	}
@@ -95,7 +96,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noArticles})
 	}
-	if len(items) >= 30*(st.Page+1) && st.Page < 5 {
+	if full && st.Page < 5 {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section}

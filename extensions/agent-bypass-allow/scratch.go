@@ -54,6 +54,10 @@ type roots struct {
 
 // scratchRoots reads the roots for a session in cwd ("" for none).
 func scratchRoots(cwd string) *roots {
+	return scratchRootsWithWorkspaces(cwd, nil)
+}
+
+func scratchRootsWithWorkspaces(cwd string, workspaces []string) *roots {
 	r := &roots{}
 	homeRaw, _ := os.UserHomeDir()
 	if filepath.IsAbs(homeRaw) {
@@ -69,9 +73,11 @@ func scratchRoots(cwd string) *roots {
 			cand = append(cand, filepath.Join(r.home, d))
 		}
 	}
-	if filepath.IsAbs(cwd) {
-		if c := resolve(filepath.Clean(cwd), true); r.workDir(c) {
-			cand = append(cand, c)
+	for _, w := range append([]string{cwd}, workspaces...) {
+		if filepath.IsAbs(w) {
+			if c := resolve(filepath.Clean(w), true); r.workDir(c) {
+				cand = append(cand, c)
+			}
 		}
 	}
 	for _, c := range cand {

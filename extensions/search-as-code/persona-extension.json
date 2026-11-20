@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "search-as-code",
   "name": "代码化搜索",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "icon": "assets/icon.png",
   "description": "受 Perplexity「Rethinking Search as Code Generation」与 CASS 会话检索启发：把复杂的多步检索与排查任务编译为可执行的搜索代码（Search as Code），跨 Coding Agent 会话历史（Claude Code、Codex，支持排除工具噪音的纯对话检索、角色过滤与报错排查；含 disklessly 已移到云端的会话，经纯文本索引照常检索、标记「已上云」并可一键恢复到原路径）和本地代码仓库执行流水线算子（过滤、正则匹配、跨会话文件关联、聚合统计、相关性与新鲜度排序）。可选多台电脑：经 Persona 的节点把检索分发到每台电脑上执行、只回传排好序的证据片段并标明来源电脑，离线的电脑检索 hub 上已同步的轻量纯对话索引，已上云会话在所在电脑上恢复。界面透明展示生成的搜索程序与每一步算子的耗时和命中轨迹，支持保存为可复用的搜索配方。助手读其他电脑或其他项目的会话历史前先弹审批卡（写明电脑、项目与范围，可在本次对话内按目标记住）；附带本机 MCP 服务器（search-as-code mcp），列配方直接运行，检索、保存与删除配方、恢复已上云会话按对话权限询问。",
   "publisher": "nwverse",

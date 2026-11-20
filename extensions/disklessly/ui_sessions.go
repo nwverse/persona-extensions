@@ -142,16 +142,13 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult) []wire.Se
 	status := wire.Section{
 		Title:  "云端会话备份",
 		Footer: "位置只按最近 24 小时内的检查判断：后端不可达、未检查或机器离线时显示「未知」，从不当作已丢失。",
-		Items: []wire.Component{{
-			Type: wire.ComponentStatGrid,
-			Stats: []wire.Stat{
-				{Label: "已索引会话", Value: fmt.Sprintf("%d 个", indexed), Detail: indexDetail},
-				{Label: LocCloud, Value: fmt.Sprintf("%d 个", counts[LocCloud]), Tone: toneIf(counts[LocCloud] > 0, wire.TonePositive)},
-				{Label: "未知 / 云端缺失", Value: fmt.Sprintf("%d / %d", counts[LocUnknown], counts[LocMissing]),
-					Tone: cmp.Or(toneIf(counts[LocMissing] > 0, wire.ToneDanger), toneIf(counts[LocUnknown] > 0, wire.ToneCaution))},
-				machineStat,
-			},
-		}},
+		Items: d.statComponents("", []wire.Stat{
+			{Label: "已索引会话", Value: fmt.Sprintf("%d 个", indexed), Detail: indexDetail},
+			{Label: LocCloud, Value: fmt.Sprintf("%d 个", counts[LocCloud]), Tone: toneIf(counts[LocCloud] > 0, wire.TonePositive)},
+			{Label: "未知 / 云端缺失", Value: fmt.Sprintf("%d / %d", counts[LocUnknown], counts[LocMissing]),
+				Tone: cmp.Or(toneIf(counts[LocMissing] > 0, wire.ToneDanger), toneIf(counts[LocUnknown] > 0, wire.ToneCaution))},
+			machineStat,
+		}),
 	}
 	if len(reading) > 0 {
 		status.Items = append(status.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
@@ -215,7 +212,7 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult) []wire.Se
 		if strings.TrimSpace(query) != "" {
 			detail = "本地索引没有匹配的会话；可试试「" + coldDeepText + "」在机器上搜索完整摘要。"
 		}
-		results.Items = append(results.Items, wire.Component{Type: wire.ComponentEmpty, Icon: "chat", Title: "没有会话", Detail: detail})
+		results.Items = append(results.Items, d.emptyComponents("chat", "没有会话", detail, nil)...)
 	}
 	if len(machineSec.Items) == 0 {
 		return []wire.Section{status, results}
@@ -615,6 +612,25 @@ func (a *app) sessionsView(r *ext.UIRequest, p sessPage, deep *deepResult) (*wir
 	return v, err
 }
 
+func (d draw) sessionsFallbackSummary(m *Machine, query string) string {
+	scope := "全部机器"
+	machineArg := ""
+	if m != nil {
+		scope = machineLabel(m)
+		machineArg = m.ID
+	}
+	hits := SearchCold(d.st, clipQuery(query), machineArg, 5, d.now)
+	var lines []string
+	lines = append(lines, fmt.Sprintf("Disklessly Agent 对话备份（范围：%s，匹配会话 %d 个）", scope, len(hits)))
+	for _, mm := range d.st.Machines {
+		if (m == nil && mm.Enabled) || (m != nil && mm.ID == m.ID) {
+			cat := d.st.cold(mm.ID)
+			lines = append(lines, fmt.Sprintf("- %s：%s", machineLabel(mm), coldStateLabel(cat.stateCode())))
+		}
+	}
+	return clip(strings.Join(lines, "\n"), 1950)
+}
+
 func (d draw) sessionsPage(p sessPage, deep *deepResult) *wire.View {
 	var m *Machine
 	if p.Machine != "" && p.Machine != allMachines {
@@ -632,14 +648,22 @@ func (d draw) sessionsPage(p sessPage, deep *deepResult) *wire.View {
 	if m != nil {
 		value = m.ID
 	}
-	return &wire.View{
+	var lead []wire.Section
+	if d.v4() {
+		lead = sandboxSection()
+	} else if sandboxed() {
+		sp := sandboxProblem()
+		lead = []wire.Section{{Title: sp.Title, Items: []wire.Component{{Type: wire.ComponentText, Text: sp.message()}}}}
+	}
+	return d.fitVersion(&wire.View{
 		Title:        "Agent 对话",
+		Fallback:     d.sessionsFallbackSummary(m, p.Query),
 		State:        ext.EncodeState(p),
 		RefreshAfter: d.refreshAfter(),
 		Search:       &wire.Search{Placeholder: coldSearchHint, Value: clipQuery(p.Query), Action: wire.Action{ID: "search"}},
 		Filter:       &wire.Filter{Name: "machine", Title: "机器", Choices: choices, Value: value, Action: wire.Action{ID: "machine"}},
-		Sections:     append(sandboxSection(), d.coldSections(m, p.Query, deep)...),
-	}
+		Sections:     append(lead, d.coldSections(m, p.Query, deep)...),
+	})
 }
 
 func (a *app) actionSessions(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, error) {

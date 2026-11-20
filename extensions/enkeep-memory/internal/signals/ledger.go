@@ -3,6 +3,7 @@ package signals
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"regexp"
@@ -96,6 +97,11 @@ func (l *ledger) run(ctx context.Context, g *gathered, res *Result) error {
 		if l.o.Workers <= 1 {
 			verdicts, err = l.judge(ctx, cat, batch)
 		}
+		if errors.Is(err, model.ErrPaused) {
+			// The hub held the model past the call's wait: the day's signals stop here and the day stays open; what
+			// was kept is kept (a correction is kept once, by its id) and the rest is judged on the next pass.
+			return err
+		}
 		if err != nil {
 			l.o.logf("signals: correction judge: %v", err)
 			continue
@@ -112,7 +118,8 @@ func (l *ledger) run(ctx context.Context, g *gathered, res *Result) error {
 		}
 	}
 	if res.Corrections > 0 {
-		if err := l.groupIssues(ctx); err != nil {
+		// Held (model_paused): the grouping is upkeep over every open issue, made again with the next correction.
+		if err := l.groupIssues(ctx); err != nil && !errors.Is(err, model.ErrPaused) {
 			l.o.logf("signals: issue grouping: %v", err)
 		}
 	}

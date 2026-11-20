@@ -80,6 +80,31 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+// maxViewPullRequests keeps the accumulated list within the SDK's component limit.
+const maxViewPullRequests = 250
+
+// collectPullRequests reads pages from start 0 through start so that Load more extends the list instead of
+// replacing it, and reports whether Bitbucket has more pull requests that the cap still leaves room to show.
+func (a *app) collectPullRequests(ctx context.Context, project, repo string, start int) ([]pullRequest, bool, error) {
+	var out []pullRequest
+	more := false
+	for pos := 0; pos <= start && len(out) < maxViewPullRequests; pos += 50 {
+		page, err := a.client.pullRequests(ctx, project, repo, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, page.Values...)
+		more = !page.IsLastPage && page.NextPageStart != nil
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewPullRequests {
+		out = out[:maxViewPullRequests]
+	}
+	return out, more && len(out) < maxViewPullRequests, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" {
@@ -100,14 +125,14 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		}
 		return detailView(r, st, item, activities), nil
 	}
-	page, err := a.client.pullRequests(ctx, st.Project, st.Repo, st.Start)
+	items, more, err := a.collectPullRequests(ctx, st.Project, st.Repo, st.Start)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
 	v := &wire.View{Title: t.reviews, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}}
-	section := wire.Section{Title: fmt.Sprintf(t.results, len(page.Values))}
-	for _, item := range page.Values {
+	section := wire.Section{Title: fmt.Sprintf(t.results, len(items))}
+	for _, item := range items {
 		if st.Query != "" && !strings.Contains(strings.ToLower(item.Title), strings.ToLower(st.Query)) {
 			continue
 		}
@@ -116,7 +141,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noPRs})
 	}
-	if !page.IsLastPage && page.NextPageStart != nil {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section}

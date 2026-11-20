@@ -16,7 +16,7 @@ export function Root(options: RootOptions): Node {
   return page({ ...options, state, loaded: result?.service === options.service && result.identity === identity ? result.loaded : { kind: "loading" },
     action: (id, next, title) => {
       if (next && (options.uiVersion ?? 0) >= 3) {
-        const push = { ui: "discover", state: encodeState(next), ...(title ? { title } : {}) };
+        const push = { ui: "podcasts", state: encodeState(next), ...(title ? { title } : {}) };
         return callback(() => ({ push }), { push });
       }
       return callback(async values => {

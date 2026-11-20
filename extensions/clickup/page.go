@@ -116,6 +116,31 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const (
+	taskBatch    = 100 // tasks per ClickUp page
+	maxViewTasks = 250 // keeps the accumulated list within the SDK's component limit
+)
+
+// collectTasks reads pages 0 through page so that Load more extends the list instead of replacing it. It reads
+// whole pages only, so it stops before a page that would push the list past the cap, and it reports whether
+// ClickUp has more tasks that the cap still leaves room to show.
+func (a *app) collectTasks(ctx context.Context, teamID string, userID int64, page int) ([]task, bool, error) {
+	var out []task
+	more := false
+	for p := 0; p <= page && len(out)+taskBatch <= maxViewTasks; p++ {
+		batch, err := a.client.tasks(ctx, teamID, userID, p)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Tasks...)
+		more = !batch.Last && len(batch.Tasks) == taskBatch
+		if !more {
+			break
+		}
+	}
+	return out, more && len(out)+taskBatch <= maxViewTasks, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.token == "" {
@@ -175,13 +200,13 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			a.record(err)
 			return nil, err
 		}
-		page, err := a.client.tasks(ctx, st.TeamID, me.ID, st.Page)
+		tasks, more, err := a.collectTasks(ctx, st.TeamID, me.ID, st.Page)
 		a.record(err)
 		if err != nil {
 			return nil, err
 		}
 		section := wire.Section{Title: t.tasks}
-		for _, item := range page.Tasks {
+		for _, item := range tasks {
 			if item.ID == "" || item.Name == "" {
 				continue
 			}
@@ -190,7 +215,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noTasks})
 		}
-		if !page.Last && len(page.Tasks) == 100 {
+		if more {
 			section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 		}
 		v := &wire.View{Title: clipText(st.TeamName, 1800), State: ext.EncodeState(st), Sections: []wire.Section{section, {Title: t.tasks, Items: []wire.Component{

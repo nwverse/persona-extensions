@@ -19,12 +19,18 @@ import (
 // readings, then the exits compiled from every entry (internal/export, P6). The weekly pass picks the ledger's spot
 // check. Both run with the store's lock held and never on a dry run.
 
-func (c *Curator) afterDaily(ctx context.Context, m model.Model, day string, run *store.Run, dry bool) {
+// afterDaily returns an error only when the hub held the model (model.ErrPaused) past a call's wait: the day's signals or
+// exits wait for the next pass, which runs the day again (what was kept is not asked again).
+func (c *Curator) afterDaily(ctx context.Context, m model.Model, day string, run *store.Run, dry bool) error {
 	if dry {
-		return
+		return nil
 	}
 	res, err := signals.Run(ctx, c.St.S, day, signals.Options{Hub: c.Hub, Model: m, Tier: tier(c.Cfg.DailyTier),
 		Lang: c.language(), Loc: c.Loc, Now: c.now, Dir: c.St.Dir, Observe: c.Observe, Run: run.ID, Logf: c.logf, Workers: c.Workers})
+	if errors.Is(err, model.ErrPaused) {
+		run.Notes = append(run.Notes, "纠正台账和不顺信号：模型等闸，闸开后这一天接着跑")
+		return err
+	}
 	if err != nil {
 		c.logf("signals %s: %v", day, err)
 		run.Notes = append(run.Notes, "纠正台账和不顺信号没跑完："+err.Error())
@@ -42,7 +48,7 @@ func (c *Curator) afterDaily(ctx context.Context, m model.Model, day string, run
 		}
 	}
 	c.readings(ctx, day, run)
-	c.compileExits(ctx, m, run)
+	return c.compileExits(ctx, m, run)
 }
 
 // readings computes the period's readings (internal/readings) with the cards of the two weeks, and opens or closes
@@ -74,13 +80,18 @@ func (c *Curator) readings(ctx context.Context, day string, run *store.Run) {
 }
 
 // compileExits writes the exits from every entry (nothing to the assistant while the first-run replay goes on).
-func (c *Curator) compileExits(ctx context.Context, m model.Model, run *store.Run) {
+// It returns the error only when the hub held the model (model.ErrPaused): the exits stay as they were.
+func (c *Curator) compileExits(ctx context.Context, m model.Model, run *store.Run) error {
 	rep, err := export.Compile(ctx, c.St.S, export.Options{Dir: c.St.Dir, Model: m, Tier: tier(c.Cfg.DailyTier), Lang: c.language(),
 		Loc: c.Loc, Now: c.now, Hub: c.Hub, Run: run.ID, Event: func(ev entry.Event) { c.event(ev) }, Logf: c.logf})
+	if errors.Is(err, model.ErrPaused) {
+		run.Notes = append(run.Notes, "出口：模型等闸，这次沿用上一版，闸开后再写")
+		return err
+	}
 	if err != nil {
 		c.logf("exits %s: %v", run.Period, err)
 		run.Notes = append(run.Notes, "出口没写完："+err.Error())
-		return
+		return nil
 	}
 	if rep.Backfill {
 		run.Notes = append(run.Notes, "首次回放还没完成：出口先不写给助手")
@@ -101,6 +112,7 @@ func (c *Curator) compileExits(ctx context.Context, m model.Model, run *store.Ru
 	for _, w := range c.St.S.Exits.Warnings {
 		run.Notes = append(run.Notes, "出口告警："+w)
 	}
+	return nil
 }
 
 func (c *Curator) afterWeekly(week string, days []string, run *store.Run, dry bool) {

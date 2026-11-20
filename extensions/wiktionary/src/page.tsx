@@ -40,7 +40,7 @@ export async function loadPage(service: Wiktionary, state: PageState, refresh: b
 export interface PageProps { service: Wiktionary; state: PageState; loaded: Loaded; locale?: string; tz?: string; uiVersion?: number; action?: (id: string, next?: PageState, title?: string) => NativeAction | CallbackAction }
 export function page(props: PageProps): Node {
   const { service, state, loaded, uiVersion = 0 } = props, t = textsFor(props.locale ?? service.locale), tz = props.tz ?? "Local";
-  const act = (id: string, next?: PageState, title?: string) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "lookup", state: encodeState(next), ...(title ? { title } : {}) } } : { id });
+  const act = (id: string, next?: PageState, title?: string) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "wiktionary", state: encodeState(next), ...(title ? { title } : {}) } } : { id });
   const text = (key: string, value: string, style: "body" | "caption" | "secondary" = "secondary") => <Text key={key} text={clip(value, 4000)} style={style} />;
   const search = <Section key="dictionary-search" title={t.lookup}><Field key="dictionary-word" name="word" label={t.lookup} kind="text" placeholder={t.searchHint} value={state.q} /><Button key="dictionary-submit" title={t.searchAction} action={act("lookup")} /></Section>;
   const home = <Section key="dictionary-home"><Button key="dictionary-home-button" title={t.back} action={act("home")} /></Section>;

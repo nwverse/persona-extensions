@@ -84,6 +84,31 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const maxViewRecords = 250
+
+// collectIssues reads the batches from the start through the one at offset so that Load more answers the whole list,
+// longer. It stops at maxViewRecords to keep the view within the SDK's component limit, and reports whether another
+// batch can be loaded.
+func (a *app) collectIssues(ctx context.Context, offset int) ([]issue, bool, error) {
+	var out []issue
+	more := false
+	for pos := 0; pos <= offset && len(out) < maxViewRecords; pos += 50 {
+		page, err := a.client.issues(ctx, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, page.Issues...)
+		more = page.Offset+len(page.Issues) < page.TotalCount
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewRecords {
+		out = out[:maxViewRecords]
+	}
+	return out, more && len(out) < maxViewRecords, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -121,13 +146,13 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Mode != "" {
 		return nil, errors.New("invalid issue view")
 	}
-	page, err := a.client.issues(ctx, st.Offset)
+	issues, more, err := a.collectIssues(ctx, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
 	section := wire.Section{Title: t.issues}
-	for _, item := range page.Issues {
+	for _, item := range issues {
 		if item.ID <= 0 || item.Subject == "" {
 			continue
 		}
@@ -136,7 +161,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noIssues})
 	}
-	if page.Offset+len(page.Issues) < page.TotalCount {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v := &wire.View{Title: t.issues, State: ext.EncodeState(st), Sections: []wire.Section{section, {Title: t.issues, Items: []wire.Component{

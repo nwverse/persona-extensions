@@ -11,16 +11,17 @@ import (
 )
 
 type pageState struct {
-	Mode      string `json:"m,omitempty"`
-	TeamID    string `json:"t,omitempty"`
-	ChannelID string `json:"c,omitempty"`
-	Before    string `json:"b,omitempty"`
-	Page      int    `json:"p,omitempty"`
+	Mode      string   `json:"m,omitempty"`
+	TeamID    string   `json:"t,omitempty"`
+	ChannelID string   `json:"c,omitempty"`
+	Before    string   `json:"b,omitempty"`
+	Pages     []string `json:"g,omitempty"`
+	Page      int      `json:"p,omitempty"`
 }
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Page < 0 || len(st.TeamID) > 64 || len(st.ChannelID) > 64 || len(st.Before) > 64 || len(st.Mode) > 30 {
+	if err := r.DecodeState(&st); err != nil || st.Page < 0 || len(st.TeamID) > 64 || len(st.ChannelID) > 64 || len(st.Before) > 64 || len(st.Pages) >= maxViewPages || len(st.Mode) > 30 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -49,11 +50,12 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if !validID(r.Values["channel_id"]) {
 			return nil, errors.New("invalid channel ID")
 		}
-		st.Mode, st.ChannelID, st.Before, st.Page = "posts", r.Values["channel_id"], "", 0
+		st.Mode, st.ChannelID, st.Before, st.Pages, st.Page = "posts", r.Values["channel_id"], "", nil, 0
 	case "more":
 		if !validID(r.Values["before"]) || r.Values["before"] != st.Before {
 			return nil, errors.New("invalid previous post ID")
 		}
+		st.Pages = append(st.Pages, st.Before)
 	case "back":
 		st.Mode, st.ChannelID, st.Before = "", "", ""
 	default:
@@ -62,6 +64,14 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	v, err := a.page(ctx, r, st)
 	return &wire.ActionResult{View: v}, err
 }
+
+// The messages view shows the batches the view has gone through, the first and then those at the ids in Pages, so that
+// Load more answers the whole list, longer. It stops adding messages at maxViewItems components to keep the view within
+// the SDK's component limit, and holds at most maxViewPages batches to keep the state small.
+const (
+	maxViewItems = 250
+	maxViewPages = 10
+)
 
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
@@ -87,29 +97,41 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		return &wire.View{Title: t.channels, State: ext.EncodeState(st), Sections: []wire.Section{section, {Items: []wire.Component{{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}}}}}}, nil
 	}
 	if st.Mode == "posts" {
-		page, err := a.client.posts(ctx, st.ChannelID, st.Before, st.Page)
-		a.record(err)
-		if err != nil {
-			return nil, err
-		}
 		users := map[string]user{}
 		section := wire.Section{Title: t.messages}
-		for _, id := range page.Order {
-			post, ok := page.Posts[id]
-			if !ok || post.DeleteAt != 0 {
-				continue
-			}
-			author, err := a.postAuthor(ctx, users, post.UserID)
+		prev, full := "", false
+		for _, before := range append([]string{""}, st.Pages...) {
+			page, err := a.client.posts(ctx, st.ChannelID, before, st.Page)
+			a.record(err)
 			if err != nil {
 				return nil, err
 			}
-			section.Items = append(section.Items, textComponents(clipText(author+": "+post.Message, 10000))...)
+			for _, id := range page.Order {
+				post, ok := page.Posts[id]
+				if !ok || post.DeleteAt != 0 {
+					continue
+				}
+				author, err := a.postAuthor(ctx, users, post.UserID)
+				if err != nil {
+					return nil, err
+				}
+				text := textComponents(clipText(author+": "+post.Message, 10000))
+				if len(section.Items)+len(text) > maxViewItems {
+					full = true
+					break
+				}
+				section.Items = append(section.Items, text...)
+			}
+			if full {
+				break
+			}
+			prev = page.PrevPostID
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noMessages})
 		}
-		if page.PrevPostID != "" {
-			st.Before = page.PrevPostID
+		if prev != "" && !full && len(st.Pages)+1 < maxViewPages {
+			st.Before = prev
 			section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"before": st.Before}}}
 		}
 		return &wire.View{Title: t.messages, State: ext.EncodeState(st), Sections: []wire.Section{section, {Items: []wire.Component{{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}}}}}}, nil

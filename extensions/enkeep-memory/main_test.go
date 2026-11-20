@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -134,6 +135,19 @@ func TestManifestDefaults(t *testing.T) {
 	}
 	if d := m.Configuration.Properties["mode"].Default; d != "auto" {
 		t.Errorf("mode default %v", d)
+	}
+	// The model route's defaults (docs/model-routes.md) are the curator's.
+	d := curate.Defaults()
+	want := map[string]any{"model_route": d.ModelRoute, "model_primary": []any{}, "model_long": d.ModelLong,
+		"model_short": d.ModelShort, "model_long_above": float64(d.ModelLongAbove),
+		"model_timeout": float64(d.ModelTimeout)}
+	if len(d.ModelPrimary) != 0 {
+		t.Errorf("model_primary default %v", d.ModelPrimary)
+	}
+	for k, v := range want {
+		if got := m.Configuration.Properties[k].Default; !reflect.DeepEqual(got, v) {
+			t.Errorf("%s default %#v, the curator's %#v", k, got, v)
+		}
 	}
 }
 

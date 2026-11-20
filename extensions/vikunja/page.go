@@ -109,6 +109,30 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const maxViewRecords = 250
+
+// collectTasks reads page 1 through the current page so that Load more answers the whole list, longer. It stops at
+// maxViewRecords to keep the view within the SDK's component limit, and reports whether another page can be loaded.
+func (a *app) collectTasks(ctx context.Context, username, query string, current int) ([]task, bool, error) {
+	var out []task
+	more := false
+	for page := 1; page <= current && len(out) < maxViewRecords; page++ {
+		batch, err := a.client.tasks(ctx, username, query, page)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Items...)
+		more = batch.HasMore
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewRecords {
+		out = out[:maxViewRecords]
+	}
+	return out, more && len(out) < maxViewRecords, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -154,14 +178,14 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Page == 0 {
 		st.Page = 1
 	}
-	page, err := a.client.tasks(ctx, me.Username, st.Query, st.Page)
+	tasks, more, err := a.collectTasks(ctx, me.Username, st.Query, st.Page)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
 	v := &wire.View{Title: t.tasks, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}}
 	section := wire.Section{Title: t.tasks}
-	for _, item := range page.Items {
+	for _, item := range tasks {
 		if item.ID <= 0 || item.Title == "" {
 			continue
 		}
@@ -170,8 +194,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noTasks})
 	}
-	if page.HasMore {
-		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"page": fmt.Sprint(page.NextPage)}}}
+	if more {
+		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"page": fmt.Sprint(st.Page + 1)}}}
 	}
 	v.Sections = []wire.Section{section, {Items: []wire.Component{{Type: wire.ComponentButton, Title: t.create, Action: &wire.Action{ID: "projects", Push: &wire.Push{Title: t.projects, State: ext.EncodeState(pageState{Mode: "projects"})}}}}}}
 	return v, nil

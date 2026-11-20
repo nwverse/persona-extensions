@@ -41,7 +41,8 @@ type app struct {
 	hubLoc    *time.Location
 	rt        string // the assistant's runtime, cached (page_v4.go)
 	rtAt      time.Time
-	exitDir   string // where the exit files are when not in the store's directory (the page subcommand)
+	exitDir   string       // where the exit files are when not in the store's directory (the page subcommand)
+	route     *model.Route // the model route; nil: every call on the purpose's model (model_route "purpose")
 }
 
 func newApp() *app { return &app{} }
@@ -95,7 +96,15 @@ func (a *app) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]
 		more.Logf = withConversations.Logf
 		src, collect = more, more
 	}
-	a.c = &curate.Curator{Src: src, Model: model.Hub{H: hub, Extension: info.ID}, St: st, Cfg: cfg, Loc: loc,
+	// The model route (docs/model-routes.md): each call names its model and falls back by length; its counts are kept
+	// in model-routes.json beside the state and shown by enkeep_rerun_status.
+	route := cfg.Route()
+	if route != nil {
+		route.Stats = model.OpenStats(dir, time.Now())
+		route.Logf = func(f string, args ...any) { log.Printf(f, args...) }
+		a.route = route
+	}
+	a.c = &curate.Curator{Src: src, Model: model.Hub{H: hub, Extension: info.ID, Route: route}, St: st, Cfg: cfg, Loc: loc,
 		Lang: in.Hub.Locale, Extension: info.ID, Logf: func(f string, args ...any) { log.Printf(f, args...) }, Live: &curate.Live{},
 		Collect: collect, Hub: a.hubAPI, Cards: curate.PeopleCards{}}
 	st.Lock() // nothing runs yet: the health page's first snapshot
@@ -179,6 +188,16 @@ func (a *app) tick(ctx context.Context) {
 		if day >= today {
 			days = days[:i]
 			break
+		}
+	}
+	// Days queued with force (enkeep_rerun force) run first, although they carry the current prompt's marker.
+	c.St.Lock()
+	forced := slices.Clone(c.St.S.ForceReruns)
+	c.St.Unlock()
+	for _, day := range forced {
+		if day < today && !a.attempted(day) {
+			a.start(ctx, "daily", day)
+			return
 		}
 	}
 	for _, day := range days {
@@ -386,6 +405,8 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 				if key := period + "@" + schema.DailyPrompt; !slices.Contains(a.c.St.S.Reruns, key) {
 					a.c.St.S.Reruns = append(a.c.St.S.Reruns, key)
 				}
+				// A day queued with force is done once its daily run completes.
+				a.c.St.S.ForceReruns = slices.DeleteFunc(a.c.St.S.ForceReruns, func(d string) bool { return d == period })
 				err = a.c.St.Save()
 				a.c.St.Unlock()
 			}
@@ -402,6 +423,12 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 		a.lastErr = ""
 		if errors.Is(err, curate.ErrModelDown) {
 			a.paused = append(a.paused, triedKey(kind, period)) // tried again after the pause, not only at the next start
+		}
+		if errors.Is(err, model.ErrPaused) {
+			// The hub held the model's connection (busy or quota): the day waits for the hold to let go and runs
+			// again; not a failed run (the page says it waits, State.ModelPause).
+			log.Printf("enkeep-memory %s %s: waits for the hub's hold: %v", kind, period, err)
+			err = nil
 		}
 		if err != nil {
 			a.lastErr = kind + " " + period + "：" + err.Error()

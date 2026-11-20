@@ -63,6 +63,7 @@ type compiler struct {
 	rep   *Report
 	never []string
 	fw    words
+	held  error // the hub held the model (model.ErrPaused): nothing is written this time
 }
 
 func (c *compiler) now() time.Time {
@@ -105,6 +106,12 @@ func Compile(ctx context.Context, st *store.State, o Options) (*Report, error) {
 	c.never = c.neverLines()
 	p := c.plan()
 	texts := c.texts(ctx, p.wants)
+	if c.held != nil {
+		// The hub held the model's connection past the call's wait (model_paused): the files stay as the last
+		// compile wrote them, rather than go out with the lines that could not be rewritten left out; the rewrites
+		// already made are kept on their entries and reused next time (0.2.0-beta.34).
+		return c.rep, c.held
+	}
 	files := c.render(p, texts)
 	if err := c.write(files); err != nil {
 		return c.rep, err

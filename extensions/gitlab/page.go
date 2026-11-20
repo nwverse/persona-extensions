@@ -138,7 +138,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Page < 1 {
 		st.Page = 1
 	}
-	page, err := a.client.mergeRequests(ctx, st.Scope, st.Query, st.Page)
+	items, more, err := a.collectMergeRequests(ctx, st.Scope, st.Query, st.Page)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -147,8 +147,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		Name: "view", Title: t.open, Value: st.Scope, Action: wire.Action{ID: "scope"},
 		Choices: []wire.Choice{{Value: "assigned_to_me", Title: t.assigned}, {Value: "reviews_for_me", Title: t.review}},
 	}}
-	section := wire.Section{Title: fmt.Sprintf(t.results, len(page.Items))}
-	for _, item := range page.Items {
+	section := wire.Section{Title: fmt.Sprintf(t.results, len(items))}
+	for _, item := range items {
 		if item.ProjectID <= 0 || item.IID <= 0 {
 			continue
 		}
@@ -157,11 +157,36 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noMRs})
 	}
-	if page.Next != "" {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section}
 	return v, nil
+}
+
+// maxViewMergeRequests keeps the accumulated list within the SDK's component limit.
+const maxViewMergeRequests = 250
+
+// collectMergeRequests reads pages 1 through page so that Load more extends the list instead of replacing it,
+// and reports whether GitLab has more merge requests that the cap still leaves room to show.
+func (a *app) collectMergeRequests(ctx context.Context, scope, query string, page int) ([]mergeRequest, bool, error) {
+	var out []mergeRequest
+	more := false
+	for p := 1; p <= page && len(out) < maxViewMergeRequests; p++ {
+		batch, err := a.client.mergeRequests(ctx, scope, query, p)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Items...)
+		more = batch.Next != ""
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewMergeRequests {
+		out = out[:maxViewMergeRequests]
+	}
+	return out, more && len(out) < maxViewMergeRequests, nil
 }
 
 func detailView(r *ext.UIRequest, st pageState, item mergeRequest, notes []note, next ...string) *wire.View {

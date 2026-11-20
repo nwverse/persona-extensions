@@ -27,7 +27,7 @@ export function createProgram(fetch: FetchAdapter = (input, init) => globalThis.
       if (!store) await listening.load();
     },
     namespaces: { connector: connector(() => current().service) },
-    ui: { discover: componentPage(req => root({ service: current().service, store: current().store, state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) },
+    ui: { podcasts: componentPage(req => root({ service: current().service, store: current().store, state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) },
   };
 }
 export default createProgram();

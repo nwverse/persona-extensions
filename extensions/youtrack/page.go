@@ -83,6 +83,31 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const maxViewRecords = 250
+
+// collectIssues reads the batches from the start through the one at skip so that Load more answers the whole list,
+// longer. It stops at maxViewRecords to keep the view within the SDK's component limit, and reports whether another
+// batch can be loaded.
+func (a *app) collectIssues(ctx context.Context, skip int) ([]issue, bool, error) {
+	var out []issue
+	last := 0
+	for pos := 0; pos <= skip && len(out) < maxViewRecords; pos += 50 {
+		batch, err := a.client.issues(ctx, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		last = len(batch)
+		out = append(out, batch...)
+		if last < 50 {
+			break
+		}
+	}
+	if len(out) > maxViewRecords {
+		out = out[:maxViewRecords]
+	}
+	return out, last == 50 && len(out) < maxViewRecords, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -124,7 +149,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Mode != "" {
 		return nil, errors.New("invalid issue view")
 	}
-	items, err := a.client.issues(ctx, st.Skip)
+	items, more, err := a.collectIssues(ctx, st.Skip)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -139,7 +164,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noIssues})
 	}
-	if len(items) == 50 {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v := &wire.View{Title: t.issues, State: ext.EncodeState(st), Sections: []wire.Section{section, {Title: t.issues, Items: []wire.Component{

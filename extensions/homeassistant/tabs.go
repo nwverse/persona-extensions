@@ -13,7 +13,8 @@ import (
 // Room tabs and the scenes row (#634): a small home (at most roomTabsMost rooms with devices, Home Assistant's own
 // areas, UI version 6) has its rooms as tabs on top, between 全屋 and 动态 / 自动化, as a home app has them; a room's
 // tab is the room's page without a breadcrumb (the tabs are the way back), and the area filter goes (the tabs are it).
-// 全屋 and each room start with a row of scenes: 全关 when something is on, then Home Assistant's scenes and scripts.
+// 全屋 and each room start with a row of scenes: 全关 when something is on, then Home Assistant's scenes and scripts;
+// 全屋's starts with the user's own shortcuts and ends with 新建, which makes one (shortcuts.go, #639).
 
 const (
 	roomTabsMost = 5 // 全屋 + rooms + 动态 + 自动化 within a tab bar's 8
@@ -110,6 +111,14 @@ func (a *app) scenesRow(hm *home, reg *Registry, ar *Area) (wire.Component, bool
 	if ar != nil {
 		where, id = ar.Name, ar.ID
 	}
+	// the user's own shortcuts first (shortcuts.go), on 全屋
+	mine := map[string]bool{}
+	if ar == nil {
+		tiles = append(tiles, a.shortcutTiles(hm)...)
+		for _, sc := range hm.Shortcuts {
+			mine[sc.entity()] = true
+		}
+	}
 	if on := a.offTargets(hm, reg, ar); len(on) > 0 {
 		tiles = append(tiles, wire.Tile{Key: "alloff", Title: "全关", Subtitle: fmt.Sprintf("%d 个开着", len(on)), Icon: "power", Color: "gray",
 			Action: &wire.Action{ID: "alloff", Values: map[string]string{"area": id},
@@ -126,7 +135,8 @@ func (a *app) scenesRow(hm *home, reg *Registry, ar *Area) (wire.Component, bool
 	}
 	for _, s := range ids {
 		d := s.Domain()
-		if (d != "scene" && d != "script") || !hm.visible(s.EntityID) || regHidden(reg, s.EntityID) || offline(s) || len(tiles) == scenesMost {
+		if (d != "scene" && d != "script") || mine[s.EntityID] || !hm.visible(s.EntityID) || regHidden(reg, s.EntityID) || offline(s) ||
+			len(tiles) == scenesMost {
 			continue
 		}
 		row := a.autoRow(s, a.loc())
@@ -136,6 +146,9 @@ func (a *app) scenesRow(hm *home, reg *Registry, ar *Area) (wire.Component, bool
 			t.Action = openAction(s.EntityID)
 		}
 		tiles = append(tiles, t)
+	}
+	if ar == nil && a.canMakeShortcuts(hm) {
+		tiles = append(tiles[:min(len(tiles), scenesMost-1)], newShortcutTile())
 	}
 	if len(tiles) == 0 {
 		return wire.Component{}, false

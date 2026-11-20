@@ -47,6 +47,7 @@ type pageState struct {
 	All     bool   `json:"qa,omitempty"` // 家 lists every device, not only those on and the first few
 	Rooms   bool   `json:"r,omitempty"`  // 家 lists the quiet areas one by one
 	Lost    bool   `json:"lo,omitempty"` // 家 lists the devices offline one by one
+	SC      string `json:"sc,omitempty"` // a shortcut's form (shortcuts.go): its script's key, new or not
 }
 
 const (
@@ -84,6 +85,9 @@ func (st *pageState) clean() {
 	st.Q = clip(strings.TrimSpace(st.Q), 40)
 	if !entityRE.MatchString(st.Entity) {
 		st.Entity = ""
+	}
+	if !shortcutKeyRE.MatchString(st.SC) {
+		st.SC = ""
 	}
 }
 
@@ -184,6 +188,8 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			toast = msg
 		}
 		fresh = 0
+	case "sc": // a shortcut (shortcuts.go): run, save (the form, submitted) or delete
+		return a.shortcutAction(ctx, r, st, arg)
 	case "do": // a row's own call: a light or a switch on or off, a script or a scene run
 		eid, svc, _ := strings.Cut(arg, "|")
 		if arg == "" { // an entity id too long for the action's id (rowDo)
@@ -382,6 +388,11 @@ func (a *app) tap(ctx context.Context, eid, kind, arg string, values map[string]
 }
 
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh time.Duration) *wire.View {
+	return a.pageWith(ctx, r, st, fresh, nil)
+}
+
+// pageWith is page with a shortcut's form showing draft (a save that was refused) instead of the shortcut's own.
+func (a *app) pageWith(ctx context.Context, r *ext.UIRequest, st pageState, fresh time.Duration, draft *shortcutDraft) *wire.View {
 	v := &wire.View{Title: "家", RefreshAfter: refreshList}
 	hm, err := a.home(ctx, fresh)
 	if err != nil {
@@ -396,6 +407,14 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh ti
 	}
 	reg := a.pageRegistry(ctx)
 	hm = hm.named(reg)
+	if st.SC != "" {
+		a.shortcutPage(ctx, hm, reg, st, draft, v)
+		v.State = ext.EncodeState(st)
+		return v
+	}
+	if r.UIVersion >= 6 && st.Entity == "" && st.Tab == "" && st.Area == "" && st.Q == "" {
+		hm.Shortcuts = a.shortcuts(ctx, hm)
+	}
 	rooms := roomTabs(r, hm, reg)
 	tabbed := st.Area != "" && slices.ContainsFunc(rooms, func(ar *Area) bool { return ar.ID == st.Area })
 	if st.Entity == "" {

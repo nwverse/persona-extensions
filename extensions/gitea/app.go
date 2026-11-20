@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "gitea"
-const pageUI = "reviews"
+const pageUI = "gitea"
 
 type app struct {
 	mu       sync.RWMutex

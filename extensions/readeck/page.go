@@ -129,6 +129,34 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const maxViewRecords = 250
+
+// collectBookmarks reads the batches from the start through the one at offset, following Readeck's next links, so that
+// Load more answers the whole list, longer. It stops at maxViewRecords to keep the view within the SDK's component
+// limit, and HasMore (with NextPage) reports whether another batch can be loaded.
+func (a *app) collectBookmarks(ctx context.Context, view, query string, offset int) (bookmarkPage, error) {
+	var out bookmarkPage
+	for pos := 0; len(out.Items) < maxViewRecords; {
+		batch, err := a.client.bookmarks(ctx, view, query, pos)
+		if err != nil {
+			return bookmarkPage{}, err
+		}
+		out.Items = append(out.Items, batch.Items...)
+		out.Total, out.HasMore, out.NextPage = batch.Total, batch.HasMore, batch.NextPage
+		if !batch.HasMore || pos >= offset {
+			break
+		}
+		pos = batch.NextPage
+	}
+	if len(out.Items) > maxViewRecords {
+		out.Items = out.Items[:maxViewRecords]
+	}
+	if len(out.Items) >= maxViewRecords {
+		out.HasMore = false
+	}
+	return out, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -166,7 +194,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.View == "" {
 		st.View = "unread"
 	}
-	page, err := a.client.bookmarks(ctx, st.View, st.Query, st.Offset)
+	page, err := a.collectBookmarks(ctx, st.View, st.Query, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err

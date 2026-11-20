@@ -15,7 +15,7 @@ import (
 )
 
 const connectorID = "jira"
-const pageUI = "issues"
+const pageUI = "jira"
 
 type app struct {
 	mu       sync.RWMutex

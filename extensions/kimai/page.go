@@ -174,7 +174,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Page == 0 {
 		st.Page = 1
 	}
-	items, err := a.client.timesheets(ctx, view, st.Page)
+	items, more, err := a.collectTimesheets(ctx, view, st.Page)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -193,11 +193,41 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noEntries})
 	}
-	if view == "timesheets" && len(items) == 30 {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"page": fmt.Sprint(st.Page + 1)}}}
 	}
 	v.Sections = []wire.Section{section, {Items: []wire.Component{{Type: wire.ComponentButton, Title: t.create, Action: &wire.Action{ID: "projects", Push: &wire.Push{Title: t.projects, State: ext.EncodeState(pageState{Mode: "projects"})}}}}}}
 	return v, nil
+}
+
+// maxViewRecords is half the SDK's component limit: an entry renders two text lines.
+const maxViewRecords = 125
+
+// collectTimesheets reads the history from page 1 through the current page so that Load more answers the whole list,
+// longer. It stops at maxViewRecords to keep the view within the SDK's component limit, and reports whether another
+// page can be loaded. The recent and active lists are a single read.
+func (a *app) collectTimesheets(ctx context.Context, view string, current int) ([]timesheet, bool, error) {
+	if view != "timesheets" {
+		items, err := a.client.timesheets(ctx, view, current)
+		return items, false, err
+	}
+	var out []timesheet
+	last := 0
+	for page := 1; page <= current && len(out) < maxViewRecords; page++ {
+		batch, err := a.client.timesheets(ctx, view, page)
+		if err != nil {
+			return nil, false, err
+		}
+		last = len(batch)
+		out = append(out, batch...)
+		if last < 30 {
+			break
+		}
+	}
+	if len(out) > maxViewRecords {
+		out = out[:maxViewRecords]
+	}
+	return out, last == 30 && len(out) < maxViewRecords, nil
 }
 
 func activeView(r *ext.UIRequest, st pageState, items []timesheet) *wire.View {

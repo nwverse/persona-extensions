@@ -47,6 +47,29 @@ type Config struct {
 	BackfillDays          int      `json:"backfill_days"`            // the first-run replay's reach in days (4.1); 0: none
 	RerunRange            string   `json:"rerun_range"`              // "YYYY-MM-DD..YYYY-MM-DD": days to digest again with the current daily prompt, once each
 	StaleDays             int      `json:"stale_days"`               // 30
+
+	// The model route (0.2.0-beta.30, docs/model-routes.md): "chain" tries ModelPrimary in order, then ModelLong for
+	// a call estimated above ModelLongAbove tokens (input and room for the answer), else ModelShort; "purpose" is the
+	// behaviour before: every call on the model of the extension's purpose in the hub's model settings.
+	ModelRoute     string   `json:"model_route"`      // chain
+	ModelPrimary   []string `json:"model_primary"`    // none: set it to the connection's fast model
+	ModelLong      string   `json:"model_long"`       // claude-sonnet-5-5
+	ModelShort     string   `json:"model_short"`      // claude-haiku-5-5
+	ModelLongAbove int      `json:"model_long_above"` // 16000
+	ModelTimeout   int      `json:"model_timeout"`    // 180 seconds each candidate may take
+}
+
+// Route is the model route the settings ask for; nil: every call on the purpose's model.
+func (c Config) Route() *model.Route {
+	if c.ModelRoute == "purpose" {
+		return nil
+	}
+	rt := &model.Route{Primary: c.ModelPrimary, Long: c.ModelLong, Short: c.ModelShort, LongAbove: c.ModelLongAbove,
+		Timeout: c.ModelTimeout}
+	if !rt.Enabled() {
+		return nil
+	}
+	return rt
 }
 
 // Defaults are the settings when nothing is set.
@@ -56,6 +79,8 @@ func Defaults() Config {
 		DailyTier: "small", WeeklyTier: "medium",
 		ActivityDays: 3, Tiers: true, EngagedDays: 30, NoiseMembers: 200, MentionWindow: 15, AdmitAllBelowTokens: 20000, AIMinRelevance: 60,
 		Graph: true, BackfillDays: DefaultBackfillDays, AutoApplyMinPrecision: 0.95, ProposalExpiryDays: 14, StaleDays: 30,
+		ModelRoute: "chain", ModelLong: "claude-sonnet-5-5",
+		ModelShort: "claude-haiku-5-5", ModelLongAbove: 16000, ModelTimeout: 180,
 	}
 }
 

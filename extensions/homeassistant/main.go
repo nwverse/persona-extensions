@@ -67,6 +67,7 @@ type app struct {
 	tz       *time.Location
 	dataDir  string
 	hub      *hubAPI
+	rpc      invalidator // the hub's connection: ui.invalidate (nil in tests)
 	watch    *watcher
 	// actions.do runs each request id once. In-flight calls stay pinned in running; only completed successful
 	// answers occupy the bounded done LRU.
@@ -105,7 +106,12 @@ func (a *app) program() ext.Program {
 		UI:         map[string]ext.Page{pageUI: {Render: a.render, Action: a.action}}}
 }
 
-func (a *app) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
+// invalidator asks the apps to draw a page again (ext.Hub).
+type invalidator interface {
+	Invalidate(contribution string) error
+}
+
+func (a *app) init(ctx context.Context, in *ext.Init, rpc *ext.Hub) (map[string]any, error) {
 	var cfg Config
 	if err := in.Config(&cfg); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -117,6 +123,9 @@ func (a *app) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]an
 	}
 	a.dataDir = in.Info().DataDir
 	a.hub = &hubAPI{url: in.Hub.URL, token: in.Hub.Token, scopes: in.Hub.Scopes, http: &http.Client{Timeout: 20 * time.Second}}
+	if rpc != nil {
+		a.rpc = rpc
+	}
 	a.mu.Unlock()
 	a.watch.load(a.dataDir)
 	go a.warm(ctx)

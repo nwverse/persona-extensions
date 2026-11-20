@@ -123,7 +123,7 @@ var tools = []tool{
 		required: []string{"host"},
 		props: map[string]any{
 			"id":            str("机器节点 ID（可选，不填由 host 自动生成）"),
-			"host":          str("SSH Host 别名或主机地址（如 armbox、devvm、mini-2、10.0.0.5）"),
+			"host":          str("SSH Host 别名或主机地址（如 armbox、devvm、mini-2、dev.example.com）"),
 			"name":          str("显示名称（如 armbox (ARM VM)）"),
 			"user":          str("SSH 登录用户名（可选，默认读 ~/.ssh/config）"),
 			"port":          map[string]any{"type": "integer", "minimum": 1, "maximum": 65535, "description": "SSH 端口，默认 22"},

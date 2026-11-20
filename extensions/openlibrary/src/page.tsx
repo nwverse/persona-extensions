@@ -67,7 +67,7 @@ export async function loadPage(service: OpenLibrary, state: PageState, refresh: 
 export interface PageProps { service: OpenLibrary; state: PageState; loaded: Loaded; locale?: string; tz?: string; uiVersion?: number; action?: (id: string, next?: PageState, title?: string) => NativeAction | CallbackAction }
 export function page(props: PageProps): Node {
   const { service, state, loaded, uiVersion = 0 } = props, t = textsFor(props.locale ?? service.locale), tz = props.tz ?? "Local";
-  const act = (id: string, next?: PageState, title?: string) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "discover", state: encodeState(next), ...(title ? { title } : {}) } } : { id });
+  const act = (id: string, next?: PageState, title?: string) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "openlibrary", state: encodeState(next), ...(title ? { title } : {}) } } : { id });
   const text = (key: string, value: string, style: "body" | "caption" | "secondary" = "secondary") => <Text key={key} text={clip(value, 8000)} style={style} />;
   const search = <Section key="book-search" title={t.search}><Field key="book-query" name="query" label={t.search} kind="text" placeholder={t.searchHint} value={state.q} /><Button key="book-search-submit" title={t.searchAction} action={act("search")} /></Section>;
   const navigation = <Section key="book-navigation"><Button key="book-back" title={state.q ? t.back : t.backDiscover} action={act("back")} /></Section>;

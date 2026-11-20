@@ -144,7 +144,11 @@ type guard struct {
 
 // newGuard is the guard for a session in cwd.
 func newGuard(cwd string, allowDestructive bool) *guard {
-	return &guard{allowDestructive: allowDestructive, roots: scratchRoots(cwd), cwd: cwd}
+	return newGuardWithWorkspaces(cwd, nil, allowDestructive)
+}
+
+func newGuardWithWorkspaces(cwd string, workspaces []string, allowDestructive bool) *guard {
+	return &guard{allowDestructive: allowDestructive, roots: scratchRootsWithWorkspaces(cwd, workspaces), cwd: cwd}
 }
 
 // personOnly says why cmd must stay with a person ("" when it need not).

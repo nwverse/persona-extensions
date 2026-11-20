@@ -15,7 +15,8 @@ differently because of it, and can be pinned, edited, deleted or marked right or
 reaches the assistant through the hub's data-directory contributions (a per-turn instructions block, skills, agent
 project context and inbox context) and the knowledge base. The extension reads everything through the hub's own
 interfaces (`kb.*`, `assistant.*`, `agents.read`, `todos.read`, `assistant.memory`, `notify`, `model.complete` with
-the model the user picks for it); it depends on no other service.
+the model the user picks for it, or per call a primary model and a fallback by length on a hub that takes it:
+[docs/model-routes.md](docs/model-routes.md)); it depends on no other service.
 
 - [Extension guide and configuration](../../docs/extensions/enkeep-memory.md)
 - [Installation](../../docs/installation.md)

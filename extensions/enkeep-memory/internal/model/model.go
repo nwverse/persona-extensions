@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -32,6 +33,7 @@ type Request struct {
 	User      string          // the input, usually JSON
 	MaxTokens int             //
 	Schema    json.RawMessage // the JSON schema of the answer
+	Timeout   int             // seconds for the whole call; 0: by tier (callTimeout)
 }
 
 // Response is a call's answer and what it cost.
@@ -52,7 +54,8 @@ type Model interface {
 
 // ErrUnavailable: the hub cannot run a model for the extension now: a hub without model.complete (older than
 // nwverse/persona#6102), the permission not granted, nothing set up for the extension's purpose, or the connection
-// held for quota or load. The curator then runs only its deterministic steps; the wrapped message says which.
+// held for quota or load past the call's wait (a *PausedError, which is ErrPaused as well). The curator then runs
+// only its deterministic steps; the wrapped message says which.
 var ErrUnavailable = errors.New("model unavailable to extensions")
 
 // ErrRefused: the model declined this input (the Messages API's stop_reason "refusal", a safety classifier). The
@@ -77,11 +80,24 @@ func refused(msg string) bool {
 
 // Hub calls model.complete on the hub (nwverse/persona#6102, permission "models"). The hub runs it on the
 // extension's own purpose extension.<id> in Settings › Model configuration, which follows the knowledge base's model
-// until the user picks another; the extension never holds a key and does not pick the connection. There is no
-// budget and no cap: each call's usage comes back and is recorded per day and step (Metered).
+// until the user picks another; the extension never holds a key. With a Route, each call hands the hub its chain of
+// candidate models (model.complete's "models"), which the hub tries in order; without one, or on a hub that does not
+// take "models", the call runs on the purpose's model. There is no budget and no cap: each call's usage
+// comes back and is recorded per day and step (Metered).
 type Hub struct {
 	H         *ext.Hub
 	Extension string
+	Route     *Route // nil, or without models: every call on the purpose's model, as before 0.2.0-beta.30
+	// PauseBudget is how long one call waits in all for the hub's holds (model_paused, pause.go); 0:
+	// PauseBudgetDefault.
+	PauseBudget time.Duration
+	// Logf logs the waits; nil: the route's.
+	Logf func(format string, args ...any)
+	// call makes one model.complete and decodes its result into out (tests replace it); nil: H.Call.
+	call func(ctx context.Context, params, out any) error
+	// now and sleep are the clock and the wait (tests replace them); nil: time.Now, a timer that ends with ctx.
+	now   func() time.Time
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // callTimeout bounds one call, the hub's second try for a reply that does not match the schema included.
@@ -92,16 +108,52 @@ func callTimeout(t Tier) int {
 	return 300
 }
 
-func (h Hub) Complete(ctx context.Context, r Request) (Response, error) {
-	out, err := h.H.ModelComplete(ctx, wire.ModelCompleteParams{
+func (h Hub) params(r Request) wire.ModelCompleteParams {
+	return wire.ModelCompleteParams{
 		System: r.System, Messages: []wire.ModelMessage{{Role: wire.ModelRoleUser, Content: r.User}},
-		MaxTokens: r.MaxTokens, JSONSchema: r.Schema, TimeoutSeconds: callTimeout(r.Tier), Label: r.Step,
-	})
+		MaxTokens: r.MaxTokens, JSONSchema: r.Schema, TimeoutSeconds: timeout(r), Label: r.Step,
+	}
+}
+
+func timeout(r Request) int {
+	if r.Timeout > 0 {
+		return r.Timeout
+	}
+	return callTimeout(r.Tier)
+}
+
+func (h Hub) do(ctx context.Context, params, out any) error {
+	if h.call != nil {
+		return h.call(ctx, params, out)
+	}
+	return h.H.Call(ctx, "model.complete", params, out)
+}
+
+// Complete asks for one answer. A call the hub holds (model_paused) waits until the hold lets go and is asked again,
+// within PauseBudget (pause.go); past it the error is a *PausedError.
+func (h Hub) Complete(ctx context.Context, r Request) (Response, error) {
+	return h.waitHeld(ctx, r, h.once)
+}
+
+func (h Hub) once(ctx context.Context, r Request) (Response, error) {
+	if h.Route.Enabled() {
+		return h.Route.complete(ctx, r, h.chained, h.legacy)
+	}
+	return h.legacy(ctx, r)
+}
+
+// legacy is the call on the purpose's model, as before routes.
+func (h Hub) legacy(ctx context.Context, r Request) (Response, error) {
+	var out wire.ModelCompleteResult
+	err := h.do(ctx, h.params(r), &out)
 	var e *ext.Error
 	if errors.As(err, &e) {
+		if p, ok := pausedOf(e.Code, e.Message, e.Data, h.clock()); ok { // held: waited out by Complete
+			return Response{}, p
+		}
 		switch e.Code {
 		case wire.ErrorCodeUnknownMethod, wire.ErrorCodeUnsupported, wire.ErrorCodePermissionDenied,
-			wire.ModelErrorCodeModelUnavailable, wire.ModelErrorCodeModelPaused, wire.ModelErrorCodeAssistantOffline:
+			wire.ModelErrorCodeModelUnavailable, wire.ModelErrorCodeAssistantOffline:
 			return Response{}, fmt.Errorf("%w: %s", ErrUnavailable, e.Message)
 		case wire.ModelErrorCodeModelRefused: // a hub that names a refusal with its own code
 			return Response{}, fmt.Errorf("%w: %s", ErrRefused, e.Message)
@@ -124,13 +176,24 @@ func (h Hub) Complete(ctx context.Context, r Request) (Response, error) {
 	if out.StopReason == "refusal" { // a hub that passes the upstream's stop reason through
 		return Response{}, fmt.Errorf("%w: stop_reason refusal", ErrRefused)
 	}
+	return response(r, out), nil
+}
+
+func response(r Request, out wire.ModelCompleteResult) Response {
 	text := out.Text
 	if len(r.Schema) > 0 && len(out.JSON) > 0 { // the hub checked it against the schema: take the decoded value
 		text = string(out.JSON)
 	}
 	u := out.Usage
 	return Response{Text: text, Model: out.Model, InTokens: u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens,
-		OutTokens: u.OutputTokens}, nil
+		OutTokens: u.OutputTokens}
+}
+
+// chained makes model.complete with the route's candidates (persona #10398).
+func (h Hub) chained(ctx context.Context, r Request, models []string) (chainResult, error) {
+	var out chainResult
+	err := h.do(ctx, chainParams{ModelCompleteParams: h.params(r), Models: models}, &out)
+	return out, err
 }
 
 // Usage is what the calls cost in tokens, recorded per day and step for the report (there is no cap: the user

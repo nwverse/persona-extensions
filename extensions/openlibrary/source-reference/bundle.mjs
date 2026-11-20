@@ -763,7 +763,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "openlibrary", name: "Open Library \u56FE\u4E66\u53D1\u73B0", version: "0.1.1", icon: "assets/icon.png", description: "\u6309\u4E66\u540D\u3001\u4F5C\u8005\u6216 ISBN \u641C\u7D22\u56FE\u4E66\uFF0C\u67E5\u770B\u51FA\u7248\u4FE1\u606F\u3001\u4F5C\u54C1\u7B80\u4ECB\u548C Open Library \u9605\u8BFB\u5165\u53E3\u3002\u5185\u5BB9\u7531 hub \u901A\u8FC7\u516C\u5F00 API \u83B7\u53D6\uFF0C\u65E0\u9700\u8D26\u53F7\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/openlibrary/README.md", tags: ["\u56FE\u4E66", "\u9605\u8BFB", "Open Library"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/openlibrary.mjs", sha256: "" } }, contributes: { connectors: [{ id: "openlibrary", name: "Open Library", capabilities: ["status", "tools"], hosts: ["openlibrary.org"], agent_tools: ["openlibrary_*"] }], ui: [{ id: "discover", title: "\u53D1\u73B0\u56FE\u4E66", placement: "nav_page", icon: "doc" }] }, permissions: { network: ["openlibrary.org"] } };
+var persona_extension_default = { manifest_version: 1, id: "openlibrary", name: "Open Library \u56FE\u4E66\u53D1\u73B0", version: "0.1.2", icon: "assets/icon.png", description: "\u6309\u4E66\u540D\u3001\u4F5C\u8005\u6216 ISBN \u641C\u7D22\u56FE\u4E66\uFF0C\u67E5\u770B\u51FA\u7248\u4FE1\u606F\u3001\u4F5C\u54C1\u7B80\u4ECB\u548C Open Library \u9605\u8BFB\u5165\u53E3\u3002\u5185\u5BB9\u7531 hub \u901A\u8FC7\u516C\u5F00 API \u83B7\u53D6\uFF0C\u65E0\u9700\u8D26\u53F7\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/openlibrary/README.md", tags: ["\u56FE\u4E66", "\u9605\u8BFB", "Open Library"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/openlibrary.mjs", sha256: "" } }, contributes: { connectors: [{ id: "openlibrary", name: "Open Library", capabilities: ["status", "tools"], hosts: ["openlibrary.org"], agent_tools: ["openlibrary_*"] }], ui: [{ id: "openlibrary", title: "\u53D1\u73B0\u56FE\u4E66", placement: "nav_page", icon: "doc" }] }, permissions: { network: ["openlibrary.org"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 2 << 20, fresh: 60 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 250 });
@@ -1384,7 +1384,7 @@ async function loadPage(service, state, refresh, signal) {
 }
 function page(props) {
   const { service, state, loaded, uiVersion = 0 } = props, t = textsFor(props.locale ?? service.locale), tz = props.tz ?? "Local";
-  const act = (id, next, title) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "discover", state: encodeState(next), ...title ? { title } : {} } } : { id });
+  const act = (id, next, title) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "openlibrary", state: encodeState(next), ...title ? { title } : {} } } : { id });
   const text = (key, value, style = "secondary") => /* @__PURE__ */ jsx(Text, { text: clip(value, 8e3), style }, key);
   const search = /* @__PURE__ */ jsxs(Section, { title: t.search, children: [
     /* @__PURE__ */ jsx(Field, { name: "query", label: t.search, kind: "text", placeholder: t.searchHint, value: state.q }, "book-query"),
@@ -1457,7 +1457,7 @@ function Root(options) {
     loaded: result?.service === options.service && result.identity === identity ? result.loaded : { kind: "loading" },
     action: (id, next, title) => {
       if (next && (options.uiVersion ?? 0) >= 3) {
-        const push = { ui: "discover", state: encodeState(next), ...title ? { title } : {} };
+        const push = { ui: "openlibrary", state: encodeState(next), ...title ? { title } : {} };
         return callback(() => ({ push }), { push });
       }
       return callback((values) => {
@@ -1510,7 +1510,7 @@ function createProgram(fetch = (input, init) => globalThis.fetch(input, init), o
       service = new OpenLibrary(fetch, init.config, { ...options, locale: init.hub?.locale ?? options.locale });
     },
     namespaces: { connector: connector(current) },
-    ui: { discover: componentPage((req) => root({ service: current(), state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) }
+    ui: { openlibrary: componentPage((req) => root({ service: current(), state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) }
   };
 }
 var index_default = createProgram();

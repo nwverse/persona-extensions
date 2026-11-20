@@ -27,7 +27,11 @@ out of everything the assistant reads at once.
   counts.
 - Scopes: `kb.read`, `kb.write`, `models`, `assistant.read`, `agents.read`, `todos.read`, `notify`, `assistant.ask`,
   `assistant.memory.read`. A scope you do not grant is a source the extension goes without; the sources card says so.
-- A model for it under Settings › Model configuration. The extension never sees the key.
+- A model for it under Settings › Model configuration. The extension never sees the key. On a hub whose
+  `model.complete` takes `models`, each call tries `model_primary` first and, when it fails, `model_long` or
+  `model_short` by the call's estimated size (`model_long_above`); `model_route: purpose` keeps every call on the
+  purpose's model. `enkeep_rerun_status` shows the calls per model and the fallback rate
+  ([model routes](../../extensions/enkeep-memory/docs/model-routes.md)).
 
 ## Sources
 
@@ -67,7 +71,15 @@ category, per fork type and per source where they apply), a check page, and whet
 After the model was down, or when the extraction prompt changed, past days can be read again with the current
 prompt. Ask the assistant (or an Agent) to call `enkeep_rerun` with the first and last day; `enkeep_rerun_status` shows
 progress. The days run one at a time in the background, each at most once per prompt version, at most 31 days per
-call. The `rerun_range` setting does the same and still works.
+call. The `rerun_range` setting does the same and still works. With `force: true` the days are read again even if
+they were already read with the current prompt, for a day that lost a unit to a model error; what was read before is
+reused and only the rest calls the model. A unit the model cannot read keeps its day open: the day waits and runs again
+from where it stopped, as when the model is away. When the hub holds the model's connection (busy or out of quota) a
+call waits for the hold and asks again; a unit still held goes back to the queue, its day stays open, and nothing is
+counted as failed. A rerun also reads the agent sessions earlier passes found, though their runtime no longer lists
+them, and adds to what the day admitted rather than replace it. On a hub with session history, every pass also lists
+the day's archived, finished and offline sessions (scheduled runs left out); `enkeep_rerun_status` names the days,
+machines and sources the history could not list in full, or says the hub has none.
 
 ## Development
 

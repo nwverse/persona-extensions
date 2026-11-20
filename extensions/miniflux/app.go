@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "miniflux"
-const pageUI = "reading"
+const pageUI = "miniflux"
 
 type app struct {
 	mu       sync.RWMutex

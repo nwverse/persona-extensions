@@ -71,7 +71,119 @@ func userRules(configDir, cwd string) []string {
 	return rules
 }
 
-func isBashRule(r string) bool { return ruleTool(r) == "Bash" }
+func agyManagedSettings() []string {
+	switch runtime.GOOS {
+	case "darwin":
+		return []string{"/Library/Application Support/Antigravity/admin_settings.json"}
+	case "linux":
+		return []string{"/etc/antigravity/admin_settings.json", "/etc/antigravity-cli/admin_settings.json"}
+	}
+	return nil
+}
+
+func agySettingsFiles(geminiDir, agyDir, cwd string, workspaces []string) []string {
+	files := agyManagedSettings()
+	if agyDir != "" {
+		files = append(files, filepath.Join(agyDir, "settings.json"), filepath.Join(agyDir, "settings.example.json"))
+	}
+	if geminiDir != "" {
+		files = append(files, filepath.Join(geminiDir, "config", "config.json"))
+		if geminiDir != agyDir {
+			files = append(files, filepath.Join(geminiDir, "settings.json"), filepath.Join(geminiDir, "settings.example.json"))
+		}
+	}
+	seenWalk := map[string]bool{}
+	for _, root := range append([]string{cwd}, workspaces...) {
+		if root == "" || !filepath.IsAbs(root) {
+			continue
+		}
+		for d := filepath.Clean(root); !seenWalk[d]; d = filepath.Dir(d) {
+			seenWalk[d] = true
+			for _, sub := range []string{".agents", ".agent", ".gemini"} {
+				files = append(files, filepath.Join(d, sub, "settings.json"), filepath.Join(d, sub, "settings.example.json"))
+			}
+			if filepath.Dir(d) == d {
+				break
+			}
+		}
+	}
+	return files
+}
+
+func agyUserRules(geminiDir, agyDir, cwd string, workspaces []string) []string {
+	var rules []string
+	seen := map[string]bool{}
+	for _, f := range agySettingsFiles(geminiDir, agyDir, cwd, workspaces) {
+		if seen[f] {
+			continue
+		}
+		seen[f] = true
+		b, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		var s struct {
+			Permissions struct {
+				Ask  []string `json:"ask"`
+				Deny []string `json:"deny"`
+			} `json:"permissions"`
+			GlobalGrants struct {
+				Ask  []string `json:"ask"`
+				Deny []string `json:"deny"`
+			} `json:"globalPermissionGrants"`
+			UserSettings struct {
+				GlobalGrants struct {
+					Ask  []string `json:"ask"`
+					Deny []string `json:"deny"`
+				} `json:"globalPermissionGrants"`
+			} `json:"userSettings"`
+		}
+		if json.Unmarshal(b, &s) != nil {
+			continue
+		}
+		rules = append(rules, s.Permissions.Ask...)
+		rules = append(rules, s.Permissions.Deny...)
+		rules = append(rules, s.GlobalGrants.Ask...)
+		rules = append(rules, s.GlobalGrants.Deny...)
+		rules = append(rules, s.UserSettings.GlobalGrants.Ask...)
+		rules = append(rules, s.UserSettings.GlobalGrants.Deny...)
+	}
+	return rules
+}
+
+func userRulesFor(a hookArgs, req hookInput) []string {
+	rules := userRules(a.ConfigDir, req.Cwd)
+	if !req.isAgy && a.GeminiDir == "" && a.AgyDir == "" {
+		return rules
+	}
+	geminiDir, agyDir := req.geminiDir, req.agyDir
+	if geminiDir == "" && agyDir == "" {
+		geminiDir, agyDir = resolveAgyDirs(a)
+	}
+	return append(rules, agyUserRules(geminiDir, agyDir, req.Cwd, req.workspaces)...)
+}
+
+func canonicalRuleTool(r string) string {
+	switch r {
+	case "command", "run_command":
+		return "Bash"
+	case "read_file", "view_file":
+		return "Read"
+	case "find_by_name":
+		return "Glob"
+	case "grep_search":
+		return "Grep"
+	case "list_dir":
+		return "LS"
+	case "write_file", "write_to_file", "edit_file", "replace_file_content":
+		return "Edit"
+	case "Task", "invoke_subagent":
+		return "Agent"
+	}
+	return r
+}
+
+func isBashRule(r string) bool { return canonicalRuleTool(ruleTool(r)) == "Bash" }
 
 // ruleTool is the tool a rule is about: "Read" for Read(./x) and for Read.
 func ruleTool(r string) string {
@@ -82,25 +194,27 @@ func ruleTool(r string) string {
 	return strings.TrimSpace(r)
 }
 
-// readers are the tools a Read rule also covers: Claude Code applies Read rules to every tool that reads files.
+// readers are the tools a Read rule also covers: Claude Code and agy apply Read rules to every tool that reads files.
 var readers = map[string]bool{"Read": true, "Glob": true, "Grep": true, "LS": true, "NotebookRead": true}
 
-// sameTool says whether a rule for ruleName is about tool; Agent was called Task before, and a Read rule is about
-// every tool that reads files.
+// sameTool says whether a rule for ruleName is about tool; Agent was called Task before, agy uses its native grant
+// names (command, read_file, write_file, invoke_subagent), and a Read or Edit rule covers its family.
 func sameTool(ruleName, tool string) bool {
-	if ruleName == "Read" && readers[tool] {
+	canonRule := canonicalRuleTool(ruleName)
+	canonTool := canonicalRuleTool(tool)
+	if canonRule == "Read" && readers[canonTool] {
 		return true
 	}
-	if ruleName == "Edit" && tool == "Write" { // Claude Code applies Edit rules to every tool that edits files
+	if canonRule == "Edit" && (tool == "Write" || tool == "Edit") {
 		return true
 	}
-	alias := func(s string) string {
-		if s == "Task" {
-			return "Agent"
-		}
-		return s
+	if ruleName == "Write" && tool == "Write" {
+		return true
 	}
-	return alias(ruleName) == alias(tool)
+	if ruleName == "Write" && tool == "Edit" {
+		return false
+	}
+	return canonRule == canonTool
 }
 
 // matchingRule is the first rule that might be about a call of tool (cmd is Bash's command) ("" when none is).
@@ -129,11 +243,17 @@ func shellWords(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
-// ruleLiteral is the literal start of a Bash rule's pattern: "git push" for Bash(git push:*), Bash(git push *) and
-// Bash(git push). all is true for a rule about every command (Bash, Bash(), Bash(*), Bash(:*)).
+// ruleLiteral is the literal start of a Bash/command rule's pattern: "git push" for Bash(git push:*),
+// command(git push *) and Bash(git push). all is true for a rule about every command (Bash, command, Bash(*), command(*)).
 func ruleLiteral(r string) (lit string, all bool) {
 	r = strings.TrimSpace(r)
-	inner, ok := strings.CutPrefix(r, "Bash(")
+	var inner string
+	var ok bool
+	for _, p := range []string{"Bash(", "command(", "run_command("} {
+		if inner, ok = strings.CutPrefix(r, p); ok {
+			break
+		}
+	}
 	if !ok {
 		return "", true
 	}

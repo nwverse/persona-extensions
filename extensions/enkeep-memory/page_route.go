@@ -129,6 +129,12 @@ func (a *app) pauseLine(t tr, st *store.State, now time.Time) (string, string) {
 			"The assistant's computer is not connected (%s); %s is not counted as read and will be tried again at %s."),
 			why, cp.Day, clock(cp.NextTry)), wire.ToneCaution
 	}
+	if cp.What == curate.WhatHeld {
+		// The hub held the model's connection (model_paused): a wait, not a failure.
+		return fmt.Sprintf(t.s("模型那边忙（hub 压闸：%s），%s 这一天先不算读完，%s 闸开后接着读。",
+			"The model's connection is busy (held by the hub: %s); %s is not counted as read yet and goes on at %s, when the hold lets go."),
+			why, cp.Day, clock(cp.NextTry)), wire.ToneCaution
+	}
 	if cp.Fails < curate.PausedAfter {
 		return fmt.Sprintf(t.s("模型暂时不可用（%s），%s 再试 %s 这一天。", "The model is briefly unavailable (%s); %s will be tried again at %s."),
 			why, cp.Day, clock(cp.NextTry)), wire.ToneCaution

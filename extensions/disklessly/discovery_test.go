@@ -28,7 +28,7 @@ func discoveryHome(t *testing.T, config string) string {
 func TestDiscoveryFiltersGitAndWildcardHosts(t *testing.T) {
 	home := discoveryHome(t, `Host * *.internal !ignored
  User dev
-Host code.byted.org *.byted.org
+Host code.example.org *.example.org
  User git
 Host github.com gitlab.com gitlab.corp.example bitbucket.org
 Host git-alias
@@ -37,7 +37,7 @@ Host worker
  HostName 192.0.2.10
 `)
 	st := &State{Machines: []*Machine{
-		{ID: "code.byted.org", Host: "code.byted.org", Source: "ssh-config", Enabled: true},
+		{ID: "code.example.org", Host: "code.example.org", Source: "ssh-config", Enabled: true},
 		{ID: "git-alias", Host: "git-alias", Source: "ssh-config", Enabled: true},
 	}}
 	if n := st.DiscoverMachines(home, t0); n != 1 {
@@ -46,7 +46,7 @@ Host worker
 	if len(st.Machines) != 2 || st.machine("worker") == nil {
 		t.Fatalf("machines=%+v", st.Machines)
 	}
-	for _, h := range []string{"code.byted.org", "github.com", "gitlab.com", "gitlab.corp.example", "bitbucket.org", "git-alias", "*", "*.byted.org"} {
+	for _, h := range []string{"code.example.org", "github.com", "gitlab.com", "gitlab.corp.example", "bitbucket.org", "git-alias", "*", "*.example.org"} {
 		if st.machine(h) != nil {
 			t.Errorf("unexpected host %q", h)
 		}

@@ -121,8 +121,9 @@ type ha struct {
 	retry     bool // the user asked to try again (Retry, refresh): the next request goes out even after a refusal
 	reg       *Registry
 	regAt     time.Time
-	regFailAt time.Time         // the page's last failed read of the registry (pageRegistry)
-	autoCfg   map[string]string // automation config id → its config as last read (canonical JSON)
+	regFailAt time.Time            // the page's last failed read of the registry (pageRegistry)
+	autoCfg   map[string]string    // automation config id → its config as last read (canonical JSON)
+	scripts   map[string]scriptCfg // a shortcut's script key → its config as last read (shortcuts.go)
 
 	wsMu sync.Mutex
 	wsc  *wsConn // the commands' WebSocket (ws.go)
