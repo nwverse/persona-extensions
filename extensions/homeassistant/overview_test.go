@@ -254,3 +254,43 @@ func TestEntityNameKeepsWhatTheUserWrote(t *testing.T) {
 		}
 	}
 }
+
+// An area's device count (#922) takes its remotes too where they are tiles (UI version 6), so 区域 says as many as its
+// section shows; before, an area is rows without remotes and counts its devices only.
+func TestAreaCountsRemotes(t *testing.T) {
+	r := newRichHA(t)
+	r.put(State{EntityID: "light.lamp", State: "off", Attributes: map[string]any{"friendly_name": "吸顶灯"}},
+		State{EntityID: "button.tv_turn_on", State: "unknown", Attributes: map[string]any{"friendly_name": "电视 红外电视控制 开机"}},
+		State{EntityID: "button.tv_turn_off", State: "unknown", Attributes: map[string]any{"friendly_name": "电视 红外电视控制 关机"}},
+		State{EntityID: "button.ac_turn_on", State: "unknown", Attributes: map[string]any{"friendly_name": "空调 红外空调控制 开机"}})
+	ids := []string{"light.lamp", "button.tv_turn_on", "button.tv_turn_off", "button.ac_turn_on"}
+	for i, dev := range []string{"lamp", "tv", "tv", "ac"} {
+		r.ws.entities = append(r.ws.entities, map[string]any{"entity_id": ids[i], "device_id": dev, "platform": "xiaomi_home"})
+	}
+	r.ws.devices = append(r.ws.devices, map[string]any{"id": "lamp", "name": "吸顶灯"}, map[string]any{"id": "tv", "name": "电视"},
+		map[string]any{"id": "ac", "name": "空调"})
+	r.services = strings.TrimSuffix(r.services, "]") + `,{"domain":"button","services":{"press":{}}}]`
+	r.areas = areasJSON([][3]any{{"ke_ting", "客厅", ids}})
+	a := richApp(t, r, Config{})
+
+	v, _ := renderV(t, a, 6, nil)
+	if n := len(tilesOf(v, "room:ke_ting")); n != 3 {
+		t.Fatalf("客厅's section: %d tiles, want the lamp and two remotes", n)
+	}
+	areas := tilesOf(v, "areas")
+	if len(areas) != 1 || areas[0].Subtitle != "3 个设备" {
+		t.Errorf("区域 on UI version 6: %+v", areas)
+	}
+	v, _ = renderV(t, a, 5, nil)
+	var sub []string
+	for _, s := range v.Sections {
+		for _, it := range s.Items {
+			if it.Key == "area:ke_ting" {
+				sub = append(sub, it.Subtitle)
+			}
+		}
+	}
+	if !slices.Equal(sub, []string{"1 个设备"}) {
+		t.Errorf("区域 before UI version 6 (rows, no remotes): %q", sub)
+	}
+}

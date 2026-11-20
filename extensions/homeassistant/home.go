@@ -59,6 +59,7 @@ var powerDomains = []string{"light", "switch", "fan", "input_boolean", "humidifi
 type areaFacts struct {
 	ar          *Area
 	devices     int     // its devices: a device's main entities (deviceRows), not scenes, scripts and remotes
+	remotes     int     // its IR remotes (remotes), tiles on UI version 6 that never count as on (#922)
 	on          []State // those on
 	offline     int
 	temp, humid []float64 // its air (airOf)
@@ -135,6 +136,7 @@ func gatherHome(hm *home, reg *Registry) *homeFacts {
 		af := &areaFacts{ar: ar}
 		af.temp, af.humid = airOf(hm, reg, ar)
 		devices(ar, af)
+		af.remotes = len(remotes(hm, reg, ar))
 		f.areas = append(f.areas, af)
 		of[ar] = af
 	}
@@ -945,15 +947,19 @@ func areasTitle(hm *home, n int) string {
 }
 
 // areaStatus is an area's line: what kinds are on (2 灯、1 开关开着; a type's, how many: 2 开着), else how many
-// devices it has.
-func areaStatus(hm *home, af *areaFacts) string {
+// devices it has. With tiles (UI version 6) its remotes are devices too, as its section draws them (#922).
+func areaStatus(hm *home, af *areaFacts, tiles bool) string {
+	n := af.devices
+	if tiles {
+		n += af.remotes
+	}
 	switch {
 	case len(af.on) > 0 && hm.ByType:
 		return fmt.Sprintf("%d 开着", len(af.on))
 	case len(af.on) > 0:
 		return kindCounts(af.on, "、") + "开着"
-	case af.devices > 0:
-		return fmt.Sprintf("%d 个设备", af.devices)
+	case n > 0:
+		return fmt.Sprintf("%d 个设备", n)
 	}
 	return ""
 }
@@ -980,7 +986,7 @@ func areaBadge(af *areaFacts) *wire.Badge {
 // needs a look. A tap opens the area.
 func areaTile(hm *home, af *areaFacts) wire.Tile {
 	icon, color := areaLook(hm, af.ar)
-	return wire.Tile{Key: ref("area:", af.ar.ID), Title: clip(af.ar.Name, 40), Subtitle: clip(areaStatus(hm, af), 80),
+	return wire.Tile{Key: ref("area:", af.ar.ID), Title: clip(af.ar.Name, 40), Subtitle: clip(areaStatus(hm, af, true), 80),
 		Value: clip(airText(af.temp, af.humid), 40), Icon: icon, Color: color, Active: len(af.on) > 0, Badge: areaBadge(af),
 		Action: areaAction(af.ar.ID)}
 }
@@ -1075,7 +1081,7 @@ func areaList(r *ext.UIRequest, hm *home, f *homeFacts, st pageState, v *wire.Vi
 
 // areaRow is an area as a row: what is on, its air on the right, its badge what needs a look or how many are on.
 func areaRow(hm *home, af *areaFacts) wire.Component {
-	row := wire.Component{Type: "row", Key: ref("area:", af.ar.ID), Title: clip(af.ar.Name, 80), Subtitle: clip(areaStatus(hm, af), 120),
+	row := wire.Component{Type: "row", Key: ref("area:", af.ar.ID), Title: clip(af.ar.Name, 80), Subtitle: clip(areaStatus(hm, af, false), 120),
 		Value: airText(af.temp, af.humid), Badge: areaBadge(af), Action: areaAction(af.ar.ID)}
 	if row.Badge == nil && len(af.on) > 0 && !hm.ByType { // a type's line already says how many
 		row.Badge = &wire.Badge{Text: fmt.Sprintf("%d 开着", len(af.on)), Tone: "positive"}
