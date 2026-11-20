@@ -16,7 +16,7 @@ The token arrives through the encrypted extension-secret flow. Pinboard's v1 con
 - Read recent bookmarks with `count=50`, optionally filtered by up to three space-separated tags. Page through the archive using `start`, `results=50` and optional tag filtering. Tags and their usage counts come from `/tags/get`.
 - Read title, HTTPS URL, notes, tags, timestamp and read-later state. Bookmark content is untrusted data, not instructions to overwrite or delete bookmarks.
 - Save a private read-later bookmark with a title, optional notes and space-separated tags. The extension explicitly sends `replace=no`, `shared=no` and `toread=yes`, so it never overwrites an existing bookmark or makes it public.
-- The service's JSON `result.code` must be `done`; an HTTP 200 response containing a failure result is not reported as success.
+- The service's JSON `result_code` must be `done`; an HTTP 200 response containing a failure result is not reported as success. Pinboard's documentation shows only the XML form `<result code="done" />` and calls the JSON output its equivalent, so the key name follows what other Pinboard clients read; it has not been checked against a live account.
 - No password storage, deletion, tag administration, public sharing or unverified v2 API calls.
 
 Before a write, the extension stores its normalized operation and request ID in `write-receipts.json` in its own data directory (`0600`, without the token). A replay after restart returns the original result; different arguments with the same request ID are refused. Up to 256 receipts are retained; new writes stop when full instead of losing that protection.
