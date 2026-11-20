@@ -135,6 +135,12 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if err != nil {
 		return nil, err
 	}
+	// A page holds up to 100 documents: the queue is cut to fit the hub's 300 component limit, and then offers no more.
+	if len(page.Results) >= maxViewDocuments {
+		page.Results, page.Cursor = page.Results[:maxViewDocuments], ""
+		page.Count = len(page.Results)
+	}
+	st.Cursor = page.Cursor
 	v := &wire.View{Title: t.new, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}}
 	v.Filter = &wire.Filter{Name: "location", Title: t.read, Value: st.Location, Action: wire.Action{ID: "location"}, Choices: []wire.Choice{
 		{Value: "new", Title: t.new}, {Value: "later", Title: t.later}, {Value: "shortlist", Title: t.shortlist}, {Value: "archive", Title: t.archive}, {Value: "feed", Title: t.feed},
@@ -155,6 +161,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	return v, nil
 }
 
+const maxViewDocuments = 250
+
 func (a *app) readQueue(ctx context.Context, st pageState) (listPage, error) {
 	var out listPage
 	cursor, seen := "", map[string]bool{}
@@ -170,6 +178,7 @@ func (a *app) readQueue(ctx context.Context, st pageState) (listPage, error) {
 			out.Results = append(out.Results, item)
 		}
 		out.Count = len(out.Results)
+		out.Cursor = page.Cursor
 		if page.Cursor == "" {
 			return out, nil
 		}
@@ -177,7 +186,6 @@ func (a *app) readQueue(ctx context.Context, st pageState) (listPage, error) {
 			return listPage{}, errors.New("Readwise repeated its pagination cursor")
 		}
 		seen[page.Cursor], cursor = true, page.Cursor
-		out.Cursor = page.Cursor
 	}
 	out.Count = len(out.Results)
 	if st.Query != "" {
