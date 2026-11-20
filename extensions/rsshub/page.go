@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -355,7 +356,7 @@ func feedSections(r *ext.UIRequest, f feed, st pageState, loc *time.Location) []
 	head := wire.Section{Title: clip(f.name(), 200), Items: []wire.Component{
 		{Type: wire.ComponentText, Text: clip(fmt.Sprintf("%s · 分类 %s · 未读 %d / %d · %s", f.Source, f.tag(), f.unread(), len(f.Entries), fetchState(f, loc)), pageTextMost), Style: wire.TextStyleSecondary},
 	}}
-	if strings.HasPrefix(f.SiteLink, "https://") {
+	if httpsLink(f.SiteLink) {
 		head.Items = append(head.Items, wire.Component{Type: wire.ComponentLink, Title: "打开网站", URL: f.SiteLink})
 	}
 	head.Items = append(head.Items,
@@ -383,6 +384,12 @@ func feedSections(r *ext.UIRequest, f feed, st pageState, loc *time.Location) []
 	return []wire.Section{head, list}
 }
 
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
 // entrySection is one entry's text.
 func entrySection(f feed, e entry, loc *time.Location) []wire.Section {
 	var meta []string
@@ -398,7 +405,7 @@ func entrySection(f feed, e entry, loc *time.Location) []wire.Section {
 	}}
 	sec.Items = append(sec.Items, bodyTexts(firstNonEmpty(e.Content, e.Summary))...)
 	switch {
-	case strings.HasPrefix(e.Link, "https://"):
+	case httpsLink(e.Link):
 		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentLink, Title: "打开原文", URL: e.Link})
 	case e.Link != "":
 		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentText, Text: clip(e.Link, pageTextMost), Style: wire.TextStyleCaption})
