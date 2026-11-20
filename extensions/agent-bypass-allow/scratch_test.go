@@ -211,7 +211,7 @@ func TestAllowDestructiveSetting(t *testing.T) {
 	for _, c := range []string{
 		"rm -rf /srv/data", "rm -rf ~/notes", "git reset --hard", "mv a b", "echo {} > settings.json", "git clean -fdx",
 		"docker system prune -a", "psql -c 'DROP TABLE t'", "git branch -D x", "kubectl delete pod p", "git checkout -- .",
-		"find . -delete", "truncate -s 0 log", "sed -i s/a/b/ f", "aws s3 rm s3://b/x", "cd x && rm -f sub/*", "ls | xargs rm",
+		"truncate -s 0 log", "sed -i s/a/b/ f", "aws s3 rm s3://b/x", "cd x && rm -f sub/*", "ls | xargs rm",
 		"ssh host rm -rf /srv/x", "bash -c 'rm -rf x'", "gh repo delete me/r --yes", "dd if=a of=b",
 	} {
 		if why := g.personOnly(c); why != "" {
@@ -221,7 +221,7 @@ func TestAllowDestructiveSetting(t *testing.T) {
 		}
 	}
 	for _, c := range []string{
-		"git push --force", "git push -f origin main", "chmod 777 x", "chown me f", "rm -rf x && chmod 777 y",
+		"find . -delete", "git push --force", "git push -f origin main", "chmod 777 x", "chown me f", "rm -rf x && chmod 777 y",
 		"rm -rf x; git push -f", "bash -c 'git push -f'", "gh secret delete X", "gh -R o/r secret set X",
 		"gh api -X DELETE repos/o/r/branches/main/protection", "kubectl delete rolebinding rb", "psql -c 'GRANT ALL ON t TO u'",
 		"psql -c 'DROP USER u'", "mkfs.ext4 /dev/sdb1", "dd if=/dev/zero of=/dev/sda", "wipefs -a /dev/sda",
