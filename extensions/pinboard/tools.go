@@ -29,7 +29,7 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "pinboard_add", Description: "Add a private read-later Pinboard bookmark after explicit confirmation. replace=no prevents overwriting an existing URL; shared=no and toread=yes are explicit.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"url", "title"}, "properties": map[string]any{
-			"url": map[string]any{"type": "string", "format": "uri"}, "title": map[string]any{"type": "string", "minLength": 1, "maxLength": 255},
+			"url": map[string]any{"type": "string", "format": "uri"}, "title": map[string]any{"type": "string", "minLength": 1, "maxLength": maxTitleChars},
 			"notes": map[string]any{"type": "string", "maxLength": 65536}, "tags": map[string]any{"type": "string", "maxLength": 1000, "description": "Space-separated tags: at most 100, each at most 255 characters, without commas"},
 		}}},
 }
