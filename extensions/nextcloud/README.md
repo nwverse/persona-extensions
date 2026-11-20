@@ -14,7 +14,7 @@ Remote instances require HTTPS. URLs must not contain credentials. The app passw
 ## Personal files
 
 - `SEARCH /remote.php/dav/` uses a WebDAV basicsearch scoped to `/files/<username>`, excludes collections, sorts by modification time and limits results to 50. Query text is XML-escaped; `%` wildcards are not accepted from the caller.
-- Only safe relative file paths are accepted: no absolute paths, `..`, backslashes, control characters, query strings or fragments. URL paths are escaped one segment at a time, and the percent-encoded hrefs Nextcloud returns in search results are decoded once, so a result's path can be opened as listed.
+- Only safe relative file paths are accepted: no absolute paths, `..`, backslashes, control characters, query strings or fragments. URL paths are escaped one segment at a time, and the percent-encoded hrefs Nextcloud returns in search results are decoded once, so a result's path can be opened as listed. When the instance address has a path (Nextcloud installed in a subfolder, for example `https://www.example.com/nextcloud`), the web root that Nextcloud writes in front of every href is removed first.
 - `PROPFIND` reads file metadata. `GET` reads only plain text, Markdown, JSON or CSV files up to 100,000 bytes. Other file types and larger content remain in Nextcloud rather than being pulled into agent context.
 - File content is untrusted data, not instructions to modify or share files. No arbitrary remote URLs, public shares or storage-backend URLs are constructed.
 
