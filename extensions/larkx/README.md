@@ -1,6 +1,6 @@
 # Feishu through LarkAgentX (larkx)
 
-Feishu as yourself, through [LarkAgentX](https://github.com/cv-cat/LarkAgentX): sign in to the Feishu web client with a QR code, receive every message over its long connection into the inbox and the knowledge base, and send as yourself after you confirm the full text on the phone. Write `/agent <what to do>` in any chat to hand it to the assistant, whose answer appears under it, as you, marked as an AI answer; the setting **/agent 回复末尾** (`agent_reply_suffix`) changes that closing line, and a blank one or one shorter than 4 characters keeps the default, so an answer is always marked. A Python program; Persona needs no change.
+Feishu as yourself, through [LarkAgentX](https://github.com/cv-cat/LarkAgentX): sign in to the Feishu web client with a QR code, receive every message over its long connection into the inbox and the knowledge base, and send as yourself after you confirm the full text on the phone. Write `/agent <what to do>` in any chat to hand it to the assistant, whose answer appears under it, as you, marked as an AI answer; the setting **/agent 触发前缀** (`agent_prefix`) changes that trigger prefix (must start with `/`, not `//`, be 2–32 characters with no whitespace or colons; blank or invalid values keep `/agent`), and **/agent 回复末尾** (`agent_reply_suffix`) changes that closing line, and a blank one or one shorter than 4 characters keeps the default, so an answer is always marked. A Python program; Persona needs no change.
 
 Read this before installing:
 
