@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "larkx",
   "name": "飞书（LarkAgentX）",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "用 LarkAgentX 以你本人的身份接飞书：扫码登录，全部消息进收件箱和知识库，经手机确认后以你的身份发送；在任意会话里发 /agent 交给助手。走逆向的网页版协议，不是官方接口。",
   "publisher": "nwverse",
   "homepage": "https://github.com/cv-cat/LarkAgentX",
@@ -98,6 +98,13 @@
         "description": "用你自己的话写飞书消息怎么分拣，比如「直属领导的私聊都要处理」「某某群只看 @ 我的」。留空用 hub 的全局规则。",
         "maxLength": 4000,
         "default": ""
+      },
+      "agent_prefix": {
+        "type": "string",
+        "title": "/agent 触发前缀",
+        "description": "在飞书会话里以这个前缀发消息给助手（默认 /agent，不区分大小写，后面跟空格、冒号或换行）。必须以 / 开头（不能是 //），2–32 个字符，不能包含空白或冒号；留空或不合法时回退默认 /agent。",
+        "maxLength": 32,
+        "default": "/agent"
       },
       "agent_reply_suffix": {
         "type": "string",

@@ -14,7 +14,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from test_connector import ME, Backend, Hub, message  # noqa: E402
 
 from larkx_persona import main  # noqa: E402
-from larkx_persona.connector import AGENT_SUFFIX, AGENT_SUFFIX_LEAST, AGENT_SUFFIX_MOST, Connector, agent_request  # noqa: E402
+from larkx_persona.connector import (  # noqa: E402
+    AGENT_PREFIX, AGENT_PREFIX_LEAST, AGENT_PREFIX_MOST, AGENT_SUFFIX, AGENT_SUFFIX_LEAST, AGENT_SUFFIX_MOST,
+    Connector, agent_request, normalize_agent_prefix,
+)
 from larkx_persona.main import Plugin  # noqa: E402
 from larkx_persona.store import Store  # noqa: E402
 from larkx_persona.wire import RpcError  # noqa: E402
@@ -203,8 +206,8 @@ class AgentSuffixTest(unittest.TestCase):
         got = {}
 
         class Recorder:
-            def __init__(self, backend, store, hub, rules="", suffix=""):
-                got.update(rules=rules, suffix=suffix)
+            def __init__(self, backend, store, hub, rules="", suffix="", prefix=""):
+                got.update(rules=rules, suffix=suffix, prefix=prefix)
 
             def start(self):
                 pass
@@ -214,8 +217,71 @@ class AgentSuffixTest(unittest.TestCase):
         self.addCleanup(setattr, main, "Connector", real)
         plugin = Plugin({"id": "larkx", "version": "0", "contributes": {}}, lambda *_: None)
         plugin.initialize({"protocol": main.PROTOCOL, "extension": {"data_dir": self.dir.name},
-                           "config": {"triage_rules": "规则", "agent_reply_suffix": "— AI 代答"}})
-        self.assertEqual(got, {"rules": "规则", "suffix": "— AI 代答"})
+                           "config": {"triage_rules": "规则", "agent_reply_suffix": "— AI 代答", "agent_prefix": "/ai"}})
+        self.assertEqual(got, {"rules": "规则", "suffix": "— AI 代答", "prefix": "/ai"})
+
+
+class AgentPrefixTest(unittest.TestCase):
+    """The setting agent_prefix: which trigger prefix hands a message to the hub and allows channel.send."""
+    setUp, handed, nothing_handed = AgentTest.setUp, AgentTest.handed, AgentTest.nothing_handed
+
+    def use(self, prefix):
+        self.c = Connector(self.backend, self.c.store, self.hub, prefix=prefix)
+        self.c._ready.set()
+        self.assertTrue(self.c.login_step({"step": "scan"})["done"])
+        self.addCleanup(self.c._stop.set)
+
+    def test_custom_prefix_triggers_and_answers(self):
+        self.use("  /ai  ")
+        self.assertEqual(self.c.prefix, "/ai")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/AI：帮我看下"))
+        got = self.handed()
+        self.assertEqual(got["message"]["text"], "帮我看下")
+        self.assertIn("/ai", got["message"]["forward"])
+        out = self.c.channel_send({"ref": "r1", "text": "好的", "kind": "answer", "reply_to": "m1"})
+        self.assertEqual(out, {"message_id": "m_new"})
+        self.assertEqual(self.backend.sent, [("c1", "好的\n\n" + AGENT_SUFFIX, "m1")])
+
+    def test_chinese_prefix_and_empty_request(self):
+        self.use("/助手")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/助手"))
+        got = self.handed()
+        self.assertIn("只发了 /助手", got["message"]["text"])
+
+    def test_custom_prefix_does_not_match_default_or_longer_word(self):
+        self.use("/ai")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/agent 总结"))
+        self.c._on_live(message("m2", "c1", 2, sender=ME, text="/aibot 总结"))
+        self.nothing_handed()
+        for mid in ("m1", "m2"):
+            with self.assertRaises(RpcError) as e:
+                self.c.channel_send({"ref": "r_" + mid, "text": "x", "kind": "answer", "reply_to": mid})
+            self.assertEqual(e.exception.code, "cannot_send")
+
+    def test_blank_or_invalid_prefix_keeps_default(self):
+        invalid = [
+            "", "   \n ", None,
+            "/", "//", "//note",
+            "agent", "ai", "助手",
+            "/a b", "/a\tb", "/a\nb",
+            "/a:b", "/a：b",
+            "/a\x00b", "/a\x7fb",
+            "/" + "a" * AGENT_PREFIX_MOST,
+        ]
+        for bad in invalid:
+            self.assertEqual(normalize_agent_prefix(bad), AGENT_PREFIX, repr(bad))
+            self.assertEqual(Connector(self.backend, self.c.store, self.hub, prefix=bad).prefix, AGENT_PREFIX)
+        # Valid edge lengths: AGENT_PREFIX_LEAST and AGENT_PREFIX_MOST.
+        shortest = "/" + "p" * (AGENT_PREFIX_LEAST - 1)
+        longest = "/" + "a" * (AGENT_PREFIX_MOST - 1)
+        self.assertEqual(normalize_agent_prefix(shortest), shortest)
+        self.assertEqual(normalize_agent_prefix(longest), longest)
+
+    def test_the_manifest_setting_matches_the_code(self):
+        with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
+            setting = json.load(f)["configuration"]["properties"]["agent_prefix"]
+        self.assertEqual(setting["default"], AGENT_PREFIX)
+        self.assertEqual(setting["maxLength"], AGENT_PREFIX_MOST)
 
 
 class PluginRoutingTest(unittest.TestCase):
