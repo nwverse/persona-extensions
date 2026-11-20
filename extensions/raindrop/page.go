@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -225,9 +226,18 @@ func compactComponents(items ...wire.Component) []wire.Component {
 		if item.Type == wire.ComponentText && item.Text == "" {
 			continue
 		}
+		if item.Type == wire.ComponentLink && !httpsLink(item.URL) {
+			continue
+		}
 		out = append(out, item)
 	}
 	return out
+}
+
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
 func textComponents(text string) []wire.Component {
