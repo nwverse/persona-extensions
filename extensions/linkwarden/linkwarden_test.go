@@ -42,7 +42,7 @@ func newFakeLinkwarden(t *testing.T) *fakeLinkwarden {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/search":
-			fmt.Fprint(w, `{"links":[{"id":101,"name":"Reading with context","url":"https://example.com/article","description":"A saved article","note":"Why this matters","collection":{"id":5,"name":"Research"}}]}`)
+			fmt.Fprint(w, `{"data":{"links":[{"id":101,"name":"Reading with context","url":"https://example.com/article","description":"A saved article","note":"Why this matters","collection":{"id":5,"name":"Research"}}],"nextCursor":null},"success":true}`)
 		case "/collections":
 			fmt.Fprint(w, `[{"id":5,"name":"Research"},{"id":8,"name":"Later"}]`)
 		case "/links/101":

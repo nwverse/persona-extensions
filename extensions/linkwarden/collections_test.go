@@ -23,7 +23,7 @@ func serveCollections(t *testing.T, n int) *app {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/search":
-			fmt.Fprint(w, `{"links":[]}`)
+			fmt.Fprint(w, `{"data":[],"success":true}`)
 		case "/collections":
 			fmt.Fprintf(w, "[%s]", strings.Join(list, ","))
 		default:
