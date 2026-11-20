@@ -19,6 +19,7 @@ type pageState struct {
 	BoardID   int64  `json:"b,omitempty"`
 	BoardName string `json:"n,omitempty"`
 	Cursor    string `json:"c,omitempty"`
+	Next      string `json:"x,omitempty"`
 	DraftID   string `json:"d,omitempty"`
 	Name      string `json:"a,omitempty"`
 	ItemID    int64  `json:"i,omitempty"`
@@ -28,7 +29,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.BoardID < 0 || st.ItemID < 0 || len(st.BoardName) > 1000 || len(st.DraftID) > 128 || len(st.Name) > 600 || len(st.Cursor) > 2048 || len(st.ColumnID) > 100 || len(st.Label) > 100 {
+	if err := r.DecodeState(&st); err != nil || st.BoardID < 0 || st.ItemID < 0 || len(st.BoardName) > 1000 || len(st.DraftID) > 128 || len(st.Name) > 600 || len(st.Cursor) > 2048 || len(st.Next) > 2048 || len(st.ColumnID) > 100 || len(st.Label) > 100 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -57,9 +58,10 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	case "boards":
 		st = pageState{}
 	case "more":
-		if st.Cursor == "" || len(st.Cursor) > 2048 || strings.ContainsAny(st.Cursor, "\x00\r\n\"'") {
+		if st.Next == "" || len(st.Next) > 2048 || strings.ContainsAny(st.Next, "\x00\r\n\"'") {
 			return nil, errors.New("invalid next cursor")
 		}
+		st.Cursor = st.Next
 	case "detail":
 		id, err := strconv.ParseInt(r.Values["id"], 10, 64)
 		if err != nil || id <= 0 {
@@ -143,6 +145,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if err != nil {
 			return nil, err
 		}
+		st.Next = page.Cursor
 		section := wire.Section{Title: t.items}
 		for _, item := range page.Items {
 			if item.ID <= 0 || item.Name == "" {
