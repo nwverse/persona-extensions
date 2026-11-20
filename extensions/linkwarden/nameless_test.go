@@ -18,7 +18,7 @@ func serveNameless(t *testing.T, links string) *app {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/search":
-			fmt.Fprintf(w, `{"links":%s}`, links)
+			fmt.Fprintf(w, `{"data":{"links":%s,"nextCursor":null},"success":true}`, links)
 		case "/collections":
 			fmt.Fprint(w, `[{"id":5,"name":"Research"},{"id":8,"name":"Later"}]`)
 		default:

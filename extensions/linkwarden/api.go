@@ -95,22 +95,27 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 func (c *client) search(ctx context.Context, query string, collectionID int64) ([]link, error) {
 	q := url.Values{}
 	if query != "" {
-		q.Set("q", query)
+		q.Set("searchQueryString", query)
 	}
 	if collectionID > 0 {
 		q.Set("collectionId", strconv.FormatInt(collectionID, 10))
 	}
+	// The links are in data.links; data is an empty array when nothing matched.
 	var out struct {
-		Links []link `json:"links"`
-		Data  []link `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := c.do(ctx, http.MethodGet, "/search", q, nil, &out); err != nil {
 		return nil, err
 	}
-	if out.Links != nil {
-		return out.Links, nil
+	var found struct {
+		Links []link `json:"links"`
 	}
-	return out.Data, nil
+	if len(out.Data) > 0 && out.Data[0] == '{' {
+		if err := json.Unmarshal(out.Data, &found); err != nil {
+			return nil, errors.New("Linkwarden returned invalid JSON")
+		}
+	}
+	return found.Links, nil
 }
 
 func (c *client) collections(ctx context.Context) ([]collection, error) {
