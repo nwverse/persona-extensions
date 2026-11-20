@@ -240,7 +240,7 @@ func TestLocalizedViewsAndCreateReview(t *testing.T) {
 }
 
 // /search/jql answers no total and ignores startAt; it pages with nextPageToken, as the fake does. The page's Load more
-// and jira_assigned's page_token reach the second page.
+// extends the view with the second page, and jira_assigned's page_token reaches it.
 func TestPaginationFollowsNextPageToken(t *testing.T) {
 	f := newFakeJira(t)
 	a := f.app()
@@ -266,7 +266,7 @@ func TestPaginationFollowsNextPageToken(t *testing.T) {
 	if err != nil || res.View == nil {
 		t.Fatalf("%v %+v", err, res)
 	}
-	if s := res.View.Sections[0]; s.More != nil || !slices.Equal(rows(s), []string{"issue-ENG-125"}) {
+	if s := res.View.Sections[0]; s.More != nil || !slices.Equal(rows(s), []string{"issue-ENG-123", "issue-ENG-125"}) {
 		t.Fatalf("second page: %v, more %+v", rows(s), s.More)
 	}
 	text, err := a.callTool(t.Context(), "jira_assigned", nil)
