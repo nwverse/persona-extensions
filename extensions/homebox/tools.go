@@ -31,7 +31,7 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "homebox_create_item", Description: "Create a Homebox item after explicit confirmation using a discovered non-location entity type and location parent. Supports name, description, quantity and discovered tag IDs; no attachments, deletion or group administration.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"entity_type_id", "location_id", "name", "quantity"}, "properties": map[string]any{
-			"entity_type_id": map[string]any{"type": "string", "format": "uuid"}, "location_id": map[string]any{"type": "string", "format": "uuid"}, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": 255}, "description": map[string]any{"type": "string", "maxLength": 1000}, "quantity": map[string]any{"type": "number", "minimum": 0.001, "maximum": 1000000}, "tag_ids": map[string]any{"type": "array", "maxItems": 20, "items": map[string]any{"type": "string", "format": "uuid"}},
+			"entity_type_id": map[string]any{"type": "string", "format": "uuid"}, "location_id": map[string]any{"type": "string", "format": "uuid"}, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxNameChars}, "description": map[string]any{"type": "string", "maxLength": 1000}, "quantity": map[string]any{"type": "number", "minimum": 0.001, "maximum": 1000000}, "tag_ids": map[string]any{"type": "array", "maxItems": 20, "items": map[string]any{"type": "string", "format": "uuid"}},
 		}}},
 }
 

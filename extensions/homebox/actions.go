@@ -18,8 +18,11 @@ type createArgs struct {
 	TagIDs       []string `json:"tag_ids,omitempty"`
 }
 
+// maxNameChars is the longest item name: the validation, the tool schema and the page state check use it.
+const maxNameChars = 255
+
 func (in createArgs) validate() error {
-	if !validEntityID(in.EntityTypeID) || !validEntityID(in.LocationID) || strings.TrimSpace(in.Name) == "" || len([]rune(in.Name)) > 255 || len([]rune(in.Description)) > 1000 || in.Quantity <= 0 || in.Quantity > 1000000 || len(in.TagIDs) > 20 {
+	if !validEntityID(in.EntityTypeID) || !validEntityID(in.LocationID) || strings.TrimSpace(in.Name) == "" || len([]rune(in.Name)) > maxNameChars || len([]rune(in.Description)) > 1000 || in.Quantity <= 0 || in.Quantity > 1000000 || len(in.TagIDs) > 20 {
 		return errors.New("valid type/location UUIDs, a bounded name/description, positive quantity and at most 20 tags are required")
 	}
 	if strings.ContainsFunc(in.Name, unicode.IsControl) || strings.ContainsFunc(in.Description, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) {
