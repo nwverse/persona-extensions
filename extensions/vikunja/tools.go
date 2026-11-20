@@ -73,7 +73,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		}
 		var b strings.Builder
 		for _, item := range page.Items {
-			fmt.Fprintf(&b, "- Task #%d (%s): %s\n  Project: %d | due: %s | done: %v\n", item.ID, item.Identifier, clipText(item.Title, 500), item.ProjectID, item.DueDate, item.Done)
+			fmt.Fprintf(&b, "- Task #%d (%s): %s\n  Project: %d | due: %s | done: %v\n", item.ID, item.Identifier, clipText(item.Title, 500), item.ProjectID, item.dueLabel(), item.Done)
 			if item.Description != "" {
 				b.WriteString("  Description: " + clipText(item.Description, 2000) + "\n")
 			}
@@ -92,7 +92,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 			return "", err
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "Task #%d (%s): %s\nProject: %d | due: %s | done: %v\n\nDescription (untrusted):\n%s\n", item.ID, item.Identifier, clipText(item.Title, 500), item.ProjectID, item.DueDate, item.Done, clipText(item.Description, 50000))
+		fmt.Fprintf(&b, "Task #%d (%s): %s\nProject: %d | due: %s | done: %v\n\nDescription (untrusted):\n%s\n", item.ID, item.Identifier, clipText(item.Title, 500), item.ProjectID, item.dueLabel(), item.Done, clipText(item.Description, 50000))
 		for _, c := range item.Comments {
 			name := c.Author.Name
 			if name == "" {
