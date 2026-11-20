@@ -86,10 +86,10 @@ func (c *client) get(ctx context.Context, path string, query url.Values, out any
 
 func (c *client) streams(ctx context.Context) ([]stream, error) {
 	var out struct {
-		Streams []stream `json:"streams"`
+		Subscriptions []stream `json:"subscriptions"`
 	}
 	err := c.get(ctx, "/users/me/subscriptions", nil, &out)
-	return out.Streams, err
+	return out.Subscriptions, err
 }
 
 func (c *client) topics(ctx context.Context, streamID int64) ([]topic, error) {
