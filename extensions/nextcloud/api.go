@@ -107,11 +107,13 @@ func (c *client) search(ctx context.Context, username, query string) ([]fileEntr
 	prefix := "/remote.php/dav/files/" + username + "/"
 	var files []fileEntry
 	for _, item := range out.Responses {
-		if item.IsCollection || !strings.HasPrefix(item.Href, prefix) {
+		// WebDAV hrefs are percent-encoded; keep the decoded path so it can be passed back to file().
+		href, err := url.PathUnescape(item.Href)
+		if err != nil || item.IsCollection || !strings.HasPrefix(href, prefix) {
 			continue
 		}
-		rel := strings.TrimPrefix(item.Href, prefix)
-		if validRemotePath(rel) {
+		if validRemotePath(strings.TrimPrefix(href, prefix)) {
+			item.Href = href
 			files = append(files, item)
 		}
 	}

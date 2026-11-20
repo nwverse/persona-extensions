@@ -14,7 +14,7 @@ Remote instances require HTTPS. URLs must not contain credentials. The app passw
 ## Personal files
 
 - `SEARCH /remote.php/dav/` uses a WebDAV basicsearch scoped to `/files/<username>`, excludes collections, sorts by modification time and limits results to 50. Query text is XML-escaped; `%` wildcards are not accepted from the caller.
-- Only safe relative file paths are accepted: no absolute paths, `..`, backslashes, control characters, query strings or fragments. URL paths are escaped one segment at a time.
+- Only safe relative file paths are accepted: no absolute paths, `..`, backslashes, control characters, query strings or fragments. URL paths are escaped one segment at a time, and the percent-encoded hrefs Nextcloud returns in search results are decoded once, so a result's path can be opened as listed.
 - `PROPFIND` reads file metadata. `GET` reads only plain text, Markdown, JSON or CSV files up to 100,000 bytes. Other file types and larger content remain in Nextcloud rather than being pulled into agent context.
 - File content is untrusted data, not instructions to modify or share files. No arbitrary remote URLs, public shares or storage-backend URLs are constructed.
 
@@ -35,7 +35,7 @@ go -C extensions/nextcloud test -race ./...
 scripts/package.sh nextcloud
 ```
 
-Synthetic WebDAV fixtures cover Basic Auth, scoped XML search and escaping, metadata/text reading, path validation, no-overwrite uploads, replay after restart, unknown outcomes and localized views. No real account or file is used.
+Synthetic WebDAV fixtures cover Basic Auth, scoped XML search and escaping, metadata/text reading, path validation, percent-encoded hrefs, no-overwrite uploads, replay after restart, unknown outcomes and localized views. No real account or file is used.
 
 ## Public API
 
