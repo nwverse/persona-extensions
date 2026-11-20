@@ -228,7 +228,10 @@ func (a *app) createView(ctx context.Context, r *ext.UIRequest, st pageState) (*
 
 func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 	t := textsFor(r.Locale)
-	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(taskSummary(item), 1800)}}
+	var items []wire.Component
+	if summary := taskSummary(item); summary != "" {
+		items = append(items, wire.Component{Type: wire.ComponentText, Text: clipText(summary, 1800)})
+	}
 	if link := safeTaskLink(item.PermalinkURL); link != "" {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
