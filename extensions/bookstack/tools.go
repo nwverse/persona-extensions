@@ -16,7 +16,7 @@ type tool struct {
 }
 
 var idSchema = map[string]any{"type": "integer", "minimum": 1}
-var textSchema = map[string]any{"type": "string", "maxLength": 200}
+var textSchema = map[string]any{"type": "string", "maxLength": maxQueryChars}
 
 var readTools = []tool{
 	{Name: "bookstack_books", Description: "List visible BookStack books with count/offset pagination. Returns exact book IDs for page listing and creation.",
