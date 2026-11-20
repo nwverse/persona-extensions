@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -16,6 +17,7 @@ import (
 type pageState struct {
 	Query    string     `json:"q,omitempty"`
 	Token    string     `json:"t,omitempty"`
+	History  []string   `json:"h,omitempty"`
 	IssueKey string     `json:"k,omitempty"`
 	Mode     string     `json:"m,omitempty"`
 	DraftID  string     `json:"d,omitempty"`
@@ -24,7 +26,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.Token) > maxPageToken || len(st.IssueKey) > 64 || len(st.DraftID) > 128 {
+	if err := r.DecodeState(&st); err != nil || len(st.Token) > maxPageToken || len(st.History) >= maxViewPages || len(st.IssueKey) > 64 || len(st.DraftID) > 128 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -45,12 +47,13 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Token, st.Mode = r.Values["q"], "", "list"
+		st.Query, st.Token, st.History, st.Mode = r.Values["q"], "", nil, "list"
 	case "more":
 		token := r.Values["token"]
 		if token == "" || len(token) > maxPageToken {
 			return nil, errors.New("invalid page token")
 		}
+		st.History = append(st.History, st.Token)
 		st.Token = token
 	case "detail":
 		if err := validKey(r.Values["id"]); err != nil {
@@ -103,7 +106,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		}
 		return detailView(r, st, item), nil
 	}
-	page, err := a.client.search(ctx, st.Token)
+	issues, next, err := a.collectIssues(ctx, st)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -112,7 +115,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	section := wire.Section{Title: t.recent, Items: []wire.Component{{
 		Type: wire.ComponentButton, Title: t.create, Action: &wire.Action{ID: "create", Push: &wire.Push{State: ext.EncodeState(pageState{Mode: "create", DraftID: randomID()}), Title: t.create}},
 	}}}
-	for _, item := range page.Issues {
+	for _, item := range issues {
 		if st.Query != "" && !strings.Contains(strings.ToLower(item.Fields.Summary+" "+item.Key), strings.ToLower(st.Query)) {
 			continue
 		}
@@ -121,11 +124,49 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 1 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noIssues})
 	}
-	if next := page.next(); next != "" {
+	if next != "" {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"token": next}}}
 	}
 	v.Sections = []wire.Section{section}
 	return v, nil
+}
+
+const (
+	maxViewIssues = 250
+	maxViewPages  = 10
+)
+
+// collectIssues reads the pages the view has gone through, the tokens in History and then Token, so that Load more
+// answers the whole list, longer. It stops at maxViewIssues to keep the view within the SDK's component limit, and
+// returns a next token only while another page can be loaded. An issue that moved between two reads (the query orders
+// by update time) is listed once.
+func (a *app) collectIssues(ctx context.Context, st pageState) ([]issue, string, error) {
+	var out []issue
+	seen := map[string]bool{}
+	next := ""
+	for _, token := range append(slices.Clone(st.History), st.Token) {
+		if len(out) >= maxViewIssues {
+			break
+		}
+		batch, err := a.client.search(ctx, token)
+		if err != nil {
+			return nil, "", err
+		}
+		for _, item := range batch.Issues {
+			if !seen[item.Key] {
+				seen[item.Key] = true
+				out = append(out, item)
+			}
+		}
+		next = batch.next()
+	}
+	if len(out) > maxViewIssues {
+		out = out[:maxViewIssues]
+	}
+	if len(out) >= maxViewIssues || len(st.History)+1 >= maxViewPages {
+		next = ""
+	}
+	return out, next, nil
 }
 
 func detailView(r *ext.UIRequest, st pageState, item issue) *wire.View {

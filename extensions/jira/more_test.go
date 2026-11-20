@@ -142,3 +142,32 @@ func TestLoadMoreStopsAtViewLimit(t *testing.T) {
 		t.Fatal("loaded past the cap")
 	}
 }
+
+// The query orders by update time, so an issue updated between two reads can be at the end of the first page and at the
+// start of the second. Row keys must stay unique for the view to pass the check.
+func TestLoadMoreListsAMovedIssueOnce(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		issue := func(n int) string {
+			return fmt.Sprintf(`{"id":"%d","key":"ENG-%d","fields":{"summary":"issue %d","status":{"name":"To Do"},"project":{"key":"ENG"}}}`, n, n, n)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("nextPageToken") == "p2" {
+			fmt.Fprint(w, `{"issues":[`+issue(2)+`,`+issue(3)+`],"isLast":true}`)
+			return
+		}
+		fmt.Fprint(w, `{"issues":[`+issue(1)+`,`+issue(2)+`],"nextPageToken":"p2","isLast":false}`)
+	}))
+	t.Cleanup(srv.Close)
+	a := &app{client: newClient(srv.URL, testToken), receipts: newWriteStore("")}
+	v, err := a.page(t.Context(), &ext.UIRequest{UIParams: wire.UIParams{Locale: "en", UIVersion: 3}}, pageState{})
+	if err != nil || v.Sections[0].More == nil {
+		t.Fatalf("initial view: %+v, %v", v, err)
+	}
+	v = loadMore(t, a, v)
+	if keys := strings.Join(issueRows(v), " "); keys != "issue-ENG-1 issue-ENG-2 issue-ENG-3" {
+		t.Fatalf("rows: %s", keys)
+	}
+	if err := wire.CheckView(v); err != nil {
+		t.Fatal(err)
+	}
+}
