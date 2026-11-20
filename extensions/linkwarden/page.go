@@ -126,11 +126,23 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	}
 	v := &wire.View{Title: t.links, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}}
 	if collections, err := a.client.collections(ctx); err == nil {
+		// A drop-down has at most 100 choices: the first collections, and the one being looked at in the last place
+		// when it is beyond them.
 		choices := []wire.Choice{{Value: "0", Title: t.all}}
+		selected := st.CollectionID == 0
 		for _, c := range collections {
-			choices = append(choices, wire.Choice{Value: strconv.FormatInt(c.ID, 10), Title: c.Name})
+			choice := wire.Choice{Value: strconv.FormatInt(c.ID, 10), Title: c.Name}
+			switch {
+			case len(choices) < maxFilterChoices:
+				choices = append(choices, choice)
+			case c.ID == st.CollectionID:
+				choices[len(choices)-1] = choice
+			}
+			selected = selected || c.ID == st.CollectionID
 		}
-		v.Filter = &wire.Filter{Name: "collection", Title: t.collections, Value: strconv.FormatInt(st.CollectionID, 10), Choices: choices, Action: wire.Action{ID: "collection"}}
+		if selected {
+			v.Filter = &wire.Filter{Name: "collection", Title: t.collections, Value: strconv.FormatInt(st.CollectionID, 10), Choices: choices, Action: wire.Action{ID: "collection"}}
+		}
 	}
 	section := wire.Section{Title: fmt.Sprintf(t.results, len(items)), Items: []wire.Component{{
 		Type: wire.ComponentButton, Title: t.save, Action: &wire.Action{ID: "save-form", Push: &wire.Push{State: ext.EncodeState(pageState{Mode: "save", DraftID: randomID()}), Title: t.save}},
@@ -144,6 +156,9 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	v.Sections = []wire.Section{section}
 	return v, nil
 }
+
+// maxFilterChoices is the most choices a filter has.
+const maxFilterChoices = 100
 
 func detailView(r *ext.UIRequest, st pageState, item link, highlights []highlight) *wire.View {
 	t := textsFor(r.Locale)
