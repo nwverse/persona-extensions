@@ -216,15 +216,37 @@ func (a *app) collectSpaces(ctx context.Context, offset int) ([]space, bool, err
 	return out, more && len(out) < maxViewObjects, nil
 }
 
+// collectSearch reads batches from offset 0 through offset so that Load more extends the results instead of
+// replacing them, and reports whether Anytype has more matches that the cap still leaves room to show.
+func (a *app) collectSearch(ctx context.Context, query string, offset int) ([]knowledgeObject, bool, error) {
+	var out []knowledgeObject
+	more := false
+	for pos := 0; pos <= offset && len(out) < maxViewObjects; pos += 50 {
+		batch, err := a.client.search(ctx, query, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Data...)
+		more = batch.Pagination.HasMore
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewObjects {
+		out = out[:maxViewObjects]
+	}
+	return out, more && len(out) < maxViewObjects, nil
+}
+
 func (a *app) searchView(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
-	page, err := a.client.search(ctx, st.Query, st.Offset)
+	results, more, err := a.collectSearch(ctx, st.Query, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
-	section := wire.Section{Title: fmt.Sprintf(t.objects, len(page.Data))}
-	for _, item := range page.Data {
+	section := wire.Section{Title: fmt.Sprintf(t.objects, len(results))}
+	for _, item := range results {
 		if item.ID == "" || item.Name == "" || item.SpaceID == "" {
 			continue
 		}
@@ -233,7 +255,7 @@ func (a *app) searchView(ctx context.Context, r *ext.UIRequest, st pageState) (*
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noObjects})
 	}
-	if page.Pagination.HasMore {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	return &wire.View{Title: t.search, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}, Sections: []wire.Section{section, {Items: []wire.Component{{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "spaces"}}}}}}, nil
