@@ -262,12 +262,14 @@ func collectionName(id string, cols []collection, t *texts) string {
 	return t.unsorted
 }
 
-func collectionLabel(item raindrop, t *texts) string {
-	if item.Collection.Title != "" {
-		return item.Collection.Title
-	}
+func collectionLabel(item raindrop, cols []collection, t *texts) string {
 	if item.Collection.ID == -1 {
 		return t.unsorted
+	}
+	for _, c := range cols {
+		if c.ID == item.Collection.ID {
+			return c.Title
+		}
 	}
 	return "Raindrop"
 }
