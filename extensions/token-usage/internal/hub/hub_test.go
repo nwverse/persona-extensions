@@ -42,22 +42,19 @@ func TestPullSplitsByModelAndLauncher(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The empty pairs are dropped. beta's point covers 10 minutes, so it becomes 10 buckets summing to 40.
+	// Empty pairs produce zero correction tombstones. beta's point covers 10 minutes, so it becomes 10 buckets summing to 40.
 	sums := map[string]int64{}
 	for _, b := range got {
-		if b.Model == "alpha" && b.Launcher != "cli" || b.Model == "beta" && b.Launcher != "" {
-			t.Errorf("an empty pair was kept: %+v", b)
-		}
 		sums[b.Model+"|"+b.Launcher] += b.Total()
 	}
-	if sums["alpha|cli"] != 100 || sums["beta|"] != 40 || len(sums) != 2 {
-		t.Fatalf("sums %v, want alpha|cli 100 and beta| 40", sums)
+	if sums["alpha|cli"] != 100 || sums["beta|"] != 40 || sums["alpha|"] != 0 || sums["beta|cli"] != 0 || len(sums) != 4 {
+		t.Fatalf("sums %v, want alpha|cli 100, beta| 40, and both zero-valued empty pairs", sums)
 	}
 }
 
 func TestBucketsSpreadAPointOverItsMinutes(t *testing.T) {
 	s := Series{Step: 600, Points: []Point{{T: 1000, Step: 600, In: 605, Out: 3, Req: 2}}}
-	got := bucketsOf(s, "alpha", "cli")
+	got := bucketsOf(s, "alpha", "cli", true)
 	if len(got) != 10 {
 		t.Fatalf("got %d minutes, want 10", len(got))
 	}
