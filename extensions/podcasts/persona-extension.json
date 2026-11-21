@@ -22,7 +22,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/podcasts.mjs",
-      "sha256": "1dcaf20c38d6870b920324b78842f8eeaec8f4ed239186e7bb19fb63b75ced38"
+      "sha256": "1d3cbe3754805ed2c0e97f36bb5636d6827ef9b5cb9d2437df60a7a5c70b6143"
     }
   },
   "contributes": {

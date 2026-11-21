@@ -22,7 +22,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/domains.mjs",
-      "sha256": "1fae4f779a19476e7fcefc8cb30171c1e39ef754fd7caaea44c1a6799272f6ff"
+      "sha256": "8b3e33e2d14f6e7d44b5be23659d645eadf8f75c3f4fdf1910bae7ba96b93f3e"
     }
   },
   "contributes": {

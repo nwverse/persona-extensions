@@ -20,7 +20,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/openlibrary.mjs",
-      "sha256": "3439ea99bc6a11cdc55c47224df3fdfd92d96d8a933cd0e4f18bdc83358f0e14"
+      "sha256": "e6388f3fb95015597df7791cfc8f9170fb9bb0e7de409a4f25be42b79c60c93d"
     }
   },
   "contributes": {
