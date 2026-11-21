@@ -69,7 +69,8 @@ type app struct {
 	hub      *hubAPI
 	rpc      invalidator // the hub's connection: ui.invalidate (nil in tests)
 	watch    *watcher
-	marks    irMarks // remotes marked off without sending (irmarks.go)
+	marks    irMarks    // remotes marked off without sending (irmarks.go)
+	scene    sceneCache // cached RoomPlan scan, home3d.json fixes and rendered posters (scene.go)
 	// actions.do runs each request id once. In-flight calls stay pinned in running; only completed successful
 	// answers occupy the bounded done LRU.
 	doneMu    sync.Mutex
@@ -104,7 +105,7 @@ func (a *app) hubAPI() *hubAPI {
 func (a *app) program() ext.Program {
 	return ext.Program{ID: id, Version: version, Manifest: manifest, Init: a.init,
 		Namespaces: map[string]ext.Handler{"connector": a.connector},
-		UI:         map[string]ext.Page{pageUI: {Render: a.render, Action: a.action}}}
+		UI:         map[string]ext.Page{pageUI: {Render: a.render, Action: a.action, Image: a.image}}}
 }
 
 // invalidator asks the apps to draw a page again (ext.Hub).
@@ -130,6 +131,9 @@ func (a *app) init(ctx context.Context, in *ext.Init, rpc *ext.Hub) (map[string]
 	a.mu.Unlock()
 	a.watch.load(a.dataDir)
 	a.marks.load(a.dataDir, a.logf)
+	if a.hasScene() {
+		a.watch.poke()
+	}
 	go a.warm(ctx)
 	go a.watch.run(ctx)
 	return nil, nil
