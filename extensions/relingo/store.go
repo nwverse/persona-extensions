@@ -136,6 +136,21 @@ func (s *store) save(lemma, gloss string) (already bool) {
 	return false
 }
 
+// remove forgets lemma. missing is true when it was not saved.
+func (s *store) remove(lemma string) (missing bool) {
+	if !surfaceOK(lemma) {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.Words[lemma]; !ok {
+		return true
+	}
+	delete(s.Words, lemma)
+	s.flush()
+	return false
+}
+
 func (s *store) translation(key string) (string, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -177,4 +192,11 @@ func (s *store) flush() {
 	if err := os.Rename(tmp, s.path); err != nil {
 		s.logf("state: %v", err)
 	}
+}
+
+func (s *store) pathDir() string {
+	if s.path == "" {
+		return ""
+	}
+	return filepath.Dir(s.path)
 }

@@ -32,4 +32,4 @@ SOFTWARE.
 
 ## Termwise
 
-[s546126/termwise](https://github.com/s546126/termwise) is the companion terminal and coding-agent vocabulary tool (`tw`). This extension implements the Persona reading page and browser preview in Go, using the same local ECDICT candidate rules (`exchange` inflections `0:` and `p/d/i/3/s/r/t`, short uppercase acronym skipping, function-word filtering, and the everyday developer word list in `devwords.txt` from `termwise/devwords.txt`).
+[s546126/termwise](https://github.com/s546126/termwise) is a separate terminal and coding-agent vocabulary tool (`tw`). Relingo neither calls nor needs it; it implements the Persona reading page and browser preview in Go, using the same local ECDICT candidate rules (`exchange` inflections `0:` and `p/d/i/3/s/r/t`, short uppercase acronym skipping, function-word filtering, and the everyday developer word list in `devwords.txt` from `termwise/devwords.txt`).
