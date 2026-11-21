@@ -29,12 +29,146 @@ class Expired(Exception):
     """The session is over: the user has to scan again. Not being able to reach Feishu is any other exception."""
 
 
+def _fields(raw):
+    """The length-delimited fields of a protobuf message, the last of each by number, as bytes. Enough to read the
+    rich text's few string properties without generated classes; anything malformed ends the read, and a property
+    that is not bytes has no fields."""
+    if not isinstance(raw, (bytes, bytearray, memoryview)):
+        return {}
+    raw = bytes(raw)
+    out, i, n = {}, 0, len(raw)
+
+    def varint():
+        nonlocal i
+        shift = value = 0
+        while i < n and shift < 70:  # protobuf's longest varint is 10 bytes
+            b = raw[i]
+            i += 1
+            value |= (b & 0x7F) << shift
+            if not b & 0x80:
+                return value
+            shift += 7
+        raise ValueError("truncated or overlong varint")
+
+    try:
+        while i < n:
+            key = varint()
+            number, wire = key >> 3, key & 7
+            if wire == 0:
+                varint()
+                continue
+            size = {1: 8, 5: 4}.get(wire)
+            if wire == 2:
+                size = varint()
+            if size is None or i + size > n:
+                break  # an unknown wire type, or a length past the end: what follows is not read as a field
+            if wire == 2:
+                out[number] = raw[i:i + size]  # the last one wins, as protobuf reads a repeated scalar
+            i += size
+    except ValueError:
+        pass
+    return out
+
+
+def _string(raw, number):
+    value = _fields(raw).get(number) or b""
+    return value if isinstance(value, str) else value.decode("utf-8", "replace")
+
+
+# LarkAgentX's rich text: its tags (RichTextElement.Tag) and what it writes for the ones with no text.
+_TEXT_TAGS = (1, 3, 7, 8, 9, 17)  # TEXT, P, B, I, U, LINK: TextProperty.content (LINK: LinkProperty.url) is field 1
+_AT, _ANCHOR, _PARAGRAPH = 5, 6, 3
+_PLACEHOLDERS = {2: "[图片]", 5: "[@]", 10: "[表情]", 18: "[视频]", 22: "[文档]"}
+
+
+def rich_text(rich):
+    """A TEXT or POST message's rich text as LarkAgentX reads it (`extract_rich_text`), but with its links. LarkAgentX
+    drops an A element whole, its title and its address: a pasted Feishu doc link reached Persona as the words around
+    it (2026-11-12). A link is its title, a space and its address (the address alone when the title is it or empty).
+    None when the message has no link, so LarkAgentX's own text stays (and so does an empty result)."""
+    linked = _linked(rich)
+    return linked[0] if linked else None
+
+
+def _linked(rich):
+    """rich_text's text and the AT elements' spans in that same text ({id, start, end, label}, as _mentions gives them
+    for LarkAgentX's text), or None when the message has no link."""
+    # A decoder of another shape (a dictionary that is not one, elements or ids of another type) leaves LarkAgentX's
+    # text as it is: None, never an exception that would lose the whole message.
+    try:
+        dictionary = rich["elements"]["dictionary"]
+    except (KeyError, TypeError, IndexError):
+        return None
+    if not isinstance(dictionary, dict):
+        return None
+    if not any(isinstance(v, dict) and v.get("tag") == _ANCHOR for v in dictionary.values()):
+        return None
+    ids = rich.get("elementIds")
+    ids = [k for k in ids if isinstance(k, str)] if isinstance(ids, list) else []
+    if ids:
+        listed = set(ids)
+        ordered = [dictionary[k] for k in ids if k in dictionary] + [v for k, v in dictionary.items() if k not in listed]
+    else:
+        try:
+            ordered = [v for _, v in sorted(dictionary.items(), key=lambda item: int(item[0]))]
+        except (ValueError, TypeError):
+            ordered = list(dictionary.values())
+    text, after_link, spans, linked = "", False, [], False
+    for v in ordered:
+        if not isinstance(v, dict):
+            continue
+        tag, prop = v.get("tag", 1), v.get("property")
+        if not prop:
+            continue
+        piece, user_id = None, ""
+        if tag in _TEXT_TAGS:
+            piece = _string(prop, 1) + ("\n" if tag == _PARAGRAPH else "")
+        elif tag == _AT:
+            user_id, piece = _string(prop, 1), _string(prop, 2) or None  # AtProperty.userId, .content
+        elif tag == _ANCHOR:
+            # AnchorProperty is not in LarkAgentX's proto.proto (only Tag.A = 6 and RichText.anchorIds = 7); its fields
+            # are LarkAgentX's lark_all_pb2 entities.RichTextElement.AnchorProperty at the pinned commit: href 1,
+            # content 2, textContent 3.
+            # tests/test_real.py checks them there; check again when the pin moves.
+            href, title = _string(prop, 1), _string(prop, 2) or _string(prop, 3)
+            title = title.strip()
+            piece = href if not title or title == href else ("%s %s" % (title, href) if href else title)
+            linked = linked or bool(href)
+            if piece and text and not text[-1].isspace():
+                piece = " " + piece
+        if piece is None:
+            piece = _PLACEHOLDERS.get(tag, "")
+        spaced = after_link and bool(piece) and not piece[0].isspace()
+        if spaced:
+            piece = " " + piece  # an address glued to the next words is a different address
+        if tag == _AT and user_id:
+            start = len(text) + (1 if spaced else 0)
+            spans.append({"id": user_id, "start": start, "end": len(text) + len(piece), "label": piece[1:] if spaced else piece})
+        text += piece
+        if piece:  # an element that adds nothing keeps the last link apart from what comes next
+            after_link = tag == _ANCHOR
+    if not linked:
+        return None  # an anchor with no readable address adds no link: LarkAgentX's text stays
+    return text, spans
+
+
 def normalize(msg, extract_key):
     """A message of LarkAgentX's, live or from history, as the connector keeps it. Pure, for the tests."""
     msg_type = msg.get("msg_type") or 0
     name = msg.get("msg_type_name") or "UNKNOWN"
     data = msg.get("content_data") or {}
     key = extract_key(msg_type, data) if isinstance(data, dict) else ""
+    text = msg.get("content") or ""
+    mentions = _mentions(data, text)
+    linked = _linked(data.get("richText")) if name in ("TEXT", "POST") and isinstance(data, dict) else None
+    if linked and linked[0]:  # an empty rebuild keeps LarkAgentX's text, as its own `extract_rich_text(...) or text` does
+        head = "[富文本] %s\n" % data.get("title", "") if name == "POST" else ""
+        text = (head + linked[0]).rstrip() if head else linked[0]
+        # The spans follow the text the connector keeps: shifted past a POST's title line, and none at all when one
+        # does not land on its label (the message is then no self-mention, never a wrong one).
+        mentions = [dict(m, start=m["start"] + len(head), end=m["end"] + len(head)) for m in linked[1]]
+        if any(text[m["start"]:m["end"]] != m["label"] for m in mentions):
+            mentions = []
     media = []
     if name in ("IMAGE", "STICKER") and key:
         media = [{"kind": name.lower(), "key": key}]
@@ -48,14 +182,13 @@ def normalize(msg, extract_key):
     if at > 1e12:
         at /= 1000
     root = msg.get("root_id") or ""
-    text = msg.get("content") or ""
     return {
         "id": str(msg.get("msg_id") or ""), "chat": str(msg.get("chat_id") or ""),
         "chat_kind": "dm" if msg.get("chat_type") == 1 else "group",
         "position": int(msg.get("position") or 0), "sender": str(msg.get("from_id") or ""), "type": name,
         "text": text, "at": at or time.time(), "root": "" if root == "0" else root,
         "parent": msg.get("parent_id") or "", "at_me": bool(msg.get("at_me")), "media": media,
-        "mentions": _mentions(data, text),
+        "mentions": mentions,
     }
 
 
@@ -89,12 +222,15 @@ def _mentions(data, text):
     if not isinstance(data, dict):
         return []
     rich = data.get("richText") or {}
-    elements = (rich.get("elements") or {}).get("dictionary") or {}
+    holder = rich.get("elements") if isinstance(rich, dict) else None
+    elements = (holder.get("dictionary") if isinstance(holder, dict) else None) or {}
     if not isinstance(elements, dict):
         return []
-    ids = rich.get("elementIds") or []
+    ids = rich.get("elementIds") if isinstance(rich, dict) else None
+    ids = [k for k in ids if isinstance(k, str)] if isinstance(ids, list) else []
+    listed = set(ids)
     keys = [k for k in ids if k in elements]
-    keys += [k for k in elements if k not in set(ids)]
+    keys += [k for k in elements if k not in listed]
     if not ids:
         try:
             keys = sorted(elements, key=lambda k: int(k))
