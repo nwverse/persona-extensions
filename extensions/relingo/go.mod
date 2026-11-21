@@ -1,4 +1,4 @@
-module github.com/nwverse/persona-extensions/extensions/termwise
+module github.com/nwverse/persona-extensions/extensions/relingo
 
 go 1.27.1
 

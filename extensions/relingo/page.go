@@ -10,9 +10,10 @@ import (
 )
 
 type app struct {
-	logf  func(string, ...any)
-	tr    translator
-	store *store
+	logf           func(string, ...any)
+	tr             translator
+	store          *store
+	underlineSaved bool
 }
 
 func newApp(logf func(string, ...any)) *app {
@@ -28,6 +29,9 @@ func newApp(logf func(string, ...any)) *app {
 
 func (a *app) init(_ context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
 	a.store = openStore(in.Info().DataDir, a.logf)
+	var cfg settings
+	_ = in.Config(&cfg)
+	a.underlineSaved = cfg.UnderlineSaved
 	return nil, nil
 }
 

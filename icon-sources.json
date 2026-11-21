@@ -1026,7 +1026,7 @@
       "trademark_owner": "Telegram",
       "usage": "Exact Raycast extension icon used to identify the corresponding public service."
     },
-    "termwise": {
+    "relingo": {
       "path": "assets/icon.png",
       "source_id": "persona",
       "source_url": "https://raw.githubusercontent.com/nwverse/persona/ba975136899181a7f79b771cfe0d508f088dbaf9/apple/Persona/Resources/Assets.xcassets/AppIcon.appiconset/icon.png",

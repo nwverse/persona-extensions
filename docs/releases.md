@@ -4,6 +4,18 @@
 
 Publishing packages, changing package visibility and dispatching publication workflows require authorization. Code and tests can merge after affected local verification passes **before** cutover, but publication cannot. Hosted CI is explicit-dispatch only, not a PR merge gate. The cutover owner handles repository renaming and visibility; this workflow does neither. Local CI and synthetic fixtures are not evidence of a published package or a working hub installation.
 
+## Extension notes
+
+### Relingo 0.2.0 (formerly termwise)
+
+`relingo` 0.2.0 replaces the `termwise` extension (last packaged as 0.1.2; installed data from 0.1.1 uses the same `reading.json`). The source manifest declares `replaces: "termwise"`. That field is market-entry metadata only: `scripts/manifest.py packaged` strips it, and the program's runtime manifest omits it. Publication follows [Renamed identities](#renamed-identities): a new package namespace, the predecessor removed from the next generated catalog, and no deletion of the old package or release. Hubs that support identity transitions keep the original storage slot, so settings and `reading.json` carry over. The program reads that file as before; saved words are not renamed or dropped.
+
+`text_lookup` (`relingo`, English) answers `state`, `lookup`, `save` and `remove` on the same saved-word list as the reading page. `underline_saved` defaults to false.
+
+The name Relingo is also the name of an existing commercial English-vocabulary product. This extension is not that product. Maintainers should weigh the name before publication.
+
+Relingo needs no command line: the dictionary and rules are built into the program and it starts no other program. The separate CLI `s546126/termwise` is neither called nor required; it should stay named `termwise`, and this release does not rename any repository.
+
 ## Market and indexes
 
 The repository has one catalog, `persona-extensions.json`, with embedded signatures:
