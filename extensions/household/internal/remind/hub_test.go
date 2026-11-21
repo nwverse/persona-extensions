@@ -258,10 +258,16 @@ func TestCreateTodo(t *testing.T) {
 		status  int
 		reply   string
 		wantErr string
+		notMade bool // createNotMade: creating it again cannot duplicate it
 	}{
-		{"no id in reply", http.StatusOK, `{"todo":{}}`, "编号"},
-		{"server error", http.StatusInternalServerError, "nope", "HTTP 500"},
-		{"assistant offline", http.StatusServiceUnavailable, "offline", "HTTP 503"},
+		{"no id in reply", http.StatusOK, `{"todo":{}}`, "编号", false},
+		{"bad request", http.StatusBadRequest, "bad", "HTTP 400", true},
+		{"conflict", http.StatusConflict, "conflict", "HTTP 409", true},
+		{"too many requests", http.StatusTooManyRequests, "slow down", "HTTP 429", true},
+		{"request timeout is unknown", http.StatusRequestTimeout, "late", "HTTP 408", false},
+		{"server error", http.StatusInternalServerError, "nope", "HTTP 500", false},
+		{"assistant in doubt", http.StatusBadGateway, `{"code":"assistant_in_doubt","delivered":"unknown"}`, "HTTP 502", false},
+		{"assistant offline", http.StatusServiceUnavailable, "offline", "HTTP 503", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -273,8 +279,35 @@ func TestCreateTodo(t *testing.T) {
 			if id != "" {
 				t.Fatalf("id = %q on error, want empty", id)
 			}
+			if got := createNotMade(err); got != tt.notMade {
+				t.Fatalf("createNotMade(error) = %v, want %v", got, tt.notMade)
+			}
 		})
 	}
+
+	t.Run("hub not listening is not made", func(t *testing.T) {
+		_, srv := newFakeHub(t, http.StatusOK, `{"todo":{"id":"todo-1"}}`)
+		srv.Close()
+		_, err := NewHub(srv.URL, testToken, allScopes).CreateTodo(context.Background(), todo)
+		if err == nil || !createNotMade(err) {
+			t.Fatalf("CreateTodo error = %v, want one createNotMade accepts", err)
+		}
+	})
+
+	t.Run("connection lost after the request is unknown", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.ReadAll(r.Body)
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err == nil {
+				conn.Close()
+			}
+		}))
+		t.Cleanup(srv.Close)
+		_, err := NewHub(srv.URL, testToken, allScopes).CreateTodo(context.Background(), todo)
+		if err == nil || createNotMade(err) {
+			t.Fatalf("CreateTodo error = %v, want an unknown outcome", err)
+		}
+	})
 
 	t.Run("scope not granted sends nothing", func(t *testing.T) {
 		f, srv := newFakeHub(t, http.StatusOK, `{"todo":{"id":"todo-1"}}`)
