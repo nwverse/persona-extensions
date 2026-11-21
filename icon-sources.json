@@ -324,6 +324,18 @@
       "trademark_owner": "Discord Inc.",
       "usage": "Exact Raycast extension icon used to identify the corresponding public service."
     },
+    "dingtalk": {
+      "path": "assets/icon.png",
+      "source_id": "dify-official-plugins",
+      "source_url": "https://raw.githubusercontent.com/langgenius/dify-official-plugins/60804e30f6fa41fbe890c02c9849b0bdbe28d13a/tools/dingtalk/_assets/icon.svg",
+      "sha256": "1a24b488055ed08a0ed7d5699af39eeeea875de504cf6b4d866c04ee02eff55a",
+      "format": "png",
+      "width": 480,
+      "height": 480,
+      "trademark_owner": "Alibaba (DingTalk)",
+      "usage": "Service icon used solely to identify this integration. The 480x480 PNG embedded in the upstream SVG, extracted byte for byte without changes.",
+      "transformation": "The 480x480 PNG embedded in the upstream SVG, extracted byte for byte without changes."
+    },
     "disklessly": {
       "path": "assets/icon.png",
       "source_id": "persona",
