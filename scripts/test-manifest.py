@@ -57,6 +57,72 @@ class SelectedTests(unittest.TestCase):
             manifest.ROOT = old_root
 
 
+class L10nTests(unittest.TestCase):
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root, True)
+        old_root = manifest.ROOT
+        manifest.ROOT = str(self.root)
+        self.addCleanup(setattr, manifest, 'ROOT', old_root)
+
+    def write(self, name, text):
+        p = self.root / 'extensions' / 'demo' / 'l10n' / name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(text)
+
+    def test_translations_by_language(self):
+        self.write('zh-Hans.json', '{"name": "演示"}')
+        self.write('ja.json', '{"name": "デモ"}')
+        self.assertEqual(manifest.l10n('demo'), {'ja': {'name': 'デモ'}, 'zh-Hans': {'name': '演示'}})
+
+    def test_no_translations_is_empty(self):
+        self.assertEqual(manifest.l10n('demo'), {})
+
+    def test_a_bad_file_is_an_error_not_a_dropped_translation(self):
+        self.write('zh-Hans.json', '[1, 2]')
+        with self.assertRaises(ValueError):
+            manifest.l10n('demo')
+        self.write('zh-Hans.json', '{"name": "a", "name": "b"}')
+        with self.assertRaises(ValueError):
+            manifest.l10n('demo')
+
+    def test_a_translation_the_hub_would_drop_is_an_error(self):
+        # The hub drops a translation that does not match its Translation shape or limits
+        # (persona server/internal/extension/l10n.go); the repository must refuse it instead of shipping text the
+        # market will never show.
+        for bad in ('{"configuration": {"macs": true}}',
+                    '{"name": "%s"}' % ("n" * 41),
+                    '{"name": "   "}',
+                    '{"name": 7}',
+                    '{"description": "%s"}' % ("d" * 2001),
+                    '{"configuration": {"macs": {"title": 1}}}',
+                    '{"configuration": {"macs": {"choices": {"a": 1}}}}',
+                    '{"configuration": {"macs": {"properties": {"x": []}}}}',
+                    '{"secrets": {"token": []}}',
+                    '{"secrets": {"token": {"title": ["x"]}}}'):
+            self.write('zh-Hans.json', bad)
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                manifest.l10n('demo')
+
+    def test_a_translation_the_hub_accepts_passes(self):
+        self.write('zh-Hans.json', json.dumps({
+            "name": "演示",
+            "description": "d" * 2000,
+            "configuration": {"macs": {"title": "Mac", "description": "d", "confirm": "c",
+                                       "choices": {"a": "A"}, "properties": {"inner": {"title": "I"}}}},
+            "secrets": {"token": {"title": "Token", "description": "d"}},
+            "unknown": {"ignored": True},
+        }, ensure_ascii=False))
+        ts = manifest.l10n('demo')
+        self.assertEqual(ts['zh-Hans']['configuration']['macs']['choices']['a'], 'A')
+
+    def test_the_catalog_entry_and_its_inventory_carry_them(self):
+        self.write('zh-Hans.json', '{"name": "演示"}')
+        entry = manifest.catalog.source_entry({'id': 'demo'}, l10n=manifest.l10n('demo'))
+        self.assertEqual(entry['l10n'], {'zh-Hans': {'name': '演示'}})
+        self.assertEqual(manifest.catalog.entry_inventory(entry)['l10n'], entry['l10n'])
+
+
 class JunkTests(unittest.TestCase):
     """macOS/editor junk (AppleDouble ._*, .DS_Store, __pycache__) under skills/assistant must fail the check:
     scripts/package.sh copies those trees verbatim, so the junk would ship (issue #99)."""
