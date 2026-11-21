@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "nuget",
   "name": "NuGet Packages",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "icon": "assets/icon.png",
   "description": "Search .NET packages on the official NuGet JSON APIs. Compare current stable versions, licenses, release dates, target frameworks, dependencies and project links. Get an exact-version dotnet add command without executing it.",
   "publisher": "nwverse",
@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/nuget.mjs",
-      "sha256": "a0df8dbba86ca1cc899eea8d9b979333397638cacff429a749c2108b82269a08"
+      "sha256": "4665fbf94a741a6c9dcc4e800171aaabb70bb38fd7c4480a140ff3ea3de83f00"
     }
   },
   "contributes": {

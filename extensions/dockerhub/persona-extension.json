@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "dockerhub",
   "name": "Docker Hub",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "icon": "assets/icon.png",
   "description": "Search public Docker Hub images. Check official status, publisher namespaces, pull activity, selected tag digests and supported platforms. Get an exact docker pull command as text without pulling or running images.",
   "publisher": "nwverse",
@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/dockerhub.mjs",
-      "sha256": "646ebd1648cb1a472ff21b232c2896f0147777bd642747da44233a15831b1f72"
+      "sha256": "ab416174483f7903c863747ae04ea9ce043bbf8369d937b0d2919e72172e3591"
     }
   },
   "contributes": {
