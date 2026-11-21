@@ -64,12 +64,13 @@
         "name": "飞书 /agent",
         "kind": "im",
         "connector": "larkx",
-        "description": "在任意飞书会话里发「/agent 要做的事」，或在本人消息里 @自己，交给助手；助手以你的身份回复在那条消息下面，末尾标明 AI 代答。群里每个话题各用一段助手对话。",
+        "description": "在任意飞书会话里发「/agent 要做的事」，或在本人消息里 @自己，交给助手；助手以你的身份回复在那条消息下面，末尾标明 AI 代答。群里每个话题各用一段助手对话。打开「推送也发到这里」或「同步主对话」后，这些消息只发到你和自己的飞书私聊，不进群。",
         "capabilities": {
           "format": "plain",
           "max_text": 4000,
           "asks": "none",
-          "threads": true
+          "threads": true,
+          "push": true
         }
       }
     ]

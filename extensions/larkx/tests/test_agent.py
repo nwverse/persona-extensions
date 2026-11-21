@@ -16,6 +16,7 @@ from test_connector import ME, Backend, Hub, message  # noqa: E402
 from larkx_persona import main  # noqa: E402
 from larkx_persona.connector import AGENT_SUFFIX, AGENT_SUFFIX_LEAST, AGENT_SUFFIX_MOST, Connector, agent_request  # noqa: E402
 from larkx_persona.main import Plugin  # noqa: E402
+from larkx_persona.real import own_chat_ok  # noqa: E402
 from larkx_persona.store import Store  # noqa: E402
 from larkx_persona.wire import RpcError  # noqa: E402
 
@@ -117,8 +118,11 @@ class AgentTest(unittest.TestCase):
 
     def test_nothing_goes_where_the_user_did_not_ask(self):
         self.c.on_message(message("m1", "c1", 1, sender="u_a", text="在吗"))
-        for p in ({"ref": "r1", "text": "x", "kind": "push"}, {"ref": "r2", "text": "x", "kind": "answer", "reply_to": "m1"},
-                  {"ref": "r3", "text": "x", "kind": "answer", "reply_to": "m_unknown"}):
+        # Only a push goes out without a request (to the user's own chat, AgentPushTest); a push answering a message
+        # still needs that message to be one of the user's own requests.
+        for p in ({"ref": "r1", "text": "x", "kind": "note"}, {"ref": "r2", "text": "x", "kind": "answer", "reply_to": "m1"},
+                  {"ref": "r3", "text": "x", "kind": "answer", "reply_to": "m_unknown"},
+                  {"ref": "r4", "text": "x", "kind": "push", "reply_to": "m1"}):
             with self.assertRaises(RpcError) as e:
                 self.c.channel_send(p)
             self.assertEqual(e.exception.code, "cannot_send")
@@ -202,6 +206,90 @@ class AgentTopicTest(unittest.TestCase):
             manifest = json.load(f)
         self.assertIs(manifest["configuration"]["properties"]["agent_group_topics"]["default"], True)
         self.assertIs(manifest["contributes"]["channel"][0]["capabilities"]["threads"], True)
+
+
+class AgentPushTest(unittest.TestCase):
+    """A push (kind push, no reply_to: a background task's report, a main-chat turn, a reminder) may carry anything the
+    assistant knows, so it goes only to the user's own chat with themself, marked like an answer."""
+    setUp, handed, nothing_handed = AgentTest.setUp, AgentTest.handed, AgentTest.nothing_handed
+
+    def test_a_push_goes_to_my_own_chat_once(self):
+        out = self.c.channel_send({"ref": "p1", "text": "后台任务做完了", "kind": "push"})
+        self.assertEqual(out, {"message_id": "m_new"})
+        self.assertEqual(self.backend.sent, [("c_me", "后台任务做完了\n\n" + AGENT_SUFFIX, None)])
+        self.assertEqual(self.c.channel_send({"ref": "p1", "text": "后台任务做完了", "kind": "push"}), {"message_id": "m_new"})
+        self.assertEqual(len(self.backend.sent), 1)
+
+    def test_a_push_never_goes_anywhere_else(self):
+        for own in (None, "", OSError("unreachable")):
+            def own_chat(own=own):
+                if isinstance(own, Exception):
+                    raise own
+                return own
+            self.backend.own_chat = own_chat
+            self.c._own_chats.clear()
+            with self.assertRaises(RpcError) as e:
+                self.c.channel_send({"ref": "p_%r" % own, "text": "x", "kind": "push"})
+            self.assertEqual(e.exception.code, "cannot_send")
+        self.assertEqual(self.backend.sent, [])
+
+    def test_every_sign_in_checks_the_own_chat_again(self):
+        # Review of #843: the chat found for one sign-in is not reused after signing out and in again.
+        looked = []
+        self.backend.own_chat = lambda: looked.append(1) or "c_me"
+        self.c.channel_send({"ref": "p1", "text": "一", "kind": "push"})
+        self.c.channel_send({"ref": "p2", "text": "二", "kind": "push"})
+        self.assertEqual(len(looked), 1)
+        self.c.logout({})
+        self.backend.poll = "done"
+        self.assertTrue(self.c.login_step({"step": "scan"})["done"])
+        self.c.channel_send({"ref": "p3", "text": "三", "kind": "push"})
+        self.assertEqual(len(looked), 2)
+        self.backend.own_chat = lambda: None  # the new sign-in's check fails: nothing goes out
+        self.c.logout({})
+        self.assertTrue(self.c.login_step({"step": "scan"})["done"])
+        with self.assertRaises(RpcError) as e:
+            self.c.channel_send({"ref": "p4", "text": "四", "kind": "push"})
+        self.assertEqual(e.exception.code, "cannot_send")
+
+    def test_no_push_while_signed_out(self):
+        self.c.logout({})
+        with self.assertRaises(RpcError) as e:
+            self.c.channel_send({"ref": "p1", "text": "x", "kind": "push"})
+        self.assertEqual(e.exception.code, "cannot_send")
+        self.assertEqual(self.backend.sent, [])
+
+    def test_an_unknown_push_result_is_never_sent_again(self):
+        self.backend.send_error = OSError("cut off")
+        with self.assertRaises(RpcError):
+            self.c.channel_send({"ref": "p1", "text": "x", "kind": "push"})
+        self.backend.send_error = None
+        with self.assertRaises(RpcError):
+            self.c.channel_send({"ref": "p1", "text": "x", "kind": "push"})
+        self.assertEqual(self.backend.sent, [])
+
+    def test_my_pushed_message_coming_back_is_not_a_request(self):
+        self.c._on_live(message("m1", "c_me", 1, sender=ME, text="/agent 看一下\n\n" + AGENT_SUFFIX))
+        self.nothing_handed()
+
+    def test_only_a_one_person_direct_chat_counts_as_my_own(self):
+        # Fails closed (review of #843): only a direct chat with memberCount 1 owned by the user counts. The user's
+        # chat with themself on a real account reports type 1, memberCount 1 and ownerId the user, and no userCount.
+        self.assertTrue(own_chat_ok({"type": 1, "memberCount": 1, "ownerId": ME}, ME))
+        self.assertTrue(own_chat_ok({"type": "P2P", "memberCount": "1", "ownerId": ME, "userCount": 1}, ME))
+        for info in (None, {}, {"type": "P2P"}, {"type": 1, "ownerId": ME}, {"type": 1, "memberCount": 1},
+                     {"type": 1, "memberCount": 1, "ownerId": "u_other"}, {"type": 1, "memberCount": 2, "ownerId": ME},
+                     {"type": 1, "memberCount": 0, "ownerId": ME}, {"type": 1, "memberCount": True, "ownerId": ME},
+                     {"type": 1, "memberCount": "x", "ownerId": ME}, {"type": 1, "memberCount": 1, "ownerId": ME, "userCount": 2},
+                     {"type": 1, "memberCount": 1, "ownerId": ME, "userCount": None},
+                     {"type": 2, "memberCount": 1, "ownerId": ME}, {"type": "GROUP", "memberCount": 1, "ownerId": ME}):
+            self.assertFalse(own_chat_ok(info, ME), info)
+        self.assertFalse(own_chat_ok({"type": 1, "memberCount": 1, "ownerId": ""}, ""))
+
+    def test_the_manifest_declares_push(self):
+        with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
+            channel = json.load(f)["contributes"]["channel"][0]
+        self.assertIs(channel["capabilities"]["push"], True)
 
 
 class AgentSuffixTest(unittest.TestCase):

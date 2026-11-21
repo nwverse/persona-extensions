@@ -37,6 +37,7 @@ RESTORE_RETRY_SECONDS = 30
 LINK_WAIT_SECONDS = 5
 CHANNEL = "channel."
 CANNOT_SEND = "cannot_send"
+PUSH = "push"
 # /agent: the user's own message starting with it goes to the assistant; the answer comes back in that chat.
 AGENT_PREFIX = "/agent"
 AGENT_SUFFIX = "🤖 AI 代答，仅供参考"
@@ -147,6 +148,9 @@ class Connector:
         self._expired = False
         self._link_up = False
         self._linked = threading.Event()
+        # The user's chat with themself, by account: where pushes go. Emptied at every sign-in and sign-out, so the first
+        # push of each sign-in checks the chat again (_own_chat).
+        self._own_chats = {}
         self._unreachable = False
         self._last_event = 0.0
         self._last_sync = 0.0
@@ -234,6 +238,7 @@ class Connector:
             self._account = account["name"]
             self._signed_in = True
             self._expired = False
+            self._own_chats = {}
         self._stop.set()
         self._stop = threading.Event()
         self._linked.clear()
@@ -406,33 +411,57 @@ class Connector:
         return "这条 /agent 写在%s里，之前的 %d 条消息：\n%s" % (where, len(before), "\n".join(_line(x) for x in before))
 
     def channel_send(self, p):
-        """An answer for one /agent: in the chat it was written in, under it, as the user, marked as written by AI.
-        A ref is sent once; a send whose result is unknown is never tried again."""
+        """An answer for one /agent: in the chat it was written in, under it, as the user, marked as written by AI. A
+        push (kind push, no reply_to) goes only to the user's own chat with themself. A ref is sent once; a send whose
+        result is unknown is never tried again."""
         ref = p.get("ref") or ""
         if not ref:
             raise RpcError("channel.send without a ref", "invalid_params")
         with self._lock:
             signed_in, me = self._signed_in, self._account_id
+        text = (p.get("text") or "").rstrip() + "\n\n" + self.suffix
+        if not p.get("reply_to") and p.get("kind") == PUSH:
+            if not signed_in:
+                raise RpcError(SIGNED_OUT_ERROR, CANNOT_SEND)
+            return self._channel_out("channel:" + ref, self._own_chat(me), text, None)
         request = self.store.message(p.get("reply_to") or "") if p.get("reply_to") else None
         if not signed_in or request is None or request["sender"] != me or self._agent_request(request, me) is None:
             # Only an answer to one of the user's own /agent goes out: nothing in a chat they did not ask in.
             raise RpcError("没有可以回复的 /agent 消息", CANNOT_SEND)
-        key = "channel:" + ref
+        return self._channel_out("channel:" + ref, request["chat"], text, request.get("root") or request["id"],
+                                 lambda: self._context_mentions(request, text))
+
+    def _channel_out(self, key, chat, text, root, mentions=None):
+        """Sends one channel message once, keyed on its ref: again, it answers what the first send ended with."""
         claimed, result = self.store.claim_send(key)
         if not claimed:
             if result:
                 return {"message_id": result}
             raise RpcError(_UNKNOWN_SEND)
-        text = (p.get("text") or "").rstrip() + "\n\n" + self.suffix
-        mentions = self._context_mentions(request, text)
         try:
-            msg_id = self.backend.send(request["chat"], text, request.get("root") or request["id"], mentions=mentions)
+            msg_id = self.backend.send(chat, text, root, mentions=mentions() if mentions else [])
         except Exception:
             msg_id = None
         if not msg_id:
             raise RpcError(_UNKNOWN_SEND)
         self.store.finish_send(key, str(msg_id))
         return {"message_id": str(msg_id)}
+
+    def _own_chat(self, me):
+        """The user's chat with themself. A push may carry anything the assistant knows (a main-chat turn, a reminder,
+        a scheduled task), so it never goes to a chat anybody else reads: no other chat is ever used instead."""
+        chat = self._own_chats.get(me)
+        if chat:
+            return chat
+        try:
+            chat = self.backend.own_chat()
+        except Exception as e:
+            self._log("finding the chat with yourself failed: %s" % type(e).__name__)
+            chat = None
+        if not chat:
+            raise RpcError("找不到你和自己的私聊", CANNOT_SEND)
+        self._own_chats[me] = str(chat)
+        return str(chat)
 
     def channel_typing(self, _):
         return {}
@@ -886,6 +915,7 @@ class Connector:
                 self._link_up = False
                 self._account = ""
                 self._account_id = ""
+                self._own_chats = {}
         return {}
 
 

@@ -14,7 +14,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-from larkx_persona.connector import DM_UNKNOWN, KEEP_DAYS, Connector  # noqa: E402
+from larkx_persona.connector import DM_UNKNOWN, KEEP_DAYS, Connector, mention_request  # noqa: E402
 from larkx_persona.real import normalize  # noqa: E402
 from larkx_persona.store import Store  # noqa: E402
 from larkx_persona.wire import RpcError  # noqa: E402
@@ -83,6 +83,9 @@ class Backend:
 
     def create_chat(self, user):
         return "c_" + user
+
+    def own_chat(self):
+        return "c_me"
 
     def search(self, query):
         return []
@@ -589,6 +592,147 @@ class NormalizeTest(unittest.TestCase):
 
     def test_milliseconds_become_seconds(self):
         self.assertEqual(normalize({"create_time": 1793000000000}, self.key)["at"], 1793000000.0)
+
+    @staticmethod
+    def prop(*fields):
+        """A rich text element's property: (field number, string) pairs, as protobuf writes them."""
+        out = b""
+        for number, value in fields:
+            raw = value.encode()
+            out += bytes([number << 3 | 2, len(raw)]) + raw
+        return out
+
+    def rich(self, *elements):
+        """TextContent / PostContent as protobuf_to_dict gives it: (tag, property) elements in order."""
+        ids = [str(i) for i in range(1, len(elements) + 1)]
+        return {"richText": {"elementIds": ids, "elements": {"dictionary": {
+            i: {"tag": tag, "property": prop} for i, (tag, prop) in zip(ids, elements)}}}}
+
+    def test_a_pasted_doc_link_keeps_its_title_and_address(self):
+        # 2026-11-12: LarkAgentX's text dropped the A element whole, so only the words before the link arrived.
+        url = "https://example.feishu.cn/docx/AbC123"
+        data = self.rich((1, self.prop((1, "请看一下 "))), (6, self.prop((1, url), (2, "示例文档"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "请看一下 ", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "请看一下 示例文档 " + url)
+
+    def test_a_link_in_the_middle_keeps_its_place_and_stays_apart_from_the_next_words(self):
+        url = "https://example.com/a"
+        data = self.rich((1, self.prop((1, "看"))), (6, self.prop((1, url), (3, url))), (1, self.prop((1, "，周五前回复"))),
+                         (5, self.prop((1, "ou_1"), (2, "@小王"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "看，周五前回复@小王", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "看 " + url + " ，周五前回复@小王")
+
+    def test_a_post_with_a_link_keeps_larkagentxs_title_line(self):
+        data = self.rich((3, self.prop((1, "正文"))), (6, self.prop((1, "https://example.com/b"), (2, "链接"))))
+        data["title"] = "周报"
+        m = normalize({"msg_type": 2, "msg_type_name": "POST", "content": "[富文本] 周报\n正文\n", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "[富文本] 周报\n正文\n链接 https://example.com/b")
+
+    def test_without_a_link_larkagentxs_text_stays(self):
+        data = self.rich((1, self.prop((1, "你好"))), (10, self.prop((1, "smile"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "你好[表情]", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "你好[表情]")
+
+    def test_a_malformed_link_property_does_not_break_the_message(self):
+        data = self.rich((1, self.prop((1, "看 "))), (6, b"\x0a\xff\x01"))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "看 ", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "看 ")
+
+    def test_a_link_that_renders_empty_keeps_larkagentxs_text(self):
+        # LarkAgentX falls back to its text when the rich text renders as nothing; so does the rebuild.
+        data = self.rich((6, self.prop((4, "x"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "原文", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "原文")
+
+    def test_a_repeated_link_field_reads_as_protobuf_reads_it(self):
+        # A non-repeated field written twice is its last value in protobuf.
+        data = self.rich((6, self.prop((1, "https://example.com/old"), (1, "https://example.com/new"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "https://example.com/new")
+
+    def test_a_link_and_a_self_mention_share_one_text(self):
+        # The spans follow the text with its link: a span counted in LarkAgentX's text, which has no link, would miss.
+        url = "https://example.com/c"
+        data = self.rich((1, self.prop((1, "看 "))), (6, self.prop((1, url), (3, url))), (5, self.prop((1, "7001"), (2, "@Example"))),
+                         (1, self.prop((1, " 总结一下"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "看 @Example 总结一下", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "看 " + url + " @Example 总结一下")
+        self.assertEqual(m["mentions"], [{"id": "7001", "start": len("看 " + url + " "), "end": len("看 " + url + " @Example"),
+                                          "label": "@Example"}])
+        self.assertEqual(mention_request(m["text"], m["mentions"], "7001"), "看 " + url + "  总结一下")
+
+    def test_a_post_with_a_link_shifts_its_spans_past_the_title(self):
+        url = "https://example.com/d"
+        data = self.rich((5, self.prop((1, "7001"), (2, "@Example"))), (1, self.prop((1, " 看 "))), (6, self.prop((1, url))))
+        data["title"] = "周报"
+        m = normalize({"msg_type": 4, "msg_type_name": "POST", "content": "[富文本] 周报\n@Example 看 ", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "[富文本] 周报\n@Example 看 " + url)
+        span = m["mentions"][0]
+        self.assertEqual(m["text"][span["start"]:span["end"]], "@Example")
+
+    def test_without_a_link_the_spans_stay_on_larkagentxs_text(self):
+        data = self.rich((5, self.prop((1, "7001"), (2, "@Example"))), (1, self.prop((1, " 总结"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "@Example 总结", "content_data": data}, self.key)
+        self.assertEqual((m["text"], m["mentions"]), ("@Example 总结", [{"id": "7001", "start": 0, "end": 8, "label": "@Example"}]))
+
+    def text_of(self, data, content="原文"):
+        return normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": content, "content_data": data}, self.key)["text"]
+
+    def test_a_decoder_of_another_shape_keeps_larkagentxs_text(self):
+        # Review of #570: none of these may raise; each keeps the text LarkAgentX gave.
+        link = (6, self.prop((1, "https://example.com/e")))
+        for dictionary in (None, [], "x", 7):
+            self.assertEqual(self.text_of({"richText": {"elementIds": ["1"], "elements": {"dictionary": dictionary}}}), "原文")
+        for rich in (None, [], "x", {"elements": None}, {"elements": []}, {"elements": {"dictionary": {}}, "elementIds": "12"}):
+            m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "原文", "content_data": {"richText": rich}}, self.key)
+            self.assertEqual((m["text"], m["mentions"]), ("原文", []))
+        data = self.rich((1, self.prop((1, "看 "))), link)
+        data["richText"]["elementIds"] = [["1"], {"k": 1}, None, "1", "2"]  # unhashable and non-string ids
+        self.assertEqual(self.text_of(data), "看 https://example.com/e")
+        data = self.rich(link)
+        data["richText"]["elements"]["dictionary"]["3"] = None  # an element that is not a dictionary
+        data["richText"]["elements"]["dictionary"]["4"] = "x"
+        self.assertEqual(self.text_of(data), "https://example.com/e")
+        data = self.rich((1, "看"), link)  # a property decoded as a string instead of bytes
+        self.assertEqual(self.text_of(data), "https://example.com/e")
+        data = self.rich((6, "https://example.com/e"))
+        self.assertEqual(self.text_of(data), "原文")
+
+    def test_a_length_past_the_end_reads_no_address(self):
+        # Review of #570: a truncated href is not taken as a shorter one; with no link added LarkAgentX's text stays.
+        truncated = bytes([1 << 3 | 2, 50]) + b"https://ex"
+        self.assertEqual(self.text_of(self.rich((1, self.prop((1, "看 "))), (6, truncated)), "看 "), "看 ")
+        fixed = bytes([2 << 3 | 1]) + b"\x00" * 3  # a fixed64 with only 3 of its 8 bytes
+        self.assertEqual(self.text_of(self.rich((6, fixed)), "原文"), "原文")
+
+    def test_an_overlong_varint_ends_the_read_at_once(self):
+        # Review of #570: a run of continuation bytes is not read as one huge number.
+        from larkx_persona.real import _fields
+        overlong = b"\x80" * 100000 + b"\x01"
+        started = time.monotonic()
+        self.assertEqual(_fields(overlong), {})
+        self.assertEqual(_fields(bytes([1 << 3 | 2]) + b"\xff" * 11 + b"\x01"), {})
+        self.assertLess(time.monotonic() - started, 1)
+        self.assertEqual(self.text_of(self.rich((1, self.prop((1, "看 "))), (6, overlong)), "看 "), "看 ")
+
+    def test_a_linked_post_keeps_its_body_s_leading_lines(self):
+        url = "https://example.com/f"
+        data = self.rich((1, self.prop((1, "\n  缩进的第一行 "))), (6, self.prop((1, url))))
+        data["title"] = "周报"
+        m = normalize({"msg_type": 2, "msg_type_name": "POST", "content": "[富文本] 周报\n\n  缩进的第一行", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "[富文本] 周报\n\n  缩进的第一行 " + url)
+
+    def test_an_empty_element_after_a_link_keeps_it_apart_from_the_next_words(self):
+        data = self.rich((6, self.prop((1, "https://example.com"))), (6, self.prop((2, ""))), (1, self.prop((1, "next"))))
+        self.assertEqual(self.text_of(data), "https://example.com next")
+
+    def test_an_anchor_with_no_readable_address_keeps_larkagentxs_text(self):
+        # Review of #570: replace LarkAgentX's text only when a link was really added.
+        self.assertEqual(self.text_of(self.rich((1, self.prop((1, "看 "))), (6, self.prop((2, "只有标题")))), "看 "), "看 ")
+        anchored = {"richText": {"elementIds": [], "anchorIds": ["9"], "elements": {"dictionary": {}}}}
+        self.assertEqual(self.text_of(anchored, "看 "), "看 ")
+        unreadable = self.rich((1, self.prop((1, "看 "))), (6, b"\xff\xff"))
+        self.assertEqual(self.text_of(unreadable, "看 "), "看 ")
 
     def test_media(self):
         image = normalize({"msg_type_name": "IMAGE", "content_data": {"key": "k"}}, self.key)
