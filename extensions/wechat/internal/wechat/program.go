@@ -27,11 +27,12 @@ const MaxText = 3500
 var Network = []string{"*.weixin.qq.com"}
 
 // Channel is the channel it contributes (docs/extensions/channels.md): pictures and voice (WeChat's own transcript) come in, plain
-// text goes out in pieces WeChat takes, what agents ask is answered in text, "typing…" while a turn goes on.
+// text goes out in pieces WeChat takes and an answer's pictures as WeChat pictures, what agents ask is answered in text,
+// "typing…" while a turn goes on.
 func Channel() wire.ChannelItem {
 	return wire.ChannelItem{ID: ID, Name: Name, Kind: "im", Connector: ID, Bind: "qr",
 		Description: "在个人微信里私聊机器人：扫码绑定，消息进主对话，回答以纯文字发回", // i18n-ignore: as the hub registers it
-		Capabilities: wire.ChannelCapabilities{ImagesIn: true, VoiceIn: true, Format: "plain", MaxText: MaxText,
+		Capabilities: wire.ChannelCapabilities{ImagesIn: true, ImagesOut: true, VoiceIn: true, Format: "plain", MaxText: MaxText,
 			Asks: "text", Push: true, Typing: true}}
 }
 

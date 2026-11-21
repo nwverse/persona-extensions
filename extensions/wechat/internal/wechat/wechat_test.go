@@ -1,7 +1,9 @@
 package wechat
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -72,11 +74,22 @@ type fakeILink struct {
 	image    []byte
 	// failSends: how many sendmessage calls to keep and then answer HTTP 500 (the answer lost on the way back).
 	failSends int
-	clientIDs []string        // every sendmessage's client_id, repeated ones too
-	kept      map[string]bool // client_ids iLink has: a repeat is not posted again
+	clientIDs []string          // every sendmessage's client_id, repeated ones too
+	kept      map[string]bool   // client_ids iLink has: a repeat is not posted again
+	uploadReq []map[string]any  // getuploadurl's requests
+	uploads   map[string][]byte // what the CDN took, by the download reference it answered
+	pictures  []sentPicture
+	// failUploads: how many CDN uploads to answer HTTP 500.
+	failUploads int
 }
 
 type sentText struct{ To, Context, Text string }
+
+// sentPicture is an image_item the bot sent: where its picture is and its key as sent (base64 of the hex key).
+type sentPicture struct {
+	To, Context, Query, AESKey string
+	EncryptType, MidSize       float64
+}
 
 func newFakeILink(t *testing.T) *fakeILink {
 	f := &fakeILink{t: t}
@@ -94,8 +107,9 @@ func (f *fakeILink) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
-	if b, _ := io.ReadAll(r.Body); len(b) > 0 {
-		_ = json.Unmarshal(b, &body)
+	raw, _ := io.ReadAll(r.Body)
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &body)
 	}
 	out := map[string]any{"ret": 0}
 	f.mu.Lock()
@@ -131,8 +145,15 @@ func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			f.kept[id] = true
 			item := msg["item_list"].([]any)[0].(map[string]any)
-			f.sent = append(f.sent, sentText{To: msg["to_user_id"].(string), Context: msg["context_token"].(string),
-				Text: item["text_item"].(map[string]any)["text"].(string)})
+			if pic, ok := item["image_item"].(map[string]any); ok {
+				media := pic["media"].(map[string]any)
+				f.pictures = append(f.pictures, sentPicture{To: msg["to_user_id"].(string), Context: msg["context_token"].(string),
+					Query: media["encrypt_query_param"].(string), AESKey: media["aes_key"].(string),
+					EncryptType: media["encrypt_type"].(float64), MidSize: pic["mid_size"].(float64)})
+			} else {
+				f.sent = append(f.sent, sentText{To: msg["to_user_id"].(string), Context: msg["context_token"].(string),
+					Text: item["text_item"].(map[string]any)["text"].(string)})
+			}
 		}
 		if f.failSends > 0 {
 			f.failSends--
@@ -147,6 +168,25 @@ func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 	case "/c2c/download":
 		f.mu.Unlock()
 		_, _ = w.Write(f.image)
+		return
+	case "/ilink/bot/getuploadurl":
+		f.uploadReq = append(f.uploadReq, body)
+		out["upload_param"] = "UP-" + strconv.Itoa(len(f.uploadReq))
+	case "/c2c/upload":
+		if f.failUploads > 0 {
+			f.failUploads--
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		ref := "DL-" + r.URL.Query().Get("encrypted_query_param") + "-" + r.URL.Query().Get("filekey")
+		if f.uploads == nil {
+			f.uploads = map[string][]byte{}
+		}
+		f.uploads[ref] = raw
+		f.mu.Unlock()
+		w.Header().Set("x-encrypted-param", ref)
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	f.mu.Unlock()
@@ -171,6 +211,30 @@ func (f *fakeILink) say(from, text string, items ...map[string]any) {
 	defer f.mu.Unlock()
 	f.queue = append(f.queue, map[string]any{"message_id": id, "from_user_id": from, "context_token": "ctx-" + strconv.Itoa(id),
 		"message_type": 1, "item_list": items})
+}
+
+// sentPictures are the image_items the bot sent, with the picture each names decrypted by the key it sent.
+func (f *fakeILink) sentPictures(t *testing.T) ([]sentPicture, [][]byte) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var plain [][]byte
+	for _, p := range f.pictures {
+		keyHex, err := base64.StdEncoding.DecodeString(p.AESKey)
+		if err != nil {
+			t.Fatalf("aes_key %q: %v", p.AESKey, err)
+		}
+		key, err := hex.DecodeString(string(keyHex))
+		if err != nil || len(key) != 16 {
+			t.Fatalf("aes_key is not base64 of a hex key: %q", keyHex)
+		}
+		data, err := ilink.DecryptECB(f.uploads[p.Query], key)
+		if err != nil {
+			t.Fatalf("picture %s: %v", p.Query, err)
+		}
+		plain = append(plain, data)
+	}
+	return append([]sentPicture(nil), f.pictures...), plain
 }
 
 func (f *fakeILink) texts() []sentText {
@@ -500,5 +564,100 @@ func TestTextInTheUsersLanguage(t *testing.T) {
 	c := &ilink.Credentials{UserID: "owner-fixture@example.invalid"}
 	if got := account(langEn, c); got != "WeChat user ixture" {
 		t.Fatal(got)
+	}
+}
+
+// channel.send with pictures (images_out): the text first, then each picture encrypted with a fresh key, uploaded to
+// the CDN where getuploadurl says and sent as an image_item naming it; an upload that fails is tried again; the same
+// ref again posts nothing twice; pictures alone go without text.
+func TestSendSendsPicturesAfterTheText(t *testing.T) {
+	wait := sendRetryWait
+	sendRetryWait = time.Millisecond
+	t.Cleanup(func() { sendRetryWait = wait })
+	r := newRig(t, true)
+	ctx := context.Background()
+	r.ilink.say(owner, "在吗")
+	eventually(t, "the message at the hub", func() bool { return len(r.hub.got()) == 1 })
+	eventually(t, "serving", func() bool { return r.bot.Status(ctx).State == wire.ConnectorStateOk })
+	pic1 := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{7}, 100)...)
+	pic2 := []byte("\xff\xd8\xff a second picture")
+	b64 := base64.StdEncoding.EncodeToString
+	r.ilink.mu.Lock()
+	r.ilink.failUploads = 1
+	r.ilink.mu.Unlock()
+	p := wire.ChannelSendParams{Ref: "run-7:3", Text: "图在这里", Kind: wire.ChannelSendKindAnswer,
+		Images: []wire.ChannelBlob{{Mime: "image/png", Data: b64(pic1)}, {Mime: "image/jpeg", Data: b64(pic2)}}}
+	if _, err := r.bot.Send(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	r.sentTo(owner, "图在这里")
+	pics, plain := r.ilink.sentPictures(t)
+	if len(pics) != 2 || !bytes.Equal(plain[0], pic1) || !bytes.Equal(plain[1], pic2) {
+		t.Fatalf("sent %d pictures", len(pics))
+	}
+	r.ilink.mu.Lock()
+	reqs := slices.Clone(r.ilink.uploadReq)
+	for _, pic := range pics {
+		if pic.To != owner || pic.Context == "" || pic.EncryptType != 1 || int(pic.MidSize) != len(r.ilink.uploads[pic.Query]) {
+			t.Errorf("picture %+v", pic)
+		}
+	}
+	r.ilink.mu.Unlock()
+	if len(reqs) != 2 {
+		t.Fatalf("%d getuploadurl calls", len(reqs))
+	}
+	for i, req := range reqs {
+		src := [][]byte{pic1, pic2}[i]
+		sum := md5.Sum(src)
+		if req["media_type"] != float64(1) || req["to_user_id"] != owner || req["rawsize"] != float64(len(src)) ||
+			req["rawfilemd5"] != hex.EncodeToString(sum[:]) || req["filesize"] != float64((len(src)/16+1)*16) ||
+			req["no_need_thumb"] != true || len(req["aeskey"].(string)) != 32 || len(req["filekey"].(string)) != 32 {
+			t.Errorf("getuploadurl %v", req)
+		}
+	}
+
+	if _, err := r.bot.Send(ctx, p); err != nil { // the hub sends the same ref again: iLink keeps each once
+		t.Fatal(err)
+	}
+	if pics, _ := r.ilink.sentPictures(t); len(pics) != 2 {
+		t.Fatalf("the same ref again posted %d pictures", len(pics))
+	}
+
+	alone := wire.ChannelSendParams{Ref: "run-8:1", Kind: wire.ChannelSendKindAnswer, Images: []wire.ChannelBlob{{Mime: "image/png", Data: b64(pic1)}}}
+	texts := len(r.ilink.texts())
+	if _, err := r.bot.Send(ctx, alone); err != nil {
+		t.Fatal(err)
+	}
+	if pics, _ := r.ilink.sentPictures(t); len(pics) != 3 || len(r.ilink.texts()) != texts {
+		t.Fatalf("pictures alone: %d pictures, %d texts", len(pics), len(r.ilink.texts())-texts)
+	}
+}
+
+// A picture that can't be sent at all (not base64) is skipped; one WeChat keeps refusing fails the send, which the
+// hub tries again with the same ref.
+func TestSendPictureFailures(t *testing.T) {
+	wait := sendRetryWait
+	sendRetryWait = time.Millisecond
+	t.Cleanup(func() { sendRetryWait = wait })
+	r := newRig(t, true)
+	ctx := context.Background()
+	r.ilink.say(owner, "在吗")
+	eventually(t, "the message at the hub", func() bool { return len(r.hub.got()) == 1 })
+	eventually(t, "serving", func() bool { return r.bot.Status(ctx).State == wire.ConnectorStateOk })
+	if _, err := r.bot.Send(ctx, wire.ChannelSendParams{Ref: "a", Text: "坏图", Kind: wire.ChannelSendKindAnswer,
+		Images: []wire.ChannelBlob{{Mime: "image/png", Data: "not base64!"}}}); err != nil {
+		t.Fatalf("an undecodable picture: %v", err)
+	}
+	r.ilink.mu.Lock()
+	r.ilink.failUploads = 100
+	r.ilink.mu.Unlock()
+	_, err := r.bot.Send(ctx, wire.ChannelSendParams{Ref: "b", Kind: wire.ChannelSendKindAnswer,
+		Images: []wire.ChannelBlob{{Mime: "image/png", Data: base64.StdEncoding.EncodeToString([]byte("png"))}}})
+	var failed sendFailed
+	if !errors.As(err, &failed) {
+		t.Fatalf("a refused upload: %v", err)
+	}
+	if pics, _ := r.ilink.sentPictures(t); len(pics) != 0 {
+		t.Fatalf("sent %d pictures", len(pics))
 	}
 }

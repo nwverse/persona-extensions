@@ -8,7 +8,7 @@ A personal WeChat bot using Tencent's public iLink protocol. It contributes both
 
 Install **WeChat** from Persona's public extension marketplace, then open **Settings → Connectors → WeChat** and scan the QR code in WeChat. Confirm on the phone; if WeChat asks for a number, enter that number in Persona. QR expiry, scanned confirmation, redirects and verification-code steps retain the former connector's behavior.
 
-Only the person who bound the bot can send messages into Persona. Other senders receive a rate-limited explanation and never enter the hub conversation. Text, pictures and WeChat's voice transcript come in. Plain-text replies are chunked at 3,500 characters; the channel supports questions, push messages and typing indicators. Files and videos are described but not transferred.
+Only the person who bound the bot can send messages into Persona. Other senders receive a rate-limited explanation and never enter the hub conversation. Text, pictures and WeChat's voice transcript come in. Plain-text replies are chunked at 3,500 characters, and the pictures of an answer (sent by a hub with `images_out`) arrive as WeChat pictures after its text: each is encrypted with a fresh key, uploaded to WeChat's CDN through iLink's `getuploadurl`, and sent as an `image_item`; the channel supports questions, push messages and typing indicators. Files and videos are described but not transferred.
 
 Conversation routing, `/new` and turn execution belong to the hub, not this extension. See [Persona's channel documentation](https://github.com/nwverse/persona/blob/main/docs/extensions/channels.md).
 

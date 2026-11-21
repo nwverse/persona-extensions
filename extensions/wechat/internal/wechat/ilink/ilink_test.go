@@ -336,3 +336,22 @@ func TestChunk(t *testing.T) {
 		t.Error("lost the end")
 	}
 }
+
+// getuploadurl's full upload URL is taken only on a Tencent HTTPS origin; otherwise the picture goes to the CDN's
+// upload with the encrypted parameter, and with neither there is nowhere to upload.
+func TestUploadURL(t *testing.T) {
+	if got, err := uploadURL("https://upload.weixin.qq.com/c2c/upload?x=1", "", "FK"); err != nil || got != "https://upload.weixin.qq.com/c2c/upload?x=1" {
+		t.Errorf("Tencent full URL: %q %v", got, err)
+	}
+	for _, bad := range []string{"http://upload.weixin.qq.com/x", "https://evil.example/x", "https://u:p@upload.weixin.qq.com/x", "https://upload.weixin.qq.com:8443/x"} {
+		if _, err := uploadURL(bad, "P", "FK"); CodeOf(err) != CodeProtocol {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	if got, err := uploadURL("", "a+b/c", "FK"); err != nil || got != "https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param=a%2Bb%2Fc&filekey=FK" {
+		t.Errorf("param: %q %v", got, err)
+	}
+	if _, err := uploadURL("", "", "FK"); CodeOf(err) != CodeBadResponse {
+		t.Errorf("neither: %v", err)
+	}
+}

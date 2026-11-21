@@ -127,7 +127,40 @@ func (b *Bot) Send(ctx context.Context, p wire.ChannelSendParams) (wire.ChannelS
 	if !b.send(ctx, c, creds.UserID, contextToken, p.Ref, p.Text) {
 		return wire.ChannelSendResult{}, sendFailed{b.lang()}
 	}
+	for i, img := range p.Images {
+		if !b.sendImage(ctx, c, creds.UserID, contextToken, clientID(p.Ref+"#image", i), img) {
+			return wire.ChannelSendResult{}, sendFailed{b.lang()}
+		}
+	}
 	return wire.ChannelSendResult{}, nil
+}
+
+// sendImage uploads one of the hub's pictures to WeChat's CDN and sends it, trying a failure that may pass again
+// twice more. id is the same on every attempt and every send of the same ref: iLink keeps the picture once. A
+// picture that isn't one (not base64, empty, too large) is logged and skipped, not tried again.
+func (b *Bot) sendImage(ctx context.Context, c *ilink.Client, peer, contextToken, id string, img wire.ChannelBlob) bool {
+	data, err := base64.StdEncoding.DecodeString(img.Data)
+	if err != nil || len(data) == 0 || len(data) > ilink.MaxMedia {
+		log.Printf("wechat: skipping a picture the hub sent that can't be sent (%d bytes)", len(data))
+		return true
+	}
+	for attempt := range 3 {
+		var up ilink.Uploaded
+		if up, err = c.UploadImage(ctx, peer, data); err == nil {
+			err = c.SendImage(ctx, peer, contextToken, id, up)
+		}
+		if err == nil || !ilink.Retryable(err) {
+			break
+		}
+		if !sleep(ctx, time.Duration(attempt+1)*sendRetryWait) {
+			return false
+		}
+	}
+	if err != nil {
+		log.Printf("wechat: sending a picture: %v", err)
+		return false
+	}
+	return true
 }
 
 // sendFailed: WeChat did not take the message (logged by the hub, which sends it again with the same ref).
