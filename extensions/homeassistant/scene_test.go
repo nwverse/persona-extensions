@@ -712,3 +712,32 @@ func TestSceneWatchInvalidatesOnStateChange(t *testing.T) {
 		t.Fatalf("caption after state_changed = %q, want 3 盏灯开着", vAfter.Sections[0].Items[0].Caption)
 	}
 }
+
+// A wall switch's indicator light is a light entity that is on, but a setting of the switch (entity_category config),
+// not a lamp: the caption counts only lamps, as the rest of the page does (#940).
+func TestSceneCaptionLeavesIndicatorLightsOut(t *testing.T) {
+	parsed, err := readRoomPlan(syntheticHomeUSDZ(t, nil))
+	if err != nil {
+		t.Fatalf("readRoomPlan: %v", err)
+	}
+	reg := &Registry{Entities: map[string]RegEntity{
+		"light.switch_a_indicator": {EntityCategory: "config"},
+		"light.switch_b_indicator": {EntityCategory: "config"},
+		"light.living":             {},
+	}}
+	build := func(living string) wire.Component {
+		states := []State{
+			{EntityID: "light.switch_a_indicator", State: "on", Attributes: map[string]any{"friendly_name": "开关 A 指示灯"}},
+			{EntityID: "light.switch_b_indicator", State: "on", Attributes: map[string]any{"friendly_name": "开关 B 指示灯"}},
+			{EntityID: "light.living", State: living, Attributes: map[string]any{"friendly_name": "客厅吸顶灯"}},
+		}
+		hm := buildHome(Config{}, states, []Area{{ID: "living", Name: "客厅", Entities: []string{"light.living"}}}, nil)
+		return newApp(t.Logf).buildSceneWith(parsed, &sceneFix{}, hm, reg)
+	}
+	if c := build("off").Caption; c != "" {
+		t.Errorf("every lamp off: caption %q, want none", c)
+	}
+	if c := build("on").Caption; c != "1 盏灯开着" {
+		t.Errorf("one lamp on: caption %q, want 1 盏灯开着", c)
+	}
+}

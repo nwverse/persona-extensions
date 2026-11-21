@@ -390,7 +390,7 @@ func (a *app) buildSceneWith(sc *scan, fix *sceneFix, hm *home, reg *Registry) w
 	devs := a.matchScannedTVs(fp, hm, reg)
 	pins, pinnedLightsOn := a.buildScenePins(devs, hm, reg)
 
-	lightsOn := countHomeLightsOn(hm, devs, pinnedLightsOn)
+	lightsOn := countHomeLightsOn(hm, reg, devs, pinnedLightsOn)
 	caption := ""
 	if lightsOn > 0 {
 		caption = fmt.Sprintf("%d 盏灯开着", lightsOn)
@@ -1531,13 +1531,22 @@ func pinStateText(s State) string {
 	return clip(st, 40)
 }
 
-func countHomeLightsOn(hm *home, devs []fixDevice, pinnedLights map[string]bool) int {
+func countHomeLightsOn(hm *home, reg *Registry, devs []fixDevice, pinnedLights map[string]bool) int {
 	seen := map[string]bool{}
 	for eid := range pinnedLights {
 		seen[eid] = true
 	}
+	// a switch's indicator light is a light too, but a setting of the switch (entity_category config), not a lamp: the
+	// rest of the page leaves such entities out of its counts, and so does this one (#940)
+	setting := func(e string) bool {
+		if reg == nil {
+			return false
+		}
+		re, ok := reg.Entities[e]
+		return ok && (re.EntityCategory != "" || regHidden(reg, e))
+	}
 	for _, s := range hm.States {
-		if s.Domain() == "light" && s.State == "on" && hm.visible(s.EntityID) {
+		if s.Domain() == "light" && s.State == "on" && hm.visible(s.EntityID) && !setting(s.EntityID) {
 			seen[s.EntityID] = true
 		}
 	}
