@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "podcasts",
   "name": "Podcasts 播客",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "icon": "assets/icon.png",
   "description": "搜索公开播客，查看节目和近期单集，把想听的节目保存到本地收听清单。通过 Apple 公开目录获取元数据，无需账号；不下载媒体，不控制播放。",
   "publisher": "nwverse",
@@ -22,7 +22,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/podcasts.mjs",
-      "sha256": "1d3cbe3754805ed2c0e97f36bb5636d6827ef9b5cb9d2437df60a7a5c70b6143"
+      "sha256": "a66729b3fac5bd7c655eef70d9b92754f2bdc6ee1673482389a313d3f7ae6efc"
     }
   },
   "contributes": {
