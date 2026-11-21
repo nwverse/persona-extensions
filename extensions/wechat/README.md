@@ -25,7 +25,7 @@ A hub with the built-in must support registry handoff before installing this sam
 
 ## Privacy and network
 
-The only network grant is `*.weixin.qq.com`, matching the previous iLink/media-CDN allowlist. API and redirect origins are restricted to HTTPS Tencent hosts. Tokens and message contents are not logged. Polling, outbound retries, message deduplication and stable send refs retain the built-in implementation.
+The network grants are `*.weixin.qq.com` and `*.wechat.com`, matching Tencent's iLink and media-CDN allowlist for mainland Weixin and international WeChat accounts. API and redirect origins are restricted to HTTPS Tencent hosts. Tokens and message contents are not logged. Polling, outbound retries, message deduplication and stable send refs retain the built-in implementation.
 
 The implementation was moved from Persona's MIT-licensed Go plugin. Its iLink wire behavior follows Tencent's MIT-licensed `openclaw-weixin` v2.4.6; the Go client does not embed Tencent's plugin runtime. [License notices](assistant/THIRD_PARTY_NOTICES.md) ship in the package.
 
