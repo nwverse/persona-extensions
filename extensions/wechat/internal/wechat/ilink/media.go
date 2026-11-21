@@ -16,8 +16,9 @@ import (
 // cdnOrigin serves media that has an encrypted query but no full URL.
 const cdnOrigin = "https://novac2c.cdn.weixin.qq.com"
 
-// MaxMedia is the largest media Download accepts (decrypted).
-const MaxMedia = 8 << 20
+// MaxMedia is the largest media Download accepts (decrypted): room for a photo sent as the original (often 3–10
+// MB), which the hub scales down for the model.
+const MaxMedia = 16 << 20
 
 var hex32 = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
 
@@ -52,7 +53,11 @@ func (c *Client) Download(ctx context.Context, m Media) ([]byte, error) {
 	if len(data) > MaxMedia+aes.BlockSize {
 		return nil, &Error{Code: CodeBadResponse, Msg: "media too large"}
 	}
-	return DecryptECB(data, key)
+	plain, err := DecryptECB(data, key)
+	if err == nil && len(plain) > MaxMedia { // the padding leaves up to 15 bytes past MaxMedia in a ciphertext that fits
+		return nil, &Error{Code: CodeBadResponse, Msg: "media too large"}
+	}
+	return plain, err
 }
 
 func mediaURL(m Media) (string, error) {

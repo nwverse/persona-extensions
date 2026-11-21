@@ -270,6 +270,32 @@ func TestSendTextAndTyping(t *testing.T) {
 	}
 }
 
+// A photo sent as the original (12 MiB here) is downloaded; one past MaxMedia is refused, not read whole.
+func TestDownloadTakesAnOriginalPhoto(t *testing.T) {
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	original := bytes.Repeat([]byte{0xab}, 12<<20)
+	tooLarge := bytes.Repeat([]byte{0xab}, MaxMedia+1)
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		plain := original
+		if r.URL.Query().Get("encrypted_query_param") == "big" {
+			plain = tooLarge
+		}
+		enc, err := EncryptECB(plain, key)
+		if err != nil {
+			t.Error(err)
+		}
+		_, _ = w.Write(enc)
+	})
+	c := f.client("BT", "")
+	got, err := c.Download(context.Background(), Media{Query: "Q", KeyHex: hex.EncodeToString(key)})
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("a 12 MiB original: %d bytes, %v", len(got), err)
+	}
+	if _, err := c.Download(context.Background(), Media{Query: "big", KeyHex: hex.EncodeToString(key)}); CodeOf(err) != CodeBadResponse {
+		t.Fatalf("past MaxMedia: %v", err)
+	}
+}
+
 func TestDownload(t *testing.T) {
 	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
 	plain := []byte("picture bytes, not a multiple of sixteen")
