@@ -391,9 +391,13 @@ func TestSensitiveNeverInExits(t *testing.T) {
 		t.Errorf("K22 on: not out:\n%s", in)
 	}
 	for path, content := range allExits(t, dir) {
-		if strings.Contains(content, "复诊流程") || strings.Contains(content, "家庭情况") {
+		if strings.Contains(content, "复诊流程") || (strings.Contains(content, "家庭情况") && !strings.HasSuffix(path, NeverQuotePath)) {
 			t.Errorf("%s carries a space's workflow or an evaluation", path)
 		}
+	}
+	// never_quote is the list drafts must not copy: an evaluation in a category let in is on it.
+	if !strings.Contains(read(t, dir, NeverQuotePath), "家庭情况") {
+		t.Error("an evaluation in a category let in is not on never_quote")
 	}
 }
 
