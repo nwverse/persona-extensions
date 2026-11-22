@@ -1458,6 +1458,43 @@ type SecretsResolveResult struct {
 	Value string `json:"value"`
 }
 
+// SecretStoreField: A public field name/type; never a value or source path.
+type SecretStoreField struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// SecretStoreTarget: the canonical public target approved on the secret storage card.
+type SecretStoreTarget struct {
+	Operation string             `json:"operation"`
+	Vault     string             `json:"vault"`
+	Item      string             `json:"item,omitempty"`
+	Title     string             `json:"title,omitempty"`
+	Category  string             `json:"category,omitempty"`
+	Fields    []SecretStoreField `json:"fields"`
+}
+
+// SecretStoreParams: secrets.store: describe metadata, prepare an expiring node HPKE key after explicit approval,
+// commit one encrypted payload.
+type SecretStoreParams struct {
+	Contribution string            `json:"contribution,omitempty"`
+	Phase        string            `json:"phase"`
+	Target       SecretStoreTarget `json:"target"`
+	Machine      string            `json:"machine"`
+	Session      string            `json:"session"`
+	KeyID        string            `json:"key_id,omitempty"`
+	Sealed       string            `json:"sealed,omitempty"`
+}
+
+// SecretStoreResult: metadata and a recipient key, or references of written fields. Never values.
+type SecretStoreResult struct {
+	Target     SecretStoreTarget `json:"target"`
+	VaultName  string            `json:"vault_name,omitempty"`
+	Key        string            `json:"key,omitempty"`
+	KeyID      string            `json:"key_id,omitempty"`
+	References map[string]string `json:"references,omitempty"`
+}
+
 // SecretsUsedEvent: secrets.used (an event to the provider, no answer): a reference it resolved was used, for the
 // usage record its own page shows. Never the value.
 type SecretsUsedEvent struct {
@@ -3978,6 +4015,8 @@ type ConnectorInboxThing struct {
 	// Marks the newest move: a different last adds to the open item.
 	Last string `json:"last,omitempty"`
 	URL  string `json:"url,omitempty"`
+	// The observed lifecycle of a GitHub pull request: open, closed or merged.
+	ThreadState string `json:"thread_state,omitempty"`
 	// A link the system opens instead (sms:…).
 	OpenURL string `json:"open_url,omitempty"`
 	// Where a reply goes and who sees it.
@@ -5628,6 +5667,46 @@ type AssistantDataStatusResult struct {
 	Items []AssistantDataItem `json:"items"`
 }
 
+// BrowserMachinesParams: browser.machines (browser.run): list computers that have a browser backend enabled.
+type BrowserMachinesParams struct {
+	// Optional backend filter (e.g. ego, cdp). Empty returns all backends.
+	Backend string `json:"backend,omitempty"`
+}
+
+type BrowserMachine struct {
+	MachineID string `json:"machine_id"`
+	Name      string `json:"name"`
+	// Browser backend identifier (e.g. ego, cdp).
+	Backend string `json:"backend"`
+	Online  bool   `json:"online"`
+	Ready   bool   `json:"ready"`
+}
+
+type BrowserMachinesResult struct {
+	Machines []BrowserMachine `json:"machines"`
+}
+
+// BrowserRunParams: browser.run (browser.run): run a script inside an extension-isolated browser task space
+// (ext-<extensionID>-<slot>) on machine_id.
+type BrowserRunParams struct {
+	MachineID string `json:"machine_id"`
+	// Browser backend to use (default: ego).
+	Backend string `json:"backend,omitempty"`
+	// Logical slot name scoped to this extension (e.g. pac-muse).
+	Slot string `json:"slot"`
+	// Async JS script body executed inside the isolated task space.
+	Script    string `json:"script"`
+	TimeoutMs int    `json:"timeout_ms,omitempty"`
+}
+
+type BrowserRunResult struct {
+	Backend string `json:"backend"`
+	// Raw output / JSON payload returned by the browser backend.
+	Output string `json:"output"`
+	// Script error message, if any.
+	Error string `json:"error,omitempty"`
+}
+
 type StorageEmptyParams struct {
 }
 
@@ -7089,6 +7168,10 @@ var newDef = map[string]func() any{
 	"SecretsDescribeResult":         func() any { return new(SecretsDescribeResult) },
 	"SecretsResolveParams":          func() any { return new(SecretsResolveParams) },
 	"SecretsResolveResult":          func() any { return new(SecretsResolveResult) },
+	"SecretStoreField":              func() any { return new(SecretStoreField) },
+	"SecretStoreTarget":             func() any { return new(SecretStoreTarget) },
+	"SecretStoreParams":             func() any { return new(SecretStoreParams) },
+	"SecretStoreResult":             func() any { return new(SecretStoreResult) },
 	"SecretsUsedEvent":              func() any { return new(SecretsUsedEvent) },
 	"ExtensionNotification":         func() any { return new(ExtensionNotification) },
 	"View":                          func() any { return new(View) },
@@ -7390,6 +7473,11 @@ var newDef = map[string]func() any{
 	"AssistantDataStatusParams":     func() any { return new(AssistantDataStatusParams) },
 	"AssistantDataItem":             func() any { return new(AssistantDataItem) },
 	"AssistantDataStatusResult":     func() any { return new(AssistantDataStatusResult) },
+	"BrowserMachinesParams":         func() any { return new(BrowserMachinesParams) },
+	"BrowserMachine":                func() any { return new(BrowserMachine) },
+	"BrowserMachinesResult":         func() any { return new(BrowserMachinesResult) },
+	"BrowserRunParams":              func() any { return new(BrowserRunParams) },
+	"BrowserRunResult":              func() any { return new(BrowserRunResult) },
 	"StorageEmptyParams":            func() any { return new(StorageEmptyParams) },
 	"StorageRequestResult":          func() any { return new(StorageRequestResult) },
 	"StorageKeyParams":              func() any { return new(StorageKeyParams) },
@@ -7530,6 +7618,8 @@ var Calls = map[string]Call{
 	"assistant.messages":             {Name: "assistant.messages", From: "program", Params: "AssistantMessagesParams", Result: "AssistantMessagesResult"},
 	"assistant.memory":               {Name: "assistant.memory", From: "program", Params: "AssistantMemoryParams", Result: "AssistantMemoryResult"},
 	"assistant.data_status":          {Name: "assistant.data_status", From: "program", Params: "AssistantDataStatusParams", Result: "AssistantDataStatusResult"},
+	"browser.machines":               {Name: "browser.machines", From: "program", Params: "BrowserMachinesParams", Result: "BrowserMachinesResult"},
+	"browser.run":                    {Name: "browser.run", From: "program", Params: "BrowserRunParams", Result: "BrowserRunResult"},
 	"storage.request":                {Name: "storage.request", From: "program", Params: "StorageEmptyParams", Result: "StorageRequestResult"},
 	"storage.get":                    {Name: "storage.get", From: "program", Params: "StorageKeyParams", Result: "StorageEntry"},
 	"storage.list":                   {Name: "storage.list", From: "program", Params: "StorageListParams", Result: "StorageListResult"},

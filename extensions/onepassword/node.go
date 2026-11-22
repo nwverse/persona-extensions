@@ -59,14 +59,33 @@ var opPaths = []string{"/opt/homebrew/bin/op", "/usr/local/bin/op", "/usr/bin/op
 type runner func(ctx context.Context, args ...string) ([]byte, error)
 
 type nodeApp struct {
-	mu  sync.Mutex // one op at a time, so the app asks the user once
-	run runner
+	mu               sync.Mutex // one op at a time, so the app asks the user once
+	run              runner
+	write            func(context.Context, []byte, ...string) ([]byte, error)
+	storeKeys        map[string]storeKey
+	keepaliveAt      time.Time
+	keepaliveStarted time.Time
+	keepaliveBlocked bool
 }
 
-func newNodeApp() *nodeApp { return &nodeApp{run: runOp} }
+func newNodeApp() *nodeApp {
+	n := &nodeApp{}
+	n.run = func(ctx context.Context, args ...string) ([]byte, error) {
+		out, err := runOp(ctx, args...)
+		if err == nil && len(args) > 0 && args[0] != "--version" && args[0] != "whoami" {
+			n.noteAuthorization(time.Now())
+		}
+		return out, err
+	}
+	return n
+}
 
 func nodeProgram(n *nodeApp) ext.Program {
 	return ext.Program{ID: about.ID, Version: about.Version,
+		Init: func(ctx context.Context, _ *ext.Init, _ *ext.Hub) (map[string]any, error) {
+			go n.keepalive(ctx)
+			return nil, nil
+		},
 		Namespaces: map[string]ext.Handler{"op": n.handle}}
 }
 
@@ -91,6 +110,13 @@ type nodeStatus struct {
 }
 
 func (n *nodeApp) handle(ctx context.Context, method string, raw json.RawMessage) (any, error) {
+	if method == "store" {
+		ctx, cancel := context.WithTimeout(ctx, opTimeout)
+		defer cancel()
+		n.mu.Lock()
+		defer n.mu.Unlock()
+		return n.storeNode(ctx, raw)
+	}
 	var in nodeParams
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &in); err != nil {
@@ -462,12 +488,17 @@ func cliFieldType(t string) op.ItemFieldType {
 
 // runOp runs op with args in the user's own sign-in: the 1Password app's, never a service account or Connect server
 // that the environment might name, so those variables are left out.
-func runOp(ctx context.Context, args ...string) ([]byte, error) {
+func runOp(ctx context.Context, args ...string) ([]byte, error) { return runOpInput(ctx, nil, args...) }
+
+func runOpInput(ctx context.Context, input []byte, args ...string) ([]byte, error) {
 	path := findOp()
 	if path == "" {
 		return nil, &ext.Error{Code: codeMissing, Message: "op (the 1Password CLI) is not installed on this computer"}
 	}
 	cmd := exec.CommandContext(ctx, path, args...)
+	if input != nil {
+		cmd.Stdin = bytes.NewReader(input)
+	}
 	cmd.Env = opEnv(os.Environ(), runtime.GOOS, os.Getuid(), exists)
 	var stdout, stderr limitedBuffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -478,12 +509,18 @@ func runOp(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, &ext.Error{Code: codeFailed, Message: "op's answer was too large"}
 	}
 	if err == nil {
+		clear(stderr.Bytes())
 		return stdout.Bytes(), nil
 	}
 	clear(stdout.Bytes())
 	if ctx.Err() != nil {
 		return nil, &ext.Error{Code: codeLocked, Message: "op got no answer from the 1Password app in time"}
 	}
+	if input != nil {
+		clear(stderr.Bytes())
+		return nil, storeFailure()
+	}
+	defer clear(stderr.Bytes())
 	return nil, opError(stderr.String())
 }
 
