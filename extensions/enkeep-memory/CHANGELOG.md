@@ -2,6 +2,9 @@
 
 ## 0.2.0-beta.38 (pre-release)
 
+- **Only days really read count.** A day the model never read (no model, or every unit screened out before any
+  call) is no longer an active day, and statuses are settled again after every rerun step, not only when the
+  queue empties: a long backfill cannot put entries to sleep on days still waiting.
 - **Who said it, in three values.** Every line is the user's, the user's words relayed verbatim (verified), or
   someone else's (an agent, Persona, a probe, pasted material); what cannot be verified is never guessed. A task
   prompt or a relay Persona typed into a session stays Persona's, but the user's words it says it carries (a "用户原话"
