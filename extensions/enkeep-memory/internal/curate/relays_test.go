@@ -9,7 +9,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/hubapi"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/relay"
-	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/sources"
+	srcs "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/sources"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/speaker"
 )
 
@@ -28,12 +28,12 @@ func TestVerifyRelays(t *testing.T) {
 	units := []Unit{
 		{Ref: "chats/assistant", Lines: []norm.Line{{N: 1, Speaker: norm.Me, Body: "以后汇报先写结论，再写过程"}, {N: 2, Speaker: norm.Me, Body: "默认开"}}},
 		{Ref: "agents/m/s1", Lines: []norm.Line{
-			{N: 1, Speaker: sources.SpeakerPersona, Body: "## 用户原话 …"},
-			{N: 2, Speaker: sources.SpeakerRelayCand, Body: "以后汇报先写结论"}, // part of a line of the user's: kept
-			{N: 3, Speaker: sources.SpeakerRelayCand, Body: "默认开"},      // short, a whole line of the user's: kept
-			{N: 4, Speaker: sources.SpeakerRelayCand, Body: "开"},        // short, only part of a line: dropped
-			{N: 5, Speaker: sources.SpeakerRelayCand, Body: "直接全补占位月份"}, // nowhere in the user's words: dropped
-			{N: 6, Speaker: sources.SpeakerRelayCand, Body: "按账本里的原话办"}, // in the ledger by the user: kept
+			{N: 1, Speaker: srcs.SpeakerPersona, Body: "## 用户原话 …"},
+			{N: 2, Speaker: srcs.SpeakerRelayCand, Body: "以后汇报先写结论"}, // part of a line of the user's: kept
+			{N: 3, Speaker: srcs.SpeakerRelayCand, Body: "默认开"},      // short, a whole line of the user's: kept
+			{N: 4, Speaker: srcs.SpeakerRelayCand, Body: "开"},        // short, only part of a line: dropped
+			{N: 5, Speaker: srcs.SpeakerRelayCand, Body: "直接全补占位月份"}, // nowhere in the user's words: dropped
+			{N: 6, Speaker: srcs.SpeakerRelayCand, Body: "按账本里的原话办"}, // in the ledger by the user: kept
 		}},
 	}
 	c := &Curator{Hub: fakeLedger{es: []hubapi.LedgerEntry{{ID: "l1", By: "user", Quote: "按账本里的原话办", At: time.Now()}}}}
@@ -54,7 +54,7 @@ func TestVerifyRelays(t *testing.T) {
 		t.Fatal("the relay itself is not the user's")
 	}
 	// Without the ledger (a hub that has none) the ledger's claim is dropped, without an error.
-	units[1].Lines = []norm.Line{{N: 6, Speaker: sources.SpeakerRelayCand, Body: "按账本里的原话办"}}
+	units[1].Lines = []norm.Line{{N: 6, Speaker: srcs.SpeakerRelayCand, Body: "按账本里的原话办"}}
 	(&Curator{Hub: hubapi.None{}}).verifyRelays(context.Background(), units)
 	if len(units[1].Lines) != 0 {
 		t.Fatalf("kept without evidence: %+v", units[1].Lines)

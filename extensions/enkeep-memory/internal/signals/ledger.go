@@ -52,11 +52,19 @@ type ledger struct {
 // missed before 0.2.0-beta.38. A bare agreement ("好", "ok") is no correction and is not sent.
 const shortCorrectionRunes = 40
 
-// shortReply: a short message answering an AI line or a card, not only agreement.
+// shortReply: a short message answering an AI line or a card, not only agreement or "go on". Punctuation alone
+// ("？？？") is a reply too: exasperation, not agreement.
 func shortReply(m msg) bool {
 	t := strings.TrimSpace(m.Text)
-	return m.Prior != "" && t != "" && utf8.RuneCountInString(t) <= shortCorrectionRunes && !voice.Agreement(t)
+	if m.Prior == "" || t == "" || utf8.RuneCountInString(t) > shortCorrectionRunes {
+		return false
+	}
+	q := norm.Q(t)
+	return q == "" || !voice.Agreement(t) && !goOn.MatchString(q)
 }
+
+// goOn is a reply that only lets the AI go on ("好的继续", "continue").
+var goOn = regexp.MustCompile(`^(好的?|行|可以|嗯+|ok|okay)?(继续|接着(做|来)?|开始吧?|go ?on|continue|proceed)(吧|呀|啊|干)?$`)
 
 func corrID(m msg) string {
 	return "c-" + hash(m.Session, fmt.Sprint(m.Seq), m.At.UTC().Format(time.RFC3339), m.Text)[:10]
