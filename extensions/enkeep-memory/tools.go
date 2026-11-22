@@ -67,7 +67,7 @@ var rerunTools = []tool{
 		"certain. Evaluations of and inferences about people are never returned. Nothing is sent anywhere and the query " +
 		"is not kept.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"query"}, "properties": map[string]any{
-			"query": map[string]any{"type": "string", "minLength": 1, "maxLength": 200, "description": "names or words to look for, e.g. a project name, a person's name, a machine, a kind of task"},
+			"query": map[string]any{"type": "string", "description": "names or words to look for (at most 200 characters), e.g. a project name, a person's name, a machine, a kind of task"},
 			"facets": map[string]any{"type": "array", "items": map[string]any{"type": "string",
 				"enum": []string{"interaction", "tools", "judgement", "workflow", "world", "people", "persona"}},
 				"description": "only these facets: interaction (working with the AI), tools, judgement (default judgements), workflow (ways of working), world (projects and facts), people, persona (about the user)"},
@@ -79,8 +79,8 @@ var rerunTools = []tool{
 		"counter-examples, recorded as marked by the assistant with the reason; the user can mark them right on the " +
 		"enkeep memory page to bring them back. Give entry ids from enkeep_recall. Deletes nothing.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"ids", "reason"}, "properties": map[string]any{
-			"ids":    map[string]any{"type": "array", "minItems": 1, "maxItems": 20, "items": map[string]any{"type": "string"}, "description": "entry ids (id:… in enkeep_recall's lines)"},
-			"reason": map[string]any{"type": "string", "minLength": 1, "maxLength": 300, "description": "why the entries are wrong"},
+			"ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "1 to 20 entry ids (id:… in enkeep_recall's lines)"},
+			"reason": map[string]any{"type": "string", "description": "why the entries are wrong (at most 300 characters)"},
 		}}},
 }
 

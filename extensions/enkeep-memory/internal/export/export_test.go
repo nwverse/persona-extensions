@@ -436,8 +436,9 @@ func TestWritesOnlyChanges(t *testing.T) {
 	if rep.Deferred || !strings.Contains(a, "新加的占位") || !strings.Contains(a, "用户自己写的占位出口文字") {
 		t.Fatalf("next day:\n%s", a)
 	}
-	if st.Entries["i-0000000001"].Effective != now.Format(time.RFC3339) || add.Effective != later.Format(time.RFC3339) {
-		t.Fatal("Effective is the first time out")
+	// The new ① line went out the first day in project-x's general part (exit D is not held to once a day).
+	if st.Entries["i-0000000001"].Effective != now.Format(time.RFC3339) || add.Effective != now.Format(time.RFC3339) {
+		t.Fatalf("Effective is the first time out: %q %q", st.Entries["i-0000000001"].Effective, add.Effective)
 	}
 }
 

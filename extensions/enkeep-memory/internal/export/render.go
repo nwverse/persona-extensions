@@ -271,14 +271,35 @@ func (c *compiler) instructions(p *plan, texts map[string]string) file {
 		texts2[s], got[s] = render(s, avail*SectionShare[s]/100)
 		used += len(texts2[s])
 	}
-	for _, s := range SectionOrder { // what is left, in order, to the sections that left lines out
-		if left := avail - used; left > 0 && s != "tools" && len(got[s]) < len(sections[s]) {
-			t, g := render(s, len(texts2[s])+left)
-			if t == "" { // still nothing fits: keep what was there
+	// What is left goes to the sections that left lines out, in proportion to their shares; a last round in order
+	// takes what rounding and lines too long for a part left.
+	hungry := func(s string) bool { return s != "tools" && len(got[s]) < len(sections[s]) }
+	for round := 0; round < 4; round++ {
+		left := avail - used
+		if left <= 0 {
+			break
+		}
+		shares := 0
+		for _, s := range SectionOrder {
+			if hungry(s) {
+				shares += SectionShare[s]
+			}
+		}
+		if shares == 0 {
+			break
+		}
+		for _, s := range SectionOrder {
+			if !hungry(s) {
 				continue
 			}
-			used += len(t) - len(texts2[s])
-			texts2[s], got[s] = t, g
+			extra := left * SectionShare[s] / shares
+			if round == 3 {
+				extra = avail - used
+			}
+			if t, g := render(s, len(texts2[s])+extra); t != "" && len(t) > len(texts2[s]) {
+				used += len(t) - len(texts2[s])
+				texts2[s], got[s] = t, g
+			}
 		}
 	}
 	var b strings.Builder
