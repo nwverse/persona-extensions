@@ -134,7 +134,7 @@ Since 0.3.1 the extension keeps 1Password's metadata in its own memory, for both
 
 ## Not in this version
 
-- Creating or editing items, browser autofill, and 1Password's SSH agent or Git signing.
+- Browser autofill, 1Password's SSH agent or Git signing, and service-account writes. Phone-approved resident-node item writes are described below.
 
 ## Tests
 
