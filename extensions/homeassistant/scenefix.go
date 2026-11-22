@@ -26,17 +26,19 @@ const (
 var hexColorRE = regexp.MustCompile(`^#[0-9A-Fa-f]{6}$`)
 
 type sceneFix struct {
-	Rotate     *float64     `json:"rotate,omitempty"`
-	WallHeight *float64     `json:"wall_height,omitempty"`
-	Drop       []string     `json:"drop,omitempty"`
-	Walls      []fixWall    `json:"walls,omitempty"`
-	Doors      []fixDoor    `json:"doors,omitempty"`
-	Split      []fixSplit   `json:"split,omitempty"`
-	Openings   []fixOpening `json:"openings,omitempty"`
-	Rooms      []fixRoom    `json:"rooms,omitempty"`
-	Objects    []fixObject  `json:"objects,omitempty"`
-	Add        []fixAdd     `json:"add,omitempty"`
-	Devices    []fixDevice  `json:"devices,omitempty"`
+	Rotate        *float64     `json:"rotate,omitempty"`
+	WallHeight    *float64     `json:"wall_height,omitempty"`
+	WallThickness *float64     `json:"wall_thickness,omitempty"`
+	Drop          []string     `json:"drop,omitempty"`
+	Walls         []fixWall    `json:"walls,omitempty"`
+	Doors         []fixDoor    `json:"doors,omitempty"`
+	Split         []fixSplit   `json:"split,omitempty"`
+	Openings      []fixOpening `json:"openings,omitempty"`
+	Rooms         []fixRoom    `json:"rooms,omitempty"`
+	Objects       []fixObject  `json:"objects,omitempty"`
+	Add           []fixAdd     `json:"add,omitempty"`
+	Curtains      []fixCurtain `json:"curtains,omitempty"`
+	Devices       []fixDevice  `json:"devices,omitempty"`
 }
 
 type fixWall struct {
@@ -119,9 +121,23 @@ type fixRoom struct {
 	WallColor  string      `json:"wall_color,omitempty"`
 }
 
+// fixObject changes a scanned object: its kind and color, and where the scan put it (center, size, yaw, bottom, top),
+// for an object the scan placed or sized wrong.
 type fixObject struct {
-	Name  string `json:"name"`
-	Kind  string `json:"kind"`
+	Name   string    `json:"name"`
+	Kind   string    `json:"kind"`
+	Color  string    `json:"color,omitempty"`
+	Center []float64 `json:"center,omitempty"`
+	Size   []float64 `json:"size,omitempty"`
+	Yaw    *float64  `json:"yaw,omitempty"`
+	Bottom *float64  `json:"bottom,omitempty"`
+	Top    *float64  `json:"top,omitempty"`
+}
+
+// fixCurtain hangs curtains at both sides of every window and glass door in a wall, on the named room's side.
+type fixCurtain struct {
+	Wall  string `json:"wall"`
+	Room  string `json:"room,omitempty"`
 	Color string `json:"color,omitempty"`
 }
 
@@ -181,6 +197,9 @@ func parseSceneFix(raw []byte) (*sceneFix, error) {
 	}
 	if fix.WallHeight != nil && (!isFinite(*fix.WallHeight) || *fix.WallHeight < 0.05 || *fix.WallHeight > 10) {
 		return nil, fmt.Errorf("%s: wall_height must be between 0.05 and 10 m", sceneFixFile)
+	}
+	if fix.WallThickness != nil && (!isFinite(*fix.WallThickness) || *fix.WallThickness < 0.04 || *fix.WallThickness > 1) {
+		return nil, fmt.Errorf("%s: wall_thickness must be between 0.04 and 1 m", sceneFixFile)
 	}
 	for i, w := range fix.Walls {
 		a, ok1 := checkCoord2(w.From)
@@ -254,6 +273,30 @@ func parseSceneFix(raw []byte) (*sceneFix, error) {
 		}
 		if ob.Color != "" && !hexColorRE.MatchString(ob.Color) {
 			return nil, fmt.Errorf("%s: objects[%d].color must be #RRGGBB", sceneFixFile, i)
+		}
+		if len(ob.Center) > 0 {
+			if _, ok := checkCoord2(ob.Center); !ok {
+				return nil, fmt.Errorf("%s: objects[%d].center must be [x, y]", sceneFixFile, i)
+			}
+		}
+		if len(ob.Size) > 0 && (len(ob.Size) != 2 || !isFinite(ob.Size[0]) || !isFinite(ob.Size[1]) ||
+			ob.Size[0] < 0.02 || ob.Size[1] < 0.02 || ob.Size[0] > 100 || ob.Size[1] > 100) {
+			return nil, fmt.Errorf("%s: objects[%d].size must be positive [width, depth]", sceneFixFile, i)
+		}
+		if ob.Yaw != nil && !isFinite(*ob.Yaw) {
+			return nil, fmt.Errorf("%s: objects[%d].yaw must be finite", sceneFixFile, i)
+		}
+		if (ob.Bottom != nil && (!isFinite(*ob.Bottom) || *ob.Bottom < 0)) || (ob.Top != nil && (!isFinite(*ob.Top) || *ob.Top <= 0)) ||
+			(ob.Bottom != nil && ob.Top != nil && *ob.Top <= *ob.Bottom) {
+			return nil, fmt.Errorf("%s: objects[%d] heights are invalid", sceneFixFile, i)
+		}
+	}
+	for i, cu := range fix.Curtains {
+		if strings.TrimSpace(cu.Wall) == "" {
+			return nil, fmt.Errorf("%s: curtains[%d] needs a wall", sceneFixFile, i)
+		}
+		if cu.Color != "" && !hexColorRE.MatchString(cu.Color) {
+			return nil, fmt.Errorf("%s: curtains[%d].color must be #RRGGBB", sceneFixFile, i)
 		}
 	}
 	for i, ad := range fix.Add {
@@ -329,6 +372,7 @@ type fixedPlan struct {
 	Floor        [][2]float64
 	Rooms        []planRoom
 	ScanRooms    []scanRoom
+	Curtains     []fixCurtain
 	Devices      []fixDevice
 }
 
@@ -360,6 +404,7 @@ func applySceneFix(sc *scan, fix *sceneFix) *fixedPlan {
 	fp := &fixedPlan{
 		WallHeight:   wallH,
 		WallOpenings: slices.Clone(fix.Openings),
+		Curtains:     slices.Clone(fix.Curtains),
 		Devices:      slices.Clone(fix.Devices),
 	}
 
@@ -488,6 +533,22 @@ func applySceneFix(sc *scan, fix *sceneFix) *fixedPlan {
 			if ov.Color != "" {
 				ob.Color = ov.Color
 			}
+			if pt, ok := checkCoord2(ov.Center); ok {
+				ob.Center = pt
+			}
+			if len(ov.Size) == 2 {
+				ob.Size = [2]float64{ov.Size[0], ov.Size[1]}
+			}
+			if ov.Yaw != nil {
+				ob.Yaw, ob.FixedYaw = normAngle(*ov.Yaw), true
+			}
+			if ov.Bottom != nil {
+				ob.Bottom = *ov.Bottom
+			}
+			if ov.Top != nil {
+				ob.Top = *ov.Top
+			}
+			ob.Top = max(ob.Top, ob.Bottom+0.06)
 		}
 		fp.Objects = append(fp.Objects, ob)
 	}
@@ -514,6 +575,12 @@ func applySceneFix(sc *scan, fix *sceneFix) *fixedPlan {
 			Category: kind, Kind: kind, Name: ad.Name, Center: pt, Size: sz,
 			Yaw: yaw, FixedYaw: fixedYaw, Bottom: ad.Bottom, Top: top, Color: ad.Color,
 		})
+	}
+
+	if fix.WallThickness != nil {
+		for i := range fp.Walls {
+			fp.Walls[i].Thickness = *fix.WallThickness
+		}
 	}
 
 	if len(sc.Floor) >= 3 {
@@ -595,6 +662,10 @@ func defaultObjectSize(kind string) [2]float64 {
 		return [2]float64{1.4, 0.8}
 	case "coffee_table":
 		return [2]float64{1.1, 0.6}
+	case "round_coffee_table":
+		return [2]float64{0.8, 0.8}
+	case "bench":
+		return [2]float64{0.7, 0.32}
 	case "chair":
 		return [2]float64{0.48, 0.48}
 	case "piano":
@@ -624,8 +695,8 @@ func defaultObjectHeight(kind string) float64 {
 		return 0.75
 	case "bar_table":
 		return 1.05
-	case "coffee_table":
-		return 0.42
+	case "coffee_table", "round_coffee_table", "bench":
+		return 0.45
 	case "chair":
 		return 0.82
 	case "piano":
