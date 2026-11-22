@@ -110,7 +110,7 @@ var rerunTools = []tool{
 		"user's own records bear them out.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"source", "items"}, "properties": map[string]any{
 			"source": map[string]any{"type": "string", "description": "a short name of the source, without spaces or slashes (e.g. enkeep)"},
-			"items": map[string]any{"type": "array", "maxItems": 500, "items": map[string]any{"type": "object",
+			"items": map[string]any{"type": "array", "description": "at most 500 items", "items": map[string]any{"type": "object",
 				"required": []string{"id", "kind", "text", "confirmed"}, "properties": map[string]any{
 					"id": map[string]any{"type": "string"}, "kind": map[string]any{"type": "string", "enum": []string{"rule", "guardrail", "preference", "fact"}},
 					"text": map[string]any{"type": "string"}, "confirmed": map[string]any{"type": "string"},
