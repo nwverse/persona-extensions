@@ -7,8 +7,8 @@
   wrong, probes carry the tag `probe`. The legacy route with `cursor` and `created_at` is gone. No personal entry
   visible (the hub shows them only to an extension proven to run on the assistant's computer) is a normal empty read;
   `enkeep_rerun_status` says what the last read found. An owner's "wrong" mark (`assistant.entries.changed`) makes the
-  next read leave the entry out. The manifest declares the grant and subscribes to the event: a hub that does not
-  know them refuses the manifest, so this version installs only on a hub with the ledger (H1a).
+  next read leave the entry out. The grant and the event are declared once the SDK's manifest schema (synced from
+  persona #13106) lists them; until then the read answers "not granted", which is the same empty read.
 - **Every space is collected; categories decide use by scene** (unified memory design v2 §3.2, §3.3b, §8). The
   health space's sessions, cards and to-dos are read like any other; nothing is dropped for being sensitive any more
   (K13 decided what was collected; it now decides nothing and is off the page). Entries carry their source space

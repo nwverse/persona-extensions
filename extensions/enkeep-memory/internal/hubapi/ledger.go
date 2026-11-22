@@ -21,9 +21,10 @@ import (
 // computer (it gets no personal entries: on a hub in a container, every by=user entry about the user is personal)
 // all read as "nothing to verify by": the callers go on with the day's own records.
 //
-// The manifest declares the grant and subscribes to assistant.entries.changed (0.2.0-beta.40). A hub that does not
-// know the scope or the topic refuses to install the manifest (extension/perm.go, EventTopics), so this version is
-// installed only on a hub with the ledger (H1a).
+// The grant and the event are not declared in the manifest yet: the manifest schema this repository syncs from the
+// SDK (sdk/go/wire/schema/manifest.schema.json) does not list them until persona #13106 is merged and synced, and a
+// hub without the ledger refuses a manifest naming them (extension/perm.go, EventTopics). Until then the call answers
+// permission_denied, the same "nothing" as above; the event handler is ready for when it is subscribed.
 
 // LedgerMethod and LedgerScope are the RPC and the grant it needs.
 const (

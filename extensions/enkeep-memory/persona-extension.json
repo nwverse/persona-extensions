@@ -65,8 +65,7 @@
         "id": "enkeep-memory-kb",
         "subscribe": [
           "kb.changed",
-          "kb.forgotten",
-          "assistant.entries.changed"
+          "kb.forgotten"
         ]
       }
     ],
@@ -402,8 +401,7 @@
       "todos.read",
       "notify",
       "assistant.ask",
-      "assistant.memory.read",
-      "assistant.entries.read"
+      "assistant.memory.read"
     ]
   }
 }
