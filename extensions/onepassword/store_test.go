@@ -82,7 +82,10 @@ func TestStorageCreateEditOnlyStdinAndReferenceAnswers(t *testing.T) {
 	if _, err = storeCall(t, n, in); err == nil || writes != 1 {
 		t.Fatal("replay wrote")
 	}
-	// Edit preserves unrelated values, URLs and version entirely within the node.
+	// Edit preserves unrelated values, URLs and version entirely within the node,
+	// including the CLI's unnamed default section used for ordinary custom fields.
+	stored["fields"].([]any)[0].(map[string]any)["section"] = map[string]string{"id": "add more"}
+	stored["sections"] = []any{map[string]any{"id": "add more", "label": ""}}
 	stored["fields"] = append([]any{map[string]any{"id": "untouched", "label": "untouched", "type": "STRING", "value": "OTHER-FAKE-VALUE"}}, stored["fields"].([]any)...)
 	stored["version"] = float64(7)
 	stored["urls"] = []any{map[string]any{"href": "https://example.com"}}
@@ -105,6 +108,12 @@ func TestStorageCreateEditOnlyStdinAndReferenceAnswers(t *testing.T) {
 	if stored["version"] != float64(7) || stored["fields"].([]any)[0].(map[string]any)["value"] != "OTHER-FAKE-VALUE" || len(stored["urls"].([]any)) != 1 {
 		t.Fatal("unrelated metadata or fields lost")
 	}
+	stored["sections"].([]any)[0].(map[string]any)["label"] = "Named section"
+	before, _ = json.Marshal(stored)
+	if _, err = n.writeStore(context.Background(), in.Target, []storeValue{{Name: "credential", Value: []byte(secret)}}); err == nil || writes != 2 {
+		t.Fatal("named section was silently edited")
+	}
+
 }
 func TestStorageRejectsChangedExpiredForeignAndInvalidCiphertext(t *testing.T) {
 	for _, change := range []string{"target", "session", "expired", "ciphertext", "field"} {
