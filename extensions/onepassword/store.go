@@ -183,7 +183,7 @@ func (n *nodeApp) writeStore(ctx context.Context, t wire.SecretStoreTarget, vals
 	item := map[string]json.RawMessage{}
 	put := func(m map[string]json.RawMessage, k string, v any) { m[k], _ = json.Marshal(v) }
 	var fields []map[string]json.RawMessage
-	args := []string{"item", "create", "--vault", t.Vault, "--format", "json", "--reveal"}
+	args := []string{"item", "create", "-", "--vault", t.Vault, "--format", "json", "--reveal"}
 	if t.Operation == "edit" {
 		raw, err := n.run(ctx, "item", "get", t.Item, "--vault", t.Vault, "--format", "json", "--reveal")
 		if err != nil {
@@ -252,6 +252,7 @@ func (n *nodeApp) writeStore(ctx context.Context, t wire.SecretStoreTarget, vals
 		put(f, "value", string(v.Value))
 		put(f, "type", t.Fields[i].Type)
 	}
+	clear(item["fields"])
 	put(item, "fields", fields)
 	template, err := json.Marshal(item)
 	if err != nil {
@@ -269,6 +270,11 @@ func (n *nodeApp) writeStore(ctx context.Context, t wire.SecretStoreTarget, vals
 	defer clear(out)
 	n.noteAuthorization(time.Now())
 	var saved cliItem
+	defer func() {
+		for _, f := range saved.Fields {
+			clear(f.Value)
+		}
+	}()
 	if json.Unmarshal(out, &saved) != nil || !opID.MatchString(saved.ID) || saved.Vault.ID != t.Vault {
 		return nil, storeFailure()
 	}
