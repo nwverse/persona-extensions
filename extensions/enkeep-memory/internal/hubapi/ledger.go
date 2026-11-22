@@ -2,64 +2,94 @@ package hubapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
-	"net/url"
+	"slices"
+	"strings"
 	"time"
+
+	"github.com/nwverse/persona/sdk/go/ext"
 )
 
-// The hub's entry ledger (unified memory design v2 §5.1, appendix D interface I1): one append-only list of entries the
-// user said, relayed or confirmed, and what agents and extensions published. It is not on any hub yet: the fields
-// below are the design's, and a hub without the route, or a token without the scope, is skipped without a word
-// (LedgerReader's callers treat every error as "no ledger").
+// The hub's entry ledger (unified memory design v2 §5.1, appendix D interface I1, persona #13106): one append-only
+// list of entries the user said, relayed or confirmed, and what agents and extensions published.
 //
-// The route the extension reads: GET /api/v1/ledger?by=user&since=<RFC 3339>&limit=…&cursor=…, answering
-// {"items": [LedgerEntry…], "next_cursor": "…"}.
+// The extension reads it with the RPC assistant.entries.list (grant assistant.entries.read): params {limit ≤200,
+// after, by, trust, status, scope, tag, type}, answering {entries, after, has_more} in ascending publication time.
+// The legacy names cursor and created_at are refused by the hub. A hub without the method, an extension without the
+// grant (permission_denied with data {scope}), and an extension the hub cannot prove runs on the assistant's
+// computer (it gets no personal entries: on a hub in a container, every by=user entry about the user is personal)
+// all read as "nothing to verify by": the callers go on with the day's own records.
+//
+// The grant is not declared in the manifest yet: a hub that does not know the scope refuses to install a manifest
+// naming it (extension/perm.go), so it is declared once a hub with the ledger is deployed, as assistant.memory.read
+// was (H2). Until then the call answers permission_denied, which is the same "nothing" as above.
 
-// LedgerEntry is one ledger entry as the extension reads it.
+// LedgerMethod and LedgerScope are the RPC and the grant it needs.
+const (
+	LedgerMethod = "assistant.entries.list"
+	LedgerScope  = "assistant.entries.read"
+	// LedgerChanged is the event an owner's "wrong" mark sends ({id, record_id, status: "wrong"}).
+	LedgerChanged = "assistant.entries.changed"
+)
+
+// LedgerSource is where an entry's quote was said.
+type LedgerSource struct {
+	Machine string `json:"machine,omitempty"`
+	Session string `json:"session,omitempty"`
+	MsgUUID string `json:"msg_uuid,omitempty"`
+	CardID  string `json:"card_id,omitempty"`
+	File    string `json:"file,omitempty"`
+	Line    int    `json:"line,omitempty"`
+}
+
+// LedgerScopeOf is an entry's scope: all specified dimensions must match.
+type LedgerScopeOf struct {
+	Executor string   `json:"executor,omitempty"` // system | assistant | any
+	Machine  []string `json:"machine,omitempty"`
+	Project  []string `json:"project,omitempty"`
+	Personal bool     `json:"personal,omitempty"`
+}
+
+// LedgerEntry is one ledger entry as assistant.entries.list returns it.
 type LedgerEntry struct {
-	ID   string `json:"id"`
-	Type string `json:"type"` // fact | preference | rule | decision | hot_state
-	Text string `json:"text"`
-	// Quote is the user's words verbatim, verified by the hub against the source it names (user-role, not injected).
+	ID    string `json:"id"`
+	Type  string `json:"type"` // fact | preference | rule | decision
+	Text  string `json:"text"`
 	Quote string `json:"quote,omitempty"`
-	By    string `json:"by"`              // user | agent | extension
-	Trust string `json:"trust,omitempty"` // user_verbatim | user_relayed | inferred | agent | repo | import
-	// Source is where the quote was said: a session and item, a card, a to-do.
-	Source string `json:"source,omitempty"`
-	// RelayedVia is the session that relayed the user's words (a supervisor's), when they reached the hub through
-	// it; the quote is still checked against the user's own message in Source.
-	RelayedVia string `json:"relayed_via,omitempty"`
-	// Supersedes is the id of the older entry this one replaces (newer points at older).
-	Supersedes string    `json:"supersedes,omitempty"`
-	ExpiresAt  time.Time `json:"expires_at,omitempty"`
-	Tags       []string  `json:"tag,omitempty"`
-	Scope      struct {
-		Executor string `json:"executor,omitempty"` // assistant | supervisor | agent | any
-		Machine  string `json:"machine,omitempty"`
-		Project  string `json:"project,omitempty"`
-		Personal bool   `json:"personal,omitempty"`
-	} `json:"scope"`
-	// Origin is the session's origin when the entry came from one (user | channel | inbox | task | spawned |
-	// automation): automation and test probes never teach anything about the user.
-	Origin string    `json:"origin,omitempty"`
-	Kind   string    `json:"kind,omitempty"` // "probe": a test probe (never read as the user's)
-	At     time.Time `json:"created_at"`
-	// replaced is set by Ledger when a later entry of the list supersedes this one.
+	// Source is where Quote was said; RelayedVia the relay sessions it came through ([] when said directly).
+	Source     LedgerSource `json:"source"`
+	RelayedVia []string     `json:"relayed_via"`
+	At         time.Time    `json:"at"`
+	ExpiresAt  *time.Time   `json:"expires_at"`
+	// Supersedes is set on the newer entry ("" when none); the older one reads status superseded.
+	Supersedes string        `json:"supersedes"`
+	Trust      string        `json:"trust"`  // user_verbatim | user_relayed | repo | agent | inferred
+	Status     string        `json:"status"` // active | superseded | expired | wrong
+	By         string        `json:"by"`     // user | agent | enkeep | import
+	Tags       []string      `json:"tag"`    // reserved: seed, import, probe
+	Scope      LedgerScopeOf `json:"scope"`
+	ExtID      string        `json:"ext_id,omitempty"`
+	// replaced is set by ledgerClean when the list holds a newer entry superseding this one.
 	replaced bool
 }
 
-// Superseded says whether a later entry of the list read replaces this one.
-func (e LedgerEntry) Superseded() bool { return e.replaced }
+// Superseded says whether the entry no longer holds because a newer one replaced it.
+func (e LedgerEntry) Superseded() bool { return e.replaced || e.Status == "superseded" }
 
 // Expired says whether the entry no longer holds at now.
 func (e LedgerEntry) Expired(now time.Time) bool {
-	return !e.ExpiresAt.IsZero() && !now.Before(e.ExpiresAt)
+	return e.Status == "expired" || e.ExpiresAt != nil && !now.Before(*e.ExpiresAt)
 }
+
+// Probe says whether the entry is a test probe (never read as the user's).
+func (e LedgerEntry) Probe() bool { return slices.Contains(e.Tags, "probe") }
 
 // LedgerQuery selects ledger entries.
 type LedgerQuery struct {
-	By    string    // user | agent | extension; "" all
-	Since time.Time // zero: from the start
+	By     string // user | agent | enkeep | import; "" all
+	Status string // "" (the hub's default: everything but expired) | active | wrong | all …
+	Tag    string
 }
 
 // LedgerReader reads the ledger. It is a separate interface, not part of Hub: a Hub that cannot read it (None,
@@ -68,62 +98,100 @@ type LedgerReader interface {
 	Ledger(ctx context.Context, q LedgerQuery) ([]LedgerEntry, error)
 }
 
-// ledgerMost bounds one read: pages of ledgerPage, at most this many entries.
+// LedgerDenied is the hub's answer to an extension without the grant: the scope it needs.
+type LedgerDenied struct{ Scope string }
+
+func (d *LedgerDenied) Error() string { return "the ledger needs the grant " + d.Scope }
+
+// ledgerPage is the page size (the hub's maximum); ledgerMost bounds one read.
 const (
-	ledgerPage = 500
+	ledgerPage = 200
 	ledgerMost = 20000
 )
 
-// Ledger reads the ledger's entries (every page, up to ledgerMost), marks the ones a later entry supersedes, and
-// leaves out probes, automation and expired entries. A hub without the route is a *WaitingHub{"I1"}.
+// Ledger reads every page (up to ledgerMost) of assistant.entries.list, marks the entries a newer one supersedes, and
+// leaves out probes, expired and wrong entries. Errors: *WaitingHub{"I1"} for a hub without the method,
+// *LedgerDenied without the grant; no personal entry visible is an empty list, not an error.
 func (h *HTTP) Ledger(ctx context.Context, q LedgerQuery) ([]LedgerEntry, error) {
+	if h.Call == nil {
+		return nil, &WaitingHub{Change: "I1"}
+	}
 	var all []LedgerEntry
-	cursor := ""
+	after := ""
 	for len(all) < ledgerMost {
-		v := url.Values{"limit": {"500"}}
+		params := map[string]any{"limit": ledgerPage}
 		if q.By != "" {
-			v.Set("by", q.By)
+			params["by"] = q.By
 		}
-		if !q.Since.IsZero() {
-			v.Set("since", q.Since.UTC().Format(time.RFC3339))
+		if q.Status != "" {
+			params["status"] = q.Status
 		}
-		if cursor != "" {
-			v.Set("cursor", cursor)
+		if q.Tag != "" {
+			params["tag"] = q.Tag
+		}
+		if after != "" {
+			params["after"] = after
 		}
 		var r struct {
-			Items []LedgerEntry `json:"items"`
-			Next  string        `json:"next_cursor"`
+			Entries []LedgerEntry `json:"entries"`
+			After   string        `json:"after"`
+			HasMore bool          `json:"has_more"`
 		}
-		if err := h.get(ctx, "ledger", "/api/v1/ledger", v, &r); err != nil {
-			if errors.Is(err, errNoRoute) {
-				return nil, &WaitingHub{Change: "I1"}
-			}
-			return nil, err
+		if err := h.Call(ctx, LedgerMethod, params, &r); err != nil {
+			return nil, ledgerErr(err)
 		}
-		all = append(all, r.Items...)
-		if r.Next == "" || len(r.Items) == 0 {
+		all = append(all, r.Entries...)
+		if !r.HasMore || r.After == "" || len(r.Entries) == 0 {
 			break
 		}
-		cursor = r.Next
+		after = r.After
 	}
 	return ledgerClean(all, time.Now()), nil
 }
 
-// ledgerClean marks superseded entries and drops probes, automation and expired entries.
+// ledgerErr maps assistant.entries.list's errors by their code.
+func ledgerErr(err error) error {
+	var coded *ext.Error
+	code, scope := "", LedgerScope
+	if errors.As(err, &coded) {
+		code = coded.Code
+		var d struct {
+			Scope string `json:"scope"`
+		}
+		if len(coded.Data) > 0 && json.Unmarshal(coded.Data, &d) == nil && d.Scope != "" {
+			scope = d.Scope
+		}
+	} else {
+		for _, c := range []string{"unknown_method", "method_not_found", "permission_denied"} {
+			if strings.Contains(err.Error(), c) {
+				code = c
+			}
+		}
+	}
+	switch code {
+	case "unknown_method", "method_not_found":
+		return &WaitingHub{Change: "I1"}
+	case "permission_denied":
+		return &LedgerDenied{Scope: scope}
+	}
+	return err
+}
+
+// ledgerClean marks superseded entries and drops probes, expired and wrong entries.
 func ledgerClean(all []LedgerEntry, now time.Time) []LedgerEntry {
+	var out []LedgerEntry
 	replaced := map[string]bool{}
 	for _, e := range all {
+		if e.Probe() || e.Expired(now) || e.Status == "wrong" {
+			continue // and it replaces nothing
+		}
 		if e.Supersedes != "" {
 			replaced[e.Supersedes] = true
 		}
-	}
-	var out []LedgerEntry
-	for _, e := range all {
-		if e.Kind == "probe" || e.Origin == "automation" || e.Expired(now) {
-			continue
-		}
-		e.replaced = replaced[e.ID]
 		out = append(out, e)
+	}
+	for i := range out {
+		out[i].replaced = replaced[out[i].ID]
 	}
 	return out
 }

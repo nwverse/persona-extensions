@@ -330,6 +330,9 @@ func (a *app) modelText() string {
 	out, waiting, minute := model.Shared().Stats()
 	fmt.Fprintf(&b, "\nCall limit: at most %d at once and %d a minute (reruns wait behind the daily and weekly passes); now %d out, %d waiting, %d in the last minute.",
 		model.LimitConcurrent, model.LimitPerMinute, out, waiting, minute)
+	if l := a.c.LedgerState(); l != "" {
+		b.WriteString("\nLedger (assistant.entries.list): " + l + ".")
+	}
 	return b.String()
 }
 

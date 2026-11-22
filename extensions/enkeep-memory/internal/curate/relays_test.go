@@ -61,11 +61,15 @@ func TestVerifyRelays(t *testing.T) {
 	}
 }
 
-// A ledger entry a later one supersedes, a probe and an automation entry are left out.
+// A ledger entry a later one supersedes (by the pointer or its own status) holds no more; a probe, an expired and a
+// wrong entry are left out (persona #13106's fields).
 func TestLedgerClean(t *testing.T) {
+	past := time.Now().Add(-time.Hour)
 	es := hubapi.LedgerCleanForTest([]hubapi.LedgerEntry{{ID: "a", By: "user", Quote: "旧的"}, {ID: "b", By: "user", Quote: "新的", Supersedes: "a"},
-		{ID: "p", By: "user", Kind: "probe"}, {ID: "x", By: "user", Origin: "automation"}})
-	if len(es) != 2 || !es[0].Superseded() || es[1].Superseded() {
+		{ID: "c", By: "user", Quote: "也旧了", Status: "superseded"},
+		{ID: "p", By: "user", Tags: []string{"probe"}}, {ID: "e", By: "user", ExpiresAt: &past}, {ID: "w", By: "user", Status: "wrong"},
+		{ID: "x", By: "user", Status: "expired"}})
+	if len(es) != 3 || !es[0].Superseded() || es[1].Superseded() || !es[2].Superseded() {
 		t.Fatalf("%+v", es)
 	}
 }

@@ -1,5 +1,15 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.40 (pre-release)
+
+- **The ledger as the hub defines it.** The user's entries are read with the RPC `assistant.entries.list` (grant
+  `assistant.entries.read`, persona #13106): pages by `after`, the time is `at`, the status says superseded, expired or
+  wrong, probes carry the tag `probe`. The legacy route with `cursor` and `created_at` is gone. No personal entry
+  visible (the hub shows them only to an extension proven to run on the assistant's computer) is a normal empty read;
+  `enkeep_rerun_status` says what the last read found. An owner's "wrong" mark (`assistant.entries.changed`) makes the
+  next read leave the entry out. The grant and the event are not declared yet: a hub that does not know them refuses
+  the manifest, so they are declared once a hub with the ledger is deployed.
+
 ## 0.2.0-beta.39 (pre-release)
 
 - **The tab bar fits a phone.** Eight tabs did not fit an iPhone's width; the app then draws them as a

@@ -544,6 +544,11 @@ func (a *app) event(ctx context.Context, method string, params json.RawMessage) 
 		a.mu.Lock()
 		a.changed++
 		a.mu.Unlock()
+	case hubapi.LedgerChanged:
+		// An owner's "wrong" mark on a ledger entry (persona #13106): a hint only. The next read of the ledger leaves the
+		// entry out, so its quote no longer verifies anything. Subscribed once a hub with the ledger is deployed (the
+		// manifest cannot name the event before: a hub that does not know it refuses the manifest).
+		a.c.LedgerChanged()
 	}
 	return nil, nil
 }

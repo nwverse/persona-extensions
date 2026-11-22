@@ -2,6 +2,8 @@ package curate
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -108,7 +110,16 @@ func (c *Curator) ledgerQuotes(ctx context.Context) []string {
 	}
 	lc.at, lc.quotes = time.Now(), nil
 	es, err := lr.Ledger(ctx, hubapi.LedgerQuery{By: "user"})
-	if err != nil {
+	var denied *hubapi.LedgerDenied
+	switch {
+	case errors.As(err, &denied):
+		lc.state = "the hub answers that the ledger needs the grant " + denied.Scope + " (not declared yet: read nothing)"
+		return nil
+	case errors.Is(err, hubapi.ErrWaitingHub):
+		lc.state = "the hub has no ledger yet (assistant.entries.list)"
+		return nil
+	case err != nil:
+		lc.state = "the last read failed: " + err.Error()
 		return nil
 	}
 	for _, e := range es {
@@ -116,13 +127,44 @@ func (c *Curator) ledgerQuotes(ctx context.Context) []string {
 			lc.quotes = append(lc.quotes, e.Quote)
 		}
 	}
+	// No entry at all is normal: the hub shows personal entries only to an extension it can prove runs on the
+	// assistant's computer, and one in a hub container cannot (persona #13106).
+	lc.state = fmt.Sprintf("read %d entr(ies) by the user with a quote (%d listed; personal entries are visible only on the assistant's computer)", len(lc.quotes), len(es))
 	return lc.quotes
+}
+
+// LedgerChanged forgets the last read of the ledger: the hub's assistant.entries.changed (an owner's "wrong" mark) is
+// a hint, and the next unit reads the ledger again, without the entry marked wrong.
+func (c *Curator) LedgerChanged() {
+	whoInit.Lock()
+	lc := c.ledger
+	whoInit.Unlock()
+	if lc == nil {
+		return
+	}
+	lc.mu.Lock()
+	lc.at = time.Time{}
+	lc.mu.Unlock()
+}
+
+// LedgerState says what the last read of the ledger found ("" before any).
+func (c *Curator) LedgerState() string {
+	whoInit.Lock()
+	lc := c.ledger
+	whoInit.Unlock()
+	if lc == nil {
+		return ""
+	}
+	lc.mu.Lock()
+	defer lc.mu.Unlock()
+	return lc.state
 }
 
 type ledgerCache struct {
 	mu     sync.Mutex
 	at     time.Time
 	quotes []string
+	state  string
 }
 
 // ledgerFresh is how long one read of the ledger serves the day's units (a pass reads many days' units).
