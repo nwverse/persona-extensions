@@ -62,7 +62,9 @@ func TestLedgerRPC(t *testing.T) {
 	if _, err := h.Ledger(context.Background(), LedgerQuery{}); !errors.As(err, &d) || d.Scope != LedgerScope {
 		t.Fatalf("denied: %v", err)
 	}
-	h.Call = func(context.Context, string, any, any) error { return &ext.Error{Message: "no", Code: "unknown_method"} }
+	h.Call = func(context.Context, string, any, any) error {
+		return &ext.Error{Message: "no", Code: "unknown_method"}
+	}
 	if _, err := h.Ledger(context.Background(), LedgerQuery{}); !errors.Is(err, ErrWaitingHub) {
 		t.Fatalf("unknown method: %v", err)
 	}
