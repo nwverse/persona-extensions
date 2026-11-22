@@ -195,6 +195,13 @@ func (c *compiler) render(p *plan, texts map[string]string) []file {
 			}
 			parts = append(parts, part{key: f, heading: heading, lines: ls})
 		}
+		own := false
+		for _, pt := range parts {
+			own = own || (pt.key != "general" && len(pt.lines) > 0)
+		}
+		if !own {
+			continue // the general part alone says nothing about the project
+		}
 		content, ids := fillParts(fmt.Sprintf(c.fw.Project, pr.name), parts, ProjectMax)
 		if content != "" {
 			files = append(files, file{path: path.Join(ProjectsDir, slug+".md"), exit: "D", content: content, ids: ids})

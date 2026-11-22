@@ -64,7 +64,7 @@ func TestProjectFilesByKnowledgeBase(t *testing.T) {
 		t.Error("project-x file lacks its judgement")
 	}
 	files, _ := filepath.Glob(filepath.Join(dir, ProjectsDir, "*.md"))
-	if len(files) != 2 {
+	if len(files) != 2 { // dup-a and dup-b: nothing of their own, no file with the general part alone
 		t.Errorf("project files %v: want the two known projects only", files)
 	}
 	a := read(t, dir, InstructionsPath)
