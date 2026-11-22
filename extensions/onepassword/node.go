@@ -501,6 +501,7 @@ func runOpInput(ctx context.Context, input []byte, args ...string) ([]byte, erro
 	}
 	cmd.Env = opEnv(os.Environ(), runtime.GOOS, os.Getuid(), exists)
 	var stdout, stderr limitedBuffer
+	defer func() { clear(stderr.Bytes()) }()
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.WaitDelay = 2 * time.Second
 	err := cmd.Run()
