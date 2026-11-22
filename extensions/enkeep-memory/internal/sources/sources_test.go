@@ -306,41 +306,81 @@ func TestAgentsTrailingFoldCursorIncludesThrough(t *testing.T) {
 	}
 }
 
-func TestByPersonaFirstMessageSpeaker(t *testing.T) {
+// A session Persona started: with K20 on (the default, 0.2.0-beta.37) every user-role line is Persona's (task
+// prompt, the supervisor's or the assistant's later messages); with K20 off only its first message is.
+func TestByPersonaSessionSpeaker(t *testing.T) {
+	for _, k20 := range []string{"on", "off"} {
+		h := &hub{
+			sessions: []hubapi.Session{{Machine: "m1", ID: "s-persona", Started: at(3, 8), Updated: at(4, 9), ByPersona: true}},
+			items: []hubapi.Item{
+				{Seq: 1, At: at(3, 9), Kind: hubapi.KindUser, Text: "delegated task"},
+				{Seq: 2, At: at(3, 10), Kind: hubapi.KindUser, Text: "my own follow-up"},
+				{Seq: 3, At: at(4, 9), Kind: hubapi.KindUser, Text: "next day's user message"},
+			},
+		}
+		s := With(&kb{}, h, time.UTC)
+		st := &store.State{Switches: map[string]entry.SwitchSetting{entry.K20PersonaSession: {Value: k20, By: "user"}}}
+		later := SpeakerUser
+		if k20 == "on" {
+			later = SpeakerPersona
+		}
+		ctx := context.Background()
+		s.Begin(st, "2026-11-03")
+		if _, err := s.Recent(ctx, day3, time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		lines := dayLines(t, s, "agents/m1/s-persona", "2026-11-03")
+		if len(lines) != 2 {
+			t.Fatalf("K20 %s: day 3 lines: %v", k20, lines)
+		}
+		if !strings.Contains(lines[0], SpeakerPersona+": delegated task") {
+			t.Errorf("K20 %s: the first message is not Persona's: %v", k20, lines[0])
+		}
+		if !strings.Contains(lines[1], later+": my own follow-up") {
+			t.Errorf("K20 %s: follow-up speaker: %v", k20, lines[1])
+		}
+		s.End(st, "2026-11-03", 1)
+
+		s.Begin(st, "2026-11-04")
+		if _, err := s.Recent(ctx, at(4, 0), time.Time{}); err != nil {
+			t.Fatal(err)
+		}
+		lines = dayLines(t, s, "agents/m1/s-persona", "2026-11-04")
+		if len(lines) != 1 || !strings.Contains(lines[0], later+": next day's user message") {
+			t.Errorf("K20 %s: an incremental page's user message speaker: %v", k20, lines)
+		}
+	}
+}
+
+// A session the user started: a test prompt, a relay marked as such and a pasted block are not the user's words;
+// what the user typed beside a paste is.
+func TestUserSessionNotTheUsersWords(t *testing.T) {
 	h := &hub{
-		sessions: []hubapi.Session{{Machine: "m1", ID: "s-persona", Started: at(3, 8), Updated: at(4, 9), ByPersona: true}},
+		sessions: []hubapi.Session{{Machine: "m1", ID: "s-own", Started: at(3, 8), Updated: at(3, 12)}},
 		items: []hubapi.Item{
-			{Seq: 1, At: at(3, 9), Kind: hubapi.KindUser, Text: "delegated task"},
-			{Seq: 2, At: at(3, 10), Kind: hubapi.KindUser, Text: "my own follow-up"},
-			{Seq: 3, At: at(4, 9), Kind: hubapi.KindUser, Text: "next day's user message"},
+			{Seq: 1, At: at(3, 9), Kind: hubapi.KindUser, Text: "部署验证：请只回复 OK，不要调用任何工具。"},
+			{Seq: 2, At: at(3, 10), Kind: hubapi.KindUser, Text: "（占位主管经主对话转）把占位服务升级到最新"},
+			{Seq: 3, At: at(3, 11), Kind: hubapi.KindUser, Text: "<pasted_content id=\"p1\">用简体中文，直接做，不进计划模式。</pasted_content id=\"p1\">"},
+			{Seq: 4, At: at(3, 11), Kind: hubapi.KindUser, Text: "照这个做 <pasted_content id=\"p2\">占位材料</pasted_content id=\"p2\">"},
 		},
 	}
 	s := With(&kb{}, h, time.UTC)
 	st := &store.State{}
-	ctx := context.Background()
 	s.Begin(st, "2026-11-03")
-	if _, err := s.Recent(ctx, day3, time.Time{}); err != nil {
+	if _, err := s.Recent(context.Background(), day3, time.Time{}); err != nil {
 		t.Fatal(err)
 	}
-	lines := dayLines(t, s, "agents/m1/s-persona", "2026-11-03")
-	if len(lines) != 2 {
-		t.Fatalf("day 3 lines: %v", lines)
+	lines := dayLines(t, s, "agents/m1/s-own", "2026-11-03")
+	if len(lines) != 4 {
+		t.Fatalf("lines: %v", lines)
 	}
-	if !strings.Contains(lines[0], SpeakerPersona+": delegated task") {
-		t.Errorf("the first message is not Persona's: %v", lines[0])
+	for i, want := range []string{SpeakerTest + ": 部署验证", SpeakerPersona + ": （占位主管经主对话转）", SpeakerPaste + ": ", SpeakerUser + ": 照这个做 [粘贴材料"} {
+		if !strings.Contains(lines[i], want) {
+			t.Errorf("line %d: %q, want %q", i, lines[i], want)
+		}
 	}
-	if !strings.Contains(lines[1], SpeakerUser+": my own follow-up") {
-		t.Errorf("the user follow-up changed speaker: %v", lines[1])
-	}
-	s.End(st, "2026-11-03", 1)
-
-	s.Begin(st, "2026-11-04")
-	if _, err := s.Recent(ctx, at(4, 0), time.Time{}); err != nil {
-		t.Fatal(err)
-	}
-	lines = dayLines(t, s, "agents/m1/s-persona", "2026-11-04")
-	if len(lines) != 1 || !strings.Contains(lines[0], SpeakerUser+": next day's user message") {
-		t.Errorf("an incremental page's first user message changed speaker: %v", lines)
+	if strings.Contains(lines[3], "占位材料") {
+		t.Errorf("pasted material kept as the user's words: %q", lines[3])
 	}
 }
 

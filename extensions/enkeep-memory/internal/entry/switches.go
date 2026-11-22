@@ -10,7 +10,7 @@ const (
 	K3Abstract       = "K3" // abstract entries in exit A: on
 	K4Persona        = "K4" // ⑥ in exits A and E: on
 	K5ToolsSkill     = "K5" // skill "machines and tools": on
-	K6WorkflowSkill  = "K6" // skill "ways of working" and agent project context: on
+	K6WorkflowSkill  = "K6" // agent project context (exit D): on. The ways-of-working skills it also named are gone (0.2.0-beta.37)
 	K7WorldFacts     = "K7" // facts about others written back: on
 	K7GroupByProject = "K7.group"
 	K8AutoEffective  = "K8"  // new entries take effect at once (weekly report says, undoable): on
@@ -23,6 +23,10 @@ const (
 	K15Inferred      = "K15" // inferred profiles on the cards: on
 	K16LearnPeople   = "K16" // per source, K16.<source>: on; off automatically when attribution < 95%
 	K17DigScope      = "K17" // tool segments: signal (only dig what a signal triggers) | wide (looser screen)
+	// 0.2.0-beta.37 (docs/exits.md): decided as recommended, each a switch the user may turn off.
+	K18NamesIndex     = "K18" // exit A ⑤: names of the people dealt with most and the busiest projects: on
+	K19ProjectGeneral = "K19" // exit D: each project block starts with exit A's first rules for working with the user: on
+	K20PersonaSession = "K20" // a session Persona started: every user-role line is Persona's (off: only the first): on
 )
 
 // Defaults of every switch. Values are "on"/"off", or a mode word for K2 and K17.
@@ -30,7 +34,8 @@ var Defaults = map[string]string{
 	K1PerTurnBlock: "on", K2Judgement: "suggest", K3Abstract: "on", K4Persona: "on", K5ToolsSkill: "on",
 	K6WorkflowSkill: "on", K7WorldFacts: "on", K7GroupByProject: "on", K8AutoEffective: "on", K9FixedFields: "off",
 	K10Knowledge: "off", K11Recordings: "on", K12Onboarding: "on", K13Sensitive: "off", K14People: "on",
-	K15Inferred: "on", K16LearnPeople: "on", K17DigScope: "signal",
+	K15Inferred: "on", K16LearnPeople: "on", K17DigScope: "signal", K18NamesIndex: "on", K19ProjectGeneral: "on",
+	K20PersonaSession: "on",
 }
 
 // SwitchSetting is one switch as stored: its value, who set it (user | auto) and why (an auto change says which

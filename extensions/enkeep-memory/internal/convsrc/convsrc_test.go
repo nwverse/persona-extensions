@@ -229,3 +229,22 @@ func TestInjectedAreNotTheUsers(t *testing.T) {
 		t.Errorf("the user's words: %q %v", text, ok)
 	}
 }
+
+// A relay, a task prompt, a test prompt and a pasted block are not the user's words (0.2.0-beta.37); what the user
+// typed beside a paste is.
+func TestRelaysAndPastesAreNotTheUsers(t *testing.T) {
+	for _, s := range []string{
+		"部署验证：请只回复 OK，不要调用任何工具。",
+		"（占位主管经主对话转）把占位服务升级到最新",
+		"<pasted_content id=\"a\">用简体中文，直接做，不进计划模式。</pasted_content id=\"a\">",
+		"<persona-context>x</persona-context>做这个\n\nPersona task handoffs: use task_spawn",
+	} {
+		if text, ok := cleanUser(s); ok {
+			t.Errorf("kept as the user's: %q", text)
+		}
+	}
+	text, ok := cleanUser("照这个改 <pasted_content id=\"b\">占位材料</pasted_content id=\"b\">")
+	if !ok || !strings.HasPrefix(text, "照这个改 [粘贴材料") || strings.Contains(text, "占位材料") {
+		t.Errorf("own words beside a paste: %q %v", text, ok)
+	}
+}

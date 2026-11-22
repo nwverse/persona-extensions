@@ -19,6 +19,8 @@ import (
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/recall"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/ext"
 )
 
@@ -57,6 +59,29 @@ var rerunTools = []tool{
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 			"dry_run": map[string]any{"type": "boolean", "default": true, "description": "true: report only; false: apply"},
 		}}},
+	{Name: "enkeep_recall", Description: "Look up what enkeep memory has curated about the user: a person, a project, a " +
+		"system, machine or account, a kind of task or a fork where you would choose for the user. Use it before " +
+		"answering about a specific person, project or system, and after the conversation was compacted. Returns up to " +
+		"limit lines (about 4000 characters), best match first, each with its facet, status (稳定 stable, 在变 shifting, " +
+		"候选 candidate, 较早 dormant), last day seen, source kinds and entry id. Candidates and dormant entries are less " +
+		"certain. Evaluations of and inferences about people are never returned. Nothing is sent anywhere and the query " +
+		"is not kept.",
+		InputSchema: map[string]any{"type": "object", "required": []string{"query"}, "properties": map[string]any{
+			"query": map[string]any{"type": "string", "minLength": 1, "maxLength": 200, "description": "names or words to look for, e.g. a project name, a person's name, a machine, a kind of task"},
+			"facets": map[string]any{"type": "array", "items": map[string]any{"type": "string",
+				"enum": []string{"interaction", "tools", "judgement", "workflow", "world", "people", "persona"}},
+				"description": "only these facets: interaction (working with the AI), tools, judgement (default judgements), workflow (ways of working), world (projects and facts), people, persona (about the user)"},
+			"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 30, "default": 12},
+		}}},
+	{Name: "enkeep_mark_wrong", Description: "Mark enkeep memory entries wrong, for example a line in the assistant's " +
+		"「关于用户（由 enkeep-memory 整理）」 block that is not the user's rule (a task prompt, a relay or a test prompt " +
+		"taken for the user's words). No card goes to the user's phone: the entries leave every exit at once and stay as " +
+		"counter-examples, recorded as marked by the assistant with the reason; the user can mark them right on the " +
+		"enkeep memory page to bring them back. Give entry ids from enkeep_recall. Deletes nothing.",
+		InputSchema: map[string]any{"type": "object", "required": []string{"ids", "reason"}, "properties": map[string]any{
+			"ids":    map[string]any{"type": "array", "minItems": 1, "maxItems": 20, "items": map[string]any{"type": "string"}, "description": "entry ids (id:… in enkeep_recall's lines)"},
+			"reason": map[string]any{"type": "string", "minLength": 1, "maxLength": 300, "description": "why the entries are wrong"},
+		}}},
 }
 
 func (a *app) connector(ctx context.Context, method string, raw json.RawMessage) (any, error) {
@@ -79,7 +104,7 @@ func (a *app) connector(ctx context.Context, method string, raw json.RawMessage)
 	case "tools.list":
 		return map[string]any{"tools": rerunTools}, nil
 	case "tools.call":
-		text, err := a.callTool(in.Name, in.Args)
+		text, err := a.callTool(ctx, in.Name, in.Args)
 		if err != nil {
 			return nil, &ext.Error{Code: "invalid", Message: err.Error()}
 		}
@@ -100,8 +125,12 @@ func strictDecode(raw json.RawMessage, out any) error {
 	return nil
 }
 
-func (a *app) callTool(name string, raw json.RawMessage) (string, error) {
+func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (string, error) {
 	switch name {
+	case "enkeep_recall":
+		return a.recallTool(raw)
+	case "enkeep_mark_wrong":
+		return a.markWrongTool(ctx, raw)
 	case "enkeep_rerun":
 		var in struct {
 			From, To string
@@ -157,6 +186,9 @@ func (a *app) callTool(name string, raw json.RawMessage) (string, error) {
 		}
 		for _, l := range p.History {
 			b.WriteString("\nSession history: " + l + ".")
+		}
+		if l := a.recallCounts(); l != "" {
+			b.WriteString("\n" + l)
 		}
 		b.WriteString("\n" + a.modelText())
 		return b.String(), nil
@@ -256,4 +288,158 @@ func resettleText(r curate.ResettleReport) string {
 		b.WriteString("\nCall again with dry_run false to apply.")
 	}
 	return b.String()
+}
+
+// recallTool answers enkeep_recall (internal/recall) and counts the call for the day: calls, empty answers, hits per
+// facet and status, never the query.
+func (a *app) recallTool(raw json.RawMessage) (string, error) {
+	var in struct {
+		Query  string   `json:"query"`
+		Facets []string `json:"facets"`
+		Limit  int      `json:"limit"`
+	}
+	if err := strictDecode(raw, &in); err != nil {
+		return "", err
+	}
+	in.Query = strings.TrimSpace(in.Query)
+	if in.Query == "" {
+		return "", errors.New("query is empty")
+	}
+	if len([]rune(in.Query)) > 200 {
+		return "", errors.New("query: at most 200 characters")
+	}
+	q := recall.Query{Text: in.Query, Limit: in.Limit}
+	for _, f := range in.Facets {
+		x, ok := recall.FacetOf(f)
+		if !ok {
+			return "", fmt.Errorf("unknown facet %q", f)
+		}
+		q.Facets = append(q.Facets, x)
+	}
+	a.c.St.Lock()
+	defer a.c.St.Unlock()
+	st := a.c.St.S
+	res := recall.Search(st, q)
+	day := a.localDay()
+	if st.Recall == nil {
+		st.Recall = map[string]*store.RecallDay{}
+	}
+	d := st.Recall[day]
+	if d == nil {
+		d = &store.RecallDay{Facets: map[string]int{}, Statuses: map[string]int{}}
+		st.Recall[day] = d
+		days := make([]string, 0, len(st.Recall))
+		for k := range st.Recall {
+			days = append(days, k)
+		}
+		sort.Strings(days)
+		for len(days) > store.RecallDays {
+			delete(st.Recall, days[0])
+			days = days[1:]
+		}
+	}
+	d.Calls++
+	if len(res.Hits) == 0 {
+		d.Empty++
+		if res.Pool == 0 {
+			return "enkeep memory has no curated entries to look in yet.", nil
+		}
+		return fmt.Sprintf("Nothing in enkeep memory matches %q (%d entries searched). Try a shorter name or another word.", in.Query, res.Pool), nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d line(s) from enkeep memory, best match first (稳定 = settled; 候选/较早 = less certain):\n", len(res.Hits))
+	for _, h := range res.Hits {
+		if d.Facets == nil {
+			d.Facets = map[string]int{}
+		}
+		if d.Statuses == nil {
+			d.Statuses = map[string]int{}
+		}
+		d.Facets[string(h.Facet)]++
+		d.Statuses[string(h.Status)]++
+		b.WriteString(recall.Format(h))
+	}
+	return strings.TrimRight(b.String(), "\n"), nil
+}
+
+// recallCounts says enkeep_recall's counts of the last 7 days, for enkeep_rerun_status: "" when it was never called.
+func (a *app) recallCounts() string {
+	a.c.St.Lock()
+	defer a.c.St.Unlock()
+	rs := a.c.St.S.Recall
+	if len(rs) == 0 {
+		return ""
+	}
+	days := make([]string, 0, len(rs))
+	for k := range rs {
+		days = append(days, k)
+	}
+	sort.Strings(days)
+	if len(days) > 7 {
+		days = days[len(days)-7:]
+	}
+	var parts []string
+	for _, k := range days {
+		d := rs[k]
+		parts = append(parts, fmt.Sprintf("%s %d call(s), %d empty", k, d.Calls, d.Empty))
+	}
+	return "enkeep_recall: " + strings.Join(parts, "; ") + "."
+}
+
+// markWrongTool answers enkeep_mark_wrong: each entry marked wrong by the assistant with the reason, then the exits
+// compiled at once without the entries (as the page's "不对" does) and the state saved.
+func (a *app) markWrongTool(ctx context.Context, raw json.RawMessage) (string, error) {
+	var in struct {
+		IDs    []string `json:"ids"`
+		Reason string   `json:"reason"`
+	}
+	if err := strictDecode(raw, &in); err != nil {
+		return "", err
+	}
+	in.Reason = strings.TrimSpace(in.Reason)
+	if len(in.IDs) == 0 || len(in.IDs) > 20 {
+		return "", errors.New("ids: 1 to 20 entry ids")
+	}
+	if in.Reason == "" || len([]rune(in.Reason)) > 300 {
+		return "", errors.New("reason: 1 to 300 characters")
+	}
+	a.c.St.Lock()
+	defer a.c.St.Unlock()
+	var marked, missing []string
+	for _, id := range in.IDs {
+		id = strings.TrimPrefix(strings.TrimSpace(id), "id:")
+		e, err := a.c.MarkWrongBy(id, "assistant", in.Reason)
+		if err != nil {
+			missing = append(missing, id)
+			continue
+		}
+		marked = append(marked, fmt.Sprintf("%s (%s)", id, cut(recall.Line(e), 60)))
+	}
+	if len(marked) > 0 {
+		a.withdraw(ctx)
+		if err := a.c.St.Save(); err != nil {
+			return "", err
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Marked wrong: %d entr(ies)", len(marked))
+	if len(marked) > 0 {
+		b.WriteString(": " + strings.Join(marked, "; "))
+	}
+	b.WriteString(".")
+	if len(missing) > 0 {
+		fmt.Fprintf(&b, " Not found: %s.", strings.Join(missing, ", "))
+	}
+	if len(marked) > 0 {
+		b.WriteString(" They are out of the exits now (the assistant's block follows the hub's own schedule); the user can mark them right on the enkeep memory page.")
+	}
+	return b.String(), nil
+}
+
+func cut(s string, n int) string {
+	r := []rune(strings.Join(strings.Fields(s), " "))
+	if len(r) <= n {
+		return string(r)
+	}
+	return string(r[:n]) + "…"
 }

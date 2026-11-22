@@ -144,6 +144,10 @@ func wechat(source string) bool {
 	return strings.Contains(s, "wechat") || s == "wx" || s == "weixin"
 }
 
+// notUserLabels are the labels the sources give user-role text that is not the user's (internal/sources): what
+// Persona sent (a task prompt, a relay), a test prompt, pasted material, another session's message.
+var notUserLabels = []string{"Persona", "测试提示", "粘贴材料", "其他会话"}
+
 // userLabels are the speaker labels the user's own side carries in the assistant's and agents' conversations.
 var userLabels = []string{norm.Me, "user", "User", "用户"}
 
@@ -168,6 +172,8 @@ func Resolve(u Unit, o Owner) Result {
 			set(l.N, entry.WhoSelf, WhySelf)
 		case conversational(u) && slices.Contains(userLabels, sp):
 			set(l.N, entry.WhoSelf, WhySelf)
+		case conversational(u) && slices.Contains(notUserLabels, sp):
+			set(l.N, "", WhyNotPerson)
 		case sp == voice.Ghost || sp == voice.AI || voice.Automated(sp) || (u.Kind == "bot" && sp != norm.Me):
 			set(l.N, "", WhyNotPerson)
 		case sp == "" || sp == "?":

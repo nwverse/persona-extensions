@@ -365,6 +365,9 @@ type State struct {
 	// list in full, by day, as the day's last completed pass found it: an older hub without history, or a machine or
 	// source that did not answer or vouch for the whole window. A day listed in full has no entry.
 	SessionHistory map[string]*HistoryRead `json:"session_history,omitempty"`
+	// Recall counts enkeep_recall's calls per local day (0.2.0-beta.37): how often it was asked, how often it found
+	// nothing, and the hits per facet and status. Never the query or the answer. The last RecallDays days are kept.
+	Recall map[string]*RecallDay `json:"recall,omitempty"`
 
 	// v4: every facet's entries in one structure (internal/entry), and what feeds and uses them. The event log is
 	// not here: it is append-only in events.jsonl (AppendEvents).
@@ -868,4 +871,15 @@ func (s *Store) Events() ([]entry.Event, error) {
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// RecallDays is how many days of enkeep_recall counts are kept.
+const RecallDays = 30
+
+// RecallDay is one day's enkeep_recall counts.
+type RecallDay struct {
+	Calls    int            `json:"calls"`
+	Empty    int            `json:"empty"`
+	Facets   map[string]int `json:"facets,omitempty"`
+	Statuses map[string]int `json:"statuses,omitempty"`
 }

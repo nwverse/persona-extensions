@@ -138,7 +138,7 @@ func TestCompileEveryExit(t *testing.T) {
 		t.Fatalf("instructions: %d bytes", len(a))
 	}
 	for _, want := range []string{"## 和用户打交道", "汇报时先给结论", "## 机器和工具", "host-a", "## 默认判断", "先上线再优化", "## 做事方式",
-		"## 开着的承诺", "周五前交占位方案（到期 2026-01-09）", "## 关于用户", "简短直接", "周末喜欢在家做占位手工",
+		"## 人、项目和开着的承诺", "周五前交占位方案（到期 2026-01-09）", "## 关于用户", "简短直接", "周末喜欢在家做占位手工",
 		"人物页里标了推断和评价的内容只供参考，不对外转述。", "按你以往会选 X"} {
 		if !strings.Contains(a, want) {
 			t.Errorf("instructions lack %q:\n%s", want, a)
@@ -153,9 +153,12 @@ func TestCompileEveryExit(t *testing.T) {
 	if !strings.Contains(tools, "## host-a") || !strings.Contains(tools, "description: \"") || !strings.Contains(tools, "host-a") {
 		t.Errorf("tools skill:\n%s", tools)
 	}
-	work := read(t, dir, "assistant/skills/enkeep-ways-of-working-release/SKILL.md")
-	if !strings.Contains(work, "处理「release」这类事情") || !strings.Contains(work, "先在测试环境跑一遍") || strings.Contains(work, "必须先") {
-		t.Errorf("workflow skill:\n%s", work)
+	// The ways-of-working skills are gone (0.2.0-beta.37): ④ is in the block (and the project's file).
+	if m, _ := filepath.Glob(filepath.Join(dir, SkillsDir, "enkeep-ways-of-working-*")); len(m) > 0 {
+		t.Errorf("ways-of-working skills written: %v", m)
+	}
+	if !strings.Contains(a, "先在测试环境跑一遍") || !strings.Contains(a, RecallHintZH) {
+		t.Errorf("instructions lack ④ or the recall line:\n%s", a)
 	}
 	proj := read(t, dir, "agent/projects/project-x.md")
 	if len(proj) > ProjectMax || !strings.Contains(proj, "先上线再优化") || !strings.Contains(proj, "先在测试环境") || !strings.Contains(proj, "（单一来源）") {
@@ -193,12 +196,12 @@ func TestCompileEveryExit(t *testing.T) {
 	if st.Entries["i-0000000004"].Effective != "" || st.Entries["u-0000000003"].Effective != "" {
 		t.Fatal("a candidate or a sensitive entry took effect")
 	}
-	if rep.Sections["interaction"] == 0 || rep.Sections["tools"] > SectionBudget["tools"] {
+	if rep.Sections["interaction"] == 0 || rep.Sections["tools"] > InstructionsMax*SectionShare["tools"]/100 {
 		t.Fatalf("sections %+v", rep.Sections)
 	}
 	var man manifest
 	_ = json.Unmarshal([]byte(read(t, dir, ManifestPath)), &man)
-	if man.Exits["A"].Hash == "" || len(man.Exits["B"].Files) != 2 {
+	if man.Exits["A"].Hash == "" || len(man.Exits["B"].Files) != 1 {
 		t.Fatalf("manifest %+v", man.Exits)
 	}
 }
@@ -217,10 +220,10 @@ func TestInstructionsBudget(t *testing.T) {
 	if len(a) > InstructionsMax {
 		t.Fatalf("%d bytes", len(a))
 	}
-	if rep.Sections["interaction"] == 0 || rep.Sections["judgement"] == 0 || rep.Sections["interaction"] > SectionBudget["interaction"] {
+	if rep.Sections["interaction"] == 0 || rep.Sections["judgement"] == 0 || rep.Sections["interaction"] > InstructionsMax/2 {
 		t.Fatalf("sections %+v", rep.Sections)
 	}
-	for _, absent := range []string{"## 机器和工具", "## 做事方式", "## 开着的承诺", "## 关于用户"} {
+	for _, absent := range []string{"## 机器和工具", "## 做事方式", "## 人、项目和开着的承诺", "## 关于用户"} {
 		if strings.Contains(a, absent) {
 			t.Errorf("empty section %q is there", absent)
 		}
@@ -313,8 +316,8 @@ func TestSwitchesOff(t *testing.T) {
 			}
 		},
 		entry.K6WorkflowSkill: func(t *testing.T, dir string) {
-			if read(t, dir, "assistant/skills/enkeep-ways-of-working-release/SKILL.md") != "" || read(t, dir, "agent/projects/project-x.md") != "" {
-				t.Error("K6 off: workflow skill or project context written")
+			if read(t, dir, "agent/projects/project-x.md") != "" {
+				t.Error("K6 off: project context written")
 			}
 		},
 		entry.K4Persona: func(t *testing.T, dir string) {
@@ -477,11 +480,26 @@ func TestReadback(t *testing.T) {
 	}
 }
 
-func TestSlug(t *testing.T) {
-	if Slug("Project X") != "project-x" || Slug("发布") == Slug("部署") || !strings.HasPrefix(Slug("persona 插件"), "persona-") {
-		t.Fatal(Slug("Project X"), Slug("发布"), Slug("persona 插件"))
+// KBSlug is the knowledge base's kb.Slug: letters of any script kept, so a project named in Chinese gets the file name
+// the hub looks for (0.2.0-beta.37: the old ASCII-and-hash name matched no project).
+func TestKBSlug(t *testing.T) {
+	for in, want := range map[string]string{
+		"Persona 2.0 Launch":    "persona-2-0-launch",
+		"占位项目·插件":               "占位项目-插件",
+		"project-x 整理插件":        "project-x-整理插件",
+		"  --Mixed__Case!! ":    "mixed-case",
+		strings.Repeat("长", 50): strings.Repeat("长", 40),
+	} {
+		if got := KBSlug(in); got != want {
+			t.Errorf("KBSlug(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if projectSlug("") || projectSlug("-x") || !projectSlug("占位项目-插件") {
+		t.Error("projectSlug")
 	}
 }
+
+const RecallHintZH = "先调 enkeep_recall 查"
 
 // The user's own words go out as written whatever the output language: a first-run answer in Chinese stays in an
 // English block, while the curator's own wording in the wrong language is still held back.

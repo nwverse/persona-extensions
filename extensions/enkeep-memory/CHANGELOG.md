@@ -1,5 +1,33 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.37 (pre-release)
+
+- **The long-term layer, said plainly.** The extension curates what holds over days; near-real-time working memory
+  (what was decided an hour ago, which task runs) is the hub's to bring back after compaction. A ledger of the
+  user's decisions, once the hub has one, will be read as a source the next day (interface in
+  [docs/exits.md](docs/exits.md)); nothing is implemented for it yet.
+- **No more ways-of-working skills.** The `enkeep-ways-of-working-<slug>` skills were loaded no time at all and agents
+  never see them. ④ entries that hold across projects go into the per-turn block, those of a project into its
+  project block, the rest stay in `enkeep_recall`; an upgrade removes the old directories. `enkeep-machines-and-tools`
+  stays, a look-up handbook. The per-turn block is still at most 6 KB; its sections share it by proportion (① 22%,
+  ② 8%, ③ 22%, ④ 18%, ⑤ 12%, ⑥ 18%), what one leaves going to the next. An action-grain judgement with its fork,
+  choice and what was not chosen or why may go in. What holds only in a known project leaves the per-turn block.
+  ⑤ adds a names index (K18) and a fixed line pointing at `enkeep_recall`.
+- **`enkeep_recall`** (connector `enkeep`): look up curated entries about a person, a project, a system or a kind of
+  task; candidates and dormant entries ranked lower; never a card's evaluation or inference. Only per-day counts are
+  kept, shown by `enkeep_rerun_status`.
+- **`enkeep_mark_wrong`**: the assistant or an agent marks entries wrong (by id, with a reason) without a card on the
+  user's phone; recorded as the assistant's, undone by marking right on the page.
+- **Who said it.** In a session Persona started every user-role line is Persona's (K20; before, only the first);
+  texts with the hub's context block, the task-handoff boilerplate, a cross-session message or a marked relay are
+  Persona's anywhere; short test prompts ("reply only OK, call no tool") are test prompts; pasted blocks are
+  material. None of them teach anything about the user.
+- **Agent project context reaches the agents.** Project files were named by an ASCII slug with a hash for any
+  non-ASCII name, which no knowledge-base slug matched, so projects with Chinese names never got their block. Files
+  are now named by the knowledge-base project's id (the slug the hub looks up), entries matched to projects by name,
+  alias or id; a name the knowledge base does not have gets no file. ① entries of a project go to its block too, after
+  a short general part (K19).
+
 ## 0.2.0-beta.34 (pre-release)
 
 - **Sessions seen before are read on reruns.** A runtime lists only its recent sessions (enkeep: active in the last 7

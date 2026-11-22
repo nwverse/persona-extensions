@@ -47,12 +47,12 @@ func call(t *testing.T, a *app, name string, args any) (string, error) {
 	return out.(map[string]any)["text"].(string), nil
 }
 
-// The connector lists three tools; the rerun tool queues the days once, refuses days not over and more than 31, and the
+// The connector lists five tools; the rerun tool queues the days once, refuses days not over and more than 31, and the
 // status tool says what is done and what waits.
 func TestRerunTool(t *testing.T) {
 	a, st := toolApp(t)
 	list, err := a.connector(t.Context(), "tools.list", nil)
-	if err != nil || len(list.(map[string]any)["tools"].([]tool)) != 3 {
+	if err != nil || len(list.(map[string]any)["tools"].([]tool)) != 5 {
 		t.Fatalf("tools.list: %v %v", list, err)
 	}
 	st.S.Reruns = []string{"2026-11-03@" + schema.DailyPrompt} // done with the current prompt already
@@ -233,5 +233,60 @@ func TestRerunToolForce(t *testing.T) {
 	}
 	if runs != 1 || len(st.S.ForceReruns) != 0 {
 		t.Fatalf("forced day: %d run(s), force list %v", runs, st.S.ForceReruns)
+	}
+}
+
+// enkeep_recall finds an entry by a project name and counts the call, never the query; a card's evaluation is not
+// returned. enkeep_mark_wrong takes an entry out by id, recorded as the assistant's, with no card.
+func TestRecallAndMarkWrongTools(t *testing.T) {
+	a, st := toolApp(t)
+	add := func(id string, f entry.Facet, text string) *entry.Entry {
+		e := &entry.Entry{ID: id, Facet: f, Grain: entry.Class, Text: text, Status: entry.Stable, Origin: entry.Behavior,
+			Count: 2, Kinds: []string{"S3"}, Last: "2026-11-08"}
+		st.S.Entries[id] = e
+		return e
+	}
+	if st.S.Entries == nil {
+		st.S.Entries = map[string]*entry.Entry{}
+	}
+	w := add("o-0000000001", entry.World, "占位项目甲的发布窗口在每周四晚上")
+	w.Subject = "project:占位项目甲"
+	add("i-0000000001", entry.Interaction, "部署验证时只回复 OK（占位错条目）")
+	ev := add("p-0000000001", entry.People, "占位项目甲的负责人做事拖沓（占位评价）")
+	ev.Part = entry.PartUserEval
+
+	text, err := call(t, a, "enkeep_recall", map[string]any{"query": "占位项目甲"})
+	if err != nil || !strings.Contains(text, "发布窗口在每周四晚上") || !strings.Contains(text, "id:o-0000000001") || strings.Contains(text, "拖沓") {
+		t.Fatalf("recall: %q %v", text, err)
+	}
+	if _, err := call(t, a, "enkeep_recall", map[string]any{"query": "完全无关的占位词语"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := call(t, a, "enkeep_recall", map[string]any{"query": "x", "facets": []string{"nope"}}); err == nil {
+		t.Fatal("an unknown facet was taken")
+	}
+	d := st.S.Recall["2026-11-09"]
+	if d == nil || d.Calls != 2 || d.Empty != 1 || d.Facets["world"] == 0 {
+		t.Fatalf("recall counts: %+v", d)
+	}
+	raw, _ := json.Marshal(st.S.Recall)
+	if strings.Contains(string(raw), "占位项目甲") {
+		t.Fatal("the query was kept")
+	}
+
+	text, err = call(t, a, "enkeep_mark_wrong", map[string]any{"ids": []string{"id:i-0000000001", "i-missing"}, "reason": "测试提示，不是用户的规矩"})
+	if err != nil || !strings.Contains(text, "Marked wrong: 1") || !strings.Contains(text, "Not found: i-missing") {
+		t.Fatalf("mark_wrong: %q %v", text, err)
+	}
+	e := st.S.Entries["i-0000000001"]
+	if e.Live() || e.Verdicts[len(e.Verdicts)-1].By != "assistant" || e.Verdicts[len(e.Verdicts)-1].Note == "" {
+		t.Fatalf("entry after mark_wrong: %+v", e.Verdicts)
+	}
+	if _, err := call(t, a, "enkeep_mark_wrong", map[string]any{"ids": []string{"i-0000000001"}}); err == nil {
+		t.Fatal("a mark without a reason was taken")
+	}
+	text, _ = call(t, a, "enkeep_rerun_status", map[string]any{})
+	if !strings.Contains(text, "enkeep_recall: 2026-11-09 2 call(s), 1 empty") {
+		t.Fatalf("status lacks the recall counts: %q", text)
 	}
 }

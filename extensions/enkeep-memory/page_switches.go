@@ -30,7 +30,7 @@ var switchTable = []switchInfo{
 	{entry.K4Persona, "「关于你」进说明块和收件箱", "\"About you\" in the block and the inbox",
 		"同一条被你纠正 2 次以上，那一条撤出", "A line you corrected twice is withdrawn"},
 	{entry.K5ToolsSkill, "技能「机器与工具手册」", "Skill \"machines and tools\"", "", ""},
-	{entry.K6WorkflowSkill, "技能「做事方式」和 Agent 项目背景", "Skill \"ways of working\" and agent project context", "", ""},
+	{entry.K6WorkflowSkill, "Agent 项目背景（按知识库项目）", "Agent project context (by knowledge-base project)", "", ""},
 	{entry.K7WorldFacts, "关于别人的事实写回知识库", "Facts about others written back to the knowledge base",
 		"每周抽 30 条群聊来源的新条目，噪声 >10% 就关群聊分支", "30 new lines from group chats are checked weekly; over 10% noise turns the group-chat branch off"},
 	{entry.K7GroupByProject, "群聊里的事实按项目名放回", "Group-chat facts filed by project name", "", ""},
@@ -47,6 +47,9 @@ var switchTable = []switchInfo{
 		"画像卡「对」<70%，或两周删卡比例 >30%，只留在这个页面上", "Kept on this page only when under 70% right or over 30% deleted in two weeks"},
 	{entry.K15Inferred, "画像卡里的推断侧写", "Inferred profiles on the cards",
 		"推断被改或删的比例 >30%，关掉，只留事实、你的原话和承诺", "Off when over 30% of inferred lines are edited or deleted"},
+	{entry.K18NamesIndex, "说明块里列来往最多的人和项目的名字（细节靠 enkeep_recall 查）", "Names of the people and projects you deal with most in the block (details through enkeep_recall)", "", ""},
+	{entry.K19ProjectGeneral, "Agent 项目背景开头带上通用的打交道规矩", "Agent project context starts with the general rules for working with you", "", ""},
+	{entry.K20PersonaSession, "Persona 起的会话里，用户那一侧的话都算 Persona 发的（派活、转达），不当你的原话", "In sessions Persona started, every user-side line is Persona's (a task, a relay), not your words", "", ""},
 }
 
 // whoSet says who set a switch and why.

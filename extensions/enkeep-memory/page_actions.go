@@ -330,7 +330,11 @@ func (a *app) withdraw(ctx context.Context) {
 	if lang == "" {
 		lang = c.Lang
 	}
-	rep, err := exits.Compile(ctx, clone, exits.Options{Dir: c.St.Dir, Lang: lang, Loc: c.Loc, Hub: c.Hub, Run: "page",
+	var projects []entry.KBProject
+	if clone.Exits != nil {
+		projects = clone.Exits.Projects
+	}
+	rep, err := exits.Compile(ctx, clone, exits.Options{Dir: c.St.Dir, Lang: lang, Loc: c.Loc, Hub: c.Hub, Run: "page", Projects: projects,
 		Event: func(ev entry.Event) { _ = c.St.AppendEvents(ev) }, Logf: a.logf})
 	if err != nil {
 		a.logf("enkeep-memory: withdraw: %v", err)

@@ -54,6 +54,7 @@ const (
 	SpeakerAgent   = "Agent" // an agent's text
 	SpeakerPersona = "Persona"
 	SpeakerPaste   = "粘贴材料"
+	SpeakerTest    = "测试提示" // a probe sent to check a deployment: never the user's words (internal/relay)
 	SpeakerOther   = "其他会话"
 	SpeakerWork    = "工作"
 	SpeakerCard    = "卡片"

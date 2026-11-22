@@ -11,6 +11,7 @@ import (
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/hubapi"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/relay"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/wire"
 )
@@ -235,7 +236,8 @@ func (s *Source) agentDay(ctx context.Context, id, day string) ([]string, error)
 		if it.Fold != nil && it.Fold.To > last {
 			last = it.Fold.To // Fold.Seq is only the range's start: the next page must resume after Fold.To.
 		}
-		if t := s.itemLine(it, se.ByPersona && page.base == 0 && i == 0); t != "" {
+		byPersona := se.ByPersona && (page.base == 0 && i == 0 || entry.On(s.switches, entry.K20PersonaSession))
+		if t := s.itemLine(it, byPersona); t != "" {
 			ls = append(ls, line{it.At, t})
 		}
 	}
@@ -266,16 +268,31 @@ func (s *Source) agentDay(ctx context.Context, id, day string) ([]string, error)
 }
 
 // itemLine is one item as a day's line, or "" for what is not read daily (slash commands, notifications).
-// byPersona is set only for the first item of a Persona-started session read from the beginning.
+// byPersona: the session is one Persona started (a task, a relay) and the item is a user-role text Persona typed: its
+// first item, or every user-role item while K20 is on (0.2.0-beta.37: a supervisor's or the assistant's later
+// messages are not the user's words either). Otherwise a user-role text is still not the user's when it carries a
+// task prompt's, a relay's or the hub's marks, or is a test prompt (internal/relay); pasted blocks are material.
 func (s *Source) itemLine(it hubapi.Item, byPersona bool) string {
 	at := hhmm(it.At, s.Loc)
 	switch it.Kind {
 	case hubapi.KindUser:
-		speaker := SpeakerUser
 		if byPersona {
-			speaker = SpeakerPersona
+			return at + " " + SpeakerPersona + ": " + oneLine(clip(it.Text, noticeCut))
 		}
-		return at + " " + speaker + ": " + oneLine(it.Text)
+		switch relay.Classify(it.Text) {
+		case relay.Persona:
+			return at + " " + SpeakerPersona + ": " + oneLine(clip(it.Text, noticeCut))
+		case relay.Test:
+			return at + " " + SpeakerTest + ": " + oneLine(clip(it.Text, noticeCut))
+		}
+		own, n := relay.SplitPaste(it.Text)
+		if own == "" && n > 0 {
+			return at + " " + SpeakerPaste + ": " + oneLine(clip(it.Text, noticeCut))
+		}
+		if n > 0 {
+			own += " " + relay.PasteMark(n)
+		}
+		return at + " " + SpeakerUser + ": " + oneLine(own)
 	case hubapi.KindAgent:
 		return at + " " + SpeakerAgent + ": " + oneLine(headTail(it.Text, agentHead, agentTail))
 	case hubapi.KindFold:

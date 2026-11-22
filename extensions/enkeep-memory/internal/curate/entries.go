@@ -778,6 +778,25 @@ func (c *Curator) UserAct(id, act, value string) error {
 	return nil
 }
 
+// MarkWrongBy marks an entry wrong on behalf of the assistant or an agent (enkeep_mark_wrong, 0.2.0-beta.37): the
+// same verdict as the user's "不对" on the page, recorded with who gave it (by: "assistant") and why, without a card on
+// the user's phone. It takes the entry out of every exit and keeps it as a counter-example; the user can mark it
+// right on the page to bring it back. Call it with the store's lock held.
+func (c *Curator) MarkWrongBy(id, by, note string) (*entry.Entry, error) {
+	e := c.St.S.Entries[id]
+	if e == nil {
+		return nil, fmt.Errorf("no entry %s", id)
+	}
+	if n := len(e.Verdicts); n > 0 && e.Verdicts[n-1].Mark == ActWrong {
+		return e, nil // already wrong: nothing more
+	}
+	now := c.stamp()
+	e.Verdicts = append(e.Verdicts, entry.Verdict{Mark: ActWrong, At: now, By: by, Note: note})
+	e.Updated = now
+	c.commit(entry.EvUser, e, "", ActWrong+" by "+by, "")
+	return e, nil
+}
+
 // EntriesOf lists a facet's live entries (keep may narrow them), ordered as every view and exit orders them:
 // count × source kinds, then last seen, then id.
 func EntriesOf(s *store.State, f entry.Facet, keep func(*entry.Entry) bool) []*entry.Entry {
