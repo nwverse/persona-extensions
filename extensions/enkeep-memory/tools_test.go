@@ -89,7 +89,7 @@ func TestRerunTool(t *testing.T) {
 	a.route = curate.Defaults().Route()
 	a.route.Stats = model.OpenStats(t.TempDir(), time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC))
 	status, _ = call(t, a, "enkeep_rerun_status", map[string]any{})
-	for _, w := range []string{"Model route: gemini-3.8-flash-low; fallback above 16000 estimated tokens claude-sonnet-5-5, else claude-haiku-5-5.",
+	for _, w := range []string{"Model route: no primary model; fallback above 16000 estimated tokens claude-sonnet-5-5, else claude-haiku-5-5.",
 		"Model calls since 2026-11-18T00:00:00Z: 0, answered by a fallback 0 (0.0%)",
 		// design v2 §4.7: the cost lines, the call limit and the reruns' progress.
 		"Cost 2026-11-09: 0 call(s)", "Reruns since", "Call limit: at most 4 at once and 20 a minute",

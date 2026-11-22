@@ -40,7 +40,7 @@ func TestConfigOldNames(t *testing.T) {
 // turns it off, back to every call on the purpose's model.
 func TestConfigRoute(t *testing.T) {
 	rt := Defaults().Route()
-	if rt == nil || !slices.Equal(rt.Primary, []string{DefaultPrimary}) || rt.Long != "claude-sonnet-5-5" ||
+	if rt == nil || len(rt.Primary) != 0 || rt.Long != "claude-sonnet-5-5" ||
 		rt.Short != "claude-haiku-5-5" || rt.LongAbove != 16000 {
 		t.Fatalf("default route %+v", rt)
 	}

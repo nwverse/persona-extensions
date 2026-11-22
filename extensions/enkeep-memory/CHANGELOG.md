@@ -23,12 +23,10 @@
 - **One limit on model calls.** Every call of the process (daily, weekly, reruns, synthesis, exits, trials) waits for
   a turn: at most 4 at once and 20 a minute; the reruns wait behind the scheduled passes, and the weekly pass, once
   due, runs before them. The daily pass makes 4 calls at once; offline trials keep to at most 4 workers.
-- **Gemini Flash first.** `model_primary` defaults to `gemini-3.8-flash-low`; a connection without it goes on to the
-  fallback by length (`claude-sonnet-5-5` above 16000 estimated tokens, else `claude-haiku-5-5`).
 - **The cost line.** Calls and tokens are counted per day and per model, the reruns apart: each day's daily run notes
   the day's line and the totals, and `enkeep_rerun_status` shows today's and yesterday's lines, the totals, the call
-  limit's state, and the reruns' progress (days done, days left, new usable entries resting on the days read). When a
-  batch of reruns is done, every entry's status is settled again (what `enkeep_resettle` applies).
+  limit's state, and the reruns' progress (days done, days left, new usable entries resting on the days read). After
+  every rerun step, every entry's status is settled again (what `enkeep_resettle` applies).
 - **Seeds.** `enkeep_seed_import` imports the user's own profile and rules confirmed elsewhere, in a general format;
   it previews by default and writes with `apply`. Items in the four sensitive categories (by category, keywords and a
   model's reading), with a credential or not confirmed at the source are never imported; an item the curator already

@@ -6,7 +6,6 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -139,12 +138,10 @@ func TestManifestDefaults(t *testing.T) {
 	}
 	// The model route's defaults (docs/model-routes.md) are the curator's.
 	d := curate.Defaults()
-	want := map[string]any{"model_route": d.ModelRoute, "model_primary": []any{curate.DefaultPrimary}, "model_long": d.ModelLong,
+	want := map[string]any{"model_route": d.ModelRoute, "model_primary": []any{}, "model_long": d.ModelLong,
 		"model_short": d.ModelShort, "model_long_above": float64(d.ModelLongAbove),
 		"model_timeout": float64(d.ModelTimeout)}
-	// Gemini Flash first (design v2 §4.7, the user's route).
-	if len(d.ModelPrimary) != 1 || d.ModelPrimary[0] != curate.DefaultPrimary || !strings.Contains(curate.DefaultPrimary, "gemini") ||
-		!strings.Contains(curate.DefaultPrimary, "flash") {
+	if len(d.ModelPrimary) != 0 {
 		t.Errorf("model_primary default %v", d.ModelPrimary)
 	}
 	for k, v := range want {
