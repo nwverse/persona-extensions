@@ -90,23 +90,27 @@ var rerunTools = []tool{
 		"answering about a specific person, project or system, and after the conversation was compacted. Returns up to " +
 		"limit lines (about 4000 characters), best match first, each with its facet, status (稳定 stable, 在变 shifting, " +
 		"候选 candidate, 较早 dormant), last day seen, source kinds and entry id. Candidates and dormant entries are less " +
-		"certain. Evaluations of and inferences about people are never returned. Nothing is sent anywhere and the query " +
-		"is not kept.",
+		"certain. Evaluations of and inferences about people are never returned. Entries in a category (health, " +
+		"finance, relationships, emotion, legal_id) are returned only when categories names every one of theirs: name " +
+		"one only when the user's request is about it. Nothing is sent anywhere and the query is not kept.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"query"}, "properties": map[string]any{
 			"query": map[string]any{"type": "string", "description": "names or words to look for (at most 200 characters), e.g. a project name, a person's name, a machine, a kind of task"},
 			"facets": map[string]any{"type": "array", "items": map[string]any{"type": "string",
 				"enum": []string{"interaction", "tools", "judgement", "workflow", "world", "people", "persona"}},
 				"description": "only these facets: interaction (working with the AI), tools, judgement (default judgements), workflow (ways of working), world (projects and facts), people, persona (about the user)"},
 			"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 30, "default": 12},
+			"categories": map[string]any{"type": "array", "items": map[string]any{"type": "string",
+				"enum": entry.CategoryNames},
+				"description": "also return entries in these categories, when the request is about them: health, finance, relationships, emotion, legal_id (identity papers, legal matters). Empty: general entries only"},
 		}}},
 	{Name: "enkeep_seed_import", Description: "Import the user's own profile and rules confirmed elsewhere (another " +
 		"memory, a notes file, a profile platform) into enkeep memory as seeds, in the general format: a source name and " +
 		"items {id, kind (rule | guardrail | preference | fact), text, confirmed (YYYY-MM-DD), and optionally facet, hard, " +
 		"category, scope (global | project:<name>), domain (work | life), effective, expiring (recent | role), sensitive}. " +
 		"Previews by default: says how many items would be new, merged with an entry the curator has, updated, the same " +
-		"as before, or skipped and why, writing nothing; apply: true writes. Items in the four sensitive categories " +
-		"(emotion, finance, health, family; by category, keywords and a model's reading), with a credential, or not " +
-		"confirmed at the source are never imported. New seeds start as candidates and reach the exits only once the " +
+		"as before, or skipped and why, writing nothing; apply: true writes. Items in a category (health, finance, " +
+		"relationships, emotion, legal_id; by category, keywords and a model's reading) are imported tagged and used by " +
+		"scene; items with a credential or not confirmed at the source are never imported. New seeds start as candidates and reach the exits only once the " +
 		"user's own records bear them out.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"source", "items"}, "properties": map[string]any{
 			"source": map[string]any{"type": "string", "description": "a short name of the source, without spaces or slashes (e.g. enkeep)"},
@@ -403,9 +407,10 @@ func resettleText(r curate.ResettleReport) string {
 // facet and status, never the query.
 func (a *app) recallTool(raw json.RawMessage) (string, error) {
 	var in struct {
-		Query  string   `json:"query"`
-		Facets []string `json:"facets"`
-		Limit  int      `json:"limit"`
+		Query      string   `json:"query"`
+		Facets     []string `json:"facets"`
+		Limit      int      `json:"limit"`
+		Categories []string `json:"categories"`
 	}
 	if err := strictDecode(raw, &in); err != nil {
 		return "", err
@@ -424,6 +429,12 @@ func (a *app) recallTool(raw json.RawMessage) (string, error) {
 			return "", fmt.Errorf("unknown facet %q", f)
 		}
 		q.Facets = append(q.Facets, x)
+	}
+	for _, n := range in.Categories {
+		if entry.CategoryOf(n) == "" || n == entry.SensFamily {
+			return "", fmt.Errorf("unknown category %q", n)
+		}
+		q.Categories = append(q.Categories, n)
 	}
 	st, _, done := a.c.Read() // the snapshot: a run holds the store's lock for its whole pass
 	res := recall.Search(st, q)

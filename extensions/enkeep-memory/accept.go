@@ -488,7 +488,7 @@ func sampleSpeakers(ctx context.Context, in acceptInput) []speakerItem {
 	extra := map[string][]speakerItem{}
 	for _, id := range sortedIDs(in.St.Entries) {
 		e := in.St.Entries[id]
-		if e.Sensitive != "" {
+		if e.IsSensitive() {
 			continue
 		}
 		for _, ev := range e.Evidence {

@@ -77,7 +77,10 @@ type Meta struct {
 	// Code is the design's source code (S1…S11) for the curator's own sources (internal/sources), and Origin how
 	// an entry from it starts (entry.Origin: self_report for "about me", handwritten for memory files); empty for
 	// the knowledge base's own entities.
-	Code   string `json:"code,omitempty"`
+	Code string `json:"code,omitempty"`
+	// Space is the assistant space the unit was said in ("": the main space): entries from it carry it as their
+	// origin space, with the space's default categories (0.2.0-beta.40).
+	Space  string `json:"space,omitempty"`
 	Origin string `json:"origin,omitempty"`
 }
 

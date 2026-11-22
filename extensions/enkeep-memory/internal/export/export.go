@@ -137,14 +137,15 @@ func stable(e *entry.Entry) bool {
 		(e.Origin != entry.Behavior && e.Origin != "" && e.Origin != entry.Seed && e.Status == entry.Candidate)
 }
 
-// usable is the gate every exit A–E shares: live (not deleted, retired, merged, invalidated or marked wrong), not
-// in a sensitive category (K13, whether its switch is on or not: an opened category reaches only the user's own
-// understanding), stable, and not life content when the user chose "work only" at the first-run questions.
+// usable is the gate every exit A–E shares: live (not deleted, retired, merged, invalidated or marked wrong), allowed
+// in the resident exits by its categories and source space (entry.Resident: a category only once the user turned
+// K22.<category> on; a domain space's content only as interaction or persona), stable, and not life content when
+// the user chose "work only" at the first-run questions.
 func (c *compiler) usable(e *entry.Entry) bool { return Usable(c.st, e) }
 
 // Usable is the exits' shared gate for an entry of st (the overview card counts with it too).
 func Usable(st *store.State, e *entry.Entry) bool {
-	if !e.Live() || e.Sensitive != "" || !stable(e) {
+	if !e.Live() || !e.Resident(st.Switches) || !stable(e) {
 		return false
 	}
 	if e.Origin == entry.Seed && !entry.On(st.Switches, entry.K21Seeds) { // the seeds' source switched off
@@ -461,11 +462,12 @@ func (c *compiler) contactNames(n int) []string {
 
 // neverLines are the cards' evaluation and inferred lines, as written and as the user edited them, and the user's
 // own words they rest on: never in a draft (exit E's never_quote.txt, checked by the hub), never in exits A, B, D.
-// Sensitive ones are left out with the rest of their category (K13: in no exit file at all).
+// Lines in a category the resident exits keep out are not listed either (no exit file carries them; no draft can
+// copy what it never gets).
 func (c *compiler) neverLines() []string {
 	var es []*entry.Entry
 	for _, e := range c.st.Entries {
-		if e.Facet == entry.People && (e.Part == entry.PartUserEval || e.Part == entry.PartInferred) && e.Live() && e.Sensitive == "" {
+		if e.Facet == entry.People && (e.Part == entry.PartUserEval || e.Part == entry.PartInferred) && e.Live() && e.Resident(c.st.Switches) {
 			es = append(es, e)
 		}
 	}

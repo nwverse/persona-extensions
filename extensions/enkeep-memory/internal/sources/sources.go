@@ -506,6 +506,9 @@ func (s *Source) Get(ctx context.Context, kind, id string) (wire.KBDetail, error
 		meta["name"] = "Agent 会话"
 		if ok {
 			meta["name"] = sessionName(se, s.Machine)
+			if se.Space != "" {
+				meta["space"] = se.Space // entries from it carry the space (0.2.0-beta.40)
+			}
 		}
 	case KindAsks:
 		meta["code"], meta["name"] = entry.SrcAsk, "卡片问答 · "+id

@@ -17,7 +17,7 @@ import (
 )
 
 // agentEntries lists the agent sessions with activity on the day (S3): not the assistant's own (its words are S1,
-// through convsrc), never a health space one, not one started after the day, nor before its first item.
+// through convsrc); every space's (0.2.0-beta.40), not one started after the day, nor before its first item.
 //
 // Three lists, together and each session once (by machine and session id). The hub's live list is what the runtimes
 // list, which may be only their recent sessions (enkeep: active in the last 7 days, at most 80). The hub's session
@@ -56,7 +56,7 @@ func (s *Source) agentEntries(ctx context.Context, since, end time.Time) []wire.
 				continue
 			}
 			listed[id] = true
-			if se.Health || se.Assistant || (!se.Started.IsZero() && !se.Started.Before(end)) {
+			if se.Assistant || (!se.Started.IsZero() && !se.Started.Before(end)) {
 				continue
 			}
 			s.listed[id] = seenOf(se, s.Loc)

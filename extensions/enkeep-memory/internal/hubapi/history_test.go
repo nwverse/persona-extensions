@@ -72,7 +72,8 @@ func (f *historyHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// Every page is read, by its cursor; scheduled runs, health-space and subagent rows are left out; an archived row is
+// Every page is read, by its cursor; scheduled runs and subagent rows are left out, a health-space row kept with its
+// space (0.2.0-beta.40); an archived row is
 // dated by its last activity; the sources not listed in full are the gaps, once each.
 func TestHTTPHistoryPagesAndGaps(t *testing.T) {
 	f := &historyHub{}
@@ -94,10 +95,10 @@ func TestHTTPHistoryPagesAndGaps(t *testing.T) {
 	if f.queries[1].Get("cursor") != "c-2" || f.queries[1].Get("include_inactive") != "1" {
 		t.Fatalf("second query %v", f.queries[1])
 	}
-	if len(got.Sessions) != 2 || got.Skipped != 2 {
+	if len(got.Sessions) != 3 || got.Skipped != 2 || got.Sessions[1].ID != "health" || got.Sessions[1].Space != "health" {
 		t.Fatalf("sessions %+v skipped %d", got.Sessions, got.Skipped)
 	}
-	arch, cc := got.Sessions[0], got.Sessions[1]
+	arch, cc := got.Sessions[0], got.Sessions[2]
 	if arch.ID != "arch" || !arch.Archived || arch.HistorySource != "runtime" || arch.HistoryRuntime != "rt-b" ||
 		!arch.Updated.Equal(time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)) {
 		t.Fatalf("archived row %+v", arch)

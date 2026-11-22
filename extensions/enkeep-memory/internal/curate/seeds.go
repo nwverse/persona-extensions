@@ -26,9 +26,10 @@ import (
 // user's call.
 //
 // What an import does:
-//   - every item goes through three sensitive filters (its category, keywords in its text, and a model's reading);
-//     any of them finding one of the four K13 categories (emotion, finance, health, family) leaves it out, as does a
-//     credential in its text and an item its source does not mark confirmed;
+//   - every item goes through three category filters (its source label and category, keywords in its text, and a
+//     model's reading); what they find tags the entry (health, finance, relationships, emotion, legal_id) and the
+//     exits use it by category and scene (0.2.0-beta.40, E9): nothing is left out for its category. A credential in
+//     its text leaves it out, as does an item its source does not mark confirmed;
 //   - an item that says what a live entry of the same facet already says (the same text, or nearly: sameSeedText) is
 //     merged: the entry is marked as one the user confirmed elsewhere (flag "seed:<source>/<id>") and keeps its own
 //     status and evidence;
@@ -82,11 +83,13 @@ type SeedOutcome struct {
 	Reason  string `json:"reason,omitempty"`
 	Facet   string `json:"facet,omitempty"`
 	Entry   string `json:"entry,omitempty"`
+	// Categories are the item's categories by the three filters (it is tagged with them, not left out).
+	Categories []string `json:"categories,omitempty"`
 }
 
 // Reasons an item is left out.
 const (
-	SeedSensitive   = "sensitive"   // one of the four K13 categories by any of the three filters
+	SeedSensitive   = "sensitive"   // before 0.2.0-beta.40: an item in a K13 category (they are tagged now)
 	SeedSecret      = "secret"      // a credential in the text
 	SeedUnconfirmed = "unconfirmed" // the source does not say the user confirmed it
 	SeedEmpty       = "empty"
@@ -110,16 +113,44 @@ const (
 	sameSeedText  = 0.85
 )
 
-// sensitiveCategory is a source category in one of the four K13 categories (the first filter).
-var sensitiveCategory = regexp.MustCompile(`(?i)情感|感情|恋爱|婚姻|伴侣|财务|财产|理财|收入|薪|健康|医疗|疾病|身体|心理|家庭|家人|亲属|亲子|` +
-	`emotion|relationship|romance|dating|finance|money|salary|income|health|medical|mental|family|parent`)
+// seedCatRules are the first two filters per category: a source category (label) in it, and words in a text that
+// put it there, kept to words about the person's own life (voice.Finance adds the money notices, legalWords the
+// identity papers and legal matters).
+var seedCatRules = []struct {
+	cat          string
+	label, words *regexp.Regexp
+}{
+	{entry.CatEmotion, regexp.MustCompile(`(?i)情感|感情|心理|emotion|mental`),
+		regexp.MustCompile(`(?i)抑郁|焦虑|失眠|\b(therapy|depress\w*|anxiety)\b`)},
+	{entry.CatRelationships, regexp.MustCompile(`(?i)恋爱|婚姻|伴侣|家庭|家人|亲属|亲子|relationship|romance|dating|family|parent`),
+		regexp.MustCompile(`(?i)离婚|分手|结婚|恋爱|对象|女友|男友|老婆|老公|妻子|丈夫|父母|爸爸|妈妈|父亲|母亲|孩子|儿子|女儿|亲戚|` +
+			`\b(divorce|girlfriend|boyfriend|wife|husband)\b`)},
+	{entry.CatFinance, regexp.MustCompile(`(?i)财务|财产|理财|收入|薪|finance|money|salary|income`),
+		regexp.MustCompile(`(?i)买房|购房|房贷|房价|首付|贷款|存款|理财|股票|基金|工资|薪资|薪酬|年薪|年终奖|期权|收入|\b(salary|mortgage|savings)\b`)},
+	{entry.CatHealth, regexp.MustCompile(`(?i)健康|医疗|疾病|身体|health|medical`),
+		regexp.MustCompile(`(?i)怀孕|备孕|生病|住院|手术|吃药|药物|体检|\b(pregnan\w*|illness|diagnos\w*)\b`)},
+	{entry.CatLegalID, regexp.MustCompile(`(?i)证件|法律|legal|identity`), legalWords},
+}
 
-// sensitiveWords are words in a text that put it in one of the four categories (the second filter): kept to words
-// that are about the person's own life; voice.Finance adds the money notices.
-var sensitiveWords = regexp.MustCompile(`(?i)买房|购房|房贷|房价|首付|贷款|存款|理财|股票|基金|工资|薪资|薪酬|年薪|年终奖|期权|收入|` +
-	`离婚|分手|结婚|恋爱|对象|女友|男友|老婆|老公|妻子|丈夫|怀孕|备孕|生病|住院|手术|吃药|药物|抑郁|焦虑|失眠|体检|` +
-	`父母|爸爸|妈妈|父亲|母亲|孩子|儿子|女儿|亲戚|` +
-	`\b(salary|mortgage|savings|divorce|girlfriend|boyfriend|wife|husband|pregnan\w*|illness|diagnos\w*|therapy|depress\w*|anxiety)\b`)
+// seedCats are an item's categories by the first two filters: its source label, its category, its words.
+func seedCats(it SeedItem) []string {
+	var out []string
+	add := func(n string) {
+		if n != "" && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	add(entry.CategoryOf(it.Sensitive))
+	for _, r := range seedCatRules {
+		if r.label.MatchString(it.Category) || r.words.MatchString(it.Text) {
+			add(r.cat)
+		}
+	}
+	if voice.Finance(it.Text) {
+		add(entry.CatFinance)
+	}
+	return out
+}
 
 // seedFacet is an item's facet.
 func seedFacet(it SeedItem) (entry.Facet, bool) {
@@ -188,6 +219,7 @@ func (c *Curator) ImportSeeds(ctx context.Context, f SeedFormat, apply bool, wai
 		it    SeedItem
 		facet entry.Facet
 		sc    []entry.Scope
+		cats  []string
 	}
 	var cands []cand
 	seen := map[string]bool{}
@@ -210,15 +242,12 @@ func (c *Curator) ImportSeeds(ctx context.Context, f SeedFormat, apply bool, wai
 			skip(it, SeedUnconfirmed)
 		case verify.Secret(it.Text):
 			skip(it, SeedSecret)
-		case slices.Contains(entry.Sensitives, strings.ToLower(strings.TrimSpace(it.Sensitive))) ||
-			sensitiveCategory.MatchString(it.Category) || sensitiveWords.MatchString(it.Text) || voice.Finance(it.Text):
-			skip(it, SeedSensitive)
 		default:
-			cands = append(cands, cand{i, it, facet, sc})
+			cands = append(cands, cand{i, it, facet, sc, seedCats(it)})
 		}
 		seen[it.ID] = true
 	}
-	// The third filter: the model reads what is left.
+	// The third filter: the model reads what is left, and its category tags the item too.
 	if len(cands) > 0 {
 		if c.Model == nil {
 			return r, errors.New("the sensitive check needs the model, which is not available: nothing imported")
@@ -231,15 +260,11 @@ func (c *Curator) ImportSeeds(ctx context.Context, f SeedFormat, apply bool, wai
 		if err != nil {
 			return r, fmt.Errorf("the sensitive check: %w: nothing imported", err)
 		}
-		kept := cands[:0]
-		for i, x := range cands {
-			if cats[i] != "" {
-				skip(x.it, SeedSensitive)
-				continue
+		for i := range cands {
+			if n := entry.CategoryOf(cats[i]); n != "" && !slices.Contains(cands[i].cats, n) {
+				cands[i].cats = append(cands[i].cats, n)
 			}
-			kept = append(kept, x)
 		}
-		cands = kept
 	}
 	if wait <= 0 {
 		c.St.Lock()
@@ -255,19 +280,26 @@ func (c *Curator) ImportSeeds(ctx context.Context, f SeedFormat, apply bool, wai
 		if old := seedEntry(s, f.Source, it.ID); old != nil {
 			if old.Seed.Text == it.Text {
 				r.Same++
-				r.Items = append(r.Items, SeedOutcome{ID: it.ID, Outcome: "same", Facet: string(old.Facet), Entry: old.ID})
+				r.Items = append(r.Items, SeedOutcome{ID: it.ID, Outcome: "same", Facet: string(old.Facet), Entry: old.ID, Categories: x.cats})
+				if apply {
+					tagSeed(old, x.cats)
+				}
 				continue
 			}
 			r.Updated++
-			r.Items = append(r.Items, SeedOutcome{ID: it.ID, Outcome: "updated", Facet: string(old.Facet), Entry: old.ID})
+			r.Items = append(r.Items, SeedOutcome{ID: it.ID, Outcome: "updated", Facet: string(old.Facet), Entry: old.ID, Categories: x.cats})
 			if apply {
 				c.updateSeed(old, it, x.sc, now)
+				tagSeed(old, x.cats)
 			}
 			continue
 		}
 		if t := seedTwin(s, x.facet, it.Text); t != nil {
 			r.Merged++
-			r.Items = append(r.Items, SeedOutcome{ID: it.ID, Outcome: "merged", Facet: string(x.facet), Entry: t.ID})
+			r.Items = append(r.Items, SeedOutcome{ID: it.ID, Outcome: "merged", Facet: string(x.facet), Entry: t.ID, Categories: x.cats})
+			if apply {
+				tagSeed(t, x.cats)
+			}
 			if apply && !slices.Contains(t.Flags, seedMark(f.Source, it.ID)) {
 				t.Flags = appendFlag(t.Flags, seedMark(f.Source, it.ID))
 				t.Updated = now
@@ -277,7 +309,8 @@ func (c *Curator) ImportSeeds(ctx context.Context, f SeedFormat, apply bool, wai
 		}
 		r.New++
 		e := seedNew(f.Source, it, x.facet, x.sc, now)
-		r.Items = append(r.Items, SeedOutcome{ID: it.ID, Outcome: "new", Facet: string(x.facet), Entry: e.ID})
+		tagSeed(e, x.cats)
+		r.Items = append(r.Items, SeedOutcome{ID: it.ID, Outcome: "new", Facet: string(x.facet), Entry: e.ID, Categories: x.cats})
 		if apply {
 			s.Entries[e.ID] = e
 			c.commit(entry.EvCreate, e, "", "seed: "+f.Source, "")
@@ -360,6 +393,13 @@ func (c *Curator) updateSeed(e *entry.Entry, it SeedItem, sc []entry.Scope, now 
 	e.Seed.Effective, e.Seed.Expiring, e.Seed.Imported = it.Effective, it.Expiring, now
 	e.Updated = now
 	c.commit(entry.EvUser, e, "", "seed updated: "+e.Seed.Source, "")
+}
+
+// tagSeed tags a seed's entry with the item's categories (by the plugin's filters: the model's reading and rules).
+func tagSeed(e *entry.Entry, cats []string) {
+	for _, n := range cats {
+		e.AddCategory(n, entry.ByModel)
+	}
 }
 
 // seedSensitive asks the model which texts are in one of the four categories: "" for none.
@@ -532,6 +572,9 @@ func (r SeedReport) Text() string {
 		}
 		if it.Entry != "" {
 			line += " " + it.Entry
+		}
+		if len(it.Categories) > 0 {
+			line += " [" + strings.Join(it.Categories, ",") + "]"
 		}
 		b.WriteString(line)
 	}

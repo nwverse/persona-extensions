@@ -1,6 +1,7 @@
 package recall
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -47,6 +48,23 @@ func TestSearchPoolAndRanking(t *testing.T) {
 	}
 	if r := Search(st, Query{Text: "host-a", Facets: []entry.Facet{entry.Workflow}}); len(r.Hits) != 1 {
 		t.Errorf("facet filter: %+v", r.Hits)
+	}
+	// Scene 3: an entry in a category only for a look-up that names it (all of its categories); never an inference.
+	named := Search(st, Query{Text: "host-a", Categories: []string{"relationships"}})
+	var t4 *Hit
+	for i, h := range named.Hits {
+		if h.ID == "t-4" {
+			t4 = &named.Hits[i]
+		}
+		if h.ID == "p-1" {
+			t.Error("an inference returned for a named category")
+		}
+	}
+	if t4 == nil || !strings.Contains(Format(*t4), "分类 relationships") {
+		t.Errorf("named category: %+v", named.Hits)
+	}
+	if r := Search(st, Query{Text: "host-a", Categories: []string{"health"}}); slices.ContainsFunc(r.Hits, func(h Hit) bool { return h.ID == "t-4" }) {
+		t.Error("another category's name returned it")
 	}
 	if r := Search(st, Query{Text: "   "}); len(r.Hits) != 0 {
 		t.Error("an empty query found something")

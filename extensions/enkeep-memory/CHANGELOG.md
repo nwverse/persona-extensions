@@ -7,8 +7,27 @@
   wrong, probes carry the tag `probe`. The legacy route with `cursor` and `created_at` is gone. No personal entry
   visible (the hub shows them only to an extension proven to run on the assistant's computer) is a normal empty read;
   `enkeep_rerun_status` says what the last read found. An owner's "wrong" mark (`assistant.entries.changed`) makes the
-  next read leave the entry out. The grant and the event are not declared yet: a hub that does not know them refuses
-  the manifest, so they are declared once a hub with the ledger is deployed.
+  next read leave the entry out. The manifest declares the grant and subscribes to the event: a hub that does not
+  know them refuses the manifest, so this version installs only on a hub with the ledger (H1a).
+- **Every space is collected; categories decide use by scene** (unified memory design v2 §3.2, §3.3b, §8). The
+  health space's sessions, cards and to-dos are read like any other; nothing is dropped for being sensitive any more
+  (K13 decided what was collected; it now decides nothing and is off the page). Entries carry their source space
+  (`origin_space`) and categories (`categories`: health, finance, relationships, emotion, legal_id, each with who
+  tagged it: the model's label, money words, identity and legal words, the space's default, or the user). The
+  daily prompt is unchanged (daily/16).
+  - Resident exits (the per-turn rules, the agents' rules, the profile and project files, the person pages) take an
+    entry in a category only once the user turns on the new per-category switch K22.<category> (all off), or when
+    the user wrote it about themself; a space's content goes there only as a way of working with the AI or as what
+    the user is like. A class carries its members' categories.
+  - `enkeep_recall` gives an entry in a category only when `categories` names every one of its categories, and
+    shows them on the line; evaluations of and inferences about people never.
+  - The weekly report and the commitments list leave entries in a category out.
+  - The entry page shows the categories and the space, and the user can add or take off a category (only the user
+    can take one off; one taken off is not added back by curation).
+  - Seeds (E9): an item in a category is imported tagged, no longer left out; credentials and unconfirmed items
+    still are.
+  - Credentials are never kept, as before. The privacy words setting is renamed 不读名单: messages with them are
+    still not read.
 
 ## 0.2.0-beta.39 (pre-release)
 

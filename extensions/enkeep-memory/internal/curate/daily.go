@@ -601,7 +601,7 @@ func (c *Curator) ingest(b *graph.Builder, u *Unit, d triage.Decision, owner []s
 		class, items := ci.class, ci.items
 		for fi, it := range items {
 			ev, rej, flags := w.Item(it)
-			sens := ""
+			var sens []string
 			if rej == "" && current && class == store.Fact {
 				rej, sens = c.factGate(it, ev, owner)
 				if rewritten[fmt.Sprintf("f%d", fi)] {

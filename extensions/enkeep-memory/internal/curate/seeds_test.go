@@ -33,10 +33,11 @@ func TestSeedImport(t *testing.T) {
 		{ID: "r1", Kind: "rule", Text: "执行指令时直接做，不反复确认", Hard: true, Confirmed: "2026-03-01"},
 		{ID: "r2", Kind: "rule", Text: "汇报先写结论再写过程", Confirmed: "2026-03-01"},                       // the curator has it: merged
 		{ID: "f1", Kind: "fact", Text: "在推进占位项目的发布流程", Confirmed: "2026-03-01", Expiring: "recent"}, // new
-		{ID: "f2", Kind: "fact", Text: "打算明年买房", Confirmed: "2026-03-01"},                           // keyword: sensitive
-		{ID: "f3", Kind: "fact", Text: "每周固定运动", Category: "健康", Confirmed: "2026-03-01"},           // category: sensitive
-		{ID: "f4", Kind: "fact", Text: "占位私事的安排", Confirmed: "2026-03-01"},                          // the model: sensitive
+		{ID: "f2", Kind: "fact", Text: "打算明年买房", Confirmed: "2026-03-01"},                           // keyword: tagged finance
+		{ID: "f3", Kind: "fact", Text: "每周固定运动", Category: "健康", Confirmed: "2026-03-01"},           // category: tagged health
+		{ID: "f4", Kind: "fact", Text: "占位私事的安排", Confirmed: "2026-03-01"},                          // the model: tagged health
 		{ID: "f5", Kind: "fact", Text: "没有确认过的一条", Confirmed: ""},                                   // unconfirmed
+		{ID: "f6", Kind: "fact", Text: "护照下月到期要续", Confirmed: "2026-03-01"},                         // keyword: tagged legal_id
 		{ID: "r1", Kind: "rule", Text: "同一个编号又来一次", Confirmed: "2026-03-01"},                        // duplicate id
 	}}
 	ctx := context.Background()
@@ -44,13 +45,13 @@ func TestSeedImport(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if r.New != 2 || r.Merged != 1 || r.Skipped[SeedSensitive] != 3 || r.Skipped[SeedUnconfirmed] != 1 || r.Skipped[SeedDuplicate] != 1 {
+	if r.New != 6 || r.Merged != 1 || r.Skipped[SeedSensitive] != 0 || r.Skipped[SeedUnconfirmed] != 1 || r.Skipped[SeedDuplicate] != 1 {
 		t.Fatalf("preview: %+v", r)
 	}
 	if len(c.St.S.Entries) != 1 {
 		t.Fatalf("a preview wrote: %d entries", len(c.St.S.Entries))
 	}
-	if r, err = c.ImportSeeds(ctx, f, true, 0); err != nil || !r.Applied || r.New != 2 {
+	if r, err = c.ImportSeeds(ctx, f, true, 0); err != nil || !r.Applied || r.New != 6 {
 		t.Fatalf("apply: %+v %v", r, err)
 	}
 	if !slices.Contains(own.Flags, seedMark("notes", "r2")) {
@@ -61,8 +62,14 @@ func TestSeedImport(t *testing.T) {
 		if e.Origin == entry.Seed && e.Seed.ID == "r1" {
 			seed = e
 		}
-		if e.Origin == entry.Seed && (e.Sensitive != "" || strings.Contains(e.Text, "买房") || strings.Contains(e.Text, "占位私事")) {
-			t.Fatalf("a sensitive item came in: %+v", e)
+		// E9: an item in a category comes in tagged, never untagged; the resident exits keep it out (K22 off).
+		want := map[string][]string{"f2": {entry.CatFinance}, "f3": {entry.CatHealth}, "f4": {entry.CatHealth}, "f6": {entry.CatLegalID}}
+		if e.Origin == entry.Seed && e.Seed != nil {
+			if w, ok := want[e.Seed.ID]; ok && (!slices.Equal(e.Cats(), w) || e.Resident(c.St.S.Switches)) {
+				t.Fatalf("seed %s: categories %v (want %v)", e.Seed.ID, e.Cats(), w)
+			} else if !ok && e.IsSensitive() {
+				t.Fatalf("a general seed tagged: %+v", e)
+			}
 		}
 	}
 	if seed == nil || seed.Status != entry.Candidate || export.Usable(c.St.S, seed) {
@@ -87,7 +94,7 @@ func TestSeedImport(t *testing.T) {
 	c.St.Unlock()
 	// The same source again: the same items are the same, a changed text is updated.
 	f.Items[0].Text = "执行指令时直接做，做完再汇报"
-	if r, err = c.ImportSeeds(ctx, f, true, 0); err != nil || r.Updated != 1 || r.Same != 1 || r.New != 0 {
+	if r, err = c.ImportSeeds(ctx, f, true, 0); err != nil || r.Updated != 1 || r.Same != 5 || r.New != 0 {
 		t.Fatalf("again: %+v %v", r, err)
 	}
 	if seed.Text != "执行指令时直接做，做完再汇报" {

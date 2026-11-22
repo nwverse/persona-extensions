@@ -34,6 +34,9 @@ type Query struct {
 	Text   string
 	Facets []entry.Facet // empty: every facet
 	Limit  int
+	// Categories are the categories the asker names (scene 3, unified memory design v2 §3.3b): an entry in a category
+	// is given only when every one of its categories is named. Empty: general entries only.
+	Categories []string
 }
 
 // Hit is one entry line of an answer.
@@ -45,6 +48,7 @@ type Hit struct {
 	Kinds  []string
 	Text   string
 	Score  float64
+	Cats   []string // the entry's categories (shown, so the asker knows what it was given)
 }
 
 // Result is an answer, with what it counted (for the curator's per-day counts; the query itself is not kept).
@@ -55,10 +59,10 @@ type Result struct {
 
 var statusWeight = map[entry.Status]float64{entry.Stable: 1, entry.Shifting: 0.8, entry.Candidate: 0.7, entry.Dormant: 0.5}
 
-// usable is the pool's gate: live, not sensitive, not a card's evaluation or inferred part, not life content when the
-// user chose "work only".
-func usable(st *store.State, e *entry.Entry) bool {
-	if !e.Live() || e.Sensitive != "" {
+// usable is the pool's gate: live, its categories all named by the look-up (none: general entries only), not a
+// card's evaluation or inferred part (whatever is named), not life content when the user chose "work only".
+func usable(st *store.State, e *entry.Entry, cats []string) bool {
+	if !e.Live() || !e.Named(cats) {
 		return false
 	}
 	if _, ok := statusWeight[e.Status]; !ok && !e.Pinned {
@@ -177,7 +181,7 @@ func Search(st *store.State, q Query) Result {
 		if len(q.Facets) > 0 && !slices.Contains(q.Facets, e.Facet) {
 			continue
 		}
-		if !usable(st, e) {
+		if !usable(st, e, q.Categories) {
 			continue
 		}
 		res.Pool++
@@ -229,7 +233,7 @@ func Search(st *store.State, q Query) Result {
 		if seen[t] {
 			continue
 		}
-		h := Hit{ID: c.e.ID, Facet: c.e.Facet, Status: c.e.Status, Last: c.e.Last, Kinds: c.e.Kinds, Text: t, Score: c.score}
+		h := Hit{ID: c.e.ID, Facet: c.e.Facet, Status: c.e.Status, Last: c.e.Last, Kinds: c.e.Kinds, Text: t, Score: c.score, Cats: c.e.Cats()}
 		if size+len(Format(h)) > MostBytes {
 			continue
 		}
@@ -256,7 +260,11 @@ func Format(h Hit) string {
 	if len(h.Kinds) > 0 {
 		kinds = "；来源 " + strings.Join(h.Kinds, "/")
 	}
-	return fmt.Sprintf("- [%s·%s] %s（最后 %s%s）id:%s\n", facetName[h.Facet], st, h.Text, h.Last, kinds, h.ID)
+	cats := ""
+	if len(h.Cats) > 0 {
+		cats = "；分类 " + strings.Join(h.Cats, "/")
+	}
+	return fmt.Sprintf("- [%s·%s] %s（最后 %s%s%s）id:%s\n", facetName[h.Facet], st, h.Text, h.Last, kinds, cats, h.ID)
 }
 
 // FacetOf parses a facet name as the tool takes it (the internal names).

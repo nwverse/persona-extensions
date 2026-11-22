@@ -277,36 +277,48 @@ func TestLanguageCheck(t *testing.T) {
 	}
 }
 
-// K13: a sensitive category is dropped while the user has not turned it on; once on, it is kept and marked (the
-// exits keep it out). A money matter the model did not label is still finance.
-func TestSensitiveSwitch(t *testing.T) {
+// Categories (0.2.0-beta.40): an observation in a category is kept and tagged, whatever K13 says; it reaches the
+// resident exits only once the user turns K22.<category> on. A money matter the model did not label is still
+// finance; identity papers are legal_id. Synthetic lines only.
+func TestCategoriesTagged(t *testing.T) {
 	u, d := d8unit("chats/persona-a1", "assistant", append(slices.Clone(d8persona), "10:07 我: 最近家里老人住院，这周晚上都别排会")...)
 	fam := obs("persona", "用户家里老人住院，这周晚上不排会", 8, "这周晚上都别排会")
 	fam.Sensitive, fam.Domain = entry.SensFamily, entry.Life
 	fam.Impact = schema.ObsImpact{Moment: "ask_user", Action: "这周安排日程时避开晚上"}
 	c, _ := newCurator(t, nil, "shadow")
 	d8ingest(t, c, u, d, schema.DailyOutput{Observations: []schema.Observation{fam}}, nil)
-	if obsRejected(c, fam.Text) != obsSensitiveOff || len(c.St.S.Entries) != 0 {
-		t.Errorf("K13.family off: %+v", c.St.S.Rejections)
+	e := entryWith(c, fam.Text)
+	if e == nil || !slices.Equal(e.Cats(), []string{entry.CatRelationships}) || e.Categories[0].By != entry.ByModel || e.Domain != entry.Life {
+		t.Fatalf("family kept and tagged: %+v %+v", e, c.St.S.Rejections)
 	}
-	c2, _ := newCurator(t, nil, "shadow")
-	c2.St.S.Switches["K13.family"] = entry.SwitchSetting{Value: "on", By: "user"}
-	c2.St.S.Switches["K13"] = entry.SwitchSetting{Value: "on", By: "user"} // a base value never turns a category on
-	d8ingest(t, c2, u, d, schema.DailyOutput{Observations: []schema.Observation{fam}}, nil)
-	if e := entryWith(c2, fam.Text); e == nil || e.Sensitive != entry.SensFamily || e.Domain != entry.Life {
-		t.Errorf("K13.family on: %+v %+v", e, c2.St.S.Rejections)
+	if e.Resident(c.St.S.Switches) {
+		t.Error("a category reached the resident exits with K22 off")
 	}
-	c3, _ := newCurator(t, nil, "shadow")
-	c3.St.S.Switches["K13"] = entry.SwitchSetting{Value: "on", By: "user"}
-	d8ingest(t, c3, u, d, schema.DailyOutput{Observations: []schema.Observation{fam}}, nil)
-	if obsRejected(c3, fam.Text) != obsSensitiveOff {
-		t.Errorf("K13 base on, family not: %+v", c3.St.S.Rejections)
+	sw := map[string]entry.SwitchSetting{"K13.family": {Value: "on", By: "user"}, "K22": {Value: "on", By: "user"}}
+	if e.Resident(sw) {
+		t.Error("K13 or the K22 base opened the resident exits")
+	}
+	sw["K22.relationships"] = entry.SwitchSetting{Value: "on", By: "user"}
+	if !e.Resident(sw) {
+		t.Error("K22.relationships on: still out")
+	}
+	if !e.Named([]string{"relationships"}) || e.Named(nil) || e.Named([]string{"health"}) {
+		t.Error("named categories")
 	}
 	money := obs("persona", "用户这个月工资到账后要还信用卡", 6, "推进 project-x")
 	c4, _ := newCurator(t, nil, "shadow")
 	d8ingest(t, c4, u, d, schema.DailyOutput{Observations: []schema.Observation{money}}, nil)
-	if obsRejected(c4, money.Text) != obsSensitiveOff {
-		t.Errorf("unlabelled money: %+v", c4.St.S.Rejections)
+	if e := entryWith(c4, money.Text); e == nil || !slices.Contains(e.Cats(), entry.CatFinance) {
+		t.Errorf("unlabelled money: %+v %+v", e, c4.St.S.Rejections)
+	}
+	if cats, ok := categoriesOf("", "下周去办护照续签"); !ok || !slices.Equal(cats, []string{entry.CatLegalID}) {
+		t.Errorf("legal_id by words: %v %v", cats, ok)
+	}
+	if _, ok := categoriesOf("gossip"); ok {
+		t.Error("an unknown label passed")
+	}
+	if cats, _ := categoriesOf("", "合同评审排在周三"); len(cats) != 0 {
+		t.Errorf("a work contract is not legal_id: %v", cats)
 	}
 }
 

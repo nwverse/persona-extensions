@@ -289,7 +289,7 @@ func (l *ledger) catalogue(g *gathered) []catItem {
 	}
 	var rest []*entry.Entry
 	for _, e := range l.st.Entries {
-		if !e.Live() || e.Sensitive != "" {
+		if !e.Live() || e.IsSensitive() {
 			continue
 		}
 		rest = append(rest, e)
@@ -388,10 +388,7 @@ func (l *ledger) keep(m msg, v verdict, cat []catItem) entry.Correction {
 		Seq: m.Seq, Quote: verify.Redact(cut(m.Text, 500)), Prior: verify.Redact(cut(m.Prior, 200))}
 	sens := v.Sensitive
 	if sens != "" && !slices.Contains(entry.Sensitives, sens) {
-		sens = ""
-	}
-	if sens != "" && !entry.On(l.st.Switches, entry.K13Sensitive+"."+sens) {
-		c.Quote, c.Prior = "", "" // counted, not kept: the category is off (K13)
+		sens = "" // kept whatever the category: the entry it makes is tagged (0.2.0-beta.40)
 	}
 	target := v.Target
 	if !slices.ContainsFunc(cat, func(x catItem) bool { return x.ID == target }) {
@@ -471,14 +468,12 @@ func (l *ledger) fileIssues() []string {
 		if is.Text == "" || len(is.Corrections) < 2 || len(uniq(append([]string(nil), is.Sessions...))) < 2 {
 			continue
 		}
-		if is.Sensitive != "" && !entry.On(l.st.Switches, entry.K13Sensitive+"."+is.Sensitive) {
-			continue
-		}
 		if l.o.Observe == nil {
 			continue
 		}
 		e := &entry.Entry{Facet: entry.Interaction, Grain: entry.Action, Type: "correction", Text: is.Text,
-			Impact: entry.Impact{Moment: "every_turn", Action: is.Text}, Sensitive: is.Sensitive, Flags: []string{"ledger:" + k}}
+			Impact: entry.Impact{Moment: "every_turn", Action: is.Text}, Flags: []string{"ledger:" + k}}
+		e.AddCategory(is.Sensitive, entry.ByModel)
 		var sessions []string
 		for _, id := range is.Corrections {
 			c := byID[id]
@@ -487,7 +482,7 @@ func (l *ledger) fileIssues() []string {
 			}
 			ev := entry.Evidence{Source: c.Source, Ref: c.Ref, Day: c.Day, Seq: c.Seq, Who: entry.WhoSelf, Role: "user", Quote: c.Quote}
 			if ev.Quote == "" {
-				continue // a quote not kept (K13) is no evidence
+				continue // a quote not kept (before 0.2.0-beta.40, K13) is no evidence
 			}
 			e.Evidence = append(e.Evidence, ev)
 			sessions = append(sessions, c.Ref+"#"+c.Day)

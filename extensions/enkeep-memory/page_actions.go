@@ -84,6 +84,9 @@ func (a *app) v4Action(ctx context.Context, s *page, act string, values map[stri
 	case strings.HasPrefix(act, "act:"):
 		verb, id, _ := strings.Cut(strings.TrimPrefix(act, "act:"), ":")
 		value := ""
+		if verb == curate.ActCatAdd || verb == curate.ActCatRemove {
+			id, value, _ = strings.Cut(id, ":") // act:cat_add:<id>:<category>
+		}
 		if verb == curate.ActEdit {
 			value = strings.TrimSpace(values["text"])
 			if value == "" {
@@ -91,13 +94,15 @@ func (a *app) v4Action(ctx context.Context, s *page, act string, values map[stri
 			}
 		}
 		err = write(func(st *store.State) (bool, error) {
-			return verb == curate.ActDelete, c.UserAct(id, verb, value)
+			return verb == curate.ActDelete || verb == curate.ActCatAdd || verb == curate.ActCatRemove, c.UserAct(id, verb, value)
 		})
 		if err == nil {
 			toast = map[string]string{curate.ActEdit: t.s("改好了：以后整理不会覆盖你的版本", "Saved: curation never overwrites your wording"),
 				curate.ActPin: t.s("钉住了", "Pinned"), curate.ActUnpin: t.s("取消钉住了", "Unpinned"),
-				curate.ActDelete:  t.s("删掉了，也撤出了出口；可以恢复", "Deleted and withdrawn from the exits; it can be restored"),
-				curate.ActRestore: t.s("恢复了；下一次整理后回到出口", "Restored; back in the exits after the next run")}[verb]
+				curate.ActDelete:    t.s("删掉了，也撤出了出口；可以恢复", "Deleted and withdrawn from the exits; it can be restored"),
+				curate.ActRestore:   t.s("恢复了；下一次整理后回到出口", "Restored; back in the exits after the next run"),
+				curate.ActCatAdd:    t.s("加上分类了：按分类和场景用", "Category added: used by category and scene"),
+				curate.ActCatRemove: t.s("去掉分类了：以后整理不会再自动加回来", "Category removed: curation will not add it back")}[verb]
 		}
 	case strings.HasPrefix(act, "pick:"):
 		keep, drop, _ := strings.Cut(strings.TrimPrefix(act, "pick:"), ":")
@@ -164,7 +169,7 @@ func (a *app) v4Action(ctx context.Context, s *page, act string, values map[stri
 			}
 			err = write(func(st *store.State) (bool, error) {
 				setSwitch(st, key, value, time.Now())
-				return value == "off" || strings.HasPrefix(key, entry.K13Sensitive), nil
+				return value == "off" || strings.HasPrefix(key, entry.K22Resident), nil
 			})
 			toast = t.f("%s 改成%s", "%s set %s", key, onOff(t, value))
 		}

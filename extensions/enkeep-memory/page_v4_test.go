@@ -281,21 +281,24 @@ func TestCheckWrongWithdraws(t *testing.T) {
 	}
 }
 
-// K13 per category, K2 per fork type, K16 per source: each item its own switch, set by the user.
+// K22 per category, K2 per fork type, K16 per source: each item its own switch, set by the user.
 func TestSwitchesPerItem(t *testing.T) {
 	a := v4App(t)
 	seed(a)
 	s := page{Tab: tabSwitches}
 	_, v := render(t, a, s, "zh-Hans")
-	for _, want := range []string{"sw:K13.health", "sw:K13.family", "sw:K13.emotion", "sw:K13.finance", "k2:deploy", "sw:K16.lark", "量不出", "只由你打开"} {
+	for _, want := range []string{"sw:K22.health", "sw:K22.relationships", "sw:K22.emotion", "sw:K22.finance", "sw:K22.legal_id", "k2:deploy", "sw:K16.lark", "量不出", "健康空间也一样"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the switches page has no %q", want)
 		}
 	}
-	act(t, a, s, "switch", map[string]string{"sw:K13.health": "true"}, "zh-Hans")
+	if strings.Contains(v, "sw:K13.") {
+		t.Error("K13 decides nothing now: not on the page")
+	}
+	act(t, a, s, "switch", map[string]string{"sw:K22.health": "true"}, "zh-Hans")
 	sw := a.c.St.S.Switches
-	if !entry.On(sw, "K13.health") || entry.On(sw, "K13.family") || sw["K13.health"].By != "user" {
-		t.Errorf("K13 is not per category: %+v", sw)
+	if !entry.On(sw, "K22.health") || entry.On(sw, "K22.relationships") || sw["K22.health"].By != "user" {
+		t.Errorf("K22 is not per category: %+v", sw)
 	}
 	act(t, a, s, "k2", map[string]string{"k2:deploy": "act"}, "zh-Hans")
 	if entry.Switch(sw, "K2.deploy") != "act" || entry.Switch(sw, "K2.other") != "suggest" {

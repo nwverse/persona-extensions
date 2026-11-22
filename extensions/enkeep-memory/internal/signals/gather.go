@@ -89,7 +89,7 @@ func gather(ctx context.Context, o Options, day string, sd *side) (*gathered, er
 	if !missing("sessions", err) {
 		sort.Slice(sessions, func(i, j int) bool { return sessions[i].Started.Before(sessions[j].Started) })
 		for _, s := range sessions {
-			if s.Health || s.Updated.Before(g.Start) || !s.Started.Before(g.End) {
+			if s.Updated.Before(g.Start) || !s.Started.Before(g.End) {
 				continue
 			}
 			ref := "agents/" + s.Machine + "/" + s.ID

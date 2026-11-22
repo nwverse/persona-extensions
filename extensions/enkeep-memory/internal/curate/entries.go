@@ -158,6 +158,7 @@ func mergeSighting(old, e *entry.Entry, day string) {
 		}
 	}
 	old.Evidence = trimEvidence(old.Evidence)
+	old.MergeCategories(e) // what a sighting carries, the entry carries (0.2.0-beta.40)
 	if fresh {
 		old.Count++
 	}
@@ -540,6 +541,7 @@ func (c *Curator) File(actionID, classID, run string) error {
 		k.Members = append(k.Members, actionID)
 	}
 	k.Counters = slices.DeleteFunc(k.Counters, func(x string) bool { return x == actionID })
+	k.MergeCategories(a) // a class carries its members' categories (the strict side of the scenes)
 	recount(s, k)
 	k.Updated = c.stamp()
 	c.commit(entry.EvFile, a, classID, "", run)
@@ -642,6 +644,7 @@ func (c *Curator) Merge(fromID, intoID, why, run string) error {
 		into.Count = max(into.Count, len(occurrences(into)))
 	}
 	into.Scopes = unionScopes(into.Scopes, from.Scopes)
+	into.MergeCategories(from)
 	for _, id := range sortedKeys(s.Entries) { // an abstract entry resting on the merged class rests on the kept one
 		if x := s.Entries[id]; x.Grain == entry.Abstract && slices.Contains(x.Members, fromID) {
 			x.Members = slices.DeleteFunc(x.Members, func(m string) bool { return m == fromID || m == intoID })
@@ -782,6 +785,9 @@ const (
 	ActRight   = "right"
 	ActWrong   = "wrong"
 	ActUnsure  = "unsure"
+	// ActCatAdd and ActCatRemove tag or untag a category (the value); only the user may take one off.
+	ActCatAdd    = "cat_add"
+	ActCatRemove = "cat_remove"
 )
 
 // UserAct applies the user's change to an entry. Call it with the store's lock held. A hand-written entry's text is
@@ -814,6 +820,14 @@ func (c *Curator) UserAct(id, act, value string) error {
 		s.Tombstones = slices.DeleteFunc(s.Tombstones, func(t entry.Tombstone) bool { return t.Facet == e.Facet && t.Key == key })
 	case ActRight, ActWrong, ActUnsure:
 		e.Verdicts = append(e.Verdicts, entry.Verdict{Mark: act, At: now, By: "user", Note: value})
+	case ActCatAdd:
+		if !e.AddCategory(value, entry.ByUser) {
+			return fmt.Errorf("%s: category %q not added", id, value)
+		}
+	case ActCatRemove:
+		if !e.RemoveCategory(value, entry.ByUser) {
+			return fmt.Errorf("%s: category %q not on it", id, value)
+		}
 	default:
 		return fmt.Errorf("unknown action %q", act)
 	}

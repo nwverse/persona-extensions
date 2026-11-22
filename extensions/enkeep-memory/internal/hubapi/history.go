@@ -25,7 +25,7 @@ type History struct {
 	Offered bool
 	// Why is why history is not offered, when it is not ("" when it is).
 	Why      string
-	Sessions []Session // the window's rows, deduplicated, health-space and subagent rows and automated runs left out
+	Sessions []Session // the window's rows, deduplicated, subagent rows and automated runs left out (every space's, 0.2.0-beta.40)
 	Skipped  int       // rows left out as automated runs (origin "automation", or no message of the user's)
 	Complete bool      // every source answered and vouched for the whole window
 	Gaps     []HistoryGap
@@ -115,7 +115,7 @@ func (h *HTTP) History(ctx context.Context, since, until time.Time) (History, er
 		}
 		for _, row := range r.Sessions {
 			key := row.Machine + "/" + row.ID
-			if IsHealth(row.Assistant, row.Space) || row.Subagent || seen[key] {
+			if row.Subagent || seen[key] {
 				continue
 			}
 			seen[key] = true

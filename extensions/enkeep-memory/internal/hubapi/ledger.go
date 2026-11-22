@@ -21,9 +21,9 @@ import (
 // computer (it gets no personal entries: on a hub in a container, every by=user entry about the user is personal)
 // all read as "nothing to verify by": the callers go on with the day's own records.
 //
-// The grant is not declared in the manifest yet: a hub that does not know the scope refuses to install a manifest
-// naming it (extension/perm.go), so it is declared once a hub with the ledger is deployed, as assistant.memory.read
-// was (H2). Until then the call answers permission_denied, which is the same "nothing" as above.
+// The manifest declares the grant and subscribes to assistant.entries.changed (0.2.0-beta.40). A hub that does not
+// know the scope or the topic refuses to install the manifest (extension/perm.go, EventTopics), so this version is
+// installed only on a hub with the ledger (H1a).
 
 // LedgerMethod and LedgerScope are the RPC and the grant it needs.
 const (

@@ -558,6 +558,7 @@ func (c *Curator) afterWrong(a, t *entry.Entry, run *store.Run) {
 	k := c.create(&entry.Entry{Facet: a.Facet, Grain: entry.Class, Type: a.Type, Text: a.Text, Situation: a.Situation,
 		Choice: a.Choice, Rejected: a.Rejected, Why: a.Why, Exception: a.Exception, Object: a.Object, Pitfall: a.Pitfall, Fix: a.Fix,
 		Person: a.Person, Part: a.Part, Inferred: a.Inferred, ReportedOnly: a.ReportedOnly, Domain: a.Domain, Sensitive: a.Sensitive,
+		Categories: slices.Clone(a.Categories), OriginSpace: a.OriginSpace,
 		Scopes: slices.Clone(a.Scopes), Impact: a.Impact, OriginVersion: ConsolidatePrompt, Flags: []string{mark}}, run.ID)
 	if markedWrong(k) || k.Deleted { // the action says word for word what was marked wrong: it stands alone, marked
 		a.Flags = appendFlag(a.Flags, mark)
@@ -603,6 +604,7 @@ func (c *Curator) newClass(a *entry.Entry, n *consNew, byKey map[string]string, 
 		Choice: strings.TrimSpace(n.Choice), Rejected: strings.TrimSpace(n.Rejected), Why: strings.TrimSpace(n.Why),
 		Exception: strings.TrimSpace(n.Exception), Object: firstNonEmpty(strings.TrimSpace(n.Object), a.Object), Pitfall: a.Pitfall, Fix: a.Fix,
 		Person: person, Part: a.Part, Inferred: a.Inferred, ReportedOnly: a.ReportedOnly, Domain: a.Domain, Sensitive: a.Sensitive,
+		Categories: slices.Clone(a.Categories), OriginSpace: a.OriginSpace,
 		Scopes: slices.Clone(a.Scopes), Impact: a.Impact, OriginVersion: ConsolidatePrompt}, run.ID)
 	c.noteType(a.Facet, typ)
 	if n.Key != "" {

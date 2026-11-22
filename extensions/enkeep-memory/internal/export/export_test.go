@@ -359,18 +359,39 @@ func TestSwitchesOff(t *testing.T) {
 	}
 }
 
-// K13: an opened category reaches the user's own understanding only; no exit file has it.
+// Categories (0.2.0-beta.40): no exit file has an entry in a category the user has not let in with K22 (K13 opens
+// nothing); a domain space's content reaches the resident exits only as interaction or persona; an evaluation never.
 func TestSensitiveNeverInExits(t *testing.T) {
 	dir := t.TempDir()
 	st := fixture()
 	st.Switches = map[string]entry.SwitchSetting{entry.K13Sensitive + "." + entry.SensFamily: {Value: "on"}}
+	sp := ent("w-0000000009", entry.Workflow, entry.Class, "占位健康空间里的复诊流程")
+	sp.TagSpace("health")
+	st.Entries[sp.ID] = sp
+	tagged := ent("u-0000000009", entry.Persona, entry.Class, "占位证件事项要提前一个月办")
+	tagged.AddCategory(entry.CatLegalID, entry.ByModel)
+	st.Entries[tagged.ID] = tagged
 	p := ent("p-0000000009", entry.People, entry.Action, "用户乙的占位家庭情况评价")
 	p.Person, p.Part, p.Sensitive, p.Impact.Moment = "person:p1", entry.PartUserEval, entry.SensFamily, "reply_person"
 	st.Entries[p.ID] = p
 	compile(t, st, dir, &echo{})
 	for path, content := range allExits(t, dir) {
-		if strings.Contains(content, "敏感家庭") || strings.Contains(content, "家庭情况") {
+		if strings.Contains(content, "敏感家庭") || strings.Contains(content, "家庭情况") || strings.Contains(content, "复诊流程") || strings.Contains(content, "证件事项") {
 			t.Errorf("%s carries a sensitive entry", path)
+		}
+	}
+	// The user lets relationships and legal_id in: the tagged persona entry and the family one go out; the health
+	// space's workflow and the evaluation still do not.
+	st.Switches[entry.K22Resident+"."+entry.CatRelationships] = entry.SwitchSetting{Value: "on", By: "user"}
+	st.Switches[entry.K22Resident+"."+entry.CatLegalID] = entry.SwitchSetting{Value: "on", By: "user"}
+	compile(t, st, dir, &echo{})
+	in := read(t, dir, InstructionsPath)
+	if !strings.Contains(in, "证件事项") || !strings.Contains(in, "敏感家庭") {
+		t.Errorf("K22 on: not out:\n%s", in)
+	}
+	for path, content := range allExits(t, dir) {
+		if strings.Contains(content, "复诊流程") || strings.Contains(content, "家庭情况") {
+			t.Errorf("%s carries a space's workflow or an evaluation", path)
 		}
 	}
 }

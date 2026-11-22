@@ -237,7 +237,7 @@ func curatedBrief(dir string) (string, error) {
 			return "", err
 		}
 		for _, e := range st.S.Entries {
-			if e.Live() && (e.Facet == entry.Judgement || e.Facet == entry.Workflow) && e.Grain != entry.Action && e.Sensitive == "" {
+			if e.Live() && (e.Facet == entry.Judgement || e.Facet == entry.Workflow) && e.Grain != entry.Action && !e.IsSensitive() {
 				b.WriteString("- " + exitText(e) + "\n")
 			}
 		}

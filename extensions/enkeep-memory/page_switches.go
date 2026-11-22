@@ -50,7 +50,7 @@ var switchTable = []switchInfo{
 	{entry.K18NamesIndex, "说明块里列来往最多的人和项目的名字（细节靠 enkeep_recall 查）", "Names of the people and projects you deal with most in the block (details through enkeep_recall)", "", ""},
 	{entry.K19ProjectGeneral, "Agent 项目背景开头带上通用的打交道规矩", "Agent project context starts with the general rules for working with you", "", ""},
 	{entry.K20PersonaSession, "Persona 起的会话里，用户那一侧的话都算 Persona 发的（派活、转达），不当你的原话；转达里能和你当天原话对上的句子仍算你的", "In sessions Persona started, every user-side line is Persona's (a task, a relay), not your words; a sentence of yours it relays that matches what you said that day still counts as yours", "", ""},
-	{entry.K21Seeds, "画像种子：把你在别处确认过的画像和规矩导进来当候选（要有原始记录佐证才进出口；敏感四类不导）", "Seeds: your confirmed profile and rules from elsewhere, imported as candidates (they reach the exits only when your own records bear them out; the four sensitive categories are never imported)", "", ""},
+	{entry.K21Seeds, "画像种子：把你在别处确认过的画像和规矩导进来当候选（要有原始记录佐证才进出口；带分类的打标签，凭据不导）", "Seeds: your confirmed profile and rules from elsewhere, imported as candidates (they reach the exits only when your own records bear them out; those in a category are tagged, credentials never imported)", "", ""},
 }
 
 // whoSet says who set a switch and why.
@@ -177,14 +177,14 @@ func (a *app) switchesPage(t tr, st *store.State) []wire.Section {
 		Footer: t.s("「直接办」只限能撤回的事：删数据、对外发消息、花钱、动线上服务永远只给建议。某一类被推翻 2 次自动关回「只附建议」。", "\"Act\" covers reversible things only: deleting data, messaging others, spending money and touching live services always stay suggestions. Two overturns put a type back to suggest."),
 		Items:  k2})
 
-	// K13 per sensitive category: only the user turns one on.
-	var k13 []wire.Component
-	for _, c := range entry.Sensitives {
-		k13 = append(k13, switchRow(t, set, entry.K13Sensitive+"."+c, t.sensitiveLabel(c), "")...)
+	// K22 per category: which categories may reach the resident exits; only the user turns one on (0.2.0-beta.40).
+	var k22 []wire.Component
+	for _, c := range entry.CategoryNames {
+		k22 = append(k22, switchRow(t, set, entry.K22Resident+"."+c, t.sensitiveLabel(c), "")...)
 	}
-	out = append(out, wire.Section{Title: "K13 " + t.s("敏感类别（情感、财务、健康、家庭）", "Sensitive categories (emotions, money, health, family)"),
-		Footer: t.s("默认全关，只由你打开。打开后只进你自己的理解（⑥、画像卡、知识库），不进任何出口；健康空间照旧不读。", "All off by default and only you turn one on. Turned on, a category reaches only your own understanding (⑥, the cards, the knowledge base), never an exit; the health space is never read."),
-		Items:  k13})
+	out = append(out, wire.Section{Title: "K22 " + t.s("分类进常驻出口（健康、财务、关系、情感、证件与法律）", "Categories in the resident exits (health, money, relationships, emotions, papers and legal)"),
+		Footer: t.s("每个空间都收集，健康空间也一样；带分类的条目打上标签，按场景用：默认不进常驻出口（每轮附带的规矩、agent 规则、画像和项目文件），只在查询点名这一类时给；评价和推断从不给。打开某一类，它才进常驻出口。凭据从不保存。", "Every space is collected, the health space too; entries in a category are tagged and used by scene: by default they stay out of the resident exits (the per-turn rules, the agents' rules, the profile and project files) and a look-up gets them only when it names the category; evaluations and inferences never. Turning a category on lets it into the resident exits. Credentials are never kept."),
+		Items:  k22})
 
 	// K16 per message source.
 	var k16 []wire.Component

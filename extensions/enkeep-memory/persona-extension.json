@@ -65,7 +65,8 @@
         "id": "enkeep-memory-kb",
         "subscribe": [
           "kb.changed",
-          "kb.forgotten"
+          "kb.forgotten",
+          "assistant.entries.changed"
         ]
       }
     ],
@@ -253,8 +254,8 @@
       },
       "privacy_keywords": {
         "type": "array",
-        "title": "隐私词",
-        "description": "含这些词的消息不读、不发给模型",
+        "title": "不读名单",
+        "description": "含这些词的消息不读、不发给模型（敏感类别现在都收集并打标签，按场景用；真不想让它读的，写在这里）",
         "items": {
           "type": "string"
         }
@@ -401,7 +402,8 @@
       "todos.read",
       "notify",
       "assistant.ask",
-      "assistant.memory.read"
+      "assistant.memory.read",
+      "assistant.entries.read"
     ]
   }
 }
