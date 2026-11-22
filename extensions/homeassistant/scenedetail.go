@@ -265,30 +265,3 @@ func curtainSide(center [2]float64, nx, ny float64, rooms []planRoom, room strin
 	}
 	return 1
 }
-
-// seeThrough says whether a piece of furniture taller than the walls stands with its back to a wall on the camera's
-// side: seen from the view the scene opens at, its back would stand above that wall like another wall, hiding the room
-// behind it. It is drawn see-through, like the glass of a window.
-func seeThrough(ob scanObject, walls []planWall, wallH, camYaw float64) bool {
-	kind := ob.Kind
-	if kind == "" {
-		kind = ob.Category
-	}
-	if standsFree(kind) || ob.Top < wallH+0.3 {
-		return false
-	}
-	rad := ob.Yaw * math.Pi / 180
-	bx, by := math.Sin(rad), -math.Cos(rad) // the object's back: local -y
-	cr := camYaw * math.Pi / 180
-	if bx*math.Cos(cr)+by*math.Sin(cr) < 0.5 {
-		return false
-	}
-	back := [2]float64{ob.Center[0] + bx*(ob.Size[1]/2+0.15), ob.Center[1] + by*(ob.Size[1]/2+0.15)}
-	for _, w := range walls {
-		cp := closestPointOnSegment(back, w.A, w.B)
-		if dist2D(cp, back) < 0.2 {
-			return true
-		}
-	}
-	return false
-}

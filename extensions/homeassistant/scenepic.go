@@ -200,6 +200,12 @@ func renderScenePNG(comp wire.Component, width int) ([]byte, error) {
 	w := clampPosterWidth(width)
 	h := w * 3 / 4
 	proj := newSceneProjector(comp, w, h)
+	// framed on the whole model, drawn as the app draws it from this camera: the walls facing it cut away (#947)
+	yaw := 225.0
+	if comp.Camera != nil && comp.Camera.Yaw != nil && isFinite(*comp.Camera.Yaw) {
+		yaw = *comp.Camera.Yaw
+	}
+	comp.Shapes = sceneCutaway(comp.Shapes, yaw)
 
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	zbuf := make([]float32, w*h)

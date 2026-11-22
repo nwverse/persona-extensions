@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"math"
 	"testing"
 
@@ -190,32 +191,72 @@ func TestSceneFixObjectPlacement(t *testing.T) {
 	}
 }
 
-func TestSceneDetailSeeThroughOnlyOnTheCameraSide(t *testing.T) {
+func TestSceneWallFacesTakeTheirRoomsColors(t *testing.T) {
+	fix := detailFix()
+	fix.Rooms[0].WallColor = "#F4F2EC"
+	fix.Rooms[1].WallColor = "#C4DEEE"
+	fix.WallFaces = []fixCurtain{{Wall: "North", Room: "East", Color: "#F1E6B6"}}
+	comp := buildScene(detailScan(), fix, nil)
+	checkSceneView(t, comp)
+	colors := map[string]int{}
+	for _, s := range comp.Shapes {
+		if !s.Wall {
+			continue
+		}
+		// the middle wall (x = 3) is drawn as two layers, one per room
+		if math.Abs(s.Center[0]-3) < 0.05 && s.Center[1] > 0.2 && s.Center[1] < 3.8 {
+			if math.Abs(s.Size[1]-0.04) > 1e-9 {
+				t.Errorf("a layer of the middle wall is %g thick, want 0.04", s.Size[1])
+			}
+			colors[s.Color]++
+		}
+		// the north wall faces the east room (the west room stops at y = 3.5): its wall_faces color inside and out
+		if s.Center[1] > 3.9 && s.Color != "#F1E6B6" {
+			t.Errorf("north wall is %s, want #F1E6B6", s.Color)
+		}
+		// the south wall in the west room is one box in the room's color
+		if s.Center[1] < 0.1 && s.Center[0] < 2.9 && (s.Color != "#F4F2EC" || math.Abs(s.Size[1]-0.08) > 1e-9) {
+			t.Errorf("south wall in the west room is %s, %g thick; want #F4F2EC, 0.08", s.Color, s.Size[1])
+		}
+	}
+	if colors["#F4F2EC"] == 0 || colors["#C4DEEE"] == 0 || colors["#F4F2EC"] != colors["#C4DEEE"] {
+		t.Errorf("middle wall layers by color = %v, want as many of each room's color", colors)
+	}
+
+	bad := *fix
+	bad.WallFaces = []fixCurtain{{Wall: "North", Color: "#F1E6B6"}}
+	raw, _ := json.Marshal(bad)
+	if _, err := parseSceneFix(raw); err == nil {
+		t.Error("a wall face without a room was accepted")
+	}
+}
+
+func TestWallEndsJoinWithoutGaps(t *testing.T) {
+	// as a scan leaves them with 0.08 m walls: each wall stops at the old 0.16 m wall's face, 0.08 short of the line
+	// it meets. South runs x 0..4 on y = 0, West runs y 0.08..3 on x = 0 (an L corner at the origin), Middle runs
+	// y 0.08..3 on x = 2 (a T on South), and North runs on past West to x = -0.5 (West ends into its middle).
 	walls := []planWall{
-		{Name: "South", A: [2]float64{0, 0}, B: [2]float64{6, 0}, Thickness: 0.08},
-		{Name: "North", A: [2]float64{0, 4}, B: [2]float64{6, 4}, Thickness: 0.08},
+		{Name: "South", A: [2]float64{0, 0}, B: [2]float64{4, 0}, Thickness: 0.08},
+		{Name: "West", A: [2]float64{0, 0.08}, B: [2]float64{0, 2.92}, Thickness: 0.08},
+		{Name: "Middle", A: [2]float64{2, 0.08}, B: [2]float64{2, 2.92}, Thickness: 0.08},
+		{Name: "North", A: [2]float64{-0.5, 3}, B: [2]float64{4, 3}, Thickness: 0.08},
 	}
-	// yaw 0 faces north, so its back is to the south wall; yaw 180 faces south, its back to the north wall.
-	south := scanObject{Category: "storage", Name: "S", Center: [2]float64{2, 0.34}, Size: [2]float64{1.8, 0.6}, Top: 2.2}
-	north := scanObject{Category: "storage", Name: "N", Center: [2]float64{2, 3.66}, Size: [2]float64{1.8, 0.6}, Yaw: 180, Top: 2.2}
-	low := south
-	low.Top = 1.0
-	chair := south
-	chair.Category = "chair"
-	// The opening view looks from the south-west (225 degrees): the south wall is on the camera's side.
-	if !seeThrough(south, walls, 1.3, 225) {
-		t.Error("a tall cabinet backed to the camera-side wall should be see-through")
+	joinWallEnds(walls)
+	near := func(got, want float64) bool { return math.Abs(got-want) < 1e-9 }
+	// L: South (earlier) runs through to West's outer face (x = -0.04), West only down to South's inner face (y = 0.04)
+	if !near(walls[0].ReachA, 0.04) || !near(walls[1].ReachA, 0.04) {
+		t.Errorf("corner reaches South %g, West %g; want 0.04 and 0.04", walls[0].ReachA, walls[1].ReachA)
 	}
-	if seeThrough(north, walls, 1.3, 225) {
-		t.Error("a cabinet backed to the far wall faces the camera and stays solid")
+	// T: Middle reaches the faces of South and North (y = 0.04 and 2.96)
+	if !near(walls[2].ReachA, 0.04) || !near(walls[2].ReachB, 0.04) {
+		t.Errorf("Middle reaches %g, %g; want 0.04 and 0.04", walls[2].ReachA, walls[2].ReachB)
 	}
-	if seeThrough(low, walls, 1.3, 225) {
-		t.Error("a cabinet lower than the walls stays solid")
+	// West's top end meets North where North goes on past it: a T, so West stops at North's face
+	if !near(walls[1].ReachB, 0.04) {
+		t.Errorf("West reaches %g at North, want 0.04", walls[1].ReachB)
 	}
-	if seeThrough(chair, walls, 1.3, 225) {
-		t.Error("a chair is never see-through")
-	}
-	if !seeThrough(north, walls, 1.3, 45) {
-		t.Error("from the north-east the north wall is on the camera's side")
+	// nothing moved, and a free end is left alone
+	if walls[0].A != [2]float64{0, 0} || walls[0].ReachB != 0 || walls[3].ReachA != 0 {
+		t.Errorf("ends moved or free ends reached: %+v", walls)
 	}
 }
