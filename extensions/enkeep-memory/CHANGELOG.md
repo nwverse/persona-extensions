@@ -1,5 +1,24 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.38 (pre-release)
+
+- **The overview card counts entries.** The home card counted the old items (facts, practices and knowledge with
+  status active or established), which the current curation no longer fills, so "做事方式" and "知识" read 0. It now
+  shows the entries per facet that may go out to the assistant (live, stable, not sensitive: the exits' own gate) for
+  the six facets of the plugin page, under the page's names (① 和 AI 的交互 … ⑥ 关于你), then 待确认 and the last
+  daily pass in a second row (a stat grid holds six at most). People cards are not counted (they have their own tab).
+- **The tools answer while a pass runs.** A daily pass holds the state's lock for its whole run, tens of minutes with
+  a real model, and `enkeep_rerun_status`, `enkeep_recall` and `enkeep_mark_wrong` waited for it until the hub gave
+  up. The status and `enkeep_recall` now read the pages' snapshot (the status says the snapshot's time and the pass in
+  progress with its stage); `enkeep_recall`'s counts moved from the state to `recall.json` beside it (an upgrade moves
+  them); `enkeep_mark_wrong` waits a few seconds, then queues its marks in `marks-queue.json` and applies them as soon
+  as the pass lets go (or at the next start); `enkeep_rerun` and `enkeep_resettle` wait a few seconds, then say which
+  pass is running.
+- **A withdrawal is no longer held back by an addition.** Exit A is written at most once a day unless the change
+  only takes entries out; a compile that withdrew an entry and also added one waited for the next day, so an entry
+  marked wrong stayed in the assistant's block. Now the file is written at once whenever the one out there carries an
+  entry that may no longer go out.
+
 ## 0.2.0-beta.37 (pre-release)
 
 - **The long-term layer, said plainly.** The extension curates what holds over days; near-real-time working memory

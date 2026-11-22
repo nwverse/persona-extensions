@@ -365,8 +365,8 @@ type State struct {
 	// list in full, by day, as the day's last completed pass found it: an older hub without history, or a machine or
 	// source that did not answer or vouch for the whole window. A day listed in full has no entry.
 	SessionHistory map[string]*HistoryRead `json:"session_history,omitempty"`
-	// Recall counts enkeep_recall's calls per local day (0.2.0-beta.37): how often it was asked, how often it found
-	// nothing, and the hits per facet and status. Never the query or the answer. The last RecallDays days are kept.
+	// Recall is where 0.2.0-beta.37 kept enkeep_recall's counts. Since beta.38 they are in recall.json beside the
+	// state (RecallLog), so that a call does not wait for a run's lock; OpenRecall moves these there once.
 	Recall map[string]*RecallDay `json:"recall,omitempty"`
 
 	// v4: every facet's entries in one structure (internal/entry), and what feeds and uses them. The event log is
@@ -586,6 +586,21 @@ func (s *Store) Unlock() { s.mu.Unlock() }
 
 // TryLock takes the lock only if nobody holds it.
 func (s *Store) TryLock() bool { return s.mu.TryLock() }
+
+// LockWithin takes the lock if it frees within d (polling); false when a run still holds it. A tool the hub calls
+// waits only seconds for an answer, while a daily pass holds the lock for its whole run.
+func (s *Store) LockWithin(d time.Duration) bool {
+	end := time.Now().Add(d)
+	for {
+		if s.mu.TryLock() {
+			return true
+		}
+		if !time.Now().Before(end) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
 
 // Save writes the state atomically. Call it with the lock held.
 func (s *Store) Save() error {

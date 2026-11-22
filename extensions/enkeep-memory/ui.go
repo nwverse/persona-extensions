@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	exits "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -116,11 +118,8 @@ func (a *app) lang(r *ext.UIRequest) tr { return trOf(r.Locale, a.c.Lang) }
 // for minutes while the hub gives up on a page after 20 seconds (a 502). Only a curator without a snapshot (one
 // built by hand in a test) is read from the store, under its lock.
 func (a *app) read() (*store.State, func()) {
-	if s := a.c.Live.Snapshot(); s != nil && s.State != nil {
-		return s.State, func() {}
-	}
-	a.c.St.Lock()
-	return a.c.St.S, a.c.St.Unlock
+	st, _, done := a.c.Read()
+	return st, done
 }
 
 func (a *app) listPage(s page) *wire.View {
@@ -489,41 +488,55 @@ func (a *app) homeAction(ctx context.Context, r *ext.UIRequest) (*wire.ActionRes
 	return &wire.ActionResult{View: v, Toast: toast}, nil
 }
 
+// today is the overview card (0.2.0-beta.38): per facet the entries that may go out to the assistant (stable, live,
+// not sensitive: the exits' own gate), named as the plugin page names the facets; then the pending proposals and the
+// last daily pass (a stat grid holds six at most). It used to count the old items (facts, practices, knowledge with
+// status active or established), which the current curation no longer fills: "ways of working" and "knowledge" read 0.
 func (a *app) today(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 	if a.c == nil {
 		return &wire.View{Sections: []wire.Section{{Items: []wire.Component{secondary("还没准备好")}}}}, nil
 	}
+	t := a.lang(r)
 	st, done := a.read()
 	defer done()
-	count := func(class string) int {
-		n := 0
-		for _, it := range st.Items {
-			if it.Class == class && (it.Status == "active" || it.Status == "established") {
-				n++
-			}
-		}
-		return n
+	var facets []wire.Stat // a stat grid holds at most six: the facets in one, the rest in a second
+	for f, n := range exportableCounts(st) {
+		facets = append(facets, wire.Stat{Label: t.facetLabel(facetsShown[f]), Value: fmt.Sprint(n)})
 	}
-	pending := 0
-	for _, p := range st.Proposals {
-		if p.Status == "pending" || p.Status == "later" {
-			pending++
-		}
-	}
-	last := "还没运行过"
+	last := t.s("还没运行过", "not run yet")
 	for i := len(st.Runs) - 1; i >= 0; i-- {
 		if st.Runs[i].Kind == "daily" {
 			last = st.Runs[i].Period
 			break
 		}
 	}
-	return &wire.View{Sections: []wire.Section{{Items: []wire.Component{{Type: wire.ComponentStatGrid, Stats: []wire.Stat{
-		{Label: "待确认", Value: fmt.Sprint(pending)},
-		{Label: "事实", Value: fmt.Sprint(count(store.Fact))},
-		{Label: "做事方式", Value: fmt.Sprint(count(store.Practice))},
-		{Label: "知识", Value: fmt.Sprint(count(store.Knowledge))},
-		{Label: "最近一次日级", Value: last},
-	}}}}}}, nil
+	more := []wire.Stat{{Label: t.s("待确认", "To confirm"), Value: fmt.Sprint(pendingProposals(st))},
+		{Label: t.s("最近一次日级", "Last daily pass"), Value: last}}
+	return &wire.View{Sections: []wire.Section{{Items: []wire.Component{
+		{Type: wire.ComponentStatGrid, Stats: facets},
+		{Type: wire.ComponentStatGrid, Stats: more},
+	}}}}, nil
+}
+
+// exportableCounts are the entries per facet (in facetsShown's order) that may go out to the assistant.
+func exportableCounts(st *store.State) []int {
+	out := make([]int, len(facetsShown))
+	for _, e := range st.Entries {
+		if i := slices.Index(facetsShown, e.Facet); i >= 0 && exits.Usable(st, e) {
+			out[i]++
+		}
+	}
+	return out
+}
+
+func pendingProposals(st *store.State) int {
+	n := 0
+	for _, p := range st.Proposals {
+		if p.Status == "pending" || p.Status == "later" {
+			n++
+		}
+	}
+	return n
 }
 
 // health is the settings-side page: who "I" am, the latest triage funnel, run buttons.

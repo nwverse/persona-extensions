@@ -1,6 +1,7 @@
 package curate
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -8,6 +9,7 @@ import (
 	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
 // Reruns asked for by the assistant or an Agent (the enkeep_rerun tool): a one-off "digest these days again with the
@@ -30,6 +32,15 @@ type RerunRequest struct {
 // already force-queued is left out); its units digested before are taken from the ledger, so only what was not read
 // calls the model. It takes the store's lock.
 func (c *Curator) QueueRerun(from, to, today string, force bool) (RerunRequest, error) {
+	return c.QueueRerunWithin(from, to, today, force, 0)
+}
+
+// ErrBusy: a run holds the store's lock longer than the caller waits.
+var ErrBusy = errors.New("a curation pass is running")
+
+// QueueRerunWithin is QueueRerun waiting at most wait for the store's lock (0: as long as it takes); ErrBusy when a
+// run holds it longer.
+func (c *Curator) QueueRerunWithin(from, to, today string, force bool, wait time.Duration) (RerunRequest, error) {
 	a, err1 := time.Parse("2006-01-02", from)
 	b, err2 := time.Parse("2006-01-02", to)
 	if err1 != nil || err2 != nil {
@@ -48,7 +59,11 @@ func (c *Curator) QueueRerun(from, to, today string, force bool) (RerunRequest, 
 	if len(days) > RerunMostDays {
 		return RerunRequest{}, fmt.Errorf("at most %d days at a time (asked for %d)", RerunMostDays, len(days))
 	}
-	c.St.Lock()
+	if wait <= 0 {
+		c.St.Lock()
+	} else if !c.St.LockWithin(wait) {
+		return RerunRequest{}, ErrBusy
+	}
 	defer c.St.Unlock()
 	r := RerunRequest{Force: force}
 	for _, d := range days {
@@ -80,10 +95,12 @@ func (c *Curator) QueueRerun(from, to, today string, force bool) (RerunRequest, 
 
 // RerunPlan is every day to digest again with the current prompt: rerun_range's and the queue's, in order, once each.
 // The caller holds the lock or reads a state no one writes.
-func (c *Curator) RerunPlan() []string {
+func (c *Curator) RerunPlan() []string { return c.rerunPlan(c.St.S) }
+
+func (c *Curator) rerunPlan(st *store.State) []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, d := range append(c.Cfg.RerunDays(), c.St.S.RerunQueue...) {
+	for _, d := range append(c.Cfg.RerunDays(), st.RerunQueue...) {
 		if !seen[d] {
 			seen[d] = true
 			out = append(out, d)
@@ -103,16 +120,18 @@ type RerunProgress struct {
 	// History says which days' agent sessions the hub's session history could not list in full: a line for the days
 	// of a hub without it, and one per day with a source that did not answer or vouch for the window.
 	History []string
+	At      time.Time // when the state read was taken (the pages' snapshot); zero when read from the store itself
+	Running *Progress // the pass in progress, if any
 }
 
 // historyMost is how many days with gaps the status names one by one (the newest).
 const historyMost = 10
 
-// historyLines is RerunProgress.History. The caller holds the lock.
-func (c *Curator) historyLines() []string {
+// historyLines is RerunProgress.History of st.
+func historyLines(st *store.State) []string {
 	var none, gaps []string
-	for _, day := range sortedKeys(c.St.S.SessionHistory) {
-		h := c.St.S.SessionHistory[day]
+	for _, day := range sortedKeys(st.SessionHistory) {
+		h := st.SessionHistory[day]
 		switch {
 		case h == nil:
 		case !h.Offered:
@@ -123,7 +142,7 @@ func (c *Curator) historyLines() []string {
 	}
 	var out []string
 	if len(none) > 0 {
-		why := c.St.S.SessionHistory[none[len(none)-1]].Why
+		why := st.SessionHistory[none[len(none)-1]].Why
 		out = append(out, fmt.Sprintf("%d day(s) read from the hub's live session list only, the hub offering no session history (%s): %s",
 			len(none), why, daySpan(none)))
 	}
@@ -133,7 +152,7 @@ func (c *Curator) historyLines() []string {
 	}
 	for _, day := range gaps {
 		var parts []string
-		for _, g := range c.St.S.SessionHistory[day].Gaps {
+		for _, g := range st.SessionHistory[day].Gaps {
 			src := g.Source
 			if g.Runtime != "" {
 				src += " " + g.Runtime
@@ -167,20 +186,22 @@ func cmpOr(a, b string) string {
 	return b
 }
 
-// RerunStatus is the progress of rerun_range's and the queue's days. It takes the store's lock.
+// RerunStatus is the progress of rerun_range's and the queue's days, read from the pages' snapshot (Live): a daily
+// pass holds the store's lock for its whole run, tens of minutes, and the hub gives up on a tool call long before.
+// At is when the state read was taken; the zero time when it is the store's own (no snapshot, under its lock).
 func (c *Curator) RerunStatus() RerunProgress {
-	c.St.Lock()
-	defer c.St.Unlock()
-	p := RerunProgress{Prompt: schema.DailyPrompt, Forced: slices.Clone(c.St.S.ForceReruns)}
-	for _, d := range c.RerunPlan() {
-		if slices.Contains(c.St.S.Reruns, d+"@"+schema.DailyPrompt) {
+	st, at, done := c.Read()
+	defer done()
+	p := RerunProgress{Prompt: schema.DailyPrompt, Forced: slices.Clone(st.ForceReruns), At: at}
+	for _, d := range c.rerunPlan(st) {
+		if slices.Contains(st.Reruns, d+"@"+schema.DailyPrompt) {
 			p.Done = append(p.Done, d)
 		} else {
 			p.Waiting = append(p.Waiting, d)
 		}
 	}
-	p.History = c.historyLines()
-	if mp := c.St.S.ModelPause; mp != nil {
+	p.History = historyLines(st)
+	if mp := st.ModelPause; mp != nil {
 		what := "the model is unavailable"
 		switch mp.What {
 		case "assistant":
@@ -190,5 +211,19 @@ func (c *Curator) RerunStatus() RerunProgress {
 		}
 		p.Paused = fmt.Sprintf("%s (%s); %s is tried again at %s", what, mp.Reason, mp.Day, mp.NextTry)
 	}
+	if prog, ok := c.Live.Progress(); ok {
+		p.Running = &prog
+	}
 	return p
+}
+
+// Read is the state to show or search without waiting for a run: the last snapshot (Live) with its time, never the
+// store's own while a run holds its lock. Only a curator without a snapshot (one built by hand in a test, a trial)
+// reads the store, under its lock; done releases what Read took.
+func (c *Curator) Read() (st *store.State, at time.Time, done func()) {
+	if s := c.Live.Snapshot(); s != nil && s.State != nil {
+		return s.State, s.At, func() {}
+	}
+	c.St.Lock()
+	return c.St.S, time.Time{}, c.St.Unlock
 }

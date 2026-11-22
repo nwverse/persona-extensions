@@ -80,15 +80,18 @@ line, else its text; no model is called. Never returned: deleted, retired, merge
 categories, life content when the user chose work only, a people card's evaluation and inferred parts (whatever K15
 says: the hub's privacy filter does not see an extension's own tools).
 
-Only counts are kept, per day for 30 days: calls, empty answers, hits per facet and status. `enkeep_rerun_status`
-shows the last seven days. The query and the answer are not kept.
+Only counts are kept, per day for 30 days, in `recall.json` beside the state (0.2.0-beta.37 kept them in the state):
+calls, empty answers, hits per facet and status. `enkeep_rerun_status` shows the last seven days. The query and the
+answer are not kept. It searches the pages' snapshot, so it answers while a pass runs (what the running pass is
+settling shows after it).
 
 ## `enkeep_mark_wrong`
 
 `{"ids": ["…"], "reason": "…"}` marks entries wrong on the assistant's behalf: the same verdict as the user's "不对"
 on the page, recorded with `by: assistant` and the reason, with no card on the user's phone. The entries leave every
 exit at once (the per-turn block follows the hub's own adoption schedule) and stay as counter-examples; the user can
-mark them right on the page to bring them back. It is for lines that are plainly not the user's rule, such as a task
+mark them right on the page to bring them back. While a pass holds the state (a daily pass, tens of minutes), the marks
+are queued (`marks-queue.json`) and applied as soon as it ends; the answer says so. It is for lines that are plainly not the user's rule, such as a task
 prompt taken for the user's words; when in doubt the assistant asks the user.
 
 ## Who said it

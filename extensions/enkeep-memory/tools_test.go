@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/exttest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -265,13 +267,16 @@ func TestRecallAndMarkWrongTools(t *testing.T) {
 	if _, err := call(t, a, "enkeep_recall", map[string]any{"query": "x", "facets": []string{"nope"}}); err == nil {
 		t.Fatal("an unknown facet was taken")
 	}
-	d := st.S.Recall["2026-11-09"]
-	if d == nil || d.Calls != 2 || d.Empty != 1 || d.Facets["world"] == 0 {
-		t.Fatalf("recall counts: %+v", d)
+	keys, days := a.recallLog().Days(7)
+	if len(keys) != 1 || keys[0] != "2026-11-09" || days[0].Calls != 2 || days[0].Empty != 1 || days[0].Facets["world"] == 0 {
+		t.Fatalf("recall counts: %v %+v", keys, days)
 	}
-	raw, _ := json.Marshal(st.S.Recall)
-	if strings.Contains(string(raw), "占位项目甲") {
-		t.Fatal("the query was kept")
+	raw, _ := os.ReadFile(filepath.Join(st.Dir, store.RecallFile))
+	if !strings.Contains(string(raw), `"calls":2`) || strings.Contains(string(raw), "占位项目甲") {
+		t.Fatalf("recall.json: %s", raw)
+	}
+	if st.S.Recall != nil {
+		t.Fatal("counts kept in the state")
 	}
 
 	text, err = call(t, a, "enkeep_mark_wrong", map[string]any{"ids": []string{"id:i-0000000001", "i-missing"}, "reason": "测试提示，不是用户的规矩"})
@@ -288,5 +293,78 @@ func TestRecallAndMarkWrongTools(t *testing.T) {
 	text, _ = call(t, a, "enkeep_rerun_status", map[string]any{})
 	if !strings.Contains(text, "enkeep_recall: 2026-11-09 2 call(s), 1 empty") {
 		t.Fatalf("status lacks the recall counts: %q", text)
+	}
+}
+
+// While a pass holds the store's lock (a daily run holds it for tens of minutes), the tools answer at once: the status
+// and recall from the pages' snapshot, mark_wrong queued and applied when the lock frees, rerun and resettle "busy".
+func TestToolsWhileAPassRuns(t *testing.T) {
+	a, st := toolApp(t)
+	toolWait = 100 * time.Millisecond
+	t.Cleanup(func() { toolWait = 5 * time.Second })
+	a.c.Live = &curate.Live{}
+	st.S.Entries = map[string]*entry.Entry{"i-0000000001": {ID: "i-0000000001", Facet: entry.Interaction, Grain: entry.Class,
+		Text: "部署验证时只回复 OK（占位错条目）", Status: entry.Stable, Origin: entry.Behavior, Count: 2, Kinds: []string{"S3"}, Last: "2026-11-08"}}
+	st.S.RerunQueue = []string{"2026-11-01"}
+	st.Lock()
+	a.c.Publish()
+	// the pass starts: it holds the lock from here
+	a.mu.Lock()
+	a.running = "daily 2026-11-08"
+	a.mu.Unlock()
+
+	quick := func(name string, args any) (string, error) {
+		t.Helper()
+		start := time.Now()
+		text, err := call(t, a, name, args)
+		if d := time.Since(start); d > 2*time.Second {
+			t.Fatalf("%s waited %v for the run", name, d)
+		}
+		return text, err
+	}
+	text, err := quick("enkeep_rerun_status", map[string]any{})
+	if err != nil || !strings.Contains(text, "1 waiting") || !strings.Contains(text, "Running now: daily 2026-11-08") || !strings.Contains(text, "State as of") {
+		t.Fatalf("status during a run: %q %v", text, err)
+	}
+	if text, err = quick("enkeep_recall", map[string]any{"query": "部署验证"}); err != nil || !strings.Contains(text, "id:i-0000000001") {
+		t.Fatalf("recall during a run: %q %v", text, err)
+	}
+	if _, err = quick("enkeep_rerun", map[string]any{"from": "2026-11-02", "to": "2026-11-02"}); err == nil || !strings.Contains(err.Error(), "busy: daily 2026-11-08") {
+		t.Fatalf("rerun during a run: %v", err)
+	}
+	if _, err = quick("enkeep_resettle", map[string]any{}); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("resettle during a run: %v", err)
+	}
+	text, err = quick("enkeep_mark_wrong", map[string]any{"ids": []string{"i-0000000001", "i-missing"}, "reason": "测试提示，不是用户的规矩"})
+	if err != nil || !strings.Contains(text, "Queued") || !strings.Contains(text, "i-missing") {
+		t.Fatalf("mark_wrong during a run: %q %v", text, err)
+	}
+	if !st.S.Entries["i-0000000001"].Live() {
+		t.Fatal("marked while the run held the lock")
+	}
+	// the pass ends: the queued mark is applied
+	a.mu.Lock()
+	a.running = ""
+	a.mu.Unlock()
+	st.Unlock()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		st.Lock()
+		live := st.S.Entries["i-0000000001"].Live()
+		st.Unlock()
+		_, qerr := os.Stat(filepath.Join(st.Dir, marksFile))
+		if !live && os.IsNotExist(qerr) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("queued mark not applied: live=%v queue=%v", live, qerr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	st.Lock()
+	v := st.S.Entries["i-0000000001"].Verdicts
+	st.Unlock()
+	if v[len(v)-1].By != "assistant" || v[len(v)-1].Note == "" {
+		t.Fatalf("queued verdict: %+v", v)
 	}
 }

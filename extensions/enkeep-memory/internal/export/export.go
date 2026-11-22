@@ -139,11 +139,14 @@ func stable(e *entry.Entry) bool {
 // usable is the gate every exit A–E shares: live (not deleted, retired, merged, invalidated or marked wrong), not
 // in a sensitive category (K13, whether its switch is on or not: an opened category reaches only the user's own
 // understanding), stable, and not life content when the user chose "work only" at the first-run questions.
-func (c *compiler) usable(e *entry.Entry) bool {
+func (c *compiler) usable(e *entry.Entry) bool { return Usable(c.st, e) }
+
+// Usable is the exits' shared gate for an entry of st (the overview card counts with it too).
+func Usable(st *store.State, e *entry.Entry) bool {
 	if !e.Live() || e.Sensitive != "" || !stable(e) {
 		return false
 	}
-	if e.Domain == entry.Life && c.st.Onboarding != nil && c.st.Onboarding.Use == entry.Work {
+	if e.Domain == entry.Life && st.Onboarding != nil && st.Onboarding.Use == entry.Work {
 		return false
 	}
 	return true
@@ -545,7 +548,8 @@ func writeFile(path string, data []byte) error {
 }
 
 // write puts the files on disk: only those whose hash changed; exit A at most once a day unless the change only
-// takes entries out (a withdrawal goes out at once); files no longer made are removed.
+// takes entries out, or the file out there still carries an entry that may no longer go out (a withdrawal goes out
+// at once, even when the same compile also adds lines); files no longer made are removed.
 func (c *compiler) write(files []file) error {
 	old := c.readManifest()
 	now := c.now()
@@ -565,7 +569,8 @@ func (c *compiler) write(files []file) error {
 			c.rep.Files[f.path] = FileReport{Exit: f.exit, Bytes: prev.Bytes, Entries: len(prev.Entries)}
 			continue
 		}
-		if f.path == InstructionsPath && prev != nil && onDisk && sameDay(prev.Written, today, c.loc()) && !subset(f.ids, prev.Entries) {
+		if f.path == InstructionsPath && prev != nil && onDisk && sameDay(prev.Written, today, c.loc()) && !subset(f.ids, prev.Entries) &&
+			!c.stale(prev.Entries) {
 			next.Files[f.path] = prev // once a day (H1 restarts the assistant on a change); withdrawals are not held back
 			c.rep.Deferred = true
 			c.rep.Files[f.path] = FileReport{Exit: f.exit, Bytes: prev.Bytes, Entries: len(prev.Entries)}
@@ -633,6 +638,17 @@ func (c *compiler) write(files []file) error {
 	}
 	b, _ := json.MarshalIndent(next, "", " ")
 	return writeFile(filepath.Join(c.o.Dir, ManifestPath), b)
+}
+
+// stale: one of ids (what a file out there carries) is gone or may no longer go out (wrong, deleted, sensitive, not
+// stable any more). Before 0.2.0-beta.38 such a file waited for the next day when the same compile also added a line.
+func (c *compiler) stale(ids []string) bool {
+	for _, id := range ids {
+		if e := c.st.Entries[id]; e == nil || !c.usable(e) {
+			return true
+		}
+	}
+	return false
 }
 
 func sameDay(written, today string, loc *time.Location) bool {

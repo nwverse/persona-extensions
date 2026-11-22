@@ -41,8 +41,10 @@ type app struct {
 	hubLoc    *time.Location
 	rt        string // the assistant's runtime, cached (page_v4.go)
 	rtAt      time.Time
-	exitDir   string       // where the exit files are when not in the store's directory (the page subcommand)
-	route     *model.Route // the model route; nil: every call on the purpose's model (model_route "purpose")
+	exitDir   string           // where the exit files are when not in the store's directory (the page subcommand)
+	route     *model.Route     // the model route; nil: every call on the purpose's model (model_route "purpose")
+	recalls   *store.RecallLog // enkeep_recall's counts (recall.json), with their own lock
+	marksMu   sync.Mutex       // the queued marks' file (marks.go)
 }
 
 func newApp() *app { return &app{} }
@@ -108,8 +110,11 @@ func (a *app) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]
 		Lang: in.Hub.Locale, Extension: info.ID, Logf: func(f string, args ...any) { log.Printf(f, args...) }, Live: &curate.Live{},
 		Collect: collect, Hub: a.hubAPI, Cards: curate.PeopleCards{}}
 	st.Lock() // nothing runs yet: the health page's first snapshot
+	a.recalls = store.OpenRecall(st.Dir, st.S.Recall)
+	st.S.Recall = nil // moved to recall.json; dropped from state.json at its next save
 	a.c.Publish()
 	st.Unlock()
+	go a.applyMarks(context.WithoutCancel(ctx)) // marks a pass's run left queued when the process stopped
 	go a.recover(ctx)
 	go a.migrate(ctx)
 	if !a.member {
@@ -408,6 +413,7 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 				// A day queued with force is done once its daily run completes.
 				a.c.St.S.ForceReruns = slices.DeleteFunc(a.c.St.S.ForceReruns, func(d string) bool { return d == period })
 				err = a.c.St.Save()
+				a.c.Publish() // enkeep_rerun_status reads the snapshot: the day shows done at once
 				a.c.St.Unlock()
 			}
 		} else if kind == "synth" {

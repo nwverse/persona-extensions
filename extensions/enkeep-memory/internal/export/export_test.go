@@ -692,3 +692,22 @@ func (m *personLines) Complete(_ context.Context, r model.Request) (model.Respon
 	b, _ := json.Marshal(map[string]any{"items": out})
 	return model.Response{Text: string(b)}, nil
 }
+
+// A compile that adds a line and withdraws another the same day writes exit A at once: a file out there that still
+// carries an entry no longer usable is not held to once a day (before 0.2.0-beta.38 the withdrawal waited a day).
+func TestWithdrawalNotHeldByAnAddition(t *testing.T) {
+	dir := t.TempDir()
+	st := fixture()
+	compile(t, st, dir, &echo{})
+	if !strings.Contains(read(t, dir, InstructionsPath), "汇报时先给结论") {
+		t.Fatal("fixture line not out")
+	}
+	add := ent("i-0000000010", entry.Interaction, entry.Class, "新加的占位交互要求")
+	st.Entries[add.ID] = add
+	st.Entries["i-0000000001"].Verdicts = append(st.Entries["i-0000000001"].Verdicts, entry.Verdict{Mark: "wrong", By: "assistant"})
+	rep := compile(t, st, dir, &echo{})
+	a := read(t, dir, InstructionsPath)
+	if rep.Deferred || strings.Contains(a, "汇报时先给结论") || !strings.Contains(a, "新加的占位") {
+		t.Fatalf("deferred=%v:\n%s", rep.Deferred, a)
+	}
+}
