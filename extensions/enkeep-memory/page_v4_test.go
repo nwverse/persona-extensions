@@ -130,20 +130,29 @@ func TestV4PagesBothLanguages(t *testing.T) {
 			t.Errorf("page %+v is the same in both languages", p)
 		}
 	}
-	_, zh := render(t, a, page{Tab: tabStart}, "zh-Hans")
+	sv, zh := render(t, a, page{Tab: tabStart}, "zh-Hans")
+	for _, sec := range sv.Sections {
+		if sec.Title == "起步" {
+			t.Error("a section is titled as the first tab")
+		}
+	}
 	for _, want := range []string{"等 hub（H2）", "没授权", "助手电脑离线", "等 hub（H1）", "三个问题", "① 和 AI 的交互", "⑤′ 有来往的人",
 		"「deploy」看到过", "没有 Agent 会话", "本周读了多少、挖了几段"} {
 		if !strings.Contains(zh, want) {
 			t.Errorf("the start page does not say %q", want)
 		}
 	}
+	// The section under the tabs is not titled as the first tab is, and no row repeats "还差 1 次".
+	if strings.Contains(zh, "离成条目最近") || !strings.Contains(zh, "各方面进度") || !strings.Contains(zh, "观察中") {
+		t.Errorf("start page heading or rows: %s", zh)
+	}
 	_, en := render(t, a, page{Tab: tabStart}, "en-US")
-	for _, want := range []string{"waiting for the hub (H2)", "not granted", "the assistant's computer is offline", "Getting started", "Three questions"} {
+	for _, want := range []string{"waiting for the hub (H2)", "not granted", "the assistant's computer is offline", "Facets at a glance", "Three questions"} {
 		if !strings.Contains(en, want) {
 			t.Errorf("the English start page does not say %q", want)
 		}
 	}
-	if strings.Contains(en, "已有") || strings.Contains(en, "来源") {
+	if strings.Contains(en, "已定") || strings.Contains(en, "来源") {
 		t.Errorf("Chinese left on the English start page: %s", en)
 	}
 	// The card: facts, inferred lines labelled with little evidence, the reported-only line folded until opened.

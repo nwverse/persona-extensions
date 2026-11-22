@@ -1,5 +1,19 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.39 (pre-release)
+
+- **The tab bar fits a phone.** Eight tabs did not fit an iPhone's width; the app then draws them as a
+  sideways-scrolling bar, which iOS shifts down by the navigation bar's height and draws under the first cards (half
+  the labels hidden, "起步" twice). The bar now has five short tabs (起步 · 六面 · 人物 · 核对 · 待确认); the
+  switches, the reports and the older pages are opened from a "更多" section at the end of the start page. The
+  section under the bar is titled "各方面进度", no longer "起步" as the first tab is.
+- **The start card says what its numbers mean.** Each facet's row counted every live entry not stable as "正在攒",
+  dormant ones and the concrete actions under a class included, so ③ read 56 against 1411. It now shows the
+  settled entries and those being watched (candidates, a class's actions not counted), and how many of those were
+  seen more than once; the footer says once what "观察中" is and that the user has nothing to do. The line "离成条目最近
+  的一条还差 1 次", on every row, is gone: it was right (almost every candidate was seen once, and two sightings on
+  two days settle it) but said nothing.
+
 ## 0.2.0-beta.38 (pre-release)
 
 - **Only days really read count.** A day the model never read (no model, or every unit screened out before any
