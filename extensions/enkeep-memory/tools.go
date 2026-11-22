@@ -19,7 +19,7 @@ import (
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
-	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
+	exits "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/recall"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -209,7 +209,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		if err := strictDecode(raw, &struct{}{}); err != nil {
 			return "", err
 		}
-		return a.c.Seeds(export.Usable).Text(), nil
+		return a.c.Seeds(exits.Usable).Text(), nil
 	case "enkeep_rerun":
 		var in struct {
 			From, To string

@@ -195,6 +195,10 @@ func (a *app) tick(ctx context.Context) {
 		a.start(ctx, "weekly", lastWeek)
 		return
 	}
+	// The weekly report to the user, once the week's pass has run (weekly_report.go): not held back by reruns either.
+	if err := a.weeklyTick(ctx, time.Now()); err != nil {
+		log.Printf("enkeep-memory: weekly report: %v", err)
+	}
 	// rerun_range: only completed local days are rerun, one at a time with the current daily prompt. An early daily
 	// must not suppress the formal pass after the day ends. Each day runs only once per prompt.
 	// The days asked for by the enkeep_rerun tool (State.RerunQueue) run the same way.
@@ -223,10 +227,6 @@ func (a *app) tick(ctx context.Context) {
 			a.start(ctx, "daily", day)
 			return
 		}
-	}
-	// The weekly report to the user, once the week's pass has run (weekly_report.go).
-	if err := a.weeklyTick(ctx, time.Now()); err != nil {
-		log.Printf("enkeep-memory: weekly report: %v", err)
 	}
 	// After the days of rerun_range are digested with the current prompt, their judgements are filed once.
 	if len(days) > 0 && a.reran(days[len(days)-1]) && !a.synthAfterDaily(days[len(days)-1]) && !a.attempted("synth@"+days[len(days)-1]) {
