@@ -115,7 +115,7 @@ func emptyActiveDays(s *store.State) []string {
 			continue
 		}
 		runs[r.Period] = true
-		if r.Counts["model_calls"] > 0 {
+		if r.Counts["model_calls"]+r.Counts["digested"]+r.Counts["digest_unchanged"] > 0 {
 			called[r.Period] = true
 		}
 	}

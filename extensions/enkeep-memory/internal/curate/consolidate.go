@@ -660,8 +660,8 @@ func (c *Curator) dropTombstoned(a *entry.Entry, run *store.Run) {
 	run.Counts["consolidate_tombstoned"]++
 }
 
-// noteActiveDays adds the day, and every day an entry was seen on, to the user's active days (days with any source
-// data, 4.4): the thresholds count these, not the calendar.
+// noteActiveDays adds every day an entry was seen on up to day to the user's active days (4.4): the thresholds count
+// these, not the calendar. The day itself is added by the daily pass only when the model read it (MarkActive, E4).
 func (c *Curator) noteActiveDays(day string) {
 	s := c.St.S
 	add := func(d string) {
@@ -674,7 +674,6 @@ func (c *Curator) noteActiveDays(day string) {
 		}
 		s.ActiveDays = slices.Insert(s.ActiveDays, i, d)
 	}
-	add(day)
 	for _, e := range s.Entries {
 		if e.Grain == entry.Action && e.First <= day {
 			for _, o := range occurrences(e) {
@@ -686,7 +685,7 @@ func (c *Curator) noteActiveDays(day string) {
 	}
 }
 
-// MarkActive records that day had source data (the daily pass, whenever it reads any unit).
+// MarkActive records that the model read day (the daily pass, when it had model output for the day).
 func (c *Curator) MarkActive(day string) {
 	s := c.St.S
 	if !slices.Contains(s.ActiveDays, day) {

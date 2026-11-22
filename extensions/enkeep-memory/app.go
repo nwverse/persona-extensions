@@ -256,19 +256,17 @@ func (a *app) pruneRerunQueue() {
 	}
 	a.c.St.Lock()
 	a.c.St.S.RerunQueue = slices.DeleteFunc(a.c.St.S.RerunQueue, func(d string) bool { return slices.Contains(done, d) })
-	empty := len(a.c.St.S.RerunQueue) == 0 && len(a.c.St.S.ForceReruns) == 0
 	if err := a.c.St.Save(); err != nil {
 		log.Printf("enkeep-memory: rerun queue: %v", err)
 	}
 	a.c.St.Unlock()
-	if empty {
-		// The batch is done: every entry's status is settled again as of today, counting the days now read
-		// (design v2 §11.3 "跑完自动 resettle"); what enkeep_resettle would apply.
-		if r, err := a.c.Resettle(a.localDay(), true); err != nil {
-			log.Printf("enkeep-memory: resettle after the reruns: %v", err)
-		} else {
-			log.Printf("enkeep-memory: resettled after the reruns: %d entr(ies) moved", r.Changed())
-		}
+	// Days were read again: every entry's status is settled again as of today, counting only the days really
+	// read (design v2 §11.3 and D.5, E4: resettle after the reruns, not only at the end of the batch, so the long
+	// backfill never leaves entries dormant on days still waiting); what enkeep_resettle would apply. Idempotent.
+	if r, err := a.c.Resettle(a.localDay(), true); err != nil {
+		log.Printf("enkeep-memory: resettle after the reruns: %v", err)
+	} else {
+		log.Printf("enkeep-memory: resettled after the reruns: %d entr(ies) moved", r.Changed())
 	}
 }
 
