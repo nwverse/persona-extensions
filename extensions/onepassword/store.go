@@ -145,21 +145,6 @@ func (n *nodeApp) storeNode(ctx context.Context, raw json.RawMessage) (any, erro
 		if decodeStore(plain, &vals) != nil || len(vals) != len(k.target.Fields) {
 			return nil, storeFailure()
 		}
-		// The CLI may attach ordinary fields to an unnamed default section. That is not a
-		// user-visible section (the metadata reader also treats it as unsectioned).
-		var sections []struct {
-			ID    string `json:"id"`
-			Label string `json:"label"`
-		}
-		if raw := item["sections"]; len(raw) > 0 && json.Unmarshal(raw, &sections) != nil {
-			return nil, storeFailure()
-		}
-		unnamed := map[string]bool{}
-		for _, sec := range sections {
-			if strings.TrimSpace(sec.Label) == "" {
-				unnamed[sec.ID] = true
-			}
-		}
 		for i, v := range vals {
 			if v.Name != k.target.Fields[i].Name || len(v.Value) < 1 || len(v.Value) > wire.SecretStoreValueMost || !utf8.Valid(v.Value) || bytes.IndexByte(v.Value, 0) >= 0 {
 				return nil, storeFailure()
