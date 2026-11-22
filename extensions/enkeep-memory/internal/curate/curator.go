@@ -47,6 +47,8 @@ type Curator struct {
 	Workers int
 	// Hub is the hub beyond the knowledge base (agents, cards, to-dos, memory, the exits' readback); nil: none.
 	Hub hubapi.Hub
+	// ledger caches the ledger's by=user quotes for ledgerFresh (relays.go); made on first use.
+	ledger *ledgerCache
 	// who caches what speaker resolution reads from the knowledge base (curate/speakers.go).
 	who *whoCache
 	// Collect is the sources' ledger (State.Sources, Cursors, ActiveDays); nil: none kept.
@@ -170,6 +172,7 @@ func (c *Curator) units(ctx context.Context, day string) ([]Unit, error) {
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Ref < out[j].Ref })
+	c.verifyRelays(ctx, out)
 	return out, nil
 }
 

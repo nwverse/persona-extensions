@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
@@ -66,6 +68,10 @@ func (c *Curator) QueueRerunWithin(from, to, today string, force bool, wait time
 	}
 	defer c.St.Unlock()
 	r := RerunRequest{Force: force}
+	if len(c.rerunPlanWaiting(c.St.S)) == 0 && len(c.St.S.ForceReruns) == 0 {
+		// A new batch: its gain is counted from the entries usable now.
+		c.St.S.RerunBase = &store.RerunBase{At: c.now().UTC().Format(time.RFC3339), Usable: usableIDs(c.St.S)}
+	}
 	for _, d := range days {
 		if force {
 			if slices.Contains(c.St.S.ForceReruns, d) {
@@ -110,8 +116,71 @@ func (c *Curator) rerunPlan(st *store.State) []string {
 	return out
 }
 
+// rerunPlanWaiting are the planned days not yet digested with the current prompt.
+func (c *Curator) rerunPlanWaiting(st *store.State) []string {
+	var out []string
+	for _, d := range c.rerunPlan(st) {
+		if !slices.Contains(st.Reruns, d+"@"+schema.DailyPrompt) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// usableIDs are the entries the exits may use now (export.Usable), sorted.
+func usableIDs(st *store.State) []string {
+	var out []string
+	for id, e := range st.Entries {
+		if export.Usable(st, e) {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// rerunGain counts the entries usable now that were not when the batch was queued and rest on a day the reruns
+// read (at least one piece of evidence dated on a done day).
+func rerunGain(st *store.State, done []string) int {
+	if st.RerunBase == nil || len(done) == 0 {
+		return 0
+	}
+	n := 0
+	for id, e := range st.Entries {
+		if !export.Usable(st, e) {
+			continue
+		}
+		if _, was := slices.BinarySearch(st.RerunBase.Usable, id); was {
+			continue
+		}
+		if onDays(st, e, done, 0) {
+			n++
+		}
+	}
+	return n
+}
+
+// onDays: e or one of its members (to depth 2) has evidence dated on one of days (sorted).
+func onDays(st *store.State, e *entry.Entry, days []string, depth int) bool {
+	for _, x := range e.Evidence {
+		if _, ok := slices.BinarySearch(days, x.Day); ok {
+			return true
+		}
+	}
+	if depth >= 2 {
+		return false
+	}
+	for _, id := range e.Members {
+		if m := st.Entries[id]; m != nil && onDays(st, m, days, depth+1) {
+			return true
+		}
+	}
+	return false
+}
+
 // RerunProgress is where the asked-for reruns stand.
 type RerunProgress struct {
+	Gain    int      // entries usable now, not when the batch was queued, resting on a day the reruns read
 	Prompt  string   // the daily prompt the days are digested with
 	Done    []string // planned days digested with it
 	Waiting []string // planned days still to run
@@ -200,6 +269,7 @@ func (c *Curator) RerunStatus() RerunProgress {
 			p.Waiting = append(p.Waiting, d)
 		}
 	}
+	p.Gain = rerunGain(st, p.Done)
 	p.History = historyLines(st)
 	if mp := st.ModelPause; mp != nil {
 		what := "the model is unavailable"

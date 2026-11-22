@@ -2,6 +2,41 @@
 
 ## 0.2.0-beta.38 (pre-release)
 
+- **Who said it, in three values.** Every line is the user's, the user's words relayed verbatim (verified), or
+  someone else's (an agent, Persona, a probe, pasted material); what cannot be verified is never guessed. A task
+  prompt or a relay Persona typed into a session stays Persona's, but the user's words it says it carries (a "用户原话"
+  block, "用户说「…」") are now each a line of their own, kept as the user's when the day's own lines of the user (or,
+  once the hub has it, its ledger of the user's entries) bear them out; before, K20 dropped them with the relay. The
+  correction ledger reads the same way: a session Persona started, a relay or a probe no longer counts as the user's
+  correction, and pasted material is taken out. In groups, words in a quote block or a referenced message are not the
+  sender's (as in mail).
+- **Extraction prompt daily/16.** Each of the six facets gets one line of what counts and a counter-example, at equal
+  length. A unit over 12k tokens is read in parts that keep 1k tokens before and after each cut (the same observation
+  seen in two parts is one). A short reply of the user's to the AI ("？？？", "又来了", "不是这个") goes to the
+  correction judge whatever its words. Days already read are read with daily/16 only when rerun.
+- **Marked wrong is a counter-example.** New evidence the consolidation matches with an entry marked wrong no longer
+  adds up on it (and so cannot bring it back): it starts an entry of its own marked "once wrong", which earns its
+  status from its own evidence.
+- **One limit on model calls.** Every call of the process (daily, weekly, reruns, synthesis, exits, trials) waits for
+  a turn: at most 4 at once and 20 a minute; the reruns wait behind the scheduled passes, and the weekly pass, once
+  due, runs before them. The daily pass makes 4 calls at once; offline trials keep to at most 4 workers.
+- **Gemini Flash first.** `model_primary` defaults to `gemini-3.8-flash-low`; a connection without it goes on to the
+  fallback by length (`claude-sonnet-5-5` above 16000 estimated tokens, else `claude-haiku-5-5`).
+- **The cost line.** Calls and tokens are counted per day and per model, the reruns apart: each day's daily run notes
+  the day's line and the totals, and `enkeep_rerun_status` shows today's and yesterday's lines, the totals, the call
+  limit's state, and the reruns' progress (days done, days left, new usable entries resting on the days read). When a
+  batch of reruns is done, every entry's status is settled again (what `enkeep_resettle` applies).
+- **Seeds.** `enkeep_seed_import` imports the user's own profile and rules confirmed elsewhere, in a general format;
+  it previews by default and writes with `apply`. Items in the four sensitive categories (by category, keywords and a
+  model's reading), with a credential or not confirmed at the source are never imported; an item the curator already
+  has marks that entry as confirmed; the rest become candidate entries of origin seed, which reach the exits only
+  once the user's own records bear them out on an active day. A hard rule is not turned by counter-examples alone; a
+  dating item (what the user does now, a role) goes dormant after 30 or 90 active days with nothing new.
+  `enkeep_seed_status` says where the seeds stand. Seeds as a source are switch K21, on by default; a user with no
+  seeds has nothing to do.
+- **The hub's ledger, when it comes.** The extension reads `GET /api/v1/ledger?by=user` for the user's entries
+  (quote, relayed_via, supersedes, expires_at, tag; probes and automation left out) to verify relayed words; a hub
+  without it is skipped without a word.
 - **The overview card counts entries.** The home card counted the old items (facts, practices and knowledge with
   status active or established), which the current curation no longer fills, so "做事方式" and "知识" read 0. It now
   shows the entries per facet that may go out to the assistant (live, stable, not sensitive: the exits' own gate) for

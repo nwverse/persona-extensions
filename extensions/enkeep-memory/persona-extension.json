@@ -355,11 +355,13 @@
       "model_primary": {
         "type": "array",
         "title": "首选模型",
-        "description": "按顺序先试的模型（模型 id，填连接上快而便宜的模型）；空着就直接按长短用备用模型",
+        "description": "按顺序先试的模型（模型 id，填连接上快而便宜的模型）；默认 Gemini Flash，连接上没有这个模型时直接按长短用备用模型；清空就只用备用模型",
         "items": {
           "type": "string"
         },
-        "default": []
+        "default": [
+          "gemini-3.8-flash-low"
+        ]
       },
       "model_long": {
         "type": "string",

@@ -48,7 +48,7 @@ func offline(args []string) error {
 	synth := fs.Bool("synth", false, "consolidate the entries after the days (catch up the filing, settle the statuses)")
 	consolidateOnly := fs.Bool("consolidate-only", false, "do not read the days again: on a state that has the entries already, run the consolidation day by day, and the weekly pass at every week's end and after the last day")
 	peopleOnly := fs.Bool("people-only", false, "do not read the days again: on a state that has the entries already, count the intersection list and the direct chats' rhythm over the days, run the card pass and propose the person pages (readout in people-cards.json)")
-	workers := fs.Int("workers", 6, "model calls at once in the daily pass")
+	workers := fs.Int("workers", model.LimitConcurrent, "model calls at once in the daily pass (at most 4: the project's limit, design v2 §4.7)")
 	cache := fs.String("cache", "", "answer cache directory (default: <state>/model-cache)")
 	week := fs.Bool("week", false, "run the weekly pass for the week of the last day afterwards")
 	mode := fs.String("mode", "review", "mode: shadow | review")
@@ -151,10 +151,16 @@ func offline(args []string) error {
 	if *language != "" {
 		cfg.Language = *language
 	}
+	// Every model call of a trial waits for a turn of the shared limiter (≤4 at once, ≤20 a minute); cached answers
+	// do not.
+	if *workers > model.LimitConcurrent || *workers < 1 {
+		*workers = model.LimitConcurrent
+	}
 	var m model.Model = model.CLI{Command: *cmd, Models: map[model.Tier]string{model.Small: *daily, model.Medium: *weekly}, Effort: *effort,
-		CacheDir: *cache}
+		CacheDir: *cache, Limit: model.Shared()}
 	if *usePi {
-		m = model.Pi{Provider: *provider, Models: map[model.Tier]string{model.Small: *daily, model.Medium: *weekly}, CacheDir: *cache}
+		m = model.Pi{Provider: *provider, Models: map[model.Tier]string{model.Small: *daily, model.Medium: *weekly}, CacheDir: *cache,
+			Limit: model.Shared()}
 	}
 	if *modelDir != "" {
 		m = model.File{Dir: *modelDir}

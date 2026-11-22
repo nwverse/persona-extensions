@@ -49,7 +49,8 @@ var switchTable = []switchInfo{
 		"推断被改或删的比例 >30%，关掉，只留事实、你的原话和承诺", "Off when over 30% of inferred lines are edited or deleted"},
 	{entry.K18NamesIndex, "说明块里列来往最多的人和项目的名字（细节靠 enkeep_recall 查）", "Names of the people and projects you deal with most in the block (details through enkeep_recall)", "", ""},
 	{entry.K19ProjectGeneral, "Agent 项目背景开头带上通用的打交道规矩", "Agent project context starts with the general rules for working with you", "", ""},
-	{entry.K20PersonaSession, "Persona 起的会话里，用户那一侧的话都算 Persona 发的（派活、转达），不当你的原话", "In sessions Persona started, every user-side line is Persona's (a task, a relay), not your words", "", ""},
+	{entry.K20PersonaSession, "Persona 起的会话里，用户那一侧的话都算 Persona 发的（派活、转达），不当你的原话；转达里能和你当天原话对上的句子仍算你的", "In sessions Persona started, every user-side line is Persona's (a task, a relay), not your words; a sentence of yours it relays that matches what you said that day still counts as yours", "", ""},
+	{entry.K21Seeds, "画像种子：把你在别处确认过的画像和规矩导进来当候选（要有原始记录佐证才进出口；敏感四类不导）", "Seeds: your confirmed profile and rules from elsewhere, imported as candidates (they reach the exits only when your own records bear them out; the four sensitive categories are never imported)", "", ""},
 }
 
 // whoSet says who set a switch and why.

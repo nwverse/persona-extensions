@@ -19,6 +19,8 @@ import (
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/recall"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -97,6 +99,33 @@ var rerunTools = []tool{
 				"description": "only these facets: interaction (working with the AI), tools, judgement (default judgements), workflow (ways of working), world (projects and facts), people, persona (about the user)"},
 			"limit": map[string]any{"type": "integer", "minimum": 1, "maximum": 30, "default": 12},
 		}}},
+	{Name: "enkeep_seed_import", Description: "Import the user's own profile and rules confirmed elsewhere (another " +
+		"memory, a notes file, a profile platform) into enkeep memory as seeds, in the general format: a source name and " +
+		"items {id, kind (rule | guardrail | preference | fact), text, confirmed (YYYY-MM-DD), and optionally facet, hard, " +
+		"category, scope (global | project:<name>), domain (work | life), effective, expiring (recent | role), sensitive}. " +
+		"Previews by default: says how many items would be new, merged with an entry the curator has, updated, the same " +
+		"as before, or skipped and why, writing nothing; apply: true writes. Items in the four sensitive categories " +
+		"(emotion, finance, health, family; by category, keywords and a model's reading), with a credential, or not " +
+		"confirmed at the source are never imported. New seeds start as candidates and reach the exits only once the " +
+		"user's own records bear them out.",
+		InputSchema: map[string]any{"type": "object", "required": []string{"source", "items"}, "properties": map[string]any{
+			"source": map[string]any{"type": "string", "description": "a short name of the source, without spaces or slashes (e.g. enkeep)"},
+			"items": map[string]any{"type": "array", "maxItems": 500, "items": map[string]any{"type": "object",
+				"required": []string{"id", "kind", "text", "confirmed"}, "properties": map[string]any{
+					"id": map[string]any{"type": "string"}, "kind": map[string]any{"type": "string", "enum": []string{"rule", "guardrail", "preference", "fact"}},
+					"text": map[string]any{"type": "string"}, "confirmed": map[string]any{"type": "string"},
+					"facet": map[string]any{"type": "string", "enum": []string{"interaction", "tools", "judgement", "workflow", "world", "persona"}},
+					"hard":  map[string]any{"type": "boolean"}, "category": map[string]any{"type": "string"},
+					"scope": map[string]any{"type": "string"}, "domain": map[string]any{"type": "string", "enum": []string{"work", "life"}},
+					"effective": map[string]any{"type": "string"}, "expiring": map[string]any{"type": "string", "enum": []string{"", "recent", "role"}},
+					"sensitive": map[string]any{"type": "string"},
+				}}},
+			"apply": map[string]any{"type": "boolean", "default": false, "description": "false (default): preview only; true: write"},
+		}}},
+	{Name: "enkeep_seed_status", Description: "Show enkeep memory's seeds: whether seeds are on as a source, the seed " +
+		"entries by source and status (a candidate waits for the user's own records to bear it out), by facet, how many " +
+		"reach the exits now, the curator's own entries a seed confirmed, and every import written.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}}},
 	{Name: "enkeep_mark_wrong", Description: "Mark enkeep memory entries wrong, for example a line in the assistant's " +
 		"「关于用户（由 enkeep-memory 整理）」 block that is not the user's rule (a task prompt, a relay or a test prompt " +
 		"taken for the user's words). No card goes to the user's phone: the entries leave every exit at once and stay as " +
@@ -155,6 +184,32 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		return a.recallTool(raw)
 	case "enkeep_mark_wrong":
 		return a.markWrongTool(ctx, raw)
+	case "enkeep_seed_import":
+		var in struct {
+			Source string            `json:"source"`
+			Items  []curate.SeedItem `json:"items"`
+			Apply  bool              `json:"apply"`
+		}
+		if err := strictDecode(raw, &in); err != nil {
+			return "", err
+		}
+		f := curate.SeedFormat{Source: in.Source, Items: in.Items}
+		if err := curate.CheckSeeds(&f); err != nil {
+			return "", err
+		}
+		if in.Apply && !entry.On(a.seedSwitches(), entry.K21Seeds) {
+			return "", errors.New("seeds are switched off as a source (K21 on the enkeep memory page): nothing imported")
+		}
+		r, err := a.c.ImportSeeds(ctx, f, in.Apply, toolWait)
+		if err != nil {
+			return "", a.busy(err)
+		}
+		return r.Text(), nil
+	case "enkeep_seed_status":
+		if err := strictDecode(raw, &struct{}{}); err != nil {
+			return "", err
+		}
+		return a.c.Seeds(export.Usable).Text(), nil
 	case "enkeep_rerun":
 		var in struct {
 			From, To string
@@ -193,6 +248,8 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		p := a.c.RerunStatus() // the pages' snapshot: never waits for a run's lock
 		var b strings.Builder
 		fmt.Fprintf(&b, "Prompt %s: %d day(s) done, %d waiting.", p.Prompt, len(p.Done), len(p.Waiting))
+		fmt.Fprintf(&b, " Rerun progress: %d day(s) done, %d left, %d new usable entr(ies) resting on the days read since the batch was queued.",
+			len(p.Done), len(p.Waiting)+len(p.Forced), p.Gain)
 		if len(p.Waiting) > 0 {
 			fmt.Fprintf(&b, " Waiting: %s.", span(p.Waiting))
 		}
@@ -239,6 +296,13 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 	return "", errors.New("unknown tool " + name)
 }
 
+// seedSwitches are the switches as the pages' snapshot has them.
+func (a *app) seedSwitches() map[string]entry.SwitchSetting {
+	st, _, done := a.c.Read()
+	defer done()
+	return st.Switches
+}
+
 // modelText says the model route and what it counted (docs/model-routes.md).
 func (a *app) modelText() string {
 	rt := a.route
@@ -252,8 +316,20 @@ func (a *app) modelText() string {
 	}
 	fmt.Fprintf(&b, "Model route: %s; fallback above %d estimated tokens %s, else %s.", primary, rt.LongAbove, rt.Long, rt.Short)
 	if rt.Stats != nil {
-		b.WriteString("\n" + rt.Stats.Snapshot().Summary())
+		snap := rt.Stats.Snapshot()
+		b.WriteString("\n" + snap.Summary())
+		today := a.localDay()
+		yesterday := today
+		if t, err := time.Parse("2006-01-02", today); err == nil {
+			yesterday = t.AddDate(0, 0, -1).Format("2006-01-02")
+		}
+		lines := snap.CostLines(today)
+		b.WriteString("\n" + strings.Join(lines, "\n"))
+		b.WriteString("\n" + snap.CostLines(yesterday)[0])
 	}
+	out, waiting, minute := model.Shared().Stats()
+	fmt.Fprintf(&b, "\nCall limit: at most %d at once and %d a minute (reruns wait behind the daily and weekly passes); now %d out, %d waiting, %d in the last minute.",
+		model.LimitConcurrent, model.LimitPerMinute, out, waiting, minute)
 	return b.String()
 }
 

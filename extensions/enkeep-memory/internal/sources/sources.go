@@ -62,6 +62,9 @@ const (
 	SpeakerTodo    = "待办"
 	SpeakerDecide  = "决定"
 	SpeakerMemory  = "助手记忆"
+	// SpeakerRelayCand is a claim of the user's words inside a task prompt or a relay (relay.Quotes), not yet
+	// verified: curate's verifyRelays makes it the user's line (relay.RelayedMark) or drops it.
+	SpeakerRelayCand = "转达待核"
 )
 
 // Limits on what a line keeps.

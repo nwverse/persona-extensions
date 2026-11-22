@@ -92,7 +92,7 @@ func acceptCmd(args []string) error {
 		if *cache == "" {
 			*cache = filepath.Join(*out, "cache")
 		}
-		m = model.Pi{Provider: *provider, Models: map[model.Tier]string{model.Small: *mdl}, CacheDir: *cache}
+		m = model.Pi{Provider: *provider, Models: map[model.Tier]string{model.Small: *mdl}, CacheDir: *cache, Limit: model.Shared()}
 	}
 	in := acceptInput{St: st.S, Dir: *stateDir, Day: *day, Loc: loc, Src: src, Model: m, Rand: rand.New(rand.NewSource(*seed))}
 	if in.Day == "" {

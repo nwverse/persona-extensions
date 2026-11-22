@@ -101,7 +101,8 @@ func Settle(s *store.State, e *entry.Entry, t Tally, today string) (d Decision, 
 			againstRecent++
 		}
 	}
-	if againstRecent > 0 && float64(againstRecent) >= shiftingShare*float64(forRecent+againstRecent) && !e.Pinned {
+	hardSeed := e.Origin == entry.Seed && e.Seed != nil && e.Seed.Hard
+	if againstRecent > 0 && float64(againstRecent) >= shiftingShare*float64(forRecent+againstRecent) && !e.Pinned && !hardSeed {
 		return Decision{entry.Shifting, "recent counter-examples"}, false
 	}
 	confirmed := e.Pinned || userConfirmed(e)
@@ -110,6 +111,22 @@ func Settle(s *store.State, e *entry.Entry, t Tally, today string) (d Decision, 
 			return Decision{e.Status, "quiet, confirmed: ask once"}, !slices.Contains(e.Flags, flagAskedDormant)
 		}
 		return Decision{entry.Dormant, "quiet for 40 active days"}, false
+	}
+	if e.Origin == entry.Seed {
+		// A seed (design v2 §11.2) starts a candidate and is stable once the user's own records bear it out: an
+		// occurrence of its own members on at least seedMinDays active day. A hard rule is never turned by
+		// counter-examples alone (the shifting rule above spares nothing else, but a hard seed is only asked about).
+		if seedExpired(s, e, today) {
+			return Decision{entry.Dormant, "a seed that dates (" + e.Seed.Expiring + ") with nothing new for its period"}, false
+		}
+		days := map[string]bool{}
+		for _, o := range t.For {
+			days[o.day] = true
+		}
+		if len(days) >= seedMinDays {
+			return Decision{entry.Stable, "a seed borne out by the user's own records"}, false
+		}
+		return Decision{entry.Candidate, "a seed waiting for the user's own records"}, false
 	}
 	if e.Origin != entry.Behavior && e.Origin != "" {
 		return Decision{entry.Stable, "the user's own words or hand-written memory"}, false
@@ -134,6 +151,38 @@ func Settle(s *store.State, e *entry.Entry, t Tally, today string) (d Decision, 
 		return Decision{entry.Stable, "consistent often enough"}, false
 	}
 	return Decision{entry.Candidate, "not yet enough"}, false
+}
+
+// seedMinDays: the active days of the user's own records a seed needs to be stable (design v2 §11.2: "至少 1 天佐证").
+const seedMinDays = 1
+
+// Seed periods (seed-import design §2): what the user is doing now dates after recentSeedDays active days with
+// nothing new, responsibilities after roleSeedDays; lasting identity, values and guardrails never by themselves.
+const (
+	recentSeedDays = 30
+	roleSeedDays   = 90
+)
+
+// seedExpired: a dating seed with no occurrence of its own for its period of active days since it was confirmed (or
+// last seen, when later).
+func seedExpired(s *store.State, e *entry.Entry, today string) bool {
+	if e.Seed == nil {
+		return false
+	}
+	n := 0
+	switch e.Seed.Expiring {
+	case "recent":
+		n = recentSeedDays
+	case "role":
+		n = roleSeedDays
+	default:
+		return false
+	}
+	since := e.Seed.Confirmed
+	if e.Last > since {
+		since = e.Last
+	}
+	return since != "" && quietDays(s, since, today) >= n
 }
 
 // oneShot: an action entry that one sighting proves: a pitfall and its fix shown by the tool results (② from a dug

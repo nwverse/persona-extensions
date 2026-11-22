@@ -507,6 +507,8 @@ func (c *Curator) fileInto(a, t *entry.Entry, why string, run *store.Run) {
 		c.standalone(a, "no target", run)
 	case t.Deleted:
 		c.dropTombstoned(a, run)
+	case markedWrong(t):
+		c.afterWrong(a, t, run)
 	case t.Grain == entry.Action:
 		if err := c.Merge(a.ID, t.ID, "same fact: "+why, run.ID); err == nil {
 			run.Counts["consolidate_same_fact"]++
@@ -518,6 +520,52 @@ func (c *Curator) fileInto(a, t *entry.Entry, why string, run *store.Run) {
 				run.Counts["consolidate_handwritten_counted"]++
 			}
 		}
+	}
+}
+
+// flagOnceWrong marks an entry started beside one the user (or the assistant) marked wrong: "曾被标不对", with the
+// wrong entry's id after the colon.
+const flagOnceWrong = "once_wrong:"
+
+// markedWrong: the entry's last verdict is wrong (entry.Live is false for it, but it is still a filing target).
+func markedWrong(e *entry.Entry) bool {
+	n := len(e.Verdicts)
+	return n > 0 && e.Verdicts[n-1].Mark == ActWrong
+}
+
+// afterWrong files an action the model matched with an entry marked wrong (design v2 §4.5): the wrong entry is a
+// counter-example, so new evidence of the same meaning never adds up on it and never brings it back. The action
+// starts an entry of its own instead, carrying flagOnceWrong, and has to earn its status from its own evidence; an
+// entry of that kind already started beside the same wrong one takes it.
+func (c *Curator) afterWrong(a, t *entry.Entry, run *store.Run) {
+	run.Counts["consolidate_after_wrong"]++
+	mark := flagOnceWrong + t.ID
+	for _, id := range sortedKeys(c.St.S.Entries) {
+		if e := c.St.S.Entries[id]; e.ID != a.ID && e.Live() && slices.Contains(e.Flags, mark) && e.Facet == a.Facet {
+			if e.Grain == entry.Action {
+				_ = c.Merge(a.ID, e.ID, "same as an entry started beside a wrong one", run.ID)
+			} else {
+				_ = c.File(a.ID, e.ID, run.ID)
+			}
+			return
+		}
+	}
+	if t.Grain == entry.Action { // a fact: the action stands alone, marked
+		a.Flags = appendFlag(a.Flags, mark)
+		c.standalone(a, "beside an entry marked wrong", run)
+		return
+	}
+	k := c.create(&entry.Entry{Facet: a.Facet, Grain: entry.Class, Type: a.Type, Text: a.Text, Situation: a.Situation,
+		Choice: a.Choice, Rejected: a.Rejected, Why: a.Why, Exception: a.Exception, Object: a.Object, Pitfall: a.Pitfall, Fix: a.Fix,
+		Person: a.Person, Part: a.Part, Inferred: a.Inferred, ReportedOnly: a.ReportedOnly, Domain: a.Domain, Sensitive: a.Sensitive,
+		Scopes: slices.Clone(a.Scopes), Impact: a.Impact, OriginVersion: ConsolidatePrompt, Flags: []string{mark}}, run.ID)
+	if markedWrong(k) || k.Deleted { // the action says word for word what was marked wrong: it stands alone, marked
+		a.Flags = appendFlag(a.Flags, mark)
+		c.standalone(a, "the text of an entry marked wrong", run)
+		return
+	}
+	if err := c.File(a.ID, k.ID, run.ID); err == nil {
+		run.Counts["consolidate_filed"]++
 	}
 }
 
@@ -693,5 +741,5 @@ func abstractStable(s *store.State, e *entry.Entry) bool {
 			n++
 		}
 	}
-	return n >= 2 || e.Origin != entry.Behavior
+	return n >= 2 || e.Origin != entry.Behavior && (e.Origin != entry.Seed || e.Status == entry.Stable)
 }

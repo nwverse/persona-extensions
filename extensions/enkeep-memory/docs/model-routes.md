@@ -10,8 +10,9 @@ models in order (model.complete's `models`, persona #10398).
 
 The chain of a call is:
 
-1. **Primary models** (`model_primary`, in order; none by default: set it to a fast, cheap model of your providers,
-   a Flash-class one, say).
+1. **Primary models** (`model_primary`, in order; by default Gemini Flash, `gemini-3.8-flash-low`, since 0.2.0-beta.38:
+   a connection that does not offer it answers not_offered and the call goes on to the fallback; empty the list to
+   use the fallbacks only).
 2. **One fallback by size**: `model_long` (default `claude-sonnet-5-5`) if the call's estimated size is above
    `model_long_above` (default 16000), else `model_short` (default `claude-haiku-5-5`).
 
@@ -90,7 +91,7 @@ are counted as "sent the old way".
 | setting | default | |
 | --- | --- | --- |
 | `model_route` | `chain` | `purpose`: back to the behaviour before 0.2.0-beta.30, every call on the purpose's model |
-| `model_primary` | `[]` | tried in order; empty: the size's fallback only |
+| `model_primary` | `["gemini-3.8-flash-low"]` | tried in order; empty: the size's fallback only |
 | `model_long` | `claude-sonnet-5-5` | fallback of a long call |
 | `model_short` | `claude-haiku-5-5` | fallback of a short call |
 | `model_long_above` | `16000` | the line between short and long, in estimated tokens |

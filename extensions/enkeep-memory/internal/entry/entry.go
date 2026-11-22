@@ -52,7 +52,26 @@ const (
 	SelfReport     Origin = "self_report" // the "about me" notes
 	FromOnboarding Origin = "onboarding"  // an answer to the first-run questions
 	Handwritten    Origin = "handwritten" // the assistant's memory files (S6): compared and counted, never rewritten
+	// Seed is the user's own profile or rules confirmed elsewhere (another memory, a notes file), imported
+	// (enkeep_seed_import, unified memory design v2 §11.2). Unlike the others it starts a candidate: it reaches the
+	// exits only once the user's own records bear it out (an action filed under it), and never while K21 is off.
+	Seed Origin = "seed"
 )
+
+// SeedInfo is where a seed entry came from, in the import's general format (internal/seed).
+type SeedInfo struct {
+	Source    string `json:"source"`              // enkeep, a file, another memory
+	ID        string `json:"id"`                  // the item's id at the source: a later import updates it
+	Kind      string `json:"kind"`                // rule | fact | guardrail | preference
+	Hard      bool   `json:"hard,omitempty"`      // a hard rule the user confirmed: never turned by counter-examples alone
+	Category  string `json:"category,omitempty"`  // the source's category
+	Confirmed string `json:"confirmed,omitempty"` // when the user confirmed it at the source (YYYY-MM-DD)
+	Effective string `json:"effective,omitempty"` // from when it holds (YYYY-MM-DD)
+	// Expiring: "recent" (what the user is doing now) or "role" (responsibilities) date; "" never by itself.
+	Expiring string `json:"expiring,omitempty"`
+	Imported string `json:"imported"` // when it was imported (RFC 3339)
+	Text     string `json:"text"`     // the text as the source has it, to tell a change at the next import
+}
 
 // Status of an entry. Thresholds adapt to the user's amount of data (4.4): see curate's thresholds.
 type Status string
@@ -264,8 +283,9 @@ type Entry struct {
 	ValidFrom string `json:"valid_from,omitempty"`
 	ValidTo   string `json:"valid_to,omitempty"` // set when invalidated; the entry is kept, not deleted
 
-	Origin        Origin `json:"origin"`
-	OriginVersion string `json:"origin_version,omitempty"` // prompt@ruleset, or the memory file's hash
+	Origin        Origin    `json:"origin"`
+	OriginVersion string    `json:"origin_version,omitempty"` // prompt@ruleset, or the memory file's hash
+	Seed          *SeedInfo `json:"seed,omitempty"`           // Origin Seed: where it came from
 
 	User       *UserEdit   `json:"user,omitempty"`
 	Pinned     bool        `json:"pinned,omitempty"`

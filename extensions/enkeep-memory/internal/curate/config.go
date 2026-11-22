@@ -52,12 +52,17 @@ type Config struct {
 	// a call estimated above ModelLongAbove tokens (input and room for the answer), else ModelShort; "purpose" is the
 	// behaviour before: every call on the model of the extension's purpose in the hub's model settings.
 	ModelRoute     string   `json:"model_route"`      // chain
-	ModelPrimary   []string `json:"model_primary"`    // none: set it to the connection's fast model
+	ModelPrimary   []string `json:"model_primary"`    // DefaultPrimary: Gemini Flash first (design v2 §4.7)
 	ModelLong      string   `json:"model_long"`       // claude-sonnet-5-5
 	ModelShort     string   `json:"model_short"`      // claude-haiku-5-5
 	ModelLongAbove int      `json:"model_long_above"` // 16000
 	ModelTimeout   int      `json:"model_timeout"`    // 180 seconds each candidate may take
 }
+
+// DefaultPrimary is the model tried first (the user's route, design v2 §4.7: "优先用 gemini flash，如果失败就按实际需要的
+// 文本长度回退到 sonnet5.5 和 haiku5.5"). A connection that does not offer it answers not_offered and the call goes on
+// to the fallback by length, so a hub without it loses nothing.
+const DefaultPrimary = "gemini-3.8-flash-low"
 
 // Route is the model route the settings ask for; nil: every call on the purpose's model.
 func (c Config) Route() *model.Route {
@@ -79,7 +84,7 @@ func Defaults() Config {
 		DailyTier: "small", WeeklyTier: "medium",
 		ActivityDays: 3, Tiers: true, EngagedDays: 30, NoiseMembers: 200, MentionWindow: 15, AdmitAllBelowTokens: 20000, AIMinRelevance: 60,
 		Graph: true, BackfillDays: DefaultBackfillDays, AutoApplyMinPrecision: 0.95, ProposalExpiryDays: 14, StaleDays: 30,
-		ModelRoute: "chain", ModelLong: "claude-sonnet-5-5",
+		ModelRoute: "chain", ModelPrimary: []string{DefaultPrimary}, ModelLong: "claude-sonnet-5-5",
 		ModelShort: "claude-haiku-5-5", ModelLongAbove: 16000, ModelTimeout: 180,
 	}
 }

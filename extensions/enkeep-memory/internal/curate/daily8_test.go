@@ -464,21 +464,31 @@ func TestDailyParts(t *testing.T) {
 	if len(parts) < 2 {
 		t.Fatalf("a big unit is one call: %d parts", len(parts))
 	}
-	seen := 0
+	seen := map[int]int{}
 	for _, p := range parts {
 		size := 0
 		for _, l := range u.Lines {
 			if p.d.Shown[l.N] {
 				size += norm.Tokens(l.Speaker+": "+l.Body) + 4
-				seen++
+				seen[l.N]++
 			}
 		}
 		if size > dailyBatchTokens || p.part == "" {
 			t.Errorf("part %q: %d tokens", p.part, size)
 		}
 	}
-	if seen != len(lines) {
-		t.Errorf("parts cover %d of %d lines", seen, len(lines))
+	if len(seen) != len(lines) {
+		t.Errorf("parts cover %d of %d lines", len(seen), len(lines))
+	}
+	// daily/16: neighbouring parts share up to dailyOverlapTokens of lines on each side of a cut.
+	shared := 0
+	for _, k := range seen {
+		if k > 1 {
+			shared++
+		}
+	}
+	if shared == 0 {
+		t.Error("parts do not overlap")
 	}
 	small, sd := d8unit("chats/small", "dm", "10:00 我: 你好")
 	if ps := dailyParts(small, sd); len(ps) != 1 || ps[0].part != "" {

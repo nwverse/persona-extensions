@@ -103,12 +103,16 @@ func (a *app) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]
 	route := cfg.Route()
 	if route != nil {
 		route.Stats = model.OpenStats(dir, time.Now())
+		route.Stats.Loc = loc // the cost lines' days are the hub's
 		route.Logf = func(f string, args ...any) { log.Printf(f, args...) }
 		a.route = route
 	}
 	a.c = &curate.Curator{Src: src, Model: model.Hub{H: hub, Extension: info.ID, Route: route}, St: st, Cfg: cfg, Loc: loc,
 		Lang: in.Hub.Locale, Extension: info.ID, Logf: func(f string, args ...any) { log.Printf(f, args...) }, Live: &curate.Live{},
-		Collect: collect, Hub: a.hubAPI, Cards: curate.PeopleCards{}}
+		Collect: collect, Hub: a.hubAPI, Cards: curate.PeopleCards{},
+		// Four calls at once in the daily pass: what the project's limit allows (model.LimitConcurrent, design v2
+		// §4.7); every call still waits for a turn of the shared limiter, reruns behind the scheduled passes.
+		Workers: model.LimitConcurrent}
 	st.Lock() // nothing runs yet: the health page's first snapshot
 	a.recalls = store.OpenRecall(st.Dir, st.S.Recall)
 	st.S.Recall = nil // moved to recall.json; dropped from state.json at its next save
@@ -182,6 +186,15 @@ func (a *app) tick(ctx context.Context) {
 		a.start(ctx, "daily", yesterday)
 		return
 	}
+	// The weekly pass, once due, goes before the reruns (design v2 §4.7: reruns are the low-priority queue; a long
+	// backfill must not hold the week's consolidation back).
+	monday := now.AddDate(0, 0, -int((now.Weekday()+6)%7))
+	lastWeek := curate.ISOWeek(monday.AddDate(0, 0, -1).Format("2006-01-02"))
+	weeklyDue := now.Weekday() != time.Monday || !now.Before(at(c.Cfg.WeeklyAt))
+	if weeklyDue && !a.ran("weekly", lastWeek) {
+		a.start(ctx, "weekly", lastWeek)
+		return
+	}
 	// rerun_range: only completed local days are rerun, one at a time with the current daily prompt. An early daily
 	// must not suppress the formal pass after the day ends. Each day runs only once per prompt.
 	// The days asked for by the enkeep_rerun tool (State.RerunQueue) run the same way.
@@ -210,13 +223,6 @@ func (a *app) tick(ctx context.Context) {
 			a.start(ctx, "daily", day)
 			return
 		}
-	}
-	monday := now.AddDate(0, 0, -int((now.Weekday()+6)%7))
-	lastWeek := curate.ISOWeek(monday.AddDate(0, 0, -1).Format("2006-01-02"))
-	weeklyDue := now.Weekday() != time.Monday || !now.Before(at(c.Cfg.WeeklyAt))
-	if weeklyDue && !a.ran("weekly", lastWeek) {
-		a.start(ctx, "weekly", lastWeek)
-		return
 	}
 	// The weekly report to the user, once the week's pass has run (weekly_report.go).
 	if err := a.weeklyTick(ctx, time.Now()); err != nil {
@@ -249,10 +255,20 @@ func (a *app) pruneRerunQueue() {
 		return
 	}
 	a.c.St.Lock()
-	defer a.c.St.Unlock()
 	a.c.St.S.RerunQueue = slices.DeleteFunc(a.c.St.S.RerunQueue, func(d string) bool { return slices.Contains(done, d) })
+	empty := len(a.c.St.S.RerunQueue) == 0 && len(a.c.St.S.ForceReruns) == 0
 	if err := a.c.St.Save(); err != nil {
 		log.Printf("enkeep-memory: rerun queue: %v", err)
+	}
+	a.c.St.Unlock()
+	if empty {
+		// The batch is done: every entry's status is settled again as of today, counting the days now read
+		// (design v2 §11.3 "跑完自动 resettle"); what enkeep_resettle would apply.
+		if r, err := a.c.Resettle(a.localDay(), true); err != nil {
+			log.Printf("enkeep-memory: resettle after the reruns: %v", err)
+		} else {
+			log.Printf("enkeep-memory: resettled after the reruns: %d entr(ies) moved", r.Changed())
+		}
 	}
 }
 
@@ -397,6 +413,17 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 		a.tried = append(a.tried, "backfill@"+period)
 	}
 	a.mu.Unlock()
+	// A rerun (a past day read again, its synthesis, the first-run replay) is counted apart in the cost line and waits
+	// behind the scheduled passes for a model turn (model.Limiter).
+	nowFn := a.c.Now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	yesterday := nowFn().In(a.c.Loc).AddDate(0, 0, -1).Format("2006-01-02")
+	rerun := kind == "backfill" || kind == "synth" || kind == "daily" && period != yesterday
+	if rerun {
+		ctx = model.WithPriority(model.WithClass(ctx, model.ClassRerun), model.PriorityLow)
+	}
 	prompt := map[string]string{"daily": schema.DailyPrompt, "backfill": schema.DailyPrompt, "weekly": schema.WeeklyPrompt, "synth": schema.SynthPrompt}[kind]
 	log.Printf("enkeep-memory: %s %s starts (prompt=%s ruleset=%s)", kind, period, prompt, schema.Ruleset)
 	go func() {
@@ -412,6 +439,9 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 				}
 				// A day queued with force is done once its daily run completes.
 				a.c.St.S.ForceReruns = slices.DeleteFunc(a.c.St.S.ForceReruns, func(d string) bool { return d == period })
+				if !rerun {
+					a.costLine(period) // the day's cost line in the run log
+				}
 				err = a.c.St.Save()
 				a.c.Publish() // enkeep_rerun_status reads the snapshot: the day shows done at once
 				a.c.St.Unlock()
@@ -448,6 +478,22 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 		}
 	}()
 	return true
+}
+
+// costLine writes the cost of the calendar day period (in the hub's time zone), the total and the reruns' total
+// into the run log, as notes of the day's daily run (design v2 §4.7). The store's lock is held by the caller.
+func (a *app) costLine(period string) {
+	if a.route == nil || a.route.Stats == nil {
+		return
+	}
+	lines := a.route.Stats.Snapshot().CostLines(period)
+	for i := len(a.c.St.S.Runs) - 1; i >= 0; i-- {
+		if r := a.c.St.S.Runs[i]; r.Kind == "daily" && r.Period == period && !r.DryRun {
+			r.Notes = append(r.Notes, lines...)
+			log.Printf("enkeep-memory: %s", strings.Join(lines, " "))
+			return
+		}
+	}
 }
 
 // publish takes a new snapshot for the pages after the user changed something. A run that took the lock meanwhile

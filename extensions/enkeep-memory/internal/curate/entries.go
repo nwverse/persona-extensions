@@ -44,6 +44,43 @@ const maxEvidence = 60
 
 // Observe keeps one entry seen in a unit (or self-reported): a new entry, or one more sighting of the same one.
 // It returns the id, or "" when the user deleted the same content before. Call it with the store's lock held.
+// overlapTwin is a live action of the same facet (and person) citing one of the same lines of the same unit and day
+// with nearly the same text: what two overlapping parts of one long unit both saw (dailyOverlapTokens).
+func overlapTwin(s *store.State, e *entry.Entry) *entry.Entry {
+	if e.Grain != entry.Action || len(e.Evidence) == 0 {
+		return nil
+	}
+	type at struct {
+		ref, day string
+		n        int
+	}
+	lines := map[at]bool{}
+	for _, x := range e.Evidence {
+		if x.N > 0 {
+			lines[at{x.Ref, x.Day, x.N}] = true
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	for _, id := range sortedKeys(s.Entries) {
+		o := s.Entries[id]
+		if o.Grain != entry.Action || o.Facet != e.Facet || o.Person != e.Person || o.Deleted || !o.Live() {
+			continue
+		}
+		if !slices.ContainsFunc(o.Evidence, func(x entry.Evidence) bool { return lines[at{x.Ref, x.Day, x.N}] }) {
+			continue
+		}
+		if norm.Jaccard(o.Text, e.Text) >= overlapSame {
+			return o
+		}
+	}
+	return nil
+}
+
+// overlapSame: the bigram likeness above which two observations on the same line are one.
+const overlapSame = 0.6
+
 func (c *Curator) Observe(e *entry.Entry, run string) string {
 	s := c.St.S
 	if tombstoned(s, e.Facet, e.Text, e.Person) {
@@ -70,6 +107,13 @@ func (c *Curator) Observe(e *entry.Entry, run string) string {
 		old.Updated = now
 		c.commit(entry.EvObserve, old, "", "again", run)
 		return id
+	}
+	if old := overlapTwin(s, e); old != nil {
+		// The same observation from the next part of a long unit (daily/16 parts overlap): one more sighting of it.
+		mergeSighting(old, e, day)
+		old.Updated = now
+		c.commit(entry.EvObserve, old, "", "again (overlapping part)", run)
+		return old.ID
 	}
 	e.ID = id
 	if e.Status == "" {
@@ -697,7 +741,7 @@ func (c *Curator) create(e *entry.Entry, run string) *entry.Entry {
 
 // userTouched: the user wrote, pinned, deleted or confirmed it: consolidation never overwrites it (5.0).
 func userTouched(e *entry.Entry) bool {
-	return e.User != nil || e.Pinned || e.Deleted || userConfirmed(e) || e.Origin == entry.Handwritten
+	return e.User != nil || e.Pinned || e.Deleted || userConfirmed(e) || e.Origin == entry.Handwritten || e.Origin == entry.Seed
 }
 
 // Flags consolidation sets.

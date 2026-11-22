@@ -71,3 +71,100 @@ func SplitPaste(text string) (own string, pastedRunes int) {
 
 // PasteMark is the short mark left where pasted material was taken out.
 func PasteMark(n int) string { return fmt.Sprintf("[粘贴材料 %d 字]", n) }
+
+// Who a line is by, in three values (design v2 §4.2): the user's own words, the user's words relayed verbatim by
+// Persona or an agent and verified against what the user really said, or anyone else (an agent, Persona, a probe,
+// pasted material). What cannot be verified is never guessed: it is WhoAgent.
+const (
+	WhoUser    = "user"
+	WhoRelayed = "relayed"
+	WhoAgent   = "agent"
+)
+
+// RelayedMark starts the body of a line that carries the user's words relayed verbatim and verified: the line keeps
+// the user's speaker, so every check that reads the user's own lines takes it, and the mark keeps it told apart.
+const RelayedMark = "[转达原话] "
+
+// Three is who a line is by, from its speaker label and body: the user's label (norm.Me, passed in as me) with
+// RelayedMark is relayed, without it the user's own, anything else an agent's.
+func Three(speaker, body, me string) string {
+	switch {
+	case speaker != me:
+		return WhoAgent
+	case strings.HasPrefix(body, RelayedMark):
+		return WhoRelayed
+	}
+	return WhoUser
+}
+
+// quoteHead is a heading or a lead-in line that opens a block of the user's words in a task prompt or a relay.
+var quoteHead = regexp.MustCompile(`(?i)^\s*(#{1,6}\s*)?(\*\*)?\s*(用户|他|她|本人)?(的)?原话|^\s*(#{1,6}\s*)?(the )?user'?s (own |exact )?words|^\s*(#{1,6}\s*)?verbatim`)
+
+var (
+	heading    = regexp.MustCompile(`^\s*#{1,6}\s`)
+	bullet     = regexp.MustCompile(`^\s*([-*•·]|\d+[.、)）])\s*`)
+	stampLead  = regexp.MustCompile(`^\s*(\d{4}-)?\d{1,2}-\d{1,2}\s*\d{1,2}:\d{2}\s*[，,：:]?\s*`)
+	bracketed  = regexp.MustCompile(`[「“"]([^」”"\n]{2,400})[」”"]`)
+	inlineSaid = regexp.MustCompile(`(?:原话|用户(?:说|写道|回复|答|原话是?))\s*[：:]?\s*[「“"]([^」”"\n]{2,400})[」”"]`)
+)
+
+// quotesMost bounds what one text gives: a relay carries a few of the user's sentences, not a transcript.
+const quotesMost = 20
+
+// Quotes are the user's words a task prompt or a relay says it carries verbatim: the lines of a "用户原话" (the
+// user's words) block, the bracketed parts of them when there are any, and anything bracketed after "原话" or "用户说"
+// elsewhere. They are claims only: a caller keeps one as the user's words when it finds them in what the user really
+// said (the day's own lines, or the hub's ledger), never on the relay's word alone.
+func Quotes(text string) []string {
+	var out []string
+	add := func(q string) {
+		q = strings.TrimSpace(q)
+		if utf8.RuneCountInString(q) < 2 || len(out) >= quotesMost {
+			return
+		}
+		if r := []rune(q); len(r) > 400 {
+			q = string(r[:400])
+		}
+		for _, x := range out {
+			if x == q {
+				return
+			}
+		}
+		out = append(out, q)
+	}
+	lines := strings.Split(text, "\n")
+	for i := 0; i < len(lines); i++ {
+		if !quoteHead.MatchString(lines[i]) {
+			continue
+		}
+		// The heading line itself may carry the words: "用户原话：「…」".
+		for _, m := range bracketed.FindAllStringSubmatch(lines[i], -1) {
+			add(m[1])
+		}
+		for j := i + 1; j < len(lines) && j <= i+20; j++ {
+			l := lines[j]
+			if heading.MatchString(l) || strings.HasPrefix(strings.TrimSpace(l), "<") {
+				break
+			}
+			l = stampLead.ReplaceAllString(bullet.ReplaceAllString(l, ""), "")
+			if strings.TrimSpace(l) == "" {
+				continue
+			}
+			if ms := bracketed.FindAllStringSubmatch(l, -1); len(ms) > 0 {
+				for _, m := range ms {
+					add(m[1])
+				}
+				continue
+			}
+			t := strings.TrimSpace(l)
+			if strings.HasSuffix(t, "：") || strings.HasSuffix(t, ":") {
+				continue // a lead-in ("the user settled two points:"), not the words
+			}
+			add(t)
+		}
+	}
+	for _, m := range inlineSaid.FindAllStringSubmatch(text, -1) {
+		add(m[1])
+	}
+	return out
+}

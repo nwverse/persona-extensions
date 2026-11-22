@@ -529,3 +529,34 @@ func TestMergeClasses(t *testing.T) {
 		t.Fatalf("unmerge: %v %+v", err, keep.Members)
 	}
 }
+
+// An entry marked wrong is a counter-example (design v2 §4.5): new evidence of the same meaning does not add up on it
+// and does not bring it back; it starts an entry of its own, marked "once wrong", and the next one joins that entry.
+func TestWrongIsACounterExample(t *testing.T) {
+	c := lockedCurator(t)
+	k := c.create(&entry.Entry{Facet: entry.Interaction, Grain: entry.Class, Text: "class-w: report every step"}, "t")
+	if _, err := c.MarkWrongBy(k.ID, "assistant", "not the user's rule"); err != nil {
+		t.Fatal(err)
+	}
+	a1 := c.Observe(act(entry.Interaction, "action-w1", "chats/w1", "2026-11-05", "quote-w1"), "t")
+	a2 := c.Observe(act(entry.Interaction, "action-w2", "chats/w2", "2026-11-06", "quote-w2"), "t")
+	m := &funcModel{answer: func(step string, in map[string]any) any {
+		its, _ := items(in)
+		var ds []any
+		for _, it := range its {
+			ds = append(ds, map[string]any{"item": it["id"], "action": "file", "entry": it["candidates"].([]any)[0], "reason": "same"})
+		}
+		return map[string]any{"decisions": ds}
+	}}
+	if err := c.Consolidate(context.Background(), m, "2026-11-06", newRunT()); err != nil {
+		t.Fatal(err)
+	}
+	s := c.St.S
+	if len(k.Members) != 0 || k.Live() {
+		t.Fatalf("the wrong entry took evidence or came back: members %v live %v", k.Members, k.Live())
+	}
+	p1, p2 := s.Entries[s.Entries[a1].Parent], s.Entries[s.Entries[a2].Parent]
+	if p1 == nil || p1 != p2 || !slices.Contains(p1.Flags, flagOnceWrong+k.ID) {
+		t.Fatalf("not one entry beside the wrong one: %+v %+v", p1, p2)
+	}
+}

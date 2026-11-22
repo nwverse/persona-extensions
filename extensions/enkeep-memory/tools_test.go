@@ -49,12 +49,12 @@ func call(t *testing.T, a *app, name string, args any) (string, error) {
 	return out.(map[string]any)["text"].(string), nil
 }
 
-// The connector lists five tools; the rerun tool queues the days once, refuses days not over and more than 31, and the
+// The connector lists seven tools; the rerun tool queues the days once, refuses days not over and more than 31, and the
 // status tool says what is done and what waits.
 func TestRerunTool(t *testing.T) {
 	a, st := toolApp(t)
 	list, err := a.connector(t.Context(), "tools.list", nil)
-	if err != nil || len(list.(map[string]any)["tools"].([]tool)) != 5 {
+	if err != nil || len(list.(map[string]any)["tools"].([]tool)) != 7 {
 		t.Fatalf("tools.list: %v %v", list, err)
 	}
 	st.S.Reruns = []string{"2026-11-03@" + schema.DailyPrompt} // done with the current prompt already
@@ -89,8 +89,11 @@ func TestRerunTool(t *testing.T) {
 	a.route = curate.Defaults().Route()
 	a.route.Stats = model.OpenStats(t.TempDir(), time.Date(2026, 11, 18, 0, 0, 0, 0, time.UTC))
 	status, _ = call(t, a, "enkeep_rerun_status", map[string]any{})
-	for _, w := range []string{"Model route: no primary model; fallback above 16000 estimated tokens claude-sonnet-5-5, else claude-haiku-5-5.",
-		"Model calls since 2026-11-18T00:00:00Z: 0, answered by a fallback 0 (0.0%)"} {
+	for _, w := range []string{"Model route: gemini-3.8-flash-low; fallback above 16000 estimated tokens claude-sonnet-5-5, else claude-haiku-5-5.",
+		"Model calls since 2026-11-18T00:00:00Z: 0, answered by a fallback 0 (0.0%)",
+		// design v2 §4.7: the cost lines, the call limit and the reruns' progress.
+		"Cost 2026-11-09: 0 call(s)", "Reruns since", "Call limit: at most 4 at once and 20 a minute",
+		"Rerun progress: 0 day(s) done, 2 left, 0 new usable"} {
 		if !strings.Contains(status, w) {
 			t.Fatalf("status lacks %q: %q", w, status)
 		}

@@ -133,7 +133,8 @@ func Compile(ctx context.Context, st *store.State, o Options) (*Report, error) {
 // stable: only stable entries go out (a candidate never does). What the user wrote about themself, the first-run
 // answers and the hand-written memory are stable from the start; a pinned entry counts as stable.
 func stable(e *entry.Entry) bool {
-	return e.Status == entry.Stable || e.Pinned || (e.Origin != entry.Behavior && e.Origin != "" && e.Status == entry.Candidate)
+	return e.Status == entry.Stable || e.Pinned ||
+		(e.Origin != entry.Behavior && e.Origin != "" && e.Origin != entry.Seed && e.Status == entry.Candidate)
 }
 
 // usable is the gate every exit A–E shares: live (not deleted, retired, merged, invalidated or marked wrong), not
@@ -144,6 +145,9 @@ func (c *compiler) usable(e *entry.Entry) bool { return Usable(c.st, e) }
 // Usable is the exits' shared gate for an entry of st (the overview card counts with it too).
 func Usable(st *store.State, e *entry.Entry) bool {
 	if !e.Live() || e.Sensitive != "" || !stable(e) {
+		return false
+	}
+	if e.Origin == entry.Seed && !entry.On(st.Switches, entry.K21Seeds) { // the seeds' source switched off
 		return false
 	}
 	if e.Domain == entry.Life && st.Onboarding != nil && st.Onboarding.Use == entry.Work {

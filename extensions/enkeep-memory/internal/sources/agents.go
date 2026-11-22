@@ -240,6 +240,11 @@ func (s *Source) agentDay(ctx context.Context, id, day string) ([]string, error)
 		if t := s.itemLine(it, byPersona); t != "" {
 			ls = append(ls, line{it.At, t})
 		}
+		// The user's words a task prompt or a relay says it carries: each as a line of its own, kept only when the
+		// day's own lines bear it out (curate's verifyRelays); otherwise dropped, never taken on the relay's word.
+		for _, q := range relayQuotes(it, byPersona) {
+			ls = append(ls, line{it.At, hhmm(it.At, s.Loc) + " " + SpeakerRelayCand + ": " + oneLine(q)})
+		}
 	}
 	for _, c := range s.dayCards(ctx, day) {
 		if c.Session == session && (c.Machine == "" || c.Machine == machine) {
@@ -311,6 +316,23 @@ func (s *Source) itemLine(it hubapi.Item, byPersona bool) string {
 		}
 	}
 	return ""
+}
+
+// relayQuotes are the user's words a Persona-typed item claims to carry (relay.Quotes): a user-role text Persona
+// typed (byPersona, or with a task prompt's or a relay's marks) and the hub's Persona notices. Before 0.2.0-beta.38
+// such a text was Persona's as a whole (K20), and the user's real words relayed in it were lost with it.
+func relayQuotes(it hubapi.Item, byPersona bool) []string {
+	switch it.Kind {
+	case hubapi.KindUser:
+		if byPersona || relay.Classify(it.Text) == relay.Persona {
+			return relay.Quotes(it.Text)
+		}
+	case hubapi.KindNotice:
+		if it.Notice == "persona" || strings.HasPrefix(it.Notice, "injected:") || strings.HasPrefix(it.Notice, "source:") {
+			return relay.Quotes(it.Text)
+		}
+	}
+	return nil
 }
 
 // foldText is a stretch of work in one line: calls, tool names and errors (when the hub gives them, H3; otherwise

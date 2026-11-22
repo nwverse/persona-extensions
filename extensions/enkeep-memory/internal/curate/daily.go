@@ -708,7 +708,7 @@ func itemGate(w *verify.Window, class string, it schema.Item, ev []store.Evidenc
 	assistant, weakSelf := false, false
 	for _, e := range ev {
 		l := w.All[e.N]
-		if w.Kind == "mail" && speaker.Quoted(l.Body, e.Quote) {
+		if speaker.QuotedIn(w.Kind, l.Body, e.Quote) { // mail, and group quote blocks (design v2 §4.2)
 			continue
 		}
 		switch role := voice.Role(l, w.Kind); {

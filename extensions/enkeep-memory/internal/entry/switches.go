@@ -27,6 +27,8 @@ const (
 	K18NamesIndex     = "K18" // exit A ⑤: names of the people dealt with most and the busiest projects: on
 	K19ProjectGeneral = "K19" // exit D: each project block starts with exit A's first rules for working with the user: on
 	K20PersonaSession = "K20" // a session Persona started: every user-role line is Persona's (off: only the first): on
+	// 0.2.0-beta.38 (unified memory design v2 §11.2, the user's call: on by default).
+	K21Seeds = "K21" // seeds (the user's own confirmed profile from elsewhere) as a source: on
 )
 
 // Defaults of every switch. Values are "on"/"off", or a mode word for K2 and K17.
@@ -35,7 +37,7 @@ var Defaults = map[string]string{
 	K6WorkflowSkill: "on", K7WorldFacts: "on", K7GroupByProject: "on", K8AutoEffective: "on", K9FixedFields: "off",
 	K10Knowledge: "off", K11Recordings: "on", K12Onboarding: "on", K13Sensitive: "off", K14People: "on",
 	K15Inferred: "on", K16LearnPeople: "on", K17DigScope: "signal", K18NamesIndex: "on", K19ProjectGeneral: "on",
-	K20PersonaSession: "on",
+	K20PersonaSession: "on", K21Seeds: "on",
 }
 
 // SwitchSetting is one switch as stored: its value, who set it (user | auto) and why (an auto change says which

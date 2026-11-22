@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
@@ -18,6 +19,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/prompts"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/verify"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/voice"
 )
 
 // The correction ledger (design 5.1): the user's messages in S1, S2 and S3, screened by word lists, judged by the
@@ -45,6 +47,17 @@ type ledger struct {
 	mems  map[string]time.Time
 }
 
+// shortCorrectionRunes: a reply of the user's to the AI this short goes to the correction judge whatever its words
+// (design v2 §4.4, "用户短句纠正单独抽一遍"): "？？？", "又来了", "不是这个" carry no word of the list, and were
+// missed before 0.2.0-beta.38. A bare agreement ("好", "ok") is no correction and is not sent.
+const shortCorrectionRunes = 40
+
+// shortReply: a short message answering an AI line or a card, not only agreement.
+func shortReply(m msg) bool {
+	t := strings.TrimSpace(m.Text)
+	return m.Prior != "" && t != "" && utf8.RuneCountInString(t) <= shortCorrectionRunes && !voice.Agreement(t)
+}
+
 func corrID(m msg) string {
 	return "c-" + hash(m.Session, fmt.Sprint(m.Seq), m.At.UTC().Format(time.RFC3339), m.Text)[:10]
 }
@@ -70,7 +83,7 @@ func (l *ledger) run(ctx context.Context, g *gathered, res *Result) error {
 			l.found = append(l.found, l.st.Corrections[i])
 			continue
 		}
-		if match(entry.SigCorrection, m.Text, l.sd.Words) != "" {
+		if match(entry.SigCorrection, m.Text, l.sd.Words) != "" || shortReply(m) {
 			cand = append(cand, m)
 		}
 	}

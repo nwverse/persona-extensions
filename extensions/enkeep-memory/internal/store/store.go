@@ -309,6 +309,23 @@ type Refusal struct {
 	Outcome string `json:"outcome"`
 }
 
+// SeedImport is one seed import that was written: when, from where, and what became of the items (counts only).
+type SeedImport struct {
+	At      string         `json:"at"`
+	Source  string         `json:"source"`
+	New     int            `json:"new"`
+	Merged  int            `json:"merged"`
+	Updated int            `json:"updated"`
+	Same    int            `json:"same"`
+	Skipped map[string]int `json:"skipped,omitempty"` // by reason: sensitive, secret, unconfirmed, empty, bad
+}
+
+// RerunBase is the usable entries when a batch of reruns was first queued.
+type RerunBase struct {
+	At     string   `json:"at"`
+	Usable []string `json:"usable"`
+}
+
 // Usage is tokens by day and step.
 type Usage struct {
 	Day   string `json:"day"`
@@ -354,7 +371,12 @@ type State struct {
 	RerunQueue []string `json:"rerun_queue,omitempty"`
 	// ForceReruns: days enkeep_rerun queued with force (0.2.0-beta.33): read again although they already carry the
 	// current prompt's marker (a unit lost to a model error, say). A day leaves the list once its daily run completes.
-	ForceReruns []string            `json:"force_reruns,omitempty"`
+	ForceReruns []string `json:"force_reruns,omitempty"`
+	// RerunBase is what the reruns' gain is counted from (0.2.0-beta.38, enkeep_rerun_status): the entries usable in
+	// the exits when the queue last went from empty to not empty.
+	RerunBase *RerunBase `json:"rerun_base,omitempty"`
+	// SeedImports are the seed imports written (enkeep_seed_import with apply, 0.2.0-beta.38), oldest first.
+	SeedImports []SeedImport        `json:"seed_imports,omitempty"`
 	Admitted    map[string][]string `json:"admitted,omitempty"` // day → units a daily run (not dry) admitted: what coverage may expect a digest for
 	// SeenSessions: the agent sessions (S3) a completed pass found in the hub's list, by "<machine>/<session>"
 	// (0.2.0-beta.34). A runtime lists only its recent sessions, so a rerun or replay of an older day would not find

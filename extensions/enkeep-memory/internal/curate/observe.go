@@ -12,6 +12,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
 	srcs "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/sources"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/speaker"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/triage"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/verify"
@@ -64,8 +65,10 @@ const (
 // With the prompt (about 4k tokens), the known entities and the answer (dailyMaxTokens), a call stays within 32k.
 const (
 	dailyBatchTokens = 12000
-	dailyMaxTokens   = 6000
-	rewriteMaxTokens = 4000
+	// dailyOverlapTokens: a unit read in parts gives each part this much of the lines before and after its core.
+	dailyOverlapTokens = 1000
+	dailyMaxTokens     = 6000
+	rewriteMaxTokens   = 4000
 )
 
 // dailyParts cuts an admitted unit's shown lines into parts that each fit dailyBatchTokens, in line order. A unit
@@ -91,31 +94,40 @@ func dailyParts(u *Unit, d triage.Decision) []struct {
 	if total <= dailyBatchTokens || len(lines) < 2 {
 		return []part{{d, ""}}
 	}
+	// Cores of at most dailyBatchTokens − 2×dailyOverlapTokens, each read with up to dailyOverlapTokens of the lines
+	// before and after it (design v2 §4.4, daily/16): a correction, a step or an answer that falls on a cut keeps the
+	// words around it. A part is named by its core's range.
+	core := dailyBatchTokens - 2*dailyOverlapTokens
+	weight := func(n int) int { l := byN[n]; return norm.Tokens(l.Speaker+": "+l.Body) + 4 }
 	var out []part
-	var cur []int
-	size := 0
-	flush := func() {
-		if len(cur) == 0 {
+	start, size := 0, 0
+	flush := func(end int) { // lines[start:end] is a core
+		if end <= start {
 			return
+		}
+		lo, hi := start, end
+		for t := 0; lo > 0 && t+weight(lines[lo-1]) <= dailyOverlapTokens; lo-- {
+			t += weight(lines[lo-1])
+		}
+		for t := 0; hi < len(lines) && t+weight(lines[hi]) <= dailyOverlapTokens; hi++ {
+			t += weight(lines[hi])
 		}
 		pd := d
 		pd.Shown = map[int]bool{}
-		for _, n := range cur {
+		for _, n := range lines[lo:hi] {
 			pd.Shown[n] = true
 		}
-		out = append(out, part{pd, fmt.Sprintf("%d-%d", cur[0], cur[len(cur)-1])})
-		cur, size = nil, 0
+		out = append(out, part{pd, fmt.Sprintf("%d-%d", lines[start], lines[end-1])})
+		start, size = end, 0
 	}
-	for _, n := range lines {
-		l := byN[n]
-		t := norm.Tokens(l.Speaker+": "+l.Body) + 4
-		if size+t > dailyBatchTokens {
-			flush()
+	for i, n := range lines {
+		t := weight(n)
+		if size+t > core && i > start {
+			flush(i)
 		}
-		cur = append(cur, n)
 		size += t
 	}
-	flush()
+	flush(len(lines))
 	return out
 }
 
@@ -344,7 +356,12 @@ func (c *Curator) attributeEvidence(u *Unit, k *known, w *verify.Window, ev []st
 	out := make([]obsEvidence, 0, len(ev))
 	for _, e := range ev {
 		e.Quote = verify.Redact(e.Quote)
-		out = append(out, obsEvidence{Evidence: e, who: whoOf(u, k, w.All[e.N], w.Kind)})
+		l := w.All[e.N]
+		who := whoOf(u, k, l, w.Kind)
+		if speaker.QuotedIn(w.Kind, l.Body, e.Quote) {
+			who = "" // in a quoted mail or a group's quote block: not the sender's words (design v2 §4.2)
+		}
+		out = append(out, obsEvidence{Evidence: e, who: who})
 	}
 	return out
 }
