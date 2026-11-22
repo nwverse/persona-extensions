@@ -384,6 +384,7 @@ func TestSensitiveNeverInExits(t *testing.T) {
 	// space's workflow and the evaluation still do not.
 	st.Switches[entry.K22Resident+"."+entry.CatRelationships] = entry.SwitchSetting{Value: "on", By: "user"}
 	st.Switches[entry.K22Resident+"."+entry.CatLegalID] = entry.SwitchSetting{Value: "on", By: "user"}
+	dir = t.TempDir() // a new exit is held to once a day: a fresh directory writes it now
 	compile(t, st, dir, &echo{})
 	in := read(t, dir, InstructionsPath)
 	if !strings.Contains(in, "证件事项") || !strings.Contains(in, "敏感家庭") {
