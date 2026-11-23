@@ -1,5 +1,28 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.42 (pre-release)
+
+Only the memory source; nothing else changes. This version does not read the unified entries ledger, does not add
+to people and things, and carries none of the version planned as beta.42 before (declined by the user on 2026-11-22).
+
+- **The memory source (`memory_sources`, `memory.entries`; Persona #13532, protocol of PR #13547).** The hub can read
+  the curated entries one by one, read-only, and grade them by space and scene itself. A page is ordered standing
+  first, then by rank, then newest; it ends early with `has_more` and `after` to stay under 1 MB, and is answered from
+  the last published snapshot (the call has 5 seconds; a run holds the state's lock for its whole pass).
+  - Every entry the text outlets could carry is answered, not filtered by scene: live, not an evaluation or inference
+    about a person, not life content when the user chose work only. `status` is `active` for what the exits use today
+    (stable, shifting, pinned, written by the user), else `candidate`, `dormant` or `retired`. `standing` is what goes
+    into the resident block (the exits' own gate, K22 included). `rank` is the exits' order (sightings × source kinds,
+    pinned 1000). `subjects` are the card's person, the object and the scopes' names.
+  - `tagged` is true only when every entry in the pool had its categories and space decided by the 0.2.0-beta.40
+    rules (a new mark, `tagged`, set when an entry is read or imported, and when one is read again; a class when all
+    its members are). Entries from before carry no such decision, so the page says false, leaves out `origin_space`
+    and `categories` everywhere, and nothing is made up. `enkeep_rerun_status` says how many are not tagged.
+  - The types are local (`internal/memsrc`) until the SDK copy carries `wire.MemoryEntriesParams`,
+    `MemoryEntriesResult` and `MemoryEntry`.
+  - The four text outlets (the instructions, the project files, the Inbox context, `enkeep_recall`) are unchanged.
+  - `enkeep_rerun_status` reads the source as the hub would and says what came back and how long it took.
+
 ## 0.2.0-beta.41 (pre-release)
 
 - **Consolidation judges the facets at once.** The daily pass's filing step asked the model one batch at a time

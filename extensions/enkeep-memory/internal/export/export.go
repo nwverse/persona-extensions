@@ -137,6 +137,9 @@ func stable(e *entry.Entry) bool {
 		(e.Origin != entry.Behavior && e.Origin != "" && e.Origin != entry.Seed && e.Status == entry.Candidate)
 }
 
+// Stable says whether an entry counts as settled for the exits (stable, pinned, or written by the user).
+func Stable(e *entry.Entry) bool { return stable(e) }
+
 // usable is the gate every exit A–E shares: live (not deleted, retired, merged, invalidated or marked wrong), allowed
 // in the resident exits by its categories and source space (entry.Resident: a category only once the user turned
 // K22.<category> on; a domain space's content only as interaction or persona), stable, and not life content when

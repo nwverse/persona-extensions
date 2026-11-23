@@ -338,6 +338,7 @@ func (a *app) modelText() string {
 	if l := a.c.LedgerState(); l != "" {
 		b.WriteString("\nLedger (assistant.entries.list): " + l + ".")
 	}
+	b.WriteString("\nMemory source (" + a.memoryReading() + ").")
 	return b.String()
 }
 
