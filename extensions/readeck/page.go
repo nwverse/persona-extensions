@@ -261,13 +261,19 @@ func detailView(r *ext.UIRequest, st pageState, item bookmark, article string, h
 		wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}},
 	)
 	v := &wire.View{Title: clipText(item.Title, 1800), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.reading, Items: items}}}
+	used := len(items)
 	if article != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.article, Items: textComponents(clipText(article, 30000))})
+		body := capComponents(textComponents(clipText(article, 30000)), maxArticleItems)
+		used += len(body)
+		v.Sections = append(v.Sections, wire.Section{Title: t.article, Items: body})
 	} else {
+		used++
 		v.Sections = append(v.Sections, wire.Section{Title: t.article, Items: []wire.Component{{Type: wire.ComponentText, Text: t.noContent, Style: wire.TextStyleSecondary}}})
 	}
 	if item.Note != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: textComponents(clipText(item.Note, 6000))})
+		note := capComponents(textComponents(clipText(item.Note, 6000)), maxNoteItems)
+		used += len(note)
+		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: note})
 	}
 	section := wire.Section{Title: t.highlights}
 	for _, h := range highlights {
@@ -275,11 +281,31 @@ func detailView(r *ext.UIRequest, st pageState, item bookmark, article string, h
 			section.Items = append(section.Items, textComponents(clipText(h.Text, 6000))...)
 		}
 	}
+	section.Items = capComponents(section.Items, maxViewItems-used)
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.noHighlights, Style: wire.TextStyleSecondary})
 	}
 	v.Sections = append(v.Sections, section)
 	return v
+}
+
+const (
+	// maxViewItems keeps the bookmark detail view within the SDK's 300 component limit across article, note, and highlights.
+	maxViewItems    = 250
+	maxArticleItems = 100
+	maxNoteItems    = 60
+)
+
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if n <= 0 {
+		return nil
+	}
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func safeArticleLink(raw string) string {
