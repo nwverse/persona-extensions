@@ -31,9 +31,10 @@ type tagArgs struct {
 // The longest title, author and tag name Readwise documents. The validation, the tool schemas and the page state check
 // use them; a book is opened under its title, so its name is checked against maxTitleChars.
 const (
-	maxTitleChars   = 511
-	maxAuthorChars  = 1024
-	maxTagNameChars = 127
+	maxHighlightChars = 8191
+	maxTitleChars     = 511
+	maxAuthorChars    = 1024
+	maxTagNameChars   = 127
 )
 
 func validText(value string, limit int, multiline bool) error {
@@ -49,10 +50,10 @@ func validText(value string, limit int, multiline bool) error {
 }
 
 func (in createArgs) validate() error {
-	if strings.TrimSpace(in.Text) == "" || validText(in.Text, 8191, true) != nil {
+	if strings.TrimSpace(in.Text) == "" || validText(in.Text, maxHighlightChars, true) != nil {
 		return errors.New("highlight text must be nonempty and at most 8191 characters")
 	}
-	if strings.TrimSpace(in.Title) == "" || validText(in.Title, maxTitleChars, false) != nil || validText(in.Author, maxAuthorChars, false) != nil || validText(in.Note, 8191, true) != nil {
+	if strings.TrimSpace(in.Title) == "" || validText(in.Title, maxTitleChars, false) != nil || validText(in.Author, maxAuthorChars, false) != nil || validText(in.Note, maxHighlightChars, true) != nil {
 		return errors.New("highlight title, author or note is invalid")
 	}
 	if in.SourceURL != "" {
@@ -87,7 +88,7 @@ func describeAction(name string, raw json.RawMessage) (map[string]any, error) {
 		if err := validID(in.HighlightID); err != nil {
 			return nil, err
 		}
-		if err := validText(in.Note, 8191, true); err != nil {
+		if err := validText(in.Note, maxHighlightChars, true); err != nil {
 			return nil, err
 		}
 		summary = fmt.Sprintf("Replace the note on Readwise highlight #%d\n\n%s", in.HighlightID, in.Note)
@@ -134,7 +135,7 @@ func (a *app) doAction(ctx context.Context, requestID, name string, raw json.Raw
 		if err := validID(in.HighlightID); err != nil {
 			return nil, err
 		}
-		if err := validText(in.Note, 8191, true); err != nil {
+		if err := validText(in.Note, maxHighlightChars, true); err != nil {
 			return nil, err
 		}
 		fn = func() (string, error) {

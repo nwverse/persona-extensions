@@ -103,6 +103,8 @@ func (c *client) topics(ctx context.Context, streamID int64) ([]topic, error) {
 	return out.Topics, err
 }
 
+const maxTopicChars = 500
+
 func (c *client) messages(ctx context.Context, streamID int64, topicName string, anchor int64, firstUnread bool) (messagePage, error) {
 	if anchor < 0 {
 		return messagePage{}, errors.New("invalid message anchor")
@@ -112,7 +114,7 @@ func (c *client) messages(ctx context.Context, streamID int64, topicName string,
 		narrow = append(narrow, map[string]any{"operator": "stream", "operand": streamID})
 	}
 	if topicName != "" {
-		if len([]rune(topicName)) > 500 || strings.ContainsAny(topicName, "\x00\r\n") {
+		if len([]rune(topicName)) > maxTopicChars || strings.ContainsAny(topicName, "\x00\r\n") {
 			return messagePage{}, errors.New("invalid topic name")
 		}
 		narrow = append(narrow, map[string]any{"operator": "topic", "operand": topicName})

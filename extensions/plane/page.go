@@ -33,7 +33,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.ProjectID) > 128 || len(st.ProjectName) > 1000 || len(st.WorkItemID) > 128 || len(st.DraftID) > 128 || len(st.Name) > 1024 || len(st.Description) > 12000 || len(st.History) > 10 {
+	if err := r.DecodeState(&st); err != nil || len(st.ProjectID) > 128 || len([]rune(st.ProjectName)) > maxProjectNameChars || len(st.WorkItemID) > 128 || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len([]rune(st.Description)) > maxDescriptionChars || len(st.History) > 10 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -57,7 +57,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if err := validID(r.Values["id"]); err != nil {
 			return nil, err
 		}
-		if r.Values["name"] == "" || r.Values["identifier"] == "" || len(r.Values["name"]) > 255 || len(r.Values["identifier"]) > 32 {
+		if r.Values["name"] == "" || r.Values["identifier"] == "" || len([]rune(r.Values["name"])) > maxProjectNameChars || len(r.Values["identifier"]) > 32 {
 			return nil, errors.New("invalid project metadata")
 		}
 		st = pageState{Mode: "items", ProjectID: r.Values["id"], ProjectName: r.Values["name"], Identifier: r.Values["identifier"]}
@@ -369,6 +369,10 @@ func textComponents(text string) []wire.Component {
 			n := min(len(r), 1800)
 			out = append(out, wire.Component{Type: wire.ComponentText, Text: string(r[:n])})
 			r = r[n:]
+			if len(out) >= 240 {
+				out[len(out)-1].Text = clipText(out[len(out)-1].Text, 1700) + " […]"
+				return out
+			}
 		}
 	}
 	if len(out) == 0 {
