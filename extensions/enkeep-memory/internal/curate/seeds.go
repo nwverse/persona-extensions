@@ -397,6 +397,7 @@ func (c *Curator) updateSeed(e *entry.Entry, it SeedItem, sc []entry.Scope, now 
 
 // tagSeed tags a seed's entry with the item's categories (by the plugin's filters: the model's reading and rules).
 func tagSeed(e *entry.Entry, cats []string) {
+	e.Tagged = true
 	for _, n := range cats {
 		e.AddCategory(n, entry.ByModel)
 	}

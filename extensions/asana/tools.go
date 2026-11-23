@@ -34,7 +34,7 @@ var actionTools = []tool{
 	{Name: "asana_create_task", Description: "Create an Asana task assigned to the current user after explicit confirmation. Only workspace, optional project, title, notes and YYYY-MM-DD due date are sent.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"workspace_gid", "name"}, "properties": map[string]any{
 			"workspace_gid": gidSchema, "project_gid": gidSchema,
-			"name": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}, "notes": map[string]any{"type": "string", "maxLength": 10000},
+			"name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxNameChars}, "notes": map[string]any{"type": "string", "maxLength": 10000},
 			"due_on": map[string]any{"type": "string", "format": "date"},
 		}}},
 	{Name: "asana_complete_task", Description: "Mark an existing Asana task complete after explicit confirmation. Does not delete the task or alter its other fields.",
@@ -74,7 +74,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		}
 		var b strings.Builder
 		for _, item := range page.Data {
-			fmt.Fprintf(&b, "- %s: workspace GID %s | organization: %v\n", clipText(item.Name, 500), item.GID, item.IsOrganization)
+			fmt.Fprintf(&b, "- %s: workspace GID %s | organization: %v\n", clipText(item.Name, maxWorkspaceNameChars), item.GID, item.IsOrganization)
 		}
 		return pageText(&b, len(page.Data), "No workspaces.", page.NextPage), nil
 	case "asana_projects":

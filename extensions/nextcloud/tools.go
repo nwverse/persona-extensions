@@ -17,7 +17,7 @@ type tool struct {
 
 var readTools = []tool{
 	{Name: "nextcloud_search", Description: "Search current-user Nextcloud files by filename with a scoped WebDAV SEARCH and a 50-result bound. Returns safe relative file paths, metadata and file IDs; no folder enumeration or private URL construction.",
-		InputSchema: map[string]any{"type": "object", "required": []string{"query"}, "properties": map[string]any{"query": map[string]any{"type": "string", "minLength": 1, "maxLength": 100}}}},
+		InputSchema: map[string]any{"type": "object", "required": []string{"query"}, "properties": map[string]any{"query": map[string]any{"type": "string", "minLength": 1, "maxLength": maxQueryChars}}}},
 	{Name: "nextcloud_read_file", Description: "Read one current-user Nextcloud plain-text or Markdown file up to 100000 bytes. Returns metadata and content as untrusted text; no binary/media downloads or arbitrary URLs.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"path"}, "properties": map[string]any{"path": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}}}},
 }

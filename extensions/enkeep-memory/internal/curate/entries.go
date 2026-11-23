@@ -158,7 +158,8 @@ func mergeSighting(old, e *entry.Entry, day string) {
 		}
 	}
 	old.Evidence = trimEvidence(old.Evidence)
-	old.MergeCategories(e) // what a sighting carries, the entry carries (0.2.0-beta.40)
+	old.MergeCategories(e)              // what a sighting carries, the entry carries (0.2.0-beta.40)
+	old.Tagged = old.Tagged || e.Tagged // the same claim read again under the tagging rules
 	if fresh {
 		old.Count++
 	}

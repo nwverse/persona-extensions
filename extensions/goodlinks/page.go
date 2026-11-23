@@ -25,7 +25,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.LinkID) > 256 || len(st.DraftID) > 128 || len(st.Query) > 250 {
+	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.LinkID) > 256 || len(st.DraftID) > 128 || len([]rune(st.Query)) > maxQueryChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -46,7 +46,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Offset = clipText(r.Values["q"], 200), 0
+		st.Query, st.Offset = clipText(r.Values["q"], maxQueryChars), 0
 		if strings.TrimSpace(st.Query) != "" {
 			st.View = "search"
 		} else {

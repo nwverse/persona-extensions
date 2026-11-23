@@ -98,12 +98,14 @@ func (c *client) webroot() string {
 	return strings.TrimRight(u.Path, "/")
 }
 
+const maxQueryChars = 100
+
 func (c *client) search(ctx context.Context, username, query string) ([]fileEntry, error) {
 	if username == "" || strings.ContainsAny(username, "/\\\x00\r\n") || len(username) > 128 {
 		return nil, errors.New("invalid Nextcloud username")
 	}
 	query = strings.TrimSpace(query)
-	if query == "" || len([]rune(query)) > 100 || strings.ContainsAny(query, "%\x00\r\n") {
+	if query == "" || len([]rune(query)) > maxQueryChars || strings.ContainsAny(query, "%\x00\r\n") {
 		return nil, errors.New("filename search must be at most 100 characters without wildcards")
 	}
 	scope := "/files/" + username

@@ -27,7 +27,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.Query) > 250 || len(st.Cursor) > 4096 || len(st.Pages) >= maxViewPages || len(st.AssetID) > 128 || len(st.DraftID) > 128 || len(st.View) > 30 || len(st.Mode) > 30 {
+	if err := r.DecodeState(&st); err != nil || len([]rune(st.Query)) > maxQueryChars || len(st.Cursor) > 4096 || len(st.Pages) >= maxViewPages || len(st.AssetID) > 128 || len(st.DraftID) > 128 || len(st.View) > 30 || len(st.Mode) > 30 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -53,7 +53,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		st.View, st.Cursor, st.Pages = r.Values["view"], "", nil
 	case "search":
-		st.Query, st.Cursor, st.Pages = strings.TrimSpace(clipText(r.Values["q"], 200)), "", nil
+		st.Query, st.Cursor, st.Pages = strings.TrimSpace(clipText(r.Values["q"], maxQueryChars)), "", nil
 		if st.Query == "" {
 			st.View = "favorites"
 		} else if st.View != "smart" {

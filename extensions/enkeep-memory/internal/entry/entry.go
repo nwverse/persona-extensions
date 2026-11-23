@@ -259,6 +259,10 @@ type Entry struct {
 	// and who tagged each; none: general. CatsRemoved are the ones the user took off (never added back but by them).
 	Categories  []Category `json:"categories,omitempty"`
 	CatsRemoved []string   `json:"cats_removed,omitempty"`
+	// Tagged: its categories and source space were decided by the plugin's tagging (0.2.0-beta.40 rules: the model's
+	// label, the money and legal words, the space's defaults) when it was read or imported. An entry from before
+	// carries only the old model label, if any; the memory source answers tagged false while one is in the pool.
+	Tagged bool `json:"tagged,omitempty"`
 	// OriginSpace is the slug of the space the entry's first evidence was said in ("": the main space).
 	OriginSpace string     `json:"origin_space,omitempty"`
 	Scopes      []Scope    `json:"scopes,omitempty"`

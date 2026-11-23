@@ -103,11 +103,14 @@ func validLinkID(value string) error {
 	return nil
 }
 
+// maxQueryChars is the longest search query: the client, the page clip, the tool schema and the page state check use it.
+const maxQueryChars = 200
+
 func (c *client) links(ctx context.Context, view, query string, offset int) (linkPage, error) {
 	if view != "unread" && view != "starred" && view != "search" {
 		return linkPage{}, errors.New("view must be unread, starred or search")
 	}
-	if offset < 0 || len([]rune(query)) > 200 || strings.ContainsRune(query, 0) {
+	if offset < 0 || len([]rune(query)) > maxQueryChars || strings.ContainsRune(query, 0) {
 		return linkPage{}, errors.New("invalid search or offset")
 	}
 	var path string

@@ -477,6 +477,7 @@ var legalWords = regexp.MustCompile(`(?i)身份证|护照|签证|驾驶证|驾�
 
 // tagCategories adds categories to an entry, as tagged by the plugin's model reading and rules.
 func tagCategories(e *entry.Entry, cats []string) {
+	e.Tagged = true
 	for _, n := range cats {
 		e.AddCategory(n, entry.ByModel)
 	}
