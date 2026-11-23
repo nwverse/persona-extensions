@@ -92,6 +92,8 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 	}
 }
 
+const maxQueryChars = 200
+
 func (c *client) entries(ctx context.Context, view, query string, offset int) (entryPage, error) {
 	if view != "unread" && view != "starred" && view != "search" {
 		return entryPage{}, errors.New("view must be unread, starred or search")
@@ -99,7 +101,7 @@ func (c *client) entries(ctx context.Context, view, query string, offset int) (e
 	if offset < 0 {
 		return entryPage{}, errors.New("offset must not be negative")
 	}
-	if len([]rune(query)) > 200 || strings.ContainsRune(query, 0) {
+	if len([]rune(query)) > maxQueryChars || strings.ContainsRune(query, 0) {
 		return entryPage{}, errors.New("invalid search text")
 	}
 	q := url.Values{"limit": {"50"}, "offset": {strconv.Itoa(offset)}, "direction": {"desc"}, "order": {"published_at"}}
