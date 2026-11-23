@@ -25,7 +25,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.StartIndex < 0 || len(st.Query) > 250 || len(st.ItemID) > 64 || len(st.DraftID) > 128 || len(st.Mode) > 30 || len(st.View) > 30 {
+	if err := r.DecodeState(&st); err != nil || st.StartIndex < 0 || len([]rune(st.Query)) > maxQueryChars || len(st.ItemID) > 64 || len(st.DraftID) > 128 || len(st.Mode) > 30 || len(st.View) > 30 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -51,7 +51,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		st.View, st.StartIndex = r.Values["view"], 0
 	case "search":
-		st.Query, st.StartIndex = strings.TrimSpace(clipText(r.Values["q"], 200)), 0
+		st.Query, st.StartIndex = strings.TrimSpace(clipText(r.Values["q"], maxQueryChars)), 0
 		if st.Query == "" {
 			st.View = "resume"
 		} else {
