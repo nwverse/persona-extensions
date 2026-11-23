@@ -48,7 +48,7 @@ Only the owner's own **new** to-dos:
 - matching the filter **when they were made**. A to-do seen when it was made that did not match is not forwarded later, even if it is edited to match;
 - not done, not a concern, not a question the assistant asked you (`todo_ask_…`), and not one of Persona's own agent tasks (a to-do with an `origin`) unless **也转发 Persona 自己派给 Agent 的任务** is on.
 
-At most the hourly cap a rolling hour, and at most 5 from one reconcile pass. A matching to-do over the cap waits for a later pass while it is still under 48 hours old. This stops a flood after downtime.
+At most the hourly cap of hand-overs reach the bot in any rolling hour (counted on what was actually sent), and one pass starts at most 5. A matching to-do over the cap waits for a later pass while it is still under 48 hours old.
 
 ## What the bot receives
 
@@ -59,6 +59,12 @@ One message per to-do, in a new chat:
 - how to finish: write a short summary back with `todo_write_preparation` and keep the details in the chat, then summarise in the chat.
 
 Orca answers `bots.session.start` with an empty chat of the bot that is already open, instead of a new one. A chat stays "empty" after a send until the bot's turn opens. The node program therefore refuses a chat that another hand-over already holds, and tries again shortly (`orca_busy`), so two to-dos never share a chat. An empty chat you opened by hand and left empty can be used, as Orca's own **New chat** would use it.
+
+A hand-over that never sent does not keep its chat:
+
+- when the hub gives it up (refused too often, waited too long, forwarding stopped or the bot switched), it tells the Mac (`orcabot.abandon`), which forgets it;
+- a hand-over that never sent and was last tried more than 2 minutes ago (longer than the hub waits for an answer) lets a new hand-over take its chat;
+- the Mac forgets a hand-over that never sent after 72 hours in any case, notes and all.
 
 ## The MCP tools
 
@@ -84,11 +90,11 @@ That is why the text is capped at 1500 characters and the bot is told to write a
 
 **The trust boundary is your macOS user on that Mac.** The MCP command connects only to the node program's unix socket, which sits in the extension's data directory with mode `0600`. Any process running as your user can open that socket.
 
-- **A token per bot.** The node program answers only a command carrying the bot's id and that bot's token (`--token`). Another local process cannot pass for the bot's tool by naming the bot alone.
+- **A token per bot.** The node program answers only a command carrying the bot's id and that bot's token (`--token`). Another local process cannot pass for the bot's tool by naming the bot alone. The token is shown in the setup command on the extension's page, so anyone who can open that page in Persona's settings can read it. The page request does not say who is viewing it, so the page cannot hide it from some viewers. The token is useful only to a process running as your macOS user on that Mac.
 - **One chat.** When Orca tells the command which chat runs it (`ORCA_AGENT_SESSION_ID`), only the to-do handed to that chat is reachable.
 - **No chat, no reach.** Orca deliberately leaves caller identity out of a tool process that several chats share. Without a chat id the command can list, read and write nothing. The page has a switch for this, **放宽：不知道是哪个对话时也允许读写**, after which such a command reaches every to-do handed to that bot, and no others. It is off by default.
 - **The hub checks again.** Before writing, the hub program checks the write-back against its own mapping: the to-do must have been handed to that bot and that chat, on the Mac in the settings. Anything else is refused.
-- **Notes leave the Mac.** Once a hand-over is finished and acknowledged, the node program drops the to-do's notes from its state.
+- **Notes leave the Mac.** The node program drops the to-do's notes from its state once a hand-over is finished and acknowledged, or once it gives up telling the hub of the finish after a day. A hand-over that never sent is forgotten whole.
 
 ## Safety
 
@@ -105,23 +111,25 @@ That is why the text is capped at 1500 characters and the bot is told to write a
 
 ## When the Mac or the bot is away
 
-- The Mac offline, Orca not running or slow, a paused bot, or a busy chat does not count as a failed attempt. The hand-over waits and is retried every few minutes. When the node program starts it tells the hub, and the hub retries at once. After 48 hours it fails, and you get one notification.
+- The Mac offline, Orca not running or slow, a paused bot, or a busy chat does not count as a failed attempt. The hand-over waits, and is retried every few minutes and as soon as the node program starts again.
+- After an outage the backlog does not go out at once. Waiting hand-overs reach the bot oldest first, at most the hourly cap in any rolling hour and at most 5 in one pass. Each pass is bounded, so the hub stays responsive.
+- A hand-over still waiting 48 hours after it was made fails. All of those that fail in one pass are told in **one** notification ("N 条待办等了 48 小时也没能交给机器人…"). So after two days with the Mac away you get a single notification, not one per to-do.
 - Other refusals are retried with backoff, up to 8 attempts, then fail with one notification.
-- A bot Orca no longer has fails its hand-over at once and **pauses forwarding** until you pick a bot again on the page.
-- **Stopping forwarding** (不再转发给机器人), or switching to another Mac or bot, drops the hand-overs still waiting. They never reach the old bot.
+- **A bot that is gone.** When Orca answers `bot_not_found`, the hub reads `bots.list` again. Only if the bot is missing there too does the hand-over fail and forwarding **pause** until you pick a bot again on the page. If the bot is still listed, it counts as an ordinary refusal; if the list cannot be read, the hand-over waits.
+- **Stopping or switching.** Stopping forwarding (不再转发给机器人), or switching to another Mac or bot, drops the hand-overs still waiting. They never reach the old bot, and the Mac is told to let their chats go.
 
 ## When the bot finishes
 
 The node program polls the chat every 10 seconds:
 
-- The turn has ended when Orca shows a final latest turn (`completed`, `interrupted` or `unverifiable`) that belongs to the send, while the session is not `working`. A turn belongs to the send if its user item is the send's operation, or it began no earlier than the send less a few seconds.
+- The turn has ended when Orca shows a final latest turn (`completed`, `interrupted` or `unverifiable`) that belongs to the send, while the session is not `working`. A turn belongs to the send if its user item is the send's (Orca keys it `orca:<clientOperationId>`), or it began no earlier than the send less a few seconds.
 - A turn still marked `running` while the session is not working is reported as interrupted.
 - No turn shown keeps it waiting. That covers a turn not started yet, or one Orca hides after a restart. So does an older turn.
 - Orca's verdict of a completed turn (`success`, `failure`, `cancellation`, `superseded`) chooses the notification's words. A missing verdict is never read as success. "Unverifiable" has its own words: Orca cannot confirm that the turn finished normally.
 - If an approval or question waits on two polls in a row, you get one "在等你" notification, and following continues.
 - A chat whose history Orca keeps refusing for 30 minutes (a chat deleted in Orca has no error code of its own) ends as "unavailable". A chat still working after 24 hours ends as "timeout" and is no longer followed.
 
-You get one notification per to-do. If the hub program misses the node program's message, it is sent again every minute for up to 24 hours, until acknowledged. If sending the notification fails 5 times, the hub gives up and the page says so. A notification held by Persona's push grading is noted on the page rather than counted as delivered.
+You get one notification per to-do. If the hub program misses the node program's message, it is sent again every minute for up to 24 hours, until acknowledged. A write-back the hub never answers is likewise sent again for up to 24 hours, then marked refused. If sending the notification fails 5 times, the hub gives up and the page says so. A notification held by Persona's push grading is noted on the page rather than counted as delivered.
 
 ## Status and troubleshooting
 

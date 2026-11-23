@@ -53,6 +53,11 @@ const (
 	nodeTellFor = 24 * time.Hour
 	// nodeAckWait is how long a write-back waits for the hub's answer before telling the bot it is on its way.
 	nodeAckWait = 20 * time.Second
+	// nodeStaleClaim: a hand-over that never sent and was last tried longer ago than the hub waits for an answer
+	// (handoffTimeout) no longer holds its chat: a new hand-over may take the chat over.
+	nodeStaleClaim = 2 * time.Minute
+	// nodeUnsentKept: a hand-over that never sent is forgotten after this (the hub gives up after maxAge).
+	nodeUnsentKept = 72 * time.Hour
 	// nodeHandoffsKept bounds the persisted hand-overs: the oldest acknowledged ones go first.
 	nodeHandoffsKept = 1000
 	// maxSocketPath: a unix socket path holds at most 103 bytes on macOS.
@@ -96,6 +101,7 @@ type nodeHandoff struct {
 	OpID       string       `json:"op_id"`
 	Todo       todoSnapshot `json:"todo"`
 	CreatedAt  time.Time    `json:"created_at"`
+	TriedAt    time.Time    `json:"tried_at,omitzero"` // the last attempt to send it
 	Sent       bool         `json:"sent"`
 	SentAt     time.Time    `json:"sent_at,omitzero"`
 	SawWorking bool         `json:"saw_working,omitempty"`
@@ -142,8 +148,8 @@ type nodeApp struct {
 	data     string
 	emit     func(event string, params any) error
 	st       nodeState
-	acks     map[string]chan writeAck
-	link     string // the stable path of this program, for the MCP command
+	acks     map[string][]chan writeAck // the MCP requests waiting for the hub's answer, by ref
+	link     string                     // the stable path of this program, for the MCP command
 	socket   string
 	sockErr  string
 	lastPoll string // the last error following the chats, "" when fine
@@ -155,7 +161,7 @@ func newNodeApp(orca orcaAPI) *nodeApp {
 		orca = newOrcaClient(nil)
 	}
 	return &nodeApp{orca: orca, now: time.Now, pollEvery: nodePollEvery, ackWait: nodeAckWait,
-		acks: map[string]chan writeAck{}, st: nodeState{Handoffs: map[string]*nodeHandoff{}}}
+		acks: map[string][]chan writeAck{}, st: nodeState{Handoffs: map[string]*nodeHandoff{}}}
 }
 
 func (n *nodeApp) program() ext.Program {
@@ -229,6 +235,11 @@ func (n *nodeApp) statePath() string { return filepath.Join(n.data, "state.json"
 
 // save writes the state; the caller holds n.mu.
 func (n *nodeApp) save() {
+	for id, h := range n.st.Handoffs { // never sent and long given up by the hub: forgotten, notes and all
+		if !h.Sent && n.now().Sub(lastTry(h)) > nodeUnsentKept {
+			delete(n.st.Handoffs, id)
+		}
+	}
 	if len(n.st.Handoffs) > nodeHandoffsKept {
 		var done []*nodeHandoff
 		for _, h := range n.st.Handoffs {
@@ -394,6 +405,19 @@ func (n *nodeApp) rpc(ctx context.Context, method string, params json.RawMessage
 		n.save()
 		n.mu.Unlock()
 		return map[string]any{"wide": p.Wide}, nil
+	case "abandon":
+		var p struct {
+			TodoID string `json:"todo_id"`
+		}
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, &ext.Error{Code: "invalid", Message: err.Error()}
+		}
+		n.sendMu.Lock() // not in the middle of its own hand-over
+		n.mu.Lock()
+		released := n.abandon(p.TodoID)
+		n.mu.Unlock()
+		n.sendMu.Unlock()
+		return map[string]any{"released": released}, nil
 	case "finished_ack":
 		var p struct {
 			TodoID string `json:"todo_id"`
@@ -439,10 +463,8 @@ func nodeErr(err error) error {
 		code = "orca_incompatible"
 	case errors.Is(err, context.DeadlineExceeded):
 		code = "orca_timeout"
-	case orcaCode(err) == "bot_not_found" || strings.Contains(err.Error(), "bot_not_found"):
+	case orcaCode(err) == "bot_not_found": // Orca's own code (BOT_ERROR_CODES)
 		code = "bot_not_found"
-	case strings.Contains(err.Error(), "bots_disabled") || strings.Contains(strings.ToLower(err.Error()), "bots are off"):
-		code = "bots_disabled"
 	}
 	return &ext.Error{Code: code, Message: code + ": " + clip(err.Error(), 300)}
 }
@@ -511,14 +533,40 @@ func (n *nodeApp) status(ctx context.Context, bot string) nodeStatus {
 	return s
 }
 
-// claimedBy is the to-do another hand-over holds the chat for, "" when none does; the caller holds n.mu.
+func lastTry(h *nodeHandoff) time.Time {
+	if h.TriedAt.After(h.CreatedAt) {
+		return h.TriedAt
+	}
+	return h.CreatedAt
+}
+
+// claimedBy is the to-do another hand-over holds the chat for, "" when none does. A holder that never sent and was
+// last tried longer ago than nodeStaleClaim lets the chat go (the chat is still empty, nothing of it is there): it
+// starts from a new chat should it be tried again. The caller holds n.mu.
 func (n *nodeApp) claimedBy(sessionID, todoID string) string {
 	for _, h := range n.st.Handoffs {
-		if h.SessionID == sessionID && h.TodoID != todoID {
-			return h.TodoID
+		if h.SessionID != sessionID || h.TodoID == todoID {
+			continue
 		}
+		if !h.Sent && n.now().Sub(lastTry(h)) > nodeStaleClaim {
+			h.SessionID = ""
+			continue
+		}
+		return h.TodoID
 	}
 	return ""
+}
+
+// abandon forgets a hand-over the hub gave up, when it never sent: its chat is free again. A sent one stays (it is
+// followed to its end). The caller holds n.mu.
+func (n *nodeApp) abandon(todoID string) bool {
+	h := n.st.Handoffs[todoID]
+	if h == nil || h.Sent {
+		return false
+	}
+	delete(n.st.Handoffs, todoID)
+	n.save()
+	return true
 }
 
 func (n *nodeApp) handoff(ctx context.Context, p handoffParams) (*handoffResult, error) {
@@ -551,6 +599,7 @@ func (n *nodeApp) handoff(ctx context.Context, p handoffParams) (*handoffResult,
 		h.BotID, h.OpID, h.Todo = p.BotID, p.OpID, p.Todo
 		n.save()
 	}
+	h.TriedAt = n.now()
 	sessionID, opID := h.SessionID, h.OpID
 	if sessionID != "" && n.claimedBy(sessionID, p.TodoID) != "" {
 		// Never expected (a chat is claimed once), but never send two to-dos into one chat.
@@ -665,7 +714,7 @@ func (n *nodeApp) pollOnce(ctx context.Context) {
 		case h.Sent && !h.Finished:
 			follow = append(follow, h)
 		case h.Finished && !h.Acked && now.Sub(h.FinishedAt) > nodeTellFor:
-			h.Acked = true // told for a day without an answer: given up
+			h.Acked, h.Todo.Notes = true, "" // told for a day without an answer: given up, the notes not kept
 			n.save()
 		case h.Finished && !h.Acked && now.Sub(h.EmittedAt) >= nodeReemit:
 			h.EmittedAt = now
@@ -673,6 +722,11 @@ func (n *nodeApp) pollOnce(ctx context.Context) {
 		}
 		for i := range h.Writes {
 			w := &h.Writes[i]
+			if w.Status == "pending" && now.Sub(w.At) > nodeTellFor { // a day without an answer (the hub moved on)
+				w.Status, w.Error, w.Text = "refused", "Persona 一天内没有收下", ""
+				n.save()
+				continue
+			}
 			if w.Status == "pending" && w.Text != "" && now.Sub(w.EmittedAt) >= nodeReemit {
 				w.EmittedAt = now
 				tells = append(tells, tell{"orcabot.writeback", writebackParams(h, w)})
@@ -778,7 +832,8 @@ func turnEnd(head *orcaHead, h *nodeHandoff) (string, string) {
 	if t == nil {
 		return "", ""
 	}
-	ours := (t.UserItemID != "" && t.UserItemID == h.OpID) || t.since(h.SentAt.Add(-nodeTurnSkew).UnixMilli())
+	// Orca keys the user item of a send as "orca:" + its clientOperationId (agentJournalSubmissionKey).
+	ours := (t.UserItemID != "" && t.UserItemID == "orca:"+h.OpID) || t.since(h.SentAt.Add(-nodeTurnSkew).UnixMilli())
 	if !ours {
 		return "", ""
 	}
@@ -966,14 +1021,24 @@ func (n *nodeApp) write(ctx context.Context, req mcpRequest) mcpReply {
 	}
 	w.EmittedAt = n.now()
 	ch := make(chan writeAck, 1)
-	n.acks[ref] = ch
+	n.acks[ref] = append(n.acks[ref], ch) // the same write asked twice at once: both wait for the one answer
 	n.save()
 	ev := writebackParams(h, w)
 	emit, wait := n.emit, n.ackWait
 	n.mu.Unlock()
 	defer func() {
 		n.mu.Lock()
-		delete(n.acks, ref)
+		left := n.acks[ref][:0]
+		for _, c := range n.acks[ref] {
+			if c != ch {
+				left = append(left, c)
+			}
+		}
+		if len(left) == 0 {
+			delete(n.acks, ref)
+		} else {
+			n.acks[ref] = left
+		}
 		n.mu.Unlock()
 	}()
 	if emit != nil {
@@ -1018,7 +1083,7 @@ func (n *nodeApp) writeResult(todoID, ref string, a writeAck) {
 			}
 		}
 	}
-	if ch := n.acks[ref]; ch != nil {
+	for _, ch := range n.acks[ref] {
 		select {
 		case ch <- a:
 		default:

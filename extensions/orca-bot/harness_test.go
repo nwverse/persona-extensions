@@ -3,13 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/nwverse/persona/sdk/go/ext"
 )
 
 // A fake hub (its to-do, decision and notify routes), the node program wired to it as nodes.call and node.event
@@ -43,8 +44,9 @@ type fakeHub struct {
 	}
 	notices   []notice
 	failList  error
-	notifyErr error // Notify fails with it while set
-	held      bool  // push grading holds every notification
+	notifyErr error         // Notify fails with it while set
+	held      bool          // push grading holds every notification
+	slow      time.Duration // AddDecision takes this long
 }
 
 func (h *fakeHub) add(t todoRow) {
@@ -75,6 +77,10 @@ func (h *fakeHub) Todo(ctx context.Context, id string) (*todoRow, error) {
 }
 
 func (h *fakeHub) AddDecision(ctx context.Context, todoID string, d decisionPayload) (bool, error) {
+	h.mu.Lock()
+	slow := h.slow
+	h.mu.Unlock()
+	time.Sleep(slow)
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, x := range h.decisions {
@@ -120,13 +126,17 @@ func (h *fakeHub) counts() (decisions, notices int) {
 
 // nodeLink is nodes.call to one node program (on testMac), by way of JSON as on the wire.
 type nodeLink struct {
-	node *nodeApp
-	down atomic.Bool
+	node     *nodeApp
+	down     atomic.Bool
+	handoffs atomic.Int64 // orcabot.handoff calls that reached the Mac or found it away
 }
 
 func (l *nodeLink) Call(ctx context.Context, machine, method string, params, out any) error {
+	if method == "orcabot.handoff" {
+		l.handoffs.Add(1)
+	}
 	if l.down.Load() || machine != testMac {
-		return fmt.Errorf("machine_offline")
+		return &ext.Error{Code: "offline", Message: "machine " + machine + " is offline"} // as the host answers
 	}
 	raw, err := json.Marshal(params)
 	if err != nil {

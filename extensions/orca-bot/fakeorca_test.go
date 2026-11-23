@@ -236,7 +236,7 @@ func (f *fakeOrca) answer(token, method string, raw json.RawMessage) (any, strin
 		f.working[s] = true // an unanswered send counts as work; the chat stays empty until its turn opens
 		f.lastOp[s] = op
 		if f.autoOpen {
-			f.turns[s] = map[string]any{"turnId": "t1", "state": "running", "userItemId": op}
+			f.turns[s] = map[string]any{"turnId": "t1", "state": "running", "userItemId": "orca:" + op}
 			f.turnAt[s] = f.now().UnixMilli()
 		}
 		return map[string]any{"ok": true}, ""
@@ -257,7 +257,7 @@ func contains(list []string, s string) bool {
 func (f *fakeOrca) openTurn(session string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.turns[session] = map[string]any{"turnId": "t1", "state": "running", "userItemId": f.lastOp[session]}
+	f.turns[session] = map[string]any{"turnId": "t1", "state": "running", "userItemId": "orca:" + f.lastOp[session]}
 	f.turnAt[session] = f.now().UnixMilli()
 }
 
@@ -268,7 +268,7 @@ func (f *fakeOrca) finishWith(session, state, outcome string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.working[session] = false
-	t := map[string]any{"turnId": "t1", "state": state, "userItemId": f.lastOp[session]}
+	t := map[string]any{"turnId": "t1", "state": state, "userItemId": "orca:" + f.lastOp[session]}
 	if outcome != "" {
 		t["outcome"] = outcome
 	}
