@@ -566,7 +566,8 @@ func TestReplayForced(t *testing.T) {
 	if e := entryWith(c, fam.Text); e == nil || !slices.Equal(e.Cats(), []string{entry.CatRelationships}) {
 		t.Fatalf("the refused observation is not kept on replay: %+v", c.St.S.Rejections)
 	}
-	if len(c.St.S.Rejections) != 1 || c.St.S.Rejections[0].Key != "other" || c.St.S.Done[key].Ruleset != schema.Ruleset {
+	if slices.ContainsFunc(c.St.S.Rejections, func(r store.Rejection) bool { return r.Key == key && r.Code == "SENSITIVE_OFF" }) ||
+		!slices.ContainsFunc(c.St.S.Rejections, func(r store.Rejection) bool { return r.Key == "other" }) || c.St.S.Done[key].Ruleset != schema.Ruleset {
 		t.Errorf("rejections %+v, ruleset %s", c.St.S.Rejections, c.St.S.Done[key].Ruleset)
 	}
 	// Twice: found again, not counted twice.
