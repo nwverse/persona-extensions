@@ -27,6 +27,12 @@ type updateArgs struct {
 	StateID       string `json:"state_id,omitempty"`
 }
 
+const (
+	maxProjectNameChars = 255
+	maxNameChars        = 255
+	maxDescriptionChars = 10000
+)
+
 func validText(value string, limit int, multiline bool) error {
 	if len([]rune(value)) > limit {
 		return errors.New("work item text exceeds the extension limit")
@@ -43,7 +49,7 @@ func (in createArgs) validate() error {
 	if err := validID(in.ProjectID); err != nil {
 		return err
 	}
-	if strings.TrimSpace(in.Name) == "" || validText(in.Name, 255, false) != nil || validText(in.Description, 10000, true) != nil {
+	if strings.TrimSpace(in.Name) == "" || validText(in.Name, maxNameChars, false) != nil || validText(in.Description, maxDescriptionChars, true) != nil {
 		return errors.New("name must be nonempty, one line and at most 255 characters; description is at most 10000 characters")
 	}
 	if in.Priority != "" && !validPriority(in.Priority) {
