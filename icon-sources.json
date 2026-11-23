@@ -128,6 +128,14 @@
       "license_url": "https://raw.githubusercontent.com/zulip/zulip/4a7fbdea0fa8b3425acdf3ad8590656c32053649/LICENSE",
       "license_file": "assets/LICENSE",
       "attribution": "Zulip project / Kandra Labs, Inc.. Official icon asset, with the upstream repository license notice preserved in each package. Trademark rights are separate from copyright licensing."
+    },
+    "orca": {
+      "repository": "https://github.com/stablyai/orca",
+      "revision": "6c3313a63da8470ea98e7ed58f46ae1dafcc795d",
+      "license": "MIT",
+      "license_url": "https://raw.githubusercontent.com/stablyai/orca/6c3313a63da8470ea98e7ed58f46ae1dafcc795d/LICENSE",
+      "license_file": "assets/LICENSE",
+      "attribution": "Copyright (c) 2026 Lovecast Inc. Official Orca app icon copied unchanged from the MIT-licensed Orca repository, with its license notice preserved in the package. Trademark rights are separate from copyright licensing."
     }
   },
   "icons": {
@@ -1171,6 +1179,17 @@
       "height": 1024,
       "trademark_owner": "Persona / nwverse",
       "usage": "Official Persona app branding for this Persona-native tool or pack, not the logo of an external data provider."
+    },
+    "orca-bot": {
+      "path": "assets/icon.png",
+      "source_id": "orca",
+      "source_url": "https://raw.githubusercontent.com/stablyai/orca/6c3313a63da8470ea98e7ed58f46ae1dafcc795d/resources/build/icon.png",
+      "sha256": "33aafb29dafe2b7bee3ca71d002f1821bbe920ae45a5643c27fb9dded37c12e6",
+      "format": "png",
+      "width": 1024,
+      "height": 1024,
+      "trademark_owner": "Orca (Lovecast Inc.)",
+      "usage": "Exact official Orca app icon used to identify the Orca desktop app this extension connects to; no affiliation or endorsement is implied."
     }
   }
 }
