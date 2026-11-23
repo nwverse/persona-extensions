@@ -31,7 +31,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.BookID < 0 || st.HighlightID < 0 || st.Page < 0 || len([]rune(st.BookName)) > maxTitleChars || len(st.DraftID) > 128 || len(st.Text) > 9000 || len([]rune(st.Title)) > maxTitleChars || len([]rune(st.Author)) > maxAuthorChars || len(st.Note) > 9000 || len(st.SourceURL) > 2100 || len([]rune(st.TagName)) > maxTagNameChars {
+	if err := r.DecodeState(&st); err != nil || st.BookID < 0 || st.HighlightID < 0 || st.Page < 0 || len([]rune(st.BookName)) > maxTitleChars || len(st.DraftID) > 128 || len([]rune(st.Text)) > maxHighlightChars || len([]rune(st.Title)) > maxTitleChars || len([]rune(st.Author)) > maxAuthorChars || len([]rune(st.Note)) > maxHighlightChars || len(st.SourceURL) > 2100 || len([]rune(st.TagName)) > maxTagNameChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -93,11 +93,17 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil, err
 		}
 		st.Text, st.Title, st.Author, st.Note, st.SourceURL, st.Mode = in.Text, in.Title, in.Author, in.Note, in.SourceURL, "review-create"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("highlight draft exceeds the web state size limit")
+		}
 	case "review-note":
-		if err := validText(r.Values["note"], 8191, true); err != nil {
+		if err := validText(r.Values["note"], maxHighlightChars, true); err != nil {
 			return nil, err
 		}
 		st.Note, st.Mode = r.Values["note"], "review-note"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("note draft exceeds the web state size limit")
+		}
 	case "review-tag":
 		if strings.TrimSpace(r.Values["tag_name"]) == "" || validText(r.Values["tag_name"], maxTagNameChars, false) != nil {
 			return nil, errors.New("invalid book tag")
@@ -243,12 +249,39 @@ func detailView(r *ext.UIRequest, st pageState, item highlight) *wire.View {
 	if link := safeLibraryLink(item.ReadwiseURL); link != "" {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
-	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.edit, Action: &wire.Action{ID: "edit-note", Push: &wire.Push{Title: t.edit, State: ext.EncodeState(pageState{Mode: "edit-note", HighlightID: item.ID, Note: item.Note, DraftID: randomID()})}}}, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
-	v := &wire.View{Title: fmt.Sprintf("Highlight #%d", item.ID), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.library, Items: items}, {Title: t.text, Items: textComponents(item.Text)}}}
+	editDraft := randomID()
+	editState := ext.EncodeState(pageState{Mode: "edit-note", HighlightID: item.ID, Note: item.Note, DraftID: editDraft})
+	if len(editState) > wire.StateMost {
+		editState = ext.EncodeState(pageState{Mode: "edit-note", HighlightID: item.ID, DraftID: editDraft})
+	}
+	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.edit, Action: &wire.Action{ID: "edit-note", Push: &wire.Push{Title: t.edit, State: editState}}}, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
+	passage := capComponents(textComponents(item.Text), maxPassageItems)
+	v := &wire.View{Title: fmt.Sprintf("Highlight #%d", item.ID), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.library, Items: items}, {Title: t.text, Items: passage}}}
 	if item.Note != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: textComponents(item.Note)})
+		note := capComponents(textComponents(item.Note), maxViewItems-len(items)-len(passage))
+		if len(note) > 0 {
+			v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: note})
+		}
 	}
 	return v
+}
+
+const (
+	// maxViewItems keeps the highlight detail view within the SDK's 300 component limit across passage and note.
+	maxViewItems    = 250
+	maxPassageItems = 150
+)
+
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if n <= 0 {
+		return nil
+	}
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func textComponents(text string) []wire.Component {
