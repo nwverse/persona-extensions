@@ -127,3 +127,15 @@ func TestParseSeeds(t *testing.T) {
 		}
 	}
 }
+
+// The tool's schema no longer lists "" for expiring (Gemini refuses an empty enum value), but a caller that still
+// sends it imports as before: no expiry.
+func TestParseSeedsTakesAnEmptyExpiring(t *testing.T) {
+	f, err := ParseSeeds([]byte(`{"source":"notes","items":[{"id":"a","kind":"rule","text":"x","confirmed":"2026-03-01","expiring":""}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Items[0].Expiring != "" {
+		t.Fatalf("expiring = %q", f.Items[0].Expiring)
+	}
+}

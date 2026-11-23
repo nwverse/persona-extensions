@@ -1,5 +1,15 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.43 (pre-release)
+
+Only a tool schema fix; nothing else changes.
+
+- **`enkeep_seed_import` no longer lists an empty string for `expiring`.** Its enum was `["", "recent", "role"]`;
+  Gemini rejects an empty enum value (`enum[0]: cannot be empty`) and then refuses every request of a session that
+  has the tool, so a Gemini agent with Persona's MCP tools could not call its model at all. The enum is now
+  `["recent", "role"]`: leave `expiring` out for no expiry. A caller that still sends `""` imports as before.
+  A test checks that no tool here declares an empty string or nothing in an enum.
+
 ## 0.2.0-beta.42 (pre-release)
 
 Only the memory source; nothing else changes. This version does not read the unified entries ledger, does not add

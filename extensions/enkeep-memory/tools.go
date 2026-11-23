@@ -122,7 +122,7 @@ var rerunTools = []tool{
 					"facet": map[string]any{"type": "string", "enum": []string{"interaction", "tools", "judgement", "workflow", "world", "persona"}},
 					"hard":  map[string]any{"type": "boolean"}, "category": map[string]any{"type": "string"},
 					"scope": map[string]any{"type": "string"}, "domain": map[string]any{"type": "string", "enum": []string{"work", "life"}},
-					"effective": map[string]any{"type": "string"}, "expiring": map[string]any{"type": "string", "enum": []string{"", "recent", "role"}},
+					"effective": map[string]any{"type": "string"}, "expiring": map[string]any{"type": "string", "enum": []string{"recent", "role"}},
 					"sensitive": map[string]any{"type": "string"},
 				}}},
 			"apply": map[string]any{"type": "boolean", "default": false, "description": "false (default): preview only; true: write"},
