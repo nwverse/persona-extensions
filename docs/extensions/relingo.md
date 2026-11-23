@@ -56,7 +56,7 @@ The app calls the program over the extension protocol. Every call includes `cont
 | `text_lookup.save` | Remembers `{word}` on the same list as the reading page and answers `{saved: true}` when it is now saved. |
 | `text_lookup.remove` | Forgets `{word}` and answers `{saved: false}`. |
 
-Lookup uses the same lemmatization, contractions and typographic apostrophes as the reading page. A function word, a short uppercase acronym or an everyday developer term is still not a candidate, including when it is already saved: saving and removing those goes through the reading page. A word with no lexicon entry is not found and is not saved.
+Lookup uses the same lemmatization, contractions and typographic apostrophes as the reading page. A function word, a short uppercase acronym or an everyday developer term is not offered as a candidate and is not saved through `text_lookup.save`, though if it is already saved it still answers `text_lookup.lookup` and can be removed (including by its inflected forms) through `text_lookup.remove`. A word with no lexicon entry is not found and is not saved.
 
 `underline_saved` is a boolean setting, default `false`, shown in the settings as **在 App 里给记下的词加下划线**. The reading page does not draw this underline itself; the app does, from `text_lookup.state`.
 

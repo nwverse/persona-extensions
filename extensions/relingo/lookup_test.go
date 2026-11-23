@@ -206,4 +206,19 @@ func TestLookupSavedDeveloperWord(t *testing.T) {
 	if _, still := a.store.snapshot().Words["compile"]; still || res.Saved {
 		t.Fatalf("removing compiles left compile saved (saved=%v)", res.Saved)
 	}
+	// A saved developer word or non-lexicon entry is also removed when passed with uppercase letters.
+	a.store.save("endpoint", "n. endpoint")
+	a.store.save("customterm", "n. customterm")
+	for _, tc := range []struct{ surface, lemma string }{
+		{"Endpoint", "endpoint"},
+		{"CustomTerm", "customterm"},
+	} {
+		res = savedResult{}
+		if err := json.Unmarshal(lookupCall(t, h, "remove", map[string]any{"contribution": "relingo", "word": tc.surface}), &res); err != nil {
+			t.Fatal(err)
+		}
+		if _, still := a.store.snapshot().Words[tc.lemma]; still || res.Saved {
+			t.Fatalf("removing %q left %q saved (saved=%v)", tc.surface, tc.lemma, res.Saved)
+		}
+	}
 }

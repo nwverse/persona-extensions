@@ -126,6 +126,8 @@ func (a *app) lookupRemove(_ context.Context, p lookupParams) (savedResult, erro
 	// Find the saved lemma whatever the candidate rules say: a saved developer word's inflected form removes it too.
 	if lemma, _, ok := lexicon.lookup(word, true); ok {
 		word = lemma
+	} else {
+		word = foldWord(word)
 	}
 	a.store.remove(word)
 	// Membership, not the entry's lemma: a blank or unknown word reads the zero entry, whose empty lemma equals "".
