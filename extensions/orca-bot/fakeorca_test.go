@@ -38,14 +38,17 @@ type fakeOrca struct {
 	lastOp    map[string]string
 	prompts   map[string]int
 	now       func() time.Time
-	otherRT   bool              // answer under another runtime id
-	autoOpen  bool              // the bot starts on each message at once (its chat is no longer empty)
-	dropSend  bool              // agentSession.send is taken, then the connection drops without an answer
-	onCall    map[string]func() // runs as a method is answered (a call that takes long)
-	sends     []fakeSend
-	ops       map[string]string // clientOperationId → fingerprint
-	calls     map[string]int
-	refuse    map[string]string // method → error code to answer
+	otherRT   bool // answer under another runtime id
+	autoOpen  bool // the bot starts on each message at once (its chat is no longer empty)
+	dropSend  bool // agentSession.send is taken, then the connection drops without an answer
+	// sendUnknown: agentSession.send is answered agent_session_operation_unknown (Orca cannot say whether an earlier
+	// try landed) and nothing is taken: the chat stays empty.
+	sendUnknown bool
+	onCall      map[string]func() // runs as a method is answered (a call that takes long)
+	sends       []fakeSend
+	ops         map[string]string // clientOperationId → fingerprint
+	calls       map[string]int
+	refuse      map[string]string // method → error code to answer
 }
 
 type fakeSend struct {
@@ -224,6 +227,9 @@ func (f *fakeOrca) answer(token, method string, raw json.RawMessage) (any, strin
 		fp, _ := env["payloadFingerprint"].(string)
 		if !orcaOpIDPattern.MatchString(op) {
 			return map[string]any{"ok": false, "refusal": map[string]any{"code": "agent_session_operation_invalid"}}, ""
+		}
+		if f.sendUnknown {
+			return map[string]any{"ok": false, "refusal": map[string]any{"code": "agent_session_operation_unknown"}}, ""
 		}
 		want, err := orcaFingerprint("agentSession.send", s, map[string]any{"body": p["body"], "delivery": p["delivery"]})
 		if err != nil || fp != want {

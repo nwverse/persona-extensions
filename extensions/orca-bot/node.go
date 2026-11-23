@@ -417,9 +417,7 @@ func (n *nodeApp) rpc(ctx context.Context, method string, params json.RawMessage
 			return nil, &ext.Error{Code: "invalid", Message: err.Error()}
 		}
 		n.sendMu.Lock() // not in the middle of its own hand-over
-		n.mu.Lock()
-		released := n.abandon(p.TodoID)
-		n.mu.Unlock()
+		released := n.abandon(ctx, p.TodoID)
 		n.sendMu.Unlock()
 		return map[string]any{"released": released}, nil
 	case "finished_ack":
@@ -471,6 +469,8 @@ func nodeErr(err error) error {
 		code = "bot_not_found"
 	case orcaCode(err) == "bots_disabled": // Orca's BOTS_DISABLED_CODE
 		code = "bots_disabled"
+	case orcaCode(err) == "agent_session_operation_unknown": // Orca cannot say whether an earlier send landed
+		code = "orca_unsure"
 	}
 	return &ext.Error{Code: code, Message: code + ": " + clip(err.Error(), 300)}
 }
@@ -546,10 +546,11 @@ func lastTry(h *nodeHandoff) time.Time {
 	return h.CreatedAt
 }
 
-// claimedBy is the to-do another hand-over holds the chat for, "" when none does. A holder that never sent and was
-// last tried longer ago than nodeStaleClaim lets the chat go (the chat is still empty, nothing of it is there): it
-// starts from a new chat should it be tried again. The caller holds n.mu.
-func (n *nodeApp) claimedBy(sessionID, todoID string) string {
+// claimedBy is the hand-over of another to-do that holds the chat, nil when none does. A holder that never sent, is
+// not unsure, and was last tried longer ago than nodeStaleClaim lets the chat go (the chat is still empty, nothing of
+// it is there): it starts from a new chat should it be tried again. An unsure holder is settled by settleUnsure. The
+// caller holds n.mu.
+func (n *nodeApp) claimedBy(sessionID, todoID string) *nodeHandoff {
 	for _, h := range n.st.Handoffs {
 		if h.SessionID != sessionID || h.TodoID == todoID {
 			continue
@@ -558,16 +559,64 @@ func (n *nodeApp) claimedBy(sessionID, todoID string) string {
 			h.SessionID = ""
 			continue
 		}
-		return h.TodoID
+		return h
 	}
-	return ""
+	return nil
+}
+
+// settleUnsure looks at the chat of an unsure hand-over (its send failed without Orca refusing it) to learn whether
+// Orca took it. A turn in the chat, work in progress or a waiting prompt says it did: the hand-over counts as sent
+// and is followed (the chat was empty when it was claimed, so whatever is in it is this send's). An empty chat, or
+// one Orca no longer has, says it did not: once nodeStaleClaim has passed since the last attempt, the chat is let go.
+// Orca away or incompatible tells nothing: it stays. The caller holds n.sendMu, not n.mu.
+func (n *nodeApp) settleUnsure(ctx context.Context, h *nodeHandoff) (released, taken bool) {
+	n.mu.Lock()
+	sid, tried, unsure, sent := h.SessionID, lastTry(h), h.Unsure, h.Sent
+	n.mu.Unlock()
+	switch {
+	case sent:
+		return false, true
+	case !unsure || sid == "":
+		return sid == "", false
+	}
+	cctx, cancel := context.WithTimeout(ctx, orcaHistoryTimeout)
+	head, err := n.orca.Head(cctx, sid)
+	cancel()
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	switch {
+	case err != nil && (orcaDown(err) || errors.Is(err, errOrcaIncompatible)):
+		return false, false
+	case err == nil && (head.Turn != nil || (head.Working != nil && *head.Working) || head.Prompts > 0):
+		h.Sent, h.SentAt, h.Unsure = true, h.CreatedAt, false
+		n.save()
+		return false, true
+	case n.now().Sub(tried) < nodeStaleClaim:
+		return false, false
+	}
+	h.Unsure, h.SessionID = false, ""
+	n.save()
+	return true, false
 }
 
 // abandon forgets a hand-over the hub gave up, when it never sent: its chat is free again. A sent one stays (it is
-// followed to its end). The caller holds n.mu.
-func (n *nodeApp) abandon(todoID string) bool {
+// followed to its end); an unsure one is settled first (settleUnsure). The caller holds n.sendMu, not n.mu.
+func (n *nodeApp) abandon(ctx context.Context, todoID string) bool {
+	n.mu.Lock()
 	h := n.st.Handoffs[todoID]
-	if h == nil || h.Sent || h.Unsure { // an unsure one may be in its chat: the chat stays claimed
+	unsure := h != nil && h.Unsure && !h.Sent
+	n.mu.Unlock()
+	if h == nil {
+		return false
+	}
+	if unsure {
+		if released, _ := n.settleUnsure(ctx, h); !released {
+			return false
+		}
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if h.Sent || h.Unsure || n.st.Handoffs[todoID] != h {
 		return false
 	}
 	delete(n.st.Handoffs, todoID)
@@ -612,7 +661,7 @@ func (n *nodeApp) handoff(ctx context.Context, p handoffParams) (*handoffResult,
 		n.mu.Unlock()
 	}()
 	sessionID, opID := h.SessionID, h.OpID
-	if sessionID != "" && n.claimedBy(sessionID, p.TodoID) != "" {
+	if sessionID != "" && n.claimedBy(sessionID, p.TodoID) != nil {
 		// Never expected (a chat is claimed once), but never send two to-dos into one chat.
 		h.SessionID, sessionID = "", ""
 		n.save()
@@ -646,8 +695,16 @@ func (n *nodeApp) handoff(ctx context.Context, p handoffParams) (*handoffResult,
 		}
 		n.mu.Lock()
 		// Orca answers an empty chat already open instead of a new one, and a chat stays empty after a send until
-		// its turn opens: the chat of another hand-over is refused, and this one is tried again later.
-		if other := n.claimedBy(sid, p.TodoID); other != "" {
+		// its turn opens: the chat of another hand-over is refused, and this one is tried again later. An unsure
+		// holder is looked at first: if Orca never took its send, the chat is let go.
+		other := n.claimedBy(sid, p.TodoID)
+		if other != nil && other.Unsure && !other.Sent {
+			n.mu.Unlock()
+			n.settleUnsure(ctx, other)
+			n.mu.Lock()
+			other = n.claimedBy(sid, p.TodoID)
+		}
+		if other != nil {
 			n.mu.Unlock()
 			return nil, codeErr("orca_busy", "Orca offered a chat another to-do was just sent to")
 		}
