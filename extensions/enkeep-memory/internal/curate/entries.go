@@ -44,6 +44,43 @@ const maxEvidence = 60
 
 // Observe keeps one entry seen in a unit (or self-reported): a new entry, or one more sighting of the same one.
 // It returns the id, or "" when the user deleted the same content before. Call it with the store's lock held.
+// overlapTwin is a live action of the same facet (and person) citing one of the same lines of the same unit and day
+// with nearly the same text: what two overlapping parts of one long unit both saw (dailyOverlapTokens).
+func overlapTwin(s *store.State, e *entry.Entry) *entry.Entry {
+	if e.Grain != entry.Action || len(e.Evidence) == 0 {
+		return nil
+	}
+	type at struct {
+		ref, day string
+		n        int
+	}
+	lines := map[at]bool{}
+	for _, x := range e.Evidence {
+		if x.N > 0 {
+			lines[at{x.Ref, x.Day, x.N}] = true
+		}
+	}
+	if len(lines) == 0 {
+		return nil
+	}
+	for _, id := range sortedKeys(s.Entries) {
+		o := s.Entries[id]
+		if o.Grain != entry.Action || o.Facet != e.Facet || o.Person != e.Person || o.Deleted || !o.Live() {
+			continue
+		}
+		if !slices.ContainsFunc(o.Evidence, func(x entry.Evidence) bool { return lines[at{x.Ref, x.Day, x.N}] }) {
+			continue
+		}
+		if norm.Jaccard(o.Text, e.Text) >= overlapSame {
+			return o
+		}
+	}
+	return nil
+}
+
+// overlapSame: the bigram likeness above which two observations on the same line are one.
+const overlapSame = 0.6
+
 func (c *Curator) Observe(e *entry.Entry, run string) string {
 	s := c.St.S
 	if tombstoned(s, e.Facet, e.Text, e.Person) {
@@ -70,6 +107,13 @@ func (c *Curator) Observe(e *entry.Entry, run string) string {
 		old.Updated = now
 		c.commit(entry.EvObserve, old, "", "again", run)
 		return id
+	}
+	if old := overlapTwin(s, e); old != nil {
+		// The same observation from the next part of a long unit (daily/16 parts overlap): one more sighting of it.
+		mergeSighting(old, e, day)
+		old.Updated = now
+		c.commit(entry.EvObserve, old, "", "again (overlapping part)", run)
+		return old.ID
 	}
 	e.ID = id
 	if e.Status == "" {
@@ -114,6 +158,7 @@ func mergeSighting(old, e *entry.Entry, day string) {
 		}
 	}
 	old.Evidence = trimEvidence(old.Evidence)
+	old.MergeCategories(e) // what a sighting carries, the entry carries (0.2.0-beta.40)
 	if fresh {
 		old.Count++
 	}
@@ -496,6 +541,7 @@ func (c *Curator) File(actionID, classID, run string) error {
 		k.Members = append(k.Members, actionID)
 	}
 	k.Counters = slices.DeleteFunc(k.Counters, func(x string) bool { return x == actionID })
+	k.MergeCategories(a) // a class carries its members' categories (the strict side of the scenes)
 	recount(s, k)
 	k.Updated = c.stamp()
 	c.commit(entry.EvFile, a, classID, "", run)
@@ -598,6 +644,7 @@ func (c *Curator) Merge(fromID, intoID, why, run string) error {
 		into.Count = max(into.Count, len(occurrences(into)))
 	}
 	into.Scopes = unionScopes(into.Scopes, from.Scopes)
+	into.MergeCategories(from)
 	for _, id := range sortedKeys(s.Entries) { // an abstract entry resting on the merged class rests on the kept one
 		if x := s.Entries[id]; x.Grain == entry.Abstract && slices.Contains(x.Members, fromID) {
 			x.Members = slices.DeleteFunc(x.Members, func(m string) bool { return m == fromID || m == intoID })
@@ -697,7 +744,7 @@ func (c *Curator) create(e *entry.Entry, run string) *entry.Entry {
 
 // userTouched: the user wrote, pinned, deleted or confirmed it: consolidation never overwrites it (5.0).
 func userTouched(e *entry.Entry) bool {
-	return e.User != nil || e.Pinned || e.Deleted || userConfirmed(e) || e.Origin == entry.Handwritten
+	return e.User != nil || e.Pinned || e.Deleted || userConfirmed(e) || e.Origin == entry.Handwritten || e.Origin == entry.Seed
 }
 
 // Flags consolidation sets.
@@ -738,6 +785,9 @@ const (
 	ActRight   = "right"
 	ActWrong   = "wrong"
 	ActUnsure  = "unsure"
+	// ActCatAdd and ActCatRemove tag or untag a category (the value); only the user may take one off.
+	ActCatAdd    = "cat_add"
+	ActCatRemove = "cat_remove"
 )
 
 // UserAct applies the user's change to an entry. Call it with the store's lock held. A hand-written entry's text is
@@ -770,12 +820,39 @@ func (c *Curator) UserAct(id, act, value string) error {
 		s.Tombstones = slices.DeleteFunc(s.Tombstones, func(t entry.Tombstone) bool { return t.Facet == e.Facet && t.Key == key })
 	case ActRight, ActWrong, ActUnsure:
 		e.Verdicts = append(e.Verdicts, entry.Verdict{Mark: act, At: now, By: "user", Note: value})
+	case ActCatAdd:
+		if !e.AddCategory(value, entry.ByUser) {
+			return fmt.Errorf("%s: category %q not added", id, value)
+		}
+	case ActCatRemove:
+		if !e.RemoveCategory(value, entry.ByUser) {
+			return fmt.Errorf("%s: category %q not on it", id, value)
+		}
 	default:
 		return fmt.Errorf("unknown action %q", act)
 	}
 	e.Updated = now
 	c.commit(entry.EvUser, e, "", act, "")
 	return nil
+}
+
+// MarkWrongBy marks an entry wrong on behalf of the assistant or an agent (enkeep_mark_wrong, 0.2.0-beta.37): the
+// same verdict as the user's "不对" on the page, recorded with who gave it (by: "assistant") and why, without a card on
+// the user's phone. It takes the entry out of every exit and keeps it as a counter-example; the user can mark it
+// right on the page to bring it back. Call it with the store's lock held.
+func (c *Curator) MarkWrongBy(id, by, note string) (*entry.Entry, error) {
+	e := c.St.S.Entries[id]
+	if e == nil {
+		return nil, fmt.Errorf("no entry %s", id)
+	}
+	if n := len(e.Verdicts); n > 0 && e.Verdicts[n-1].Mark == ActWrong {
+		return e, nil // already wrong: nothing more
+	}
+	now := c.stamp()
+	e.Verdicts = append(e.Verdicts, entry.Verdict{Mark: ActWrong, At: now, By: by, Note: note})
+	e.Updated = now
+	c.commit(entry.EvUser, e, "", ActWrong+" by "+by, "")
+	return e, nil
 }
 
 // EntriesOf lists a facet's live entries (keep may narrow them), ordered as every view and exit orders them:

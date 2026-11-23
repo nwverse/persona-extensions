@@ -154,11 +154,16 @@ func TestCardProfileMapping(t *testing.T) {
 			t.Fatalf("%s written: %s", never, all)
 		}
 	}
-	// K13: the sensitive category only when the user turned it on.
+	// K13 decides nothing now; K22: the category only when the user let it into the resident exits.
 	c.St.S.Switches[entry.K13Sensitive+"."+entry.SensHealth] = entry.SwitchSetting{Value: "on", By: "user"}
 	prof, _ = c.cardProfile(c.PersonCard(pA, "2026-11-08"), true)
+	if slices.Contains(texts(prof.Facts), "sensitive-line") {
+		t.Fatalf("K13 on opened a category: %q", texts(prof.Facts))
+	}
+	c.St.S.Switches[entry.K22Resident+"."+entry.CatHealth] = entry.SwitchSetting{Value: "on", By: "user"}
+	prof, _ = c.cardProfile(c.PersonCard(pA, "2026-11-08"), true)
 	if !slices.Contains(texts(prof.Facts), "sensitive-line") {
-		t.Fatalf("K13 on: %q", texts(prof.Facts))
+		t.Fatalf("K22 on: %q", texts(prof.Facts))
 	}
 	// K15 off: no inferences.
 	prof, _ = c.cardProfile(c.PersonCard(pA, "2026-11-08"), false)

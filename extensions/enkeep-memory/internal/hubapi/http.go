@@ -36,7 +36,7 @@ type HTTP struct {
 	mu    sync.Mutex
 	bytes map[string]int
 
-	health map[string]bool // machine/session → a health space session, as the last Sessions listed
+	spaces map[string]string // machine/session → its assistant space, as the last Sessions listed
 }
 
 // FromEnv is the HTTP client of PERSONA_HUB_URL and PERSONA_HUB_TOKEN, or nil when either is unset.
@@ -159,6 +159,7 @@ type hubSession struct {
 func (s hubSession) session() Session {
 	out := Session{Machine: s.Machine, ID: s.ID, Title: s.Title, Agent: s.Agent, Cwd: s.Cwd, Started: s.Started,
 		Updated: s.Updated, Status: s.Status, Assistant: s.Assistant, Health: IsHealth(s.Assistant, s.Space),
+		Space:     spaceOf(s.Assistant, s.Space),
 		ByPersona: s.ByPersona || s.ByJarvis}
 	if out.Agent == "" {
 		out.Agent = "claude"
@@ -181,12 +182,21 @@ func (s hubSession) session() Session {
 // IsHealth says whether a session is a health space conversation (proto.Session: assistant and space "health").
 func IsHealth(assistant bool, space string) bool { return assistant && space == "health" }
 
-// Sessions lists the sessions updated since since, in the paged list (limit, cursor), without health space ones and
-// without subagents (their work shows in the parent's items).
+// spaceOf is an assistant session's space slug ("" for the main space and for other sessions).
+func spaceOf(assistant bool, space string) string {
+	if !assistant {
+		return ""
+	}
+	return strings.TrimSpace(space)
+}
+
+// Sessions lists the sessions updated since since, in the paged list (limit, cursor), without subagents (their work
+// shows in the parent's items). Every space's sessions are listed, the health space's too (0.2.0-beta.40: collect
+// everything, tag it, decide by scene; design v2 §3.3b): each carries its space.
 func (h *HTTP) Sessions(ctx context.Context, since time.Time) ([]Session, error) {
 	q := url.Values{"limit": {"200"}}
 	var out []Session
-	health := map[string]bool{}
+	spaces := map[string]string{}
 	for page := 0; page < 500; page++ {
 		var r struct {
 			Sessions   []hubSession `json:"sessions"`
@@ -197,10 +207,7 @@ func (h *HTTP) Sessions(ctx context.Context, since time.Time) ([]Session, error)
 			return out, err
 		}
 		for _, s := range r.Sessions {
-			if IsHealth(s.Assistant, s.Space) {
-				health[s.Machine+"/"+s.ID] = true
-				continue
-			}
+			spaces[s.Machine+"/"+s.ID] = spaceOf(s.Assistant, s.Space)
 			if s.Subagent || s.Updated.Before(since) {
 				continue
 			}
@@ -212,16 +219,16 @@ func (h *HTTP) Sessions(ctx context.Context, since time.Time) ([]Session, error)
 		q.Set("cursor", r.NextCursor)
 	}
 	h.mu.Lock()
-	h.health = health
+	h.spaces = spaces
 	h.mu.Unlock()
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Updated.Before(out[j].Updated) })
 	return out, nil
 }
 
-// listed makes sure the sessions were listed (for the health space filter); false when the list cannot be read.
+// listed makes sure the sessions were listed (for the sessions' spaces); false when the list cannot be read.
 func (h *HTTP) listed(ctx context.Context) error {
 	h.mu.Lock()
-	known := h.health != nil
+	known := h.spaces != nil
 	h.mu.Unlock()
 	if known {
 		return nil
@@ -230,10 +237,11 @@ func (h *HTTP) listed(ctx context.Context) error {
 	return err
 }
 
-func (h *HTTP) isHealth(machine, session string) bool {
+// spaceOfSession is a listed session's space ("" when the main space or not listed).
+func (h *HTTP) spaceOfSession(machine, session string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.health[machine+"/"+session]
+	return h.spaces[machine+"/"+session]
 }
 
 // hubItem is proto.Item (the fields read here).
@@ -320,15 +328,8 @@ func (it hubItem) item() Item {
 	return out
 }
 
-// Items reads a session's items: folded and after a seq for daily reading, or one segment unfolded for a dig. A
-// health space session is never read.
+// Items reads a session's items: folded and after a seq for daily reading, or one segment unfolded for a dig.
 func (h *HTTP) Items(ctx context.Context, machine, session string, q ItemsQuery) ([]Item, error) {
-	if err := h.listed(ctx); err != nil {
-		return nil, err // without the list a health space session could not be told apart
-	}
-	if h.isHealth(machine, session) {
-		return nil, nil
-	}
 	v := url.Values{}
 	if q.Fold {
 		v.Set("fold_work", "1")
@@ -505,7 +506,7 @@ func (h *HTTP) Interactions(ctx context.Context, q InteractionsQuery) ([]Interac
 		limit = q.Limit
 	}
 	if err := h.listed(ctx); err != nil {
-		return nil, err // without the list a health space card could not be told apart
+		return nil, err // without the list a card's space could not be told
 	}
 	ranged := !q.Since.IsZero() || !q.Before.IsZero() || q.Kind != ""
 	before, beforeID := q.Before, q.BeforeID
@@ -547,9 +548,10 @@ func (h *HTTP) Interactions(ctx context.Context, q InteractionsQuery) ([]Interac
 					old = true // the hub did not apply the range: a hub before H3
 					continue
 				}
-				if x.Private || h.isHealth(x.Machine, x.Session) {
+				if x.Private {
 					continue
 				}
+				x.Space = h.spaceOfSession(x.Machine, x.Session)
 				x.Question = clip(x.Question, maxQuestion)
 				for i := range x.Options {
 					x.Options[i] = clip(x.Options[i], maxOption)
@@ -591,7 +593,7 @@ type hubTodo struct {
 	} `json:"spaces"`
 }
 
-// Todos lists the to-dos updated since since. A to-do linked only to the health space is dropped.
+// Todos lists the to-dos updated since since, every space's.
 func (h *HTTP) Todos(ctx context.Context, since time.Time) ([]Todo, error) {
 	var r struct {
 		Todos []hubTodo `json:"todos"`
@@ -601,7 +603,7 @@ func (h *HTTP) Todos(ctx context.Context, since time.Time) ([]Todo, error) {
 	}
 	var out []Todo
 	for _, t := range r.Todos {
-		if healthOnly(t) || t.Updated.Before(since) {
+		if t.Updated.Before(since) {
 			continue
 		}
 		x := Todo{ID: t.ID, Title: t.Title, Project: t.Project, Updated: t.Updated, Created: t.Created, Kind: t.Kind}
@@ -617,18 +619,6 @@ func (h *HTTP) Todos(ctx context.Context, since time.Time) ([]Todo, error) {
 		out = append(out, x)
 	}
 	return out, nil
-}
-
-func healthOnly(t hubTodo) bool {
-	if len(t.Spaces) == 0 {
-		return false
-	}
-	for _, s := range t.Spaces {
-		if s.Space != "health" {
-			return false
-		}
-	}
-	return true
 }
 
 // TodoDecisions reads a to-do's decisions, superseded ones included (all=1), oldest first.

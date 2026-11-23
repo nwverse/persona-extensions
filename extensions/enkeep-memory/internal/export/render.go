@@ -1,8 +1,6 @@
 package export
 
 import (
-	"crypto/sha1"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"path"
@@ -173,7 +171,16 @@ func (c *compiler) render(p *plan, texts map[string]string) []file {
 	for _, slug := range slugs {
 		pr := p.projects[slug]
 		var parts []part
-		for _, f := range []string{"tools", "judgement", "workflow", "world"} {
+		if c.on(entry.K19ProjectGeneral) {
+			// The rules for working with the user that hold everywhere, ahead of the project's own: an agent does not
+			// read the assistant's CLAUDE.md (0.2.0-beta.37). At most three lines, from exit A's first.
+			gen := c.lines(p.a["interaction"], texts, false)
+			if len(gen) > 3 {
+				gen = gen[:3]
+			}
+			parts = append(parts, part{key: "general", heading: c.fw.ProjGen, lines: gen})
+		}
+		for _, f := range []string{"interaction", "tools", "judgement", "workflow", "world"} {
 			var ls []line
 			for _, e := range pr.parts[f] {
 				if openCommitment(e) {
@@ -182,7 +189,18 @@ func (c *compiler) render(p *plan, texts map[string]string) []file {
 					ls = append(ls, c.lines([]*entry.Entry{e}, texts, f == "world")...)
 				}
 			}
-			parts = append(parts, part{key: f, heading: c.fw.ProjParts[f], lines: ls})
+			heading := c.fw.ProjParts[f]
+			if heading == "" {
+				heading = c.fw.Sections[f]
+			}
+			parts = append(parts, part{key: f, heading: heading, lines: ls})
+		}
+		own := false
+		for _, pt := range parts {
+			own = own || (pt.key != "general" && len(pt.lines) > 0)
+		}
+		if !own {
+			continue // the general part alone says nothing about the project
 		}
 		content, ids := fillParts(fmt.Sprintf(c.fw.Project, pr.name), parts, ProjectMax)
 		if content != "" {
@@ -221,53 +239,86 @@ func (c *compiler) render(p *plan, texts map[string]string) []file {
 	return files
 }
 
-// instructions is exit A: sections in their order, each within its own budget (scaled down when the title and the
-// fixed lines would push the whole past 6 KB), each ordered by count × source kinds; an empty section is left out.
+// instructions is exit A: sections in their order, each first given its share of what the title and the fixed lines
+// leave of 6 KB (SectionShare), then what the sections did not use goes to those that still have lines, in order;
+// each ordered by count × source kinds; an empty section is left out.
 func (c *compiler) instructions(p *plan, texts map[string]string) file {
 	f := file{path: InstructionsPath, exit: "A"}
 	if !c.on(entry.K1PerTurnBlock) {
 		return f
 	}
+	world := c.commitmentLines(p.a["world"])
+	if c.on(entry.K18NamesIndex) {
+		world = append(world, c.namesIndex(p)...)
+	}
 	sections := map[string][]line{
 		"interaction": c.lines(p.a["interaction"], texts, false),
 		"judgement":   c.lines(p.a["judgement"], texts, false),
 		"workflow":    c.lines(p.a["workflow"], texts, false),
-		"world":       c.commitmentLines(p.a["world"]),
+		"world":       world,
 		"persona":     c.lines(p.a["persona"], texts, false),
 	}
 	askHint := entry.Switch(c.st.Switches, entry.K2Judgement) != "off" && len(sections["judgement"]) > 0
 	head := c.fw.Title + "\n"
-	tail := "\n- " + c.fw.PeopleNote + "\n"
+	tail := "\n- " + c.fw.PeopleNote + "\n- " + c.fw.RecallHint + "\n"
 	if askHint {
 		tail += "- " + c.fw.AskHint + "\n"
 	}
-	total := 0
-	for _, s := range SectionOrder {
-		total += SectionBudget[s]
-	}
 	avail := InstructionsMax - len(head) - len(tail) - len(SectionOrder) // a blank line before each section
-	scale := 1.0
-	if total > avail {
-		scale = float64(avail) / float64(total)
+	render := func(s string, budget int) (string, []string) {
+		if s == "tools" {
+			return c.toolsIndex(p.objects, budget), nil
+		}
+		return fill(c.fw.Sections[s], sections[s], budget)
+	}
+	texts2 := map[string]string{}
+	got := map[string][]string{}
+	used := 0
+	for _, s := range SectionOrder {
+		texts2[s], got[s] = render(s, avail*SectionShare[s]/100)
+		used += len(texts2[s])
+	}
+	// What is left goes to the sections that left lines out, in proportion to their shares; a last round in order
+	// takes what rounding and lines too long for a part left.
+	hungry := func(s string) bool { return s != "tools" && len(got[s]) < len(sections[s]) }
+	for round := 0; round < 4; round++ {
+		left := avail - used
+		if left <= 0 {
+			break
+		}
+		shares := 0
+		for _, s := range SectionOrder {
+			if hungry(s) {
+				shares += SectionShare[s]
+			}
+		}
+		if shares == 0 {
+			break
+		}
+		for _, s := range SectionOrder {
+			if !hungry(s) {
+				continue
+			}
+			extra := left * SectionShare[s] / shares
+			if round == 3 {
+				extra = avail - used
+			}
+			if t, g := render(s, len(texts2[s])+extra); t != "" && len(t) > len(texts2[s]) {
+				used += len(t) - len(texts2[s])
+				texts2[s], got[s] = t, g
+			}
+		}
 	}
 	var b strings.Builder
 	var ids []string
 	for _, s := range SectionOrder {
-		budget := int(float64(SectionBudget[s]) * scale)
-		var text string
-		var got []string
-		if s == "tools" {
-			text = c.toolsIndex(p.objects, budget)
-		} else {
-			text, got = fill(c.fw.Sections[s], sections[s], budget)
-		}
-		if text == "" {
+		if texts2[s] == "" {
 			continue
 		}
-		c.rep.Sections[s] = len(text)
-		c.rep.SecLines[s] = len(got)
-		b.WriteString("\n" + text)
-		ids = append(ids, got...)
+		c.rep.Sections[s] = len(texts2[s])
+		c.rep.SecLines[s] = len(got[s])
+		b.WriteString("\n" + texts2[s])
+		ids = append(ids, got[s]...)
 	}
 	if b.Len() == 0 {
 		return f // nothing to say: an empty file, no placeholder
@@ -275,6 +326,46 @@ func (c *compiler) instructions(p *plan, texts map[string]string) file {
 	f.content = head + b.String() + tail
 	f.ids = ids
 	return f
+}
+
+// namesIndex is ⑤'s names index in exit A (K18): the people the user deals with most and the projects with the most
+// entries, names only; what is known about them is looked up with enkeep_recall.
+func (c *compiler) namesIndex(p *plan) []line {
+	var out []line
+	if c.on(entry.K14People) {
+		if names := c.contactNames(8); len(names) > 0 {
+			out = append(out, line{text: fmt.Sprintf(c.fw.Contacts, list(c.o.Lang, names))})
+		}
+	}
+	type pc struct {
+		name string
+		n    int
+	}
+	var ps []pc
+	for _, pr := range p.projects {
+		n := 0
+		for _, es := range pr.parts {
+			n += len(es)
+		}
+		ps = append(ps, pc{pr.name, n})
+	}
+	sort.Slice(ps, func(i, j int) bool {
+		if ps[i].n != ps[j].n {
+			return ps[i].n > ps[j].n
+		}
+		return ps[i].name < ps[j].name
+	})
+	var names []string
+	for _, x := range ps {
+		if len(names) == 8 {
+			break
+		}
+		names = append(names, x.name)
+	}
+	if len(names) > 0 {
+		out = append(out, line{text: fmt.Sprintf(c.fw.Projects, list(c.o.Lang, names))})
+	}
+	return out
 }
 
 // toolsIndex is ②'s one line in exit A: where the details are, and which machines and tools they cover.
@@ -293,8 +384,8 @@ func (c *compiler) toolsIndex(objects []string, budget int) string {
 	return ""
 }
 
-// skills is exit B: the machines-and-tools skill (② by object) and one ways-of-working skill per kind of task (④),
-// within 256 KB together (the least used lines go first when over).
+// skills is exit B: the machines-and-tools skill (② by object), a look-up handbook, within 256 KB (the least used
+// lines go first when over).
 func (c *compiler) skills(p *plan, texts map[string]string) []file {
 	type skill struct {
 		dir, desc, title string
@@ -325,23 +416,6 @@ func (c *compiler) skills(p *plan, texts map[string]string) []file {
 		if len(sk.groups) > 0 {
 			ss = append(ss, sk)
 		}
-	}
-	types := make([]string, 0, len(p.work))
-	for t := range p.work {
-		types = append(types, t)
-	}
-	sort.Strings(types)
-	for _, t := range types {
-		name := t
-		if name == "" {
-			name = c.fw.General
-		}
-		ls := c.lines(p.work[t], texts, false)
-		if len(ls) == 0 {
-			continue
-		}
-		ss = append(ss, &skill{dir: WorkflowPrefix + Slug(name), title: fmt.Sprintf(c.fw.WorkTitle, name),
-			desc: fmt.Sprintf(c.fw.WorkDesc, name), groups: []part{{lines: ls}}})
 	}
 	render := func(sk *skill) (string, []string) {
 		desc, _ := json.Marshal(sk.desc) // a YAML double-quoted scalar
@@ -407,29 +481,19 @@ func capList(xs []string, bytes int) []string {
 	return xs
 }
 
-var notSlug = regexp.MustCompile(`[^a-z0-9]+`)
+var notSlugRune = regexp.MustCompile(`[^\p{L}\p{N}]+`)
 
-// Slug is a file-safe name: ASCII letters and digits with hyphens; a name with other characters keeps its ASCII part
-// and a short hash, so two names never share a slug.
-func Slug(name string) string {
-	s := strings.Trim(notSlug.ReplaceAllString(strings.ToLower(name), "-"), "-")
-	ascii := true
-	for _, r := range name {
-		if r > 127 {
-			ascii = false
-			break
-		}
-	}
-	if ascii && s != "" {
-		return cutRunes(s, 60)
-	}
-	h := sha1.Sum([]byte(name))
-	tag := hex.EncodeToString(h[:])[:8]
-	if s == "" {
-		return tag
-	}
-	return cutRunes(s, 50) + "-" + tag
+// KBSlug is a project name as the knowledge base makes its directory name and the hub looks exit D files up by
+// (kb.Slug): lower case, every run of characters that are neither letters nor digits (of any script) one hyphen, no
+// hyphen at either end, at most 40 characters.
+func KBSlug(name string) string {
+	return cutRunes(strings.Trim(notSlugRune.ReplaceAllString(strings.ToLower(name), "-"), "-"), 40)
 }
+
+var projectSlugRe = regexp.MustCompile(`^[\p{L}\p{N}][\p{L}\p{N}-]{0,79}$`)
+
+// projectSlug says whether the hub reads a project file of this name at all (extmgr projectSlug).
+func projectSlug(s string) bool { return projectSlugRe.MatchString(s) }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 

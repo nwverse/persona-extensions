@@ -138,7 +138,7 @@ func TestCompileEveryExit(t *testing.T) {
 		t.Fatalf("instructions: %d bytes", len(a))
 	}
 	for _, want := range []string{"## 和用户打交道", "汇报时先给结论", "## 机器和工具", "host-a", "## 默认判断", "先上线再优化", "## 做事方式",
-		"## 开着的承诺", "周五前交占位方案（到期 2026-01-09）", "## 关于用户", "简短直接", "周末喜欢在家做占位手工",
+		"## 人、项目和开着的承诺", "周五前交占位方案（到期 2026-01-09）", "## 关于用户", "简短直接", "周末喜欢在家做占位手工",
 		"人物页里标了推断和评价的内容只供参考，不对外转述。", "按你以往会选 X"} {
 		if !strings.Contains(a, want) {
 			t.Errorf("instructions lack %q:\n%s", want, a)
@@ -153,9 +153,12 @@ func TestCompileEveryExit(t *testing.T) {
 	if !strings.Contains(tools, "## host-a") || !strings.Contains(tools, "description: \"") || !strings.Contains(tools, "host-a") {
 		t.Errorf("tools skill:\n%s", tools)
 	}
-	work := read(t, dir, "assistant/skills/enkeep-ways-of-working-release/SKILL.md")
-	if !strings.Contains(work, "处理「release」这类事情") || !strings.Contains(work, "先在测试环境跑一遍") || strings.Contains(work, "必须先") {
-		t.Errorf("workflow skill:\n%s", work)
+	// The ways-of-working skills are gone (0.2.0-beta.37): ④ is in the block (and the project's file).
+	if m, _ := filepath.Glob(filepath.Join(dir, SkillsDir, "enkeep-ways-of-working-*")); len(m) > 0 {
+		t.Errorf("ways-of-working skills written: %v", m)
+	}
+	if !strings.Contains(a, "先在测试环境跑一遍") || !strings.Contains(a, RecallHintZH) {
+		t.Errorf("instructions lack ④ or the recall line:\n%s", a)
 	}
 	proj := read(t, dir, "agent/projects/project-x.md")
 	if len(proj) > ProjectMax || !strings.Contains(proj, "先上线再优化") || !strings.Contains(proj, "先在测试环境") || !strings.Contains(proj, "（单一来源）") {
@@ -193,12 +196,12 @@ func TestCompileEveryExit(t *testing.T) {
 	if st.Entries["i-0000000004"].Effective != "" || st.Entries["u-0000000003"].Effective != "" {
 		t.Fatal("a candidate or a sensitive entry took effect")
 	}
-	if rep.Sections["interaction"] == 0 || rep.Sections["tools"] > SectionBudget["tools"] {
+	if rep.Sections["interaction"] == 0 || rep.Sections["tools"] > InstructionsMax*SectionShare["tools"]/100 {
 		t.Fatalf("sections %+v", rep.Sections)
 	}
 	var man manifest
 	_ = json.Unmarshal([]byte(read(t, dir, ManifestPath)), &man)
-	if man.Exits["A"].Hash == "" || len(man.Exits["B"].Files) != 2 {
+	if man.Exits["A"].Hash == "" || len(man.Exits["B"].Files) != 1 {
 		t.Fatalf("manifest %+v", man.Exits)
 	}
 }
@@ -217,10 +220,10 @@ func TestInstructionsBudget(t *testing.T) {
 	if len(a) > InstructionsMax {
 		t.Fatalf("%d bytes", len(a))
 	}
-	if rep.Sections["interaction"] == 0 || rep.Sections["judgement"] == 0 || rep.Sections["interaction"] > SectionBudget["interaction"] {
+	if rep.Sections["interaction"] == 0 || rep.Sections["judgement"] == 0 || rep.Sections["interaction"] > InstructionsMax/2 {
 		t.Fatalf("sections %+v", rep.Sections)
 	}
-	for _, absent := range []string{"## 机器和工具", "## 做事方式", "## 开着的承诺", "## 关于用户"} {
+	for _, absent := range []string{"## 机器和工具", "## 做事方式", "## 人、项目和开着的承诺", "## 关于用户"} {
 		if strings.Contains(a, absent) {
 			t.Errorf("empty section %q is there", absent)
 		}
@@ -313,8 +316,8 @@ func TestSwitchesOff(t *testing.T) {
 			}
 		},
 		entry.K6WorkflowSkill: func(t *testing.T, dir string) {
-			if read(t, dir, "assistant/skills/enkeep-ways-of-working-release/SKILL.md") != "" || read(t, dir, "agent/projects/project-x.md") != "" {
-				t.Error("K6 off: workflow skill or project context written")
+			if read(t, dir, "agent/projects/project-x.md") != "" {
+				t.Error("K6 off: project context written")
 			}
 		},
 		entry.K4Persona: func(t *testing.T, dir string) {
@@ -356,19 +359,45 @@ func TestSwitchesOff(t *testing.T) {
 	}
 }
 
-// K13: an opened category reaches the user's own understanding only; no exit file has it.
+// Categories (0.2.0-beta.40): no exit file has an entry in a category the user has not let in with K22 (K13 opens
+// nothing); a domain space's content reaches the resident exits only as interaction or persona; an evaluation never.
 func TestSensitiveNeverInExits(t *testing.T) {
 	dir := t.TempDir()
 	st := fixture()
 	st.Switches = map[string]entry.SwitchSetting{entry.K13Sensitive + "." + entry.SensFamily: {Value: "on"}}
+	sp := ent("w-0000000009", entry.Workflow, entry.Class, "占位健康空间里的复诊流程")
+	sp.TagSpace("health")
+	st.Entries[sp.ID] = sp
+	tagged := ent("u-0000000009", entry.Persona, entry.Class, "占位证件事项要提前一个月办")
+	tagged.AddCategory(entry.CatLegalID, entry.ByModel)
+	st.Entries[tagged.ID] = tagged
 	p := ent("p-0000000009", entry.People, entry.Action, "用户乙的占位家庭情况评价")
 	p.Person, p.Part, p.Sensitive, p.Impact.Moment = "person:p1", entry.PartUserEval, entry.SensFamily, "reply_person"
 	st.Entries[p.ID] = p
 	compile(t, st, dir, &echo{})
 	for path, content := range allExits(t, dir) {
-		if strings.Contains(content, "敏感家庭") || strings.Contains(content, "家庭情况") {
+		if strings.Contains(content, "敏感家庭") || strings.Contains(content, "家庭情况") || strings.Contains(content, "复诊流程") || strings.Contains(content, "证件事项") {
 			t.Errorf("%s carries a sensitive entry", path)
 		}
+	}
+	// The user lets relationships and legal_id in: the tagged persona entry and the family one go out; the health
+	// space's workflow and the evaluation still do not.
+	st.Switches[entry.K22Resident+"."+entry.CatRelationships] = entry.SwitchSetting{Value: "on", By: "user"}
+	st.Switches[entry.K22Resident+"."+entry.CatLegalID] = entry.SwitchSetting{Value: "on", By: "user"}
+	dir = t.TempDir() // a new exit is held to once a day: a fresh directory writes it now
+	compile(t, st, dir, &echo{})
+	in := read(t, dir, InstructionsPath)
+	if !strings.Contains(in, "证件事项") || !strings.Contains(in, "敏感家庭") {
+		t.Errorf("K22 on: not out:\n%s", in)
+	}
+	for path, content := range allExits(t, dir) {
+		if strings.Contains(content, "复诊流程") || (strings.Contains(content, "家庭情况") && !strings.HasSuffix(path, NeverQuotePath)) {
+			t.Errorf("%s carries a space's workflow or an evaluation", path)
+		}
+	}
+	// never_quote is the list drafts must not copy: an evaluation in a category let in is on it.
+	if !strings.Contains(read(t, dir, NeverQuotePath), "家庭情况") {
+		t.Error("an evaluation in a category let in is not on never_quote")
 	}
 }
 
@@ -433,8 +462,9 @@ func TestWritesOnlyChanges(t *testing.T) {
 	if rep.Deferred || !strings.Contains(a, "新加的占位") || !strings.Contains(a, "用户自己写的占位出口文字") {
 		t.Fatalf("next day:\n%s", a)
 	}
-	if st.Entries["i-0000000001"].Effective != now.Format(time.RFC3339) || add.Effective != later.Format(time.RFC3339) {
-		t.Fatal("Effective is the first time out")
+	// The new ① line went out the first day in project-x's general part (exit D is not held to once a day).
+	if st.Entries["i-0000000001"].Effective != now.Format(time.RFC3339) || add.Effective != now.Format(time.RFC3339) {
+		t.Fatalf("Effective is the first time out: %q %q", st.Entries["i-0000000001"].Effective, add.Effective)
 	}
 }
 
@@ -477,11 +507,26 @@ func TestReadback(t *testing.T) {
 	}
 }
 
-func TestSlug(t *testing.T) {
-	if Slug("Project X") != "project-x" || Slug("发布") == Slug("部署") || !strings.HasPrefix(Slug("persona 插件"), "persona-") {
-		t.Fatal(Slug("Project X"), Slug("发布"), Slug("persona 插件"))
+// KBSlug is the knowledge base's kb.Slug: letters of any script kept, so a project named in Chinese gets the file name
+// the hub looks for (0.2.0-beta.37: the old ASCII-and-hash name matched no project).
+func TestKBSlug(t *testing.T) {
+	for in, want := range map[string]string{
+		"Persona 2.0 Launch":    "persona-2-0-launch",
+		"占位项目·插件":               "占位项目-插件",
+		"project-x 整理插件":        "project-x-整理插件",
+		"  --Mixed__Case!! ":    "mixed-case",
+		strings.Repeat("长", 50): strings.Repeat("长", 40),
+	} {
+		if got := KBSlug(in); got != want {
+			t.Errorf("KBSlug(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if projectSlug("") || projectSlug("-x") || !projectSlug("占位项目-插件") {
+		t.Error("projectSlug")
 	}
 }
+
+const RecallHintZH = "先调 enkeep_recall 查"
 
 // The user's own words go out as written whatever the output language: a first-run answer in Chinese stays in an
 // English block, while the curator's own wording in the wrong language is still held back.
@@ -672,4 +717,23 @@ func (m *personLines) Complete(_ context.Context, r model.Request) (model.Respon
 	}
 	b, _ := json.Marshal(map[string]any{"items": out})
 	return model.Response{Text: string(b)}, nil
+}
+
+// A compile that adds a line and withdraws another the same day writes exit A at once: a file out there that still
+// carries an entry no longer usable is not held to once a day (before 0.2.0-beta.38 the withdrawal waited a day).
+func TestWithdrawalNotHeldByAnAddition(t *testing.T) {
+	dir := t.TempDir()
+	st := fixture()
+	compile(t, st, dir, &echo{})
+	if !strings.Contains(read(t, dir, InstructionsPath), "汇报时先给结论") {
+		t.Fatal("fixture line not out")
+	}
+	add := ent("i-0000000010", entry.Interaction, entry.Class, "新加的占位交互要求")
+	st.Entries[add.ID] = add
+	st.Entries["i-0000000001"].Verdicts = append(st.Entries["i-0000000001"].Verdicts, entry.Verdict{Mark: "wrong", By: "assistant"})
+	rep := compile(t, st, dir, &echo{})
+	a := read(t, dir, InstructionsPath)
+	if rep.Deferred || strings.Contains(a, "汇报时先给结论") || !strings.Contains(a, "新加的占位") {
+		t.Fatalf("deferred=%v:\n%s", rep.Deferred, a)
+	}
 }

@@ -133,27 +133,33 @@ func newHTTP(t *testing.T, f *fakeHub) *HTTP {
 	return &HTTP{Base: srv.URL, Token: "tok-placeholder"}
 }
 
-func TestHTTPSessionsDropHealth(t *testing.T) {
+// Every space is read, the health space's too (0.2.0-beta.40): each session carries its space.
+func TestHTTPSessionsEverySpace(t *testing.T) {
 	f := &fakeHub{}
 	h := newHTTP(t, f)
 	ss, err := h.Sessions(context.Background(), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	spaces := map[string]string{}
 	for _, s := range ss {
-		if s.ID == "s-health" {
-			t.Fatal("a health space session was listed")
-		}
+		spaces[s.ID] = s.Space
 	}
-	if len(ss) != 2 {
+	if len(ss) != 3 || spaces["s-health"] != "health" || spaces["s-main"] != "" || spaces["s-work"] != "" {
 		t.Fatalf("sessions: %+v", ss)
 	}
 	if q := f.asked("/api/v1/sessions"); len(q) == 0 || q[0].Get("limit") == "" {
 		t.Errorf("the paged list was not asked: %v", q)
 	}
-	items, err := h.Items(context.Background(), "m1", "s-health", ItemsQuery{Fold: true})
-	if err != nil || len(items) != 0 || len(f.asked("/api/v1/sessions/m1/s-health/items")) != 0 {
-		t.Errorf("a health space session's items were read: %v %v", items, err)
+	_, _ = h.Items(context.Background(), "m1", "s-health", ItemsQuery{Fold: true})
+	if len(f.asked("/api/v1/sessions/m1/s-health/items")) != 1 {
+		t.Error("a health space session's items were not asked")
+	}
+	// A card from it carries the space.
+	since := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	cs, _ := h.Interactions(context.Background(), InteractionsQuery{Since: since, Before: since.AddDate(0, 0, 1)})
+	if len(cs) != 2 || cs[1].Question != "health one" || cs[1].Space != "health" || cs[0].Space != "" {
+		t.Errorf("cards with their space: %+v", cs)
 	}
 }
 
@@ -206,8 +212,8 @@ func TestHTTPInteractionsFiltered(t *testing.T) {
 	if !errors.As(err, &w) || w.Change != "H3" {
 		t.Fatalf("a range without H3: want WaitingHub H3, got %v", err)
 	}
-	if len(cs) != 1 || cs[0].Question != "which option?" {
-		t.Fatalf("private, health space and out-of-range cards must be dropped: %+v", cs)
+	if len(cs) != 2 || cs[0].Question != "which option?" || cs[1].Question != "health one" {
+		t.Fatalf("private and out-of-range cards must be dropped, the health space's kept: %+v", cs)
 	}
 	c := cs[0]
 	if len(c.Options) != 2 || c.Recommend != "A (Recommended)" || len(c.Answers) != 1 || c.Answers[0] != "B" || c.AnsweredBy != "user" ||
@@ -250,8 +256,8 @@ func TestHTTPTodosAboutNotify(t *testing.T) {
 	f := &fakeHub{}
 	h := newHTTP(t, f)
 	ts, err := h.Todos(context.Background(), time.Time{})
-	if err != nil || len(ts) != 1 || !ts[0].Done || ts[0].Reason != "merged" {
-		t.Fatalf("to-dos (health-only dropped): %+v %v", ts, err)
+	if err != nil || len(ts) != 2 || !ts[0].Done || ts[0].Reason != "merged" || ts[1].Title != "health todo" {
+		t.Fatalf("to-dos (the health space's kept): %+v %v", ts, err)
 	}
 	ds, err := h.TodoDecisions(context.Background(), "t1")
 	if err != nil || len(ds) != 1 || ds[0].Choice != "main" || ds[0].By != "card" {

@@ -134,6 +134,17 @@ type Exits struct {
 	// Waiting: exit → the hub change it waits for (H1, H4, H5) while the hub cannot take it yet.
 	Waiting  map[string]string `json:"waiting,omitempty"`
 	Warnings []string          `json:"warnings,omitempty"`
+	// Projects are the knowledge base's projects the last daily compile matched exit D against (id = the slug the
+	// hub looks the files up by), kept so a withdrawal from the page names the files the same way without reading
+	// the knowledge base again. Nil: never read.
+	Projects []KBProject `json:"projects,omitempty"`
+}
+
+// KBProject is a knowledge-base project as exit D matches entries to it.
+type KBProject struct {
+	ID      string   `json:"id"`
+	Name    string   `json:"name"`
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // Adoption is the hub's answer on one exit.

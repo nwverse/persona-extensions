@@ -34,6 +34,9 @@ type Series struct {
 	Range     string  `json:"range"`
 	Step      int     `json:"step"`
 	Points    []Point `json:"points"`
+	// Stored: the hub keeps the week (Postgres). False: it holds only what is in memory, the last 26 hours, so the
+	// 7d range reads zero before that whether or not anything was used.
+	Stored bool `json:"stored"`
 }
 
 // Point is one step of a series. Step is the step's length in seconds, copied from the series, so a point knows its
@@ -163,7 +166,8 @@ func (c *Client) Shares(ctx context.Context, id, rng string) (models, launchers 
 
 // Pull reads one machine's usage over rng and returns it as minute buckets, one per model and launcher. It asks for
 // the range once to learn the models and launchers, then once per pair, so each bucket's totals are the hub's own
-// numbers for that pair. launcher "-" in a share's name is the usage with no launcher.
+// numbers for that pair. launcher "-" in a share's name is the usage with no launcher. A zero point corrects the stored
+// minutes only where the hub holds the whole range (see bucketsOf).
 func (c *Client) Pull(ctx context.Context, id, rng string) ([]store.Bucket, error) {
 	models, launchers, err := c.Shares(ctx, id, rng)
 	if err != nil {
@@ -186,7 +190,7 @@ func (c *Client) Pull(ctx context.Context, id, rng string) ([]store.Bucket, erro
 			if name == "-" {
 				name = ""
 			}
-			out = append(out, bucketsOf(s, m.Name, name)...)
+			out = append(out, bucketsOf(s, m.Name, name, s.Stored || rng == "1h" || rng == "24h")...)
 		}
 	}
 	return out, nil
@@ -264,11 +268,13 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 
 // bucketsOf turns one filtered series into minute buckets of one model and launcher. A point covers step seconds,
 // so its tokens are spread evenly over its minutes; the first minute keeps the remainder and the requests, and the
-// minutes add back to the point.
-func bucketsOf(s Series, model, launcher string) []store.Bucket {
+// minutes add back to the point. Every minute of a point is kept, zero ones too, so it replaces all of the point's
+// stored minutes. A gap is skipped. An empty point is kept to delete a minute the hub has corrected to zero only when
+// zeros is true, that is when the hub holds the whole range; otherwise it may only mean the hub no longer has it.
+func bucketsOf(s Series, model, launcher string, zeros bool) []store.Bucket {
 	var out []store.Bucket
 	for _, p := range s.Points {
-		if p.Gap || pointTotal(p) == 0 {
+		if p.Gap || !zeros && p.In+p.CW+p.CR+p.Out == 0 && p.Req == 0 {
 			continue
 		}
 		minutes := p.Step / 60
@@ -288,9 +294,6 @@ func bucketsOf(s Series, model, launcher string) []store.Bucket {
 			if k == 0 {
 				b.Requests = p.Req
 			}
-			if b.Total() == 0 && b.Requests == 0 {
-				continue
-			}
 			out = append(out, b)
 		}
 	}
@@ -308,8 +311,6 @@ func part(total int64, minutes, minute int) int64 {
 	}
 	return each
 }
-
-func pointTotal(p Point) int64 { return p.In + p.CW + p.CR + p.Out }
 
 // clipBytes cuts s to at most n bytes without splitting a UTF-8 sequence: it backs off from byte n to the start of the
 // rune there (at most utf8.UTFMax-1 bytes, so bytes that are not UTF-8 are still cut near n).

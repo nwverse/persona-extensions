@@ -7,11 +7,11 @@ understands you better. It keeps six facets, all equally important, and a card f
 
 | Facet | What it keeps | Where it is used |
 | --- | --- | --- |
-| How you work with the AI | what you ask of the AI, corrections, how you want reports and questions | the assistant's per-turn instructions |
-| How the AI works with machines and tools | approaches, pitfalls and their way round, boundaries, per machine or tool | a skill the assistant and agents load when they touch that machine or tool |
-| Your default judgements | at a kind of fork, what you usually choose over what, and why | the per-turn instructions; a suggestion when the assistant asks you |
-| How you handle kinds of tasks | your way of doing a kind of task, and why | skills per kind of task; agent project context |
-| Your world | facts, who is responsible for what, relations, commitments | the knowledge base's people and projects |
+| How you work with the AI | what you ask of the AI, corrections, how you want reports and questions | the assistant's per-turn instructions (what holds everywhere); agent project context (what holds in a project) |
+| How the AI works with machines and tools | approaches, pitfalls and their way round, boundaries, per machine or tool | a look-up skill the assistant loads when it touches that machine or tool; agent project context |
+| Your default judgements | at a kind of fork, what you usually choose over what, and why | the per-turn instructions; agent project context; a suggestion when the assistant asks you |
+| How you handle kinds of tasks | your way of doing a kind of task, and why | the per-turn instructions (what holds everywhere); agent project context; `enkeep_recall` |
+| Your world | facts, who is responsible for what, relations, commitments | `enkeep_recall`; open commitments and a names index in the per-turn instructions; agent project context; the knowledge base |
 | You as a person | role, current work, goals, preferences you stated | the per-turn instructions; inbox drafting |
 | People you deal with | facts, your own words about them, labelled inferences, commitments either way | people pages (see below); a communication tip for inbox drafting |
 
@@ -19,6 +19,22 @@ Each entry rests on quoted lines a program checks against the original, names th
 differently because of it, and is counted by how often the kind of situation came up on the days you were active.
 You can pin, edit, delete (it is not made again) or mark any entry right or wrong on the plugin page; wrong takes it
 out of everything the assistant reads at once.
+
+It is the long-term layer: it reads each day once, the next morning, and keeps what holds over days. What was decided
+an hour ago or which task is running is the hub's to bring back after a conversation is compacted, not this
+extension's. Which content goes where, and the contract with the hub, are in
+[exits](../../extensions/enkeep-memory/docs/exits.md).
+
+## Looking things up and taking a wrong line out
+
+- `enkeep_recall {"query": "…"}`: the assistant or an agent looks up what was curated about a person, a project, a
+  system or a kind of task. The per-turn instructions keep only what holds everywhere and names; the rest is here.
+  Only counts are kept (calls per day, empty answers), never the query.
+- `enkeep_mark_wrong {"ids": [...], "reason": "…"}`: the assistant takes out a line that is plainly not your rule
+  (a task prompt or a test prompt taken for your words) without a card on your phone. It is recorded as the
+  assistant's, with the reason; mark it right on the plugin page to bring it back.
+- Lines Persona typed into an agent session (task prompts, relays), test prompts and pasted material are not taken as
+  your words.
 
 ## Requirements
 
@@ -62,7 +78,7 @@ anything for the assistant. A source you do not have is shown as missing on the 
 ## The plugin page
 
 A start card (per facet: what is in use, what is building up, which source is missing), a sources card (read volume,
-attribution checks), three skippable first-run questions, the facets and the people cards, switches K1–K17 (per
+attribution checks), three skippable first-run questions, the facets and the people cards, switches K1–K20 (per
 category, per fork type and per source where they apply), a check page, and whether each exit reached the assistant
 (the hub's read-back). A weekly report goes to your devices when something changed.
 

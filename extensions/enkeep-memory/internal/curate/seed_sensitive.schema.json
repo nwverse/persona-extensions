@@ -1,0 +1,19 @@
+{
+  "type": "object",
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "i": {"type": "integer"},
+          "category": {"type": "string", "enum": ["emotion", "finance", "health", "family", ""]}
+        },
+        "required": ["i", "category"],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["items"],
+  "additionalProperties": false
+}

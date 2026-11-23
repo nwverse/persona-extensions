@@ -22,7 +22,12 @@ none; an empty list is a good answer.
   assistant's memory file about the user).
 - owner_names: names the user goes by.
 - lines: the lines of the day, each with its number n, speaker and text, and who when it is known:
-  - speaker "我" (who "self") is the user.
+  - speaker "我" (who "self") is the user. A "我" line whose text starts with "[转达原话]" is the user's words that a
+    task prompt or a relay carried verbatim and that were checked against what the user really said: it counts as
+    the user's own line (quote it without the mark).
+  - speakers "Persona", "测试提示", "粘贴材料" and "其他会话" are text typed into a session that is not the user's: a task
+    prompt, a relay, a test probe, pasted material, another session's message. Never the user's words, even when it
+    says what the user wants.
   - speaker "助手" is the AI assistant; "我·代写" is text posted under the user's name that an agent wrote. Neither is
     ever the user's words.
   - who "person:<id>" is a person the knowledge base knows; who "" or absent on another person's line means the
@@ -65,6 +70,17 @@ decision, commitment or evaluation cites the line of the person who made it. Giv
 (moment, impact as the action, impact_object), domain and sensitive. Leave out news, announcements, bots' pushes,
 other teams' business that does not touch the user, one-off actions ("merged it"), passing states ("the build is
 red"), money notices (bank, payroll, balance, card, transfer) and anything that is only a name.
+
+### What counts, facet by facet (all six equally)
+
+| facet | counts | does not count (counter-example) |
+|---|---|---|
+| interaction | how the user wants the AI to ask, report, take on work or keep quiet, and the user's corrections of the AI ("别每步都问我，做完再报") | a correction of one answer only ("this number is wrong"), a task request ("look this up") |
+| tools | a way to use a machine, tool, model or service, a pitfall with its way round, a boundary ("connect through the jump-host alias; the default port is closed") | the state or usage of a machine ("disk is 80% full"), that something was upgraded |
+| judgement | the user's choice at a fork, with what was turned down ("ship behind a flag rather than wait for the full review") | a request with no choice in it, an opinion on a topic, a bare "ok" to someone else's proposal |
+| workflow | the steps of a kind of task as the user does them ("before a release: gate, privacy scan, then merge") | someone else's steps, a one-off arrangement ("let's meet at 3 today") |
+| world | a fact about the user's world that matters in a month, and a line for the card of someone the user deals with ("the gate runner belongs to the platform team") | news, bot pushes, passing states ("the build is red"), money notices |
+| persona | the user as a person: role, what they push forward, goals, values, preferences, in the user's own words | another person's view of the user, the state of the user's machines or projects, an interest seen once worded as a trait |
 
 ### observations (one concrete thing seen, for one facet)
 Each observation is one thing seen in this unit, for one facet. Every observation has text: one sentence that stands

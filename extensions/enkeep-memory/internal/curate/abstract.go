@@ -371,7 +371,7 @@ var exitFacets = []entry.Facet{entry.Interaction, entry.Tools, entry.Judgement, 
 // inExitAB says whether an entry is (or would be) in exit A or B: written there already, or live, stable, of a
 // class or abstract grain in a facet those exits carry.
 func inExitAB(e *entry.Entry) bool {
-	if e.Grain == entry.Action || !e.Live() || !slices.Contains(exitFacets, e.Facet) || e.Sensitive != "" {
+	if e.Grain == entry.Action || !e.Live() || !slices.Contains(exitFacets, e.Facet) || e.IsSensitive() || e.OriginSpace != "" {
 		return false
 	}
 	return e.Export != nil || e.Status == entry.Stable

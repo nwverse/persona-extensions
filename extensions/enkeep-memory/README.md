@@ -23,6 +23,7 @@ the model the user picks for it, or per call a primary model and a fallback by l
 - [Development and tests](../../docs/development.md)
 - [Manifest](persona-extension.json)
 - [Entry structure and package contracts](internal/entry/CONTRACT.md)
+- [Exits: what reaches the assistant and agents, the hub contract](docs/exits.md)
 
 ## Offline replay and acceptance tools
 

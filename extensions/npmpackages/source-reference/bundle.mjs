@@ -64,6 +64,8 @@ var Composer = native("composer");
 var Image = native("image");
 var Grid = native("grid");
 var Carousel = native("carousel");
+var Graph = native("graph");
+var Scene = native("scene");
 
 // ../../sdk/ts/src/hooks.ts
 var context;
@@ -153,7 +155,9 @@ var fields = {
   composer: ["name", "placeholder", "value", "buttons"],
   image: ["src", "alt", "caption", "aspect", "fit", "no_zoom"],
   grid: ["tiles", "max_columns"],
-  carousel: ["title", "tiles", "width"]
+  carousel: ["title", "tiles", "width"],
+  graph: ["nodes", "edges", "layout", "direction", "selected", "folded"],
+  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"]
 };
 function pathPart(parent, ...segments) {
   return parent + segments.map((segment) => `${segment.length}:${segment}`).join("");
@@ -763,7 +767,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "npmpackages", name: "npm Packages", version: "0.1.3", icon: "assets/icon.png", description: "Search public npm packages, compare latest versions, release dates, licenses, download activity and canonical repository links. Get an exact-version install command without executing it. Anonymous, read-only official registry access.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/npmpackages/README.md", tags: ["Development", "JavaScript", "npm", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/npmpackages.mjs", sha256: "" } }, contributes: { connectors: [{ id: "npmpackages", name: "npm Packages", capabilities: ["status", "tools"], hosts: ["registry.npmjs.org", "api.npmjs.org"], agent_tools: ["npmpackages_*"] }], ui: [{ id: "packages", title: "npm Packages", placement: "nav_page", icon: "code" }] }, permissions: { network: ["registry.npmjs.org", "api.npmjs.org"] } };
+var persona_extension_default = { manifest_version: 1, id: "npmpackages", name: "npm Packages", version: "0.1.4", icon: "assets/icon.png", description: "Search public npm packages, compare latest versions, release dates, licenses, download activity and canonical repository links. Get an exact-version install command without executing it. Anonymous, read-only official registry access.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/npmpackages/README.md", tags: ["Development", "JavaScript", "npm", "Dependencies"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/npmpackages.mjs", sha256: "" } }, contributes: { connectors: [{ id: "npmpackages", name: "npm Packages", capabilities: ["status", "tools"], hosts: ["registry.npmjs.org", "api.npmjs.org"], agent_tools: ["npmpackages_*"] }], ui: [{ id: "packages", title: "npm Packages", placement: "nav_page", icon: "code" }] }, permissions: { network: ["registry.npmjs.org", "api.npmjs.org"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 1 << 20, fresh: 15 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 250 });

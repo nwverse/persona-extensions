@@ -61,8 +61,8 @@ func entrySub(t tr, e *entry.Entry, exits []string) string {
 	if e.SingleSource {
 		parts = append(parts, t.s("单一来源", "single source"))
 	}
-	if e.Sensitive != "" {
-		parts = append(parts, t.f("敏感：%s（不进出口）", "sensitive: %s (never sent out)", t.sensitiveLabel(e.Sensitive)))
+	if cs := e.Cats(); len(cs) > 0 {
+		parts = append(parts, t.s("分类：", "categories: ")+t.categoryLabels(cs))
 	}
 	if len(exits) > 0 {
 		parts = append(parts, t.s("在出口 ", "in exit ")+strings.Join(exits, ","))
@@ -396,8 +396,11 @@ func (a *app) entryPage(t tr, st *store.State, id string) *wire.View {
 	if e.SingleSource {
 		flags = append(flags, t.s("目前只有一个来源", "one source so far"))
 	}
-	if e.Sensitive != "" {
-		flags = append(flags, t.f("敏感类别「%s」：只进你自己的理解，不进任何出口", "sensitive (%s): kept for your own understanding only, never in an exit", t.sensitiveLabel(e.Sensitive)))
+	if cs := e.Cats(); len(cs) > 0 {
+		flags = append(flags, t.f("分类「%s」：按场景用，查询点名这一类才给；你在开关页 K22 放行之前不进常驻出口", "categories (%s): used by scene, given to a look-up that names them; out of the resident exits until you let them in (K22)", t.categoryLabels(cs)))
+	}
+	if e.OriginSpace != "" {
+		flags = append(flags, t.f("来自空间「%s」", "from the space %s", e.OriginSpace))
 	}
 	if e.Domain == entry.Life {
 		flags = append(flags, t.s("生活类", "personal life"))
@@ -471,7 +474,16 @@ func (a *app) entryPage(t tr, st *store.State, id string) *wire.View {
 	} else {
 		acts = append(acts, button(t.s("删掉", "Delete"), "act:delete:"+e.ID, t.s("删掉后同样的内容不再生成；可以恢复。确定？", "Deleted, the same content is not made again; it can be restored. Sure?")))
 	}
+	var cats []wire.Component
+	for _, n := range entry.CategoryNames {
+		if slices.Contains(e.Cats(), n) {
+			cats = append(cats, button(t.s("去掉分类：", "Remove category: ")+t.sensitiveLabel(n), "act:"+curate.ActCatRemove+":"+e.ID+":"+n, ""))
+		} else {
+			cats = append(cats, button(t.s("加上分类：", "Add category: ")+t.sensitiveLabel(n), "act:"+curate.ActCatAdd+":"+e.ID+":"+n, ""))
+		}
+	}
 	v.Sections = append(v.Sections, wire.Section{Items: acts},
+		wire.Section{Title: t.s("分类", "Categories"), Footer: t.s("带分类的条目按场景用；只有你能去掉分类。", "Entries in a category are used by scene; only you can take a category off."), Items: cats},
 		wire.Section{Title: t.s("对不对", "Is it right?"), Footer: t.s("点「不对」立刻撤出出口，记成反例。", "\"Wrong\" withdraws it from every exit at once and keeps it as a counter-example."),
 			Items: []wire.Component{verdictSeg(t, "m:"+e.ID, lastMark(e.Verdicts), false)}})
 	v.Sections = append(v.Sections, wire.Section{Title: t.s("出处", "Evidence"), Items: evidenceRows(t, entryEvidence(st, e))})

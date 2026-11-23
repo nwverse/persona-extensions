@@ -7,9 +7,12 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/hubapi"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/relay"
 )
 
 // Item kinds of the hub's session items (hubapi.Item.Kind).
@@ -46,8 +49,11 @@ type gathered struct {
 	Cards      []hubapi.Interaction
 	Todos      []hubapi.Todo
 	Memories   []hubapi.MemoryFile
-	FoldBytes  int
-	Missing    []string
+	// Ledger are the quotes of the hub's ledger entries by the user (design v2 I1; none on a hub without it): what
+	// verifies the user's words relayed in a task prompt (userMsgs).
+	Ledger    []string
+	FoldBytes int
+	Missing   []string
 }
 
 // gather reads the day from the hub: the sessions active that day, each as a folded page (fold_work=1: words, and
@@ -83,7 +89,7 @@ func gather(ctx context.Context, o Options, day string, sd *side) (*gathered, er
 	if !missing("sessions", err) {
 		sort.Slice(sessions, func(i, j int) bool { return sessions[i].Started.Before(sessions[j].Started) })
 		for _, s := range sessions {
-			if s.Health || s.Updated.Before(g.Start) || !s.Started.Before(g.End) {
+			if s.Updated.Before(g.Start) || !s.Started.Before(g.End) {
 				continue
 			}
 			ref := "agents/" + s.Machine + "/" + s.ID
@@ -138,6 +144,15 @@ func gather(ctx context.Context, o Options, day string, sd *side) (*gathered, er
 			}
 		}
 	}
+	if lr, ok := o.Hub.(hubapi.LedgerReader); ok {
+		if es, err := lr.Ledger(ctx, hubapi.LedgerQuery{By: "user"}); err == nil { // no ledger: nothing to verify by
+			for _, e := range es {
+				if e.By == "user" && e.Quote != "" && !e.Superseded() {
+					g.Ledger = append(g.Ledger, e.Quote)
+				}
+			}
+		}
+	}
 	mems, err := o.Hub.Memories(ctx, false)
 	if !missing("memory", err) {
 		g.Memories = mems
@@ -155,12 +170,24 @@ type msg struct {
 	Text    string
 	Prior   string // the AI's line before it, or the card's question
 	Card    bool
+	Relayed bool // the user's words relayed in a task prompt, verified by the hub's ledger
 }
 
 // userMsgs lists the day's messages by the user. Texts the hub marks as not the user's (injected, relayed,
-// Persona's own notices) come as notices and are not here.
+// Persona's own notices) come as notices and are not here. A user-role text that is not the user's either is left
+// out too (design v2 §4.2, 0.2.0-beta.38: the speaker in three values): every one in a session Persona started (a
+// task, a relay), and elsewhere one with a task prompt's or a relay's marks or a test probe's shape (internal/relay);
+// pasted material is taken out of what is left. The user's words such a text relays count only when the hub's ledger
+// has them by the user and they are not among the day's own messages already (Relayed: counted once).
 func (g *gathered) userMsgs() []msg {
 	var out []msg
+	type claim struct {
+		s     *session
+		it    hubapi.Item
+		prior string
+		q     string
+	}
+	var claims []claim
 	for _, s := range g.Sessions {
 		prior := ""
 		for _, it := range s.Items {
@@ -168,9 +195,43 @@ func (g *gathered) userMsgs() []msg {
 			case kAgent:
 				prior = it.Text
 			case kUser:
-				if s.inDay(it) && strings.TrimSpace(it.Text) != "" {
-					out = append(out, msg{Source: s.Source, Ref: s.Ref, Session: s.Ref, Seq: it.Seq, At: it.At, Text: it.Text, Prior: cut(prior, 300)})
+				if !s.inDay(it) || strings.TrimSpace(it.Text) == "" {
+					continue
 				}
+				if s.ByPersona || relay.Classify(it.Text) != relay.None {
+					if s.ByPersona || relay.Classify(it.Text) == relay.Persona {
+						for _, q := range relay.Quotes(it.Text) {
+							claims = append(claims, claim{s, it, cut(prior, 300), q})
+						}
+					}
+					continue
+				}
+				own, _ := relay.SplitPaste(it.Text)
+				if own == "" {
+					continue
+				}
+				out = append(out, msg{Source: s.Source, Ref: s.Ref, Session: s.Ref, Seq: it.Seq, At: it.At, Text: own, Prior: cut(prior, 300)})
+			}
+		}
+	}
+	if len(claims) > 0 && len(g.Ledger) > 0 {
+		has := func(list []string, q string) bool {
+			nq := norm.Q(q)
+			for _, x := range list {
+				if nx := norm.Q(x); nq != "" && (nx == nq || utf8.RuneCountInString(nq) >= 4 && strings.Contains(nx, nq)) {
+					return true
+				}
+			}
+			return false
+		}
+		var ownTexts []string
+		for _, m := range out {
+			ownTexts = append(ownTexts, m.Text)
+		}
+		for _, c := range claims {
+			if has(g.Ledger, c.q) && !has(ownTexts, c.q) {
+				out = append(out, msg{Source: c.s.Source, Ref: c.s.Ref, Session: c.s.Ref, Seq: c.it.Seq, At: c.it.At, Text: c.q, Prior: c.prior, Relayed: true})
+				ownTexts = append(ownTexts, c.q)
 			}
 		}
 	}

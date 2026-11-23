@@ -174,10 +174,10 @@ func Of(e *entry.Entry, persons []string) bool {
 	return false
 }
 
-// Shows says whether an entry may be on the card at all under the switches: a sensitive category only when the
-// user turned it on (K13), inferred lines and the tip only with K15.
+// Shows says whether an entry may be on the card at all under the switches: a line in a category only when the
+// user let it into the resident exits (K22, entry.Resident), inferred lines and the tip only with K15.
 func Shows(e *entry.Entry, sw map[string]entry.SwitchSetting) bool {
-	if e.Sensitive != "" && !entry.On(sw, entry.K13Sensitive+"."+e.Sensitive) {
+	if !e.Resident(sw) {
 		return false
 	}
 	if (e.Part == entry.PartInferred || e.Inferred || e.Part == PartAdvice) && !entry.On(sw, entry.K15Inferred) {
@@ -289,7 +289,7 @@ func BuildCard(in Input, person string) *Card {
 func lineOf(in Input, e *entry.Entry) Line {
 	l := Line{ID: e.ID, Section: SectionOf(e), Part: e.Part, Dim: e.Type, Grain: string(e.Grain), Text: e.Shown(),
 		Evidence: max(e.Count, 1), Inferred: e.Inferred || e.Part == entry.PartInferred, UserEdited: e.User != nil,
-		Sensitive: e.Sensitive, First: e.First, Last: e.Last, ValidFrom: e.ValidFrom, ValidTo: e.ValidTo, Commitment: e.Commitment}
+		Sensitive: strings.Join(e.Cats(), ","), First: e.First, Last: e.Last, ValidFrom: e.ValidFrom, ValidTo: e.ValidTo, Commitment: e.Commitment}
 	if l.Part == "" {
 		l.Part = entry.PartFact
 	}

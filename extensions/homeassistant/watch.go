@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -55,8 +56,9 @@ const (
 )
 
 var (
-	batchFor = 3 * time.Second // firings close together go out as one
-	holdUnit = time.Second     // a rule's for_seconds (shorter in tests)
+	batchFor           = 3 * time.Second // firings close together go out as one
+	holdUnit           = time.Second     // a rule's for_seconds (shorter in tests)
+	sceneInvalidateFor = time.Second     // coalesces state_changed page redraws when home.usdz is present
 )
 
 func (r Rule) cooldown() time.Duration {
@@ -305,23 +307,25 @@ type fired struct {
 type watcher struct {
 	a *app
 
-	mu        sync.Mutex
-	settings  []Rule // from the settings
-	mine      []Rule // the assistant's
-	errs      []string
-	file      string                 // where the assistant's are kept
-	timers    map[string]*time.Timer // rule|entity → its "for"
-	last      map[string]State       // the newest state of each entity seen
-	sent      map[string]time.Time   // rule|entity → when it last went out
-	queue     []firing
-	flushing  bool
-	log       []fired
-	delivered []time.Time
-	connected bool
-	connErr   string
-	wake      chan struct{} // the rules changed
-	hm        *home         // the areas, rebuilt at most every homeFor (a busy home changes many times a second)
-	hmAt      time.Time
+	mu         sync.Mutex
+	settings   []Rule // from the settings
+	mine       []Rule // the assistant's
+	errs       []string
+	file       string                 // where the assistant's are kept
+	timers     map[string]*time.Timer // rule|entity → its "for"
+	last       map[string]State       // the newest state of each entity seen
+	sent       map[string]time.Time   // rule|entity → when it last went out
+	queue      []firing
+	flushing   bool
+	log        []fired
+	delivered  []time.Time
+	connected  bool
+	connErr    string
+	wake       chan struct{} // the rules or scene presence changed
+	hm         *home         // the areas, rebuilt at most every homeFor (a busy home changes many times a second)
+	hmAt       time.Time
+	scenePend  bool
+	sceneTimer *time.Timer
 }
 
 const homeFor = 30 * time.Second
@@ -428,12 +432,20 @@ func (w *watcher) poke() {
 	}
 }
 
-// run keeps the subscription while there are rules, until ctx ends.
+// run keeps the subscription while there are rules or a 3D home scene, until ctx ends.
 func (w *watcher) run(ctx context.Context) {
+	defer func() {
+		w.mu.Lock()
+		if w.sceneTimer != nil {
+			w.sceneTimer.Stop()
+			w.sceneTimer, w.scenePend = nil, false
+		}
+		w.mu.Unlock()
+	}()
 	backoff := 5 * time.Second
 	for ctx.Err() == nil {
 		h, _, _ := w.a.client()
-		if len(w.rules()) == 0 || !h.configured() {
+		if !h.configured() || (len(w.rules()) == 0 && !w.a.hasScene()) {
 			select {
 			case <-ctx.Done():
 				return
@@ -503,7 +515,10 @@ func (w *watcher) session(ctx context.Context, h *ha) error {
 		case <-c.done:
 			return errors.New("Home Assistant 的 WebSocket 断了")
 		case <-w.wake:
-			if len(w.rules()) == 0 {
+			if len(w.rules()) == 0 && !w.a.hasScene() {
+				return nil
+			}
+			if cur, _, _ := w.a.client(); cur != h {
 				return nil
 			}
 		case <-areas.C:
@@ -580,13 +595,25 @@ func holds(r Rule, s *State, prev *State) bool {
 }
 
 // change is one state_changed: each rule about the entity that comes true now (it did not before) fires, or after
-// its "for" when it still holds then.
+// its "for" when it still holds then; when home.usdz is present, state or attribute changes also trigger a coalesced
+// ui.invalidate so pins and lit rooms follow within 1–2 seconds.
 func (w *watcher) change(entity string, old *State, s State) {
 	hm := w.home()
 	rules := w.rules()
+	hasScene := w.a.hasScene()
+	changed := old == nil || old.State != s.State || !reflect.DeepEqual(old.Attributes, s.Attributes)
+	if hasScene && changed {
+		if h, _, _ := w.a.client(); h != nil {
+			h.invalidateStates(s)
+		}
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.last[entity] = s
+	if hasScene && changed && !w.scenePend {
+		w.scenePend = true
+		w.sceneTimer = time.AfterFunc(sceneInvalidateFor, w.flushScene)
+	}
 	for _, r := range rules {
 		if !w.targets(r, s, hm) {
 			continue
@@ -640,6 +667,23 @@ func (w *watcher) fire(r Rule, s State) {
 	if !w.flushing {
 		w.flushing = true
 		time.AfterFunc(batchFor, w.flush)
+	}
+}
+
+func (w *watcher) flushScene() {
+	w.mu.Lock()
+	w.scenePend, w.sceneTimer = false, nil
+	w.mu.Unlock()
+	if h, _, _ := w.a.client(); h != nil {
+		h.mu.Lock()
+		h.statesAt = time.Time{}
+		h.mu.Unlock()
+	}
+	w.a.mu.Lock()
+	rpc := w.a.rpc
+	w.a.mu.Unlock()
+	if rpc != nil {
+		_ = rpc.Invalidate(pageUI)
 	}
 }
 

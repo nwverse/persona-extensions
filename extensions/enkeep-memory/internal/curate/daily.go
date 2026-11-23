@@ -38,6 +38,7 @@ func (c *Curator) RunDaily(ctx context.Context, day string, dry bool) (*store.Ru
 	defer live.end()
 	c.St.Lock()
 	defer c.St.Unlock()
+	t0 := time.Now()
 	run := &store.Run{ID: fmt.Sprintf("daily-%s-%d", day, c.now().Unix()), Kind: "daily", Period: day,
 		Started: c.now().UTC().Format(time.RFC3339), DryRun: dry, Counts: map[string]int{}}
 	owner := c.ownerNames(ctx)
@@ -143,6 +144,7 @@ func (c *Curator) RunDaily(ctx context.Context, day string, dry bool) (*store.Ru
 		p.Stage, p.Done, p.Total, p.Unit, p.Refused = "摘要", 0, len(admitted), "", len(run.Refusals)
 	})
 
+	tTriage := time.Now()
 	// 2. Digest every admitted unit, most valuable first. With Workers > 1 the calls are made concurrently first;
 	// the answers are then taken in this same order, so everything the answers change stays single-threaded.
 	b := c.builder(day, owner)
@@ -211,8 +213,12 @@ func (c *Curator) RunDaily(ctx context.Context, day string, dry bool) (*store.Ru
 	if m != nil && !dry {
 		c.clearPause()
 	}
+	tDigest := time.Now()
 	// 3. Consolidation (design 5.0): the day's new entries recalled, judged and filed, counted, statuses settled.
-	if len(units) > 0 {
+	// Only a day the model really read counts as active (design v2 D.5, E4): a day without a model, or one whose
+	// units were all screened out before any call, is not counted, or the reruns' empty days would put entries to
+	// sleep early. A unit read before with the same prompt and reused counts as read.
+	if len(units) > 0 && dayRead(metered, run) {
 		c.MarkActive(day)
 	}
 	if !dry {
@@ -227,6 +233,7 @@ func (c *Curator) RunDaily(ctx context.Context, day string, dry bool) (*store.Ru
 			return nil, err
 		}
 	}
+	tCons := time.Now()
 	// 4. Proposals that a day can already make, and the queue's upkeep; commitments past due are flagged (5.4).
 	c.expire()
 	c.markCommitments(day, run)
@@ -241,6 +248,9 @@ func (c *Curator) RunDaily(ctx context.Context, day string, dry bool) (*store.Ru
 		return nil, perr
 	}
 	if !dry {
+		// Where the day's time went (0.2.0-beta.41), to find what is not a model call: wall seconds per stage.
+		c.logf("daily %s took %.0fs: read and triage %.0fs, digest %.0fs, consolidate %.0fs, signals and exits %.0fs", day, time.Since(t0).Seconds(),
+			tTriage.Sub(t0).Seconds(), tDigest.Sub(tTriage).Seconds(), tCons.Sub(tDigest).Seconds(), time.Since(tCons).Seconds())
 		// Commit source cursors and ActiveDays only after the whole day completed. In particular, the model-down return
 		// above leaves them untouched so a retry rereads everything the model could not summarize.
 		c.collectEnd(day, len(units))
@@ -494,7 +504,10 @@ func (c *Curator) digestRequest(b *graph.Builder, u *Unit, d triage.Decision, ow
 // digest is the daily call for one unit (or one part of a unit the model refused whole).
 func (c *Curator) digest(ctx context.Context, m model.Model, b *graph.Builder, u *Unit, d triage.Decision, part string, owner []string, k *known, run *store.Run) error {
 	req, key := c.digestRequest(b, u, d, owner, k)
-	if c.St.S.Done[key] != nil {
+	if done := c.St.S.Done[key]; done != nil {
+		if c.replayForced(b, u, d, owner, k, done, run) {
+			return nil
+		}
 		run.Counts["digest_unchanged"]++
 		return nil
 	}
@@ -530,6 +543,26 @@ func (c *Curator) digest(ctx context.Context, m model.Model, b *graph.Builder, u
 	c.St.S.Done[key] = done
 	run.Counts["digested"]++
 	return nil
+}
+
+// replayForced checks again, without a model call, an answer kept before for a day queued with force
+// (0.2.0-beta.41): the request is the same, so the answer is reused, but the checks may have changed since (a category
+// collected now that was refused then). The answer's earlier rejections go and ingest runs over it again; what it
+// kept before is found again and not counted twice (a sighting counts once per session and day). False when the day
+// is not forced or the stored answer is gone.
+func (c *Curator) replayForced(b *graph.Builder, u *Unit, d triage.Decision, owner []string, k *known, done *store.Done, run *store.Run) bool {
+	if done.Step != "daily" || !slices.Contains(c.St.S.ForceReruns, u.Day) {
+		return false
+	}
+	raw, err := c.St.Raw(done.Raw)
+	if err != nil {
+		return false
+	}
+	c.St.S.Rejections = slices.DeleteFunc(c.St.S.Rejections, func(r store.Rejection) bool { return r.Key == done.Key })
+	c.ingest(b, u, d, owner, k, string(raw), done, run, c.storedRewrite(done))
+	done.Ruleset = schema.Ruleset
+	run.Counts["digest_replayed"]++
+	return true
 }
 
 // ingest checks an answer and keeps what passes. It is also what Revalidate replays over stored raw answers.
@@ -598,7 +631,7 @@ func (c *Curator) ingest(b *graph.Builder, u *Unit, d triage.Decision, owner []s
 		class, items := ci.class, ci.items
 		for fi, it := range items {
 			ev, rej, flags := w.Item(it)
-			sens := ""
+			var sens []string
 			if rej == "" && current && class == store.Fact {
 				rej, sens = c.factGate(it, ev, owner)
 				if rewritten[fmt.Sprintf("f%d", fi)] {
@@ -708,7 +741,7 @@ func itemGate(w *verify.Window, class string, it schema.Item, ev []store.Evidenc
 	assistant, weakSelf := false, false
 	for _, e := range ev {
 		l := w.All[e.N]
-		if w.Kind == "mail" && speaker.Quoted(l.Body, e.Quote) {
+		if speaker.QuotedIn(w.Kind, l.Body, e.Quote) { // mail, and group quote blocks (design v2 §4.2)
 			continue
 		}
 		switch role := voice.Role(l, w.Kind); {
@@ -1176,4 +1209,13 @@ func (c *Curator) Triage(ctx context.Context, day string) ([]triage.Decision, er
 		}
 	}
 	return out, nil
+}
+
+// dayRead tells whether the daily pass had model output for the day: a successful call, or a unit read before and
+// reused.
+func dayRead(metered *model.Metered, run *store.Run) bool {
+	if metered != nil && metered.Calls > 0 {
+		return true
+	}
+	return run.Counts["digested"]+run.Counts["digest_unchanged"]+run.Counts["digest_replayed"] > 0
 }

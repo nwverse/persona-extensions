@@ -54,6 +54,7 @@ const (
 	SpeakerAgent   = "Agent" // an agent's text
 	SpeakerPersona = "Persona"
 	SpeakerPaste   = "粘贴材料"
+	SpeakerTest    = "测试提示" // a probe sent to check a deployment: never the user's words (internal/relay)
 	SpeakerOther   = "其他会话"
 	SpeakerWork    = "工作"
 	SpeakerCard    = "卡片"
@@ -61,6 +62,9 @@ const (
 	SpeakerTodo    = "待办"
 	SpeakerDecide  = "决定"
 	SpeakerMemory  = "助手记忆"
+	// SpeakerRelayCand is a claim of the user's words inside a task prompt or a relay (relay.Quotes), not yet
+	// verified: curate's verifyRelays makes it the user's line (relay.RelayedMark) or drops it.
+	SpeakerRelayCand = "转达待核"
 )
 
 // Limits on what a line keeps.
@@ -502,6 +506,9 @@ func (s *Source) Get(ctx context.Context, kind, id string) (wire.KBDetail, error
 		meta["name"] = "Agent 会话"
 		if ok {
 			meta["name"] = sessionName(se, s.Machine)
+			if se.Space != "" {
+				meta["space"] = se.Space // entries from it carry the space (0.2.0-beta.40)
+			}
 		}
 	case KindAsks:
 		meta["code"], meta["name"] = entry.SrcAsk, "卡片问答 · "+id
