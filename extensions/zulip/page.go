@@ -19,7 +19,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.StreamID < 0 || st.Anchor < 0 || len(st.Topic) > 600 || len(st.Mode) > 30 {
+	if err := r.DecodeState(&st); err != nil || st.StreamID < 0 || st.Anchor < 0 || len([]rune(st.Topic)) > maxTopicChars || len(st.Mode) > 30 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -46,6 +46,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		st.Mode, st.Topic, st.Anchor = "topics", "", 0
 	case "topic":
+		if len([]rune(r.Values["topic"])) > maxTopicChars || strings.ContainsAny(r.Values["topic"], "\x00\r\n") {
+			return nil, errors.New("invalid topic name")
+		}
 		st.Mode, st.Topic, st.Anchor = "messages", r.Values["topic"], 0
 	case "more":
 		st.Anchor, err = parsePositiveID(r.Values["anchor"])
@@ -74,8 +77,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		}
 		section := wire.Section{Title: t.topics}
 		// Zulip lists the most recent topic first; the view keeps the first maxViewTopics.
-		for _, item := range items[:min(len(items), maxViewTopics)] {
-			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "topic-" + item.Name, Title: clipText(item.Name, 1800), Subtitle: fmt.Sprintf(t.latest, item.MaxID), Action: &wire.Action{ID: "topic", Values: map[string]string{"topic": item.Name}}})
+		for i, item := range items[:min(len(items), maxViewTopics)] {
+			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: fmt.Sprintf("topic-%d", i), Title: clipText(item.Name, 1800), Subtitle: fmt.Sprintf(t.latest, item.MaxID), Action: &wire.Action{ID: "topic", Values: map[string]string{"topic": item.Name}}})
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noTopics})
