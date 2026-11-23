@@ -25,9 +25,11 @@ type pageState struct {
 	SaveURL    string `json:"u,omitempty"`
 }
 
+const maxQueryChars = 200
+
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.Cursor) > 256 || len(st.DocumentID) > 128 || len(st.DraftID) > 128 || len(st.SaveURL) > 8192 {
+	if err := r.DecodeState(&st); err != nil || st.Page < 0 || len(st.Cursor) > 256 || len([]rune(st.Query)) > maxQueryChars || len(st.DocumentID) > 128 || len(st.DraftID) > 128 || len(st.SaveURL) > 8192 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -48,7 +50,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Cursor, st.Page, st.Mode = r.Values["q"], "", 0, "list"
+		st.Query, st.Cursor, st.Page, st.Mode = clipText(strings.TrimSpace(r.Values["q"]), maxQueryChars), "", 0, "list"
 	case "location":
 		if err := validLocation(r.Values["location"]); err != nil {
 			return nil, err
@@ -195,13 +197,22 @@ func (a *app) readQueue(ctx context.Context, st pageState) (listPage, error) {
 	return out, nil
 }
 
+func documentTitle(item document) string {
+	for _, candidate := range []string{item.Title, item.SourceURL, item.ID} {
+		if trimmed := strings.TrimSpace(candidate); trimmed != "" {
+			return trimmed
+		}
+	}
+	return "Untitled"
+}
+
 func documentRow(item document) wire.Component {
 	subtitle := item.SiteName
 	if item.Author != "" {
 		subtitle += " · " + item.Author
 	}
 	subtitle += fmt.Sprintf(" · %.0f%%", item.ReadingProgress*100)
-	return wire.Component{Type: wire.ComponentRow, Key: "document-" + item.ID, Title: clipText(item.Title, 2000), Subtitle: clipText(subtitle, 2000), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID}}}
+	return wire.Component{Type: wire.ComponentRow, Key: "document-" + item.ID, Title: clipText(documentTitle(item), 2000), Subtitle: clipText(subtitle, 2000), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID}}}
 }
 
 // httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
@@ -216,21 +227,23 @@ func detailView(r *ext.UIRequest, st pageState, item document, highlights []docu
 	if err != nil {
 		return nil, err
 	}
+	title := documentTitle(item)
 	items := []wire.Component{
 		{Type: wire.ComponentText, Text: item.Author + " · " + item.SiteName, Style: wire.TextStyleSecondary},
 		{Type: wire.ComponentProgress, Label: t.progress, Ratio: &item.ReadingProgress},
-		{Type: wire.ComponentButton, Title: t.move, Action: &wire.Action{ID: "shortlist", Confirm: t.move + "\n" + item.Title}},
+		{Type: wire.ComponentButton, Title: t.move, Action: &wire.Action{ID: "shortlist", Confirm: t.move + "\n" + clipText(title, 500)}},
 	}
 	if httpsLink(item.SourceURL) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.SourceURL})
 	}
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
-	v := &wire.View{Title: clipText(item.Title, 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
+	v := &wire.View{Title: clipText(title, 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
 	used := len(items)
 	if item.Notes != "" {
-		note := capComponents(textComponents(item.Notes), maxNoteItems)
-		used += len(note)
-		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: note})
+		if note := capComponents(textComponents(item.Notes), maxNoteItems); len(note) > 0 {
+			used += len(note)
+			v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: note})
+		}
 	}
 	if len(highlights) > 0 {
 		section := wire.Section{Title: t.highlights}
@@ -239,11 +252,13 @@ func detailView(r *ext.UIRequest, st pageState, item document, highlights []docu
 			section.Items = append(section.Items, textComponents(h.Notes)...)
 		}
 		section.Items = capComponents(section.Items, maxHighlightItems)
-		used += len(section.Items)
-		v.Sections = append(v.Sections, section)
+		if len(section.Items) > 0 {
+			used += len(section.Items)
+			v.Sections = append(v.Sections, section)
+		}
 	}
-	if text != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.read, Items: capComponents(textComponents(text), maxViewItems-used)})
+	if body := capComponents(textComponents(text), maxViewItems-used); len(body) > 0 {
+		v.Sections = append(v.Sections, wire.Section{Title: t.read, Items: body})
 	} else {
 		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{{Type: wire.ComponentText, Text: t.noText, Style: wire.TextStyleSecondary}}})
 	}
@@ -260,6 +275,9 @@ const (
 
 // capComponents keeps the first n components and shows the cut on the last one.
 func capComponents(items []wire.Component, n int) []wire.Component {
+	if n <= 0 {
+		return nil
+	}
 	if len(items) <= n {
 		return items
 	}
