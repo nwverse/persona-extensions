@@ -1,5 +1,19 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.41 (pre-release)
+
+- **Consolidation judges the facets at once.** The daily pass's filing step asked the model one batch at a time
+  (about 47 s each), the slowest serial stretch of a rerun day. With the daily pass's workers (4) the facets now have
+  their calls out together; each facet's batches stay in order, and building a batch and applying its answer still
+  take turns, so what is filed is the same. The process limiter still caps every model call at 4 at once and 20 a
+  minute, with the scheduled daily and weekly passes ahead of the reruns.
+- **A forced rerun checks the stored answers again.** `enkeep_rerun` with force reused the answers of units read
+  before and skipped them, so a day queued after a switch changed showed nothing new. A forced day now runs the checks
+  over the stored answers again, without a model call: the answer's old rejections go and what passes now is kept
+  (a sighting kept before is found again, not counted twice).
+- The daily run logs where its time went (read and triage, digest, consolidate, signals and exits), to find the time
+  that is not a model call.
+
 ## 0.2.0-beta.40 (pre-release)
 
 - **The ledger as the hub defines it.** The user's entries are read with the RPC `assistant.entries.list` (grant

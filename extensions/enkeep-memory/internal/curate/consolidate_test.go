@@ -3,10 +3,13 @@ package curate
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
@@ -558,5 +561,65 @@ func TestWrongIsACounterExample(t *testing.T) {
 	p1, p2 := s.Entries[s.Entries[a1].Parent], s.Entries[s.Entries[a2].Parent]
 	if p1 == nil || p1 != p2 || !slices.Contains(p1.Flags, flagOnceWrong+k.ID) {
 		t.Fatalf("not one entry beside the wrong one: %+v %+v", p1, p2)
+	}
+}
+
+// gateModel holds every call until want calls are out at once (or a second passes), then answers each item "new".
+type gateModel struct {
+	mu        sync.Mutex
+	out, most int
+	want      int
+	all       chan struct{}
+}
+
+func (m *gateModel) Complete(ctx context.Context, r model.Request) (model.Response, error) {
+	m.mu.Lock()
+	m.out++
+	m.most = max(m.most, m.out)
+	if m.out == m.want {
+		close(m.all)
+	}
+	m.mu.Unlock()
+	select {
+	case <-m.all:
+	case <-time.After(time.Second):
+	}
+	m.mu.Lock()
+	m.out--
+	m.mu.Unlock()
+	var in map[string]any
+	_ = json.Unmarshal([]byte(r.User), &in)
+	its, _ := items(in)
+	var ds []map[string]any
+	for i, it := range its {
+		ds = append(ds, map[string]any{"item": it["id"], "action": "new", "reason": "kind",
+			"new": map[string]any{"key": fmt.Sprint(i), "type": "t", "text": fmt.Sprint(in["facet"], " class ", i)}})
+	}
+	b, _ := json.Marshal(map[string]any{"decisions": ds})
+	return model.Response{Text: string(b)}, nil
+}
+
+// With Workers > 1 the facets are judged at once (0.2.0-beta.41): three facets' calls are out together, and every
+// action is still filed exactly once.
+func TestConsolidateFacetsAtOnce(t *testing.T) {
+	c := lockedCurator(t)
+	c.Workers = 4
+	ids := []string{
+		c.Observe(act(entry.Interaction, "action-a", "chats/c1", "2026-11-03", "quote-a"), "t"),
+		c.Observe(act(entry.Workflow, "action-b", "chats/c2", "2026-11-03", "quote-b"), "t"),
+		c.Observe(act(entry.Judgement, "action-c", "chats/c3", "2026-11-03", "quote-c"), "t"),
+	}
+	m := &gateModel{want: 3, all: make(chan struct{})}
+	run := newRunT()
+	if err := c.Consolidate(context.Background(), m, "2026-11-03", run); err != nil {
+		t.Fatal(err)
+	}
+	if m.most != 3 || run.Counts["consolidate_calls"] != 3 {
+		t.Fatalf("calls at once %d, calls %v", m.most, run.Counts)
+	}
+	for _, id := range ids {
+		if c.St.S.Entries[id].Parent == "" {
+			t.Errorf("%s not filed", id)
+		}
 	}
 }

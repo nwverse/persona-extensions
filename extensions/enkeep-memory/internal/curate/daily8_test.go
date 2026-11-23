@@ -535,3 +535,43 @@ func TestDailyRequest(t *testing.T) {
 		t.Errorf("language change: %s %s", key, key2)
 	}
 }
+
+// A day queued with force reuses the answers it has (same request, no model call) but runs the checks over them again
+// (0.2.0-beta.41): what an earlier check refused is kept now, its old rejection goes, and a day not forced is left.
+func TestReplayForced(t *testing.T) {
+	u, d := d8unit("chats/persona-a1", "assistant", append(slices.Clone(d8persona), "10:07 我: 最近家里老人住院，这周晚上都别排会")...)
+	fam := obs("persona", "用户家里老人住院，这周晚上不排会", 8, "这周晚上都别排会")
+	fam.Sensitive, fam.Domain = entry.SensFamily, entry.Life
+	fam.Impact = schema.ObsImpact{Moment: "ask_user", Action: "这周安排日程时避开晚上"}
+	text, _ := json.Marshal(schema.DailyOutput{Summary: []schema.Point{}, Observations: []schema.Observation{fam}})
+	c, _ := newCurator(t, nil, "shadow")
+	owner, k := []string{"Sam Rivera"}, d8known()
+	b := c.builder(u.Day, owner)
+	_, key := c.digestRequest(b, u, d, owner, k)
+	raw, err := c.St.PutRaw(key, text)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.St.S.Done[key] = &store.Done{Key: key, Step: "daily", Chat: u.Ref, Day: u.Day, Raw: raw, Prompt: schema.DailyPrompt, Ruleset: "rules/4"}
+	c.St.S.Rejections = append(c.St.S.Rejections, store.Rejection{Key: key, Class: "obs:persona", Code: "SENSITIVE_OFF", Claim: fam.Text, Day: u.Day},
+		store.Rejection{Key: "other", Class: "fact", Code: "SENSITIVE_OFF", Day: u.Day})
+	run := &store.Run{ID: "run-test", Counts: map[string]int{}}
+	if err := c.digest(context.Background(), nil, b, u, d, "", owner, k, run); err != nil || run.Counts["digest_unchanged"] != 1 || entryWith(c, fam.Text) != nil {
+		t.Fatalf("not forced: %v %v", err, run.Counts)
+	}
+	c.St.S.ForceReruns = []string{u.Day}
+	if err := c.digest(context.Background(), nil, b, u, d, "", owner, k, run); err != nil || run.Counts["digest_replayed"] != 1 {
+		t.Fatalf("forced: %v %v", err, run.Counts)
+	}
+	if e := entryWith(c, fam.Text); e == nil || !slices.Equal(e.Cats(), []string{entry.CatRelationships}) {
+		t.Fatalf("the refused observation is not kept on replay: %+v", c.St.S.Rejections)
+	}
+	if len(c.St.S.Rejections) != 1 || c.St.S.Rejections[0].Key != "other" || c.St.S.Done[key].Ruleset != schema.Ruleset {
+		t.Errorf("rejections %+v, ruleset %s", c.St.S.Rejections, c.St.S.Done[key].Ruleset)
+	}
+	// Twice: found again, not counted twice.
+	n := entryWith(c, fam.Text).Count
+	if err := c.digest(context.Background(), nil, b, u, d, "", owner, k, run); err != nil || entryWith(c, fam.Text).Count != n {
+		t.Errorf("replayed twice: count %d → %d", n, entryWith(c, fam.Text).Count)
+	}
+}

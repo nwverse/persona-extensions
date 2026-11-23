@@ -65,7 +65,8 @@ var rerunTools = []tool{
 		"(for example after the model was down or the prompt changed). Days run one at a time in the background, " +
 		"each at most once per prompt version; days already read with the current prompt are skipped. At most 31 days " +
 		"per call, only days before today. force: true reads the days again even if already read with the current prompt " +
-		"(for a day that lost a unit to a model error); units read before are reused, only what was not read calls the " +
+		"(for a day that lost a unit to a model error, or after a switch changed what is kept); units read before reuse " +
+		"their stored answers, which are checked again without a model call, and only what was not read calls the " +
 		"model. Returns what was queued; use enkeep_rerun_status for progress.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"from", "to"}, "properties": map[string]any{
 			"from":  map[string]any{"type": "string", "pattern": `^\d{4}-\d{2}-\d{2}$`, "description": "first day, YYYY-MM-DD"},
