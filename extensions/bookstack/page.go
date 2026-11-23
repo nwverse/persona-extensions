@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -33,7 +34,7 @@ const maxBookNameChars = 255
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.BookID < 0 || st.PageID < 0 || st.Offset < 0 || st.SearchPage < 0 || len([]rune(st.BookName)) > maxBookNameChars || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxTitleChars || len(st.Markdown) > 65000 || len([]rune(st.Search)) > maxQueryChars {
+	if err := r.DecodeState(&st); err != nil || st.BookID < 0 || st.PageID < 0 || st.Offset < 0 || st.SearchPage < 0 || len([]rune(st.BookName)) > maxBookNameChars || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxTitleChars || utf8.RuneCountInString(st.Markdown) > maxMarkdownChars || len([]rune(st.Search)) > maxQueryChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -85,19 +86,33 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			st.DraftID = randomID()
 		}
 	case "back":
-		st.Mode, st.PageID, st.DraftID, st.Name, st.Markdown = "pages", 0, "", "", ""
+		switch {
+		case st.BookID > 0:
+			st.Mode = "pages"
+		case st.Search != "":
+			st.Mode = "search"
+		default:
+			st.Mode = ""
+		}
+		st.PageID, st.DraftID, st.Name, st.Markdown = 0, "", "", ""
 	case "review-create":
 		in := createArgs{BookID: st.BookID, Name: r.Values["name"], Markdown: r.Values["markdown"]}
 		if err := in.validate(); err != nil {
 			return nil, err
 		}
 		st.Name, st.Markdown, st.Mode = in.Name, in.Markdown, "review-create"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("page draft exceeds page state limit")
+		}
 	case "review-edit":
 		in := updateArgs{PageID: st.PageID, Name: r.Values["name"], Markdown: r.Values["markdown"]}
 		if err := in.validate(); err != nil {
 			return nil, err
 		}
 		st.Name, st.Markdown, st.Mode = in.Name, in.Markdown, "review-edit"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("page draft exceeds page state limit")
+		}
 	case "confirm-create":
 		raw, _ := json.Marshal(createArgs{BookID: st.BookID, Name: st.Name, Markdown: st.Markdown})
 		out, err := a.doAction(ctx, "ui-create:"+st.DraftID, "bookstack_create_page", raw)
@@ -291,8 +306,15 @@ func detailView(r *ext.UIRequest, st pageState, item page, text string) *wire.Vi
 	if link := safePageLink(item.URL); link != "" {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
-	if item.Markdown != "" && len(item.Markdown) <= 10000 {
-		items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.edit, Action: &wire.Action{ID: "edit", Push: &wire.Push{Title: t.edit, State: ext.EncodeState(pageState{Mode: "edit", BookID: item.BookID, PageID: item.ID, Name: item.Name, Markdown: item.Markdown, DraftID: randomID()})}}})
+	if item.Markdown != "" && utf8.RuneCountInString(item.Markdown) <= 10000 {
+		bookID := st.BookID
+		if bookID == 0 && st.Search == "" {
+			bookID = item.BookID
+		}
+		pushState := ext.EncodeState(pageState{Mode: "edit", BookID: bookID, BookName: st.BookName, Search: st.Search, SearchPage: st.SearchPage, PageID: item.ID, Name: item.Name, Markdown: item.Markdown, DraftID: randomID()})
+		if len(pushState) <= wire.StateMost {
+			items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.edit, Action: &wire.Action{ID: "edit", Push: &wire.Push{Title: t.edit, State: pushState}}})
+		}
 	} else if item.Markdown == "" {
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: t.noMarkdown, Style: wire.TextStyleSecondary})
 	}
