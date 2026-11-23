@@ -152,7 +152,14 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			if item.ID <= 0 || item.IsArchived || item.DeletedAt != "" {
 				continue
 			}
-			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: fmt.Sprintf("project-%d", item.ID), Title: clipText(item.Title, 1800), Subtitle: item.Identifier, Action: &wire.Action{ID: "create", Values: map[string]string{"project_id": fmt.Sprint(item.ID)}}})
+			if len(section.Items) >= maxViewRecords {
+				break
+			}
+			name := strings.TrimSpace(item.Title)
+			if name == "" {
+				name = fmt.Sprintf("#%d", item.ID)
+			}
+			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: fmt.Sprintf("project-%d", item.ID), Title: clipText(name, 1800), Subtitle: item.Identifier, Action: &wire.Action{ID: "create", Values: map[string]string{"project_id": fmt.Sprint(item.ID)}}})
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noProjects})
@@ -223,6 +230,23 @@ func createView(r *ext.UIRequest, st pageState) *wire.View {
 	}}}}
 }
 
+const (
+	maxViewItems        = 250
+	maxDescriptionItems = 120
+)
+
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if n <= 0 {
+		return nil
+	}
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
+}
+
 func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(item.subtitle(), 1800)}}
@@ -231,8 +255,11 @@ func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 	}
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	v := &wire.View{Title: clipText(item.Title, 1800), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.tasks, Items: items}}}
+	used := len(items)
 	if item.Description != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Description, 40000))})
+		desc := capComponents(textComponents(clipText(item.Description, 40000)), maxDescriptionItems)
+		used += len(desc)
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: desc})
 	}
 	section := wire.Section{Title: t.comments}
 	for _, c := range item.Comments {
@@ -247,6 +274,7 @@ func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: clipText(name+": "+c.Comment, 1800)})
 		}
 	}
+	section.Items = capComponents(section.Items, maxViewItems-used)
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.noComments, Style: wire.TextStyleSecondary})
 	}
