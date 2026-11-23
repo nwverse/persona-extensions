@@ -283,6 +283,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 			b.WriteString("\n" + l)
 		}
 		b.WriteString("\n" + a.modelText())
+		b.WriteString("\nMemory source (" + a.memoryReading() + ").")
 		return b.String(), nil
 	case "enkeep_resettle":
 		in := struct {
@@ -338,7 +339,6 @@ func (a *app) modelText() string {
 	if l := a.c.LedgerState(); l != "" {
 		b.WriteString("\nLedger (assistant.entries.list): " + l + ".")
 	}
-	b.WriteString("\nMemory source (" + a.memoryReading() + ").")
 	return b.String()
 }
 
