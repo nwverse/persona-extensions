@@ -4,7 +4,7 @@
   "name": "Orca 机器人",
   "version": "0.1.0",
   "icon": "assets/icon.png",
-  "description": "把符合条件的新待办交给你 Mac 上 Orca 里的一个机器人：每条待办开一个新对话，让它先做准备（调研、拆解、起草）。机器人这一轮做完时 Persona 通知你，回答留在它的 Orca 对话里。机器人可以通过本扩展附带的 MCP 工具读到交给它的待办，并把准备结果写回到那条待办上；别的待办它碰不到。只走那台 Mac 上 Orca 的本地 socket，不经过 Orca Cloud。",
+  "description": "把符合条件的新待办交给你 Mac 上 Orca 里的一个机器人：每条待办开一个新对话，让它先做准备（调研、拆解、起草）。机器人这一轮做完时 Persona 通知你，回答留在它的 Orca 对话里。机器人可以通过本扩展附带的 MCP 工具读到交给它的待办，并把准备结果的摘要写回到那条待办上；别的待办它碰不到。只走那台 Mac 上 Orca 的本地 socket，不经过 Orca Cloud。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/docs/extensions/orca-bot.md",
   "tags": ["Orca", "机器人", "待办", "MCP", "agents"],
@@ -64,6 +64,20 @@
         "items": {"type": "string", "minLength": 1, "maxLength": 100},
         "maxItems": 20,
         "default": []
+      },
+      "include_agent_tasks": {
+        "type": "boolean",
+        "title": "也转发 Persona 自己派给 Agent 的任务",
+        "description": "默认只转发你自己建的待办；助手派活时建的任务待办已经有 Agent 在做，一般不需要再交给机器人。问你问题时生成的待办一律不转发。",
+        "default": false
+      },
+      "max_per_hour": {
+        "type": "integer",
+        "title": "每小时最多转发几条",
+        "description": "超过的会等下一个小时再转发；新建超过 48 小时还没转发的不再转发。",
+        "minimum": 1,
+        "maximum": 100,
+        "default": 10
       }
     }
   }

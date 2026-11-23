@@ -16,12 +16,14 @@ import (
 // The MCP command (orca-bot mcp): line-delimited JSON-RPC 2.0 on stdin and stdout, the Model Context Protocol's stdio
 // transport. The owner registers it as one of the bot's own tools:
 //
-//	orca bot tools add "<data>/bin/orca-bot mcp --socket <data>/mcp.sock --bot <bot id>" --name persona-todos --bot "<bot>"
+//	orca bot tools add "<data>/bin/orca-bot mcp --socket <data>/mcp.sock --bot <bot id> --token <token>" --name persona-todos --bot <bot id>
 //
-// It holds no credential and reaches nothing but the node program's socket, which only this user can open. The node
-// program answers only for the to-dos handed to the bot named by --bot, and, when Orca says which chat runs the
-// command (ORCA_AGENT_SESSION_ID), only for the to-do handed to that chat. Writes go on to the hub, which checks them
-// again before it writes onto the to-do.
+// It reaches nothing but the node program's socket, which only this macOS user can open: the trust boundary is that
+// user. --token is a random secret per bot the node program made, so another local process cannot pass for the bot's
+// tool by naming the bot alone. The node program answers only for the to-dos handed to that bot, and only for the
+// one handed to the chat Orca says runs the command (ORCA_AGENT_SESSION_ID). Orca leaves that out of a tool process
+// several chats share; then the command reaches nothing, unless the owner allowed it on the page (then: every to-do
+// handed to that bot). Writes go on to the hub, which checks them again before it writes onto the to-do.
 
 const (
 	mcpProtocol      = "2025-06-18"
@@ -46,7 +48,7 @@ func mcpTools() []mcpTool {
 		{Name: "todo_get", Description: "读取一条交给你的待办：交接时的标题、备注、项目、截止时间，以及已经写回过的内容的状态。",
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{"todo_id": todoID},
 				"required": []string{"todo_id"}, "additionalProperties": false}},
-		{Name: "todo_write_preparation", Description: fmt.Sprintf("把你为这条待办做的准备（调研结论、拆解步骤、草稿要点）写回到 Persona 的这条待办上，作为一条决定记录，不会改动待办的标题和备注。每次最多 %d 字，每条待办最多写 %d 次；同样的内容只记一次。", writeMaxRunes, writesPerTodo),
+		{Name: "todo_write_preparation", Description: fmt.Sprintf("把你为这条待办做的准备的摘要（调研结论、拆解步骤、草稿要点）写回到 Persona 的这条待办上，作为一条决定记录，不会改动待办的标题和备注。这条记录会出现在待办的对话话题里，也会给之后处理这条待办的 Agent 看到：只写摘要，细节留在 Orca 对话里。每次最多 %d 字，每条待办最多写 %d 次；同样的内容只记一次。", writeMaxRunes, writesPerTodo),
 			InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 				"todo_id": todoID,
 				"text":    map[string]any{"type": "string", "description": "要写回的内容，纯文本或 Markdown", "maxLength": writeMaxRunes},
@@ -60,14 +62,15 @@ func runMCP(args []string, in io.Reader, out, errOut io.Writer) int {
 	fs.SetOutput(errOut)
 	socket := fs.String("socket", "", "the node program's socket (shown on the extension's page)")
 	bot := fs.String("bot", "", "the id of the Orca bot this command is registered for")
+	token := fs.String("token", "", "the bot's token (shown on the extension's page)")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *socket == "" || !safeID.MatchString(*bot) {
-		fmt.Fprintln(errOut, "orca-bot mcp: --socket and --bot are required (copy the command from the extension's page)")
+	if *socket == "" || !safeID.MatchString(*bot) || *token == "" {
+		fmt.Fprintln(errOut, "orca-bot mcp: --socket, --bot and --token are required (copy the command from the extension's page)")
 		return 2
 	}
-	s := &mcpServer{socket: *socket, bot: *bot, session: os.Getenv("ORCA_AGENT_SESSION_ID")}
+	s := &mcpServer{socket: *socket, bot: *bot, token: *token, session: os.Getenv("ORCA_AGENT_SESSION_ID")}
 	if s.session != "" && !safeID.MatchString(s.session) {
 		s.session = ""
 	}
@@ -79,7 +82,7 @@ func runMCP(args []string, in io.Reader, out, errOut io.Writer) int {
 }
 
 type mcpServer struct {
-	socket, bot, session string
+	socket, bot, token, session string
 	// ask sends one request to the node program (dialing the socket); replaced in tests.
 	ask func(req mcpRequest) (mcpReply, error)
 }
@@ -154,7 +157,7 @@ func (s *mcpServer) handle(line []byte) []byte {
 }
 
 func (s *mcpServer) call(name, todoID, text string) any {
-	req := mcpRequest{Bot: s.bot, Session: s.session, TodoID: todoID, Text: text}
+	req := mcpRequest{Bot: s.bot, Token: s.token, Session: s.session, TodoID: todoID, Text: text}
 	switch name {
 	case "todo_list":
 		req.Method = "list"
@@ -197,7 +200,7 @@ func (s *mcpServer) dial(req mcpRequest) (mcpReply, error) {
 	if _, err := c.Write(append(b, '\n')); err != nil {
 		return mcpReply{}, err
 	}
-	line, err := bufio.NewReaderSize(c, 64<<10).ReadBytes('\n')
+	line, err := readLine(bufio.NewReaderSize(c, 64<<10), mcpMaxLine)
 	if err != nil && len(line) == 0 {
 		return mcpReply{}, err
 	}

@@ -12,6 +12,9 @@ import (
 
 func handoffRaw(t *testing.T, todo, bot, op string) json.RawMessage {
 	t.Helper()
+	if !orcaOpIDPattern.MatchString(op) && op != "bad" {
+		op = orcaOperationID(time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC), op)
+	}
 	raw, _ := json.Marshal(handoffParams{TodoID: todo, BotID: bot, OpID: op, Text: "prepare " + todo,
 		Todo: todoSnapshot{Title: "title of " + todo}})
 	return raw
@@ -58,6 +61,9 @@ func TestNodeRefusesBadHandOvers(t *testing.T) {
 	w := newWorld(t, workConfig())
 	if _, err := w.node.rpc(w.ctx, "handoff", handoffRaw(t, "todo/../x", "bot-alpha", "op")); err == nil {
 		t.Fatal("an odd to-do id was taken")
+	}
+	if _, err := w.node.rpc(w.ctx, "handoff", handoffRaw(t, "todo_1", "bot-alpha", "bad")); err == nil {
+		t.Fatal("an operation id Orca would refuse was taken")
 	}
 	_, err := w.node.rpc(w.ctx, "handoff", handoffRaw(t, "todo_1", "bot-gone", "op"))
 	if err == nil || errCode(err) != "bot_not_found" {
@@ -125,37 +131,24 @@ func TestNodeFinishesAChatThatIsGoneOrTooLong(t *testing.T) {
 	if _, err := w.node.rpc(w.ctx, "handoff", handoffRaw(t, "todo_gone", "bot-alpha", "op-1")); err != nil {
 		t.Fatal(err)
 	}
+	w.orca.openTurn(w.orca.sent()[0].Session) // the first chat is no longer empty
 	if _, err := w.node.rpc(w.ctx, "handoff", handoffRaw(t, "todo_long", "bot-alpha", "op-2")); err != nil {
 		t.Fatal(err)
 	}
 	w.orca.mu.Lock()
-	w.orca.sessions = w.orca.sessions[1:] // the first chat was deleted in Orca
+	w.orca.sessions = w.orca.sessions[1:] // the first chat was deleted in Orca: its history fails as a runtime error
 	w.orca.mu.Unlock()
 	w.node.pollOnce(w.ctx)
-	w.clock.add(nodeWatchFor + time.Minute)
+	if len(states) != 0 {
+		t.Fatalf("finished at the first refusal: %v", states)
+	}
+	w.clock.add(nodeLostAfter)
+	w.node.pollOnce(w.ctx)
+	w.clock.add(nodeWatchFor)
 	w.node.pollOnce(w.ctx)
 	got := strings.Join(states, ",")
 	if !strings.Contains(got, "todo_gone=unavailable") || !strings.Contains(got, "todo_long=timeout") {
 		t.Fatalf("states: %s", got)
-	}
-}
-
-func TestNodeQuietStartWaitsForTheTurn(t *testing.T) {
-	w := newWorld(t, workConfig())
-	res, err := w.node.rpc(w.ctx, "handoff", handoffRaw(t, "todo_1", "bot-alpha", "op-1"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	sid := res.(*handoffResult).SessionID
-	w.orca.finish(sid, "completed") // idle at once, never seen working
-	w.node.pollOnce(w.ctx)
-	if w.nodeHandoff("todo_1").Finished {
-		t.Fatal("finished before the turn could have started")
-	}
-	w.clock.add(nodeQuietStart)
-	w.node.pollOnce(w.ctx)
-	if !w.nodeHandoff("todo_1").Finished {
-		t.Fatal("not finished after the quiet start")
 	}
 }
 
@@ -178,7 +171,7 @@ func TestNodeSocketAndLink(t *testing.T) {
 	if l2, err := keepLink(w.nodeD); err != nil || l2 != link {
 		t.Fatalf("keep: %q %v", l2, err)
 	}
-	s := w.node.status(context.Background())
+	s := w.node.status(context.Background(), "")
 	if !s.OrcaRunning || s.Link != link || s.Socket != w.node.socket {
 		t.Fatalf("status: %+v", s)
 	}

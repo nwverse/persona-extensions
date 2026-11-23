@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -40,8 +41,9 @@ func TestThePageListsTheBotsAndPicksOne(t *testing.T) {
 	}
 	w.pick("bot-alpha")
 	page = viewJSON(t, w)
-	for _, want := range []string{"正在转发", "正在用", "orca bot tools add", " mcp --socket ", "--bot bot-alpha", "--name persona-todos",
-		"--bot 'Example Helper'", w.node.socket} {
+	token := w.node.status(w.ctx, "bot-alpha").Token
+	for _, want := range []string{"正在转发", "正在用", "orca bot tools add", " mcp --socket ", "--bot bot-alpha --token " + token,
+		"--name persona-todos --bot bot-alpha", w.node.socket} {
 		if !strings.Contains(page, want) {
 			t.Errorf("after picking, the page lacks %q:\n%s", want, page)
 		}
@@ -79,9 +81,22 @@ func TestThePageWhenOrcaIsDown(t *testing.T) {
 }
 
 func TestToolsAddCommandQuotes(t *testing.T) {
-	got := toolsAddCommand("/Users/someone/My Data/bin/orca-bot", "/tmp/s.sock", &botChoice{ID: "bot-1", Name: `It's "Bot"`})
-	want := `orca bot tools add "'/Users/someone/My Data/bin/orca-bot' mcp --socket /tmp/s.sock --bot bot-1" --name persona-todos --bot 'It'\''s "Bot"'`
-	if got != want {
-		t.Fatalf("got  %s\nwant %s", got, want)
+	// A POSIX shell reads the command back to exactly the words it was made of, whatever the path holds.
+	link := "/Users/someone/My $HOME `x` \\ \"q\" it's/bin/orca-bot"
+	cmd := toolsAddCommand(link, "/tmp/s.sock", "0123abcd", &botChoice{ID: "bot-1", Name: `It's "Bot"`})
+	out, err := exec.Command("/bin/sh", "-c", "set -- "+cmd+`; printf '%s\n' "$1 $2 $3 $4" "$6 $7 $8 $9"; printf '%s' "$5"`).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitN(string(out), "\n", 3)
+	if lines[0] != "orca bot tools add" || lines[1] != "--name persona-todos --bot bot-1" {
+		t.Fatalf("outer words: %q", lines)
+	}
+	inner, err := exec.Command("/bin/sh", "-c", "set -- "+lines[2]+`; printf '%s\n' "$1" "$2 $3 $4 $5 $6 $7 $8" "$#"`).Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := link + "\nmcp --socket /tmp/s.sock --bot bot-1 --token 0123abcd\n8\n"; string(inner) != want {
+		t.Fatalf("inner words: %q, want %q", inner, want)
 	}
 }

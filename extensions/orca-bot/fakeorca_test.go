@@ -9,10 +9,14 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 // fakeOrca is a stand-in for the Orca desktop app's runtime: a unix socket speaking its line protocol, and the
-// orca-runtime.json that names it. Every bot, chat and message is synthetic; no real Orca is reached.
+// orca-runtime.json that names it. Every bot, chat and message is synthetic; no real Orca is reached. As Orca does,
+// bots.session.start answers an empty chat of the bot already open (one with no turn yet, even after a send) instead
+// of a new one; agentSession.history of a chat it does not have fails with a plain runtime error (Orca's readHead
+// throws, and the RPC layer answers runtime_error); a clientOperationId must have Orca's shape.
 type fakeOrca struct {
 	t        *testing.T
 	dir      string
@@ -27,8 +31,15 @@ type fakeOrca struct {
 	bots      []map[string]any
 	enabled   bool
 	sessions  []string // made by bots.session.start, in order
+	botOf     map[string]string
 	working   map[string]bool
-	turnState map[string]string
+	turns     map[string]map[string]any // the latest turn of each chat, as history's page.latestTurn.turn
+	turnAt    map[string]int64
+	lastOp    map[string]string
+	prompts   map[string]int
+	now       func() time.Time
+	otherRT   bool // answer under another runtime id
+	autoOpen  bool // the bot starts on each message at once (its chat is no longer empty)
 	sends     []fakeSend
 	ops       map[string]string // clientOperationId → fingerprint
 	calls     map[string]int
@@ -47,7 +58,9 @@ func newFakeOrca(t *testing.T) *fakeOrca {
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	f := &fakeOrca{t: t, dir: dir, metaPath: filepath.Join(dir, "orca-runtime.json"), token: "tok-1", runtimeID: "rt-1",
-		protocol: 3, minClient: 1, enabled: true, working: map[string]bool{}, turnState: map[string]string{},
+		protocol: 3, minClient: 1, enabled: true, working: map[string]bool{}, turns: map[string]map[string]any{},
+		turnAt: map[string]int64{}, lastOp: map[string]string{}, prompts: map[string]int{}, botOf: map[string]string{},
+		now: time.Now,
 		ops: map[string]string{}, calls: map[string]int{}, refuse: map[string]string{},
 		bots: []map[string]any{
 			{"id": "bot-alpha", "name": "Example Helper", "agent": "claude", "paused": false},
@@ -125,6 +138,9 @@ func (f *fakeOrca) serve(c net.Conn) {
 		res, code := f.answer(req.AuthToken, req.Method, req.Params)
 		f.mu.Lock()
 		rid := f.runtimeID
+		if f.otherRT {
+			rid = "rt-somebody-else"
+		}
 		f.mu.Unlock()
 		env := map[string]any{"id": req.ID, "_meta": map[string]any{"runtimeId": rid}}
 		if code != "" {
@@ -159,8 +175,14 @@ func (f *fakeOrca) answer(token, method string, raw json.RawMessage) (any, strin
 		id, _ := p["botId"].(string)
 		for _, b := range f.bots {
 			if b["id"] == id {
+				for _, s := range f.sessions { // like a blank page: an empty chat already open is the new chat
+					if f.botOf[s] == id && f.turns[s] == nil {
+						return map[string]any{"sessionId": s}, ""
+					}
+				}
 				s := fmt.Sprintf("claude_chat_%d", len(f.sessions)+1)
 				f.sessions = append(f.sessions, s)
+				f.botOf[s], f.working[s] = id, false
 				return map[string]any{"sessionId": s}, ""
 			}
 		}
@@ -168,11 +190,20 @@ func (f *fakeOrca) answer(token, method string, raw json.RawMessage) (any, strin
 	case "agentSession.history":
 		s, _ := p["sessionId"].(string)
 		if !contains(f.sessions, s) {
-			return nil, "agent_session_not_found"
+			return nil, "runtime_error"
 		}
-		page := map[string]any{"fence": 7, "working": f.working[s], "actionablePromptIds": []string{}}
-		if st := f.turnState[s]; st != "" {
-			page["latestTurn"] = map[string]any{"itemId": "turn-1", "observedAt": 1, "turn": map[string]any{"turnId": "t1", "state": st}}
+		ids := []string{}
+		for i := 0; i < f.prompts[s]; i++ {
+			ids = append(ids, fmt.Sprintf("prompt-%d", i))
+		}
+		page := map[string]any{"fence": 7, "actionablePromptIds": ids}
+		if w, ok := f.working[s]; ok { // an older host does not say
+			page["working"] = w
+		}
+		if t := f.turns[s]; t != nil {
+			page["latestTurn"] = map[string]any{"itemId": "turn-1", "observedAt": f.turnAt[s], "turn": t}
+		} else {
+			page["latestTurn"] = nil
 		}
 		return map[string]any{"ok": true, "page": page}, ""
 	case "agentSession.send":
@@ -180,6 +211,9 @@ func (f *fakeOrca) answer(token, method string, raw json.RawMessage) (any, strin
 		s, _ := env["sessionId"].(string)
 		op, _ := env["clientOperationId"].(string)
 		fp, _ := env["payloadFingerprint"].(string)
+		if !orcaOpIDPattern.MatchString(op) {
+			return map[string]any{"ok": false, "refusal": map[string]any{"code": "agent_session_operation_invalid"}}, ""
+		}
 		want, err := orcaFingerprint("agentSession.send", s, map[string]any{"body": p["body"], "delivery": p["delivery"]})
 		if err != nil || fp != want {
 			return map[string]any{"ok": false, "refusal": map[string]any{"code": "agent_session_fingerprint_mismatch"}}, ""
@@ -199,7 +233,12 @@ func (f *fakeOrca) answer(token, method string, raw json.RawMessage) (any, strin
 			text, _ = b["text"].(string)
 		}
 		f.sends = append(f.sends, fakeSend{s, op, text})
-		f.working[s] = true
+		f.working[s] = true // an unanswered send counts as work; the chat stays empty until its turn opens
+		f.lastOp[s] = op
+		if f.autoOpen {
+			f.turns[s] = map[string]any{"turnId": "t1", "state": "running", "userItemId": op}
+			f.turnAt[s] = f.now().UnixMilli()
+		}
 		return map[string]any{"ok": true}, ""
 	}
 	return nil, "method_not_found"
@@ -214,11 +253,45 @@ func contains(list []string, s string) bool {
 	return false
 }
 
-func (f *fakeOrca) finish(session, state string) {
+// openTurn is the bot starting on the message: the chat has a running turn and is no longer empty.
+func (f *fakeOrca) openTurn(session string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.turns[session] = map[string]any{"turnId": "t1", "state": "running", "userItemId": f.lastOp[session]}
+	f.turnAt[session] = f.now().UnixMilli()
+}
+
+// finish ends the chat's turn in state, with Orca's verdict outcome ("" none).
+func (f *fakeOrca) finish(session, state string) { f.finishWith(session, state, "success") }
+
+func (f *fakeOrca) finishWith(session, state, outcome string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.working[session] = false
-	f.turnState[session] = state
+	t := map[string]any{"turnId": "t1", "state": state, "userItemId": f.lastOp[session]}
+	if outcome != "" {
+		t["outcome"] = outcome
+	}
+	f.turns[session] = t
+	f.turnAt[session] = f.now().UnixMilli()
+}
+
+// setTurn sets what history says of the chat as it is: working (nil: the host does not say) and its latest turn.
+func (f *fakeOrca) setTurn(session string, working *bool, turn map[string]any, at time.Time) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if working == nil {
+		delete(f.working, session)
+	} else {
+		f.working[session] = *working
+	}
+	f.turns[session], f.turnAt[session] = turn, at.UnixMilli()
+}
+
+func (f *fakeOrca) setPrompts(session string, n int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prompts[session] = n
 }
 
 func (f *fakeOrca) sent() []fakeSend {
@@ -229,4 +302,11 @@ func (f *fakeOrca) sent() []fakeSend {
 
 func (f *fakeOrca) client() *orcaClient {
 	return newOrcaClient(func() string { return f.metaPath })
+}
+
+// openTurnAll opens a turn in every chat that was sent to.
+func (f *fakeOrca) openTurnAll() {
+	for _, x := range f.sent() {
+		f.openTurn(x.Session)
+	}
 }

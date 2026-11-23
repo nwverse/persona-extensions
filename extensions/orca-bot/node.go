@@ -3,6 +3,9 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,32 +25,40 @@ import (
 // The program on the Mac the owner picked (the manifest's node section). It is the only part that talks to Orca, and
 // only over Orca's local runtime socket. What it does:
 //
-//	orcabot.status            whether Orca runs and is compatible, and the MCP command to register
+//	orcabot.status            whether Orca runs and is compatible, and the MCP command to register for a bot
 //	orcabot.bots              the bots of this Orca (bots.list), for the bot picker
 //	orcabot.handoff           a new chat of the bot (bots.session.start) and the to-do sent there (agentSession.send)
+//	orcabot.set_scope         whether the bot's MCP command may act without knowing its chat
 //	orcabot.finished_ack      the hub heard that the bot finished: stop telling it
 //	orcabot.writeback_result  what became of a write-back the MCP command asked for
 //
 // and, on its own: it polls agentSession.history of each chat it handed a to-do to until the turn ends, then tells the
-// hub (node.event orcabot.finished, repeated until acknowledged); and it serves the MCP command (orca-bot mcp) over a
-// unix socket in its data directory that only this user can open, forwarding write-backs to the hub
-// (node.event orcabot.writeback). The hand-overs are persisted, so a restart neither sends twice nor forgets a chat.
+// hub (node.event orcabot.finished, repeated until acknowledged); it tells the hub when the bot waits on an approval
+// or a question (orcabot.needs_you); and it serves the MCP command (orca-bot mcp) over a unix socket in its data
+// directory that only this user can open, forwarding write-backs to the hub (node.event orcabot.writeback, repeated
+// until answered). The hand-overs are persisted, so a restart neither sends twice nor forgets a chat. When it starts it
+// says so (orcabot.hello), so the hub can retry what waited for this Mac.
 
 const (
 	nodePollEvery = 10 * time.Second
-	// nodeQuietStart: a turn seen idle this soon after the send, without having been seen working, may not have
-	// started yet.
-	nodeQuietStart = time.Minute
+	// nodeTurnSkew: a turn that began this long before the send still counts as the send's (clock and journal skew).
+	nodeTurnSkew = 5 * time.Second
 	// nodeWatchFor is how long a chat is followed before the hub is told it is still not done.
 	nodeWatchFor = 24 * time.Hour
-	// nodeReemit is how often an unacknowledged finish is told again.
+	// nodeLostAfter: a chat whose history Orca keeps refusing (while Orca itself answers) for this long is gone.
+	nodeLostAfter = 30 * time.Minute
+	// nodeReemit is how often an unacknowledged finish, a needs-you or an unanswered write-back is told again.
 	nodeReemit = time.Minute
+	// nodeTellFor: an unacknowledged finish is told again for this long, then given up.
+	nodeTellFor = 24 * time.Hour
 	// nodeAckWait is how long a write-back waits for the hub's answer before telling the bot it is on its way.
 	nodeAckWait = 20 * time.Second
 	// nodeHandoffsKept bounds the persisted hand-overs: the oldest acknowledged ones go first.
 	nodeHandoffsKept = 1000
 	// maxSocketPath: a unix socket path holds at most 103 bytes on macOS.
 	maxSocketPath = 100
+	// mcpMaxLine bounds one request on the MCP socket.
+	mcpMaxLine = 256 << 10
 )
 
 // orcaAPI is what the node program needs of Orca (orcaClient; a fake in tests).
@@ -73,6 +84,9 @@ type nodeWrite struct {
 	At     time.Time `json:"at"`
 	Status string    `json:"status"` // pending | written | duplicate | refused
 	Error  string    `json:"error,omitempty"`
+	// Text is kept only while pending, to tell the hub again; EmittedAt is when it was last told.
+	Text      string    `json:"text,omitempty"`
+	EmittedAt time.Time `json:"emitted_at,omitzero"`
 }
 
 type nodeHandoff struct {
@@ -88,13 +102,26 @@ type nodeHandoff struct {
 	Finished   bool         `json:"finished,omitempty"`
 	FinishedAt time.Time    `json:"finished_at,omitzero"`
 	TurnState  string       `json:"turn_state,omitempty"`
+	Outcome    string       `json:"outcome,omitempty"`
 	Acked      bool         `json:"acked,omitempty"`
 	EmittedAt  time.Time    `json:"emitted_at,omitzero"`
-	Writes     []nodeWrite  `json:"writes,omitempty"`
+	// FailingSince is when Orca, answering, began refusing this chat's history.
+	FailingSince time.Time `json:"failing_since,omitzero"`
+	// PromptPolls counts the polls in a row that saw an approval or question waiting; Episode numbers the waits.
+	PromptPolls     int         `json:"prompt_polls,omitempty"`
+	PromptOpen      bool        `json:"prompt_open,omitempty"`
+	PromptEpisode   int         `json:"prompt_episode,omitempty"`
+	PromptEmittedAt time.Time   `json:"prompt_emitted_at,omitzero"`
+	Writes          []nodeWrite `json:"writes,omitempty"`
 }
 
 type nodeState struct {
 	Handoffs map[string]*nodeHandoff `json:"handoffs"`
+	// Tokens are the per-bot secrets of the MCP command (--token): another local process cannot pass for the bot's
+	// tool by naming the bot alone.
+	Tokens map[string]string `json:"tokens,omitempty"`
+	// Wide lists the bots whose MCP command may act without knowing its chat (the owner's choice on the page).
+	Wide map[string]bool `json:"wide,omitempty"`
 }
 
 type writeAck struct {
@@ -109,7 +136,7 @@ type nodeApp struct {
 	pollEvery time.Duration
 	ackWait   time.Duration
 
-	sendMu sync.Mutex // one hand-over at a time: Orca reuses an empty chat, so two at once could share one
+	sendMu sync.Mutex // one hand-over at a time
 
 	mu       sync.Mutex
 	data     string
@@ -191,6 +218,9 @@ func (n *nodeApp) open(ctx context.Context, data string, emit func(string, any) 
 		n.mu.Lock()
 		n.sockErr = err.Error()
 		n.mu.Unlock()
+	}
+	if emit != nil {
+		_ = emit("orcabot.hello", map[string]any{}) // the hub may retry at once what waited for this Mac
 	}
 	return nil
 }
@@ -324,7 +354,11 @@ type handoffResult struct {
 func (n *nodeApp) rpc(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
 	case "status":
-		return n.status(ctx), nil
+		var p struct {
+			BotID string `json:"bot_id"`
+		}
+		_ = json.Unmarshal(params, &p)
+		return n.status(ctx, p.BotID), nil
 	case "bots":
 		bots, enabled, err := n.orca.Bots(ctx)
 		if err != nil {
@@ -340,6 +374,26 @@ func (n *nodeApp) rpc(ctx context.Context, method string, params json.RawMessage
 			return nil, &ext.Error{Code: "invalid", Message: "handoff: " + err.Error()}
 		}
 		return n.handoff(ctx, p)
+	case "set_scope":
+		var p struct {
+			BotID string `json:"bot_id"`
+			Wide  bool   `json:"wide"`
+		}
+		if err := json.Unmarshal(params, &p); err != nil || !safeID.MatchString(p.BotID) {
+			return nil, &ext.Error{Code: "invalid", Message: "set_scope: bot_id"}
+		}
+		n.mu.Lock()
+		if n.st.Wide == nil {
+			n.st.Wide = map[string]bool{}
+		}
+		if p.Wide {
+			n.st.Wide[p.BotID] = true
+		} else {
+			delete(n.st.Wide, p.BotID)
+		}
+		n.save()
+		n.mu.Unlock()
+		return map[string]any{"wide": p.Wide}, nil
 	case "finished_ack":
 		var p struct {
 			TodoID string `json:"todo_id"`
@@ -350,6 +404,7 @@ func (n *nodeApp) rpc(ctx context.Context, method string, params json.RawMessage
 		n.mu.Lock()
 		if h := n.st.Handoffs[p.TodoID]; h != nil && h.Finished && !h.Acked {
 			h.Acked = true
+			h.Todo.Notes = "" // done with: the notes need not stay on this Mac
 			n.save()
 		}
 		n.mu.Unlock()
@@ -372,6 +427,10 @@ func (n *nodeApp) rpc(ctx context.Context, method string, params json.RawMessage
 // nodeErr turns an Orca failure into an error the hub can tell apart by its code (and its message, should the hub
 // pass only that on).
 func nodeErr(err error) error {
+	var ee *ext.Error
+	if errors.As(err, &ee) {
+		return ee
+	}
 	code := "orca_error"
 	switch {
 	case errors.Is(err, errOrcaNotRunning):
@@ -388,6 +447,13 @@ func nodeErr(err error) error {
 	return &ext.Error{Code: code, Message: code + ": " + clip(err.Error(), 300)}
 }
 
+func codeErr(code, words string) error { return &ext.Error{Code: code, Message: code + ": " + words} }
+
+// orcaDown: Orca is away or slow, not refusing (worth trying again).
+func orcaDown(err error) bool {
+	return errors.Is(err, errOrcaNotRunning) || errors.Is(err, context.DeadlineExceeded)
+}
+
 type nodeStatus struct {
 	OrcaRunning bool   `json:"orca_running"`
 	OrcaVersion string `json:"orca_version,omitempty"`
@@ -396,11 +462,32 @@ type nodeStatus struct {
 	Link        string `json:"link,omitempty"`
 	Socket      string `json:"socket,omitempty"`
 	SocketError string `json:"socket_error,omitempty"`
-	Following   int    `json:"following"`
-	PollError   string `json:"poll_error,omitempty"`
+	// Token and Wide are the MCP command's for the bot asked about.
+	Token     string `json:"token,omitempty"`
+	Wide      bool   `json:"wide,omitempty"`
+	Following int    `json:"following"`
+	PollError string `json:"poll_error,omitempty"`
 }
 
-func (n *nodeApp) status(ctx context.Context) nodeStatus {
+// tokenFor is the bot's MCP token, made on first use; the caller holds n.mu.
+func (n *nodeApp) tokenFor(bot string) string {
+	if n.st.Tokens == nil {
+		n.st.Tokens = map[string]string{}
+	}
+	if t := n.st.Tokens[bot]; t != "" {
+		return t
+	}
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	t := hex.EncodeToString(b[:])
+	n.st.Tokens[bot] = t
+	n.save()
+	return t
+}
+
+func (n *nodeApp) status(ctx context.Context, bot string) nodeStatus {
 	var s nodeStatus
 	version, err := n.orca.Status(ctx)
 	if err != nil {
@@ -413,6 +500,9 @@ func (n *nodeApp) status(ctx context.Context) nodeStatus {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	s.Link, s.Socket, s.SocketError, s.PollError = n.link, n.socket, n.sockErr, n.lastPoll
+	if safeID.MatchString(bot) {
+		s.Token, s.Wide = n.tokenFor(bot), n.st.Wide[bot]
+	}
 	for _, h := range n.st.Handoffs {
 		if h.Sent && !h.Finished {
 			s.Following++
@@ -421,8 +511,18 @@ func (n *nodeApp) status(ctx context.Context) nodeStatus {
 	return s
 }
 
+// claimedBy is the to-do another hand-over holds the chat for, "" when none does; the caller holds n.mu.
+func (n *nodeApp) claimedBy(sessionID, todoID string) string {
+	for _, h := range n.st.Handoffs {
+		if h.SessionID == sessionID && h.TodoID != todoID {
+			return h.TodoID
+		}
+	}
+	return ""
+}
+
 func (n *nodeApp) handoff(ctx context.Context, p handoffParams) (*handoffResult, error) {
-	if !safeID.MatchString(p.TodoID) || !safeID.MatchString(p.BotID) || p.OpID == "" || len(p.OpID) > 100 {
+	if !safeID.MatchString(p.TodoID) || !safeID.MatchString(p.BotID) || !orcaOpIDPattern.MatchString(p.OpID) {
 		return nil, &ext.Error{Code: "invalid", Message: "handoff: todo_id, bot_id or op_id is not valid"}
 	}
 	if strings.TrimSpace(p.Text) == "" || len(p.Text) > 64<<10 {
@@ -452,9 +552,31 @@ func (n *nodeApp) handoff(ctx context.Context, p handoffParams) (*handoffResult,
 		n.save()
 	}
 	sessionID, opID := h.SessionID, h.OpID
+	if sessionID != "" && n.claimedBy(sessionID, p.TodoID) != "" {
+		// Never expected (a chat is claimed once), but never send two to-dos into one chat.
+		h.SessionID, sessionID = "", ""
+		n.save()
+	}
 	n.mu.Unlock()
 
 	if sessionID == "" {
+		// A paused bot takes no work: try again later rather than open a chat it will not answer.
+		bots, _, err := n.orca.Bots(ctx)
+		if err != nil {
+			return nil, nodeErr(err)
+		}
+		var bot *orcaBot
+		for i := range bots {
+			if bots[i].ID == p.BotID {
+				bot = &bots[i]
+			}
+		}
+		switch {
+		case bot == nil:
+			return nil, codeErr("bot_not_found", "the bot is not in bots.list")
+		case bot.Paused:
+			return nil, codeErr("bot_paused", "the bot is paused in Orca")
+		}
 		sid, err := n.orca.StartSession(ctx, p.BotID)
 		if err != nil {
 			return nil, nodeErr(err)
@@ -463,16 +585,26 @@ func (n *nodeApp) handoff(ctx context.Context, p handoffParams) (*handoffResult,
 			return nil, nodeErr(fmt.Errorf("%w: bots.session.start answered an odd session id", errOrcaIncompatible))
 		}
 		n.mu.Lock()
+		// Orca answers an empty chat already open instead of a new one, and a chat stays empty after a send until
+		// its turn opens: the chat of another hand-over is refused, and this one is tried again later.
+		if other := n.claimedBy(sid, p.TodoID); other != "" {
+			n.mu.Unlock()
+			return nil, codeErr("orca_busy", "Orca offered a chat another to-do was just sent to")
+		}
 		h.SessionID, sessionID = sid, sid
 		n.save()
 		n.mu.Unlock()
 	}
-	head, err := n.orca.Head(ctx, sessionID)
-	if err != nil {
+	// The fence names the history's checkpoint; a chat with no history yet has none (Orca's history refuses it), and
+	// hosts since 1.4.246 ignore it, so 1 stands in unless Orca is away.
+	fence := int64(1)
+	if head, err := n.orca.Head(ctx, sessionID); err == nil && head.Fence > 0 {
+		fence = head.Fence
+	} else if err != nil && (orcaDown(err) || errors.Is(err, errOrcaIncompatible)) {
 		return nil, nodeErr(err)
 	}
 	// The same operation id every attempt: should an earlier attempt have reached Orca, this one replays it.
-	if err := n.orca.Send(ctx, sessionID, head.Fence, opID, p.Text); err != nil {
+	if err := n.orca.Send(ctx, sessionID, fence, opID, p.Text); err != nil {
 		return nil, nodeErr(err)
 	}
 	n.mu.Lock()
@@ -501,22 +633,50 @@ type finishedEvent struct {
 	TodoID    string `json:"todo_id"`
 	SessionID string `json:"session_id"`
 	BotID     string `json:"bot_id"`
-	State     string `json:"state"` // completed | interrupted | unverifiable | unavailable | timeout
+	// State: completed | interrupted | unverifiable | unavailable | timeout; Outcome: Orca's verdict of a completed
+	// turn (success, failure, cancellation, superseded), "" when unknown.
+	State   string `json:"state"`
+	Outcome string `json:"outcome,omitempty"`
 }
 
-// pollOnce looks once at every chat still followed, and tells the hub again of finishes it has not acknowledged.
+type needsYouEvent struct {
+	TodoID    string `json:"todo_id"`
+	SessionID string `json:"session_id"`
+	BotID     string `json:"bot_id"`
+	Episode   int    `json:"episode"`
+}
+
+func (h *nodeHandoff) finishedEvent() finishedEvent {
+	return finishedEvent{h.TodoID, h.SessionID, h.BotID, h.TurnState, h.Outcome}
+}
+
+// pollOnce looks once at every chat still followed, and tells the hub again what it has not acknowledged.
 func (n *nodeApp) pollOnce(ctx context.Context) {
+	type tell struct {
+		event  string
+		params any
+	}
+	var tells []tell
 	n.mu.Lock()
 	var follow []*nodeHandoff
-	var tell []finishedEvent
 	now := n.now()
 	for _, h := range n.st.Handoffs {
 		switch {
 		case h.Sent && !h.Finished:
 			follow = append(follow, h)
+		case h.Finished && !h.Acked && now.Sub(h.FinishedAt) > nodeTellFor:
+			h.Acked = true // told for a day without an answer: given up
+			n.save()
 		case h.Finished && !h.Acked && now.Sub(h.EmittedAt) >= nodeReemit:
 			h.EmittedAt = now
-			tell = append(tell, finishedEvent{h.TodoID, h.SessionID, h.BotID, h.TurnState})
+			tells = append(tells, tell{"orcabot.finished", h.finishedEvent()})
+		}
+		for i := range h.Writes {
+			w := &h.Writes[i]
+			if w.Status == "pending" && w.Text != "" && now.Sub(w.EmittedAt) >= nodeReemit {
+				w.EmittedAt = now
+				tells = append(tells, tell{"orcabot.writeback", writebackParams(h, w)})
+			}
 		}
 	}
 	emit := n.emit
@@ -528,24 +688,50 @@ func (n *nodeApp) pollOnce(ctx context.Context) {
 			return
 		}
 		n.mu.Lock()
-		sid, sentAt, saw := h.SessionID, h.SentAt, h.SawWorking
+		sid := h.SessionID
 		n.mu.Unlock()
-		state, working, err := n.turnEnded(ctx, sid, sentAt, saw)
+		cctx, cancel := context.WithTimeout(ctx, orcaHistoryTimeout)
+		head, err := n.orca.Head(cctx, sid)
+		cancel()
+
 		n.mu.Lock()
-		if working {
-			h.SawWorking = true
-		}
-		if err != nil {
+		now := n.now()
+		state, outcome := "", ""
+		changed := false
+		switch {
+		case err != nil && orcaDown(err):
 			pollErr = clip(err.Error(), 200)
+		case err != nil:
+			// Orca answers but refuses this chat's history (a chat deleted in Orca has no code of its own): after a
+			// while it is gone.
+			pollErr = clip(err.Error(), 200)
+			if h.FailingSince.IsZero() {
+				h.FailingSince, changed = now, true
+			} else if now.Sub(h.FailingSince) >= nodeLostAfter {
+				state = "unavailable"
+			}
+		default:
+			if !h.FailingSince.IsZero() {
+				h.FailingSince, changed = time.Time{}, true
+			}
+			if head.Working != nil && *head.Working && !h.SawWorking {
+				h.SawWorking, changed = true, true
+			}
+			if ev, ok := n.prompts(h, head.Prompts, now); ok {
+				tells = append(tells, tell{"orcabot.needs_you", ev})
+				changed = true
+			}
+			state, outcome = turnEnd(head, h)
 		}
-		if state == "" && n.now().Sub(sentAt) > nodeWatchFor {
+		if state == "" && now.Sub(h.SentAt) > nodeWatchFor {
 			state = "timeout"
 		}
 		if state != "" {
-			h.Finished, h.FinishedAt, h.TurnState, h.EmittedAt = true, n.now(), state, n.now()
-			tell = append(tell, finishedEvent{h.TodoID, h.SessionID, h.BotID, state})
-			n.save()
-		} else if working && !saw {
+			h.Finished, h.FinishedAt, h.TurnState, h.Outcome, h.EmittedAt = true, now, state, outcome, now
+			tells = append(tells, tell{"orcabot.finished", h.finishedEvent()})
+			changed = true
+		}
+		if changed {
 			n.save()
 		}
 		n.mu.Unlock()
@@ -553,58 +739,69 @@ func (n *nodeApp) pollOnce(ctx context.Context) {
 	n.mu.Lock()
 	n.lastPoll = pollErr
 	n.mu.Unlock()
-	for _, ev := range tell {
+	for _, t := range tells {
 		if emit != nil {
-			_ = emit("orcabot.finished", ev)
+			_ = emit(t.event, t.params)
 		}
 	}
 }
 
-// turnEnded says how the chat's turn ended ("" while it has not), and whether it is working now.
-func (n *nodeApp) turnEnded(ctx context.Context, sessionID string, sentAt time.Time, sawWorking bool) (string, bool, error) {
-	cctx, cancel := context.WithTimeout(ctx, orcaHistoryTimeout)
-	defer cancel()
-	head, err := n.orca.Head(cctx, sessionID)
-	if err != nil {
-		if code := orcaCode(err); strings.Contains(code, "not_found") || strings.Contains(code, "session_gone") {
-			return "unavailable", false, nil
-		}
-		return "", false, err
+// prompts keeps count of the approvals and questions the bot waits on: two polls in a row with one open a wait (told
+// as needs-you, again every nodeReemit while it lasts, the hub telling the owner once); none closes it. The caller
+// holds n.mu.
+func (n *nodeApp) prompts(h *nodeHandoff, waiting int, now time.Time) (needsYouEvent, bool) {
+	if waiting <= 0 {
+		h.PromptPolls, h.PromptOpen = 0, false
+		return needsYouEvent{}, false
 	}
-	if head.Working != nil {
-		if *head.Working {
-			return "", true, nil
-		}
-		if !sawWorking && n.now().Sub(sentAt) < nodeQuietStart {
-			return "", false, nil // not seen starting yet
-		}
-		return turnStateOr(head.TurnState), false, nil
+	h.PromptPolls++
+	switch {
+	case !h.PromptOpen && h.PromptPolls >= 2:
+		h.PromptOpen, h.PromptEpisode, h.PromptEmittedAt = true, h.PromptEpisode+1, now
+	case h.PromptOpen && now.Sub(h.PromptEmittedAt) >= nodeReemit:
+		h.PromptEmittedAt = now
+	default:
+		return needsYouEvent{}, false
 	}
-	// An older host that does not say whether it works: the latest turn, if it began after the send.
-	if head.TurnState == "running" {
-		return "", true, nil
-	}
-	if head.TurnState != "" && head.TurnAt >= sentAt.Add(-5*time.Second).UnixMilli() {
-		return turnStateOr(head.TurnState), false, nil
-	}
-	return "", false, nil
+	return needsYouEvent{h.TodoID, h.SessionID, h.BotID, h.PromptEpisode}, true
 }
 
-func turnStateOr(s string) string {
-	switch s {
+// turnEnd says how the turn opened by the hand-over's send ended ("" while it has not), and Orca's verdict of it.
+// Only a turn Orca shows, that is final and that belongs to the send (its user item is the send's operation, or it
+// began no earlier than the send less a small skew) ends it: no turn yet, one Orca hides after a restart, or an older
+// turn keeps waiting (until the chat is gone or the day is over).
+func turnEnd(head *orcaHead, h *nodeHandoff) (string, string) {
+	if head.Working != nil && *head.Working {
+		return "", ""
+	}
+	t := head.Turn
+	if t == nil {
+		return "", ""
+	}
+	ours := (t.UserItemID != "" && t.UserItemID == h.OpID) || t.since(h.SentAt.Add(-nodeTurnSkew).UnixMilli())
+	if !ours {
+		return "", ""
+	}
+	switch t.State {
+	case "running":
+		if head.Working != nil { // not working, yet the turn says running: it died
+			return "interrupted", ""
+		}
+		return "", "" // an older host that does not say whether it works: still running
 	case "completed", "interrupted", "unverifiable":
-		return s
+		return t.State, t.Outcome
 	}
-	return "completed"
+	return "", ""
 }
 
 // --- the MCP command's socket ---
 
-// mcpRequest is one request of the MCP command: the bot it was registered for, the chat it runs in when Orca says
-// (ORCA_AGENT_SESSION_ID), and the tool's arguments.
+// mcpRequest is one request of the MCP command: the bot it was registered for and its token, the chat it runs in
+// when Orca says (ORCA_AGENT_SESSION_ID), and the tool's arguments.
 type mcpRequest struct {
 	Method  string `json:"method"` // list | get | write
 	Bot     string `json:"bot"`
+	Token   string `json:"token"`
 	Session string `json:"session,omitempty"`
 	TodoID  string `json:"todo_id,omitempty"`
 	Text    string `json:"text,omitempty"`
@@ -621,8 +818,8 @@ func (n *nodeApp) serveConn(ctx context.Context, c net.Conn) {
 	r := bufio.NewReaderSize(c, 64<<10)
 	for {
 		_ = c.SetReadDeadline(time.Now().Add(10 * time.Minute))
-		line, err := r.ReadBytes('\n')
-		if len(line) > 256<<10 {
+		line, err := readLine(r, mcpMaxLine) // never more than mcpMaxLine of one request in memory
+		if err != nil && len(line) == 0 {
 			return
 		}
 		if len(strings.TrimSpace(string(line))) > 0 {
@@ -645,7 +842,11 @@ func (n *nodeApp) serveConn(ctx context.Context, c net.Conn) {
 	}
 }
 
-const notHanded = "这条待办不是交给这个机器人的，读写不了。只有 Persona 交给这个机器人的待办可以读写。"
+const (
+	notHanded = "这条待办不是交给这个机器人的这个对话的，读写不了。只有 Persona 交给这个机器人的待办可以读写。"
+	noChat    = "Orca 没有告诉这个工具它在哪个对话里运行，所以不能读写待办。需要的话，主人可以在 Persona 里本扩展的页面上放宽这个限制。"
+	badToken  = "MCP 命令的 --bot 或 --token 不对：请按 Persona 里本扩展页面上的命令重新登记。"
+)
 
 // lookup finds the to-do handed to bot (and, when the chat is known, to that chat); the caller holds n.mu.
 func (n *nodeApp) lookup(bot, session, todoID string) *nodeHandoff {
@@ -656,9 +857,26 @@ func (n *nodeApp) lookup(bot, session, todoID string) *nodeHandoff {
 	return h
 }
 
+// authorized: the request carries the bot's token; the caller holds n.mu.
+func (n *nodeApp) authorized(req mcpRequest) bool {
+	want := n.st.Tokens[req.Bot]
+	return want != "" && subtle.ConstantTimeCompare([]byte(want), []byte(req.Token)) == 1
+}
+
 func (n *nodeApp) mcp(ctx context.Context, req mcpRequest) mcpReply {
 	if !safeID.MatchString(req.Bot) || (req.Session != "" && !safeID.MatchString(req.Session)) {
-		return mcpReply{Error: "MCP 命令缺少有效的 --bot（登记命令时要带上机器人的 id）"}
+		return mcpReply{Error: badToken}
+	}
+	n.mu.Lock()
+	ok, wide := n.authorized(req), n.st.Wide[req.Bot]
+	n.mu.Unlock()
+	if !ok {
+		return mcpReply{Error: badToken}
+	}
+	// A tool process several chats share carries no chat (Orca leaves the caller out on purpose): without one, it
+	// reaches nothing, unless the owner allowed it on the page.
+	if req.Session == "" && !wide {
+		return mcpReply{Error: noChat}
 	}
 	switch req.Method {
 	case "list":
@@ -686,7 +904,10 @@ func (n *nodeApp) mcp(ctx context.Context, req mcpRequest) mcpReply {
 			return mcpReply{Error: notHanded}
 		}
 		writes := make([]nodeWrite, len(h.Writes))
-		copy(writes, h.Writes)
+		for i, w := range h.Writes {
+			w.Text = ""
+			writes[i] = w
+		}
 		return mcpReply{OK: true, Result: map[string]any{"todo": h.Todo, "handed_at": h.SentAt, "write_backs": writes,
 			"write_backs_left": max(0, writesPerTodo-countWrites(h.Writes))}}
 	case "write":
@@ -705,13 +926,17 @@ func countWrites(ws []nodeWrite) int {
 	return k
 }
 
+func writebackParams(h *nodeHandoff, w *nodeWrite) map[string]any {
+	return map[string]any{"todo_id": h.TodoID, "session_id": h.SessionID, "bot_id": h.BotID, "ref": w.Ref, "text": w.Text}
+}
+
 func (n *nodeApp) write(ctx context.Context, req mcpRequest) mcpReply {
 	text := strings.TrimSpace(cleanText(req.Text))
 	if text == "" {
 		return mcpReply{Error: "text 是空的"}
 	}
 	if utf8.RuneCountInString(text) > writeMaxRunes {
-		return mcpReply{Error: fmt.Sprintf("text 太长了（%d 字）：请把要点压缩到 %d 字以内再写", utf8.RuneCountInString(text), writeMaxRunes)}
+		return mcpReply{Error: fmt.Sprintf("text 太长了（%d 字）：请把要点压缩到 %d 字以内再写，细节留在 Orca 对话里", utf8.RuneCountInString(text), writeMaxRunes)}
 	}
 	n.mu.Lock()
 	h := n.lookup(req.Bot, req.Session, req.TodoID)
@@ -720,21 +945,30 @@ func (n *nodeApp) write(ctx context.Context, req mcpRequest) mcpReply {
 		return mcpReply{Error: notHanded}
 	}
 	ref := "orca-bot:" + shortHash(24, h.TodoID, h.SessionID, text)
-	for _, w := range h.Writes {
-		if w.Ref == ref && w.Status != "refused" {
+	var w *nodeWrite
+	for i := range h.Writes {
+		if h.Writes[i].Ref != ref || h.Writes[i].Status == "refused" {
+			continue
+		}
+		if h.Writes[i].Status != "pending" {
 			n.mu.Unlock()
 			return mcpReply{OK: true, Result: map[string]any{"status": "duplicate", "message": "同样的内容已经写过了。"}}
 		}
+		w = &h.Writes[i] // still waiting for the hub: tell it again, the same entry
 	}
-	if countWrites(h.Writes) >= writesPerTodo || len(h.Writes) >= 3*writesPerTodo {
-		n.mu.Unlock()
-		return mcpReply{Error: fmt.Sprintf("这条待办已经写回了 %d 次，到上限了。", writesPerTodo)}
+	if w == nil {
+		if countWrites(h.Writes) >= writesPerTodo || len(h.Writes) >= 3*writesPerTodo {
+			n.mu.Unlock()
+			return mcpReply{Error: fmt.Sprintf("这条待办已经写回了 %d 次，到上限了。", writesPerTodo)}
+		}
+		h.Writes = append(h.Writes, nodeWrite{Ref: ref, At: n.now(), Status: "pending", Text: text})
+		w = &h.Writes[len(h.Writes)-1]
 	}
+	w.EmittedAt = n.now()
 	ch := make(chan writeAck, 1)
 	n.acks[ref] = ch
-	h.Writes = append(h.Writes, nodeWrite{Ref: ref, At: n.now(), Status: "pending"})
 	n.save()
-	ev := map[string]any{"todo_id": h.TodoID, "session_id": h.SessionID, "bot_id": h.BotID, "ref": ref, "text": text}
+	ev := writebackParams(h, w)
 	emit, wait := n.emit, n.ackWait
 	n.mu.Unlock()
 	defer func() {
@@ -742,9 +976,8 @@ func (n *nodeApp) write(ctx context.Context, req mcpRequest) mcpReply {
 		delete(n.acks, ref)
 		n.mu.Unlock()
 	}()
-	if emit == nil || emit("orcabot.writeback", ev) != nil {
-		n.writeResult(req.TodoID, ref, writeAck{Error: "没能交给 Persona"})
-		return mcpReply{Error: "没能把内容交给 Persona，请稍后再试。"}
+	if emit != nil {
+		_ = emit("orcabot.writeback", ev) // lost while the hub program is away: told again until answered
 	}
 	t := time.NewTimer(wait)
 	defer t.Stop()
@@ -759,7 +992,7 @@ func (n *nodeApp) write(ctx context.Context, req mcpRequest) mcpReply {
 		}
 		return mcpReply{OK: true, Result: map[string]any{"status": status, "message": "已经写到这条待办上（作为一条决定记录）。"}}
 	case <-t.C:
-		return mcpReply{OK: true, Result: map[string]any{"status": "pending", "message": "已交给 Persona，稍后会写到这条待办上。"}}
+		return mcpReply{OK: true, Result: map[string]any{"status": "pending", "message": "已交给 Persona，会在 Persona 收到后写到这条待办上。"}}
 	case <-ctx.Done():
 		return mcpReply{Error: "程序正在退出"}
 	}
@@ -780,6 +1013,7 @@ func (n *nodeApp) writeResult(todoID, ref string, a writeAck) {
 				default:
 					h.Writes[i].Status = "duplicate"
 				}
+				h.Writes[i].Text = ""
 				n.save()
 			}
 		}

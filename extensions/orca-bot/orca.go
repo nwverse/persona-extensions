@@ -14,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -76,11 +77,9 @@ func orcaCode(err error) string {
 	return ""
 }
 
-// orcaMetaPath is the desktop app's orca-runtime.json ($ORCA_USER_DATA_PATH's when set, Orca's own override).
+// orcaMetaPath is the desktop app's orca-runtime.json. Orca's own override ($ORCA_USER_DATA_PATH) is not read: the
+// node program runs with a clean environment that does not carry it.
 func orcaMetaPath() string {
-	if d := os.Getenv("ORCA_USER_DATA_PATH"); d != "" {
-		return filepath.Join(d, "orca-runtime.json")
-	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
 		return ""
@@ -278,7 +277,7 @@ func (c *orcaClient) callOnce(ctx context.Context, m *orcaMeta, timeout time.Dur
 	}
 	r := bufio.NewReaderSize(conn, 64<<10)
 	for {
-		line, err := readOrcaLine(r)
+		line, err := readLine(r, orcaMaxLine)
 		if err != nil {
 			if ctx.Err() != nil {
 				return fmt.Errorf("orca %s: %w", method, context.DeadlineExceeded)
@@ -314,7 +313,10 @@ func (c *orcaClient) callOnce(ctx context.Context, m *orcaMeta, timeout time.Dur
 			continue
 		}
 		if r := env.Meta.RuntimeID; r != "" && m.runtimeID != "" && r != m.runtimeID {
-			c.forget(m) // another runtime answered than the file names: read the file again next time
+			// Another runtime answered than the file names (Orca restarted in between): its answer is not used; the
+			// file is read again and the call tried once more.
+			c.forget(m)
+			return fmt.Errorf("%w (another Orca runtime answered)", errOrcaNotRunning)
 		}
 		if !env.OK {
 			e := &orcaError{Method: method, Code: "error"}
@@ -336,9 +338,45 @@ func (c *orcaClient) callOnce(ctx context.Context, m *orcaMeta, timeout time.Dur
 	}
 }
 
+// orcaShortSocketPrefix is where Orca relocates a socket whose path is too long: shared /tmp, so the directories are
+// checked before the token is sent (Orca's own CLI does the same: daemonSocketDirIsTrusted).
+const orcaShortSocketPrefix = "/tmp/.orca-daemon-"
+
+// orcaSocketTrusted: the socket belongs to this user, and its directory cannot be written by others; under Orca's
+// /tmp relocation both directories must be private to this user, as Orca requires.
+func orcaSocketTrusted(socket string) error {
+	fi, err := os.Lstat(socket)
+	if err != nil {
+		return fmt.Errorf("%w (its socket is gone)", errOrcaNotRunning)
+	}
+	if fi.Mode()&os.ModeSocket == 0 || !ownedByMe(fi) {
+		return fmt.Errorf("%w: the socket in orca-runtime.json is not this user's", errOrcaIncompatible)
+	}
+	dir := filepath.Dir(socket)
+	private := strings.HasPrefix(socket, fmt.Sprintf("%s%d/", orcaShortSocketPrefix, os.Getuid()))
+	dirs := []string{dir}
+	if private {
+		dirs = append(dirs, filepath.Dir(dir))
+	}
+	for _, d := range dirs {
+		st, err := os.Lstat(d)
+		if err != nil || !st.IsDir() || !ownedByMe(st) {
+			return fmt.Errorf("%w: the socket's directory is not this user's", errOrcaIncompatible)
+		}
+		mask := os.FileMode(0o022)
+		if private {
+			mask = 0o077
+		}
+		if st.Mode().Perm()&mask != 0 {
+			return fmt.Errorf("%w: the socket's directory is open to other users", errOrcaIncompatible)
+		}
+	}
+	return nil
+}
+
 func dialOrca(ctx context.Context, socket string) (net.Conn, error) {
-	if _, err := os.Stat(socket); err != nil {
-		return nil, fmt.Errorf("%w (its socket is gone)", errOrcaNotRunning)
+	if err := orcaSocketTrusted(socket); err != nil {
+		return nil, err
 	}
 	dctx, cancel := context.WithTimeout(ctx, orcaDialTimeout)
 	defer cancel()
@@ -352,13 +390,14 @@ func dialOrca(ctx context.Context, socket string) (net.Conn, error) {
 	return conn, nil
 }
 
-func readOrcaLine(r *bufio.Reader) ([]byte, error) {
+// readLine reads one newline-terminated line of at most max bytes, never holding more than that.
+func readLine(r *bufio.Reader, max int) ([]byte, error) {
 	var buf []byte
 	for {
 		chunk, err := r.ReadSlice('\n')
 		buf = append(buf, chunk...)
-		if len(buf) > orcaMaxLine {
-			return nil, fmt.Errorf("line over %d bytes", orcaMaxLine)
+		if len(buf) > max {
+			return nil, fmt.Errorf("line over %d bytes", max)
 		}
 		switch {
 		case err == nil:
@@ -420,10 +459,21 @@ type orcaHead struct {
 	// Working is nil from a host that does not say; true while a turn runs or a send is still unanswered.
 	Working *bool
 	Prompts int
-	// TurnState is the latest turn's lifecycle (running, completed, interrupted, unverifiable), "" when unknown;
-	// TurnAt when that turn record was made (ms since the epoch).
-	TurnState string
-	TurnAt    int64
+	// Turn is the latest turn, nil when Orca shows none (none yet, or one it hides after a restart).
+	Turn *orcaTurn
+}
+
+// orcaTurn is the latest turn of a session: its lifecycle (running, completed, interrupted, unverifiable), its
+// recorded verdict (success, failure, cancellation, superseded; "" unknown, never success), the user item that
+// opened it, and when it was made, asked for and started (ms since the epoch, 0 when not said).
+type orcaTurn struct {
+	State, Outcome, UserItemID         string
+	ObservedAt, RequestedAt, StartedAt int64
+}
+
+// since: the turn began at or after t (the latest of the times it gives).
+func (t *orcaTurn) since(at int64) bool {
+	return max(t.ObservedAt, t.RequestedAt, t.StartedAt) >= at
 }
 
 // Head reads the newest page of a session's history (the smallest one Orca gives).
@@ -436,7 +486,11 @@ func (c *orcaClient) Head(ctx context.Context, sessionID string) (*orcaHead, err
 			LatestTurn          *struct {
 				ObservedAt int64 `json:"observedAt"`
 				Turn       struct {
-					State string `json:"state"`
+					State       string `json:"state"`
+					Outcome     string `json:"outcome"`
+					UserItemID  string `json:"userItemId"`
+					StartedAt   int64  `json:"startedAt"`
+					RequestedAt int64  `json:"requestedAt"`
 				} `json:"turn"`
 			} `json:"latestTurn"`
 		} `json:"page"`
@@ -451,10 +505,14 @@ func (c *orcaClient) Head(ctx context.Context, sessionID string) (*orcaHead, err
 	}
 	h := &orcaHead{Fence: res.Page.Fence, Working: res.Page.Working, Prompts: len(res.Page.ActionablePromptIDs)}
 	if lt := res.Page.LatestTurn; lt != nil {
-		h.TurnState, h.TurnAt = lt.Turn.State, lt.ObservedAt
+		h.Turn = &orcaTurn{State: lt.Turn.State, Outcome: lt.Turn.Outcome, UserItemID: lt.Turn.UserItemID,
+			ObservedAt: lt.ObservedAt, RequestedAt: lt.Turn.RequestedAt, StartedAt: lt.Turn.StartedAt}
 	}
 	return h, nil
 }
+
+// orcaOpIDPattern is the shape Orca admits for a clientOperationId.
+var orcaOpIDPattern = regexp.MustCompile(`^\d{13}-[0-9a-f]{32}$`)
 
 // orcaOperationID is a write's clientOperationId, Orca's "<13-digit ms>-<32 hex>": the hex comes from key, so the same
 // key and time replay instead of sending twice.

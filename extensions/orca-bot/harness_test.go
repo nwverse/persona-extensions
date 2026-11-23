@@ -41,8 +41,10 @@ type fakeHub struct {
 		TodoID string
 		D      decisionPayload
 	}
-	notices  []notice
-	failList error
+	notices   []notice
+	failList  error
+	notifyErr error // Notify fails with it while set
+	held      bool  // push grading holds every notification
 }
 
 func (h *fakeHub) add(t todoRow) {
@@ -87,11 +89,27 @@ func (h *fakeHub) AddDecision(ctx context.Context, todoID string, d decisionPayl
 	return true, nil
 }
 
-func (h *fakeHub) Notify(ctx context.Context, n notice) error {
+func (h *fakeHub) Notify(ctx context.Context, n notice) (delivery, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	if h.notifyErr != nil {
+		return delivery{}, h.notifyErr
+	}
 	h.notices = append(h.notices, n)
-	return nil
+	if h.held {
+		return delivery{Held: true, Reason: "ln_p1_held"}, nil
+	}
+	return delivery{Sent: true}, nil
+}
+
+func (h *fakeHub) noticeTitles() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for _, n := range h.notices {
+		out = append(out, n.Title)
+	}
+	return out
 }
 
 func (h *fakeHub) counts() (decisions, notices int) {
@@ -158,6 +176,7 @@ func newWorld(t *testing.T, cfg config) *world {
 	t.Cleanup(cancel)
 	w := &world{t: t, ctx: ctx, clock: &clock{t: time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)}, orca: newFakeOrca(t),
 		hub: &fakeHub{}, hubD: shortTemp(t, "obh"), nodeD: shortTemp(t, "obn"), cfg: cfg}
+	w.orca.now = w.clock.now
 	w.startNode()
 	w.startHub()
 	return w
@@ -198,6 +217,9 @@ func (w *world) setConfig(cfg config) {
 func (w *world) emit(event string, params any) error {
 	raw, _ := json.Marshal(map[string]any{"machine_id": testMac, "event": event, "params": params})
 	app := w.app
+	if app == nil { // the hub program is not running: the event is lost, as on a real hub
+		return nil
+	}
 	go func() { _, _ = app.nodeEvent(w.ctx, "event", raw) }() // events are not awaited
 	return nil
 }
@@ -256,4 +278,15 @@ func (w *world) nodeHandoff(id string) nodeHandoff {
 		return *h
 	}
 	return nodeHandoff{}
+}
+
+// mcp is the bot's MCP command as registered from the page (its token), run in chat session ("" none known).
+func (w *world) mcp(bot, session string) *mcpServer {
+	token := w.node.status(context.Background(), bot).Token
+	return &mcpServer{socket: w.node.socket, bot: bot, token: token, session: session}
+}
+
+func (w *world) noticeCount() int {
+	_, n := w.hub.counts()
+	return n
 }

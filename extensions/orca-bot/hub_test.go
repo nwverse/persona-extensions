@@ -139,7 +139,7 @@ func TestAHandOverInterruptedMidwayIsNotSentTwice(t *testing.T) {
 
 	w.startNode()
 	w.startHub()
-	w.app.retryDue(w.ctx)
+	w.app.retryDue(w.ctx, false)
 	if n := len(w.orca.sent()); n != 1 {
 		t.Fatalf("sent %d times", n)
 	}
@@ -208,12 +208,12 @@ func TestOrcaDownRetriesWithTheSameOperation(t *testing.T) {
 		t.Fatalf("record while Orca is down: %+v", r)
 	}
 	w.orca.restart()
-	w.app.retryDue(w.ctx) // not due yet
+	w.app.retryDue(w.ctx, false) // not due yet
 	if len(w.orca.sent()) != 0 {
 		t.Fatal("retried before its time")
 	}
 	w.clock.add(2 * time.Minute)
-	w.app.retryDue(w.ctx)
+	w.app.retryDue(w.ctx, false)
 	sent := w.orca.sent()
 	if len(sent) != 1 || sent[0].OpID != r.OpID || w.record("todo_1").State != "sent" {
 		t.Fatalf("retry: %+v %+v", sent, w.record("todo_1"))
@@ -314,7 +314,7 @@ func TestWriteBackReachesOnlyHandedTodosAndNeverResends(t *testing.T) {
 	sid := w.orca.sent()[0].Session
 	w.newTodo("todo_secret", "not for the bot", "private notes", "home") // never handed over
 
-	m := &mcpServer{socket: w.node.socket, bot: "bot-alpha", session: sid}
+	m := w.mcp("bot-alpha", sid)
 	call := func(name, todo, text string) map[string]any {
 		var out map[string]any
 		b, _ := json.Marshal(m.call(name, todo, text))
@@ -349,11 +349,11 @@ func TestWriteBackReachesOnlyHandedTodosAndNeverResends(t *testing.T) {
 		t.Fatalf("repeat: %v", res)
 	}
 	// Another chat of the bot, or another bot, cannot reach it.
-	other := &mcpServer{socket: w.node.socket, bot: "bot-alpha", session: "claude_chat_99"}
+	other := w.mcp("bot-alpha", "claude_chat_99")
 	if r := other.call("todo_get", "todo_1", ""); !strings.Contains(toJSON(r), "isError") {
 		t.Fatalf("another chat read it: %v", r)
 	}
-	beta := &mcpServer{socket: w.node.socket, bot: "bot-beta"}
+	beta := w.mcp("bot-beta", sid)
 	if r := beta.call("todo_list", "", ""); strings.Contains(toJSON(r), "todo_1") {
 		t.Fatalf("another bot listed it: %v", r)
 	}
@@ -382,7 +382,7 @@ func TestWriteBackLimits(t *testing.T) {
 	w.newTodo("todo_1", "prepare one", "", "work")
 	w.created("todo_1")
 	sid := w.orca.sent()[0].Session
-	m := &mcpServer{socket: w.node.socket, bot: "bot-alpha", session: sid}
+	m := w.mcp("bot-alpha", sid)
 	if r := toJSON(m.call("todo_write_preparation", "todo_1", strings.Repeat("长", writeMaxRunes+1))); !strings.Contains(r, "太长") {
 		t.Fatalf("too long: %s", r)
 	}
@@ -425,9 +425,9 @@ func TestLogsCarryNoTodoText(t *testing.T) {
 	w.created("todo_1")
 	w.orca.restart()
 	w.clock.add(time.Hour)
-	w.app.retryDue(w.ctx)
+	w.app.retryDue(w.ctx, false)
 	sid := w.orca.sent()[0].Session
-	m := &mcpServer{socket: w.node.socket, bot: "bot-alpha", session: sid}
+	m := w.mcp("bot-alpha", sid)
 	m.call("todo_write_preparation", "todo_1", "SECRET-WRITE")
 	w.hub.failList = errors.New("boom")
 	w.app.reconcile(w.ctx)

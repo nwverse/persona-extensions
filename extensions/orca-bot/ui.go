@@ -73,9 +73,27 @@ func (a *hubApp) act(ctx context.Context, action string) string {
 		a.mu.Lock()
 		a.st.Bot = nil
 		a.rearm()
+		a.settle() // what still waited is not handed over any more
 		a.save()
 		a.mu.Unlock()
 		return "不再转发：没有选机器人"
+	case "scope":
+		a.mu.Lock()
+		machine, bot := a.cfg.machine(), a.st.Bot
+		nodes := a.nodes
+		a.mu.Unlock()
+		if bot == nil || machine == "" || nodes == nil || (arg != "wide" && arg != "chat") {
+			return "先选一个机器人"
+		}
+		cctx, cancel := context.WithTimeout(ctx, pageTimeout)
+		defer cancel()
+		if err := nodes.Call(cctx, machine, "orcabot.set_scope", map[string]any{"bot_id": bot.ID, "wide": arg == "wide"}, nil); err != nil {
+			return "没能改：" + failureWords(err)
+		}
+		if arg == "wide" {
+			return "已放宽：这个机器人的任何对话都能读写交给它的待办"
+		}
+		return "已收紧：只有接到待办的那个对话能读写它"
 	case "pick":
 		a.mu.Lock()
 		machine := a.cfg.machine()
@@ -94,6 +112,7 @@ func (a *hubApp) act(ctx context.Context, action string) string {
 			a.mu.Lock()
 			a.st.Bot = &botChoice{ID: b.ID, Name: clip(cleanText(b.Name), 80), Machine: machine, ChosenAt: a.now()}
 			a.rearm()
+			a.settle() // what still waited for the old bot is not handed to it any more
 			a.save()
 			a.mu.Unlock()
 			return fmt.Sprintf("以后符合条件的新待办会交给「%s」", clip(b.Name, 40))
@@ -139,7 +158,11 @@ func (a *hubApp) view(ctx context.Context, tz string) *wire.View {
 	var listErr error
 	if nodes != nil {
 		cctx, cancel := context.WithTimeout(ctx, pageTimeout)
-		stErr = nodes.Call(cctx, machine, "orcabot.status", map[string]any{}, &st)
+		params := map[string]any{}
+		if bot != nil && bot.Machine == machine {
+			params["bot_id"] = bot.ID
+		}
+		stErr = nodes.Call(cctx, machine, "orcabot.status", params, &st)
 		cancel()
 		if stErr == nil && st.OrcaRunning {
 			list, listErr = a.fetchBots(ctx, machine)
@@ -200,7 +223,7 @@ func (a *hubApp) view(ctx context.Context, tz string) *wire.View {
 		for _, b := range bots {
 			name := clip(cleanText(b.Name), 80)
 			row := wire.Component{Type: wire.ComponentRow, Title: name, Subtitle: botWords(b)}
-			if bot != nil && bot.Machine == machine && bot.ID == b.ID {
+			if bot != nil && bot.Machine == machine && bot.ID == b.ID && !bot.Gone {
 				row.Icon, row.Tone, row.Subtitle = "check", "positive", strings.TrimSpace("正在用 · "+row.Subtitle)
 				found = true
 			} else {
@@ -208,9 +231,13 @@ func (a *hubApp) view(ctx context.Context, tz string) *wire.View {
 			}
 			pick.Items = append(pick.Items, row)
 		}
-		if bot != nil && bot.Machine == machine && !found {
+		if bot != nil && bot.Machine == machine && (!found || bot.Gone) {
+			sub := "转发暂停了，请重新选一个"
+			if found {
+				sub = "Orca 曾经找不到它，转发暂停了：点它重新选上即可恢复"
+			}
 			pick.Items = append([]wire.Component{{Type: wire.ComponentRow, Title: "选过的「" + bot.Name + "」不在列表里了",
-				Subtitle: "暂停转发，请重新选一个", Icon: "warning", Tone: "danger"}}, pick.Items...)
+				Subtitle: sub, Icon: "warning", Tone: "danger"}}, pick.Items...)
 		}
 	}
 	if bot != nil {
@@ -274,21 +301,27 @@ func shellWord(s string) string {
 }
 
 // mcpCommand is the command line Orca runs for the bot's tool.
-func mcpCommand(link, socket, botID string) string {
-	return shellWord(link) + " mcp --socket " + shellWord(socket) + " --bot " + shellWord(botID)
+func mcpCommand(link, socket, botID, token string) string {
+	return shellWord(link) + " mcp --socket " + shellWord(socket) + " --bot " + shellWord(botID) + " --token " + shellWord(token)
 }
 
-// toolsAddCommand is what the owner runs once on the Mac to give the bot the tool.
-func toolsAddCommand(link, socket string, bot *botChoice) string {
-	cmd := mcpCommand(link, socket, bot.ID)
-	return `orca bot tools add "` + strings.ReplaceAll(cmd, `"`, `\"`) + `" --name persona-todos --bot ` + shellWord(bot.Name)
+// inDoubleQuotes escapes s for a POSIX shell's double quotes: \, ", $ and ` lose their meaning.
+func inDoubleQuotes(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `"`, `\"`, "$", `\$`, "`", "\\`").Replace(s)
+}
+
+// toolsAddCommand is what the owner runs once on the Mac to give the bot the tool. The bot is named by its id, which
+// orca bot tools add --bot takes as well as a name (Orca's findBot matches the id first).
+func toolsAddCommand(link, socket, token string, bot *botChoice) string {
+	return `orca bot tools add "` + inDoubleQuotes(mcpCommand(link, socket, bot.ID, token)) + `" --name persona-todos --bot ` +
+		shellWord(bot.ID)
 }
 
 func mcpSection(st nodeStatus, bot *botChoice) wire.Section {
 	sec := wire.Section{Title: "让机器人能写回待办",
-		Footer: "这个工具只能读写交给这个机器人的待办，别的待办它碰不到；写回的内容作为一条决定记录出现在待办上，不改待办的标题和备注。"}
+		Footer: "这个工具只能读写交给这个机器人的待办，别的待办它碰不到；命令里的 token 不要给别人。写回的内容作为一条决定记录出现在待办上，不改待办的标题和备注，但会出现在待办的对话话题里，其他扩展和之后处理这条待办的 Agent 也看得到。"}
 	switch {
-	case st.Link == "" || st.Socket == "":
+	case st.Link == "" || st.Socket == "" || st.Token == "":
 		why := "那台 Mac 上的扩展程序还没准备好 MCP 命令"
 		if st.SocketError != "" {
 			why += "：" + clip(st.SocketError, 160)
@@ -297,9 +330,17 @@ func mcpSection(st nodeStatus, bot *botChoice) wire.Section {
 	default:
 		sec.Items = []wire.Component{
 			{Type: wire.ComponentText, Text: "在那台 Mac 的终端里运行一次下面这条命令，把本扩展的 MCP 工具（persona-todos）加给这个机器人。命令里的路径在扩展升级后不变，不用重新登记；换了机器人要按新的命令再加一次。"},
-			{Type: wire.ComponentText, Style: wire.TextStyleCode, Text: toolsAddCommand(st.Link, st.Socket, bot)},
-			{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: "加好以后，可以用 orca bot tools --bot " + shellWord(bot.Name) + " 看它有没有这个工具。"},
+			{Type: wire.ComponentText, Style: wire.TextStyleCode, Text: toolsAddCommand(st.Link, st.Socket, st.Token, bot)},
+			{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: "加好以后，可以用 orca bot tools --bot " + shellWord(bot.ID) + " 看它有没有这个工具。"},
 		}
+		scope := wire.Component{Type: wire.ComponentButton, Title: "放宽：不知道是哪个对话时也允许读写",
+			Action: &wire.Action{ID: "scope:wide", Confirm: "Orca 没告诉工具它在哪个对话里时（几个对话共用一个工具进程），这个机器人的任何对话都能读写交给它的所有待办。确定放宽？"}}
+		words := "默认只有接到待办的那个对话能读写它；Orca 没告诉工具它在哪个对话里时，工具什么都读写不了。"
+		if st.Wide {
+			scope = wire.Component{Type: wire.ComponentButton, Title: "收紧：只允许接到待办的对话", Action: &wire.Action{ID: "scope:chat"}}
+			words = "已放宽：Orca 没告诉工具它在哪个对话里时，这个机器人的任何对话都能读写交给它的所有待办。"
+		}
+		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: words}, scope)
 	}
 	return sec
 }
@@ -314,7 +355,15 @@ func stateWords(r record) string {
 	case "sent":
 		return "机器人在处理"
 	case "finished":
+		switch {
+		case r.TurnState == "completed" && r.Outcome == "failure":
+			return "这一轮出错结束了"
+		case r.TurnState == "completed" && (r.Outcome == "cancellation" || r.Outcome == "superseded"):
+			return "这一轮被中断了"
+		}
 		switch r.TurnState {
+		case "unverifiable":
+			return "结束了，但 Orca 无法确认是否正常做完"
 		case "interrupted":
 			return "这一轮被中断了"
 		case "unavailable":
@@ -342,6 +391,9 @@ func recentSection(recs []record, loc *time.Location) wire.Section {
 		sub := stateWords(r)
 		if n := len(r.Refs); n > 0 {
 			sub += fmt.Sprintf(" · 写回 %d 次", n)
+		}
+		if r.NotifyNote != "" {
+			sub += " · " + r.NotifyNote
 		}
 		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentRow, Title: clip(r.Title, 80),
 			Subtitle: r.CreatedAt.In(loc).Format("01-02 15:04") + " · " + sub})

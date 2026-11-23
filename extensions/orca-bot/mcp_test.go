@@ -78,7 +78,10 @@ func TestMCPCommandNeedsItsFlags(t *testing.T) {
 	if code := runMCP(nil, strings.NewReader(""), &bytes.Buffer{}, &errOut); code != 2 {
 		t.Fatalf("exit %d", code)
 	}
-	if code := runMCP([]string{"--socket", "/tmp/x.sock", "--bot", "bot-alpha"}, strings.NewReader(""), &bytes.Buffer{}, &errOut); code != 0 {
+	if code := runMCP([]string{"--socket", "/tmp/x.sock", "--bot", "bot-alpha"}, strings.NewReader(""), &bytes.Buffer{}, &errOut); code != 2 {
+		t.Fatalf("without a token: exit %d", code)
+	}
+	if code := runMCP([]string{"--socket", "/tmp/x.sock", "--bot", "bot-alpha", "--token", "t"}, strings.NewReader(""), &bytes.Buffer{}, &errOut); code != 0 {
 		t.Fatalf("exit %d: %s", code, errOut.String())
 	}
 }

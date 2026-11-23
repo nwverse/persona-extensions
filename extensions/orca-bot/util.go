@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	// writeMaxRunes bounds one write-back: the bot is told to summarise.
-	writeMaxRunes = 4000
+	// writeMaxRunes bounds one write-back: it lands where others read it (the to-do's thread, other extensions, later
+	// Agents' hand-over context), so the bot writes a summary and leaves the details in its Orca chat.
+	writeMaxRunes = 1500
 	// writesPerTodo bounds how many write-backs one to-do takes.
 	writesPerTodo = 10
 )

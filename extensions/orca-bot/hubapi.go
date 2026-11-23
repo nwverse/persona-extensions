@@ -23,6 +23,15 @@ type decisionPayload struct {
 	Choice   string `json:"choice"`
 	Reason   string `json:"reason,omitempty"`
 	Ref      string `json:"ref"`
+	// Source is always "outcome": the only kind an extension may write (said explicitly, not left to the default).
+	Source string `json:"source"`
+}
+
+// delivery is the hub's answer to a notification: sent, or held by push grading, or not sent and why.
+type delivery struct {
+	Sent   bool   `json:"sent"`
+	Held   bool   `json:"held"`
+	Reason string `json:"reason"`
 }
 
 type notice struct {
@@ -38,7 +47,7 @@ type hubAPI interface {
 	Todo(ctx context.Context, id string) (*todoRow, error)
 	// AddDecision writes an outcome decision; inserted is false when one with the same ref was there.
 	AddDecision(ctx context.Context, todoID string, d decisionPayload) (bool, error)
-	Notify(ctx context.Context, n notice) error
+	Notify(ctx context.Context, n notice) (delivery, error)
 }
 
 // nodeCaller calls the node program on a computer.
@@ -152,6 +161,8 @@ func (c *hubClient) AddDecision(ctx context.Context, todoID string, d decisionPa
 	return out.Inserted == nil || *out.Inserted, nil
 }
 
-func (c *hubClient) Notify(ctx context.Context, n notice) error {
-	return c.do(ctx, http.MethodPost, "/api/v1/notify", n, nil)
+func (c *hubClient) Notify(ctx context.Context, n notice) (delivery, error) {
+	var d delivery
+	err := c.do(ctx, http.MethodPost, "/api/v1/notify", n, &d)
+	return d, err
 }
