@@ -31,9 +31,11 @@ func (c *client) query(ctx context.Context, query string, recent bool, start int
 	return c.queryRange(ctx, query, recent, start, 20)
 }
 
+const maxQueryChars = 200
+
 // queryRange asks for count papers from start in one request.
 func (c *client) queryRange(ctx context.Context, query string, recent bool, start, count int) (feed, error) {
-	if len([]rune(query)) > 200 || strings.ContainsRune(query, 0) {
+	if len([]rune(query)) > maxQueryChars || strings.ContainsRune(query, 0) {
 		return feed{}, errors.New("search text must be at most 200 characters")
 	}
 	if start < 0 {
