@@ -95,22 +95,26 @@ type nodeWrite struct {
 }
 
 type nodeHandoff struct {
-	TodoID     string       `json:"todo_id"`
-	BotID      string       `json:"bot_id"`
-	SessionID  string       `json:"session_id,omitempty"`
-	OpID       string       `json:"op_id"`
-	Todo       todoSnapshot `json:"todo"`
-	CreatedAt  time.Time    `json:"created_at"`
-	TriedAt    time.Time    `json:"tried_at,omitzero"` // the last attempt to send it
-	Sent       bool         `json:"sent"`
-	SentAt     time.Time    `json:"sent_at,omitzero"`
-	SawWorking bool         `json:"saw_working,omitempty"`
-	Finished   bool         `json:"finished,omitempty"`
-	FinishedAt time.Time    `json:"finished_at,omitzero"`
-	TurnState  string       `json:"turn_state,omitempty"`
-	Outcome    string       `json:"outcome,omitempty"`
-	Acked      bool         `json:"acked,omitempty"`
-	EmittedAt  time.Time    `json:"emitted_at,omitzero"`
+	TodoID    string       `json:"todo_id"`
+	BotID     string       `json:"bot_id"`
+	SessionID string       `json:"session_id,omitempty"`
+	OpID      string       `json:"op_id"`
+	Todo      todoSnapshot `json:"todo"`
+	CreatedAt time.Time    `json:"created_at"`
+	TriedAt   time.Time    `json:"tried_at,omitzero"` // when the last attempt to send it ended
+	// Unsure: a send failed without Orca refusing it (a timeout, a dropped connection): Orca may have taken it. Such a
+	// claim on its chat is never let go by age, nor by abandon; only a retry (Orca replays the same operation) or the
+	// prune of never-sent hand-overs ends it.
+	Unsure     bool      `json:"unsure,omitempty"`
+	Sent       bool      `json:"sent"`
+	SentAt     time.Time `json:"sent_at,omitzero"`
+	SawWorking bool      `json:"saw_working,omitempty"`
+	Finished   bool      `json:"finished,omitempty"`
+	FinishedAt time.Time `json:"finished_at,omitzero"`
+	TurnState  string    `json:"turn_state,omitempty"`
+	Outcome    string    `json:"outcome,omitempty"`
+	Acked      bool      `json:"acked,omitempty"`
+	EmittedAt  time.Time `json:"emitted_at,omitzero"`
 	// FailingSince is when Orca, answering, began refusing this chat's history.
 	FailingSince time.Time `json:"failing_since,omitzero"`
 	// PromptPolls counts the polls in a row that saw an approval or question waiting; Episode numbers the waits.
@@ -465,6 +469,8 @@ func nodeErr(err error) error {
 		code = "orca_timeout"
 	case orcaCode(err) == "bot_not_found": // Orca's own code (BOT_ERROR_CODES)
 		code = "bot_not_found"
+	case orcaCode(err) == "bots_disabled": // Orca's BOTS_DISABLED_CODE
+		code = "bots_disabled"
 	}
 	return &ext.Error{Code: code, Message: code + ": " + clip(err.Error(), 300)}
 }
@@ -548,7 +554,7 @@ func (n *nodeApp) claimedBy(sessionID, todoID string) string {
 		if h.SessionID != sessionID || h.TodoID == todoID {
 			continue
 		}
-		if !h.Sent && n.now().Sub(lastTry(h)) > nodeStaleClaim {
+		if !h.Sent && !h.Unsure && n.now().Sub(lastTry(h)) > nodeStaleClaim {
 			h.SessionID = ""
 			continue
 		}
@@ -561,7 +567,7 @@ func (n *nodeApp) claimedBy(sessionID, todoID string) string {
 // followed to its end). The caller holds n.mu.
 func (n *nodeApp) abandon(todoID string) bool {
 	h := n.st.Handoffs[todoID]
-	if h == nil || h.Sent {
+	if h == nil || h.Sent || h.Unsure { // an unsure one may be in its chat: the chat stays claimed
 		return false
 	}
 	delete(n.st.Handoffs, todoID)
@@ -599,7 +605,12 @@ func (n *nodeApp) handoff(ctx context.Context, p handoffParams) (*handoffResult,
 		h.BotID, h.OpID, h.Todo = p.BotID, p.OpID, p.Todo
 		n.save()
 	}
-	h.TriedAt = n.now()
+	defer func() { // the claim's age counts from the end of the attempt, however long it ran
+		n.mu.Lock()
+		h.TriedAt = n.now()
+		n.save()
+		n.mu.Unlock()
+	}()
 	sessionID, opID := h.SessionID, h.OpID
 	if sessionID != "" && n.claimedBy(sessionID, p.TodoID) != "" {
 		// Never expected (a chat is claimed once), but never send two to-dos into one chat.
@@ -654,10 +665,14 @@ func (n *nodeApp) handoff(ctx context.Context, p handoffParams) (*handoffResult,
 	}
 	// The same operation id every attempt: should an earlier attempt have reached Orca, this one replays it.
 	if err := n.orca.Send(ctx, sessionID, fence, opID, p.Text); err != nil {
+		n.mu.Lock()
+		h.Unsure = h.Unsure || orcaUnsure(err)
+		n.save()
+		n.mu.Unlock()
 		return nil, nodeErr(err)
 	}
 	n.mu.Lock()
-	h.Sent, h.SentAt = true, n.now()
+	h.Sent, h.SentAt, h.Unsure = true, n.now(), false
 	n.save()
 	n.mu.Unlock()
 	return &handoffResult{SessionID: sessionID}, nil

@@ -129,11 +129,27 @@ type nodeLink struct {
 	node     *nodeApp
 	down     atomic.Bool
 	handoffs atomic.Int64 // orcabot.handoff calls that reached the Mac or found it away
+	abandons atomic.Int64 // orcabot.abandon calls
+	mu       sync.Mutex
+	failWith error         // every call fails with it while set (a host failure)
+	slowRes  time.Duration // orcabot.writeback_result takes this long
 }
 
 func (l *nodeLink) Call(ctx context.Context, machine, method string, params, out any) error {
-	if method == "orcabot.handoff" {
+	switch method {
+	case "orcabot.handoff":
 		l.handoffs.Add(1)
+	case "orcabot.abandon":
+		l.abandons.Add(1)
+	}
+	l.mu.Lock()
+	failWith, slow := l.failWith, l.slowRes
+	l.mu.Unlock()
+	if failWith != nil {
+		return failWith
+	}
+	if method == "orcabot.writeback_result" {
+		time.Sleep(slow)
 	}
 	if l.down.Load() || machine != testMac {
 		return &ext.Error{Code: "offline", Message: "machine " + machine + " is offline"} // as the host answers

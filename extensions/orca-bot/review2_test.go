@@ -133,7 +133,7 @@ func TestExpiriesAreOneNotification(t *testing.T) {
 		}
 	}
 	w.app.mu.Lock()
-	n := len(w.app.st.Abandon)
+	n := len(w.app.st.Abandoned)
 	w.app.mu.Unlock()
 	if n != 4 {
 		t.Fatalf("%d left to tell the Mac", n)
@@ -141,7 +141,7 @@ func TestExpiriesAreOneNotification(t *testing.T) {
 	w.link.down.Store(false)
 	w.app.retryDue(w.ctx, false)
 	w.app.mu.Lock()
-	n = len(w.app.st.Abandon)
+	n = len(w.app.st.Abandoned)
 	w.app.mu.Unlock()
 	if n != 0 {
 		t.Fatalf("the Mac was not told: %d", n)

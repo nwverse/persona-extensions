@@ -228,6 +228,11 @@ func TestAMissingBotFailsClosed(t *testing.T) {
 	w.orca.mu.Unlock()
 	w.newTodo("todo_1", "prepare one", "", "work")
 	w.created("todo_1")
+	if r := w.record("todo_1"); r.State != "pending" || r.LastCode != "bot_unconfirmed" {
+		t.Fatalf("paused on answers seconds apart: %+v", r)
+	}
+	w.clock.add(waitRetry) // Orca says so again, later
+	w.app.retryDue(w.ctx, false)
 	r := w.record("todo_1")
 	if r.State != "failed" || !strings.Contains(r.LastError, "找不到这个机器人") || len(w.orca.sent()) != 0 {
 		t.Fatalf("record: %+v", r)

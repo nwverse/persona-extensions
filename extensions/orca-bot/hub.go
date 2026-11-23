@@ -46,6 +46,11 @@ const (
 	defaultPerHour    = 10
 	waitRetry         = 2 * time.Minute
 	maxNotifyAttempts = 5
+	// expiryWindow: at most one "waited too long" notification in it, with the count since the last one.
+	expiryWindow = 6 * time.Hour
+	// abandonPerPass bounds the Macs told of given-up hand-overs in one pass; abandonKept is how long one is kept.
+	abandonPerPass = 10
+	abandonKept    = 72 * time.Hour
 	// recordsKept bounds the persisted mapping; to-dos made before the newest one dropped are never forwarded.
 	recordsKept = 2000
 )
@@ -84,11 +89,13 @@ type record struct {
 	Outcome    string        `json:"outcome,omitempty"`
 	Notified   bool          `json:"notified,omitempty"`
 	// NotifyAttempts counts failed notifications of the finish; NotifyNote says what became of it when not plain.
-	NotifyAttempts int      `json:"notify_attempts,omitempty"`
-	NotifyNote     string   `json:"notify_note,omitempty"`
-	NeedsYou       int      `json:"needs_you,omitempty"` // the last wait the owner was told of
-	FailNotified   bool     `json:"fail_notified,omitempty"`
-	Refs           []string `json:"refs,omitempty"`
+	NotifyAttempts int    `json:"notify_attempts,omitempty"`
+	NotifyNote     string `json:"notify_note,omitempty"`
+	NeedsYou       int    `json:"needs_you,omitempty"` // the last wait the owner was told of
+	FailNotified   bool   `json:"fail_notified,omitempty"`
+	// NotFoundAt: when Orca first said the bot is gone for this hand-over; it must say so again waitRetry later.
+	NotFoundAt time.Time `json:"not_found_at,omitzero"`
+	Refs       []string  `json:"refs,omitempty"`
 }
 
 type hubState struct {
@@ -100,9 +107,23 @@ type hubState struct {
 	// Passed are new to-dos seen when they were made that the filter did not take: they are not forwarded later,
 	// even if edited to match. Kept for maxAge.
 	Passed map[string]time.Time `json:"passed,omitempty"`
-	// Abandon are the hand-overs given up here that the Mac has not been told of yet (to-do → Mac): it lets their
-	// chat go when nothing was sent.
-	Abandon map[string]string `json:"abandon,omitempty"`
+	// Abandoned are the hand-overs given up here that the Mac has not been told of yet: it lets their chat go when
+	// nothing was sent. Dropped after abandonKept (the Mac forgets never-sent hand-overs by then anyway).
+	Abandoned map[string]abandonEntry `json:"abandoned,omitempty"`
+	// Expired is the digest of hand-overs that waited past maxAge since the last notification of them.
+	Expired expiryDigest `json:"expired,omitzero"`
+}
+
+type abandonEntry struct {
+	Machine string    `json:"machine"`
+	At      time.Time `json:"at"`
+}
+
+type expiryDigest struct {
+	Count    int       `json:"count,omitempty"`
+	Titles   []string  `json:"titles,omitempty"` // the first few
+	Bot      string    `json:"bot,omitempty"`
+	NoticeAt time.Time `json:"notice_at,omitzero"` // the last notification of them
 }
 
 type hubApp struct {
@@ -217,6 +238,11 @@ func (a *hubApp) save() {
 			}
 		}
 	}
+	for id, e := range a.st.Abandoned {
+		if a.now().Sub(e.At) > abandonKept {
+			delete(a.st.Abandoned, id)
+		}
+	}
 	for id, at := range a.st.Passed {
 		if a.now().Sub(at) > maxAge {
 			delete(a.st.Passed, id)
@@ -285,34 +311,48 @@ func (a *hubApp) settle() {
 func (a *hubApp) failRecord(r *record, why string) {
 	r.State, r.LastError, r.Text, r.Todo = "failed", why, "", nil
 	if r.SessionID == "" && r.Machine != "" { // never sent, as far as the hub knows
-		if a.st.Abandon == nil {
-			a.st.Abandon = map[string]string{}
+		if a.st.Abandoned == nil {
+			a.st.Abandoned = map[string]abandonEntry{}
 		}
-		a.st.Abandon[r.TodoID] = r.Machine
+		a.st.Abandoned[r.TodoID] = abandonEntry{Machine: r.Machine, At: a.now()}
 	}
 }
 
-// tellAbandoned tells the Mac of the hand-overs given up here; those it could not reach are told next time.
+// tellAbandoned tells the Mac of the hand-overs given up here, oldest first, at most abandonPerPass in a pass, and
+// none more to a Mac that did not answer; those not told are told next time.
 func (a *hubApp) tellAbandoned(ctx context.Context) {
+	type entry struct {
+		id string
+		abandonEntry
+	}
 	a.mu.Lock()
 	nodes := a.nodes
-	todo := make(map[string]string, len(a.st.Abandon))
-	for id, m := range a.st.Abandon {
-		todo[id] = m
+	todo := make([]entry, 0, len(a.st.Abandoned))
+	for id, e := range a.st.Abandoned {
+		todo = append(todo, entry{id, e})
 	}
 	a.mu.Unlock()
 	if nodes == nil {
 		return
 	}
-	for id, machine := range todo {
+	sort.Slice(todo, func(i, j int) bool { return todo[i].At.Before(todo[j].At) })
+	down := map[string]bool{}
+	for i, e := range todo {
+		if i >= abandonPerPass || ctx.Err() != nil {
+			break
+		}
+		if down[e.Machine] {
+			continue
+		}
 		cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
-		err := nodes.Call(cctx, machine, "orcabot.abandon", map[string]any{"todo_id": id}, nil)
+		err := nodes.Call(cctx, e.Machine, "orcabot.abandon", map[string]any{"todo_id": e.id}, nil)
 		cancel()
 		if err != nil {
+			down[e.Machine] = true
 			continue
 		}
 		a.mu.Lock()
-		delete(a.st.Abandon, id)
+		delete(a.st.Abandoned, e.id)
 		a.save()
 		a.mu.Unlock()
 	}
@@ -511,7 +551,7 @@ func (a *hubApp) retryDue(ctx context.Context, back bool) {
 		a.tellAbandoned(ctx)
 		return
 	}
-	expired := a.expire()
+	a.expire()
 	var due []*record
 	now := a.now()
 	for _, r := range a.st.Records {
@@ -524,7 +564,7 @@ func (a *hubApp) retryDue(ctx context.Context, back bool) {
 	for _, r := range due {
 		ids = append(ids, r.TodoID)
 	}
-	tell := a.expiredNotice(expired)
+	tell := a.expiredNotice()
 	api, canNotify := a.api, a.canNotify()
 	a.save()
 	a.mu.Unlock()
@@ -548,8 +588,8 @@ func (a *hubApp) retryDue(ctx context.Context, back bool) {
 	a.tellAbandoned(ctx)
 }
 
-// expire fails the hand-overs still waiting after maxAge; the caller holds a.mu.
-func (a *hubApp) expire() []*record {
+// expire fails the hand-overs still waiting after maxAge, into the digest; the caller holds a.mu.
+func (a *hubApp) expire() {
 	var out []*record
 	for _, r := range a.st.Records {
 		if r.State == "pending" && r.SessionID == "" && a.now().Sub(r.CreatedAt) > maxAge {
@@ -559,31 +599,38 @@ func (a *hubApp) expire() []*record {
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CreatedAt.Before(out[j].CreatedAt) })
-	return out
+	d := &a.st.Expired
+	for _, r := range out {
+		d.Count++
+		d.Bot = r.BotName
+		if len(d.Titles) < 3 {
+			d.Titles = append(d.Titles, clip(r.Title, 30))
+		}
+	}
 }
 
-// expiredNotice is the one notification for the hand-overs that waited too long in a pass.
-func (a *hubApp) expiredNotice(rs []*record) *notice {
-	if len(rs) == 0 {
+// expiredNotice is the notification of the hand-overs that waited too long since the last one: at most one in
+// expiryWindow, carrying the count, under an id of its own window so it does not replace an earlier one unread. The
+// caller holds a.mu.
+func (a *hubApp) expiredNotice() *notice {
+	d := &a.st.Expired
+	now := a.now()
+	if d.Count == 0 || (!d.NoticeAt.IsZero() && now.Sub(d.NoticeAt) < expiryWindow) {
 		return nil
 	}
-	if len(rs) == 1 {
-		return failNotice(rs[0])
-	}
 	var titles []string
-	for i, r := range rs {
-		if i == 3 {
-			break
-		}
-		titles = append(titles, "「"+clip(r.Title, 30)+"」")
+	for _, t := range d.Titles {
+		titles = append(titles, "「"+t+"」")
 	}
 	more := ""
-	if len(rs) > 3 {
+	if d.Count > len(d.Titles) {
 		more = "等"
 	}
-	return &notice{Title: "待办没交给 Orca 机器人", ID: "orca-bot-expired", PushLevel: "P1",
-		Body: fmt.Sprintf("%d 条待办等了 48 小时也没能交给机器人「%s」：%s%s。", len(rs), clip(orName(rs[0].BotName), 40),
-			strings.Join(titles, "、"), more)}
+	n := &notice{Title: "待办没交给 Orca 机器人", ID: fmt.Sprintf("orca-bot-expired-%d", now.Unix()/int64(expiryWindow/time.Second)),
+		PushLevel: "P1", Body: fmt.Sprintf("%d 条待办等了 48 小时也没能交给机器人「%s」：%s%s。", d.Count,
+			clip(orName(d.Bot), 40), strings.Join(titles, "、"), more)}
+	*d = expiryDigest{NoticeAt: now}
+	return n
 }
 
 func retryAfter(attempts int) time.Duration {
@@ -591,14 +638,19 @@ func retryAfter(attempts int) time.Duration {
 	return min(d, 2*time.Hour)
 }
 
-// waiting: a failure that is the Mac, Orca or the bot being away for now, not a refusal; it does not use up attempts.
-func waiting(code string) bool {
+// refusal: the node program refused the hand-over or Orca refused it; it uses up an attempt. The node program
+// always names its failures, so a failure without a code is the host's (the Mac away, the call dropped).
+func refusal(code string) bool {
 	switch code {
-	case "offline", "orca_not_running", "orca_timeout", "bot_paused", "orca_busy", "timeout":
+	case "invalid", "orca_error", "orca_incompatible":
 		return true
 	}
 	return false
 }
+
+// waiting: a failure that is the Mac, Orca or the bot being away for now (offline, not_running, a timeout, a busy
+// chat, a paused bot, bots turned off, a failure without a code), not a refusal; it does not use up attempts.
+func waiting(code string) bool { return code != "bot_not_found" && !refusal(code) }
 
 // attempt asks the node program to hand one pending to-do over. The same operation id and text every time: should
 // an earlier attempt have reached Orca, Orca answers it again instead of sending twice.
@@ -663,7 +715,13 @@ func (a *hubApp) attempt(ctx context.Context, id string) {
 		case !sure:
 			code = "offline" // could not ask again: wait
 		case !gone:
-			code = "" // listed after all: an ordinary refusal
+			code, r.NotFoundAt = "orca_error", time.Time{} // listed after all: an ordinary refusal
+		case r.NotFoundAt.IsZero() || a.now().Sub(r.NotFoundAt) < waitRetry:
+			// Gone by two answers in a row, but only seconds apart: ask again later before pausing everything.
+			if r.NotFoundAt.IsZero() {
+				r.NotFoundAt = a.now()
+			}
+			code = "bot_unconfirmed"
 		}
 	}
 	r.LastError, r.LastCode = failureWords(err), code
@@ -736,8 +794,8 @@ func orName(name string) string {
 	return name
 }
 
-var knownCodes = []string{"bot_not_found", "bot_paused", "bots_disabled", "orca_busy", "orca_not_running",
-	"orca_incompatible", "orca_timeout", "orca_error", "offline", "timeout"}
+var knownCodes = []string{"bot_not_found", "bot_unconfirmed", "bot_paused", "bots_disabled", "orca_busy",
+	"orca_not_running", "orca_incompatible", "orca_timeout", "orca_error", "offline", "timeout", "not_running", "invalid"}
 
 // errCode is the structured code of a failure of nodes.call: the error's own code (the host's offline or timeout, or
 // the node program's), or the code the node program put first in its message ("<code>: …") should the host pass on
@@ -765,8 +823,12 @@ func failureWords(err error) string {
 	switch errCode(err) {
 	case "bot_not_found":
 		return "Orca 里找不到这个机器人了：请在本页重新选一个"
+	case "bot_unconfirmed":
+		return "Orca 说找不到这个机器人，过一会儿再确认一次"
 	case "bot_paused":
 		return "机器人在 Orca 里暂停了，恢复后会再交"
+	case "not_running":
+		return "那台 Mac 上本扩展的程序没在运行"
 	case "bots_disabled":
 		return "Orca 里的机器人功能关着"
 	case "orca_busy":
@@ -1016,15 +1078,18 @@ func (a *hubApp) writeback(ctx context.Context, machine string, w writebackEvent
 	bot := orName(r.BotName)
 	api := a.api
 	a.mu.Unlock()
-	defer func() {
-		a.mu.Lock()
+	// release drops the reservation (the caller holds a.mu); it is dropped before the node program is answered, so a
+	// write-back after this one never sees it counted twice (in Refs and reserved).
+	release := func() {
 		delete(a.writing[w.TodoID], w.Ref)
 		if len(a.writing[w.TodoID]) == 0 {
 			delete(a.writing, w.TodoID)
 		}
-		a.mu.Unlock()
-	}()
+	}
 	if api == nil {
+		a.mu.Lock()
+		release()
+		a.mu.Unlock()
 		result(writeAck{Error: "hub 的接口还没准备好"})
 		return
 	}
@@ -1033,14 +1098,14 @@ func (a *hubApp) writeback(ctx context.Context, machine string, w writebackEvent
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	inserted, err := api.AddDecision(cctx, w.TodoID, d)
 	cancel()
+	a.mu.Lock()
+	release()
 	if err != nil {
-		a.mu.Lock()
 		a.lastErr = "写回待办失败：" + clip(err.Error(), 200)
 		a.mu.Unlock()
 		result(writeAck{Error: "写回待办失败：" + clip(err.Error(), 200)})
 		return
 	}
-	a.mu.Lock()
 	if r := a.st.Records[w.TodoID]; r != nil && !slices.Contains(r.Refs, w.Ref) {
 		r.Refs = append(r.Refs, w.Ref)
 		a.save()

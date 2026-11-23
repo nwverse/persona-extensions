@@ -38,8 +38,10 @@ type fakeOrca struct {
 	lastOp    map[string]string
 	prompts   map[string]int
 	now       func() time.Time
-	otherRT   bool // answer under another runtime id
-	autoOpen  bool // the bot starts on each message at once (its chat is no longer empty)
+	otherRT   bool              // answer under another runtime id
+	autoOpen  bool              // the bot starts on each message at once (its chat is no longer empty)
+	dropSend  bool              // agentSession.send is taken, then the connection drops without an answer
+	onCall    map[string]func() // runs as a method is answered (a call that takes long)
 	sends     []fakeSend
 	ops       map[string]string // clientOperationId → fingerprint
 	calls     map[string]int
@@ -59,7 +61,7 @@ func newFakeOrca(t *testing.T) *fakeOrca {
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	f := &fakeOrca{t: t, dir: dir, metaPath: filepath.Join(dir, "orca-runtime.json"), token: "tok-1", runtimeID: "rt-1",
 		protocol: 3, minClient: 1, enabled: true, working: map[string]bool{}, turns: map[string]map[string]any{},
-		turnAt: map[string]int64{}, lastOp: map[string]string{}, prompts: map[string]int{}, botOf: map[string]string{},
+		turnAt: map[string]int64{}, onCall: map[string]func(){}, lastOp: map[string]string{}, prompts: map[string]int{}, botOf: map[string]string{},
 		now: time.Now,
 		ops: map[string]string{}, calls: map[string]int{}, refuse: map[string]string{},
 		bots: []map[string]any{
@@ -135,7 +137,16 @@ func (f *fakeOrca) serve(c net.Conn) {
 			continue
 		}
 		c.Write([]byte(`{"_keepalive":true}` + "\n"))
+		f.mu.Lock()
+		hook, drop := f.onCall[req.Method], f.dropSend && req.Method == "agentSession.send"
+		f.mu.Unlock()
+		if hook != nil {
+			hook()
+		}
 		res, code := f.answer(req.AuthToken, req.Method, req.Params)
+		if drop && code == "" {
+			return // taken, but the answer never comes back
+		}
 		f.mu.Lock()
 		rid := f.runtimeID
 		if f.otherRT {
@@ -233,6 +244,7 @@ func (f *fakeOrca) answer(token, method string, raw json.RawMessage) (any, strin
 			text, _ = b["text"].(string)
 		}
 		f.sends = append(f.sends, fakeSend{s, op, text})
+
 		f.working[s] = true // an unanswered send counts as work; the chat stays empty until its turn opens
 		f.lastOp[s] = op
 		if f.autoOpen {

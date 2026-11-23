@@ -373,6 +373,8 @@ func TestAGoneBotPausesForwardingUntilPickedAgain(t *testing.T) {
 	w.orca.mu.Unlock()
 	w.newTodo("todo_1", "prepare one", "", "work")
 	w.created("todo_1")
+	w.clock.add(waitRetry) // confirmed by a second attempt, later
+	w.app.retryDue(w.ctx, false)
 	if ok, missing := w.app.ready(); ok || !strings.Contains(missing, "暂停") {
 		t.Fatalf("still forwarding: %v %q", ok, missing)
 	}

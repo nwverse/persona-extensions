@@ -69,6 +69,29 @@ func (e *orcaError) Error() string {
 	return "orca " + e.Method + ": " + e.Code
 }
 
+// notSentError is a failure before the request reached Orca: nothing can have happened there.
+type notSentError struct{ err error }
+
+func (e notSentError) Error() string { return e.err.Error() }
+func (e notSentError) Unwrap() error { return e.err }
+
+// orcaNotSent: the call failed before its request reached Orca (no metadata, the compatibility check, the dial).
+func orcaNotSent(err error) bool {
+	var ns notSentError
+	return errors.As(err, &ns)
+}
+
+// orcaUnsure: the call may have been carried out though it failed: its request may have reached Orca, and Orca did
+// not answer with a refusal (a timeout, a dropped connection, an answer of an unexpected shape or of another
+// runtime, or Orca itself not knowing: agent_session_operation_unknown).
+func orcaUnsure(err error) bool {
+	if err == nil || orcaNotSent(err) {
+		return false
+	}
+	code := orcaCode(err)
+	return code == "" || code == "agent_session_operation_unknown"
+}
+
 func orcaCode(err error) string {
 	var e *orcaError
 	if errors.As(err, &e) {
@@ -182,10 +205,12 @@ func (c *orcaClient) call(ctx context.Context, timeout time.Duration, method str
 	for attempt := 0; ; attempt++ {
 		m, err := c.currentMeta()
 		if err != nil {
-			return err
+			return notSentError{err}
 		}
 		err = c.checkCompat(ctx, m)
-		if err == nil {
+		if err != nil {
+			err = notSentError{err} // the call itself never went out
+		} else {
 			err = c.callOnce(ctx, m, timeout, method, params, out)
 		}
 		if err != nil && orcaRetryable(err) && attempt == 0 {
@@ -256,7 +281,7 @@ func (c *orcaClient) callOnce(ctx context.Context, m *orcaMeta, timeout time.Dur
 	defer cancel()
 	conn, err := dialOrca(ctx, m.socket)
 	if err != nil {
-		return err
+		return notSentError{err}
 	}
 	defer conn.Close()
 	if dl, ok := ctx.Deadline(); ok {
@@ -323,8 +348,8 @@ func (c *orcaClient) callOnce(ctx context.Context, m *orcaMeta, timeout time.Dur
 			if env.Error != nil {
 				e.Code, e.Message = env.Error.Code, clip(env.Error.Message, 300)
 			}
-			if e.Code == "method_not_found" {
-				return fmt.Errorf("%w: %v", errOrcaIncompatible, e)
+			if e.Code == "method_not_found" { // refused before anything was done
+				return notSentError{fmt.Errorf("%w: %v", errOrcaIncompatible, e)}
 			}
 			return e
 		}

@@ -48,7 +48,7 @@ Only the owner's own **new** to-dos:
 - matching the filter **when they were made**. A to-do seen when it was made that did not match is not forwarded later, even if it is edited to match;
 - not done, not a concern, not a question the assistant asked you (`todo_ask_…`), and not one of Persona's own agent tasks (a to-do with an `origin`) unless **也转发 Persona 自己派给 Agent 的任务** is on.
 
-At most the hourly cap of hand-overs reach the bot in any rolling hour (counted on what was actually sent), and one pass starts at most 5. A matching to-do over the cap waits for a later pass while it is still under 48 hours old.
+At most the hourly cap of hand-overs reach the bot in any rolling hour (counted on what was actually sent), and one pass starts at most 5. A matching to-do over the cap is not recorded yet: each later reconcile considers it again while it is under 48 hours old. A to-do still not picked up after 48 hours is not forwarded, and no notification says so.
 
 ## What the bot receives
 
@@ -63,7 +63,8 @@ Orca answers `bots.session.start` with an empty chat of the bot that is already 
 A hand-over that never sent does not keep its chat:
 
 - when the hub gives it up (refused too often, waited too long, forwarding stopped or the bot switched), it tells the Mac (`orcabot.abandon`), which forgets it;
-- a hand-over that never sent and was last tried more than 2 minutes ago (longer than the hub waits for an answer) lets a new hand-over take its chat;
+- a hand-over that never sent, whose last attempt **ended** more than 2 minutes ago, lets a new hand-over take its chat. That is longer than the hub waits for an answer, and the age counts from the end of the attempt, however long it ran;
+- a send that failed without Orca refusing it (a timeout, a dropped connection) may have been taken by Orca. Its chat is never freed by age or by the hub giving up. Its retry replays the same operation into the same chat, so Orca does not send it twice;
 - the Mac forgets a hand-over that never sent after 72 hours in any case, notes and all.
 
 ## The MCP tools
@@ -111,12 +112,12 @@ That is why the text is capped at 1500 characters and the bot is told to write a
 
 ## When the Mac or the bot is away
 
-- The Mac offline, Orca not running or slow, a paused bot, or a busy chat does not count as a failed attempt. The hand-over waits, and is retried every few minutes and as soon as the node program starts again.
-- After an outage the backlog does not go out at once. Waiting hand-overs reach the bot oldest first, at most the hourly cap in any rolling hour and at most 5 in one pass. Each pass is bounded, so the hub stays responsive.
-- A hand-over still waiting 48 hours after it was made fails. All of those that fail in one pass are told in **one** notification ("N 条待办等了 48 小时也没能交给机器人…"). So after two days with the Mac away you get a single notification, not one per to-do.
-- Other refusals are retried with backoff, up to 8 attempts, then fail with one notification.
-- **A bot that is gone.** When Orca answers `bot_not_found`, the hub reads `bots.list` again. Only if the bot is missing there too does the hand-over fail and forwarding **pause** until you pick a bot again on the page. If the bot is still listed, it counts as an ordinary refusal; if the list cannot be read, the hand-over waits.
-- **Stopping or switching.** Stopping forwarding (不再转发给机器人), or switching to another Mac or bot, drops the hand-overs still waiting. They never reach the old bot, and the Mac is told to let their chats go.
+- **No attempt used.** None of these counts as a failed attempt: the Mac offline, the node program not running, Orca not running or slow, a paused bot, bots turned off in Orca, a busy chat, or a failure the host reports without a code (a dropped call). The hand-over waits, and is retried every few minutes and as soon as the node program starts again.
+- **The backlog after an outage.** It does not go out at once. Waiting hand-overs reach the bot oldest first, at most the hourly cap in any rolling hour. A pass tries at most 5. The pass the node program's start triggers and the minute's pass can overlap, so up to 10 attempts can run in a minute, but the cap still holds. A backlog bigger than the cap times the hours left before each to-do turns 48 hours old is not all sent: the rest expires.
+- **Expiry.** A hand-over still waiting 48 hours after it was made fails. Expiries are gathered: at most one notification every 6 hours, carrying the number that expired since the last one ("N 条待办等了 48 小时也没能交给机器人…"). Each notification has an id of its own window, so a later one does not replace an earlier one you have not read. A long outage therefore makes a few notifications, not one per to-do.
+- **Refusals.** Other refusals are retried with backoff, up to 8 attempts, then fail with one notification.
+- **A bot that is gone.** When Orca answers `bot_not_found`, the hub reads `bots.list` again. The hand-over fails and forwarding **pauses** only if Orca says so on two attempts at least 2 minutes apart, and the bot is missing from the list both times. Then it stays paused until you pick a bot again on the page. If the bot is listed after all, it is an ordinary refusal; if the list cannot be read, the hand-over waits.
+- **Stopping or switching.** Stopping forwarding (不再转发给机器人), or switching to another Mac or bot, drops the hand-overs still waiting. They never reach the old bot. The Mac is told to let their chats go, at most 10 a pass, and not again in that pass once the Mac fails to answer; what is left is told later, for up to 72 hours.
 
 ## When the bot finishes
 
