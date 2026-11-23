@@ -26,7 +26,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Skip < 0 || len(st.IssueID) > 100 || len(st.ProjectID) > 100 || len(st.ProjectName) > 1000 || len(st.DraftID) > 128 || len(st.Summary) > 600 || len(st.Description) > 31000 {
+	if err := r.DecodeState(&st); err != nil || st.Skip < 0 || len(st.IssueID) > 100 || len(st.ProjectID) > 100 || len(st.ProjectName) > 1000 || len(st.DraftID) > 128 || len([]rune(st.Summary)) > maxSummaryChars || len(st.Description) > 31000 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil

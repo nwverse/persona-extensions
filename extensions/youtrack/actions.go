@@ -15,11 +15,14 @@ type createArgs struct {
 	Description string `json:"description,omitempty"`
 }
 
+// maxSummaryChars is the longest issue summary: the validation, the tool schema and the page state check use it.
+const maxSummaryChars = 500
+
 func (in createArgs) validate() error {
 	if err := validResourceID(in.ProjectID); err != nil {
 		return err
 	}
-	if strings.TrimSpace(in.Summary) == "" || len([]rune(in.Summary)) > 500 || len([]rune(in.Description)) > 30000 {
+	if strings.TrimSpace(in.Summary) == "" || len([]rune(in.Summary)) > maxSummaryChars || len([]rune(in.Description)) > 30000 {
 		return errors.New("summary must be nonempty and at most 500 characters; description is at most 30000 characters")
 	}
 	for _, r := range in.Summary {
