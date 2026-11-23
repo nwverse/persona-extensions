@@ -22,8 +22,11 @@ type updateArgs struct {
 	WorkflowStateID int64 `json:"workflow_state_id"`
 }
 
-// maxNameChars is the longest story name: the validation, the tool schema and the page state check use it.
-const maxNameChars = 512
+// maxNameChars and maxDescriptionChars bound story fields across validation, tool schemas and page state.
+const (
+	maxNameChars        = 512
+	maxDescriptionChars = 10000
+)
 
 func validText(value string, limit int, multiline bool) error {
 	if len([]rune(value)) > limit {
@@ -38,7 +41,7 @@ func validText(value string, limit int, multiline bool) error {
 }
 
 func (in createArgs) validate() error {
-	if strings.TrimSpace(in.Name) == "" || validText(in.Name, maxNameChars, false) != nil || validText(in.Description, 10000, true) != nil {
+	if strings.TrimSpace(in.Name) == "" || validText(in.Name, maxNameChars, false) != nil || validText(in.Description, maxDescriptionChars, true) != nil {
 		return errors.New("story title must be nonempty, one line and at most 512 characters; description is at most 10000 characters")
 	}
 	if in.WorkflowStateID <= 0 {

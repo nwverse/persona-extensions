@@ -30,7 +30,7 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "shortcut_create_story", Description: "Create a Shortcut story owned by the current member after explicit confirmation. Title, description, optional feature/bug/chore type, deadline and a valid workflow state are sent.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"name", "workflow_state_id"}, "properties": map[string]any{
-			"name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxNameChars}, "description": map[string]any{"type": "string", "maxLength": 10000},
+			"name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxNameChars}, "description": map[string]any{"type": "string", "maxLength": maxDescriptionChars},
 			"workflow_state_id": idSchema, "story_type": map[string]any{"type": "string", "enum": []string{"feature", "bug", "chore"}},
 			"deadline": map[string]any{"type": "string", "format": "date"},
 		}}},

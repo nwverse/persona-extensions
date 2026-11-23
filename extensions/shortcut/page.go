@@ -28,7 +28,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.StoryID < 0 || st.WorkflowStateID < 0 || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len(st.Description) > 11000 || len(st.Next) > 2048 {
+	if err := r.DecodeState(&st); err != nil || st.StoryID < 0 || st.WorkflowStateID < 0 || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len([]rune(st.Description)) > maxDescriptionChars || len(st.Next) > 2048 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -85,6 +85,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		st.Name, st.Description, st.WorkflowStateID, st.StoryType, st.Deadline = in.Name, in.Description, in.WorkflowStateID, in.StoryType, in.Deadline
 		st.Mode = "review-create"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("story draft exceeds page state limit")
+		}
 	case "review-edit":
 		st.WorkflowStateID, err = strconv.ParseInt(r.Values["state_id"], 10, 64)
 		if err != nil || st.WorkflowStateID <= 0 {
@@ -143,6 +146,9 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			if item.ID <= 0 || item.Name == "" {
 				continue
 			}
+			if len(section.Items) >= maxViewItems {
+				break
+			}
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "story-" + fmt.Sprint(item.ID), Title: clipText(item.Name, 1800), Subtitle: fmt.Sprintf("#%d · %s · %s", item.ID, item.StoryType, item.Deadline), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": fmt.Sprint(item.ID)}}})
 		}
 		if len(section.Items) == 0 {
@@ -187,7 +193,7 @@ func (a *app) createView(ctx context.Context, r *ext.UIRequest, st pageState) (*
 		}
 		items := []wire.Component{{Type: wire.ComponentText, Text: clipText(st.Name, 1800)}}
 		if st.Description != "" {
-			items = append(items, textComponents(st.Description)...)
+			items = append(items, capComponents(textComponents(st.Description), maxViewItems-4)...)
 		}
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: fmt.Sprintf("%s: %d · %s: %s", t.state, st.WorkflowStateID, t.deadline, st.Deadline)}, wire.Component{Type: wire.ComponentButton, Title: t.create, Action: &wire.Action{ID: "confirm-create", Confirm: t.create + "\n" + st.Name}}, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "create"}})
 		return &wire.View{Title: t.review, State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.create, Items: items}}}, nil
