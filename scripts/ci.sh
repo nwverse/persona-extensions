@@ -40,7 +40,7 @@ python3 -I scripts/test-icons.py
 
 step gofmt
 bad=$(gofmt -l . | grep -v '^dist/' || true)
-[ -z "$bad" ] || { echo "not gofmt'ed:"; echo "$bad"; exit 1; }
+[ -z "$bad" ] || { echo "not gofmt'ed:"; echo "$bad"; printf '%s\n' "$bad" | xargs -r gofmt -d; exit 1; }
 
 # The copied SDK is checked as it comes from upstream; its go.mod is upstream's too, so no tidiness check.
 step sdk
