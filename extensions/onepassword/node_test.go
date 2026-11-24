@@ -57,11 +57,15 @@ type fakeCLI struct {
 }
 
 func newFakeCLI() *fakeCLI {
+	version := "2.30.3\n"
+	accountList := `[{"url": "my.1password.com", "email": "me@example.com", "user_uuid": "U1", "account_uuid": "A1"}]`
+	vaultList := fmt.Sprintf(`[{"id": %q, "name": "Dev", "content_version": 3, "updated_at": "2026-01-02T03:04:05Z", "items": 1}, {"id": "w%s", "name": "Shared"}]`, fixVault, strings.Repeat("c", 25))
+	itemList := fmt.Sprintf(`[{"id": %q, "title": "GitHub token", "category": "API_CREDENTIAL", "vault": {"id": %q, "name": "Dev"}, "tags": ["ci"], "additional_information": "me@example.com", "urls": [{"href": "https://me:synthetic-password-Zq81@example.com/login?x=1"}], "updated_at": "2026-02-03T04:05:06Z"}]`, fixItem, fixVault)
 	return &fakeCLI{fail: map[string]error{}, answers: map[string]string{
-		"--version":                                        "2.30.3\n",
-		"account list --format json":                       `[{"url": "my.1password.com", "email": "me@example.com", "user_uuid": "U1", "account_uuid": "A1"}]`,
-		"vault list --format json":                         fmt.Sprintf(`[{"id": %q, "name": "Dev", "content_version": 3, "updated_at": "2026-01-02T03:04:05Z", "items": 1}, {"id": "w%s", "name": "Shared"}]`, fixVault, strings.Repeat("c", 25)),
-		"item list --vault " + fixVault + " --format json": fmt.Sprintf(`[{"id": %q, "title": "GitHub token", "category": "API_CREDENTIAL", "vault": {"id": %q, "name": "Dev"}, "tags": ["ci"], "additional_information": "me@example.com", "urls": [{"href": "https://me:synthetic-password-Zq81@example.com/login?x=1"}], "updated_at": "2026-02-03T04:05:06Z"}]`, fixItem, fixVault),
+		"--version":                                        version,
+		"account list --format json":                       accountList,
+		"vault list --format json":                         vaultList,
+		"item list --vault " + fixVault + " --format json": itemList,
 		"item get " + fixItem + " --vault " + fixVault + " --format json":       cliItemJSON(),
 		"item list --vault w" + strings.Repeat("c", 25) + " --format json":      `[]`,
 		"read --no-newline -- op://Dev/GitHub token/credential":                 secretValues[1],
