@@ -466,9 +466,7 @@ func (c *Curator) cardDerive(line *entry.Entry) {
 	line.ReportedOnly = !slices.ContainsFunc(ms, func(m *entry.Entry) bool { return !m.ReportedOnly })
 	line.Domain = entry.Life
 	for _, m := range ms {
-		if m.Sensitive != "" && line.Sensitive == "" {
-			line.Sensitive = m.Sensitive
-		}
+		line.MergeCategories(m)
 		if m.Domain != entry.Life {
 			line.Domain = entry.Work
 		}
@@ -545,7 +543,7 @@ func (c *Curator) cardAdvice(key string, persons []string, text string, run *sto
 	}
 	var lines []string
 	for _, e := range cardLines(s, persons) {
-		if e.Sensitive == "" {
+		if !e.IsSensitive() {
 			lines = append(lines, e.ID)
 		}
 	}
@@ -809,12 +807,12 @@ func (c *Curator) peopleNotes(today string, run *store.Run) []string {
 		return fmt.Sprintf("承诺（%s）：%s%s：%s（到期 %s）", mark, name, head, clip(cm.What, 60), cm.Due)
 	}
 	for _, e := range due {
-		if e.Sensitive == "" {
+		if !e.IsSensitive() {
 			out = append(out, line(e, "快到期"))
 		}
 	}
 	for _, e := range overdue {
-		if e.Sensitive == "" {
+		if !e.IsSensitive() {
 			out = append(out, line(e, "可能逾期，没有完成的证据，不自动关"))
 		}
 	}
@@ -842,7 +840,7 @@ func (c *Curator) peopleNotes(today string, run *store.Run) []string {
 // comes from (the hub takes that on any build), and the whole card as this extension's person profile (facts, the
 // user's own words, inferences and commitments kept apart, every item with where it comes from; profiles.go),
 // blocked until the hub is released for it (ProfileMinHubBuild). K14 off writes nothing; K15 off leaves the
-// inferences out; a sensitive category only when the user turned it on (K13, on the card already).
+// inferences out; a line in a category only when the user let the category into the resident exits (K22, on the card already).
 //
 // A card of several person entries the user merged (kept in the plugin only) is one person to the user: every
 // person entry of the merge gets the merged card's profile, so whichever entry the assistant looks up has all of

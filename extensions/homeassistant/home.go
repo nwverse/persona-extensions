@@ -59,6 +59,7 @@ var powerDomains = []string{"light", "switch", "fan", "input_boolean", "humidifi
 type areaFacts struct {
 	ar          *Area
 	devices     int     // its devices: a device's main entities (deviceRows), not scenes, scripts and remotes
+	remotes     int     // its IR remotes (remotes), tiles on UI version 6 that never count as on (#922)
 	on          []State // those on
 	offline     int
 	temp, humid []float64 // its air (airOf)
@@ -68,6 +69,21 @@ type areaFacts struct {
 // lively: something on in it, something to look at, or its air to show.
 func (af *areaFacts) lively() bool {
 	return len(af.on) > 0 || len(af.alerts) > 0 || len(af.temp) > 0 || len(af.humid) > 0
+}
+
+// empty: nothing in it to show, no device, remote, alert or air (an area Home Assistant made on setup and nobody
+// used); 区域 leaves it out, as the room tabs do (#923).
+func (af *areaFacts) empty() bool { return af.devices == 0 && af.remotes == 0 && !af.lively() }
+
+// shownAreas are the areas 区域 lists: all but the empty ones, in Home Assistant's order.
+func shownAreas(f *homeFacts) []*areaFacts {
+	var out []*areaFacts
+	for _, af := range f.areas {
+		if !af.empty() {
+			out = append(out, af)
+		}
+	}
+	return out
 }
 
 // alert is something that needs a look: an alarm (danger) or a door, window or lock left open, a battery running low
@@ -135,6 +151,7 @@ func gatherHome(hm *home, reg *Registry) *homeFacts {
 		af := &areaFacts{ar: ar}
 		af.temp, af.humid = airOf(hm, reg, ar)
 		devices(ar, af)
+		af.remotes = len(remotes(hm, reg, ar))
 		f.areas = append(f.areas, af)
 		of[ar] = af
 	}
@@ -486,6 +503,9 @@ func statItems(r *ext.UIRequest, stats []wire.Stat) []wire.Component {
 // homePage is 家's overview.
 func (a *app) homePage(r *ext.UIRequest, hm *home, reg *Registry, st pageState, v *wire.View) {
 	f := gatherHome(hm, reg)
+	if sec, ok := a.homeSceneSection(r, hm, reg); ok {
+		v.Sections = append(v.Sections, sec)
+	}
 	if r.UIVersion >= 6 {
 		if row, ok := a.scenesRow(hm, reg, nil); ok {
 			v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{row}})
@@ -917,8 +937,8 @@ func slider(kind, eid string, v, lo, hi, step float64) *wire.RowControl {
 
 // splitAreas is the areas with something on, something to look at or their air (an alarm first, then the busiest),
 // and the quiet ones, each otherwise in Home Assistant's order (the user's own, which its area settings can change).
-func splitAreas(f *homeFacts) (lively, quiet []*areaFacts) {
-	for _, af := range f.areas {
+func splitAreas(areas []*areaFacts) (lively, quiet []*areaFacts) {
+	for _, af := range areas {
 		if af.lively() {
 			lively = append(lively, af)
 		} else {
@@ -945,15 +965,19 @@ func areasTitle(hm *home, n int) string {
 }
 
 // areaStatus is an area's line: what kinds are on (2 灯、1 开关开着; a type's, how many: 2 开着), else how many
-// devices it has.
-func areaStatus(hm *home, af *areaFacts) string {
+// devices it has. With tiles (UI version 6) its remotes are devices too, as its section draws them (#922).
+func areaStatus(hm *home, af *areaFacts, tiles bool) string {
+	n := af.devices
+	if tiles {
+		n += af.remotes
+	}
 	switch {
 	case len(af.on) > 0 && hm.ByType:
 		return fmt.Sprintf("%d 开着", len(af.on))
 	case len(af.on) > 0:
 		return kindCounts(af.on, "、") + "开着"
-	case af.devices > 0:
-		return fmt.Sprintf("%d 个设备", af.devices)
+	case n > 0:
+		return fmt.Sprintf("%d 个设备", n)
 	}
 	return ""
 }
@@ -980,7 +1004,7 @@ func areaBadge(af *areaFacts) *wire.Badge {
 // needs a look. A tap opens the area.
 func areaTile(hm *home, af *areaFacts) wire.Tile {
 	icon, color := areaLook(hm, af.ar)
-	return wire.Tile{Key: ref("area:", af.ar.ID), Title: clip(af.ar.Name, 40), Subtitle: clip(areaStatus(hm, af), 80),
+	return wire.Tile{Key: ref("area:", af.ar.ID), Title: clip(af.ar.Name, 40), Subtitle: clip(areaStatus(hm, af, true), 80),
 		Value: clip(airText(af.temp, af.humid), 40), Icon: icon, Color: color, Active: len(af.on) > 0, Badge: areaBadge(af),
 		Action: areaAction(af.ar.ID)}
 }
@@ -989,13 +1013,14 @@ func areaTile(hm *home, af *areaFacts) wire.Tile {
 // there are more than a carousel takes, one row that unfolds them (st.Rooms) into tiles. With none lively, all are
 // tiles: they are the way into the areas.
 func areaTiles(r *ext.UIRequest, hm *home, f *homeFacts, st pageState, v *wire.View) {
-	sec := wire.Section{Title: areasTitle(hm, len(f.areas))}
-	if len(f.areas) == 0 {
+	areas := shownAreas(f)
+	sec := wire.Section{Title: areasTitle(hm, len(areas))}
+	if len(areas) == 0 {
 		sec.Items = append(sec.Items, emptyItem(r, "还没有区域", "在 Home Assistant 里给设备分好区域，这里就按区域列出"))
 		v.Sections = append(v.Sections, sec)
 		return
 	}
-	lively, quiet := splitAreas(f)
+	lively, quiet := splitAreas(areas)
 	tiles := func(list []*areaFacts) []wire.Tile {
 		if len(list) > tilesMost {
 			list, sec.Footer = list[:tilesMost], fmt.Sprintf("只列前 %d 个，用上面的区域筛选或搜索找别的", tilesMost)
@@ -1042,13 +1067,14 @@ func quietRow(hm *home, quiet []*areaFacts) wire.Component {
 // areaList is 区域 before UI version 6: a row per lively area, the quiet ones one row that unfolds (st.Rooms) when
 // there are more than a few.
 func areaList(r *ext.UIRequest, hm *home, f *homeFacts, st pageState, v *wire.View) {
-	sec := wire.Section{Title: areasTitle(hm, len(f.areas))}
-	if len(f.areas) == 0 {
+	areas := shownAreas(f)
+	sec := wire.Section{Title: areasTitle(hm, len(areas))}
+	if len(areas) == 0 {
 		sec.Items = append(sec.Items, emptyItem(r, "还没有区域", "在 Home Assistant 里给设备分好区域，这里就按区域列出"))
 		v.Sections = append(v.Sections, sec)
 		return
 	}
-	lively, quiet := splitAreas(f)
+	lively, quiet := splitAreas(areas)
 	rows := 0
 	add := func(list []*areaFacts) {
 		for _, af := range list {
@@ -1075,7 +1101,7 @@ func areaList(r *ext.UIRequest, hm *home, f *homeFacts, st pageState, v *wire.Vi
 
 // areaRow is an area as a row: what is on, its air on the right, its badge what needs a look or how many are on.
 func areaRow(hm *home, af *areaFacts) wire.Component {
-	row := wire.Component{Type: "row", Key: ref("area:", af.ar.ID), Title: clip(af.ar.Name, 80), Subtitle: clip(areaStatus(hm, af), 120),
+	row := wire.Component{Type: "row", Key: ref("area:", af.ar.ID), Title: clip(af.ar.Name, 80), Subtitle: clip(areaStatus(hm, af, false), 120),
 		Value: airText(af.temp, af.humid), Badge: areaBadge(af), Action: areaAction(af.ar.ID)}
 	if row.Badge == nil && len(af.on) > 0 && !hm.ByType { // a type's line already says how many
 		row.Badge = &wire.Badge{Text: fmt.Sprintf("%d 开着", len(af.on)), Tone: "positive"}
@@ -1244,13 +1270,15 @@ func ref(prefix, s string) string {
 	return prefix + "#" + hex.EncodeToString(sum[:12])
 }
 
-// openAction opens eid: open:<entity> when that fits an action id, else open with the entity in the action's values
-// (UI version 4).
+// openAction opens eid: its page pushed on top (UI version 3), so the app's back button and swipe return to the page
+// below (#774). An older app calls open:<entity> instead (open with the entity in the action's values when that is
+// too long for an id, UI version 4), which draws the page in place with its own 返回.
 func openAction(eid string) *wire.Action {
+	push := &wire.Push{State: ext.EncodeState(pageState{Entity: eid})}
 	if id := "open:" + eid; len(id) <= idMost {
-		return &wire.Action{ID: id}
+		return &wire.Action{ID: id, Push: push}
 	}
-	return &wire.Action{ID: "open", Values: map[string]string{"entity": eid}}
+	return &wire.Action{ID: "open", Values: map[string]string{"entity": eid}, Push: push}
 }
 
 // areaAction opens an area: area:<id>, or area with the id in the action's values (an id may be as long as a name).

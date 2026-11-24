@@ -24,6 +24,7 @@ type CLI struct {
 	Effort   string          // --effort, if set
 	CacheDir string          // if set, answers are kept here by request, so an unchanged rerun calls nothing
 	Timeout  time.Duration   // one try; default 10 minutes
+	Limit    *Limiter        // each try waits for a turn (limit.go); nil: none (offline sets the shared one)
 }
 
 // cliResult is the part of the command's JSON output read.
@@ -96,6 +97,13 @@ func (c CLI) Complete(ctx context.Context, r Request) (Response, error) {
 }
 
 func (c CLI) run(ctx context.Context, mdl string, r Request) (Response, error) {
+	if c.Limit != nil {
+		release, err := c.Limit.Acquire(ctx)
+		if err != nil {
+			return Response{}, err
+		}
+		defer release()
+	}
 	cmd := c.Command
 	if cmd == "" {
 		cmd = "claude"

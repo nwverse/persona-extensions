@@ -15,7 +15,7 @@ import (
 // Jira's "self" names the REST resource (https://site/rest/api/3/issue/10001), not the issue's page, so the page's Open
 // link and the tools' issue link have to be built from the site and the key.
 func newLinkJira(t *testing.T) (*httptest.Server, *app) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		issue := `{"id":"10001","key":"ENG-123","self":"https://jira.example.com/rest/api/3/issue/10001","fields":{"summary":"Review","project":{"key":"ENG","name":"Engineering"},"status":{"name":"To Do"}}}`
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
@@ -28,13 +28,18 @@ func newLinkJira(t *testing.T) (*httptest.Server, *app) {
 		}
 	}))
 	t.Cleanup(srv.Close)
-	return srv, &app{client: newClient(srv.URL+"/rest/api/3", testToken), receipts: newWriteStore("")}
+	c := newClient(srv.URL+"/rest/api/3", testToken)
+	c.http = srv.Client()
+	return srv, &app{client: c, receipts: newWriteStore("")}
 }
 
 func TestOpenLinkIsTheIssuePage(t *testing.T) {
 	srv, a := newLinkJira(t)
 	v, err := a.page(t.Context(), &ext.UIRequest{UIParams: wire.UIParams{Locale: "en", UIVersion: 3}}, pageState{Mode: "detail", IssueKey: "ENG-123"})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := wire.CheckView(v); err != nil {
 		t.Fatal(err)
 	}
 	var got []string

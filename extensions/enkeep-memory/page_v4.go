@@ -51,6 +51,28 @@ func v4Tabs(t tr) []wire.Tab {
 		{Value: tabReports, Title: t.s("报告", "Reports")}, {Value: tabOlder, Title: t.s("旧版", "Older")}}
 }
 
+// barTabs are the tabs in the page's tab bar: five short ones, so the row fits an iPhone's width. The app draws a
+// row that does not fit as a sideways-scrolling bar, which iOS shifts down by the navigation bar's height and draws
+// under the first cards (0.2.0-beta.38: eight tabs, "六个方面" and "画像卡" among them, made exactly that). The
+// switches, the reports and the older pages are opened from the start page's last section instead.
+func barTabs(t tr) []wire.Tab {
+	return []wire.Tab{{Value: tabStart, Title: t.s("起步", "Home")}, {Value: tabFacets, Title: t.s("六面", "Facets")},
+		{Value: tabPeople, Title: t.s("人物", "Cards")}, {Value: tabCheck, Title: t.s("核对", "Check")},
+		{Value: tabReview, Title: t.s("待确认", "Review")}}
+}
+
+// moreSection is the start page's last section: the tabs the bar has no room for.
+func moreSection(t tr) wire.Section {
+	open := func(title, sub, tab string) wire.Component {
+		return row(title, sub, nil, ext.Open("open:tab:"+tab, "", page{Tab: tab}, title))
+	}
+	return wire.Section{Title: t.s("更多", "More"), Items: []wire.Component{
+		open(t.s("开关", "Switches"), t.s("每项整理和出口的开关", "what is curated and where it goes"), tabSwitches),
+		open(t.s("报告", "Reports"), t.s("每周报告", "the weekly reports"), tabReports),
+		open(t.s("旧版", "Older"), t.s("旧版页面", "the older pages"), tabOlder),
+	}}
+}
+
 // facetsShown are the facets of the facets tab; ⑤′ has a tab of its own.
 var facetsShown = []entry.Facet{entry.Interaction, entry.Tools, entry.Judgement, entry.Workflow, entry.World, entry.Persona}
 
@@ -303,20 +325,32 @@ func lastDays(now time.Time, n int) []string {
 
 // ---- the start card (4.2) -----------------------------------------------------------------------------------------
 
-// facetCounts: live entries "已有" (stable or pinned) and "正在攒" (candidate or shifting), by facet.
-func facetCounts(st *store.State) (have, collecting map[entry.Facet]int) {
-	have, collecting = map[entry.Facet]int{}, map[entry.Facet]int{}
+// facetCount is one facet's row on the start card: what is settled, what is being watched, and how many of those
+// were seen more than once.
+type facetCount struct{ Settled, Watching, SeenTwice int }
+
+// facetCounts counts each facet's live entries for the start card. A concrete action under a class is the class's
+// evidence, not an entry of its own here (the facet page lists it under its class), and dormant or shifting entries
+// are not on the start card: before 0.2.0-beta.38 both counted as "正在攒", so a facet showed 56 against 1411.
+func facetCounts(st *store.State) map[entry.Facet]facetCount {
+	out := map[entry.Facet]facetCount{}
 	for _, e := range st.Entries {
-		if !e.Live() {
+		if !e.Live() || e.Grain == entry.Action && e.Parent != "" {
 			continue
 		}
-		if stableish(e) {
-			have[e.Facet]++
-		} else {
-			collecting[e.Facet]++
+		c := out[e.Facet]
+		switch {
+		case stableish(e):
+			c.Settled++
+		case e.Status == entry.Candidate:
+			c.Watching++
+			if e.Count >= 2 {
+				c.SeenTwice++
+			}
 		}
+		out[e.Facet] = c
 	}
-	return
+	return out
 }
 
 // forkSeen is one fork type (③) or kind of task (④) seen so far: how often, and how often the choice agreed.
@@ -469,15 +503,19 @@ func (a *app) startPage(ctx context.Context, t tr, st *store.State) []wire.Secti
 		}
 	}
 	// The start card: each facet in one row.
-	have, collecting := facetCounts(st)
+	counts := facetCounts(st)
 	var rows []wire.Component
 	for _, f := range entry.Facets {
-		sub := t.f("已有 %d 条 · 正在攒 %d 条", "%d in use · %d collecting", have[f], collecting[f])
+		c := counts[f]
+		sub := t.f("已定 %d 条 · 观察中 %d 条", "%d settled · %d being watched", c.Settled, c.Watching)
 		if f == entry.People {
-			sub = t.f("名单 %d 人 · 卡上已有 %d 条 · 正在攒 %d 条", "%d people on the list · %d card lines in use · %d collecting", len(people.Ranked(st.Contacts)), have[f], collecting[f])
+			sub = t.f("名单 %d 人 · 卡上已定 %d 条 · 观察中 %d 条", "%d people on the list · %d card lines settled · %d being watched", len(people.Ranked(st.Contacts)), c.Settled, c.Watching)
+		}
+		if c.SeenTwice > 0 {
+			sub += t.f("，其中 %d 条见过不止一次", ", %d of them seen more than once", c.SeenTwice)
 		}
 		var notes []string
-		if (f == entry.Judgement || f == entry.Workflow) && have[f] == 0 {
+		if (f == entry.Judgement || f == entry.Workflow) && c.Settled == 0 {
 			var seen []string
 			for i, x := range forksSeen(st, f) {
 				if i >= 3 {
@@ -491,10 +529,6 @@ func (a *app) startPage(ctx context.Context, t tr, st *store.State) []wire.Secti
 				notes = append(notes, t.s("还没看到过同类的岔口：要同类的事重复出现才看得出", "no repeated fork seen yet: it takes the same kind of choice coming up again"))
 			}
 		}
-		if n, ok := closestToStable(st, f); ok {
-			notes = append(notes, t.f("离成条目最近的一条还差 %d 次（门槛按你自己的数据量自动调整）",
-				"the nearest one needs %d more (the bar adapts to how much data you have)", n))
-		}
 		if m := missingFor(t, st, f); m != "" {
 			notes = append(notes, m)
 		}
@@ -507,10 +541,12 @@ func (a *app) startPage(ctx context.Context, t tr, st *store.State) []wire.Secti
 			rows = append(rows, wire.Component{Type: wire.ComponentText, Text: n, Style: wire.TextStyleCaption})
 		}
 	}
-	out = append(out, wire.Section{Title: t.s("起步", "Getting started"),
-		Footer: t.s("哪一面还没攒够，这一面在助手那里就空着，不用泛泛的默认画像去填。", "A facet without enough yet stays empty for the assistant; it is never filled with generic defaults."), Items: rows})
+	out = append(out, wire.Section{Title: t.s("各方面进度", "Facets at a glance"),
+		Footer: t.s("助手只用「已定」的条目（敏感类除外）。「观察中」的是只看到过一两次的做法、判断和事实，大多只见过一次：在别的日子再看到、又没有反例，就会自己定下来，你不用做什么；一直停在观察中也正常。哪一面还没定下什么，这一面在助手那里就空着，不用泛泛的默认画像去填。",
+			"The assistant only uses settled entries (sensitive ones aside). Entries being watched were seen once or twice, most of them once: seen again on another day with nothing against them, they settle by themselves; there is nothing for you to do, and many stay watched. A facet with nothing settled stays empty for the assistant; it is never filled with generic defaults."), Items: rows})
 	out = append(out, a.sourcesSection(ctx, t, st)...)
 	out = append(out, a.exitsSection(ctx, t, st))
+	out = append(out, moreSection(t))
 	return out
 }
 
@@ -861,33 +897,4 @@ func matchProject(projects map[string]string, what string) string {
 		}
 	}
 	return best
-}
-
-// closestToStable is how many more consistent sightings the candidate of a facet nearest to stable needs (design
-// 4.2 "还差几次"): its bar is curate.StableK of its chances, and it must rest on at least two active days.
-func closestToStable(st *store.State, f entry.Facet) (int, bool) {
-	best, found := 0, false
-	for _, e := range st.Entries {
-		if e.Facet != f || !e.Live() || e.Status != entry.Candidate || e.Origin != entry.Behavior {
-			continue
-		}
-		if f != entry.World && f != entry.Tools && e.Grain == entry.Action && e.Parent != "" {
-			continue // counted with its class
-		}
-		chances := e.Chances
-		if chances < e.Count+len(e.Counters) {
-			chances = e.Count + len(e.Counters)
-		}
-		need := curate.StableK(chances) - e.Count
-		if days := 2 - len(e.ActiveDays); days > need {
-			need = days
-		}
-		if need < 1 {
-			need = 1 // it waits for the next pass to settle it
-		}
-		if !found || need < best {
-			best, found = need, true
-		}
-	}
-	return best, found
 }

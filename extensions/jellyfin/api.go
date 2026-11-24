@@ -93,6 +93,9 @@ func (c *client) currentUser(ctx context.Context) (user, error) {
 	return out, nil
 }
 
+// maxQueryChars is the longest search query: the client, the page clip, the tool schema and the page state check use it.
+const maxQueryChars = 200
+
 func (c *client) items(ctx context.Context, userID, view, query string, start int) (itemPage, error) {
 	if !validMediaID(userID) || start < 0 || start > 1000000 {
 		return itemPage{}, errors.New("invalid user or start index")
@@ -108,7 +111,7 @@ func (c *client) items(ctx context.Context, userID, view, query string, start in
 		q.Set("sortOrder", "Ascending")
 	case "search":
 		query = strings.TrimSpace(query)
-		if query == "" || len([]rune(query)) > 200 {
+		if query == "" || len([]rune(query)) > maxQueryChars {
 			return itemPage{}, errors.New("search requires at most 200 characters")
 		}
 		q.Set("searchTerm", query)

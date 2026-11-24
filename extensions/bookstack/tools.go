@@ -16,7 +16,7 @@ type tool struct {
 }
 
 var idSchema = map[string]any{"type": "integer", "minimum": 1}
-var textSchema = map[string]any{"type": "string", "maxLength": 200}
+var textSchema = map[string]any{"type": "string", "maxLength": maxQueryChars}
 
 var readTools = []tool{
 	{Name: "bookstack_books", Description: "List visible BookStack books with count/offset pagination. Returns exact book IDs for page listing and creation.",
@@ -32,11 +32,11 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "bookstack_create_page", Description: "Create a Markdown page in a specific BookStack book after explicit confirmation. Book must be selected by exact ID; no chapter, images or permissions are changed.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"book_id", "name", "markdown"}, "properties": map[string]any{
-			"book_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": 255}, "markdown": map[string]any{"type": "string", "minLength": 1, "maxLength": 60000},
+			"book_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxTitleChars}, "markdown": map[string]any{"type": "string", "minLength": 1, "maxLength": 60000},
 		}}},
 	{Name: "bookstack_update_page", Description: "Replace a page's Markdown source after explicit confirmation. Only Markdown and optionally title are sent; page is not moved, deleted or converted from HTML.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"page_id", "markdown"}, "properties": map[string]any{
-			"page_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": 255}, "markdown": map[string]any{"type": "string", "minLength": 1, "maxLength": 60000},
+			"page_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxTitleChars}, "markdown": map[string]any{"type": "string", "minLength": 1, "maxLength": 60000},
 		}}},
 }
 

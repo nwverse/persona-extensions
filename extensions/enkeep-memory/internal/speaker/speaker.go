@@ -103,6 +103,7 @@ const (
 	WhyUnsupported = "unsupported" // a source whose senders cannot be told yet (WeChat groups)
 	WhyNotPerson   = "not_person"  // the assistant, an agent's draft, a bot or an alert
 	WhyQuoted      = "quoted"      // a mail that is only a forwarded or quoted older mail
+	WhyRelayed     = "relayed"     // the user's words relayed verbatim in a task prompt, verified (relay.RelayedMark)
 )
 
 // Result is a unit's resolution.
@@ -144,6 +145,10 @@ func wechat(source string) bool {
 	return strings.Contains(s, "wechat") || s == "wx" || s == "weixin"
 }
 
+// notUserLabels are the labels the sources give user-role text that is not the user's (internal/sources): what
+// Persona sent (a task prompt, a relay), a test prompt, pasted material, another session's message.
+var notUserLabels = []string{"Persona", "测试提示", "粘贴材料", "其他会话", "转达待核"}
+
 // userLabels are the speaker labels the user's own side carries in the assistant's and agents' conversations.
 var userLabels = []string{norm.Me, "user", "User", "用户"}
 
@@ -168,6 +173,8 @@ func Resolve(u Unit, o Owner) Result {
 			set(l.N, entry.WhoSelf, WhySelf)
 		case conversational(u) && slices.Contains(userLabels, sp):
 			set(l.N, entry.WhoSelf, WhySelf)
+		case conversational(u) && slices.Contains(notUserLabels, sp):
+			set(l.N, "", WhyNotPerson)
 		case sp == voice.Ghost || sp == voice.AI || voice.Automated(sp) || (u.Kind == "bot" && sp != norm.Me):
 			set(l.N, "", WhyNotPerson)
 		case sp == "" || sp == "?":
@@ -286,6 +293,47 @@ func Quoted(body, quote string) bool {
 	}
 	ok, _ := norm.Match(quote, body)
 	return ok
+}
+
+// Group chats (design v2 §4.2, 0.2.0-beta.38): a message that replies to or quotes another carries the other's words
+// in a quote block: "> …" lines, the part after a "- - - -" separator (a WeChat reference), a "回复 X：…" / "引用 X：…"
+// / "Reply to X: …" lead, a forwarded chat record. Only the rest is the sender's own.
+var (
+	groupQuoteLine = regexp.MustCompile(`(?m)^\s*>.*$`)
+	groupSeparator = regexp.MustCompile(`(?m)^\s*-( -){3,}\s*$`)
+	groupReplyLead = regexp.MustCompile(`(?m)^\s*(回复|引用|reply to|quote)\s*@?[^\n:：]{1,40}[:：].*$`)
+	groupRecord    = regexp.MustCompile(`(?s)\[(聊天记录|chat history)\].*$`)
+)
+
+// GroupOwnText is the part of a group message the sender wrote: without quote lines, reply leads, a referenced
+// message after a separator, or a forwarded chat record.
+func GroupOwnText(body string) string {
+	if loc := groupSeparator.FindStringIndex(body); loc != nil {
+		body = body[:loc[0]]
+	}
+	body = groupRecord.ReplaceAllString(body, "")
+	body = groupReplyLead.ReplaceAllString(body, "")
+	return strings.TrimSpace(groupQuoteLine.ReplaceAllString(body, ""))
+}
+
+// QuotedIn says whether quote lies in a part of body the sender did not write: a quoted or forwarded older mail
+// (Quoted) for mail, a quote block or a referenced message (GroupOwnText) for a group chat. Other kinds have none.
+func QuotedIn(kind, body, quote string) bool {
+	switch kind {
+	case "mail":
+		return Quoted(body, quote)
+	case "group":
+		own := GroupOwnText(body)
+		if own == strings.TrimSpace(body) {
+			return false
+		}
+		if ok, _ := norm.Match(quote, own); ok {
+			return false
+		}
+		ok, _ := norm.Match(quote, body)
+		return ok
+	}
+	return false
 }
 
 // pureForward: the message is nothing but a forwarded or quoted older mail.

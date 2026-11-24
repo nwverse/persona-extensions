@@ -1,5 +1,205 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.44 (pre-release)
+
+The tools follow the hub's rules for a memory extension (Persona #13532, #13586: `extmgr/memory_sources.go`
+`memoryWithheld`, `extension_assistant.go` `assistantMCPServers`). With beta.42 every `enkeep_*` tool was a read tool
+of the connector, so declaring `memory_sources` withheld all of them from the assistant's conversations; this
+version reads only through `memory.entries`, and the writes are writes.
+
+- **No recall tool.** `enkeep_recall` is removed: the hub reads the entries with `memory.entries`, puts what each
+  scene may use in its context, and `decisions_query` recalls more (`memory: [{id, text}]`, ids as
+  `memory-extension:<id>`). The per-turn block's look-up line and the package skill now point to `decisions_query`.
+- **Writes are actions** (capability `actions`; `actions.list`, `actions.describe`, `actions.do`): `enkeep_rerun`,
+  `enkeep_resettle` (applies; no `dry_run`), `enkeep_seed_import` (imports; no `apply`) and `enkeep_mark_wrong`
+  (takes `memory-extension:<id>` too). The hub runs them only through its gate: a card on the phone, described from
+  the checked arguments and the pages' snapshot (never the store's lock), unless a `connector_gate` rule allows the
+  write. A repeated `request_id` answers the first result.
+- **Reads are read tools, for coding Agents** (`agent_tools`): `enkeep_rerun_status`, `enkeep_seed_status`, and two
+  new previews split off the writes, `enkeep_resettle_preview` (what `dry_run` reported) and `enkeep_seed_preview`
+  (what `apply: false` reported). The writes are in `agent_tools` too, as every tool was before. The hub does not offer
+  the reads in the assistant's conversations, by design. The connector id and the contribution keys are unchanged.
+- **`memory.entries` is tagged.** An untagged page puts none of its entries in any scene (the hub takes each for
+  sensitive everywhere), and beta.42's pages were untagged while any entry read before the 0.2.0-beta.40 tagging rules
+  was in the pool. Such an entry is now tagged on reading by the same rules on what it carries: its old model label,
+  the money words of its text and quotes when it has no label, the identity-paper and legal words, a class's members'
+  categories and space, the space's default categories. Its space is the main one unless it or a member says otherwise
+  (no unit carried its space before beta.40). The state is not changed. `enkeep_rerun_status` says how many were
+  tagged so.
+
+## 0.2.0-beta.43 (pre-release)
+
+Only a tool schema fix; nothing else changes.
+
+- **`enkeep_seed_import` no longer lists an empty string for `expiring`.** Its enum was `["", "recent", "role"]`;
+  Gemini rejects an empty enum value (`enum[0]: cannot be empty`) and then refuses every request of a session that
+  has the tool, so a Gemini agent with Persona's MCP tools could not call its model at all. The enum is now
+  `["recent", "role"]`: leave `expiring` out for no expiry. A caller that still sends `""` imports as before.
+  A test checks that no tool here declares an empty string or nothing in an enum.
+
+## 0.2.0-beta.42 (pre-release)
+
+Only the memory source; nothing else changes. This version does not read the unified entries ledger, does not add
+to people and things, and carries none of the version planned as beta.42 before (declined by the user on 2026-11-22).
+
+- **The memory source (`memory_sources`, `memory.entries`; Persona #13532, protocol of PR #13547).** The hub can read
+  the curated entries one by one, read-only, and grade them by space and scene itself. A page is ordered standing
+  first, then by rank, then newest; it ends early with `has_more` and `after` to stay under 1 MB, and is answered from
+  the last published snapshot (the call has 5 seconds; a run holds the state's lock for its whole pass).
+  - Every entry the text outlets could carry is answered, not filtered by scene: live, not an evaluation or inference
+    about a person, not life content when the user chose work only. `status` is `active` for what the exits use today
+    (stable, shifting, pinned, written by the user), else `candidate`, `dormant` or `retired`. `standing` is what goes
+    into the resident block (the exits' own gate, K22 included). `rank` is the exits' order (sightings × source kinds,
+    pinned 1000). `subjects` are the card's person, the object and the scopes' names.
+  - `tagged` is true only when every entry in the pool had its categories and space decided by the 0.2.0-beta.40
+    rules (a new mark, `tagged`, set when an entry is read or imported, and when one is read again; a class when all
+    its members are). Entries from before carry no such decision, so the page says false, leaves out `origin_space`
+    and `categories` everywhere, and nothing is made up. `enkeep_rerun_status` says how many are not tagged.
+  - The types are local (`internal/memsrc`) until the SDK copy carries `wire.MemoryEntriesParams`,
+    `MemoryEntriesResult` and `MemoryEntry`.
+  - The four text outlets (the instructions, the project files, the Inbox context, `enkeep_recall`) are unchanged.
+  - `enkeep_rerun_status` reads the source as the hub would and says what came back and how long it took.
+
+## 0.2.0-beta.41 (pre-release)
+
+- **Consolidation judges the facets at once.** The daily pass's filing step asked the model one batch at a time
+  (about 47 s each), the slowest serial stretch of a rerun day. With the daily pass's workers (4) the facets now have
+  their calls out together; each facet's batches stay in order, and building a batch and applying its answer still
+  take turns, so what is filed is the same. The process limiter still caps every model call at 4 at once and 20 a
+  minute, with the scheduled daily and weekly passes ahead of the reruns.
+- **A forced rerun checks the stored answers again.** `enkeep_rerun` with force reused the answers of units read
+  before and skipped them, so a day queued after a switch changed showed nothing new. A forced day now runs the checks
+  over the stored answers again, without a model call: the answer's old rejections go and what passes now is kept
+  (a sighting kept before is found again, not counted twice).
+- The daily run logs where its time went (read and triage, digest, consolidate, signals and exits), to find the time
+  that is not a model call.
+
+## 0.2.0-beta.40 (pre-release)
+
+- **The ledger as the hub defines it.** The user's entries are read with the RPC `assistant.entries.list` (grant
+  `assistant.entries.read`, persona #13106): pages by `after`, the time is `at`, the status says superseded, expired or
+  wrong, probes carry the tag `probe`. The legacy route with `cursor` and `created_at` is gone. No personal entry
+  visible (the hub shows them only to an extension proven to run on the assistant's computer) is a normal empty read;
+  `enkeep_rerun_status` says what the last read found. An owner's "wrong" mark (`assistant.entries.changed`) makes the
+  next read leave the entry out. The grant and the event are declared once the SDK's manifest schema (synced from
+  persona #13106) lists them; until then the read answers "not granted", which is the same empty read.
+- **Every space is collected; categories decide use by scene** (unified memory design v2 §3.2, §3.3b, §8). The
+  health space's sessions, cards and to-dos are read like any other; nothing is dropped for being sensitive any more
+  (K13 decided what was collected; it now decides nothing and is off the page). Entries carry their source space
+  (`origin_space`) and categories (`categories`: health, finance, relationships, emotion, legal_id, each with who
+  tagged it: the model's label, money words, identity and legal words, the space's default, or the user). The
+  daily prompt is unchanged (daily/16).
+  - Resident exits (the per-turn rules, the agents' rules, the profile and project files, the person pages) take an
+    entry in a category only once the user turns on the new per-category switch K22.<category> (all off), or when
+    the user wrote it about themself; a space's content goes there only as a way of working with the AI or as what
+    the user is like. A class carries its members' categories.
+  - `enkeep_recall` gives an entry in a category only when `categories` names every one of its categories, and
+    shows them on the line; evaluations of and inferences about people never.
+  - The weekly report and the commitments list leave entries in a category out.
+  - The entry page shows the categories and the space, and the user can add or take off a category (only the user
+    can take one off; one taken off is not added back by curation).
+  - Seeds (E9): an item in a category is imported tagged, no longer left out; credentials and unconfirmed items
+    still are.
+  - Credentials are never kept, as before. The privacy words setting is renamed 不读名单: messages with them are
+    still not read.
+
+## 0.2.0-beta.39 (pre-release)
+
+- **The tab bar fits a phone.** Eight tabs did not fit an iPhone's width; the app then draws them as a
+  sideways-scrolling bar, which iOS shifts down by the navigation bar's height and draws under the first cards (half
+  the labels hidden, "起步" twice). The bar now has five short tabs (起步 · 六面 · 人物 · 核对 · 待确认); the
+  switches, the reports and the older pages are opened from a "更多" section at the end of the start page. The
+  section under the bar is titled "各方面进度", no longer "起步" as the first tab is.
+- **The start card says what its numbers mean.** Each facet's row counted every live entry not stable as "正在攒",
+  dormant ones and the concrete actions under a class included, so ③ read 56 against 1411. It now shows the
+  settled entries and those being watched (candidates, a class's actions not counted), and how many of those were
+  seen more than once; the footer says once what "观察中" is and that the user has nothing to do. The line "离成条目最近
+  的一条还差 1 次", on every row, is gone: it was right (almost every candidate was seen once, and two sightings on
+  two days settle it) but said nothing.
+
+## 0.2.0-beta.38 (pre-release)
+
+- **Only days really read count.** A day the model never read (no model, or every unit screened out before any
+  call) is no longer an active day, and statuses are settled again after every rerun step, not only when the
+  queue empties: a long backfill cannot put entries to sleep on days still waiting.
+- **Who said it, in three values.** Every line is the user's, the user's words relayed verbatim (verified), or
+  someone else's (an agent, Persona, a probe, pasted material); what cannot be verified is never guessed. A task
+  prompt or a relay Persona typed into a session stays Persona's, but the user's words it says it carries (a "用户原话"
+  block, "用户说「…」") are now each a line of their own, kept as the user's when the day's own lines of the user (or,
+  once the hub has it, its ledger of the user's entries) bear them out; before, K20 dropped them with the relay. The
+  correction ledger reads the same way: a session Persona started, a relay or a probe no longer counts as the user's
+  correction, and pasted material is taken out. In groups, words in a quote block or a referenced message are not the
+  sender's (as in mail).
+- **Extraction prompt daily/16.** Each of the six facets gets one line of what counts and a counter-example, at equal
+  length. A unit over 12k tokens is read in parts that keep 1k tokens before and after each cut (the same observation
+  seen in two parts is one). A short reply of the user's to the AI ("？？？", "又来了", "不是这个") goes to the
+  correction judge whatever its words. Days already read are read with daily/16 only when rerun.
+- **Marked wrong is a counter-example.** New evidence the consolidation matches with an entry marked wrong no longer
+  adds up on it (and so cannot bring it back): it starts an entry of its own marked "once wrong", which earns its
+  status from its own evidence.
+- **One limit on model calls.** Every call of the process (daily, weekly, reruns, synthesis, exits, trials) waits for
+  a turn: at most 4 at once and 20 a minute; the reruns wait behind the scheduled passes, and the weekly pass, once
+  due, runs before them. The daily pass makes 4 calls at once; offline trials keep to at most 4 workers.
+- **The cost line.** Calls and tokens are counted per day and per model, the reruns apart: each day's daily run notes
+  the day's line and the totals, and `enkeep_rerun_status` shows today's and yesterday's lines, the totals, the call
+  limit's state, and the reruns' progress (days done, days left, new usable entries resting on the days read). After
+  every rerun step, every entry's status is settled again (what `enkeep_resettle` applies).
+- **Seeds.** `enkeep_seed_import` imports the user's own profile and rules confirmed elsewhere, in a general format;
+  it previews by default and writes with `apply`. Items in the four sensitive categories (by category, keywords and a
+  model's reading), with a credential or not confirmed at the source are never imported; an item the curator already
+  has marks that entry as confirmed; the rest become candidate entries of origin seed, which reach the exits only
+  once the user's own records bear them out on an active day. A hard rule is not turned by counter-examples alone; a
+  dating item (what the user does now, a role) goes dormant after 30 or 90 active days with nothing new.
+  `enkeep_seed_status` says where the seeds stand. Seeds as a source are switch K21, on by default; a user with no
+  seeds has nothing to do.
+- **The hub's ledger, when it comes.** The extension reads `GET /api/v1/ledger?by=user` for the user's entries
+  (quote, relayed_via, supersedes, expires_at, tag; probes and automation left out) to verify relayed words; a hub
+  without it is skipped without a word.
+- **The overview card counts entries.** The home card counted the old items (facts, practices and knowledge with
+  status active or established), which the current curation no longer fills, so "做事方式" and "知识" read 0. It now
+  shows the entries per facet that may go out to the assistant (live, stable, not sensitive: the exits' own gate) for
+  the six facets of the plugin page, under the page's names (① 和 AI 的交互 … ⑥ 关于你), then 待确认 and the last
+  daily pass in a second row (a stat grid holds six at most). People cards are not counted (they have their own tab).
+- **The tools answer while a pass runs.** A daily pass holds the state's lock for its whole run, tens of minutes with
+  a real model, and `enkeep_rerun_status`, `enkeep_recall` and `enkeep_mark_wrong` waited for it until the hub gave
+  up. The status and `enkeep_recall` now read the pages' snapshot (the status says the snapshot's time and the pass in
+  progress with its stage); `enkeep_recall`'s counts moved from the state to `recall.json` beside it (an upgrade moves
+  them); `enkeep_mark_wrong` waits a few seconds, then queues its marks in `marks-queue.json` and applies them as soon
+  as the pass lets go (or at the next start); `enkeep_rerun` and `enkeep_resettle` wait a few seconds, then say which
+  pass is running.
+- **A withdrawal is no longer held back by an addition.** Exit A is written at most once a day unless the change
+  only takes entries out; a compile that withdrew an entry and also added one waited for the next day, so an entry
+  marked wrong stayed in the assistant's block. Now the file is written at once whenever the one out there carries an
+  entry that may no longer go out.
+
+## 0.2.0-beta.37 (pre-release)
+
+- **The long-term layer, said plainly.** The extension curates what holds over days; near-real-time working memory
+  (what was decided an hour ago, which task runs) is the hub's to bring back after compaction. A ledger of the
+  user's decisions, once the hub has one, will be read as a source the next day (interface in
+  [docs/exits.md](docs/exits.md)); nothing is implemented for it yet.
+- **No more ways-of-working skills.** The `enkeep-ways-of-working-<slug>` skills were loaded no time at all and agents
+  never see them. ④ entries that hold across projects go into the per-turn block, those of a project into its
+  project block, the rest stay in `enkeep_recall`; an upgrade removes the old directories. `enkeep-machines-and-tools`
+  stays, a look-up handbook. The per-turn block is still at most 6 KB; its sections share it by proportion (① 22%,
+  ② 8%, ③ 22%, ④ 18%, ⑤ 12%, ⑥ 18%), what one leaves going to the next. An action-grain judgement with its fork,
+  choice and what was not chosen or why may go in. What holds only in a known project leaves the per-turn block.
+  ⑤ adds a names index (K18) and a fixed line pointing at `enkeep_recall`.
+- **`enkeep_recall`** (connector `enkeep`): look up curated entries about a person, a project, a system or a kind of
+  task; candidates and dormant entries ranked lower; never a card's evaluation or inference. Only per-day counts are
+  kept, shown by `enkeep_rerun_status`.
+- **`enkeep_mark_wrong`**: the assistant or an agent marks entries wrong (by id, with a reason) without a card on the
+  user's phone; recorded as the assistant's, undone by marking right on the page.
+- **Who said it.** In a session Persona started every user-role line is Persona's (K20; before, only the first);
+  texts with the hub's context block, the task-handoff boilerplate, a cross-session message or a marked relay are
+  Persona's anywhere; short test prompts ("reply only OK, call no tool") are test prompts; pasted blocks are
+  material. None of them teach anything about the user.
+- **Agent project context reaches the agents.** Project files were named by an ASCII slug with a hash for any
+  non-ASCII name, which no knowledge-base slug matched, so projects with Chinese names never got their block. Files
+  are now named by the knowledge-base project's id (the slug the hub looks up), entries matched to projects by name,
+  alias or id; a name the knowledge base does not have gets no file. ① entries of a project go to its block too, after
+  a short general part (K19).
+
 ## 0.2.0-beta.34 (pre-release)
 
 - **Sessions seen before are read on reruns.** A runtime lists only its recent sessions (enkeep: active in the last 7

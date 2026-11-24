@@ -25,8 +25,10 @@ class RealTest(unittest.TestCase):
         import larkx
         from larkx import media
         from larkx.proto import decoders
+        from larkx.proto import lark_all_pb2 as lark
         from larkx.proto import proto_pb2 as P
         cls.larkx, cls.media, cls.decoders, cls.P = larkx, media, decoders, P
+        cls.anchor = lark.entities.RichTextElement.AnchorProperty
 
     @classmethod
     def tearDownClass(cls):
@@ -94,6 +96,30 @@ class RealTest(unittest.TestCase):
         m = self.normalized(self.frame([self.message("9004", 5, content.SerializeToString())]))[0]
         self.assertEqual(m["type"], "IMAGE")
         self.assertEqual(m["media"], [{"kind": "image", "key": "img_key"}])
+
+    def test_a_pasted_doc_link_keeps_its_title_and_address(self):
+        # LarkAgentX's own text drops an A element whole; normalize rebuilds the text from the decoded rich text.
+        P, url = self.P, "https://example.feishu.cn/docx/AbC123"
+        words = P.TextProperty()
+        words.content = "请看一下 "
+        anchor = self.anchor()  # LarkAgentX's own schema for the A element
+        anchor.href, anchor.content = url, "示例文档"
+        anchor = anchor.SerializeToString()
+        tc = P.TextContent()
+        tc.text = "请看一下 "
+        for key, tag, prop in (("1", 1, words.SerializeToString()), ("2", 6, anchor)):
+            tc.richText.elementIds.append(key)
+            element = tc.richText.elements.dictionary[key]
+            element.tag, element.property = tag, prop
+        m = self.normalized(self.frame([self.message("9005", 4, tc.SerializeToString())]))[0]
+        self.assertEqual(m["text"], "请看一下 示例文档 " + url)
+
+    def test_the_link_fields_real_py_reads_are_larkagentxs(self):
+        # real.py reads an A element's href, content and textContent by number. LarkAgentX's proto.proto has no
+        # AnchorProperty; its lark_all_pb2 has entities.RichTextElement.AnchorProperty. A pin bump that moves them
+        # fails here.
+        fields = {f.name: f.number for f in self.anchor.DESCRIPTOR.fields}
+        self.assertEqual((fields["href"], fields["content"], fields["textContent"]), (1, 2, 3))
 
     def test_a_rich_text_self_mention_keeps_the_real_account_and_span(self):
         rich = self.P.RichText()

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strings"
 
@@ -169,6 +170,12 @@ func (a *app) collectIssues(ctx context.Context, st pageState) ([]issue, string,
 	return out, next, nil
 }
 
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
 func detailView(r *ext.UIRequest, st pageState, item issue) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{
@@ -178,7 +185,7 @@ func detailView(r *ext.UIRequest, st pageState, item issue) *wire.View {
 	if item.Fields.Assignee != nil {
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: t.assignee + ": " + item.Fields.Assignee.DisplayName})
 	}
-	if item.URL != "" {
+	if httpsLink(item.URL) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.URL})
 	}
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})

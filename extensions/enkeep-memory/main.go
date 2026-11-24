@@ -92,6 +92,14 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && (os.Args[1] == "exits" || os.Args[1] == "recall") {
+		cmd := map[string]func([]string) error{"exits": exitsCmd, "recall": recallCmd}[os.Args[1]]
+		if err := cmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "enkeep-memory "+os.Args[1]+":", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "smoke" {
 		if err := smokeCmd(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "enkeep-memory smoke:", err)
@@ -122,7 +130,7 @@ func program(a *app) ext.Program {
 	return ext.Program{
 		ID: m.ID, Version: m.Version, Manifest: manifest,
 		Init:       a.init,
-		Namespaces: map[string]ext.Handler{"event": a.event, "connector": a.connector},
+		Namespaces: map[string]ext.Handler{"event": a.event, "connector": a.connector, "memory": a.memory},
 		UI: map[string]ext.Page{
 			"enkeep-memory":        {Render: a.home, Action: a.homeAction},
 			"enkeep-memory-today":  {Render: a.today},

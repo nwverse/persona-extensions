@@ -31,7 +31,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Page < 0 || len(st.TeamID) > 100 || len(st.TeamName) > 1000 || len(st.SpaceID) > 100 || len(st.SpaceName) > 1000 || len(st.ListID) > 100 || len(st.ListName) > 1000 || len(st.TaskID) > 100 || len(st.DraftID) > 128 || len(st.Name) > 600 || len(st.Description) > 31000 || len(st.Status) > 120 {
+	if err := r.DecodeState(&st); err != nil || st.Page < 0 || len(st.TeamID) > 100 || len([]rune(st.TeamName)) > maxNameChars || len(st.SpaceID) > 100 || len([]rune(st.SpaceName)) > maxNameChars || len(st.ListID) > 100 || len([]rune(st.ListName)) > maxNameChars || len(st.TaskID) > 100 || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len([]rune(st.Description)) > maxDescriptionChars || len([]rune(st.Status)) > maxStatusChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -52,19 +52,25 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "team":
-		if err := validID(r.Values["id"]); err != nil || r.Values["name"] == "" {
+		if err := validID(r.Values["id"]); err != nil || strings.TrimSpace(r.Values["name"]) == "" {
 			return nil, errors.New("invalid workspace")
 		}
-		st = pageState{Mode: "tasks", TeamID: r.Values["id"], TeamName: r.Values["name"]}
+		st = pageState{Mode: "tasks", TeamID: r.Values["id"], TeamName: clipText(r.Values["name"], maxNameChars)}
 	case "teams":
 		st = pageState{}
 	case "spaces":
 		st = pageState{Mode: "spaces", TeamID: st.TeamID, TeamName: st.TeamName}
 	case "lists":
-		st = pageState{Mode: "lists", TeamID: st.TeamID, TeamName: st.TeamName, SpaceID: r.Values["id"], SpaceName: r.Values["name"]}
+		if err := validID(r.Values["id"]); err != nil || strings.TrimSpace(r.Values["name"]) == "" {
+			return nil, errors.New("invalid space")
+		}
+		st = pageState{Mode: "lists", TeamID: st.TeamID, TeamName: st.TeamName, SpaceID: r.Values["id"], SpaceName: clipText(r.Values["name"], maxNameChars)}
 	case "create":
 		if st.Mode != "review-create" {
-			st = pageState{Mode: "create", TeamID: st.TeamID, TeamName: st.TeamName, SpaceID: st.SpaceID, SpaceName: st.SpaceName, ListID: r.Values["id"], ListName: r.Values["name"], DraftID: randomID()}
+			if err := validID(r.Values["id"]); err != nil || strings.TrimSpace(r.Values["name"]) == "" {
+				return nil, errors.New("invalid list")
+			}
+			st = pageState{Mode: "create", TeamID: st.TeamID, TeamName: st.TeamName, SpaceID: st.SpaceID, SpaceName: st.SpaceName, ListID: r.Values["id"], ListName: clipText(r.Values["name"], maxNameChars), DraftID: randomID()}
 		} else {
 			st.Mode = "create"
 		}
@@ -81,7 +87,12 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			st.DraftID = randomID()
 		}
 	case "back":
-		st.Mode, st.TaskID, st.DraftID = "tasks", "", ""
+		if st.TeamID != "" {
+			st.Mode = "tasks"
+		} else {
+			st.Mode = ""
+		}
+		st.TaskID, st.DraftID = "", ""
 		st.Name, st.Description, st.Status = "", "", ""
 	case "review-create":
 		in := createArgs{ListID: st.ListID, Name: r.Values["name"], Description: r.Values["description"]}
@@ -89,6 +100,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil, err
 		}
 		st.Name, st.Description, st.Mode = in.Name, in.Description, "review-create"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("task draft exceeds page state limit")
+		}
 	case "review-edit":
 		in := statusArgs{TaskID: st.TaskID, Status: r.Values["status"]}
 		if err := in.validate(); err != nil {
@@ -169,7 +183,10 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			if item.ID == "" || item.Name == "" {
 				continue
 			}
-			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "space-" + item.ID, Title: clipText(item.Name, 1800), Subtitle: item.ID, Action: &wire.Action{ID: "lists", Values: map[string]string{"id": item.ID, "name": item.Name}}})
+			if len(section.Items) >= maxViewTasks {
+				break
+			}
+			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "space-" + item.ID, Title: clipText(item.Name, 1800), Subtitle: item.ID, Action: &wire.Action{ID: "lists", Values: map[string]string{"id": item.ID, "name": clipText(item.Name, maxNameChars)}}})
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.spaces})
@@ -187,7 +204,10 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			if item.ID == "" || item.Name == "" || item.Archived {
 				continue
 			}
-			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "list-" + item.ID, Title: clipText(item.Name, 1800), Subtitle: item.ID, Action: &wire.Action{ID: "create", Values: map[string]string{"id": item.ID, "name": item.Name}}})
+			if len(section.Items) >= maxViewTasks {
+				break
+			}
+			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "list-" + item.ID, Title: clipText(item.Name, 1800), Subtitle: item.ID, Action: &wire.Action{ID: "create", Values: map[string]string{"id": item.ID, "name": clipText(item.Name, maxNameChars)}}})
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.lists})
@@ -237,7 +257,10 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if item.ID == "" || item.Name == "" {
 			continue
 		}
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "team-" + item.ID, Title: clipText(item.Name, 1800), Subtitle: item.ID, Action: &wire.Action{ID: "team", Values: map[string]string{"id": item.ID, "name": item.Name}}})
+		if len(section.Items) >= maxViewTasks {
+			break
+		}
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "team-" + item.ID, Title: clipText(item.Name, 1800), Subtitle: item.ID, Action: &wire.Action{ID: "team", Values: map[string]string{"id": item.ID, "name": clipText(item.Name, maxNameChars)}}})
 	}
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.teams})
@@ -277,7 +300,7 @@ func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 	if link := safeTaskLink(item.URL); link != "" {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
-	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.update, Action: &wire.Action{ID: "edit", Push: &wire.Push{Title: t.update, State: ext.EncodeState(pageState{Mode: "edit", TaskID: item.ID, Status: item.Status.Status, DraftID: randomID()})}}}, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
+	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.update, Action: &wire.Action{ID: "edit", Push: &wire.Push{Title: t.update, State: ext.EncodeState(pageState{Mode: "edit", TeamID: st.TeamID, TeamName: st.TeamName, TaskID: item.ID, Status: item.Status.Status, DraftID: randomID()})}}}, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	v := &wire.View{Title: clipText(item.Name, 1800), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.tasks, Items: items}}}
 	if item.Description != "" {
 		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Description, 60000))})

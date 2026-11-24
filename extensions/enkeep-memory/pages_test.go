@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -149,5 +150,55 @@ func TestMainPageAndCardDuringARun(t *testing.T) {
 	done()
 	if p := snap.Proposal(prop); p == nil || p.Status != "later" {
 		t.Fatalf("the snapshot after the change: %+v", p)
+	}
+}
+
+// The overview card counts the entries per facet that may go out (the exits' gate), under the plugin page's facet
+// names, beside the pending proposals; the old items' 事实/做事方式/知识 are gone.
+func TestOverviewCardCountsEntries(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	mk := func(id string, f entry.Facet, status entry.Status) *entry.Entry {
+		return &entry.Entry{ID: id, Facet: f, Grain: entry.Class, Text: "占位 " + id, Status: status, Origin: entry.Behavior, Count: 2}
+	}
+	st.S.Entries = map[string]*entry.Entry{}
+	for _, e := range []*entry.Entry{
+		mk("w-1", entry.Workflow, entry.Stable), mk("w-2", entry.Workflow, entry.Stable), mk("w-3", entry.Workflow, entry.Candidate),
+		mk("o-1", entry.World, entry.Stable), mk("i-1", entry.Interaction, entry.Stable), mk("p-1", entry.People, entry.Stable),
+	} {
+		st.S.Entries[e.ID] = e
+	}
+	wrong := mk("i-2", entry.Interaction, entry.Stable)
+	wrong.Verdicts = []entry.Verdict{{Mark: "wrong", By: "user"}}
+	st.S.Entries[wrong.ID] = wrong
+	st.S.Proposals = []*store.Proposal{{ID: "p1", Status: "pending"}}
+	a := &app{c: &curate.Curator{St: st, Cfg: curate.Defaults(), Loc: time.UTC}}
+	v, err := a.today(t.Context(), &ext.UIRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	var labels []string
+	for _, c := range v.Sections[0].Items {
+		for _, s := range c.Stats {
+			got[s.Label] = s.Value
+			labels = append(labels, s.Label)
+		}
+	}
+	want := map[string]string{"待确认": "1", "① 和 AI 的交互": "1", "② AI 和工具": "0", "③ 默认判断": "0", "④ 处理方式": "2", "最近一次日级": "还没运行过"}
+	for k, w := range want {
+		if got[k] != w {
+			t.Errorf("%s = %q, want %q (card %v)", k, got[k], w, got)
+		}
+	}
+	if len(labels) != 8 || labels[0] != "① 和 AI 的交互" || labels[5] != "⑥ 关于你" || labels[6] != "待确认" {
+		t.Errorf("labels %v", labels)
+	}
+	for _, old := range []string{"事实", "做事方式", "知识"} {
+		if _, ok := got[old]; ok {
+			t.Errorf("old label %q still there", old)
+		}
 	}
 }

@@ -29,7 +29,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.BoardID < 0 || st.ItemID < 0 || len(st.BoardName) > 1000 || len(st.DraftID) > 128 || len(st.Name) > 600 || len(st.Cursor) > 2048 || len(st.Next) > 2048 || len(st.ColumnID) > 100 || len(st.Label) > 100 {
+	if err := r.DecodeState(&st); err != nil || st.BoardID < 0 || st.ItemID < 0 || len(st.BoardName) > 1000 || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len(st.Cursor) > 2048 || len(st.Next) > 2048 || len(st.ColumnID) > 100 || len([]rune(st.Label)) > maxLabelChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -88,7 +88,18 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		st.Name, st.Mode = in.Name, "review-create"
 	case "review-edit":
-		in := statusArgs{BoardID: st.BoardID, ItemID: st.ItemID, ColumnID: r.Values["column_id"], Label: r.Values["label"]}
+		columnID := r.Values["column_id"]
+		if columnID == "" {
+			columnID = st.ColumnID
+		}
+		if columnID == "" && st.BoardID > 0 {
+			board, err := a.client.board(ctx, st.BoardID)
+			if err != nil {
+				return nil, err
+			}
+			columnID = statusColumnID(board, "")
+		}
+		in := statusArgs{BoardID: st.BoardID, ItemID: st.ItemID, ColumnID: columnID, Label: r.Values["label"]}
 		if err := in.validate(); err != nil {
 			return nil, err
 		}
@@ -200,6 +211,9 @@ func (a *app) editorView(ctx context.Context, r *ext.UIRequest, st pageState) (*
 		if err != nil {
 			return nil, err
 		}
+		if colID := statusColumnID(board, st.ColumnID); colID != "" {
+			st.ColumnID = colID
+		}
 		choices := statusChoices(board, st.ColumnID)
 		if len(choices) > 0 {
 			items = append(items, wire.Component{Type: wire.ComponentField, Kind: "choice", Name: "label", Label: t.label, Value: choices[0].Value, Choices: choices})
@@ -213,19 +227,40 @@ func (a *app) editorView(ctx context.Context, r *ext.UIRequest, st pageState) (*
 	return &wire.View{Title: t.review, State: ext.EncodeState(st), Sections: []wire.Section{{Items: items}}}, nil
 }
 
+const maxViewItems = 250
+
 func detailView(r *ext.UIRequest, st pageState, board board, item item) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(item.UpdatedAt, 100)}}
 	if link := safeBoardLink(item.URL); link != "" {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
+	budget := maxViewItems - len(items) - 2
+	var cols []wire.Component
 	for _, column := range item.ColumnValues {
 		if column.Text != "" {
-			items = append(items, wire.Component{Type: wire.ComponentText, Text: clipText(column.ID+": "+column.Text, 1800)})
+			cols = append(cols, wire.Component{Type: wire.ComponentText, Text: clipText(column.ID+": "+column.Text, 1800)})
 		}
 	}
-	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.update, Action: &wire.Action{ID: "edit", Push: &wire.Push{Title: t.update, State: ext.EncodeState(pageState{Mode: "edit", BoardID: st.BoardID, ItemID: st.ItemID, DraftID: randomID()})}}}, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
+	if len(cols) > budget {
+		cols = cols[:budget]
+		cols[budget-1].Text = clipText(cols[budget-1].Text, 1700) + " […]"
+	}
+	items = append(items, cols...)
+	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.update, Action: &wire.Action{ID: "edit", Push: &wire.Push{Title: t.update, State: ext.EncodeState(pageState{Mode: "edit", BoardID: st.BoardID, ItemID: st.ItemID, ColumnID: statusColumnID(board, st.ColumnID), DraftID: randomID()})}}}, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	return &wire.View{Title: clipText(item.Name, 1800), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.items, Items: items}}}
+}
+
+func statusColumnID(board board, selected string) string {
+	for _, column := range board.Columns {
+		if column.Type != "status" || (selected != "" && column.ID != selected) {
+			continue
+		}
+		if column.ID != "" {
+			return column.ID
+		}
+	}
+	return ""
 }
 
 func statusChoices(board board, selected string) []wire.Choice {

@@ -128,6 +128,12 @@ func fakeGitHub(t *testing.T) (*httptest.Server, map[string]int) {
 // signedIn is a connector signed in (the device flow's token) against the fake, its page fixed at now.
 func signedIn(t *testing.T) (*Page, map[string]int) {
 	srv, seen := fakeGitHub(t)
+	return signedInTo(t, srv), seen
+}
+
+// signedInTo is a connector signed in against srv, which answers /user with the token gho_example; its page fixed at
+// now.
+func signedInTo(t *testing.T, srv *httptest.Server) *Page {
 	c := github.New(github.Config{}, "", nil)
 	c.UseAPI(srv.URL, "https://github.com")
 	c.UseSecrets(&memSecrets{data: []byte(`{"token":"gho_example"}`)})
@@ -143,7 +149,7 @@ func signedIn(t *testing.T) (*Page, map[string]int) {
 	}
 	p := New(c)
 	p.now = func() time.Time { return now }
-	return p, seen
+	return p
 }
 
 func req(version int, s state, action string, values map[string]string) *ext.UIRequest {

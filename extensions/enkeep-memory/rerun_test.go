@@ -288,6 +288,8 @@ func TestPrematureRerunMarkerDoesNotBlockRecovery(t *testing.T) {
 	if dailyRuns() != 1 {
 		t.Fatalf("unexpected early runs: %+v", st.S.Runs)
 	}
+	a.tick(t.Context()) // the weekly pass, once due, goes before the reruns (0.2.0-beta.38)
+	settle()
 	a.tick(t.Context()) // the stale marker must not suppress a valid rerun
 	settle()
 	if dailyRuns() != 2 {
@@ -296,8 +298,6 @@ func TestPrematureRerunMarkerDoesNotBlockRecovery(t *testing.T) {
 	if a.synthAfterDaily("2026-11-04") {
 		t.Errorf("synth ran before a valid rerun completed")
 	}
-	a.tick(t.Context()) // weekly is scheduled before synth
-	settle()
 	a.tick(t.Context())
 	settle()
 	if !a.synthAfterDaily("2026-11-04") {
@@ -389,13 +389,13 @@ func TestInvalidDailyFinishDoesNotSkipRecovery(t *testing.T) {
 
 			a.tick(t.Context()) // formal yesterday
 			settle()
+			a.tick(t.Context()) // weekly: before the reruns (0.2.0-beta.38)
+			settle()
 			a.tick(t.Context()) // an invalid Finished must not suppress the rerun
 			settle()
 			if dailyRuns() != 2 {
 				t.Errorf("invalid daily Finished suppressed recovery: %+v", st.S.Runs)
 			}
-			a.tick(t.Context()) // weekly
-			settle()
 			a.tick(t.Context()) // synth follows the recovered daily
 			settle()
 			if dailyRuns() != 2 {

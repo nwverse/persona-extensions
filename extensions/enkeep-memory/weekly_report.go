@@ -116,7 +116,7 @@ func buildWeekly(st *store.State, week string, days []string, today, lang string
 	// 1. New in effect this week: what went into an exit for the first time.
 	var fresh []*entry.Entry
 	for _, e := range st.Entries {
-		if e.Live() && e.Effective != "" && in(e.Effective) && e.Sensitive == "" && e.Part != entry.PartUserEval && e.Part != entry.PartInferred {
+		if e.Live() && e.Effective != "" && in(e.Effective) && !e.IsSensitive() && e.Part != entry.PartUserEval && e.Part != entry.PartInferred {
 			fresh = append(fresh, e)
 		}
 	}
@@ -191,7 +191,7 @@ func buildWeekly(st *store.State, week string, days []string, today, lang string
 	// 5. Quiet confirmed entries, asked about once.
 	var asks []*entry.Entry
 	for _, e := range st.Entries {
-		if e.Live() && slices.Contains(e.Flags, flagAskedDormant) && e.Sensitive == "" && (led == nil || !slices.Contains(led.Asked, e.ID)) {
+		if e.Live() && slices.Contains(e.Flags, flagAskedDormant) && !e.IsSensitive() && (led == nil || !slices.Contains(led.Asked, e.ID)) {
 			asks = append(asks, e)
 		}
 	}

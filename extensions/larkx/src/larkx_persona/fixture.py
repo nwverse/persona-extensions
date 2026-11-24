@@ -71,6 +71,9 @@ class FixtureBackend:
     def create_chat(self, user):
         return "c_" + user
 
+    def own_chat(self):
+        return "c_me"
+
     def search(self, query):
         return [{"type": "user", "id": "u_a", "title": "示例联系人"}]
 

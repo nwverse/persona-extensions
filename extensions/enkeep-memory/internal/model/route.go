@@ -240,19 +240,19 @@ func (rt *Route) complete(ctx context.Context, r Request, call func(context.Cont
 		}
 		if out.StopReason == "refusal" {
 			ans.Reason = ReasonRefused
-			rt.done(began, r, est, size, append(attempts, ans), "", false, note)
+			rt.done(ctx, began, r, est, size, append(attempts, ans), "", false, note)
 			return Response{}, fmt.Errorf("%w: stop_reason refusal", ErrRefused)
 		}
 		resp := response(r, out.ModelCompleteResult)
 		if resp.Model == "" {
 			resp.Model = ans.Model
 		}
-		rt.done(began, r, est, size, append(attempts, ans), ans.Model, len(attempts) > 0, note)
+		rt.done(ctx, began, r, est, size, append(attempts, ans), ans.Model, len(attempts) > 0, note, resp.InTokens, resp.OutTokens)
 		return resp, nil
 	}
 	var e *ext.Error
 	if !errors.As(err, &e) { // the connection to the hub, or ctx: nothing the chain can help with
-		rt.done(began, r, est, size, []Attempt{{Model: strings.Join(chain, "|"), Reason: ReasonError, Message: cut(err.Error(), 160), Secs: secs}}, "", false, "")
+		rt.done(ctx, began, r, est, size, []Attempt{{Model: strings.Join(chain, "|"), Reason: ReasonError, Message: cut(err.Error(), 160), Secs: secs}}, "", false, "")
 		return Response{}, err
 	}
 	var attempts []Attempt
@@ -266,7 +266,7 @@ func (rt *Route) complete(ctx context.Context, r Request, call func(context.Cont
 		attempts = []Attempt{{Model: chain[0], Reason: ReasonError, Code: e.Code, Message: cut(e.Message, 160), Secs: secs}}
 	case wire.ErrorCodeUnknownMethod, wire.ErrorCodeUnsupported, wire.ErrorCodePermissionDenied, wire.ModelErrorCodeAssistantOffline:
 		// The hub cannot run any model for the extension: the run waits, as before.
-		rt.done(began, r, est, size, []Attempt{{Model: strings.Join(chain, "|"), Reason: ReasonUnavailable, Code: e.Code, Message: cut(e.Message, 160), Secs: secs}}, "", false, "")
+		rt.done(ctx, began, r, est, size, []Attempt{{Model: strings.Join(chain, "|"), Reason: ReasonUnavailable, Code: e.Code, Message: cut(e.Message, 160), Secs: secs}}, "", false, "")
 		return Response{}, fmt.Errorf("%w: %s", ErrUnavailable, e.Message)
 	case codeCandidatesFailed:
 		var data candidatesFailed
@@ -286,7 +286,7 @@ func (rt *Route) complete(ctx context.Context, r Request, call func(context.Cont
 		if e.Code == wire.ModelErrorCodeInvalidOutput {
 			if resp, ok := fromInvalidOutput(e.Data); ok { // the reply the hub returned anyway goes to the step's checks
 				resp.Model = cmpOr(resp.Model, m)
-				rt.done(began, r, est, size, attempts, resp.Model, false, "reply kept though it does not match")
+				rt.done(ctx, began, r, est, size, attempts, resp.Model, false, "reply kept though it does not match", resp.InTokens, resp.OutTokens)
 				return resp, nil
 			}
 		}
@@ -310,7 +310,7 @@ func (rt *Route) complete(ctx context.Context, r Request, call func(context.Cont
 		// candidate not offered and one not matching failed the call, and the unit went unread).
 		return rt.old(ctx, r, est, size, legacy, "no candidate matched the schema", attempts...)
 	}
-	rt.done(began, r, est, size, attempts, "", false, "")
+	rt.done(ctx, began, r, est, size, attempts, "", false, "")
 	last := attempts[len(attempts)-1]
 	switch last.Reason {
 	case ReasonRefused:
@@ -375,9 +375,10 @@ func (rt *Route) old(ctx context.Context, r Request, est int, size string, legac
 		a.Reason, a.Message = ReasonError, cut(err.Error(), 160)
 	}
 	if rt.Stats != nil {
-		c := Call{At: start.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: append(before, a), Legacy: why, Paused: paused}
+		c := Call{At: start.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: append(before, a), Legacy: why, Paused: paused,
+			Class: ClassOf(ctx)}
 		if err == nil {
-			c.Answered = a.Model
+			c.Answered, c.In, c.Out = a.Model, resp.InTokens, resp.OutTokens
 		}
 		rt.Stats.add(c)
 	}
@@ -405,7 +406,7 @@ func (rt *Route) held(began time.Time, r Request, est int, size string, attempts
 }
 
 // done counts and logs a call that went through the chain.
-func (rt *Route) done(began time.Time, r Request, est int, size string, attempts []Attempt, answered string, fellBack bool, note string) {
+func (rt *Route) done(ctx context.Context, began time.Time, r Request, est int, size string, attempts []Attempt, answered string, fellBack bool, note string, tok ...int) {
 	var tried []string
 	for _, a := range attempts {
 		tried = append(tried, outcome(a))
@@ -425,8 +426,12 @@ func (rt *Route) done(began time.Time, r Request, est int, size string, attempts
 			note, strings.Join(tried, ", "))
 	}
 	if rt.Stats != nil {
-		rt.Stats.add(Call{At: began.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: attempts,
-			Answered: answered, FellBack: fellBack, Note: strings.Trim(note, " ()")})
+		c := Call{At: began.UTC().Format(time.RFC3339), Step: r.Step, Est: est, Size: size, Attempts: attempts,
+			Answered: answered, FellBack: fellBack, Note: strings.Trim(note, " ()"), Class: ClassOf(ctx)}
+		if len(tok) == 2 {
+			c.In, c.Out = tok[0], tok[1]
+		}
+		rt.Stats.add(c)
 	}
 }
 
@@ -448,6 +453,8 @@ type Stats struct {
 	mu   sync.Mutex
 	path string
 	c    Counts
+	// Loc is the time zone the cost lines' days are in (nil: UTC).
+	Loc *time.Location
 }
 
 // Counts is what Stats counted: a plain value, safe to pass around.
@@ -460,6 +467,85 @@ type Counts struct {
 	Paused   int                    `json:"paused"`    // tries the hub held (model_paused): waited out and asked again
 	Models   map[string]*ModelCount `json:"models"`
 	Recent   []Call                 `json:"recent"` // the last recentCalls calls, oldest first
+	// The cost line (design v2 §4.7, 0.2.0-beta.38): calls and tokens per local day, in all and for the reruns
+	// apart, and since CostSince.
+	CostSince string              `json:"cost_since,omitempty"`
+	Days      map[string]*DayCost `json:"days,omitempty"` // YYYY-MM-DD in the hub's time zone
+	Total     Cost                `json:"total"`
+	Rerun     Cost                `json:"rerun"`
+}
+
+// DayCost is one day's cost: every call, and the reruns' among them.
+type DayCost struct {
+	All   Cost `json:"all"`
+	Rerun Cost `json:"rerun"`
+}
+
+// Cost is calls and tokens: per model the calls it answered with their input and output tokens; FellBack the calls
+// a fallback answered, Failed the calls none answered (held ones are not calls).
+type Cost struct {
+	Calls    int                   `json:"calls"`
+	FellBack int                   `json:"fell_back"`
+	Failed   int                   `json:"failed"`
+	In       int                   `json:"in"`
+	Out      int                   `json:"out"`
+	Models   map[string]*ModelCost `json:"models,omitempty"`
+}
+
+// ModelCost is one model's answered calls and tokens.
+type ModelCost struct {
+	Calls int `json:"calls"`
+	In    int `json:"in"`
+	Out   int `json:"out"`
+}
+
+// costDays is how many days the cost lines are kept.
+const costDays = 200
+
+func (c *Cost) add(call Call) {
+	c.Calls++
+	switch {
+	case call.Answered == "":
+		c.Failed++
+	case call.FellBack:
+		c.FellBack++
+	}
+	c.In += call.In
+	c.Out += call.Out
+	if call.Answered != "" {
+		if c.Models == nil {
+			c.Models = map[string]*ModelCost{}
+		}
+		m := c.Models[call.Answered]
+		if m == nil {
+			m = &ModelCost{}
+			c.Models[call.Answered] = m
+		}
+		m.Calls++
+		m.In += call.In
+		m.Out += call.Out
+	}
+}
+
+// Line is the cost in one line: calls, tokens per model, fallbacks and failures.
+func (c Cost) Line() string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d call(s), in %d / out %d tokens", c.Calls, c.In, c.Out)
+	names := make([]string, 0, len(c.Models))
+	for n := range c.Models {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var parts []string
+	for _, n := range names {
+		m := c.Models[n]
+		parts = append(parts, fmt.Sprintf("%s %d (in %d / out %d)", n, m.Calls, m.In, m.Out))
+	}
+	if len(parts) > 0 {
+		fmt.Fprintf(&b, " [%s]", strings.Join(parts, "; "))
+	}
+	fmt.Fprintf(&b, ", fallbacks %d, failed %d", c.FellBack, c.Failed)
+	return b.String()
 }
 
 // ModelCount is one model's attempts. Paused is the tries the hub held (model_paused): not attempts, not failures.
@@ -485,6 +571,9 @@ type Call struct {
 	Note     string    `json:"note,omitempty"`   // candidates off, the user's own list, a reply kept though it does not match
 	Paused   bool      `json:"paused,omitempty"` // the hub held it (model_paused): asked again after Until, not a failure
 	Until    string    `json:"until,omitempty"`  // RFC 3339: when the hold lets go
+	Class    string    `json:"class,omitempty"`  // regular | rerun (the cost line counts reruns apart)
+	In       int       `json:"in,omitempty"`     // input tokens of the answer, as the hub said (cache reads included)
+	Out      int       `json:"out,omitempty"`    // output tokens
 }
 
 const recentCalls = 50
@@ -553,6 +642,46 @@ func (s *Stats) add(c Call) {
 			m.Failures[a.Reason]++
 		}
 	}
+	if !c.Paused {
+		day := c.At
+		if t, err := time.Parse(time.RFC3339, c.At); err == nil {
+			loc := s.Loc
+			if loc == nil {
+				loc = time.UTC
+			}
+			day = t.In(loc).Format("2006-01-02")
+		}
+		if len(day) > 10 {
+			day = day[:10]
+		}
+		if n.Days == nil {
+			n.Days = map[string]*DayCost{}
+		}
+		if n.CostSince == "" {
+			n.CostSince = day
+		}
+		d := n.Days[day]
+		if d == nil {
+			d = &DayCost{}
+			n.Days[day] = d
+		}
+		d.All.add(c)
+		n.Total.add(c)
+		if c.Class == ClassRerun {
+			d.Rerun.add(c)
+			n.Rerun.add(c)
+		}
+		if len(n.Days) > costDays {
+			keys := make([]string, 0, len(n.Days))
+			for k := range n.Days {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys[:len(keys)-costDays] {
+				delete(n.Days, k)
+			}
+		}
+	}
 	n.Recent = append(n.Recent, c)
 	if len(n.Recent) > recentCalls {
 		n.Recent = append([]Call(nil), n.Recent[len(n.Recent)-recentCalls:]...)
@@ -593,6 +722,24 @@ func (s *Stats) Snapshot() Counts {
 	var c Counts
 	_ = json.Unmarshal(b, &c)
 	return c
+}
+
+// CostLines are the cost lines for the status tool and the run log: the day asked for, the total since the first
+// counted day, and the reruns' total (design v2 §4.7).
+func (s Counts) CostLines(day string) []string {
+	d := s.Days[day]
+	if d == nil {
+		d = &DayCost{}
+	}
+	since := s.CostSince
+	if since == "" {
+		since = day
+	}
+	return []string{
+		fmt.Sprintf("Cost %s: %s; of which reruns: %s.", day, d.All.Line(), d.Rerun.Line()),
+		fmt.Sprintf("Cost since %s: %s.", since, s.Total.Line()),
+		fmt.Sprintf("Reruns since %s: %s.", since, s.Rerun.Line()),
+	}
 }
 
 // Summary says the stats in a few lines: the calls, the fallback rate, and each model's attempts.

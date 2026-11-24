@@ -52,7 +52,26 @@ const (
 	SelfReport     Origin = "self_report" // the "about me" notes
 	FromOnboarding Origin = "onboarding"  // an answer to the first-run questions
 	Handwritten    Origin = "handwritten" // the assistant's memory files (S6): compared and counted, never rewritten
+	// Seed is the user's own profile or rules confirmed elsewhere (another memory, a notes file), imported
+	// (enkeep_seed_import, unified memory design v2 §11.2). Unlike the others it starts a candidate: it reaches the
+	// exits only once the user's own records bear it out (an action filed under it), and never while K21 is off.
+	Seed Origin = "seed"
 )
+
+// SeedInfo is where a seed entry came from, in the import's general format (internal/seed).
+type SeedInfo struct {
+	Source    string `json:"source"`              // enkeep, a file, another memory
+	ID        string `json:"id"`                  // the item's id at the source: a later import updates it
+	Kind      string `json:"kind"`                // rule | fact | guardrail | preference
+	Hard      bool   `json:"hard,omitempty"`      // a hard rule the user confirmed: never turned by counter-examples alone
+	Category  string `json:"category,omitempty"`  // the source's category
+	Confirmed string `json:"confirmed,omitempty"` // when the user confirmed it at the source (YYYY-MM-DD)
+	Effective string `json:"effective,omitempty"` // from when it holds (YYYY-MM-DD)
+	// Expiring: "recent" (what the user is doing now) or "role" (responsibilities) date; "" never by itself.
+	Expiring string `json:"expiring,omitempty"`
+	Imported string `json:"imported"` // when it was imported (RFC 3339)
+	Text     string `json:"text"`     // the text as the source has it, to tell a change at the next import
+}
 
 // Status of an entry. Thresholds adapt to the user's amount of data (4.4): see curate's thresholds.
 type Status string
@@ -71,8 +90,8 @@ const (
 	Life = "life"
 )
 
-// Sensitive categories (K13). Default off: content in them is not extracted. A user may turn on a category; it
-// then reaches only the user's own understanding (⑥, ⑤′ cards, the knowledge base), never an exit.
+// The K13 names, before 0.2.0-beta.40 (category.go maps them: family is part of relationships). Content in them is
+// collected and tagged now; K13.<category> on lets that category into the resident exits (the user's widening).
 const (
 	SensEmotion = "emotion"
 	SensFinance = "finance"
@@ -231,14 +250,24 @@ type Entry struct {
 	Predicate string `json:"predicate,omitempty"`
 	Target    string `json:"target,omitempty"`
 
-	Inferred     bool       `json:"inferred,omitempty"`      // the model's reading, not stated
-	ReportedOnly bool       `json:"reported_only,omitempty"` // rests only on what others said about the subject
-	SingleSource bool       `json:"single_source,omitempty"` // ⑤: one source so far (4.4); exits D and E carry the mark
-	Domain       string     `json:"domain,omitempty"`        // Work | Life
-	Sensitive    string     `json:"sensitive,omitempty"`     // one of Sensitives, or ""
-	Scopes       []Scope    `json:"scopes,omitempty"`
-	Impact       Impact     `json:"impact"`
-	Evidence     []Evidence `json:"evidence"`
+	Inferred     bool   `json:"inferred,omitempty"`      // the model's reading, not stated
+	ReportedOnly bool   `json:"reported_only,omitempty"` // rests only on what others said about the subject
+	SingleSource bool   `json:"single_source,omitempty"` // ⑤: one source so far (4.4); exits D and E carry the mark
+	Domain       string `json:"domain,omitempty"`        // Work | Life
+	Sensitive    string `json:"sensitive,omitempty"`     // before 0.2.0-beta.40: one of Sensitives; read by Cats
+	// Categories (category.go): what the entry is about among health, finance, relationships, emotion and legal_id,
+	// and who tagged each; none: general. CatsRemoved are the ones the user took off (never added back but by them).
+	Categories  []Category `json:"categories,omitempty"`
+	CatsRemoved []string   `json:"cats_removed,omitempty"`
+	// Tagged: its categories and source space were decided by the plugin's tagging (0.2.0-beta.40 rules: the model's
+	// label, the money and legal words, the space's defaults) when it was read or imported. An entry from before
+	// carries only the old model label, if any; the memory source answers tagged false while one is in the pool.
+	Tagged bool `json:"tagged,omitempty"`
+	// OriginSpace is the slug of the space the entry's first evidence was said in ("": the main space).
+	OriginSpace string     `json:"origin_space,omitempty"`
+	Scopes      []Scope    `json:"scopes,omitempty"`
+	Impact      Impact     `json:"impact"`
+	Evidence    []Evidence `json:"evidence"`
 
 	// Members are lower-grain entries: a class's actions, an abstract entry's classes. Parent is the class an
 	// action was filed under. Counters are actions that went against it.
@@ -264,8 +293,9 @@ type Entry struct {
 	ValidFrom string `json:"valid_from,omitempty"`
 	ValidTo   string `json:"valid_to,omitempty"` // set when invalidated; the entry is kept, not deleted
 
-	Origin        Origin `json:"origin"`
-	OriginVersion string `json:"origin_version,omitempty"` // prompt@ruleset, or the memory file's hash
+	Origin        Origin    `json:"origin"`
+	OriginVersion string    `json:"origin_version,omitempty"` // prompt@ruleset, or the memory file's hash
+	Seed          *SeedInfo `json:"seed,omitempty"`           // Origin Seed: where it came from
 
 	User       *UserEdit   `json:"user,omitempty"`
 	Pinned     bool        `json:"pinned,omitempty"`

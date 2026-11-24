@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "enkeep-memory",
   "name": "enkeep 记忆",
-  "version": "0.2.0-beta.34",
+  "version": "0.2.0-beta.44",
   "icon": "assets/icon.png",
   "description": "从你在 Persona 里的对话、Agent 会话、卡片问答和消息来源里，整理你和 AI 怎么打交道、AI 怎么用工具、你的默认判断和做事方式、你的人和事、你自己，以及和你有来往的人；每条都带出处，你可以改、删、点对错。",
   "publisher": "nwverse",
@@ -88,16 +88,30 @@
         "never_quote": "inbox/never_quote.txt"
       }
     ],
+    "memory_sources": [
+      {
+        "id": "memory",
+        "name": "enkeep 记忆"
+      }
+    ],
     "connectors": [
       {
         "id": "enkeep",
         "name": "enkeep 记忆",
         "capabilities": [
           "status",
-          "tools"
+          "tools",
+          "actions"
         ],
         "agent_tools": [
-          "enkeep_*"
+          "enkeep_rerun_status",
+          "enkeep_resettle_preview",
+          "enkeep_seed_status",
+          "enkeep_seed_preview",
+          "enkeep_rerun",
+          "enkeep_resettle",
+          "enkeep_seed_import",
+          "enkeep_mark_wrong"
         ]
       }
     ]
@@ -253,8 +267,8 @@
       },
       "privacy_keywords": {
         "type": "array",
-        "title": "隐私词",
-        "description": "含这些词的消息不读、不发给模型",
+        "title": "不读名单",
+        "description": "含这些词的消息不读、不发给模型（敏感类别现在都收集并打标签，按场景用；真不想让它读的，写在这里）",
         "items": {
           "type": "string"
         }

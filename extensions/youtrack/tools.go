@@ -29,7 +29,7 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "youtrack_create_issue", Description: "Create an issue in a specific YouTrack project after explicit confirmation. Only summary and description are sent to the documented project issues endpoint; no arbitrary commands or custom fields.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"project_id", "summary"}, "properties": map[string]any{
-			"project_id": idSchema, "summary": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}, "description": map[string]any{"type": "string", "maxLength": 30000},
+			"project_id": idSchema, "summary": map[string]any{"type": "string", "minLength": 1, "maxLength": maxSummaryChars}, "description": map[string]any{"type": "string", "maxLength": 30000},
 		}}},
 }
 

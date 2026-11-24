@@ -64,6 +64,8 @@ var Composer = native("composer");
 var Image = native("image");
 var Grid = native("grid");
 var Carousel = native("carousel");
+var Graph = native("graph");
+var Scene = native("scene");
 
 // ../../sdk/ts/src/hooks.ts
 var context;
@@ -153,7 +155,9 @@ var fields = {
   composer: ["name", "placeholder", "value", "buttons"],
   image: ["src", "alt", "caption", "aspect", "fit", "no_zoom"],
   grid: ["tiles", "max_columns"],
-  carousel: ["title", "tiles", "width"]
+  carousel: ["title", "tiles", "width"],
+  graph: ["nodes", "edges", "layout", "direction", "selected", "folded"],
+  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"]
 };
 function pathPart(parent, ...segments) {
   return parent + segments.map((segment) => `${segment.length}:${segment}`).join("");
@@ -763,7 +767,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "openlibrary", name: "Open Library \u56FE\u4E66\u53D1\u73B0", version: "0.1.2", icon: "assets/icon.png", description: "\u6309\u4E66\u540D\u3001\u4F5C\u8005\u6216 ISBN \u641C\u7D22\u56FE\u4E66\uFF0C\u67E5\u770B\u51FA\u7248\u4FE1\u606F\u3001\u4F5C\u54C1\u7B80\u4ECB\u548C Open Library \u9605\u8BFB\u5165\u53E3\u3002\u5185\u5BB9\u7531 hub \u901A\u8FC7\u516C\u5F00 API \u83B7\u53D6\uFF0C\u65E0\u9700\u8D26\u53F7\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/openlibrary/README.md", tags: ["\u56FE\u4E66", "\u9605\u8BFB", "Open Library"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/openlibrary.mjs", sha256: "" } }, contributes: { connectors: [{ id: "openlibrary", name: "Open Library", capabilities: ["status", "tools"], hosts: ["openlibrary.org"], agent_tools: ["openlibrary_*"] }], ui: [{ id: "openlibrary", title: "\u53D1\u73B0\u56FE\u4E66", placement: "nav_page", icon: "doc" }] }, permissions: { network: ["openlibrary.org"] } };
+var persona_extension_default = { manifest_version: 1, id: "openlibrary", name: "Open Library \u56FE\u4E66\u53D1\u73B0", version: "0.1.3", icon: "assets/icon.png", description: "\u6309\u4E66\u540D\u3001\u4F5C\u8005\u6216 ISBN \u641C\u7D22\u56FE\u4E66\uFF0C\u67E5\u770B\u51FA\u7248\u4FE1\u606F\u3001\u4F5C\u54C1\u7B80\u4ECB\u548C Open Library \u9605\u8BFB\u5165\u53E3\u3002\u5185\u5BB9\u7531 hub \u901A\u8FC7\u516C\u5F00 API \u83B7\u53D6\uFF0C\u65E0\u9700\u8D26\u53F7\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/openlibrary/README.md", tags: ["\u56FE\u4E66", "\u9605\u8BFB", "Open Library"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/openlibrary.mjs", sha256: "" } }, contributes: { connectors: [{ id: "openlibrary", name: "Open Library", capabilities: ["status", "tools"], hosts: ["openlibrary.org"], agent_tools: ["openlibrary_*"] }], ui: [{ id: "openlibrary", title: "\u53D1\u73B0\u56FE\u4E66", placement: "nav_page", icon: "doc" }] }, permissions: { network: ["openlibrary.org"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 2 << 20, fresh: 60 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 250 });

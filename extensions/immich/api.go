@@ -88,6 +88,8 @@ func (c *client) do(ctx context.Context, method, path string, in, out any) error
 	}
 }
 
+const maxQueryChars = 200
+
 func (c *client) search(ctx context.Context, query string, favoritesOnly bool, cursor string) (searchResponse, error) {
 	if cursor != "" && len(cursor) > 4096 {
 		return searchResponse{}, errors.New("invalid search cursor")
@@ -97,7 +99,7 @@ func (c *client) search(ctx context.Context, query string, favoritesOnly bool, c
 		body["filter"] = map[string]any{"isFavorite": map[string]bool{"eq": true}}
 	} else {
 		query = strings.TrimSpace(query)
-		if query == "" || len([]rune(query)) > 200 {
+		if query == "" || len([]rune(query)) > maxQueryChars {
 			return searchResponse{}, errors.New("search requires at most 200 characters")
 		}
 		body["filter"] = map[string]any{"originalFileName": map[string]string{"like": query}}
@@ -112,7 +114,7 @@ func (c *client) search(ctx context.Context, query string, favoritesOnly bool, c
 
 func (c *client) smartSearch(ctx context.Context, query string) (searchResponse, error) {
 	query = strings.TrimSpace(query)
-	if query == "" || len([]rune(query)) > 200 {
+	if query == "" || len([]rune(query)) > maxQueryChars {
 		return searchResponse{}, errors.New("smart search requires at most 200 characters")
 	}
 	var out searchResponse

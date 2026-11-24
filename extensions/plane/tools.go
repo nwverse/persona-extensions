@@ -33,7 +33,7 @@ var actionTools = []tool{
 	{Name: "plane_create_work_item", Description: "Create a Plane work item after explicit confirmation. Only title, plain-text description, priority, optional YYYY-MM-DD target date and a state ID already belonging to the project are sent.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"project_id", "name"}, "properties": map[string]any{
 			"project_id": idSchema, "workspace_slug": workspaceSchema,
-			"name": map[string]any{"type": "string", "minLength": 1, "maxLength": 255}, "description": map[string]any{"type": "string", "maxLength": 10000},
+			"name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxNameChars}, "description": map[string]any{"type": "string", "maxLength": maxDescriptionChars},
 			"priority":    map[string]any{"type": "string", "enum": []string{"urgent", "high", "medium", "low", "none"}},
 			"target_date": map[string]any{"type": "string", "format": "date"}, "state_id": idSchema,
 		}}},

@@ -194,8 +194,10 @@ func detailView(r *ext.UIRequest, st pageState, item pullRequest, activities []a
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: activity.Comment.Author.DisplayName, Style: wire.TextStyleSecondary})
 			section.Items = append(section.Items, textComponents(activity.Comment.Text)...)
 		}
-		section.Items = capComponents(section.Items, maxViewItems-used)
-		v.Sections = append(v.Sections, section)
+		if len(section.Items) > 0 {
+			section.Items = capComponents(section.Items, maxViewItems-used)
+			v.Sections = append(v.Sections, section)
+		}
 	}
 	return v
 }

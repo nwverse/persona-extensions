@@ -33,6 +33,12 @@ func validText(value string, limit int, multiline bool) error {
 	return nil
 }
 
+// The longest task title and workspace name: the validation, the tool schema and the page checks use them.
+const (
+	maxNameChars          = 500
+	maxWorkspaceNameChars = 500
+)
+
 func (in createArgs) validate() error {
 	if err := validGID(in.WorkspaceGID); err != nil {
 		return err
@@ -42,7 +48,7 @@ func (in createArgs) validate() error {
 			return err
 		}
 	}
-	if strings.TrimSpace(in.Name) == "" || validText(in.Name, 500, false) != nil || validText(in.Notes, 10000, true) != nil {
+	if strings.TrimSpace(in.Name) == "" || validText(in.Name, maxNameChars, false) != nil || validText(in.Notes, 10000, true) != nil {
 		return errors.New("task title must be nonempty, one line and at most 500 characters; notes are at most 10000 characters")
 	}
 	return validDueDate(in.DueOn)

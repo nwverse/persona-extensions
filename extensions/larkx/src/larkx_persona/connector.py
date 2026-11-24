@@ -3,6 +3,7 @@ LarkAgentX, so the whole of it runs against a fixture backend in the tests."""
 import base64
 import hashlib
 import json
+import queue
 import threading
 import time
 from datetime import datetime, timezone
@@ -36,6 +37,7 @@ RESTORE_RETRY_SECONDS = 30
 LINK_WAIT_SECONDS = 5
 CHANNEL = "channel."
 CANNOT_SEND = "cannot_send"
+PUSH = "push"
 # /agent: the user's own message starting with it goes to the assistant; the answer comes back in that chat.
 AGENT_PREFIX = "/agent"
 # The setting agent_prefix takes its place; the manifest's maxLength is the same. A prefix must start with "/" (not
@@ -137,6 +139,9 @@ class Connector:
         self.suffix = suffix if len(suffix) >= AGENT_SUFFIX_LEAST else AGENT_SUFFIX
         # A fresh message from the signed-in user with a real AT element for that same account is also a request.
         self.mention = True
+        # A group request carries its topic as the channel message's thread: the hub keeps one conversation per topic
+        # (setting agent_group_topics).
+        self.topics = True
         self.store = store
         self.hub = hub
         self._ready = threading.Event()
@@ -151,11 +156,21 @@ class Connector:
         self._expired = False
         self._link_up = False
         self._linked = threading.Event()
+        # The user's chat with themself, by account: where pushes go. Emptied at every sign-in and sign-out, so the first
+        # push of each sign-in checks the chat again (_own_chat).
+        self._own_chats = {}
         self._unreachable = False
         self._last_event = 0.0
         self._last_sync = 0.0
         self._last_prune = 0.0
         self._stop = threading.Event()
+        self._catch_stop = threading.Event()
+        self._catch_queue = queue.Queue()
+        self._catch_pending = False
+        self._worker_lock = threading.Lock()
+        self._workers = set()
+        self._closed = False
+        self._catch_thread = None
         self._dirty = threading.Event()
         self.methods = {
             "status": self.status, "tools.list": self.tools_list, "tools.call": self.tools_call,
@@ -231,15 +246,46 @@ class Connector:
             self._account = account["name"]
             self._signed_in = True
             self._expired = False
+            self._own_chats = {}
         self._stop.set()
         self._stop = threading.Event()
         self._linked.clear()
         self._dirty.set()
-        threading.Thread(target=self._listen, args=(self._stop,), daemon=True).start()
+        if not self._closed:
+            threading.Thread(target=self._listen, args=(self._stop,), name="larkx-listen", daemon=True).start()
         self._linked.wait(LINK_WAIT_SECONDS)
 
     def _listen(self, stop):
-        self.backend.listen(self._on_live, self._on_link, stop)
+        thread = threading.current_thread()
+        with self._worker_lock:
+            if self._closed:
+                return
+            self._workers.add(thread)
+        try:
+            self.backend.listen(self._on_live, self._on_link, stop)
+        finally:
+            with self._worker_lock:
+                self._workers.discard(threading.current_thread())
+
+    def close(self):
+        """Stop receiving and wait for history writes before closing the store; safe to call more than once."""
+        with self._worker_lock:
+            self._closed = True
+            self._stop.set()
+            self._catch_stop.set()
+            self._catch_queue.put(None)
+        if self._catch_thread is not None:
+            self._catch_thread.join(30)
+            with self._worker_lock:
+                self._workers.discard(self._catch_thread)
+        while True:
+            with self._worker_lock:
+                workers = [w for w in self._workers if w is not threading.current_thread()]
+            if not workers:
+                break
+            for worker in workers:
+                worker.join(30)
+        self.store.close()
 
     def _on_live(self, m):
         """A message pushed on the long connection: kept like any other, and the user's own /agent goes to the assistant.
@@ -256,17 +302,40 @@ class Connector:
                 self._expired = True
         self._linked.set()
         if state == "up":
-            threading.Thread(target=self.catch_up, daemon=True).start()
+            with self._worker_lock:
+                if not self._catch_pending and not self._closed:
+                    self._catch_pending = True
+                    if self._catch_thread is None:
+                        self._catch_thread = threading.Thread(target=self._catch_worker, name="larkx-catch-up", daemon=True)
+                        self._workers.add(self._catch_thread)
+                        self._catch_thread.start()
+                    self._catch_queue.put(True)
+
+    def _catch_worker(self):
+        while True:
+            item = self._catch_queue.get()
+            try:
+                if item is None:
+                    return
+                self.catch_up()
+            finally:
+                with self._worker_lock:
+                    self._catch_pending = False
+                    self._catch_queue.task_done()
 
     def catch_up(self):
-        """Fetches what came in while the connection was down, for the chats that moved last."""
+        """Fetches what came in while the connection was down, stopping with the listener."""
         for chat in self.store.chats(CATCH_UP_CHATS):
+            if self._catch_stop.is_set():
+                return
             try:
                 newest = self.backend.chat_info(chat["id"]).get("last_position") or 0
                 known = self.store.newest_position(chat["id"])
                 if known and newest > known:
                     first = max(known + 1, newest - CATCH_UP_MESSAGES + 1)
                     for m in self.backend.history(chat["id"], list(range(first, newest + 1))):
+                        if self._catch_stop.is_set():
+                            return
                         self.on_message(m)
             except Exception as e:
                 self._log("catching up failed: %s" % type(e).__name__)
@@ -313,6 +382,9 @@ class Connector:
 
     def _hand_over(self, m, request):
         message = {"id": m["id"], "text": request or (AGENT_EMPTY % self.prefix)}
+        thread = self._thread(m)
+        if thread:
+            message["thread"] = thread
         context = self._agent_context(m)
         if context:
             message["forward"] = context
@@ -330,6 +402,13 @@ class Connector:
                     return
                 time.sleep(wait)
 
+    def _thread(self, m):
+        """The topic a group request belongs to, "" for a direct chat: the topic it was written in, or the one its answer
+        opens under it (channel_send replies under the same root). The hub gives each one a conversation of its own."""
+        if not self.topics or (m.get("chat_kind") or "group") != "group":
+            return ""
+        return "%s:%s" % (m["chat"], m.get("root") or m["id"])
+
     def _agent_context(self, m):
         """Where the request was written and what was said there just before it, for the assistant."""
         chat = self.store.chat(m["chat"]) or {}
@@ -340,33 +419,57 @@ class Connector:
         return "这条 %s 写在%s里，之前的 %d 条消息：\n%s" % (self.prefix, where, len(before), "\n".join(_line(x) for x in before))
 
     def channel_send(self, p):
-        """An answer for one /agent: in the chat it was written in, under it, as the user, marked as written by AI.
-        A ref is sent once; a send whose result is unknown is never tried again."""
+        """An answer for one /agent: in the chat it was written in, under it, as the user, marked as written by AI. A
+        push (kind push, no reply_to) goes only to the user's own chat with themself. A ref is sent once; a send whose
+        result is unknown is never tried again."""
         ref = p.get("ref") or ""
         if not ref:
             raise RpcError("channel.send without a ref", "invalid_params")
         with self._lock:
             signed_in, me = self._signed_in, self._account_id
+        text = (p.get("text") or "").rstrip() + "\n\n" + self.suffix
+        if not p.get("reply_to") and p.get("kind") == PUSH:
+            if not signed_in:
+                raise RpcError(SIGNED_OUT_ERROR, CANNOT_SEND)
+            return self._channel_out("channel:" + ref, self._own_chat(me), text, None)
         request = self.store.message(p.get("reply_to") or "") if p.get("reply_to") else None
         if not signed_in or request is None or request["sender"] != me or self._agent_request(request, me) is None:
             # Only an answer to one of the user's own /agent goes out: nothing in a chat they did not ask in.
             raise RpcError("没有可以回复的 %s 消息" % self.prefix, CANNOT_SEND)
-        key = "channel:" + ref
+        return self._channel_out("channel:" + ref, request["chat"], text, request.get("root") or request["id"],
+                                 lambda: self._context_mentions(request, text))
+
+    def _channel_out(self, key, chat, text, root, mentions=None):
+        """Sends one channel message once, keyed on its ref: again, it answers what the first send ended with."""
         claimed, result = self.store.claim_send(key)
         if not claimed:
             if result:
                 return {"message_id": result}
             raise RpcError(_UNKNOWN_SEND)
-        text = (p.get("text") or "").rstrip() + "\n\n" + self.suffix
-        mentions = self._context_mentions(request, text)
         try:
-            msg_id = self.backend.send(request["chat"], text, request.get("root") or request["id"], mentions=mentions)
+            msg_id = self.backend.send(chat, text, root, mentions=mentions() if mentions else [])
         except Exception:
             msg_id = None
         if not msg_id:
             raise RpcError(_UNKNOWN_SEND)
         self.store.finish_send(key, str(msg_id))
         return {"message_id": str(msg_id)}
+
+    def _own_chat(self, me):
+        """The user's chat with themself. A push may carry anything the assistant knows (a main-chat turn, a reminder,
+        a scheduled task), so it never goes to a chat anybody else reads: no other chat is ever used instead."""
+        chat = self._own_chats.get(me)
+        if chat:
+            return chat
+        try:
+            chat = self.backend.own_chat()
+        except Exception as e:
+            self._log("finding the chat with yourself failed: %s" % type(e).__name__)
+            chat = None
+        if not chat:
+            raise RpcError("找不到你和自己的私聊", CANNOT_SEND)
+        self._own_chats[me] = str(chat)
+        return str(chat)
 
     def channel_typing(self, _):
         return {}
@@ -820,6 +923,7 @@ class Connector:
                 self._link_up = False
                 self._account = ""
                 self._account_id = ""
+                self._own_chats = {}
         return {}
 
 

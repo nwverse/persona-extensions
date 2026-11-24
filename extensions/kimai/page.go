@@ -30,7 +30,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Page < 0 || st.TimesheetID < 0 || st.ProjectID < 0 || st.ActivityID < 0 || len(st.DraftID) > 128 || len(st.Begin) > 64 || len(st.End) > 64 || len(st.Description) > 5100 || len(st.Mode) > 30 || len(st.View) > 30 {
+	if err := r.DecodeState(&st); err != nil || st.Page < 0 || st.TimesheetID < 0 || st.ProjectID < 0 || st.ActivityID < 0 || len(st.DraftID) > 128 || len(st.Begin) > 64 || len(st.End) > 64 || len([]rune(st.Description)) > 5000 || len(st.Mode) > 30 || len(st.View) > 30 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -55,6 +55,11 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil, errors.New("invalid timesheet view")
 		}
 		st.View, st.Page = r.Values["view"], 1
+		if st.View == "active" {
+			st.Mode = "active"
+		} else {
+			st.Mode, st.DraftID = "", ""
+		}
 	case "more":
 		st.Page, err = strconv.Atoi(r.Values["page"])
 		if err != nil || st.Page < 2 {
@@ -84,6 +89,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil, err
 		}
 		st.Begin, st.End, st.Description, st.Mode = in.Begin, in.End, in.Description, "review-create"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("time entry draft exceeds page state limit")
+		}
 	case "confirm-create":
 		in := createArgs{ProjectID: st.ProjectID, ActivityID: st.ActivityID, Begin: st.Begin, End: st.End, Description: st.Description}
 		if err := in.validate(); err != nil || st.Mode != "review-create" || st.DraftID == "" {
@@ -96,7 +104,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		return &wire.ActionResult{Toast: out["text"].(string), Pop: true}, nil
 	case "stop":
-		if st.Mode != "active" || st.DraftID == "" {
+		if (st.Mode != "active" && st.View != "active") || st.DraftID == "" {
 			return nil, errors.New("a running timer stop draft is required")
 		}
 		id, err := strconv.ParseInt(r.Values["id"], 10, 64)
@@ -179,7 +187,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if err != nil {
 		return nil, err
 	}
-	if st.Mode == "active" {
+	if view == "active" {
+		st.Mode = "active"
 		return activeView(r, st, items), nil
 	}
 	v := &wire.View{Title: t.time, State: ext.EncodeState(st), Filter: &wire.Filter{Name: "view", Title: t.time, Value: view, Action: wire.Action{ID: "view"}, Choices: []wire.Choice{{Value: "recent", Title: t.recent}, {Value: "active", Title: t.active}, {Value: "timesheets", Title: t.history}}}}
@@ -201,7 +210,11 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 }
 
 // maxViewRecords is half the SDK's component limit: an entry renders two text lines.
-const maxViewRecords = 125
+// maxActiveRecords keeps activeView (three components per entry) within wire.ItemsMost.
+const (
+	maxViewRecords   = 125
+	maxActiveRecords = 80
+)
 
 // collectTimesheets reads the history from page 1 through the current page so that Load more answers the whole list,
 // longer. It stops at maxViewRecords to keep the view within the SDK's component limit, and reports whether another
@@ -209,6 +222,13 @@ const maxViewRecords = 125
 func (a *app) collectTimesheets(ctx context.Context, view string, current int) ([]timesheet, bool, error) {
 	if view != "timesheets" {
 		items, err := a.client.timesheets(ctx, view, current)
+		limit := maxViewRecords
+		if view == "active" {
+			limit = maxActiveRecords
+		}
+		if len(items) > limit {
+			items = items[:limit]
+		}
 		return items, false, err
 	}
 	var out []timesheet
@@ -235,10 +255,15 @@ func activeView(r *ext.UIRequest, st pageState, items []timesheet) *wire.View {
 	st.DraftID = randomID()
 	v := &wire.View{Title: t.active, State: ext.EncodeState(st), Filter: &wire.Filter{Name: "view", Title: t.time, Value: "active", Action: wire.Action{ID: "view"}, Choices: []wire.Choice{{Value: "recent", Title: t.recent}, {Value: "active", Title: t.active}, {Value: "timesheets", Title: t.history}}}}
 	section := wire.Section{Title: t.active}
+	rendered := 0
 	for _, item := range items {
 		if item.ID <= 0 {
 			continue
 		}
+		if rendered >= maxActiveRecords {
+			break
+		}
+		rendered++
 		section.Items = append(section.Items, timesheetComponents(item, t)...)
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentButton, Title: t.stop, Action: &wire.Action{ID: "stop", Confirm: t.stop + "\n" + item.Begin, Values: map[string]string{"id": fmt.Sprint(item.ID)}}})
 	}
