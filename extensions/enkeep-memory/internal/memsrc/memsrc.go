@@ -15,6 +15,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/recall"
@@ -170,6 +171,67 @@ func tagged(st *store.State, e *entry.Entry, depth int) bool {
 	return n > 0 || e.Tagged
 }
 
+// Tags are the categories and the source space an entry is answered with, and whether they were decided now rather
+// than when it was read. An entry tagged by the 0.2.0-beta.40 rules (Tagged) keeps its own. One read before them is
+// tagged here by the same rules on what it carries (curate.CategoriesOf): its old model label, the money words of its
+// text and quotes when it has no label, the identity-paper and legal words; a class or an abstract entry also takes
+// every member's categories and, without a space of its own, the first member's space. The state is not changed
+// (memory.entries is read-only). Space: before 0.2.0-beta.40 no unit carried its space, so such an entry is answered
+// from the main space unless it or a member says otherwise; what it is about still tags it (a health matter is
+// health wherever it was said), and the hub never carries a sensitive entry outside its track.
+func Tags(st *store.State, e *entry.Entry) (cats []string, space string, backfilled bool) {
+	if Tagged(st, e) {
+		return e.Cats(), e.OriginSpace, false
+	}
+	cats, space = backfill(st, e, 0)
+	return cats, space, true
+}
+
+func backfill(st *store.State, e *entry.Entry, depth int) ([]string, string) {
+	cats, space := e.Cats(), e.OriginSpace
+	add := func(list []string) {
+		for _, c := range list {
+			if !slices.Contains(cats, c) && !slices.Contains(e.CatsRemoved, c) {
+				cats = append(cats, c)
+			}
+		}
+	}
+	if !e.Tagged {
+		texts := []string{e.Text, e.Object}
+		for _, ev := range e.Evidence {
+			texts = append(texts, ev.Quote)
+		}
+		words, _ := curate.CategoriesOf("", texts...)
+		if e.Sensitive != "" || len(e.Categories) > 0 { // a model's label: the money words add nothing on their own
+			words = slices.DeleteFunc(words, func(c string) bool { return c == entry.CatFinance })
+		}
+		add(words)
+	}
+	if depth < 2 {
+		for _, id := range e.Members {
+			m := st.Entries[id]
+			if m == nil {
+				continue
+			}
+			var mc []string
+			var ms string
+			if Tagged(st, m) {
+				mc, ms = m.Cats(), m.OriginSpace
+			} else {
+				mc, ms = backfill(st, m, depth+1)
+			}
+			add(mc)
+			if space == "" {
+				space = ms
+			}
+		}
+	}
+	for _, c := range entry.SpaceDefaults(space) {
+		add([]string{c})
+	}
+	return cats, space
+}
+
 // Subjects are the names whose mention brings the entry in: the person of a card, its object, its scopes' names.
 func Subjects(st *store.State, e *entry.Entry) []string {
 	var out []string
@@ -192,8 +254,9 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 	return out
 }
 
-// Counts summarises a source's pool: entries, active, standing, untagged.
-type Counts struct{ Entries, Active, Standing, Untagged int }
+// Counts summarises a source's pool: entries, active, standing, and Backfilled: read before the 0.2.0-beta.40 tagging
+// rules and tagged by them now (Tags).
+type Counts struct{ Entries, Active, Standing, Backfilled int }
 
 // Page answers one memory.entries page of st. The order is standing first, then rank, then newest; after is the
 // last answered entry's place, so pages stay consistent while entries come and go between them.
@@ -210,7 +273,6 @@ func Page(st *store.State, p Params) (Result, Counts, error) {
 	limit := min(max(p.Limit, 1), MaxLimit)
 	var all []item
 	var n Counts
-	tagAll := true
 	for _, e := range st.Entries {
 		if !Pool(st, e) || !idRe.MatchString(e.ID) || strings.TrimSpace(recall.Line(e)) == "" {
 			continue
@@ -224,9 +286,8 @@ func Page(st *store.State, p Params) (Result, Counts, error) {
 		if it.standing {
 			n.Standing++
 		}
-		if !Tagged(st, e) || e.OriginSpace != "" && !spaceRe.MatchString(e.OriginSpace) {
-			n.Untagged++
-			tagAll = false
+		if !Tagged(st, e) {
+			n.Backfilled++
 		}
 	}
 	sort.Slice(all, func(i, j int) bool { return before(all[i].key(), all[j].key()) })
@@ -234,14 +295,15 @@ func Page(st *store.State, p Params) (Result, Counts, error) {
 	if from != nil {
 		start = sort.Search(len(all), func(i int) bool { return before(*from, all[i].key()) })
 	}
-	res := Result{Entries: []Entry{}, Tagged: tagAll}
+	// Every entry's categories and space are decided (Tags), so the page keeps the protocol's promise: tagged.
+	res := Result{Entries: []Entry{}, Tagged: true}
 	size := 64
 	for i := start; i < len(all); i++ {
 		if len(res.Entries) == limit {
 			res.HasMore = true
 			break
 		}
-		x := entryOf(st, all[i], tagAll)
+		x := entryOf(st, all[i])
 		b, _ := json.Marshal(x)
 		if size+len(b)+1 > MaxBytes && len(res.Entries) > 0 {
 			res.HasMore = true
@@ -260,22 +322,20 @@ func Page(st *store.State, p Params) (Result, Counts, error) {
 	return res, n, nil
 }
 
-// entryOf is what the protocol carries of an entry; origin_space and categories only on a tagged page (an untagged
-// page leaves both out: nothing known, the hub takes the strictest rule).
-func entryOf(st *store.State, it item, tagged bool) Entry {
+// entryOf is what the protocol carries of an entry, with its categories and space (Tags). A space slug the protocol
+// would refuse is left out; the entry's categories still grade it.
+func entryOf(st *store.State, it item) Entry {
 	e := it.e
 	x := Entry{ID: e.ID, Text: clip(strings.TrimSpace(recall.Line(e)), MaxText), Status: Status(e), Standing: it.standing,
 		Rank: it.rank, Subjects: Subjects(st, e)}
 	if f := string(e.Facet); facetRe.MatchString(f) {
 		x.Facet = f
 	}
-	if tagged {
-		if spaceRe.MatchString(e.OriginSpace) {
-			x.OriginSpace = e.OriginSpace
-		}
-		cats := e.Cats()
-		x.Categories = cats[:min(len(cats), MaxCats)]
+	cats, space, _ := Tags(st, e)
+	if spaceRe.MatchString(space) {
+		x.OriginSpace = space
 	}
+	x.Categories = cats[:min(len(cats), MaxCats)]
 	return x
 }
 

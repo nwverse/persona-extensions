@@ -78,6 +78,6 @@ func (a *app) memoryReading() string {
 		p.After = res.After
 	}
 	return fmt.Sprintf("memory.entries: %d entr(ies) in %d page(s) of %d in the pool (%d active, %d standing), tagged %t "+
-		"(%d of the pool not tagged by the 0.2.0-beta.40 rules), in %d ms",
-		got, pages, n.Entries, active, standing, tagged, n.Untagged, time.Since(t0).Milliseconds())
+		"(%d of the pool read before the 0.2.0-beta.40 tagging rules, tagged by them on reading), in %d ms",
+		got, pages, n.Entries, active, standing, tagged, n.Backfilled, time.Since(t0).Milliseconds())
 }

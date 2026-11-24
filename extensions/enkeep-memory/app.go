@@ -43,8 +43,9 @@ type app struct {
 	rtAt      time.Time
 	exitDir   string           // where the exit files are when not in the store's directory (the page subcommand)
 	route     *model.Route     // the model route; nil: every call on the purpose's model (model_route "purpose")
-	recalls   *store.RecallLog // enkeep_recall's counts (recall.json), with their own lock
+	recalls   *store.RecallLog // the old enkeep_recall's counts (recall.json, up to 0.2.0-beta.43), with their own lock
 	marksMu   sync.Mutex       // the queued marks' file (marks.go)
+	done      []doneWrite      // the last actions.do answers by request id (tools.go doOnce)
 }
 
 func newApp() *app { return &app{} }
@@ -262,7 +263,7 @@ func (a *app) pruneRerunQueue() {
 	a.c.St.Unlock()
 	// Days were read again: every entry's status is settled again as of today, counting only the days really
 	// read (design v2 §11.3 and D.5, E4: resettle after the reruns, not only at the end of the batch, so the long
-	// backfill never leaves entries dormant on days still waiting); what enkeep_resettle would apply. Idempotent.
+	// backfill never leaves entries dormant on days still waiting); what enkeep_resettle applies. Idempotent.
 	if r, err := a.c.Resettle(a.localDay(), true); err != nil {
 		log.Printf("enkeep-memory: resettle after the reruns: %v", err)
 	} else {

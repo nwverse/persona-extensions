@@ -526,7 +526,7 @@ func TestKBSlug(t *testing.T) {
 	}
 }
 
-const RecallHintZH = "先调 enkeep_recall 查"
+const RecallHintZH = "先调 decisions_query 查"
 
 // The user's own words go out as written whatever the output language: a first-run answer in Chinese stays in an
 // English block, while the curator's own wording in the wrong language is still held back.

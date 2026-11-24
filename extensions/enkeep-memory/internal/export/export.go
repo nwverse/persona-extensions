@@ -36,7 +36,7 @@ type Options struct {
 	Logf  func(format string, args ...any)
 	// Projects are the knowledge base's projects (kb.list "projects": the id is the slug the hub looks exit D files
 	// up by). An entry's project names are matched to them by name, alias or id; a name that matches none gets no
-	// project file (it stays in enkeep_recall). Nil: the list could not be read, and files are named by kb.Slug's
+	// project file (it stays in memory.entries). Nil: the list could not be read, and files are named by kb.Slug's
 	// rule from the entry's own project name.
 	Projects []entry.KBProject
 }

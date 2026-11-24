@@ -18,7 +18,7 @@ type words struct {
 	SingleSrc  string
 	ToolsSkill string // heading of the tools skill
 	ToolsDesc  string // "%s": machine and tool names
-	RecallHint string // fixed line: look up people, projects and facts with enkeep_recall
+	RecallHint string // fixed line: look up people, projects and facts with decisions_query (the hub recalls the entries)
 	Projects   string // "%s": the projects with the most entries (the names index)
 	ProjGen    string // heading of a project block's general part (① across projects)
 	General    string // the object of ② entries without one
@@ -39,7 +39,7 @@ var fixedWords = map[string]words{
 		AskHint:    "请示用户时，如果上面的默认判断里有同类岔口，附一句「按你以往会选 X，因为……」，X 和理由取自那条判断。",
 		Due:        "（到期 %s）", SingleSrc: "（单一来源）",
 		ToolsSkill: "# 机器和工具", ToolsDesc: "用户的机器和工具手册：怎么连、怎么用、哪里会踩坑、不能用来做什么。涉及这些机器或工具时读：%s",
-		RecallHint: "涉及具体的人、项目、系统、机器或账号，或者要在岔口上替用户选时，先调 enkeep_recall 查用户的整理条目再答。",
+		RecallHint: "涉及具体的人、项目、系统、机器或账号，或者要在岔口上替用户选时，先调 decisions_query 查用户的整理条目再答。",
 		Projects:   "最近条目最多的项目：%s", ProjGen: "## 和用户打交道（通用）",
 		General: "通用", Project: "# 项目背景：%s",
 		ProjParts: map[string]string{"tools": "## 机器和工具", "judgement": "## 技术取舍", "workflow": "## 做事方式", "world": "## 进展、卡点、负责人和承诺"},
@@ -56,7 +56,7 @@ var fixedWords = map[string]words{
 		AskHint:    "When asking the user, if a default judgement above covers the same kind of fork, add \"you would usually pick X, because …\", with X and the reason from that judgement.",
 		Due:        " (due %s)", SingleSrc: " (single source)",
 		ToolsSkill: "# Machines and tools", ToolsDesc: "The user's handbook of machines and tools: how to reach and use them, pitfalls, limits. Read when working with: %s",
-		RecallHint: "For a specific person, project, system, machine or account, or before choosing for the user at a fork, call enkeep_recall to look up the user's curated entries first.",
+		RecallHint: "For a specific person, project, system, machine or account, or before choosing for the user at a fork, call decisions_query to look up the user's curated entries first.",
 		Projects:   "Projects with the most entries: %s", ProjGen: "## Working with the user (general)",
 		General: "General", Project: "# Project context: %s",
 		ProjParts: map[string]string{"tools": "## Machines and tools", "judgement": "## Technical trade-offs", "workflow": "## Ways of working",

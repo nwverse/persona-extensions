@@ -34,11 +34,11 @@ func TestMemoryEntries(t *testing.T) {
 	}
 	out, err := a.memory(t.Context(), "entries", raw(map[string]any{"contribution": "memory", "limit": 200}))
 	r, _ := out.(memsrc.Result)
-	if err != nil || len(r.Entries) != 1 || r.Entries[0].Status != "active" || !r.Entries[0].Standing || r.Tagged {
+	if err != nil || len(r.Entries) != 1 || r.Entries[0].Status != "active" || !r.Entries[0].Standing || !r.Tagged {
 		t.Fatalf("page: %+v %v", out, err)
 	}
 	status, _ := call(t, a, "enkeep_rerun_status", map[string]any{})
-	if !strings.Contains(status, "memory.entries: 1 entr(ies) in 1 page(s) of 1 in the pool (1 active, 1 standing), tagged false (1 of the pool not tagged") {
+	if !strings.Contains(status, "memory.entries: 1 entr(ies) in 1 page(s) of 1 in the pool (1 active, 1 standing), tagged true (1 of the pool read before the 0.2.0-beta.40 tagging rules") {
 		t.Fatalf("status: %q", status)
 	}
 }

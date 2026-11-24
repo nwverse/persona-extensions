@@ -475,6 +475,11 @@ func categoriesOf(label string, texts ...string) (cats []string, ok bool) {
 var legalWords = regexp.MustCompile(`(?i)身份证|护照|签证|驾驶证|驾照|户口|户籍|居住证|绿卡|社保号|诉讼|起诉|被告|原告|官司|律师函|仲裁|判决书|` +
 	`\bpassport\b|\bvisa\b|green card|driver'?s licen[cs]e|social security number|\bssn\b|lawsuit|\bsued\b|arbitration`)
 
+// CategoriesOf is categoriesOf for the memory source's tagging of entries read before these rules (memsrc.Tags).
+func CategoriesOf(label string, texts ...string) ([]string, bool) {
+	return categoriesOf(label, texts...)
+}
+
 // tagCategories adds categories to an entry, as tagged by the plugin's model reading and rules.
 func tagCategories(e *entry.Entry, cats []string) {
 	e.Tagged = true

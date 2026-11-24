@@ -36,10 +36,10 @@ func TestToolSchemasHaveNoEmptyEnum(t *testing.T) {
 			}
 		}
 	}
-	if len(rerunTools) == 0 {
+	if len(allTools()) == 0 {
 		t.Fatal("no tools")
 	}
-	for _, tl := range rerunTools {
+	for _, tl := range allTools() {
 		b, err := json.Marshal(tl.InputSchema)
 		if err != nil {
 			t.Fatal(err)

@@ -1,5 +1,32 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.44 (pre-release)
+
+The tools follow the hub's rules for a memory extension (Persona #13532, #13586: `extmgr/memory_sources.go`
+`memoryWithheld`, `extension_assistant.go` `assistantMCPServers`). With beta.42 every `enkeep_*` tool was a read tool
+of the connector, so declaring `memory_sources` withheld all of them from the assistant's conversations; this
+version reads only through `memory.entries`, and the writes are writes.
+
+- **No recall tool.** `enkeep_recall` is removed: the hub reads the entries with `memory.entries`, puts what each
+  scene may use in its context, and `decisions_query` recalls more (`memory: [{id, text}]`, ids as
+  `memory-extension:<id>`). The per-turn block's look-up line and the package skill now point to `decisions_query`.
+- **Writes are actions** (capability `actions`; `actions.list`, `actions.describe`, `actions.do`): `enkeep_rerun`,
+  `enkeep_resettle` (applies; no `dry_run`), `enkeep_seed_import` (imports; no `apply`) and `enkeep_mark_wrong`
+  (takes `memory-extension:<id>` too). The hub runs them only through its gate: a card on the phone, described from
+  the checked arguments and the pages' snapshot (never the store's lock), unless a `connector_gate` rule allows the
+  write. A repeated `request_id` answers the first result.
+- **Reads are read tools, for coding Agents** (`agent_tools`): `enkeep_rerun_status`, `enkeep_seed_status`, and two
+  new previews split off the writes, `enkeep_resettle_preview` (what `dry_run` reported) and `enkeep_seed_preview`
+  (what `apply: false` reported). The writes are in `agent_tools` too, as every tool was before. The hub does not offer
+  the reads in the assistant's conversations, by design. The connector id and the contribution keys are unchanged.
+- **`memory.entries` is tagged.** An untagged page puts none of its entries in any scene (the hub takes each for
+  sensitive everywhere), and beta.42's pages were untagged while any entry read before the 0.2.0-beta.40 tagging rules
+  was in the pool. Such an entry is now tagged on reading by the same rules on what it carries: its old model label,
+  the money words of its text and quotes when it has no label, the identity-paper and legal words, a class's members'
+  categories and space, the space's default categories. Its space is the main one unless it or a member says otherwise
+  (no unit carried its space before beta.40). The state is not changed. `enkeep_rerun_status` says how many were
+  tagged so.
+
 ## 0.2.0-beta.43 (pre-release)
 
 Only a tool schema fix; nothing else changes.

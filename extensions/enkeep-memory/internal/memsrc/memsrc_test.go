@@ -51,7 +51,7 @@ func TestPage(t *testing.T) {
 	if st2["i-stable"] != "active" || st2["w-shift"] != "active" || st2["u-cand"] != "candidate" || st2["j-dorm"] != "dormant" {
 		t.Errorf("statuses %v", st2)
 	}
-	if n.Entries != 5 || n.Active != 3 || n.Standing != 2 || n.Untagged != 0 {
+	if n.Entries != 5 || n.Active != 3 || n.Standing != 2 || n.Backfilled != 0 {
 		t.Errorf("counts %+v", n)
 	}
 	for _, e := range r.Entries {
@@ -99,25 +99,52 @@ func TestPage(t *testing.T) {
 	}
 }
 
-// One entry without the tagging mark (from before 0.2.0-beta.40) makes the page untagged, and then no entry carries
-// origin_space or categories; a class is tagged when every member is.
-func TestUntagged(t *testing.T) {
+// Entries from before the 0.2.0-beta.40 tagging rules are tagged here by the same rules, so the page stays tagged (an
+// untagged page would carry none of the entries anywhere): the old model label, the money and legal words when there
+// is no label, a class's members' categories and space. The state is not changed.
+func TestBackfilledTags(t *testing.T) {
 	st := state()
 	st.Entries["i-stable"].Members = []string{"a1", "a2"}
 	st.Entries["a1"] = &entry.Entry{ID: "a1", Facet: entry.Interaction, Grain: entry.Action, Text: "a1", Status: entry.Retired, Tagged: true}
-	st.Entries["a2"] = &entry.Entry{ID: "a2", Facet: entry.Interaction, Grain: entry.Action, Text: "a2", Status: entry.Retired}
+	st.Entries["a2"] = &entry.Entry{ID: "a2", Facet: entry.Interaction, Grain: entry.Action, Text: "a2", Status: entry.Retired, OriginSpace: "health"}
+	st.Entries["w-old"] = &entry.Entry{ID: "w-old", Facet: entry.Workflow, Text: "renew the passport before the trip", Status: entry.Stable,
+		Count: 2, Last: "2026-10-01", Origin: entry.Behavior}
+	st.Entries["w-label"] = &entry.Entry{ID: "w-label", Facet: entry.Workflow, Text: "keeps the receipts", Status: entry.Stable,
+		Count: 2, Last: "2026-10-01", Origin: entry.Behavior, Sensitive: "emotion",
+		Evidence: []entry.Evidence{{Quote: "报销的发票都留着"}}}
+	st.Entries["w-money"] = &entry.Entry{ID: "w-money", Facet: entry.Workflow, Text: "pays the rent", Status: entry.Stable,
+		Count: 2, Last: "2026-10-01", Origin: entry.Behavior, Evidence: []entry.Evidence{{Quote: "每月转账交房租"}}}
+	st.Entries["w-plain"] = &entry.Entry{ID: "w-plain", Facet: entry.Workflow, Text: "runs the gate before merging", Status: entry.Stable,
+		Count: 2, Last: "2026-10-01", Origin: entry.Behavior}
 	r, n, _ := Page(st, Params{Contribution: "memory", Limit: 200})
-	if r.Tagged || n.Untagged != 1 {
-		t.Fatalf("tagged %v untagged %d", r.Tagged, n.Untagged)
+	if !r.Tagged || n.Backfilled != 5 {
+		t.Fatalf("tagged %v backfilled %d", r.Tagged, n.Backfilled)
 	}
+	got := map[string]Entry{}
 	for _, e := range r.Entries {
-		if e.OriginSpace != "" || e.Categories != nil {
-			t.Errorf("untagged page carries tags: %+v", e)
-		}
+		got[e.ID] = e
+	}
+	if e := got["i-stable"]; e.OriginSpace != "health" || !slices.Equal(e.Categories, []string{"health"}) {
+		t.Errorf("class from its members: %+v", e)
+	}
+	if e := got["w-old"]; !slices.Equal(e.Categories, []string{"legal_id"}) || e.OriginSpace != "" {
+		t.Errorf("legal words: %+v", e)
+	}
+	if e := got["w-label"]; !slices.Equal(e.Categories, []string{"emotion"}) {
+		t.Errorf("a label: the money words add nothing: %+v", e)
+	}
+	if e := got["w-money"]; !slices.Contains(e.Categories, "finance") {
+		t.Errorf("money words without a label: %+v", e)
+	}
+	if e := got["w-plain"]; e.Categories != nil || e.OriginSpace != "" {
+		t.Errorf("general: %+v", e)
+	}
+	if st.Entries["w-old"].Tagged || len(st.Entries["w-old"].Categories) != 0 {
+		t.Error("the state was changed")
 	}
 	st.Entries["a2"].Tagged = true
-	if r, _, _ := Page(st, Params{Contribution: "memory", Limit: 200}); !r.Tagged {
-		t.Error("every member tagged: the class is")
+	if _, n, _ := Page(st, Params{Contribution: "memory", Limit: 200}); n.Backfilled != 4 {
+		t.Errorf("every member tagged: the class is; backfilled %d", n.Backfilled)
 	}
 }
 

@@ -72,6 +72,8 @@ judgement goes in when it states its fork, the choice and what was not chosen or
 
 ## `enkeep_recall`
 
+> Removed in 0.2.0-beta.44: the hub reads the entries with `memory.entries` and recalls them with `decisions_query`. What follows describes beta.37 to beta.43.
+
 `{"query": "…", "facets": [...], "limit": 12}` → up to `limit` lines (at most 30, about 4000 characters together), best
 match first: `- [facet·status] line (last day; source kinds) id:<entry id>`. Ranking: how much of the query the entry's
 text and names cover, doubled when a query word is a name the entry is about, times the status weight (stable 1,

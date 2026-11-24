@@ -329,7 +329,7 @@ func (c *compiler) instructions(p *plan, texts map[string]string) file {
 }
 
 // namesIndex is ⑤'s names index in exit A (K18): the people the user deals with most and the projects with the most
-// entries, names only; what is known about them is looked up with enkeep_recall.
+// entries, names only; what is known about them is looked up with decisions_query (the hub recalls memory.entries).
 func (c *compiler) namesIndex(p *plan) []line {
 	var out []line
 	if c.on(entry.K14People) {
