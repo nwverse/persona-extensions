@@ -48,6 +48,8 @@ AGENT_SUFFIX_MOST = 100
 AGENT_SUFFIX_LEAST = 4
 AGENT_EMPTY = "（只发了 /agent：看上面的上下文和引用的消息，判断要做什么。）"
 AGENT_TYPES = ("TEXT", "POST")
+CHANNEL_IMAGE_MOST = 3 << 20
+CHANNEL_IMAGES_MOST = 4
 AGENT_FRESH_SECONDS = 600
 AGENT_CONTEXT_MESSAGES = 20
 AGENT_RETRY_SECONDS = [2, 5, 15]
@@ -354,6 +356,10 @@ class Connector:
         if text.rstrip().endswith(self.suffix):
             return None
         request = agent_request(text)
+        if request is None and m.get("type") == "POST":
+            first, newline, body = text.lstrip().partition("\n")
+            if newline and (first == "[富文本]" or first.startswith("[富文本] ")):
+                request = agent_request(body)
         if request is not None:
             return request
         return mention_request(text, m.get("mentions"), me) if self.mention else None
@@ -385,6 +391,13 @@ class Connector:
             message["quote"] = _line(parent)
         for wait in AGENT_RETRY_SECONDS + [None]:
             try:
+                media = [x for x in m.get("media") or [] if x.get("kind") == "image" and x.get("key")]
+                images = []
+                for item in media[:CHANNEL_IMAGES_MOST]:
+                    mime, data = self.backend.download(m["id"], m["chat"], item["key"], CHANNEL_IMAGE_MOST)
+                    images.append({"mime": mime, "data": base64.b64encode(data).decode()})
+                if images:
+                    message["images"] = images
                 # The hub keeps each message id once: handing it over again after a cut-off call answers it once.
                 self.hub.call(CHANNEL + "receive", {"contribution": ID, "message": message})
                 return
