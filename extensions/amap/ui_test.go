@@ -153,6 +153,72 @@ func TestUISearchAndOpenPOIImage(t *testing.T) {
 	}
 }
 
+func TestUISearchRendersPOICostWithoutPanic(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+	// Queue recorded coffee fixture whose POIs contain business.cost ("59.00", "107.00").
+	f.queue("/v5/place/text", fixture(t, "around-coffee"))
+
+	res, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "search",
+		Values: map[string]string{"keywords": "咖啡", "city": "北京"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, res.View, false)
+	wantIn(t, string(mustJSON(t, res.View)), "¥59/人", "¥107/人")
+}
+
+func TestUIRoutePreviewKeepsDestinationMarkerBeyondLimit(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	// Start + 10 waypoints + destination = 12 stops (> staticMapMarkersMost = 10).
+	wps := []string{
+		"39.910,116.380", "39.911,116.381", "39.912,116.382", "39.913,116.383", "39.914,116.384",
+		"39.915,116.385", "39.916,116.386", "39.917,116.387", "39.918,116.388", "39.919,116.389",
+	}
+	res, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "route",
+		Values: map[string]string{
+			"from":      "39.900,116.370",
+			"to":        "39.930,116.410",
+			"waypoints": strings.Join(wps, ";"),
+			"mode":      "driving",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, res.View, false)
+	refs := wire.ImageRefs(res.View)
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 route map ref, got %v", refs)
+	}
+	if _, err := a.imagePage(context.Background(), &ext.ImageRequest{UIImageParams: wire.UIImageParams{
+		Contribution: pageUI, Ref: refs[0], Width: 640,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	q := f.last("/v3/staticmap")
+	markers := strings.Split(q.Get("markers"), "|")
+	if len(markers) != staticMapMarkersMost {
+		t.Fatalf("expected %d markers, got %d: %v", staticMapMarkersMost, len(markers), markers)
+	}
+	if !strings.HasPrefix(markers[0], "mid,0x2E7D32,A:") {
+		t.Fatalf("expected green A start marker, got %q", markers[0])
+	}
+	wantDest := "mid,0xE53935,J:" + amapLocation(point{39.930, 116.410})
+	if markers[len(markers)-1] != wantDest {
+		t.Fatalf("last marker = %q, want red J destination %q", markers[len(markers)-1], wantDest)
+	}
+	pathStops := strings.Split(strings.TrimPrefix(q.Get("paths"), "5,0x1976D2,1,,:"), ";")
+	if len(pathStops) != 12 {
+		t.Fatalf("expected all 12 stops on route path, got %d", len(pathStops))
+	}
+}
+
 func TestUIRouteWithWaypointsAndUsageTab(t *testing.T) {
 	f := newFake(t)
 	a, _ := testApp(t, f)

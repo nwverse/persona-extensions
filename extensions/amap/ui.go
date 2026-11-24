@@ -332,7 +332,11 @@ func (a *app) actionPage(ctx context.Context, r *ext.UIRequest) (*wire.ActionRes
 		}
 	case "delete_place":
 		name := strings.TrimSpace(r.Values["name"])
-		if !a.removeUIPlace(name) {
+		removed, err := a.deleteUIPlace(name)
+		if err != nil {
+			st.PlaceErr = err.Error()
+			toast = err.Error()
+		} else if !removed {
 			toast = fmt.Sprintf("「%s」未在本页保存列表里（若来自扩展设置，请到 设置 › 扩展 › 高德地图 修改）", clip(name, 20))
 		} else {
 			toast = fmt.Sprintf("已删除常用地点「%s」", clip(name, 20))
@@ -533,7 +537,7 @@ func (a *app) searchSections(ctx context.Context, st uiState) []wire.Section {
 			val = append(val, "★ "+biz.Rating.String())
 		}
 		if c, ok := biz.Cost.num(); ok && c > 0 {
-			val = append(val, "¥"+strconv.FormatFloat(c, 'f', -1, 0)+"/人")
+			val = append(val, "¥"+strconv.FormatFloat(c, 'f', -1, 64)+"/人")
 		}
 		row := wire.Component{
 			Type:     wire.ComponentRow,
@@ -691,20 +695,25 @@ func (a *app) routeSections(ctx context.Context, st uiState) []wire.Section {
 	}
 	if len(stops) >= 2 {
 		q := url.Values{}
-		markerParts := make([]string, 0, min(len(stops), staticMapMarkersMost))
 		pathCoords := make([]string, 0, len(stops))
-		for i, s := range stops {
-			loc := amapLocation(s.at)
-			pathCoords = append(pathCoords, loc)
-			if i < staticMapMarkersMost {
-				colorHex := "0x1976D2"
-				if i == 0 {
-					colorHex = "0x2E7D32"
-				} else if i == len(stops)-1 {
-					colorHex = "0xE53935"
-				}
-				markerParts = append(markerParts, fmt.Sprintf("mid,%s,%c:%s", colorHex, rune('A'+i), loc))
+		for _, s := range stops {
+			pathCoords = append(pathCoords, amapLocation(s.at))
+		}
+		marked := stops
+		if len(stops) > staticMapMarkersMost {
+			marked = make([]place, 0, staticMapMarkersMost)
+			marked = append(marked, stops[:staticMapMarkersMost-1]...)
+			marked = append(marked, stops[len(stops)-1])
+		}
+		markerParts := make([]string, 0, len(marked))
+		for i, s := range marked {
+			colorHex := "0x1976D2"
+			if i == 0 {
+				colorHex = "0x2E7D32"
+			} else if i == len(marked)-1 {
+				colorHex = "0xE53935"
 			}
+			markerParts = append(markerParts, fmt.Sprintf("mid,%s,%c:%s", colorHex, rune('A'+i), amapLocation(s.at)))
 		}
 		q.Set("markers", strings.Join(markerParts, "|"))
 		q.Set("paths", "5,0x1976D2,1,,:"+strings.Join(pathCoords, ";"))
@@ -724,7 +733,7 @@ func (a *app) routeSections(ctx context.Context, st uiState) []wire.Section {
 				Type:    wire.ComponentImage,
 				Src:     &wire.ImageSource{Ref: ref, Width: 600, Height: 400},
 				Alt:     fmt.Sprintf("%s 到 %s 路线示意图", stops[0].label(), stops[len(stops)-1].label()),
-				Caption: fmt.Sprintf("起点 A（绿）→ 终点 %c（红）", rune('A'+min(len(stops), staticMapMarkersMost)-1)),
+				Caption: fmt.Sprintf("起点 A（绿）→ 终点 %c（红）", rune('A'+len(marked)-1)),
 				Aspect:  wire.ImageAspectLandscape,
 				Fit:     wire.ImageFitFit,
 			},
