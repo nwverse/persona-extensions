@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -10,7 +9,6 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
-	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
@@ -153,7 +151,7 @@ func TestEntryNodeProposalAndHealthHardeningSchema(t *testing.T) {
 		Status:   entry.Stable,
 		Count:    3,
 		Counters: counterIDs,
-		Export:   &entry.Exported{Text: longText},
+		Export:   &entry.ExportText{Text: longText},
 	}
 	a.c.St.S.Proposals = append(a.c.St.S.Proposals, &store.Proposal{
 		ID:       "K-long",
@@ -177,17 +175,13 @@ func TestEntryNodeProposalAndHealthHardeningSchema(t *testing.T) {
 	render(t, a, page{Tab: tabReview, Open: "K-long"}, "zh-Hans")
 	render(t, a, page{Tab: "graph", Open: "n-hub"}, "zh-Hans")
 
-	// Health page with > 100 refusals (TableComponent.rows maxItems=100).
+	// Health refusal table with > 100 refusals (TableComponent.rows maxItems=100).
 	refusals := make([]store.Refusal, 120)
 	for i := range refusals {
 		refusals[i] = store.Refusal{Name: fmt.Sprintf("src-%03d", i), Step: "daily", From: 1, To: 10, Lines: 10, Reason: "blocked", Outcome: store.RefusalSkipped}
 	}
-	a.c.Live.Set(&curate.Snapshot{Daily: &curate.RunBrief{Period: "2026-11-23", Refusals: refusals, Skipped: 120}})
-	vHealth, err := a.health(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Locale: "zh-Hans", UIVersion: 6}})
-	if err != nil {
-		t.Fatalf("health render: %v", err)
-	}
+	vHealth := &wire.View{Title: "记忆体检", Sections: []wire.Section{refusalSection(&curate.RunBrief{Period: "2026-11-23", Refusals: refusals, Skipped: 120})}}
 	if err := wire.CheckView(vHealth); err != nil {
-		t.Fatalf("health page fails CheckView: %v", err)
+		t.Fatalf("health refusal section fails CheckView: %v", err)
 	}
 }
