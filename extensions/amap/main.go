@@ -30,6 +30,8 @@ var about = func() (m struct{ ID, Version string }) {
 // The contributions' and the secret's ids (persona-extension.json).
 const (
 	connectorID = "amap"
+	pageUI      = "amap"
+	cardUI      = "amap-card"
 	keySecret   = "api_key"
 )
 
@@ -40,5 +42,9 @@ func program(a *app) ext.Program {
 		ID: about.ID, Version: about.Version, Manifest: manifest,
 		Init:       a.init,
 		Namespaces: map[string]ext.Handler{"connector": a.connector, "settings": a.settings},
+		UI: map[string]ext.Page{
+			pageUI: {Render: a.renderPage, Action: a.actionPage, Image: a.imagePage},
+			cardUI: {Render: a.renderCard},
+		},
 	}
 }

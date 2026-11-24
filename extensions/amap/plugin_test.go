@@ -30,6 +30,11 @@ func TestManifestMatchesTheCode(t *testing.T) {
 		!slices.Equal(c[0].Hosts, []string{"restapi.amap.com"}) {
 		t.Fatalf("connectors %+v", c)
 	}
+	if len(m.Contributes.UI) != 2 ||
+		m.Contributes.UI[0].ID != pageUI || m.Contributes.UI[0].Placement != wire.PlacementNavPage || m.Contributes.UI[0].Icon != "location" ||
+		m.Contributes.UI[1].ID != cardUI || m.Contributes.UI[1].Placement != wire.PlacementOverviewCard || m.Contributes.UI[1].Opens != pageUI {
+		t.Fatalf("ui %+v", m.Contributes.UI)
+	}
 	if !slices.Equal(m.Permissions.Network, []string{"restapi.amap.com"}) {
 		t.Fatalf("network %v", m.Permissions.Network)
 	}
@@ -83,8 +88,10 @@ func startWithKey(t *testing.T, a *app, key string) *exttest.Host {
 func TestConformance(t *testing.T) {
 	f := newFake(t)
 	a := &app{logf: t.Logf, tune: tuneFor(f, newClock())}
-	exttest.CheckConnectors(t, manifest, exttest.Serve(t, program(a)))
-	if st := a.status(); st.State != wire.ConnectorStateNotConfigured || st.GuideURL != consoleURL {
+	exttest.Check(t, manifest, exttest.Serve(t, program(a)))
+	a2 := &app{logf: t.Logf, tune: tuneFor(f, newClock())}
+	exttest.CheckConnectors(t, manifest, exttest.Serve(t, program(a2)))
+	if st := a2.status(); st.State != wire.ConnectorStateNotConfigured || st.GuideURL != consoleURL {
 		t.Fatalf("without a key: %+v", st)
 	}
 

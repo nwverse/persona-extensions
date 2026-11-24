@@ -4,11 +4,12 @@
 
 Places, routes and weather in China for the Persona assistant, from the [AMap Web Service API](https://lbs.amap.com/api/webservice/summary) with the user's own key. Design: [#590](https://github.com/nwverse/persona-extensions/issues/590).
 
-Who it serves: everyday assistant users. Nothing new appears in the apps' UI. The user fills in a key once in 设置 › 扩展 › 高德地图, and the assistant gets six read-only tools.
+Who it serves: everyday assistant users and anyone who wants an in-app map/route/quota workbench. The user fills in a key once in 设置 › 扩展 › 高德地图, and gets ten read-only assistant tools plus a dedicated「高德地图」page and overview card.
 
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |
-| `connectors` | `amap`, capabilities `status` and `tools` | `amap_search`, `amap_nearby`, `amap_geocode`, `amap_reverse_geocode`, `amap_route` and `amap_weather`, all read-only, with no confirmation card. |
+| `connectors` | `amap`, capabilities `status` and `tools` | `amap_search`, `amap_input_tips`, `amap_nearby`, `amap_geocode`, `amap_reverse_geocode`, `amap_district`, `amap_route`, `amap_distance`, `amap_static_map` and `amap_weather`, all read-only, with no confirmation card. |
+| `ui` | `amap` (`nav_page`, icon `location`), `amap-card` (`overview_card`) | Interactive place search, route planner (with driving waypoints), static map preview with zoom/traffic toggles served via `ui.image`, city weather, and a zero-network monthly usage overview card. |
 | `skills` | `amap` | When to use which tool, getting the user's location or saved places first, and how to treat the quota. |
 
 ## The key
@@ -30,10 +31,14 @@ Every coordinate the tools take or give is **WGS-84 `纬度,经度`**, the syste
 | Tool | Arguments | Answer, one line each |
 | --- | --- | --- |
 | `amap_search` | `keywords`; `city` (a preference, not a limit); `city_only`; `limit` 1–10, default 5 | Name (category), address, point, phone, today's opening hours, rating, cost per person in ¥. |
+| `amap_input_tips` | `keywords`; `city`; `city_only`; optional `latitude` + `longitude` bias; `limit` 1–10, default 5 | Autocomplete suggestions: name, district, address, point (when available), adcode. |
 | `amap_nearby` | `latitude` + `longitude`, or `place` (looked up first, preferring `city`); `keywords`; `radius_meters` 1–50000, default 1000; `sort` `distance` (default) or `weight`; `limit` | As above with the distance in metres, nearest first. Without keywords AMap's default categories: food, shopping, daily services. |
 | `amap_geocode` | `address`; `city` | Up to three matches: formatted address, point, match level (门址, 兴趣点, 区县…), city, district, adcode. |
 | `amap_reverse_geocode` | `latitude`, `longitude` | Address, street number with direction and distance, the areas the point is inside, business areas, three nearby places. |
-| `amap_route` | `mode` `driving` (default), `walking`, `cycling`, `ebike` or `transit`; each end as `*_latitude` + `*_longitude` or a name or address (`from`, `to`); `city` (where to look the names up); `prefer` (driving: `recommended`, `fastest`, `avoid_congestion`, `avoid_tolls`, `avoid_highways`); `depart_at` (transit, Beijing time `2026-11-16 08:30`); `alternatives` 1–3; `steps` | Distance in km and time in minutes. Driving adds traffic lights, tolls, a restriction that cannot be avoided, the three main roads and AMap's taxi fare estimate. Transit gives each plan's time, fare, total walking and legs: `步行 880 米 → 地铁2号线内环 前门→宣武门（2 站） → …`. `steps` adds up to 15 turn-by-turn instructions. |
+| `amap_district` | optional `keywords` (province/city/district name or adcode, empty for China); `subdistrict` 0–2, default 1 | Administrative hierarchy: level, adcode, citycode, WGS-84 center and bounded child districts. |
+| `amap_route` | `mode` `driving` (default), `walking`, `cycling`, `ebike` or `transit`; each end as `*_latitude` + `*_longitude` or a name or address (`from`, `to`); `waypoints` (up to 16 stops for `driving`, names/addresses or WGS-84 `lat,lng`); `city` (where to look names up); `prefer` (driving: `recommended`, `fastest`, `avoid_congestion`, `avoid_tolls`, `avoid_highways`); `depart_at` (transit, Beijing time `2026-11-16 08:30`); `alternatives` 1–3; `steps` | Distance in km and time in minutes. Driving adds traffic lights, tolls, a restriction that cannot be avoided, the three main roads and AMap's taxi fare estimate. Transit gives each plan's time, fare, total walking and legs: `步行 880 米 → 地铁2号线内环 前门→宣武门（2 站） → …`. `steps` adds up to 15 turn-by-turn instructions. |
+| `amap_distance` | `origins` (1–20 names, addresses or WGS-84 `lat,lng`); `destination` or `destination_latitude` + `destination_longitude`; `mode` `driving` (default), `walking` or `straight`; `city`; `sort` `input` (default), `distance` or `duration` | Batch distance and duration from each origin to the destination, optionally sorted by nearest or fastest. |
+| `amap_static_map` | `latitude` + `longitude` or `place`; `markers` (up to 10, labelled A–J); `path` (2–20 points connected with a blue polyline); `city`; `zoom` 1–17; `width` / `height` 100–1024 (default 600×400); `traffic` | A standalone text summary plus a PNG map image (`ConnectorToolImage`, auto-falling back from `scale=2` to `scale=1` if over 1 MiB). |
 | `amap_weather` | `city` (name or adcode); `days` 0–4, default 3 | The live report (weather, °C, humidity, wind direction and force in 级, report time) and each day's day and night weather, low~high °C and wind. Data from the China Meteorological Administration through AMap. |
 
 A place given by name (a route's end, or the centre of a nearby search) is looked up in one of two ways:
@@ -51,7 +56,7 @@ AMap reads and writes GCJ-02 inside China. The program converts every point at A
 
 ## Quota and pacing
 
-AMap's free allowances are monthly and shared by everything in a group. For a verified individual developer, from 2025-05-20: 150,000 a month for 基础 LBS (geocoding, reverse geocoding, routes), 5,000 for 基础搜索 (keyword and around search) and 5,000 for weather. Unverified accounts get less, and the per-second limit is shown only in the AMap console.
+AMap's free allowances are monthly and shared by everything in a group. For a verified individual developer, from 2025-05-20: 150,000 a month for 基础 LBS (geocoding, reverse geocoding, districts, routes, distance measurement and static maps), 5,000 for 基础搜索 (keyword, around search and input tips) and 5,000 for weather. Unverified accounts get less, and the per-second limit is shown only in the AMap console.
 
 - **Cache** (memory only): geocoding and reverse geocoding 30 days (at most 2000 answers in all); searches 15 minutes; weather 20 minutes live, 1 hour forecast; driving 2 minutes (live traffic); other routes 15 minutes. The same request asked while one is on its way waits for that one.
 - **Pacing**: requests start at most three a second. One that would wait more than 3 seconds for its turn is refused as `rate_limited`.

@@ -19,6 +19,9 @@ import (
 // stepsMost is how many turn-by-turn steps a route lists at most.
 const stepsMost = 15
 
+// waypointsMost is how many driving waypoints AMap's v5 driving API accepts.
+const waypointsMost = 16
+
 // driveStrategies are AMap's driving strategies for the tool's preferences.
 var driveStrategies = map[string]string{
 	"recommended":      "32",
@@ -142,7 +145,38 @@ func (a *app) toolRoute(ctx context.Context, in args) (string, error) {
 	if toGiven {
 		to.citycode = knownCity
 	}
-	if metres(from.at, to.at) < 20 {
+	var rawWaypoints []string
+	for _, w := range in.Waypoints {
+		if w = strings.TrimSpace(w); w != "" {
+			rawWaypoints = append(rawWaypoints, w)
+		}
+	}
+	if len(rawWaypoints) > 0 {
+		if mode != "driving" {
+			return "", errors.New("途经点（waypoints）目前只支持驾车（driving）路线")
+		}
+		if len(rawWaypoints) > waypointsMost {
+			return "", fmt.Errorf("途经点最多支持 %d 个", waypointsMost)
+		}
+	}
+	var viaPlaces []place
+	var viaCoords []string
+	wpCity := city
+	if wpCity == "" {
+		wpCity = to.citycode
+	}
+	for _, w := range rawWaypoints {
+		pl, err := a.resolvePoint(ctx, w, wpCity)
+		if err != nil {
+			return "", err
+		}
+		viaPlaces = append(viaPlaces, pl)
+		viaCoords = append(viaCoords, amapLocation(pl.at))
+		if wpCity == "" && pl.citycode != "" {
+			wpCity = pl.citycode
+		}
+	}
+	if len(viaPlaces) == 0 && metres(from.at, to.at) < 20 {
 		return fmt.Sprintf("%s和%s几乎在同一个地方，不用规划路线。", from.label(), to.label()), nil
 	}
 	alts := limitOr(in.Alternatives, 1, 3)
@@ -151,6 +185,9 @@ func (a *app) toolRoute(ctx context.Context, in args) (string, error) {
 	switch mode {
 	case "driving":
 		q.Set("strategy", driveStrategies[prefer])
+		if len(viaCoords) > 0 {
+			q.Set("waypoints", strings.Join(viaCoords, ";"))
+		}
 		ttl = drivingFor
 	case "walking", "cycling", "ebike":
 		if alts > 1 {
@@ -180,6 +217,13 @@ func (a *app) toolRoute(ctx context.Context, in args) (string, error) {
 		return "", err
 	}
 	head := fmt.Sprintf("%s %s → %s", modeWords[mode], from.label(), to.label())
+	if len(viaPlaces) > 0 {
+		viaLabels := make([]string, len(viaPlaces))
+		for i, vp := range viaPlaces {
+			viaLabels[i] = vp.label()
+		}
+		head = fmt.Sprintf("%s %s → 经 %s → %s", modeWords[mode], from.label(), strings.Join(viaLabels, "、"), to.label())
+	}
 	if mode == "driving" {
 		head += "（" + preferWords[prefer] + "）"
 	}

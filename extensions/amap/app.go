@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -38,10 +39,22 @@ type app struct {
 	client *client
 	probe  bool          // check the key once at start (off in tests that count requests)
 	tune   func(*client) // tests: point the client at a fake, change its clock
+
+	refMu sync.Mutex
+	refs  *mapRefStore // static map refs served through ui.image
 }
 
 func newApp() *app {
 	return &app{logf: log.Printf, client: newClient("", "", log.Printf), probe: true}
+}
+
+func (a *app) mapRefs() *mapRefStore {
+	a.refMu.Lock()
+	defer a.refMu.Unlock()
+	if a.refs == nil {
+		a.refs = newMapRefStore()
+	}
+	return a.refs
 }
 
 func (a *app) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
@@ -118,14 +131,14 @@ func (a *app) connector(ctx context.Context, method string, raw json.RawMessage)
 	case "tools.call":
 		ctx, cancel := context.WithTimeout(ctx, toolBudget)
 		defer cancel()
-		text, err := a.callTool(ctx, p.Name, p.Args)
+		res, err := a.callTool(ctx, p.Name, p.Args)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				err = errSlow
 			}
 			return nil, err
 		}
-		return wire.ConnectorCallResult{Text: text}, nil
+		return res, nil
 	}
 	return nil, ext.UnknownMethod("connector." + method)
 }

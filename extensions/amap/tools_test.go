@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -11,7 +12,7 @@ import (
 
 func TestToolsAreListedWithSchemas(t *testing.T) {
 	list := toolList()
-	if len(list) != 6 {
+	if len(list) != 10 {
 		t.Fatalf("%d tools", len(list))
 	}
 	seen := map[string]bool{}
@@ -311,5 +312,193 @@ func TestWords(t *testing.T) {
 	}
 	if got := wind("旋转不定", "≤3"); got != "风向不定 ≤3 级" {
 		t.Errorf("wind %q", got)
+	}
+}
+
+func TestDrivingWaypoints(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	// Mix a place name and a WGS-84 "lat,lng" coordinate as waypoints.
+	wpCoord := point{39.9080, 116.3900}
+	text := mustCall(t, a, "amap_route", `{"from":"天安门","to":"北京南站","waypoints":["西单","39.9080,116.3900"]}`)
+	q := f.last("/v5/direction/driving")
+	wantWP := "116.374128,39.907439;" + amapLocation(wpCoord)
+	if q.Get("waypoints") != wantWP {
+		t.Fatalf("waypoints %q, want %q", q.Get("waypoints"), wantWP)
+	}
+	wantIn(t, text, "驾车 天安门（北京市东城区） → 经 西单（北京市西城区）、39.908000,116.390000 → 北京南站（北京市丰台区）（高德推荐）：")
+
+	// Non-driving modes refuse waypoints cleanly without hitting AMap.
+	before := f.count("")
+	if _, err := call(t, a, "amap_route", `{"mode":"transit","from":"天安门","to":"北京南站","waypoints":["西单"]}`); err == nil || !strings.Contains(err.Error(), "只支持驾车") {
+		t.Fatalf("expected non-driving waypoint refusal, got %v", err)
+	}
+	if _, err := call(t, a, "amap_route", `{"mode":"walking","from":"天安门","to":"北京南站","waypoints":["西单"]}`); err == nil || !strings.Contains(err.Error(), "只支持驾车") {
+		t.Fatalf("expected walking waypoint refusal, got %v", err)
+	}
+	// More than 16 waypoints refused.
+	many := `{"from":"天安门","to":"北京南站","waypoints":[` + strings.Repeat(`"39.91,116.40",`, 16) + `"39.91,116.40"]}`
+	if _, err := call(t, a, "amap_route", many); err == nil || !strings.Contains(err.Error(), "最多支持 16") {
+		t.Fatalf("expected >16 waypoint refusal, got %v", err)
+	}
+	if f.count("") != before {
+		t.Fatalf("refused waypoint calls still reached AMap")
+	}
+}
+
+func TestDistance(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	// Sort by distance: origin 2 (西单, 4.2 km) comes before origin 1 (天安门, 9.2 km).
+	text := mustCall(t, a, "amap_distance", `{"origins":["天安门","西单"],"destination":"北京南站","mode":"driving","sort":"distance"}`)
+	q := f.last("/v3/distance")
+	if q.Get("origins") != "116.397755,39.903182|116.374128,39.907439" || q.Get("destination") != "116.378517,39.865246" || q.Get("type") != "1" {
+		t.Fatalf("query %v", q)
+	}
+	first := strings.Index(text, "1. 西单（北京市西城区）：4.2 公里，约 15 分钟")
+	second := strings.Index(text, "2. 天安门（北京市东城区）：9.2 公里，约 34 分钟")
+	if first < 0 || second < 0 || !(first < second) {
+		t.Fatalf("not sorted by distance:\n%s", text)
+	}
+
+	// Straight-line mode hides duration and uses type=0.
+	text = mustCall(t, a, "amap_distance", `{"origins":["39.9042,116.3912","39.9100,116.3800"],"destination_latitude":39.8634,"destination_longitude":116.3722,"destination":"南站","mode":"straight"}`)
+	if q := f.last("/v3/distance"); q.Get("type") != "0" {
+		t.Fatalf("query %v", q)
+	}
+	wantIn(t, text, "高德直线距离测量（到 南站）：", "1. 39.904200,116.391200：9.2 公里")
+	if strings.Contains(text, "分钟") {
+		t.Fatalf("straight-line should not print duration:\n%s", text)
+	}
+
+	// Per-item failure does not fail the whole batch.
+	f.queue("/v3/distance", `{"status":"1","info":"OK","infocode":"10000","results":[{"origin_id":"1","dest_id":"1","distance":"0","duration":"0","info":"距离过远","code":"3"}]}`)
+	text = mustCall(t, a, "amap_distance", `{"origins":["39.9042,116.3912"],"destination":"39.8634,116.3722","mode":"walking"}`)
+	wantIn(t, text, "无法计算（距离过远）")
+
+	// Validation checks.
+	if _, err := call(t, a, "amap_distance", `{"destination":"北京南站"}`); err == nil {
+		t.Fatal("distance without origins ran")
+	}
+	if _, err := call(t, a, "amap_distance", `{"origins":["天安门"]}`); err == nil {
+		t.Fatal("distance without destination ran")
+	}
+	if _, err := call(t, a, "amap_distance", `{"origins":["天安门"],"destination":"北京南站","mode":"fly"}`); err == nil {
+		t.Fatal("distance with invalid mode ran")
+	}
+}
+
+func TestDistrict(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	text := mustCall(t, a, "amap_district", `{"keywords":"杭州市","subdistrict":2}`)
+	q := f.last("/v3/config/district")
+	if q.Get("keywords") != "杭州市" || q.Get("subdistrict") != "2" || q.Get("extensions") != "base" {
+		t.Fatalf("query %v", q)
+	}
+	centerWGS := toWGS(point{30.245853, 120.209947}).String()
+	wantIn(t, text,
+		"杭州市（市） · adcode 330100 · 区号 0571 · 中心 "+centerWGS,
+		"- 西湖区（区县） · adcode 330106",
+		"下辖：北山街道(330106)",
+		"- 上城区（区县） · adcode 330102",
+	)
+
+	// Empty keywords queries top-level China districts.
+	_ = mustCall(t, a, "amap_district", `{}`)
+	if q := f.last("/v3/config/district"); q.Get("keywords") != "" || q.Get("subdistrict") != "1" {
+		t.Fatalf("query %v", q)
+	}
+}
+
+func TestInputTips(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	text := mustCall(t, a, "amap_input_tips", `{"keywords":"天安门","city":"北京","city_only":true,"latitude":39.9055,"longitude":116.3976,"limit":2}`)
+	q := f.last("/v3/assistant/inputtips")
+	if q.Get("keywords") != "天安门" || q.Get("city") != "北京" || q.Get("citylimit") != "true" || q.Get("location") != amapLocation(point{39.9055, 116.3976}) {
+		t.Fatalf("query %v", q)
+	}
+	at := toWGS(point{39.903182, 116.397755}).String()
+	wantIn(t, text, "1. 天安门广场 · 北京市东城区 · 东长安街 · "+at+" · adcode 110101", "2. 天安门东(地铁站)")
+	if strings.Contains(text, "天安门地区") {
+		t.Fatalf("limit 2 should omit 3rd tip:\n%s", text)
+	}
+	if _, err := call(t, a, "amap_input_tips", `{}`); err == nil {
+		t.Fatal("input_tips without keywords ran")
+	}
+}
+
+func TestStaticMap(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	res := mustCallResult(t, a, "amap_static_map", `{"markers":["天安门","北京南站"],"path":["天安门","西单","北京南站"],"width":640,"height":480,"traffic":true}`)
+	q := f.last("/v3/staticmap")
+	if q.Get("size") != "640*480" || q.Get("scale") != "2" || q.Get("traffic") != "1" || q.Get("zoom") != "" {
+		t.Fatalf("query %v", q)
+	}
+	if want := "mid,0xE53935,A:116.397755,39.903182|mid,0xE53935,B:116.378517,39.865246"; q.Get("markers") != want {
+		t.Fatalf("markers %q, want %q", q.Get("markers"), want)
+	}
+	if want := "5,0x1976D2,1,,:116.397755,39.903182;116.374128,39.907439;116.378517,39.865246"; q.Get("paths") != want {
+		t.Fatalf("paths %q, want %q", q.Get("paths"), want)
+	}
+	wantIn(t, res.Text, "高德静态地图（640×480，含实时路况）：", "- A. 天安门（北京市东城区）", "- B. 北京南站（北京市丰台区）", "连线：天安门（北京市东城区） → 西单（北京市西城区） → 北京南站（北京市丰台区）")
+	if len(res.Images) != 1 || res.Images[0].Mime != "image/png" || res.Images[0].Caption == "" {
+		t.Fatalf("images %+v", res.Images)
+	}
+	rawImg, err := base64.StdEncoding.DecodeString(res.Images[0].Data)
+	if err != nil || string(rawImg) != string(tinyPNG) {
+		t.Fatalf("decoded image mismatch: err=%v len=%d", err, len(rawImg))
+	}
+	if err := wire.ValidateJSON("ConnectorCallResult", mustJSON(t, res)); err != nil {
+		t.Fatalf("ConnectorCallResult schema: %v", err)
+	}
+
+	// Center-only request defaults zoom to 14.
+	res = mustCallResult(t, a, "amap_static_map", `{"latitude":39.9042,"longitude":116.3912}`)
+	if q := f.last("/v3/staticmap"); q.Get("zoom") != "14" || q.Get("location") != amapLocation(point{39.9042, 116.3912}) {
+		t.Fatalf("query %v", q)
+	}
+
+	// If scale=2 exceeds 1 MiB, falls back to scale=1.
+	bigPNG := append(append([]byte(nil), tinyPNG...), make([]byte, staticMapMaxBytes+10)...)
+	f.queue("/v3/staticmap", string(bigPNG), string(tinyPNG))
+	res = mustCallResult(t, a, "amap_static_map", `{"place":"天安门","zoom":15}`)
+	if q := f.last("/v3/staticmap"); q.Get("scale") != "1" {
+		t.Fatalf("expected scale=1 fallback, got %v", q)
+	}
+	if len(res.Images) != 1 {
+		t.Fatalf("expected fallback image, got %+v", res.Images)
+	}
+
+	// JSON error from /v3/staticmap is parsed and handled (including key/quota errors).
+	f.queue("/v3/staticmap", refusal("10001", "INVALID_USER_KEY"))
+	if _, err := callResult(t, a, "amap_static_map", `{"latitude":31.23,"longitude":121.47,"zoom":12}`); err == nil || !strings.Contains(err.Error(), "不对或已经过期") {
+		t.Fatalf("expected key error from staticmap JSON refusal, got %v", err)
+	}
+
+	// Validation checks.
+	if _, err := callResult(t, a, "amap_static_map", `{}`); err == nil {
+		t.Fatal("static_map with no location/markers/path ran")
+	}
+	if _, err := callResult(t, a, "amap_static_map", `{"path":["天安门"]}`); err == nil || !strings.Contains(err.Error(), "至少要给 2 个点") {
+		t.Fatalf("expected 1-point path error, got %v", err)
+	}
+}
+
+func TestParseLatLng(t *testing.T) {
+	if p, ok := parseLatLng("39.9042, 116.3912"); !ok || p.Lat != 39.9042 || p.Lng != 116.3912 {
+		t.Fatalf("parseLatLng valid failed: %+v %v", p, ok)
+	}
+	for _, bad := range []string{"", "天安门", "0,0", "91,116", "39,181", "39.9,abc", "39.9"} {
+		if _, ok := parseLatLng(bad); ok {
+			t.Errorf("parseLatLng(%q) unexpectedly succeeded", bad)
+		}
 	}
 }

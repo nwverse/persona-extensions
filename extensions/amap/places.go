@@ -87,6 +87,20 @@ func addressLike(text string) bool {
 	return strings.ContainsAny(text, "0123456789０１２３４５６７８９") && strings.ContainsAny(text, "路街道巷弄号村镇栋幢室")
 }
 
+// resolvePoint turns either WGS-84 "lat,lng" or a place name/address into a place, preferring city for name lookups.
+func (a *app) resolvePoint(ctx context.Context, text, city string) (place, error) {
+	text = strings.TrimSpace(text)
+	if p, ok := parseLatLng(text); ok {
+		return place{name: p.String(), at: p}, nil
+	}
+	pl, err := a.locate(ctx, text, city)
+	if err != nil {
+		return place{}, err
+	}
+	pl.name = text
+	return pl, nil
+}
+
 // locate turns a name or an address into a place, preferring city (a name, citycode or adcode; may be empty).
 // An address is geocoded (the larger allowance); a place's name is searched for, because geocoding matches names
 // poorly (东方明珠 without a city went to a shop of that name in another province). Each falls back on the other,
@@ -481,6 +495,73 @@ func (a *app) toolReverse(ctx context.Context, in args) (string, error) {
 	}
 	if len(near) > 0 {
 		b.WriteString("\n附近：" + strings.Join(near, "；"))
+	}
+	return b.String(), nil
+}
+
+func (a *app) toolInputTips(ctx context.Context, in args) (string, error) {
+	if in.Keywords == "" {
+		return "", errors.New("要给 keywords：要联想或补全的关键词")
+	}
+	center, hasPoint, err := pointArg(in.Latitude, in.Longitude, "偏好位置")
+	if err != nil {
+		return "", err
+	}
+	q := url.Values{"keywords": {in.Keywords}, "datatype": {"all"}}
+	if in.City != "" {
+		q.Set("city", in.City)
+		if in.CityOnly {
+			q.Set("citylimit", "true")
+		}
+	}
+	if hasPoint {
+		q.Set("location", amapLocation(center))
+	}
+	body, err := a.client.get(ctx, groupSearch, "/v3/assistant/inputtips", q, searchFor)
+	if err != nil {
+		return "", err
+	}
+	var ans tipsAnswer
+	if err := json.Unmarshal(body, &ans); err != nil {
+		return "", errBadAnswer
+	}
+	where := "全国"
+	if in.City != "" {
+		where = in.City
+	}
+	if len(ans.Tips) == 0 {
+		return fmt.Sprintf("高德在%s没有找到「%s」的输入提示。", where, in.Keywords), nil
+	}
+	limit := limitOr(in.Limit, 5, 10)
+	var b strings.Builder
+	fmt.Fprintf(&b, "高德在%s给「%s」的输入提示（坐标为 WGS-84 纬度,经度）：", where, in.Keywords)
+	shown := 0
+	for _, t := range ans.Tips {
+		if shown == limit {
+			break
+		}
+		name := t.Name.String()
+		if name == "" {
+			continue
+		}
+		shown++
+		parts := []string{name}
+		if d := t.District.String(); d != "" {
+			parts = append(parts, d)
+		}
+		if addr := t.Address.String(); addr != "" {
+			parts = append(parts, addr)
+		}
+		if at, ok := parseAMapLocation(t.Location.String()); ok {
+			parts = append(parts, at.String())
+		}
+		if ad := t.AdCode.String(); ad != "" {
+			parts = append(parts, "adcode "+ad)
+		}
+		fmt.Fprintf(&b, "\n%d. %s", shown, strings.Join(parts, " · "))
+	}
+	if shown == 0 {
+		return fmt.Sprintf("高德在%s没有找到「%s」的输入提示。", where, in.Keywords), nil
 	}
 	return b.String(), nil
 }
