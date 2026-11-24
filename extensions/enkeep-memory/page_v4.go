@@ -502,6 +502,8 @@ func (a *app) startPage(ctx context.Context, t tr, st *store.State) []wire.Secti
 				ext.Open("open:onboarding", "", page{Tab: tabStart, Open: "onboarding"}, t.s("三个问题", "Three questions")))}})
 		}
 	}
+	// The profile summary card: one-tap entry to the "who I am" overview.
+	out = append(out, a.profileCard(t, st))
 	// The start card: each facet in one row.
 	counts := facetCounts(st)
 	var rows []wire.Component

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
@@ -35,7 +36,8 @@ type Progress struct {
 // Snapshot is the pages' data as of At.
 type Snapshot struct {
 	At         time.Time
-	State      *store.State // a copy of the whole state, for the main page and the overview card; never changed
+	State      *store.State     // a copy of the whole state, for the main page and the overview card; never changed
+	Profile    *profile.Summary // the last built user profile summary, read-only
 	FunnelDay  string
 	FunnelToks map[string]int // decision → estimated tokens
 	Daily      *RunBrief      // the last finished daily run
@@ -115,6 +117,11 @@ func (c *Curator) Publish() {
 		return
 	}
 	s.State = st
+	if ps, err := profile.Load(c.St.Dir); err == nil && ps != nil {
+		s.Profile = ps
+	} else {
+		s.Profile = profile.Build(st, c.now(), c.language())
+	}
 	var days []string
 	for d := range c.St.S.Funnel {
 		days = append(days, d)

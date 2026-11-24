@@ -1,0 +1,18 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["overview", "sections"],
+  "properties": {
+    "overview": {
+      "type": "string",
+      "description": "2 to 4 concise sentences summarizing who the user is across the covered facets."
+    },
+    "sections": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Facet key to 1-2 sentence summary for each non-empty facet in the input."
+    }
+  }
+}

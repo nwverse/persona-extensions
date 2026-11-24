@@ -5,8 +5,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
@@ -229,3 +231,65 @@ func TestRankPrioritizesUseful(t *testing.T) {
 }
 
 func itoa(i int) string { b, _ := json.Marshal(i); return string(b) }
+
+func TestPageWithProfile(t *testing.T) {
+	st := state()
+	st.Entries["u-health"] = &entry.Entry{
+		ID: "u-health", Facet: entry.Persona, Text: "user-a runs three times a week", Status: entry.Stable,
+		Count: 3, Last: "2026-11-06", Tagged: true, Origin: entry.Behavior,
+		Categories: []entry.Category{{Name: entry.CatHealth, By: entry.ByModel}}, OriginSpace: "health",
+	}
+	sum := profile.Build(st, timeNowFixture(), "zh-Hans")
+	r, _, err := PageWithProfile(st, sum, Params{Contribution: "memory", Limit: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Tagged {
+		t.Fatal("expected tagged=true")
+	}
+	byID := map[string]Entry{}
+	for _, e := range r.Entries {
+		byID[e.ID] = e
+	}
+	ov, ok := byID["profile:overview"]
+	if !ok {
+		t.Fatalf("missing profile:overview in %v", ids(r))
+	}
+	if !ov.Standing || len(ov.Categories) != 0 || ov.Facet != "persona" {
+		t.Errorf("unexpected profile:overview: %+v", ov)
+	}
+	if strings.Contains(ov.Text, "runs three times") {
+		t.Errorf("profile:overview leaked sensitive text: %s", ov.Text)
+	}
+	if _, ok := byID["profile:interaction"]; !ok {
+		t.Errorf("missing profile:interaction in %v", ids(r))
+	}
+	hp, ok := byID["profile:cat:health"]
+	if !ok {
+		t.Fatalf("missing profile:cat:health in %v", ids(r))
+	}
+	if hp.Standing || !slices.Equal(hp.Categories, []string{"health"}) || hp.OriginSpace != "health" {
+		t.Errorf("sensitive profile entry must not be standing and must carry category+space: %+v", hp)
+	}
+	// Pagination with limit=2 across profile + regular entries stays consistent.
+	var paged []string
+	p := Params{Contribution: "memory", Limit: 2}
+	for i := 0; i < 20; i++ {
+		pr, _, err := PageWithProfile(st, sum, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paged = append(paged, ids(pr)...)
+		if !pr.HasMore {
+			break
+		}
+		p.After = pr.After
+	}
+	if !slices.Equal(paged, ids(r)) {
+		t.Fatalf("paged %v != full %v", paged, ids(r))
+	}
+}
+
+func timeNowFixture() time.Time {
+	return time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+}

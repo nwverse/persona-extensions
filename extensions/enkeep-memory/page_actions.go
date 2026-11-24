@@ -16,6 +16,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	exits "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/people"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
@@ -81,6 +82,17 @@ func (a *app) v4Action(ctx context.Context, s *page, act string, values map[stri
 			return false, nil
 		})
 		toast, s.Open = t.s("跳过了；以后在「起步」里还能回答", "Skipped; you can still answer under Start"), ""
+	case act == "profile:refresh":
+		c.St.Lock()
+		lang := c.Cfg.Language
+		if lang == "" {
+			lang = c.Lang
+		}
+		_, err = profile.Refresh(ctx, c.St.S, c.St.Dir, profile.Options{Lang: lang, SkipModel: true, Force: true})
+		c.St.Unlock()
+		if err == nil {
+			toast = t.s("已按当前稳定条目刷新侧写汇总", "Profile summary refreshed from settled entries")
+		}
 	case strings.HasPrefix(act, "act:"):
 		verb, id, _ := strings.Cut(strings.TrimPrefix(act, "act:"), ":")
 		value := ""
@@ -316,6 +328,14 @@ func uniq(xs []string) []string {
 func (a *app) withdraw(ctx context.Context) {
 	c := a.c
 	s := c.St.S
+	// Keep profile-summary.json immediately consistent whenever an entry is withdrawn or marked wrong.
+	profLang := c.Cfg.Language
+	if profLang == "" {
+		profLang = c.Lang
+	}
+	if prev, err := profile.Load(c.St.Dir); err == nil && prev != nil {
+		_, _ = profile.Refresh(ctx, s, c.St.Dir, profile.Options{Lang: profLang, SkipModel: true, Force: true})
+	}
 	in := exitIndex(c.St.Dir)
 	if len(in) == 0 {
 		return // nothing in any exit yet

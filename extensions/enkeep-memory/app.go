@@ -18,6 +18,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -117,6 +118,13 @@ func (a *app) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]
 	st.Lock() // nothing runs yet: the health page's first snapshot
 	a.recalls = store.OpenRecall(st.Dir, st.S.Recall)
 	st.S.Recall = nil // moved to recall.json; dropped from state.json at its next save
+	if prev, err := profile.Load(st.Dir); err == nil && prev == nil && len(st.S.Entries) > 0 {
+		lang := cfg.Language
+		if lang == "" {
+			lang = in.Hub.Locale
+		}
+		_ = profile.Save(st.Dir, profile.Build(st.S, time.Now(), lang))
+	}
 	a.c.Publish()
 	st.Unlock()
 	go a.applyMarks(context.WithoutCancel(ctx)) // marks a pass's run left queued when the process stopped

@@ -21,7 +21,7 @@ func (a *app) v4Tab(tab string) bool {
 
 // v4Opens says whether an open page is one of the v4 pages.
 func (a *app) v4Opens(open string) bool {
-	return open == "onboarding" || open == "k2" || strings.HasPrefix(open, "e:") || strings.HasPrefix(open, "card:") || strings.HasPrefix(open, "types:")
+	return open == "onboarding" || open == "k2" || open == "profile" || strings.HasPrefix(open, "e:") || strings.HasPrefix(open, "card:") || strings.HasPrefix(open, "types:")
 }
 
 func (a *app) v4Open(t tr, s page) *wire.View {
@@ -32,6 +32,8 @@ func (a *app) v4Open(t tr, s page) *wire.View {
 		return a.onboardingPage(t, st)
 	case s.Open == "k2":
 		return a.k2Page(t, st, s)
+	case s.Open == "profile":
+		return a.profilePage(t, st, a.profileSnapshot(st))
 	case strings.HasPrefix(s.Open, "e:"):
 		return a.entryPage(t, st, strings.TrimPrefix(s.Open, "e:"))
 	case strings.HasPrefix(s.Open, "card:"):
