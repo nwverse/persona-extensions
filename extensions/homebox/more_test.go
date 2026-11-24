@@ -63,6 +63,12 @@ func (f *moreHomebox) app() *app {
 	return &app{client: newClient(f.srv.URL, testToken), receipts: newWriteStore("")}
 }
 
+func (f *moreHomebox) requests() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return strings.Join(f.paths, "\n")
+}
+
 func TestLoadMoreRetainsEarlierEntities(t *testing.T) {
 	f := newMoreHomebox(t, 31)
 	a := f.app()
@@ -86,7 +92,7 @@ func TestLoadMoreRetainsEarlierEntities(t *testing.T) {
 	if err := wire.CheckView(result.View); err != nil {
 		t.Fatal(err)
 	}
-	if paths := strings.Join(f.paths, "\n"); !strings.Contains(paths, "page=1&") || !strings.Contains(paths, "page=2&") {
+	if paths := f.requests(); !strings.Contains(paths, "page=1&") || !strings.Contains(paths, "page=2&") {
 		t.Fatalf("page requests: %s", paths)
 	}
 }
@@ -103,7 +109,7 @@ func TestLoadMoreStopsAtViewLimit(t *testing.T) {
 	if err := wire.CheckView(v); err != nil {
 		t.Fatal(err)
 	}
-	if paths := strings.Join(f.paths, "\n"); strings.Contains(paths, "page=10&") {
+	if paths := f.requests(); strings.Contains(paths, "page=10&") {
 		t.Fatalf("loaded past the cap: %s", paths)
 	}
 }

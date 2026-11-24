@@ -1,7 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -11,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/nwverse/persona/sdk/go/wire"
 )
 
 // A fake AMap: it answers the recorded, scrubbed answers in testdata by path (public landmarks, fake phone numbers),
@@ -50,7 +56,19 @@ const (
 	// tiananmenPOI is a keyword search's answer for 天安门, at the point geocoding gives (geo-tiananmen.json).
 	tiananmenPOI = `{"status":"1","info":"OK","infocode":"10000","count":"1","pois":[{"name":"天安门","location":"116.397755,39.903182",` +
 		`"type":"风景名胜;风景名胜;国家级景点","pname":"北京市","cityname":"北京市","adname":"东城区","address":"东长安街","citycode":"010","adcode":"110101"}]}`
+	// xidanPOI is a keyword search's answer for 西单, used for waypoint and distance tests.
+	xidanPOI = `{"status":"1","info":"OK","infocode":"10000","count":"1","pois":[{"name":"西单","location":"116.374128,39.907439",` +
+		`"type":"地名地址信息;热点地名;商圈","pname":"北京市","cityname":"北京市","adname":"西城区","address":"西单北大街","citycode":"010","adcode":"110102"}]}`
 )
+
+// tinyPNG is a valid 1x1 PNG returned by fakeAMap for /v3/staticmap.
+var tinyPNG = func() []byte {
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 25, G: 118, B: 210, A: 255})
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, img)
+	return buf.Bytes()
+}()
 
 // refusal is AMap's answer with infocode code.
 func refusal(code, info string) string {
@@ -72,7 +90,11 @@ func (f *fakeAMap) serve(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	w.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	if isImageBytes([]byte(body)) {
+		w.Header().Set("Content-Type", http.DetectContentType([]byte(body)))
+	} else {
+		w.Header().Set("Content-Type", "application/json;charset=UTF-8")
+	}
 	_, _ = w.Write([]byte(body))
 }
 
@@ -100,6 +122,8 @@ func (f *fakeAMap) usual(r *http.Request) string {
 			return fixture(f.t, "text-station")
 		case "天安门":
 			return tiananmenPOI
+		case "西单":
+			return xidanPOI
 		}
 		return noPOIs
 	case "/v5/place/around":
@@ -112,6 +136,14 @@ func (f *fakeAMap) usual(r *http.Request) string {
 		return fixture(f.t, "cycling")
 	case "/v5/direction/transit/integrated":
 		return fixture(f.t, "transit")
+	case "/v3/distance":
+		return fixture(f.t, "distance")
+	case "/v3/config/district":
+		return fixture(f.t, "district")
+	case "/v3/assistant/inputtips":
+		return fixture(f.t, "inputtips")
+	case "/v3/staticmap":
+		return string(tinyPNG)
 	case "/v3/weather/weatherInfo":
 		if q.Get("extensions") == "all" {
 			return fixture(f.t, "weather-all")
@@ -203,9 +235,24 @@ func testApp(t *testing.T, f *fakeAMap) (*app, *clock) {
 	return a, c
 }
 
-func call(t *testing.T, a *app, name, raw string) (string, error) {
+func callResult(t *testing.T, a *app, name, raw string) (wire.ConnectorCallResult, error) {
 	t.Helper()
 	return a.callTool(context.Background(), name, []byte(raw))
+}
+
+func mustCallResult(t *testing.T, a *app, name, raw string) wire.ConnectorCallResult {
+	t.Helper()
+	res, err := callResult(t, a, name, raw)
+	if err != nil {
+		t.Fatalf("%s %s: %v", name, raw, err)
+	}
+	return res
+}
+
+func call(t *testing.T, a *app, name, raw string) (string, error) {
+	t.Helper()
+	res, err := a.callTool(context.Background(), name, []byte(raw))
+	return res.Text, err
 }
 
 func mustCall(t *testing.T, a *app, name, raw string) string {

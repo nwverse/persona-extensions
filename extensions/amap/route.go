@@ -19,6 +19,9 @@ import (
 // stepsMost is how many turn-by-turn steps a route lists at most.
 const stepsMost = 15
 
+// waypointsMost is how many driving waypoints AMap's v5 driving API accepts.
+const waypointsMost = 16
+
 // driveStrategies are AMap's driving strategies for the tool's preferences.
 var driveStrategies = map[string]string{
 	"recommended":      "32",
@@ -46,7 +49,7 @@ var modePaths = map[string]string{
 	"transit": "/v5/direction/transit/integrated",
 }
 
-// end is one end of a route: the point given, or the name looked up preferring city.
+// end is one end of a route: the point given, or the fixed-place/name looked up preferring city.
 func (a *app) end(ctx context.Context, text string, p point, given bool, city, which string) (place, error) {
 	if given {
 		name := text
@@ -55,12 +58,101 @@ func (a *app) end(ctx context.Context, text string, p point, given bool, city, w
 		}
 		return place{name: name, at: p}, nil
 	}
-	pl, err := a.locate(ctx, text, city)
-	if err != nil {
-		return place{}, err
+	return a.resolvePoint(ctx, text, city)
+}
+
+// resolveRouteStops resolves from, to, and waypoints together in a single consistent order so fixed places stay
+// global while unconfigured names get disambiguated from the other endpoint's city. Both toolRoute and ui route preview
+// use this helper so preview lookups always hit the cache.
+func (a *app) resolveRouteStops(ctx context.Context, fromText string, fromAt point, fromGiven bool, toText string, toAt point, toGiven bool, rawWaypoints []string, initCity, mode string) (from, to place, viaPlaces []place, err error) {
+	fromNeedsCity := !fromGiven && !a.isFixedOrCoord(fromText)
+	toNeedsCity := !toGiven && !a.isFixedOrCoord(toText)
+
+	city, knownCity := initCity, ""
+	if fromGiven != toGiven {
+		otherNeedsCity := (fromGiven && toNeedsCity) || (toGiven && fromNeedsCity)
+		if mode == "transit" || otherNeedsCity {
+			known := fromAt
+			if toGiven {
+				known = toAt
+			}
+			if c, cerr := a.cityCode(ctx, known); cerr == nil {
+				knownCity = c
+				if city == "" {
+					city = c
+				}
+			}
+		}
 	}
-	pl.name = text
-	return pl, nil
+
+	if !fromGiven && !toGiven && fromNeedsCity && !toNeedsCity && city == "" {
+		to, err = a.end(ctx, toText, toAt, false, "", "终点")
+		if err != nil {
+			return place{}, place{}, nil, err
+		}
+		if to.citycode == "" {
+			if c, cerr := a.cityCode(ctx, to.at); cerr == nil {
+				to.citycode = c
+			}
+		}
+		city = to.citycode
+		from, err = a.end(ctx, fromText, fromAt, false, city, "起点")
+		if err != nil {
+			return place{}, place{}, nil, err
+		}
+	} else {
+		from, err = a.end(ctx, fromText, fromAt, fromGiven, city, "起点")
+		if err != nil {
+			return place{}, place{}, nil, err
+		}
+		if fromGiven {
+			from.citycode = knownCity
+		}
+		if city == "" && toNeedsCity {
+			if from.citycode == "" {
+				if c, cerr := a.cityCode(ctx, from.at); cerr == nil {
+					from.citycode = c
+				}
+			}
+			city = from.citycode
+		}
+		to, err = a.end(ctx, toText, toAt, toGiven, city, "终点")
+		if err != nil {
+			return place{}, place{}, nil, err
+		}
+		if toGiven {
+			to.citycode = knownCity
+		}
+	}
+
+	wpCity := city
+	if wpCity == "" {
+		wpCity = from.citycode
+	}
+	if wpCity == "" {
+		wpCity = to.citycode
+	}
+	if wpCity == "" && len(rawWaypoints) > 0 {
+		for _, w := range rawWaypoints {
+			if !a.isFixedOrCoord(w) {
+				if c, cerr := a.cityCode(ctx, from.at); cerr == nil {
+					wpCity = c
+				}
+				break
+			}
+		}
+	}
+	for _, w := range rawWaypoints {
+		pl, err := a.resolvePoint(ctx, w, wpCity)
+		if err != nil {
+			return place{}, place{}, nil, err
+		}
+		viaPlaces = append(viaPlaces, pl)
+		if wpCity == "" && pl.citycode != "" {
+			wpCity = pl.citycode
+		}
+	}
+	return from, to, viaPlaces, nil
 }
 
 // label is a place as the answer names it: what the user called it, and where AMap put it when it was looked up.
@@ -108,41 +200,32 @@ func (a *app) toolRoute(ctx context.Context, in args) (string, error) {
 		param      string
 	}{{fromGiven, in.From, "起点", "from"}, {toGiven, in.To, "终点", "to"}} {
 		if !e.given && e.text == "" {
-			return "", fmt.Errorf("要给%s：坐标（%s_latitude、%s_longitude），或地址、地名（%s）。用户说「从这儿」「我这儿」时先用 phone_location_current，说「家」「公司」时先用 list_places", e.what, e.param, e.param, e.param)
+			return "", fmt.Errorf("要给%s：坐标（%s_latitude、%s_longitude），或地址、地名、常用地点名如「家」「公司」（%s）。用户说「从这儿」「我这儿」时先用 phone_location_current，不确定「家」「公司」是否已配置时先用 amap_places 或 list_places", e.what, e.param, e.param, e.param)
 		}
 	}
-	// A name is looked up in the city given, else in the city of the other end: most routes stay in one city, and
-	// names repeat across cities (人民广场, 东方明珠).
-	city, knownCity := in.City, ""
-	if fromGiven != toGiven {
-		known := fromAt
-		if toGiven {
-			known = toAt
-		}
-		if c, err := a.cityCode(ctx, known); err == nil {
-			knownCity = c
-			if city == "" {
-				city = c
-			}
+	var rawWaypoints []string
+	for _, w := range in.Waypoints {
+		if w = strings.TrimSpace(w); w != "" {
+			rawWaypoints = append(rawWaypoints, w)
 		}
 	}
-	from, err := a.end(ctx, in.From, fromAt, fromGiven, city, "起点")
+	if len(rawWaypoints) > 0 {
+		if mode != "driving" {
+			return "", errors.New("途经点（waypoints）目前只支持驾车（driving）路线")
+		}
+		if len(rawWaypoints) > waypointsMost {
+			return "", fmt.Errorf("途经点最多支持 %d 个", waypointsMost)
+		}
+	}
+	from, to, viaPlaces, err := a.resolveRouteStops(ctx, in.From, fromAt, fromGiven, in.To, toAt, toGiven, rawWaypoints, in.City, mode)
 	if err != nil {
 		return "", err
 	}
-	if fromGiven {
-		from.citycode = knownCity
-	} else if city == "" {
-		city = from.citycode
+	viaCoords := make([]string, len(viaPlaces))
+	for i, pl := range viaPlaces {
+		viaCoords[i] = amapLocation(pl.at)
 	}
-	to, err := a.end(ctx, in.To, toAt, toGiven, city, "终点")
-	if err != nil {
-		return "", err
-	}
-	if toGiven {
-		to.citycode = knownCity
-	}
-	if metres(from.at, to.at) < 20 {
+	if len(viaPlaces) == 0 && metres(from.at, to.at) < 20 {
 		return fmt.Sprintf("%s和%s几乎在同一个地方，不用规划路线。", from.label(), to.label()), nil
 	}
 	alts := limitOr(in.Alternatives, 1, 3)
@@ -151,6 +234,9 @@ func (a *app) toolRoute(ctx context.Context, in args) (string, error) {
 	switch mode {
 	case "driving":
 		q.Set("strategy", driveStrategies[prefer])
+		if len(viaCoords) > 0 {
+			q.Set("waypoints", strings.Join(viaCoords, ";"))
+		}
 		ttl = drivingFor
 	case "walking", "cycling", "ebike":
 		if alts > 1 {
@@ -180,6 +266,13 @@ func (a *app) toolRoute(ctx context.Context, in args) (string, error) {
 		return "", err
 	}
 	head := fmt.Sprintf("%s %s → %s", modeWords[mode], from.label(), to.label())
+	if len(viaPlaces) > 0 {
+		viaLabels := make([]string, len(viaPlaces))
+		for i, vp := range viaPlaces {
+			viaLabels[i] = vp.label()
+		}
+		head = fmt.Sprintf("%s %s → 经 %s → %s", modeWords[mode], from.label(), strings.Join(viaLabels, "、"), to.label())
+	}
 	if mode == "driving" {
 		head += "（" + preferWords[prefer] + "）"
 	}

@@ -242,3 +242,46 @@ type cast struct {
 	DayPower     str `json:"daypower"`
 	NightPower   str `json:"nightpower"`
 }
+
+// Distance measurement (/v3/distance).
+type distanceAnswer struct {
+	Results list[distanceItem] `json:"results"`
+}
+
+type distanceItem struct {
+	OriginID str `json:"origin_id"`
+	DestID   str `json:"dest_id"`
+	Distance str `json:"distance"`
+	Duration str `json:"duration"`
+	Info     str `json:"info"`
+	Code     str `json:"code"`
+}
+
+// Administrative district (/v3/config/district).
+type districtAnswer struct {
+	Districts list[district] `json:"districts"`
+}
+
+type district struct {
+	CityCode  str            `json:"citycode"`
+	AdCode    str            `json:"adcode"`
+	Name      str            `json:"name"`
+	Center    str            `json:"center"`
+	Level     str            `json:"level"`
+	Districts list[district] `json:"districts"`
+}
+
+// Input tips (/v3/assistant/inputtips).
+type tipsAnswer struct {
+	Tips list[tip] `json:"tips"`
+}
+
+type tip struct {
+	ID       str `json:"id"`
+	Name     str `json:"name"`
+	District str `json:"district"`
+	AdCode   str `json:"adcode"`
+	Location str `json:"location"`
+	Address  str `json:"address"`
+	TypeCode str `json:"typecode"`
+}

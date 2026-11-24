@@ -9,6 +9,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -38,10 +39,28 @@ type app struct {
 	client *client
 	probe  bool          // check the key once at start (off in tests that count requests)
 	tune   func(*client) // tests: point the client at a fake, change its clock
+
+	refMu sync.Mutex
+	refs  *mapRefStore // static map refs served through ui.image
+
+	placesMu     sync.Mutex
+	placesSaveMu sync.Mutex
+	placesFile   string
+	configPlaces []fixedPlace
+	uiPlaces     []fixedPlace
 }
 
 func newApp() *app {
 	return &app{logf: log.Printf, client: newClient("", "", log.Printf), probe: true}
+}
+
+func (a *app) mapRefs() *mapRefStore {
+	a.refMu.Lock()
+	defer a.refMu.Unlock()
+	if a.refs == nil {
+		a.refs = newMapRefStore()
+	}
+	return a.refs
 }
 
 func (a *app) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
@@ -54,6 +73,11 @@ func (a *app) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]an
 	if a.tune != nil {
 		a.tune(a.client)
 	}
+	var cfg placeConfig
+	if err := in.Config(&cfg); err != nil {
+		a.logf("amap: config unread: %v", err)
+	}
+	a.initPlaces(cfg, dir)
 	if key != "" && a.probe {
 		// A key saved before the extension ever ran (its first settings) was not checked: try it once now, so a
 		// wrong one shows in the status rather than at the first question.
@@ -118,14 +142,14 @@ func (a *app) connector(ctx context.Context, method string, raw json.RawMessage)
 	case "tools.call":
 		ctx, cancel := context.WithTimeout(ctx, toolBudget)
 		defer cancel()
-		text, err := a.callTool(ctx, p.Name, p.Args)
+		res, err := a.callTool(ctx, p.Name, p.Args)
 		if err != nil {
 			if errors.Is(err, context.DeadlineExceeded) {
 				err = errSlow
 			}
 			return nil, err
 		}
-		return wire.ConnectorCallResult{Text: text}, nil
+		return res, nil
 	}
 	return nil, ext.UnknownMethod("connector." + method)
 }
@@ -137,12 +161,16 @@ func (a *app) settings(ctx context.Context, method string, raw json.RawMessage) 
 		return nil, ext.UnknownMethod("settings." + method)
 	}
 	var in struct {
+		Config  json.RawMessage   `json:"config"`
 		Secrets map[string]string `json:"secrets"`
 	}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, &in); err != nil {
 			return nil, &ext.Error{Code: "invalid", Message: "设置读不懂"}
 		}
+	}
+	if err := validatePlaceConfigRaw(in.Config); err != nil {
+		return map[string]any{"ok": false, "error": err.Error()}, nil
 	}
 	key := strings.TrimSpace(in.Secrets[keySecret])
 	if key == "" {

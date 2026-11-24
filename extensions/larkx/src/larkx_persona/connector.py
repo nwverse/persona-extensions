@@ -67,7 +67,7 @@ SEND_SCHEMA = {
                      "items": {"type": "object", "additionalProperties": False, "required": ["id", "name"],
                                "properties": {"id": {"type": "string", "description": "The person's id from larkx_search."},
                                               "name": {"type": "string", "description": "The person's exact display name from larkx_search."}}}},
-        "reply_to": {"type": "string", "description": "A message's id, to answer in its topic."},
+        "reply_to": {"type": "string", "description": "A message's id (from larkx_messages), to answer in its topic."},
     },
     "required": ["chat", "text"],
 }
@@ -92,7 +92,7 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "limit": {"type": "integer", "minimum": 1, "maximum": 50},
          "query": {"type": "string", "description": "Only chats whose name contains this."}}}},
-    {"name": "larkx_messages", "description": "Read the latest messages of one Feishu chat, oldest first. For a full-text search use kb_search.",
+    {"name": "larkx_messages", "description": "Read the latest messages of one Feishu chat, oldest first, with each message's id and topic root/parent ids (pass an id to larkx_send's reply_to to answer in that topic). For a full-text search use kb_search.",
      "input_schema": {"type": "object", "properties": {
          "chat": {"type": "string"},
          "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["chat"]}},
@@ -586,7 +586,7 @@ class Connector:
         if name == "larkx_messages":
             chat = _required(args, "chat")
             rows = self.store.messages(chat, 0, _limit(args, 20))
-            return {"text": "\n".join(_line(m) for m in rows) or "这个会话还没有消息。"}
+            return {"text": "\n".join(_message_line(m) for m in rows) or "这个会话还没有消息。"}
         if name == "larkx_search":
             self._need_signed_in()
             found = self.backend.search(_required(args, "query"))
@@ -1009,6 +1009,22 @@ def _kind_label(kind):
 
 def _line(m):
     return "%s（%s）：%s" % (m["sender_name"] or "系统", local_time(m["at"]), m["text"])
+
+
+def _message_line(m):
+    """One larkx_messages line: prefixes message id and non-empty topic root/parent ids for reply_to."""
+    msg_id = m.get("id") or ""
+    root = m.get("root") or ""
+    parent = m.get("parent") or ""
+    meta = []
+    if msg_id:
+        meta.append("id=%s" % msg_id)
+    if root and root != "0" and root != msg_id:
+        meta.append("root=%s" % root)
+    if parent and parent != "0" and parent != root and parent != msg_id:
+        meta.append("parent=%s" % parent)
+    line = _line(m)
+    return "[%s] %s" % (" ".join(meta), line) if meta else line
 
 
 def _thread_media(msg_id, media):
