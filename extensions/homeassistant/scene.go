@@ -387,7 +387,8 @@ func (a *app) buildSceneWith(sc *scan, fix *sceneFix, hm *home, reg *Registry) w
 		shapes = []wire.SceneShape{sceneBox([2]float64{0, 0}, [2]float64{1, 1}, 0, 0, -0.02, 0, neutralTileColor, wire.SceneMaterialTile)}
 	}
 
-	labels, roomNames := buildRoomLabels(fp)
+	// Room names go in alt only: drawn on the floor they crowd the device pins, which already say what each one is (#1029).
+	_, roomNames := buildRoomLabels(fp)
 	devs := a.matchScannedTVs(fp, hm, reg)
 	pins, pinnedLightsOn := a.buildScenePins(devs, hm, reg)
 	// an air conditioner on the wall at each pinned one, when the walls are tall enough to hold it
@@ -414,7 +415,6 @@ func (a *app) buildSceneWith(sc *scan, fix *sceneFix, hm *home, reg *Registry) w
 		Caption: caption,
 		Camera:  &wire.SceneCamera{Yaw: &camYaw, Pitch: &camPitch, Zoom: &camZoom},
 		Shapes:  shapes,
-		Labels:  labels,
 		Pins:    pins,
 	}
 }
