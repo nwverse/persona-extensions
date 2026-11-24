@@ -212,13 +212,15 @@ func Rank(e *entry.Entry) int {
 	case entry.People:
 		score = 200
 	default: // World and any other facet
-		score = 180
 		typ := strings.ToLower(strings.TrimSpace(e.Type))
 		pred := strings.ToLower(strings.TrimSpace(e.Predicate))
-		if substantiveWorldTypes[typ] || substantiveWorldTypes[pred] {
-			score += 40
-		} else if typ == "status" {
-			score -= 40
+		switch {
+		case substantiveWorldTypes[typ] || substantiveWorldTypes[pred]:
+			score = 220
+		case typ == "status":
+			score = 80
+		default:
+			score = 180
 		}
 	}
 	switch e.Grain {
@@ -236,7 +238,7 @@ func Rank(e *entry.Entry) int {
 		userConfirmedRight(e) {
 		score += 120
 	}
-	score += min(150, max(0, e.Count)*max(1, len(e.Kinds))*12)
+	score += min(120, max(0, e.Count)*max(1, len(e.Kinds))*12)
 	switch Status(e) {
 	case "dormant":
 		score /= 2

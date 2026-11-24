@@ -39,8 +39,8 @@ func TestPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Standing first (stable, usable in the resident exits), then rank, then newest; dead entries and evaluations out.
-	want := []string{"i-stable", "p-card", "w-shift", "j-dorm", "u-cand"}
+	// Standing first (stable, usable in the resident exits), then rank (active > candidate > dormant), then newest; dead entries and evaluations out.
+	want := []string{"i-stable", "p-card", "w-shift", "u-cand", "j-dorm"}
 	if !slices.Equal(ids(r), want) || r.HasMore || r.After != "" || !r.Tagged {
 		t.Fatalf("page %v (want %v) more %v after %q tagged %v", ids(r), want, r.HasMore, r.After, r.Tagged)
 	}
