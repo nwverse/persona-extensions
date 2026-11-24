@@ -4,6 +4,7 @@ Run them: python3 -m unittest discover -s tests, in extensions/larkx."""
 import base64
 import json
 import os
+import re
 import sqlite3
 import sys
 import tempfile
@@ -126,9 +127,9 @@ class Hub:
         pass
 
 
-def message(msg_id, chat, position, sender="u_a", text="你好", kind="dm", at_me=False, msg_type="TEXT", at=None, root="", media=None):
+def message(msg_id, chat, position, sender="u_a", text="你好", kind="dm", at_me=False, msg_type="TEXT", at=None, root="", parent="", media=None):
     return {"id": msg_id, "chat": chat, "chat_kind": kind, "position": position, "sender": sender, "type": msg_type, "text": text,
-            "at": at or time.time() - 60 + position, "root": root, "parent": "", "at_me": at_me, "media": media or []}
+            "at": at or time.time() - 60 + position, "root": root, "parent": parent, "at_me": at_me, "media": media or []}
 
 
 class ConnectorTest(unittest.TestCase):
@@ -270,6 +271,63 @@ class ConnectorTest(unittest.TestCase):
         self.c.on_message(message("m2", "g1", 2, kind="group", root="m1"))
         self.c.actions_do({"name": "larkx_send", "args": {"chat": "g1", "text": "好", "reply_to": "m2"}, "request_id": "r1"})
         self.assertEqual(self.backend.sent, [("g1", "好", "m1")])
+
+    def test_larkx_messages_includes_ids_and_topic_linkage_while_inbox_context_stays_clean(self):
+        self.sign_in()
+        self.backend.chats["g1"] = {"name": "项目群", "last_position": 0}
+        self.c.on_message(message("m1", "g1", 1, kind="group", text="周五开会吗"))
+        self.c.on_message(message("m2", "g1", 2, kind="group", text="三点可以", root="m1", parent="m1"))
+        self.c.on_message(message("m3", "g1", 3, kind="group", text="我也行", root="m1", parent="m2"))
+        self.c.on_message(message("m4", "g1", 4, kind="group", text="附议", root="", parent="m1"))
+        self.c.on_message(message("m5", "g1", 5, kind="group", text="收到", root="0", parent="0"))
+
+        lines = self.c.tools_call({"name": "larkx_messages", "args": {"chat": "g1"}})["text"].splitlines()
+        self.assertEqual(len(lines), 5)
+        self.assertTrue(lines[0].startswith("[id=m1] 小明（"))
+        self.assertNotIn("root=", lines[0])
+        self.assertNotIn("parent=", lines[0])
+        self.assertTrue(lines[1].startswith("[id=m2 root=m1] 小明（"))
+        self.assertNotIn("parent=", lines[1])
+        self.assertTrue(lines[2].startswith("[id=m3 root=m1 parent=m2] 小明（"))
+        self.assertTrue(lines[3].startswith("[id=m4 parent=m1] 小明（"))
+        self.assertNotIn("root=", lines[3])
+        self.assertTrue(lines[4].startswith("[id=m5] 小明（"))
+        self.assertNotIn("root=", lines[4])
+        self.assertNotIn("parent=", lines[4])
+
+        # Inbox context keeps _line(m) clean without raw message or topic ids.
+        context = self.thing("g1")["context"]
+        self.assertIn("周五开会吗", context)
+        self.assertIn("我也行", context)
+        self.assertNotIn("[id=", context)
+        self.assertNotIn("root=", context)
+        self.assertNotIn("parent=", context)
+
+    def test_larkx_messages_id_flows_into_larkx_send_reply_to(self):
+        self.sign_in()
+        self.backend.chats["g1"] = {"name": "项目群", "last_position": 0}
+        self.c.on_message(message("m1", "g1", 1, kind="group", text="周五开会吗"))
+        self.c.on_message(message("m2", "g1", 2, kind="group", text="三点可以", root="m1", parent="m1"))
+
+        text = self.c.tools_call({"name": "larkx_messages", "args": {"chat": "g1"}})["text"]
+        match = re.search(r"^\[id=([^\s\]]+)[^\]]*\] [^\n]*三点可以$", text, re.MULTILINE)
+        self.assertIsNotNone(match)
+        target_id = match.group(1)
+        self.assertEqual(target_id, "m2")
+
+        card = self.c.actions_describe({"name": "larkx_send", "args": {"chat": "g1", "text": "收到", "reply_to": target_id}})
+        self.assertIn("回复：小明 的消息「三点可以」（发在这条消息的话题里）", card["summary"])
+        self.assertTrue(card["summary"].endswith("内容（全文）：\n收到"))
+
+        self.c.actions_do({"name": "larkx_send", "args": {"chat": "g1", "text": "收到", "reply_to": target_id}, "request_id": "r_topic"})
+        self.assertEqual(self.backend.sent, [("g1", "收到", "m1")])
+
+    def test_tool_schemas_document_larkx_messages_ids_for_reply_to(self):
+        tools = {t["name"]: t for t in self.c.tools_list({})["tools"]}
+        self.assertIn("id", tools["larkx_messages"]["description"])
+        self.assertIn("reply_to", tools["larkx_messages"]["description"])
+        actions = {a["name"]: a for a in self.c.actions_list({})["tools"]}
+        self.assertIn("larkx_messages", actions["larkx_send"]["input_schema"]["properties"]["reply_to"]["description"])
 
     def test_a_dm_to_a_person_opens_their_chat(self):
         self.sign_in()
@@ -587,8 +645,9 @@ class NormalizeTest(unittest.TestCase):
 
     def test_a_text(self):
         m = normalize({"msg_id": "1", "chat_id": "2", "chat_type": 1, "position": "7", "from_id": "3", "msg_type": 4, "msg_type_name": "TEXT",
-                       "content": "你好", "create_time": "1793000000", "root_id": "0"}, self.key)
-        self.assertEqual((m["id"], m["chat"], m["chat_kind"], m["position"], m["at"], m["root"]), ("1", "2", "dm", 7, 1793000000.0, ""))
+                       "content": "你好", "create_time": "1793000000", "root_id": "0", "parent_id": "0"}, self.key)
+        self.assertEqual((m["id"], m["chat"], m["chat_kind"], m["position"], m["at"], m["root"], m["parent"]),
+                         ("1", "2", "dm", 7, 1793000000.0, "", ""))
 
     def test_milliseconds_become_seconds(self):
         self.assertEqual(normalize({"create_time": 1793000000000}, self.key)["at"], 1793000000.0)
