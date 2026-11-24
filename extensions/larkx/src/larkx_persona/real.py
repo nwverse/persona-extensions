@@ -75,6 +75,37 @@ def _string(raw, number):
     return value if isinstance(value, str) else value.decode("utf-8", "replace")
 
 
+def _ordered(rich, dictionary):
+    """Rich-text elements in display order: a parent's children come before the next top-level element."""
+    ids = rich.get("elementIds")
+    ids = [k for k in ids if isinstance(k, str)] if isinstance(ids, list) else []
+    out, seen = [], set()
+
+    def add(key):
+        if key in seen or key not in dictionary:
+            return
+        seen.add(key)
+        element = dictionary[key]
+        out.append(element)
+        children = element.get("childIds") if isinstance(element, dict) else []
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, str):
+                    add(child)
+
+    for key in ids:
+        add(key)
+    rest = [k for k in dictionary if k not in seen]
+    if not ids:
+        try:
+            rest.sort(key=int)
+        except (TypeError, ValueError):
+            pass
+    for key in rest:
+        add(key)
+    return out
+
+
 # LarkAgentX's rich text: its tags (RichTextElement.Tag) and what it writes for the ones with no text.
 _TEXT_TAGS = (1, 3, 7, 8, 9, 17)  # TEXT, P, B, I, U, LINK: TextProperty.content (LINK: LinkProperty.url) is field 1
 _AT, _ANCHOR, _PARAGRAPH = 5, 6, 3
@@ -90,9 +121,9 @@ def rich_text(rich):
     return linked[0] if linked else None
 
 
-def _linked(rich):
+def _linked(rich, always=False):
     """rich_text's text and the AT elements' spans in that same text ({id, start, end, label}, as _mentions gives them
-    for LarkAgentX's text), or None when the message has no link."""
+    for LarkAgentX's text), or None when the message has no link. POST always rebuilds to retain childIds order."""
     # A decoder of another shape (a dictionary that is not one, elements or ids of another type) leaves LarkAgentX's
     # text as it is: None, never an exception that would lose the whole message.
     try:
@@ -101,18 +132,9 @@ def _linked(rich):
         return None
     if not isinstance(dictionary, dict):
         return None
-    if not any(isinstance(v, dict) and v.get("tag") == _ANCHOR for v in dictionary.values()):
+    if not always and not any(isinstance(v, dict) and v.get("tag") == _ANCHOR for v in dictionary.values()):
         return None
-    ids = rich.get("elementIds")
-    ids = [k for k in ids if isinstance(k, str)] if isinstance(ids, list) else []
-    if ids:
-        listed = set(ids)
-        ordered = [dictionary[k] for k in ids if k in dictionary] + [v for k, v in dictionary.items() if k not in listed]
-    else:
-        try:
-            ordered = [v for _, v in sorted(dictionary.items(), key=lambda item: int(item[0]))]
-        except (ValueError, TypeError):
-            ordered = list(dictionary.values())
+    ordered = _ordered(rich, dictionary)
     text, after_link, spans, linked = "", False, [], False
     for v in ordered:
         if not isinstance(v, dict):
@@ -147,9 +169,28 @@ def _linked(rich):
         text += piece
         if piece:  # an element that adds nothing keeps the last link apart from what comes next
             after_link = tag == _ANCHOR
-    if not linked:
+    if not linked and not always:
         return None  # an anchor with no readable address adds no link: LarkAgentX's text stays
     return text, spans
+
+
+def _inline_images(rich):
+    """The inline images of a POST, in display order. ImageProperty.token/originKey/middleKey/thumbKey are 2/4/5/6."""
+    try:
+        dictionary = rich["elements"]["dictionary"]
+    except (KeyError, TypeError, IndexError):
+        return []
+    if not isinstance(dictionary, dict):
+        return []
+    out = []
+    for element in _ordered(rich, dictionary):
+        if not isinstance(element, dict) or element.get("tag") != 2:
+            continue
+        prop = element.get("property")
+        key = next((value for value in (_string(prop, n) for n in (2, 4, 5, 6)) if value), "")
+        if key:
+            out.append({"kind": "image", "key": key})
+    return out
 
 
 def normalize(msg, extract_key):
@@ -160,7 +201,8 @@ def normalize(msg, extract_key):
     key = extract_key(msg_type, data) if isinstance(data, dict) else ""
     text = msg.get("content") or ""
     mentions = _mentions(data, text)
-    linked = _linked(data.get("richText")) if name in ("TEXT", "POST") and isinstance(data, dict) else None
+    post = name == "POST"
+    linked = _linked(data.get("richText"), always=post) if name in ("TEXT", "POST") and isinstance(data, dict) else None
     if linked and linked[0]:  # an empty rebuild keeps LarkAgentX's text, as its own `extract_rich_text(...) or text` does
         head = "[富文本] %s\n" % data.get("title", "") if name == "POST" else ""
         text = (head + linked[0]).rstrip() if head else linked[0]
@@ -169,7 +211,7 @@ def normalize(msg, extract_key):
         mentions = [dict(m, start=m["start"] + len(head), end=m["end"] + len(head)) for m in linked[1]]
         if any(text[m["start"]:m["end"]] != m["label"] for m in mentions):
             mentions = []
-    media = []
+    media = _inline_images(data.get("richText")) if post and isinstance(data, dict) else []
     if name in ("IMAGE", "STICKER") and key:
         media = [{"kind": name.lower(), "key": key}]
     elif name == "FILE":

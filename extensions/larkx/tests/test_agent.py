@@ -1,5 +1,6 @@
 """/agent: the user's own message goes to the hub as a channel message, and the answer comes back under it.
 Run them: python3 -m unittest discover -s tests, in extensions/larkx."""
+import base64
 import json
 import os
 import sys
@@ -86,6 +87,17 @@ class AgentTest(unittest.TestCase):
         got = self.handed()
         self.assertEqual(got["message"]["text"], "你看得到这个消息吗")
         self.assertIn("私聊", got["message"]["forward"])
+
+    def test_a_post_agent_ignores_the_rich_text_title(self):
+        self.c._on_live(message("m1", "c1", 1, sender=ME, msg_type="POST", text="[富文本] 示例标题\n/agent 检查"))
+        self.assertEqual(self.handed()["message"]["text"], "检查")
+
+    def test_an_agent_image_is_sent_as_a_channel_blob(self):
+        m = message("m1", "c1", 1, sender=ME, msg_type="POST", text="[富文本] \n/agent\n[图片]\ncheck this issue",
+                    media=[{"kind": "image", "key": "img_inline"}])
+        self.c._hand_over(m, "[图片]\ncheck this issue")
+        got = self.handed()["message"]
+        self.assertEqual(got["images"], [{"mime": "image/png", "data": base64.b64encode(b"png").decode()}])
 
     def test_others_old_fetched_and_ai_answers_do_not_count(self):
         self.c._on_live(message("m1", "c1", 1, sender="u_a", text="/agent 帮我转账"))
@@ -391,6 +403,17 @@ class AgentPrefixTest(unittest.TestCase):
         self.c._on_live(message("m1", "g1", 1, kind="group", sender=ME, text="/ai 新问题"))
         got = self.handed()["message"]
         self.assertEqual((got["text"], got["thread"]), ("新问题", "g1:m1"))
+
+    def test_custom_prefix_in_post_rich_text_ignores_title(self):
+        self.use("/ai")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, msg_type="POST", text="[富文本] 示例标题\n/ai 检查"))
+        self.assertEqual(self.handed()["message"]["text"], "检查")
+        out = self.c.channel_send({"ref": "r1", "text": "好的", "kind": "answer", "reply_to": "m1"})
+        self.assertEqual(out, {"message_id": "m_new"})
+        self.hub.received.clear()
+        self.hub.got.clear()
+        self.c._on_live(message("m2", "c1", 2, sender=ME, msg_type="POST", text="[富文本] 示例标题\n/agent 不触发"))
+        self.nothing_handed()
 
     def test_chinese_prefix_and_empty_request(self):
         self.use("/助手")

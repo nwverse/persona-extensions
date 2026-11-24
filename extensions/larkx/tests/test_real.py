@@ -29,6 +29,7 @@ class RealTest(unittest.TestCase):
         from larkx.proto import proto_pb2 as P
         cls.larkx, cls.media, cls.decoders, cls.P = larkx, media, decoders, P
         cls.anchor = lark.entities.RichTextElement.AnchorProperty
+        cls.image = lark.entities.RichTextElement.ImageProperty
 
     @classmethod
     def tearDownClass(cls):
@@ -96,6 +97,25 @@ class RealTest(unittest.TestCase):
         m = self.normalized(self.frame([self.message("9004", 5, content.SerializeToString())]))[0]
         self.assertEqual(m["type"], "IMAGE")
         self.assertEqual(m["media"], [{"kind": "image", "key": "img_key"}])
+
+    def test_a_post_keeps_paragraph_children_and_inline_images_in_order(self):
+        P = self.P
+        content = P.PostContent()
+        rich = content.richText
+        rich.elementIds.extend(["10", "20", "30"])
+        for key in ("31", "10", "21", "11", "30", "20"):
+            rich.elements.dictionary[key].tag = 3 if key in ("10", "20", "30") else 1
+        rich.elements.dictionary["10"].childIds.append("11")
+        rich.elements.dictionary["20"].childIds.append("21")
+        rich.elements.dictionary["30"].childIds.append("31")
+        rich.elements.dictionary["11"].property = P.TextProperty(content="/agent\n").SerializeToString()
+        rich.elements.dictionary["21"].tag = 2
+        rich.elements.dictionary["21"].property = self.image(token="img_inline").SerializeToString()
+        rich.elements.dictionary["31"].property = P.TextProperty(content="\ncheck this issue").SerializeToString()
+        rich.imageIds.append("21")
+        m = self.normalized(self.frame([self.message("9010", 2, content.SerializeToString())]))[0]
+        self.assertEqual((m["text"], m["media"]),
+                         ("[富文本] \n/agent\n[图片]\ncheck this issue", [{"kind": "image", "key": "img_inline"}]))
 
     def test_a_pasted_doc_link_keeps_its_title_and_address(self):
         # LarkAgentX's own text drops an A element whole; normalize rebuilds the text from the decoded rich text.
