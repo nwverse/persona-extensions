@@ -41,7 +41,7 @@ func (a *app) v4Action(ctx context.Context, s *page, act string, values map[stri
 	c := a.c
 	switch {
 	case act == "facet":
-		s.Facet, s.Open = values["facet"], ""
+		s.Facet, s.Sub, s.Open = values["facet"], "", ""
 		return "", true, nil
 	case act == "check":
 		s.Check, s.Sub, s.Open = values["check"], "", ""

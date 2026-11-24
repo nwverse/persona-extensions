@@ -1,5 +1,21 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.47 (pre-release)
+
+Fix View schema validation failures (HTTP 502) on subpages with large data sets:
+
+- **Review tab (`tab=review`)**: paginate pending proposals (100 per page via `Sub` offset) instead of emitting every
+  pending proposal at once, which exceeded the hub's 300-item limit.
+- **Judgement and workflow facet tabs (`tab=facets`, `facet=judgement|workflow`)**: enforce a page-wide component budget
+  across all sections and paginate type groups via `Sub` offset so facets with hundreds or thousands of types stay well
+  under 300 items.
+- **Run report detail (`tab=reports`, `open=<run>`)**: split reports over 18,000 runes into multiple `markdown`
+  components (within `MarkdownComponent.text`'s 20,000-char limit), handle empty reports, and fall back to plain text
+  chunks if a report contains disallowed markdown.
+- **Preventive schema hardening**: cap person card rows (`cardPage`), entry counter-examples (`entryPage`), graph node
+  assertions (`nodePage`), refusal table rows (`health`), legacy judgement rows/members, and long quotes/fields; give
+  `open:card`, `open:u7` and `open:u8` rows distinct action IDs.
+
 ## 0.2.0-beta.46 (pre-release)
 
 Six-facet user profile summary, mobile-friendly subpage, and `memory.entries` export (no `state.json` schema change; no external seeds required).
