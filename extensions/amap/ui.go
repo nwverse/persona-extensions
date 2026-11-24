@@ -178,7 +178,11 @@ func (a *app) renderCard(_ context.Context, _ *ext.UIRequest) (*wire.View, error
 // renderPage renders the main nav_page (amap).
 func (a *app) renderPage(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 	st := readUIState(r)
-	return a.buildPage(ctx, st)
+	return a.buildPage(ctx, st, supportsInteractiveMap(r))
+}
+
+func supportsInteractiveMap(r *ext.UIRequest) bool {
+	return r != nil && r.UIVersion >= 12
 }
 
 // actionPage handles form submits, tab switches, saved-place actions, map zoom/traffic toggles and POI selection.
@@ -364,7 +368,7 @@ func (a *app) actionPage(ctx context.Context, r *ext.UIRequest) (*wire.ActionRes
 	default:
 		return nil, &ext.Error{Code: "invalid", Message: "不认识的操作：" + r.Action}
 	}
-	v, err := a.buildPage(ctx, st)
+	v, err := a.buildPage(ctx, st, supportsInteractiveMap(r))
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +410,7 @@ func (a *app) imagePage(ctx context.Context, r *ext.ImageRequest) (*wire.UIImage
 	return ext.Image("image/png", img, maxAge), nil
 }
 
-func (a *app) buildPage(ctx context.Context, st uiState) (*wire.View, error) {
+func (a *app) buildPage(ctx context.Context, st uiState, interactive bool) (*wire.View, error) {
 	if a.client.key == "" {
 		return &wire.View{
 			Title: "高德地图",
@@ -441,11 +445,11 @@ func (a *app) buildPage(ctx context.Context, st uiState) (*wire.View, error) {
 	var sections []wire.Section
 	switch st.Tab {
 	case tabSearch:
-		sections = a.searchSections(ctx, st)
+		sections = a.searchSections(ctx, st, interactive)
 	case tabRoute:
-		sections = a.routeSections(ctx, st)
+		sections = a.routeSections(ctx, st, interactive)
 	case tabMap:
-		sections = a.mapSections(ctx, st)
+		sections = a.mapSections(ctx, st, interactive)
 	case tabPlaces:
 		sections = a.placesSections(st)
 	case tabUsage:
@@ -476,7 +480,7 @@ func (a *app) buildPage(ctx context.Context, st uiState) (*wire.View, error) {
 	}, nil
 }
 
-func (a *app) searchSections(ctx context.Context, st uiState) []wire.Section {
+func (a *app) searchSections(ctx context.Context, st uiState, interactive bool) []wire.Section {
 	form := wire.Section{
 		Title: "搜索中国境内地点",
 		Items: []wire.Component{
@@ -512,6 +516,7 @@ func (a *app) searchSections(ctx context.Context, st uiState) []wire.Section {
 	}
 
 	var rows []wire.Component
+	var pins []placePin
 	var markerParts []string
 	var firstPoint point
 	var firstName string
@@ -551,7 +556,7 @@ func (a *app) searchSections(ctx context.Context, st uiState) []wire.Section {
 				firstPoint, firstName, hasFirst = at, p.Name.String(), true
 			}
 			markerParts = append(markerParts, fmt.Sprintf("mid,0xE53935,%c:%s", rune('A'+i), amapLocation(at)))
-			row.Action = &wire.Action{
+			openAction := &wire.Action{
 				ID: "open_poi",
 				Values: map[string]string{
 					"lat":  strconv.FormatFloat(at.Lat, 'f', 6, 64),
@@ -559,11 +564,56 @@ func (a *app) searchSections(ctx context.Context, st uiState) []wire.Section {
 					"name": p.Name.String(),
 				},
 			}
+			row.Action = openAction
+			subMeta, detailMeta := poiMetadata(p, nil)
+			pin := placePin{
+				id:       fmt.Sprintf("poi-%d", i+1),
+				at:       at,
+				kind:     wire.MapMarkerKindPin,
+				label:    fmt.Sprintf("%c. %s", rune('A'+i), p.Name.String()),
+				subtitle: subMeta,
+				detail:   detailMeta,
+				icon:     "location",
+				action:   openAction,
+			}
+			if i == 0 {
+				pin.tone = wire.TonePositive
+			} else {
+				pin.color = wire.ColorBlue
+			}
+			pins = append(pins, pin)
 		}
 		rows = append(rows, row)
 	}
 
-	out := []wire.Section{form, {Title: fmt.Sprintf("搜索结果（%d 条，点选看大图）", len(rows)), Items: rows}}
+	resultTitle := fmt.Sprintf("搜索结果（%d 条，点选看大图）", len(rows))
+	if interactive {
+		resultTitle = fmt.Sprintf("搜索结果（%d 条，点选定位到地图）", len(rows))
+	}
+	out := []wire.Section{form, {Title: resultTitle, Items: rows}}
+	if interactive && len(pins) > 0 {
+		var links []wire.MapLink
+		if hasFirst {
+			links = []wire.MapLink{{
+				Title: "在高德地图中打开 " + clipFit(firstName, 30),
+				URL:   amapMarkerURL(firstPoint, firstName),
+			}}
+		}
+		if mc := buildPlacesMapComponent(
+			"search-map",
+			fmt.Sprintf("搜索「%s」", st.Keywords),
+			fmt.Sprintf("「%s」搜索结果分布图", st.Keywords),
+			fmt.Sprintf("共 %d 处地点 · 点击标记可查看详情或定位", len(pins)),
+			wire.ImageAspectWide,
+			nil,
+			pins,
+			links,
+			true,
+		); mc != nil {
+			out = append(out, wire.Section{Title: "位置分布", Items: []wire.Component{*mc}})
+			return out
+		}
+	}
 	if len(markerParts) > 0 {
 		q := url.Values{"markers": {strings.Join(markerParts, "|")}}
 		if len(markerParts) == 1 {
@@ -590,7 +640,7 @@ func (a *app) searchSections(ctx context.Context, st uiState) []wire.Section {
 	return out
 }
 
-func (a *app) routeSections(ctx context.Context, st uiState) []wire.Section {
+func (a *app) routeSections(ctx context.Context, st uiState, interactive bool) []wire.Section {
 	form := wire.Section{
 		Title: "路线规划",
 		Items: []wire.Component{
@@ -669,13 +719,13 @@ func (a *app) routeSections(ctx context.Context, st uiState) []wire.Section {
 	if p, ok := parseLatLng(st.To); ok {
 		in.ToLatitude, in.ToLongitude = &p.Lat, &p.Lng
 	}
-	text, err := a.toolRoute(ctx, in)
+	plan, err := a.planRoute(ctx, in)
 	if err != nil {
 		return []wire.Section{form, errorSection("路线规划失败", err)}
 	}
 
 	var resultItems []wire.Component
-	for _, line := range strings.Split(text, "\n") {
+	for _, line := range strings.Split(plan.text, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -684,16 +734,34 @@ func (a *app) routeSections(ctx context.Context, st uiState) []wire.Section {
 	}
 	out := []wire.Section{form, {Title: "规划结果", Items: resultItems}}
 
-	// Build a static map preview using the exact same cached endpoint/waypoint resolution order as toolRoute.
-	fromAt, fromGiven, _ := pointArg(in.FromLatitude, in.FromLongitude, "起点")
-	toAt, toGiven, _ := pointArg(in.ToLatitude, in.ToLongitude, "终点")
-	var stops []place
-	if fromPl, toPl, viaPls, rerr := a.resolveRouteStops(ctx, st.From, fromAt, fromGiven, st.To, toAt, toGiven, wps, st.City, st.Mode); rerr == nil {
-		stops = append(stops, fromPl)
-		stops = append(stops, viaPls...)
-		stops = append(stops, toPl)
+	stops := make([]place, 0, 2+len(plan.via))
+	if plan.from.at.valid() && plan.to.at.valid() {
+		stops = append(stops, plan.from)
+		stops = append(stops, plan.via...)
+		stops = append(stops, plan.to)
 	}
-	if len(stops) >= 2 {
+	if interactive && !st.Traffic {
+		if mc := buildRouteMapComponent(
+			"route-map",
+			fmt.Sprintf("%s → %s", plan.from.name, plan.to.name),
+			routeAltText(plan),
+			routeCaptionText(plan),
+			plan.from,
+			plan.to,
+			plan.via,
+			plan.mode,
+			plan.options,
+			true,
+		); mc != nil {
+			mapItems := []wire.Component{
+				*mc,
+				{Type: wire.ComponentButton, Title: "叠加实时路况（切换静态图）", Action: &wire.Action{ID: "toggle_traffic"}},
+			}
+			out = append(out, wire.Section{Title: "路线地图", Items: mapItems})
+			return out
+		}
+	}
+	if len(stops) >= 2 && (len(plan.options) > 0 || !interactive) {
 		q := url.Values{}
 		pathCoords := make([]string, 0, len(stops))
 		for _, s := range stops {
@@ -747,9 +815,13 @@ func (a *app) routeSections(ctx context.Context, st uiState) []wire.Section {
 	return out
 }
 
-func (a *app) mapSections(ctx context.Context, st uiState) []wire.Section {
+func (a *app) mapSections(ctx context.Context, st uiState, interactive bool) []wire.Section {
+	formTitle := "查看静态地图"
+	if interactive {
+		formTitle = "查看地图"
+	}
 	form := wire.Section{
-		Title: "查看静态地图",
+		Title: formTitle,
 		Items: []wire.Component{
 			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "place", Label: "中心地点或坐标", Value: st.Place, Placeholder: "地名、地址、常用地点名（如 家）或 WGS-84 纬度,经度"},
 			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "markers", Label: "标注点（可选，最多 10 个）", Value: st.Markers, Placeholder: "多个用分号或换行分隔，支持常用地点名"},
@@ -833,6 +905,151 @@ func (a *app) mapSections(ctx context.Context, st uiState) []wire.Section {
 		q.Set("traffic", "1")
 	}
 
+	target := center
+	if !hasCenter && len(markers) > 0 {
+		target = markers[0]
+	}
+	useTarget := target.at.String()
+	weatherTarget := target.at.String()
+	displayName := target.name
+	var matchedFixed fixedPlace
+	isFixed := false
+	if st.Place != "" {
+		if fp, ok := a.matchFixedPlace(st.Place); ok && len(rawMarkers) <= 1 &&
+			(len(rawMarkers) == 0 || normalizePlaceKey(rawMarkers[0]) == normalizePlaceKey(st.Place)) {
+			isFixed = true
+			matchedFixed = fp
+			useTarget = fp.Name
+			weatherTarget = fp.Name
+			displayName = fp.Name
+		}
+	}
+	if !isFixed && st.PlaceLabel != "" {
+		displayName = st.PlaceLabel
+	}
+
+	var shortcutItems []wire.Component
+	shortcutItems = append(shortcutItems,
+		wire.Component{
+			Type:   wire.ComponentButton,
+			Title:  "设为算路起点",
+			Action: &wire.Action{ID: "use_from", Values: map[string]string{"place": useTarget}},
+		},
+		wire.Component{
+			Type:   wire.ComponentButton,
+			Title:  "设为算路终点",
+			Action: &wire.Action{ID: "use_to", Values: map[string]string{"place": useTarget}},
+		},
+		wire.Component{
+			Type:   wire.ComponentButton,
+			Title:  "查当地天气",
+			Action: &wire.Action{ID: "quick_weather", Values: map[string]string{"weather_city": weatherTarget}},
+		},
+	)
+	if !isFixed {
+		draftName := ""
+		if d := strings.TrimSpace(displayName); d != "" && d != target.at.String() {
+			draftName = d
+		}
+		draftTarget := target.at.String()
+		if draftName != "" {
+			draftTarget = draftName + " " + target.at.String()
+		}
+		shortcutItems = append(shortcutItems, wire.Component{
+			Type:  wire.ComponentButton,
+			Title: "存为常用地点",
+			Action: &wire.Action{
+				ID:     "prepare_save",
+				Values: map[string]string{"name": draftName, "target": draftTarget},
+			},
+		})
+	} else if matchedFixed.Source == "ui" {
+		shortcutItems = append(shortcutItems, wire.Component{
+			Type:  wire.ComponentButton,
+			Title: "删除常用地点",
+			Role:  wire.ButtonRoleDestructive,
+			Action: &wire.Action{
+				ID:      "delete_place",
+				Values:  map[string]string{"name": matchedFixed.Name},
+				Confirm: fmt.Sprintf("要从常用地点里删掉「%s」吗？", clip(matchedFixed.Name, 20)),
+			},
+		})
+	}
+
+	if interactive && !st.Traffic && len(markers) > 0 {
+		pins := make([]placePin, 0, len(markers))
+		pts := make([]point, 0, len(markers)+1)
+		if hasCenter && center.at.valid() {
+			pts = append(pts, center.at)
+		}
+		for i, m := range markers {
+			label := m.name
+			if len(markers) == 1 {
+				if d := strings.TrimSpace(displayName); d != "" {
+					label = d
+				}
+			} else {
+				label = fmt.Sprintf("%c. %s", rune('A'+i), m.name)
+			}
+			pin := placePin{
+				id:       fmt.Sprintf("m-%d", i+1),
+				at:       m.at,
+				kind:     wire.MapMarkerKindPin,
+				label:    label,
+				subtitle: m.where,
+				detail:   "WGS-84: " + m.at.String(),
+				icon:     markerIconForName(label),
+			}
+			if i == 0 {
+				pin.tone = wire.TonePositive
+			} else {
+				pin.color = wire.ColorBlue
+			}
+			pins = append(pins, pin)
+			pts = append(pts, m.at)
+		}
+		var vp *wire.MapViewport
+		if st.Zoom > 0 && (hasCenter || len(markers) == 1) {
+			spanLat, spanLon := zoomSpan(st.Zoom)
+			vp = &wire.MapViewport{
+				Center:  mapCoord(target.at),
+				SpanLat: floatPtr(spanLat),
+				SpanLon: floatPtr(spanLon),
+			}
+		} else {
+			vp = fitViewport(pts, 0.01, 0.012)
+		}
+		capText := fmt.Sprintf("共 %d 处标注 · 可缩放拖拽查看周边", len(pins))
+		if len(pins) == 1 && displayName != "" {
+			capText = displayName
+			if target.where != "" && !strings.Contains(displayName, target.where) {
+				capText += " · " + target.where
+			}
+		}
+		links := []wire.MapLink{{
+			Title: "在高德地图中打开 " + clipFit(displayName, 30),
+			URL:   amapMarkerURL(target.at, displayName),
+		}}
+		if mc := buildPlacesMapComponent(
+			"map-viewer",
+			displayName,
+			fmt.Sprintf("%s 地图位置", displayName),
+			capText,
+			wire.ImageAspectWide,
+			vp,
+			pins,
+			links,
+			len(pins) > 1,
+		); mc != nil {
+			items := []wire.Component{
+				*mc,
+				{Type: wire.ComponentButton, Title: "叠加实时路况（切换静态图）", Action: &wire.Action{ID: "toggle_traffic"}},
+			}
+			items = append(items, shortcutItems...)
+			return []wire.Section{form, {Title: "地图预览", Items: items}}
+		}
+	}
+
 	ref := a.mapRefs().put(q, st.Traffic)
 	var capParts []string
 	if zoom > 0 {
@@ -870,74 +1087,7 @@ func (a *app) mapSections(ctx context.Context, st uiState) []wire.Section {
 			Subtitle: "WGS-84: " + m.at.String(),
 		})
 	}
-	target := center
-	if !hasCenter && len(markers) > 0 {
-		target = markers[0]
-	}
-	useTarget := target.at.String()
-	weatherTarget := target.at.String()
-	displayName := target.name
-	var matchedFixed fixedPlace
-	isFixed := false
-	if st.Place != "" {
-		if fp, ok := a.matchFixedPlace(st.Place); ok && len(rawMarkers) <= 1 &&
-			(len(rawMarkers) == 0 || normalizePlaceKey(rawMarkers[0]) == normalizePlaceKey(st.Place)) {
-			isFixed = true
-			matchedFixed = fp
-			useTarget = fp.Name
-			weatherTarget = fp.Name
-			displayName = fp.Name
-		}
-	}
-	if !isFixed && st.PlaceLabel != "" {
-		displayName = st.PlaceLabel
-	}
-	items = append(items,
-		wire.Component{
-			Type:   wire.ComponentButton,
-			Title:  "设为算路起点",
-			Action: &wire.Action{ID: "use_from", Values: map[string]string{"place": useTarget}},
-		},
-		wire.Component{
-			Type:   wire.ComponentButton,
-			Title:  "设为算路终点",
-			Action: &wire.Action{ID: "use_to", Values: map[string]string{"place": useTarget}},
-		},
-		wire.Component{
-			Type:   wire.ComponentButton,
-			Title:  "查当地天气",
-			Action: &wire.Action{ID: "quick_weather", Values: map[string]string{"weather_city": weatherTarget}},
-		},
-	)
-	if !isFixed {
-		draftName := ""
-		if d := strings.TrimSpace(displayName); d != "" && d != target.at.String() {
-			draftName = d
-		}
-		draftTarget := target.at.String()
-		if draftName != "" {
-			draftTarget = draftName + " " + target.at.String()
-		}
-		items = append(items, wire.Component{
-			Type:  wire.ComponentButton,
-			Title: "存为常用地点",
-			Action: &wire.Action{
-				ID:     "prepare_save",
-				Values: map[string]string{"name": draftName, "target": draftTarget},
-			},
-		})
-	} else if matchedFixed.Source == "ui" {
-		items = append(items, wire.Component{
-			Type:  wire.ComponentButton,
-			Title: "删除常用地点",
-			Role:  wire.ButtonRoleDestructive,
-			Action: &wire.Action{
-				ID:      "delete_place",
-				Values:  map[string]string{"name": matchedFixed.Name},
-				Confirm: fmt.Sprintf("要从常用地点里删掉「%s」吗？", clip(matchedFixed.Name, 20)),
-			},
-		})
-	}
+	items = append(items, shortcutItems...)
 	items = append(items, wire.Component{
 		Type:  wire.ComponentLink,
 		Title: "在高德地图中打开 " + clip(displayName, 30),
@@ -1210,33 +1360,4 @@ func splitBy(s string, sep func(rune) bool) []string {
 		}
 	}
 	return out
-}
-
-// amapMarkerURL builds an https AMap URI link to view a point (GCJ-02 lng,lat).
-func amapMarkerURL(p point, name string) string {
-	q := url.Values{"position": {amapLocation(p)}, "callnative": {"1"}}
-	if name != "" {
-		q.Set("name", name)
-	}
-	return "https://uri.amap.com/marker?" + q.Encode()
-}
-
-// amapNavURL builds an https AMap URI link to open route navigation (GCJ-02 lng,lat).
-func amapNavURL(from, to place, mode string) string {
-	amapMode := "car"
-	switch mode {
-	case "transit":
-		amapMode = "bus"
-	case "walking":
-		amapMode = "walk"
-	case "cycling", "ebike":
-		amapMode = "ride"
-	}
-	q := url.Values{
-		"from":       {amapLocation(from.at) + "," + from.name},
-		"to":         {amapLocation(to.at) + "," + to.name},
-		"mode":       {amapMode},
-		"callnative": {"1"},
-	}
-	return "https://uri.amap.com/navigation?" + q.Encode()
 }
