@@ -223,13 +223,14 @@ def normalize(msg, extract_key):
     at = float(msg.get("create_time") or 0)
     if at > 1e12:
         at /= 1000
-    root = msg.get("root_id") or ""
+    root = str(msg.get("root_id") or "")
+    parent = str(msg.get("parent_id") or "")
     return {
         "id": str(msg.get("msg_id") or ""), "chat": str(msg.get("chat_id") or ""),
         "chat_kind": "dm" if msg.get("chat_type") == 1 else "group",
         "position": int(msg.get("position") or 0), "sender": str(msg.get("from_id") or ""), "type": name,
         "text": text, "at": at or time.time(), "root": "" if root == "0" else root,
-        "parent": msg.get("parent_id") or "", "at_me": bool(msg.get("at_me")), "media": media,
+        "parent": "" if parent == "0" else parent, "at_me": bool(msg.get("at_me")), "media": media,
         "mentions": mentions,
     }
 
