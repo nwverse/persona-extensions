@@ -118,7 +118,9 @@ func (a *app) lookupSave(_ context.Context, p lookupParams) (savedResult, error)
 		return savedResult{}, nil
 	}
 	a.store.save(lemma, g.text(p.UILang))
-	return savedResult{Saved: true}, nil
+	// store.save turns away an empty gloss without saying so, so report what the store now holds.
+	_, saved := a.store.snapshot().Words[lemma]
+	return savedResult{Saved: saved}, nil
 }
 
 func (a *app) lookupRemove(_ context.Context, p lookupParams) (savedResult, error) {

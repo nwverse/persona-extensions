@@ -222,3 +222,40 @@ func TestLookupSavedDeveloperWord(t *testing.T) {
 		}
 	}
 }
+
+func TestLookupSaveEmptyGlossIsNotSaved(t *testing.T) {
+	a := testApp(t, &staticTranslator{text: "x"})
+	h := startLookup(t, a)
+	// An ECDICT entry can have neither an English nor a Chinese gloss; the store keeps nothing for it.
+	const word = "harbor"
+	old, had := lexicon.lemmas[word]
+	lexicon.lemmas[word] = gloss{}
+	t.Cleanup(func() {
+		if had {
+			lexicon.lemmas[word] = old
+		} else {
+			delete(lexicon.lemmas, word)
+		}
+	})
+	var res savedResult
+	if err := json.Unmarshal(lookupCall(t, h, "save", map[string]any{"contribution": "relingo", "word": word, "ui_lang": "en"}), &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Saved {
+		t.Fatal("save reported an empty-gloss word as saved")
+	}
+	if _, kept := a.store.snapshot().Words[word]; kept {
+		t.Fatal("store kept an empty-gloss word")
+	}
+	// Saving a word that is already saved still answers saved.
+	lexicon.lemmas[word] = old
+	for range 2 {
+		res = savedResult{}
+		if err := json.Unmarshal(lookupCall(t, h, "save", map[string]any{"contribution": "relingo", "word": word, "ui_lang": "en"}), &res); err != nil {
+			t.Fatal(err)
+		}
+		if !res.Saved {
+			t.Fatal("saving a real word did not report saved")
+		}
+	}
+}
