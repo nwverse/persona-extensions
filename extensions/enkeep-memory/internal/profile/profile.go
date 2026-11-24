@@ -8,6 +8,8 @@
 //     no restricted domain spaces, no person card evaluations or inferences, and no life-domain entries when onboarding.use == "work").
 //   - Sensitive stable entries are grouped separately per category with explicit category and origin_space metadata so the hub's
 //     scene filter controls where they may appear.
+//   - The input layer is pluggable (InputProvider): today EntriesProvider reads curated entries from store.State; future
+//     periodic cross-event overview pattern entries can be plugged in via InputProvider without changing the UI or memory.entries export.
 //   - Persisted in its own file (profile-summary.json) beside state.json; never mutates state.json.
 package profile
 
@@ -57,6 +59,80 @@ var Facets = []entry.Facet{
 	entry.Persona,
 }
 
+// CandidateItem is one normalized input item fed into the profile summary builder.
+// Replacing InputProvider lets the summary switch from raw curated entries to periodic-overview
+// pattern entries later without changing the subpage or memory.entries export.
+type CandidateItem struct {
+	ID          string
+	Facet       entry.Facet
+	Text        string
+	Last        string
+	Pinned      bool
+	Priority    int      // lower is higher priority (e.g. 0=abstract/pattern, 1=self_report, 2=class, 3=action)
+	Weight      int      // higher ranks first within the same priority
+	Categories  []string // non-empty => strictly isolated into Summary.Sensitive
+	OriginSpace string
+	Subjects    []string
+	IsFocus     bool // current_focus / active recent highlight
+}
+
+// InputProvider supplies normalized candidate items for building a profile Summary.
+type InputProvider interface {
+	Name() string
+	Items(st *store.State) []CandidateItem
+}
+
+// EntriesProvider is the default InputProvider backed by curated entries in store.State.
+type EntriesProvider struct{}
+
+func (EntriesProvider) Name() string { return "entries" }
+
+func (EntriesProvider) Items(st *store.State) []CandidateItem {
+	if st == nil {
+		return nil
+	}
+	contactScore := map[string]int{}
+	for _, c := range people.Ranked(st.Contacts) {
+		contactScore[c.Person] = c.Score
+	}
+	var out []CandidateItem
+	for _, e := range st.Entries {
+		if !eligible(st, e) {
+			continue
+		}
+		cats := entryCategories(e)
+		// Entries from a non-empty domain space outside interaction/persona stay out of general profile unless tagged sensitive.
+		if len(cats) == 0 && e.OriginSpace != "" && e.Facet != entry.Interaction && e.Facet != entry.Persona {
+			continue
+		}
+		targetFacet := e.Facet
+		if targetFacet == entry.People {
+			targetFacet = entry.World
+		}
+		if len(cats) == 0 && !slices.Contains(Facets, targetFacet) {
+			continue
+		}
+		weight := e.Count * max(1, len(e.Kinds))
+		if targetFacet == entry.World {
+			weight += contactScore[e.Person] / 10
+		}
+		out = append(out, CandidateItem{
+			ID:          e.ID,
+			Facet:       targetFacet,
+			Text:        formatPointText(st, e),
+			Last:        e.Last,
+			Pinned:      e.Pinned,
+			Priority:    grainRank(e),
+			Weight:      weight,
+			Categories:  cats,
+			OriginSpace: e.OriginSpace,
+			Subjects:    collectEntrySubjects(st, e),
+			IsFocus:     e.Type == "current_focus",
+		})
+	}
+	return out
+}
+
 // Summary is the persisted user profile summary.
 type Summary struct {
 	Version      int                `json:"version"`
@@ -64,6 +140,7 @@ type Summary struct {
 	Day          string             `json:"day,omitempty"`
 	Lang         string             `json:"lang,omitempty"`
 	Mode         string             `json:"mode"`
+	InputSource  string             `json:"input_source,omitempty"`
 	BasisHash    string             `json:"basis_hash"`
 	SourceCount  int                `json:"source_count"`
 	CoveredCount int                `json:"covered_count"`
@@ -102,6 +179,7 @@ type SensitiveSection struct {
 
 // Options configures Refresh.
 type Options struct {
+	Provider  InputProvider // nil defaults to EntriesProvider{}
 	Model     model.Model
 	Tier      model.Tier
 	Lang      string
@@ -173,24 +251,21 @@ func grainRank(e *entry.Entry) int {
 	}
 }
 
-func sortEntries(es []*entry.Entry) {
-	sort.SliceStable(es, func(i, j int) bool {
-		if es[i].Pinned != es[j].Pinned {
-			return es[i].Pinned
+func sortCandidates(items []CandidateItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].Pinned != items[j].Pinned {
+			return items[i].Pinned
 		}
-		gi, gj := grainRank(es[i]), grainRank(es[j])
-		if gi != gj {
-			return gi < gj
+		if items[i].Priority != items[j].Priority {
+			return items[i].Priority < items[j].Priority
 		}
-		wi := es[i].Count * max(1, len(es[i].Kinds))
-		wj := es[j].Count * max(1, len(es[j].Kinds))
-		if wi != wj {
-			return wi > wj
+		if items[i].Weight != items[j].Weight {
+			return items[i].Weight > items[j].Weight
 		}
-		if es[i].Last != es[j].Last {
-			return es[i].Last > es[j].Last
+		if items[i].Last != items[j].Last {
+			return items[i].Last > items[j].Last
 		}
-		return es[i].ID < es[j].ID
+		return items[i].ID < items[j].ID
 	})
 }
 
@@ -232,7 +307,7 @@ func formatPointText(st *store.State, e *entry.Entry) string {
 	return clipRunes(txt, 160)
 }
 
-func collectSubjects(st *store.State, es []*entry.Entry) []string {
+func collectEntrySubjects(st *store.State, e *entry.Entry) []string {
 	var out []string
 	add := func(s string) {
 		s = strings.TrimSpace(s)
@@ -245,15 +320,27 @@ func collectSubjects(st *store.State, es []*entry.Entry) []string {
 		}
 		out = append(out, clipRunes(s, 40))
 	}
-	for _, e := range es {
-		if name := contactName(st, e.Person); name != "" {
-			add(name)
+	if name := contactName(st, e.Person); name != "" {
+		add(name)
+	}
+	add(e.Object)
+	for _, sc := range e.Scopes {
+		if sc.Kind != entry.ScopeGlobal {
+			add(sc.Name)
 		}
-		add(e.Object)
-		for _, sc := range e.Scopes {
-			if sc.Kind != entry.ScopeGlobal {
-				add(sc.Name)
+	}
+	return out
+}
+
+func mergeSubjects(items []CandidateItem) []string {
+	var out []string
+	for _, it := range items {
+		for _, s := range it.Subjects {
+			s = strings.TrimSpace(s)
+			if s == "" || len(out) >= MaxSubjects || slices.Contains(out, s) {
+				continue
 			}
+			out = append(out, clipRunes(s, 40))
 		}
 	}
 	return out
@@ -319,9 +406,17 @@ func facetShortName(f entry.Facet, zh bool) string {
 	return string(f)
 }
 
-// Build deterministically compiles a six-facet profile summary from st.
+// Build deterministically compiles a six-facet profile summary from st using the default EntriesProvider.
 // It never calls a model and never mutates st.
 func Build(st *store.State, now time.Time, lang string) *Summary {
+	return BuildWith(st, EntriesProvider{}, now, lang)
+}
+
+// BuildWith deterministically compiles a six-facet profile summary from any InputProvider.
+func BuildWith(st *store.State, src InputProvider, now time.Time, lang string) *Summary {
+	if src == nil {
+		src = EntriesProvider{}
+	}
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
@@ -331,89 +426,73 @@ func Build(st *store.State, now time.Time, lang string) *Summary {
 		GeneratedAt: now.UTC().Format(time.RFC3339),
 		Lang:        lang,
 		Mode:        ModeDeterministic,
+		InputSource: src.Name(),
 		Sections:    make([]Section, 0, len(Facets)),
 	}
-	if st == nil {
+
+	items := src.Items(st)
+	if len(items) == 0 {
 		for _, f := range Facets {
 			sum.Sections = append(sum.Sections, Section{Facet: f, Group: groupOf(f)})
 		}
-		sum.BasisHash = computeBasisHash(lang, nil, nil)
+		sum.BasisHash = computeBasisHash(lang, src.Name(), nil, nil)
 		return sum
 	}
 
-	generalByFacet := map[entry.Facet][]*entry.Entry{}
-	sensitiveByCat := map[string][]*entry.Entry{}
-	var allUsed []*entry.Entry
+	generalByFacet := map[entry.Facet][]CandidateItem{}
+	sensitiveByCat := map[string][]CandidateItem{}
+	var allUsed []CandidateItem
 
-	// Rank top contacts so world/people facts prioritize frequent contacts.
-	contactScore := map[string]int{}
-	for _, c := range people.Ranked(st.Contacts) {
-		contactScore[c.Person] = c.Score
-	}
-
-	for _, e := range st.Entries {
-		if !eligible(st, e) {
+	for _, it := range items {
+		it.Text = clipRunes(cleanLine(it.Text), 160)
+		if it.Text == "" {
 			continue
 		}
-		cats := entryCategories(e)
-		// Any sensitive category goes strictly to Sensitive, never into general sections or overview.
+		// Normalize categories: any sensitive category goes strictly to Sensitive, never into general sections or overview.
+		var cats []string
+		for _, c := range it.Categories {
+			if cn := entry.CategoryOf(c); cn != "" && !slices.Contains(cats, cn) {
+				cats = append(cats, cn)
+			}
+		}
+		for _, c := range entry.SpaceDefaults(it.OriginSpace) {
+			if !slices.Contains(cats, c) {
+				cats = append(cats, c)
+			}
+		}
+		sort.Strings(cats)
+		it.Categories = cats
+
 		if len(cats) > 0 {
 			for _, cat := range cats {
-				sensitiveByCat[cat] = append(sensitiveByCat[cat], e)
+				sensitiveByCat[cat] = append(sensitiveByCat[cat], it)
 			}
-			allUsed = append(allUsed, e)
+			allUsed = append(allUsed, it)
 			continue
 		}
-		// Entries from a non-empty domain space outside interaction/persona stay out of general profile.
-		if e.OriginSpace != "" && e.Facet != entry.Interaction && e.Facet != entry.Persona {
+		if !slices.Contains(Facets, it.Facet) {
 			continue
 		}
-		targetFacet := e.Facet
-		if targetFacet == entry.People {
-			targetFacet = entry.World
-		}
-		if !slices.Contains(Facets, targetFacet) {
-			continue
-		}
-		generalByFacet[targetFacet] = append(generalByFacet[targetFacet], e)
-		allUsed = append(allUsed, e)
+		generalByFacet[it.Facet] = append(generalByFacet[it.Facet], it)
+		allUsed = append(allUsed, it)
 	}
 
 	// Build each of the six sections in fixed order.
 	for _, f := range Facets {
 		es := generalByFacet[f]
-		if f == entry.World {
-			// Sort world + people facts, giving a boost to higher-ranked contacts when weights tie.
-			sort.SliceStable(es, func(i, j int) bool {
-				if es[i].Pinned != es[j].Pinned {
-					return es[i].Pinned
-				}
-				wi := es[i].Count*max(1, len(es[i].Kinds)) + contactScore[es[i].Person]/10
-				wj := es[j].Count*max(1, len(es[j].Kinds)) + contactScore[es[j].Person]/10
-				if wi != wj {
-					return wi > wj
-				}
-				if es[i].Last != es[j].Last {
-					return es[i].Last > es[j].Last
-				}
-				return es[i].ID < es[j].ID
-			})
-		} else {
-			sortEntries(es)
-		}
+		sortCandidates(es)
 
 		seen := map[string]bool{}
 		var pts []Point
-		var picked []*entry.Entry
-		for _, e := range es {
-			txt := formatPointText(st, e)
-			key := norm.Q(txt)
+		var picked []CandidateItem
+		for _, it := range es {
+			key := norm.Q(it.Text)
 			if key == "" || seen[key] {
 				continue
 			}
 			seen[key] = true
-			pts = append(pts, Point{ID: e.ID, Text: txt, Last: e.Last})
-			picked = append(picked, e)
+			pts = append(pts, Point{ID: it.ID, Text: it.Text, Last: it.Last})
+			picked = append(picked, it)
 			if len(pts) >= MaxPointsPerFacet {
 				break
 			}
@@ -424,7 +503,7 @@ func Build(st *store.State, now time.Time, lang string) *Summary {
 			Group:       groupOf(f),
 			Points:      pts,
 			SourceCount: len(es),
-			Subjects:    collectSubjects(st, picked),
+			Subjects:    mergeSubjects(picked),
 			Summary:     joinSummary(pts, zh, 3),
 		}
 		if len(pts) > 0 {
@@ -433,21 +512,19 @@ func Build(st *store.State, now time.Time, lang string) *Summary {
 		sum.Sections = append(sum.Sections, sec)
 	}
 
-	// Build recent highlights (current_focus + entries active within RecentDays).
+	// Build recent highlights (IsFocus + general items active within RecentDays).
 	cutoff := now.AddDate(0, 0, -RecentDays).Format("2006-01-02")
-	var recentCandidates []*entry.Entry
+	var recentCandidates []CandidateItem
 	for _, f := range []entry.Facet{entry.Persona, entry.World, entry.Workflow} {
-		for _, e := range generalByFacet[f] {
-			if e.Type == "current_focus" || (e.Last != "" && e.Last >= cutoff) {
-				recentCandidates = append(recentCandidates, e)
+		for _, it := range generalByFacet[f] {
+			if it.IsFocus || (it.Last != "" && it.Last >= cutoff) {
+				recentCandidates = append(recentCandidates, it)
 			}
 		}
 	}
 	sort.SliceStable(recentCandidates, func(i, j int) bool {
-		fi := recentCandidates[i].Type == "current_focus"
-		fj := recentCandidates[j].Type == "current_focus"
-		if fi != fj {
-			return fi
+		if recentCandidates[i].IsFocus != recentCandidates[j].IsFocus {
+			return recentCandidates[i].IsFocus
 		}
 		if recentCandidates[i].Last != recentCandidates[j].Last {
 			return recentCandidates[i].Last > recentCandidates[j].Last
@@ -455,14 +532,13 @@ func Build(st *store.State, now time.Time, lang string) *Summary {
 		return recentCandidates[i].ID < recentCandidates[j].ID
 	})
 	seenRecent := map[string]bool{}
-	for _, e := range recentCandidates {
-		txt := formatPointText(st, e)
-		key := norm.Q(txt)
+	for _, it := range recentCandidates {
+		key := norm.Q(it.Text)
 		if key == "" || seenRecent[key] {
 			continue
 		}
 		seenRecent[key] = true
-		sum.Recent = append(sum.Recent, txt)
+		sum.Recent = append(sum.Recent, it.Text)
 		if len(sum.Recent) >= MaxRecent {
 			break
 		}
@@ -495,23 +571,22 @@ func Build(st *store.State, now time.Time, lang string) *Summary {
 		if len(es) == 0 {
 			continue
 		}
-		sortEntries(es)
+		sortCandidates(es)
 		seen := map[string]bool{}
 		var pts []Point
-		var picked []*entry.Entry
+		var picked []CandidateItem
 		space := ""
-		for _, e := range es {
-			if space == "" && e.OriginSpace != "" {
-				space = e.OriginSpace
+		for _, it := range es {
+			if space == "" && it.OriginSpace != "" {
+				space = it.OriginSpace
 			}
-			txt := formatPointText(st, e)
-			key := norm.Q(txt)
+			key := norm.Q(it.Text)
 			if key == "" || seen[key] {
 				continue
 			}
 			seen[key] = true
-			pts = append(pts, Point{ID: e.ID, Text: txt, Last: e.Last})
-			picked = append(picked, e)
+			pts = append(pts, Point{ID: it.ID, Text: it.Text, Last: it.Last})
+			picked = append(picked, it)
 			if len(pts) >= MaxSensitivePoints {
 				break
 			}
@@ -523,23 +598,23 @@ func Build(st *store.State, now time.Time, lang string) *Summary {
 				Summary:     joinSummary(pts, zh, 3),
 				Points:      pts,
 				SourceCount: len(es),
-				Subjects:    collectSubjects(st, picked),
+				Subjects:    mergeSubjects(picked),
 			})
 		}
 	}
 
 	sum.SourceCount = len(allUsed)
-	sum.BasisHash = computeBasisHash(lang, allUsed, sum.Recent)
+	sum.BasisHash = computeBasisHash(lang, src.Name(), allUsed, sum.Recent)
 	return sum
 }
 
-func computeBasisHash(lang string, es []*entry.Entry, recent []string) string {
-	sorted := slices.Clone(es)
+func computeBasisHash(lang, srcName string, items []CandidateItem, recent []string) string {
+	sorted := slices.Clone(items)
 	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
 	h := sha1.New()
-	fmt.Fprintf(h, "v%d|%s\n", CurrentVersion, lang)
-	for _, e := range sorted {
-		fmt.Fprintf(h, "%s|%s|%s|%v|%s|%s\n", e.ID, e.Facet, e.Last, e.Pinned, strings.Join(entryCategories(e), ","), cleanLine(recall.Line(e)))
+	fmt.Fprintf(h, "v%d|%s|%s\n", CurrentVersion, lang, srcName)
+	for _, it := range sorted {
+		fmt.Fprintf(h, "%s|%s|%s|%v|%s|%s\n", it.ID, it.Facet, it.Last, it.Pinned, strings.Join(it.Categories, ","), it.Text)
 	}
 	for _, r := range recent {
 		fmt.Fprintf(h, "r|%s\n", r)
@@ -598,15 +673,15 @@ func Save(dir string, s *Summary) error {
 	return os.Rename(tmp.Name(), path)
 }
 
-// Refresh rebuilds the profile summary from st, optionally polishing the general sections with a single
-// model call when the input fingerprint changed, and saves profile-summary.json.
+// Refresh rebuilds the profile summary from st (using o.Provider or EntriesProvider), optionally polishing
+// the general sections with a single model call when the input fingerprint changed, and saves profile-summary.json.
 func Refresh(ctx context.Context, st *store.State, dir string, o Options) (*Summary, error) {
 	nowFn := o.Now
 	if nowFn == nil {
 		nowFn = time.Now
 	}
 	now := nowFn()
-	base := Build(st, now, o.Lang)
+	base := BuildWith(st, o.Provider, now, o.Lang)
 	base.Day = o.Day
 
 	if !o.Force && dir != "" {

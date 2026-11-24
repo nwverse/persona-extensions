@@ -221,3 +221,31 @@ func TestRefreshSaveLoadAndModelFallback(t *testing.T) {
 		t.Errorf("expected host-a in tools subjects: %v", sum3.Sections[1].Subjects)
 	}
 }
+
+type mockOverviewProvider struct {
+	items []CandidateItem
+}
+
+func (m mockOverviewProvider) Name() string                         { return "periodic_overview" }
+func (m mockOverviewProvider) Items(_ *store.State) []CandidateItem { return m.items }
+
+func TestBuildWithCustomProvider(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	prov := mockOverviewProvider{
+		items: []CandidateItem{
+			{ID: "pat-1", Facet: entry.Judgement, Text: "架构选型优先插件化解耦而非侵入主分支", Last: "2026-11-24", Priority: 0, Weight: 10},
+			{ID: "pat-2", Facet: entry.Workflow, Text: "上线前先小样本实证再放量", Last: "2026-11-24", Priority: 0, Weight: 9},
+			{ID: "pat-3", Facet: entry.Persona, Text: "关注长期可维护性", Last: "2026-11-24", Priority: 0, Weight: 8, Categories: []string{entry.CatHealth}, OriginSpace: "health"},
+		},
+	}
+	sum := BuildWith(nil, prov, now, "zh-Hans")
+	if sum.InputSource != "periodic_overview" {
+		t.Fatalf("input_source = %q, want periodic_overview", sum.InputSource)
+	}
+	if sum.CoveredCount != 2 || len(sum.Sensitive) != 1 {
+		t.Fatalf("covered=%d sensitive=%d", sum.CoveredCount, len(sum.Sensitive))
+	}
+	if !strings.Contains(sum.Overview, "插件化解耦") || strings.Contains(sum.Overview, "长期可维护性") {
+		t.Fatalf("unexpected overview: %q", sum.Overview)
+	}
+}
