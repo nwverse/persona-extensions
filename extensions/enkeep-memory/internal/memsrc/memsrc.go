@@ -103,9 +103,64 @@ func before(a, b key) bool {
 	return a.I < b.I
 }
 
+// weakPredicates are low-value relation triples (e.g. "A depends on B", "A works with B") that crowd memory.entries
+// without actionable guidance. They stay in state and are only filtered at the memory.entries outlet unless the user
+// explicitly pinned, edited or confirmed them.
+var weakPredicates = map[string]bool{
+	"about":             true,
+	"allocated":         true,
+	"assigned":          true,
+	"blocked_by":        true,
+	"collaborates_with": true,
+	"depends_on":        true,
+	"member_of":         true,
+	"same_circle":       true,
+	"serves":            true,
+	"waiting_on":        true,
+}
+
+// substantiveWorldTypes are world-facet types that carry durable project/ownership/decision value over transient status.
+var substantiveWorldTypes = map[string]bool{
+	"committed":  true,
+	"decided":    true,
+	"decides":    true,
+	"decision":   true,
+	"means":      true,
+	"mentors":    true,
+	"owns":       true,
+	"reports_to": true,
+	"role":       true,
+	"term":       true,
+}
+
+func userConfirmedRight(e *entry.Entry) bool {
+	for i := len(e.Verdicts) - 1; i >= 0; i-- {
+		if e.Verdicts[i].By == "user" {
+			return e.Verdicts[i].Mark == "right"
+		}
+	}
+	return false
+}
+
+// IsWeakRelation says whether e is a low-value relation triple excluded from memory.entries. Nothing is deleted from
+// state; user-pinned, user-edited or user-confirmed entries are always kept.
+func IsWeakRelation(e *entry.Entry) bool {
+	if e == nil || e.Facet != entry.World || e.Predicate == "" {
+		return false
+	}
+	if !weakPredicates[strings.ToLower(strings.TrimSpace(e.Predicate))] {
+		return false
+	}
+	if e.Pinned || (e.User != nil && strings.TrimSpace(e.User.Text) != "") || userConfirmedRight(e) {
+		return false
+	}
+	return true
+}
+
 // Pool says whether an entry is answered: live, settled or on its way (not one the user deleted, merged, retired or
-// marked wrong), never a card's evaluation or inference about a person, and not life content when the user chose
-// "work only". The same gate as enkeep_recall's, without its category look-up: grading by category is the hub's.
+// marked wrong), never a card's evaluation or inference about a person, never a low-value weak relation triple, and
+// not life content when the user chose "work only". The same gate as enkeep_recall's, without its category look-up:
+// grading by category is the hub's.
 func Pool(st *store.State, e *entry.Entry) bool {
 	if !e.Live() {
 		return false
@@ -118,6 +173,9 @@ func Pool(st *store.State, e *entry.Entry) bool {
 		}
 	}
 	if e.Facet == entry.People && (e.Part == entry.PartUserEval || e.Part == entry.PartInferred || e.Inferred) {
+		return false
+	}
+	if IsWeakRelation(e) {
 		return false
 	}
 	if e.Domain == entry.Life && st.Onboarding != nil && st.Onboarding.Use == entry.Work {
@@ -140,13 +198,52 @@ func Status(e *entry.Entry) string {
 	return "candidate"
 }
 
-// Rank is the plugin's own order among alike entries (the exits' sortEntries): sightings × source kinds, pinned
-// first; 0 to 1000.
+// Rank orders entries by usefulness (0 to 1000, pinned 1000) so the hub's bounded memory.entries fetch (at most 1000
+// entries, re-sorted by standing then rank) keeps the highest-value rules, judgements, workflows, tools, persona and
+// substantive people/world entries first.
 func Rank(e *entry.Entry) int {
 	if e.Pinned {
 		return 1000
 	}
-	return min(999, e.Count*max(1, len(e.Kinds)))
+	var score int
+	switch e.Facet {
+	case entry.Interaction, entry.Judgement, entry.Workflow, entry.Tools, entry.Persona:
+		score = 400
+	case entry.People:
+		score = 200
+	default: // World and any other facet
+		score = 180
+		typ := strings.ToLower(strings.TrimSpace(e.Type))
+		pred := strings.ToLower(strings.TrimSpace(e.Predicate))
+		if substantiveWorldTypes[typ] || substantiveWorldTypes[pred] {
+			score += 40
+		} else if typ == "status" {
+			score -= 40
+		}
+	}
+	switch e.Grain {
+	case entry.Abstract:
+		score += 160
+	case entry.Class:
+		score += 100
+	default:
+		if slices.Contains(e.Flags, "durable") {
+			score += 60
+		}
+	}
+	if (e.Origin != entry.Behavior && e.Origin != "" && e.Origin != entry.Seed) ||
+		(e.User != nil && strings.TrimSpace(e.User.Text) != "") ||
+		userConfirmedRight(e) {
+		score += 120
+	}
+	score += min(150, max(0, e.Count)*max(1, len(e.Kinds))*12)
+	switch Status(e) {
+	case "dormant":
+		score /= 2
+	case "candidate":
+		score = score * 3 / 4
+	}
+	return max(0, min(999, score))
 }
 
 // Tagged says whether the entry's categories and space were decided by the tagging rules: its own mark, or, for a

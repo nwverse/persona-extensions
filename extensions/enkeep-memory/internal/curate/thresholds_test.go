@@ -88,13 +88,15 @@ func TestSettleMuchData(t *testing.T) {
 	if d, _ := Settle(s, e, Tally{For: six, Against: against(2, 45), Days: ds}, today); d.Status != entry.Shifting {
 		t.Errorf("2 of 8 recent against: %s", d.Status)
 	}
-	// quiet for 40 active days: dormant; a confirmed one is asked about instead
-	quiet := &entry.Entry{Grain: entry.Class, Origin: entry.Behavior, Status: entry.Stable, Last: ds[10]}
-	if d, _ := Settle(s, quiet, Tally{For: occ(ds[9], ds[10]), Days: ds[9:11]}, today); d.Status != entry.Dormant {
-		t.Errorf("quiet: %s", d.Status)
+	// quiet for 180 active days (established class): dormant; a confirmed one is asked about instead
+	longDays := days(200)
+	longState := &store.State{ActiveDays: longDays}
+	quiet := &entry.Entry{Grain: entry.Class, Origin: entry.Behavior, Status: entry.Stable, Last: longDays[10]}
+	if d, _ := Settle(longState, quiet, Tally{For: occ(longDays[9], longDays[10]), Days: longDays[9:11]}, longDays[199]); d.Status != entry.Dormant {
+		t.Errorf("quiet established: %s", d.Status)
 	}
 	quiet.Verdicts = []entry.Verdict{{Mark: "right", By: "user"}}
-	if d, ask := Settle(s, quiet, Tally{For: occ(ds[9], ds[10]), Days: ds[9:11]}, today); d.Status != entry.Stable || !ask {
+	if d, ask := Settle(longState, quiet, Tally{For: occ(longDays[9], longDays[10]), Days: longDays[9:11]}, longDays[199]); d.Status != entry.Stable || !ask {
 		t.Errorf("confirmed and quiet: %s ask %v", d.Status, ask)
 	}
 	// calendar gaps do not count: 3 active days spread over months are 3 active days
@@ -102,6 +104,36 @@ func TestSettleMuchData(t *testing.T) {
 	se := &entry.Entry{Grain: entry.Class, Origin: entry.Behavior, Status: entry.Stable, Last: "2026-01-01"}
 	if d, _ := Settle(sparse, se, Tally{For: occ("2026-01-01", "2026-01-01")}, "2026-06-01"); d.Status == entry.Dormant {
 		t.Error("dormant by the calendar")
+	}
+}
+
+// One-off action entries sleep after 90 active days (not 40); established/durable entries (class, abstract, durable,
+// self/person facts, or multi-day corroborated) stay awake past 90 and sleep after 180 active days.
+func TestSettleDormantTiers(t *testing.T) {
+	ds := days(200)
+	s := &store.State{ActiveDays: ds}
+	// 45 quiet days: neither one-off nor established sleeps.
+	oneOff := &entry.Entry{Facet: entry.World, Grain: entry.Action, Origin: entry.Behavior, Status: entry.Candidate, Last: ds[0]}
+	if d, _ := Settle(s, oneOff, Tally{For: occ(ds[0]), Days: ds[:1]}, ds[45]); d.Status == entry.Dormant {
+		t.Errorf("one-off slept too early at 45 days: %+v", d)
+	}
+	// 95 quiet days: one-off sleeps, established class stays awake.
+	if d, _ := Settle(s, oneOff, Tally{For: occ(ds[0]), Days: ds[:1]}, ds[95]); d.Status != entry.Dormant {
+		t.Errorf("one-off did not sleep at 95 days: %+v", d)
+	}
+	cls := &entry.Entry{Facet: entry.Judgement, Grain: entry.Class, Origin: entry.Behavior, Status: entry.Stable, Last: ds[1]}
+	if d, _ := Settle(s, cls, Tally{For: occ(ds[0], ds[1]), Days: ds[:2]}, ds[95]); d.Status != entry.Stable {
+		t.Errorf("established class slept too early at 94 days: %+v", d)
+	}
+	// 185 quiet days: established class sleeps.
+	if d, _ := Settle(s, cls, Tally{For: occ(ds[0], ds[1]), Days: ds[:2]}, ds[186]); d.Status != entry.Dormant {
+		t.Errorf("established class did not sleep at 185 days: %+v", d)
+	}
+	// Durable single-day action also gets the 180-day window.
+	dur := &entry.Entry{Facet: entry.Interaction, Grain: entry.Action, Origin: entry.Behavior, Flags: []string{"durable"}, Last: ds[0],
+		Evidence: []entry.Evidence{{Ref: "chats/a", Day: ds[0], Who: entry.WhoSelf}}}
+	if d, _ := Settle(s, dur, Tally{For: occ(ds[0]), Days: ds[:1]}, ds[95]); d.Status != entry.Stable {
+		t.Errorf("durable action slept too early at 95 days: %+v", d)
 	}
 }
 

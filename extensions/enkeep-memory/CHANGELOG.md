@@ -1,5 +1,24 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.45 (pre-release)
+
+Recall denoising, priority ranking and dormancy tuning (outlet filtering only; no entries are deleted from state).
+
+- **Filter low-value weak relation triples from `memory.entries`.** Bare world-facet relation triples with weak
+  predicates (`depends_on`, `collaborates_with`, `about`, `member_of`, `same_circle`, `serves`, `assigned`, `allocated`,
+  `waiting_on`, `blocked_by`) are excluded from `memory.entries` unless explicitly pinned, edited or confirmed right by
+  the user. Substantive relations (`owns`, `decides`, `decided`, `reports_to`, `mentors`, `means`, `committed`) and all
+  underlying state entries are preserved.
+- **Re-rank `memory.entries` by usefulness.** `Rank` (0–1000, pinned 1000) now weights facet tier (prioritizing
+  `interaction`, `judgement`, `workflow`, `tools` and `persona`, balanced with substantive `people` and `world`
+  entries), generalization grain (`abstract` > `class` > `durable` > `action`), user authority (self-reported,
+  user-edited or confirmed), evidence strength and status so the hub's 1,000-entry fetch keeps the highest-value
+  entries first.
+- **Tune dormancy thresholds.** One-off/transient entries now go dormant after 90 active days (aligned with
+  `ruleDormantDays` and `roleSeedDays`), and established/durable entries (`class`, `abstract`, `durable`, self/person
+  facts or multi-day entries) after 180 active days, preventing established memory from sleeping prematurely after 40
+  active days.
+
 ## 0.2.0-beta.44 (pre-release)
 
 The tools follow the hub's rules for a memory extension (Persona #13532, #13586: `extmgr/memory_sources.go`
