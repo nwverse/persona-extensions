@@ -16,14 +16,16 @@ import (
 )
 
 // Declarative UI for Persona apps:
-//   - amap (nav_page, icon "location"): interactive place search, route planning (with waypoints), static map viewer
-//     (served via ui.image with zoom and traffic toggles), city weather and monthly quota dashboard.
+//   - amap (nav_page, icon "location"): interactive place search, route planning (with waypoints and one-tap commute),
+//     static map viewer (served via ui.image with zoom and traffic toggles), saved places management ("常用地点"), city
+//     weather and monthly quota dashboard.
 //   - amap-card (overview_card): compact summary of monthly AMap usage and status, zero network calls on render.
 
 const (
 	tabSearch = "search"
 	tabRoute  = "route"
 	tabMap    = "map"
+	tabPlaces = "places"
 	tabUsage  = "usage"
 
 	mapRefCap = 64
@@ -41,10 +43,14 @@ type uiState struct {
 	Mode        string `json:"m,omitempty"`
 	Prefer      string `json:"p,omitempty"`
 	Place       string `json:"pl,omitempty"`
+	PlaceLabel  string `json:"plab,omitempty"`
 	Markers     string `json:"mk,omitempty"`
 	Zoom        int    `json:"z,omitempty"`
 	Traffic     bool   `json:"tr,omitempty"`
 	WeatherCity string `json:"wc,omitempty"`
+	DraftName   string `json:"dn,omitempty"`
+	DraftTarget string `json:"dt,omitempty"`
+	PlaceErr    string `json:"pe,omitempty"`
 	Run         bool   `json:"r,omitempty"`
 }
 
@@ -52,7 +58,7 @@ func readUIState(r *ext.UIRequest) uiState {
 	var st uiState
 	_ = r.DecodeState(&st)
 	switch st.Tab {
-	case tabSearch, tabRoute, tabMap, tabUsage:
+	case tabSearch, tabRoute, tabMap, tabPlaces, tabUsage:
 	default:
 		st.Tab = tabSearch
 	}
@@ -175,14 +181,16 @@ func (a *app) renderPage(ctx context.Context, r *ext.UIRequest) (*wire.View, err
 	return a.buildPage(ctx, st)
 }
 
-// actionPage handles form submits, tab switches, map zoom/traffic toggles and POI selection.
+// actionPage handles form submits, tab switches, saved-place actions, map zoom/traffic toggles and POI selection.
 func (a *app) actionPage(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, error) {
 	st := readUIState(r)
+	var toast string
 	switch r.Action {
 	case "tab":
 		if t := strings.TrimSpace(r.Values["tab"]); t != "" {
 			st.Tab = t
 		}
+		st.PlaceErr = ""
 		st.Run = false
 	case "search":
 		st.Tab = tabSearch
@@ -204,9 +212,59 @@ func (a *app) actionPage(ctx context.Context, r *ext.UIRequest) (*wire.ActionRes
 		}
 		st.Zoom = 0
 		st.Run = st.From != "" && st.To != ""
+	case "quick_route":
+		st.Tab = tabRoute
+		st.From = strings.TrimSpace(r.Values["from"])
+		st.To = strings.TrimSpace(r.Values["to"])
+		st.Waypoints = ""
+		st.City = ""
+		st.Zoom = 0
+		st.Run = st.From != "" && st.To != ""
+	case "swap_route":
+		st.Tab = tabRoute
+		fromVal, hasFrom := r.Values["from"]
+		toVal, hasTo := r.Values["to"]
+		if !hasFrom && !hasTo {
+			fromVal, toVal = st.From, st.To
+		}
+		st.From = strings.TrimSpace(toVal)
+		st.To = strings.TrimSpace(fromVal)
+		if w, ok := r.Values["waypoints"]; ok {
+			st.Waypoints = strings.TrimSpace(w)
+		}
+		if c, ok := r.Values["city"]; ok {
+			st.City = strings.TrimSpace(c)
+		}
+		if m := strings.TrimSpace(r.Values["mode"]); m != "" {
+			st.Mode = m
+		}
+		if p := strings.TrimSpace(r.Values["prefer"]); p != "" {
+			st.Prefer = p
+		}
+		st.Zoom = 0
+		st.Run = st.From != "" && st.To != ""
+	case "use_from":
+		st.Tab = tabRoute
+		if p := strings.TrimSpace(r.Values["place"]); p != "" {
+			st.From = p
+			toast = fmt.Sprintf("已把「%s」填入起点", clip(p, 20))
+		}
+		st.City = ""
+		st.Zoom = 0
+		st.Run = false
+	case "use_to":
+		st.Tab = tabRoute
+		if p := strings.TrimSpace(r.Values["place"]); p != "" {
+			st.To = p
+			toast = fmt.Sprintf("已把「%s」填入终点", clip(p, 20))
+		}
+		st.City = ""
+		st.Zoom = 0
+		st.Run = false
 	case "map":
 		st.Tab = tabMap
 		st.Place = strings.TrimSpace(r.Values["place"])
+		st.PlaceLabel = ""
 		st.Markers = strings.TrimSpace(r.Values["markers"])
 		st.City = strings.TrimSpace(r.Values["city"])
 		st.Traffic = parseBool(r.Values["traffic"])
@@ -216,11 +274,19 @@ func (a *app) actionPage(ctx context.Context, r *ext.UIRequest) (*wire.ActionRes
 		st.Tab = tabUsage
 		st.WeatherCity = strings.TrimSpace(r.Values["weather_city"])
 		st.Run = st.WeatherCity != ""
+	case "quick_weather":
+		st.Tab = tabUsage
+		if wc := strings.TrimSpace(r.Values["weather_city"]); wc != "" {
+			st.WeatherCity = wc
+		}
+		st.Run = st.WeatherCity != ""
 	case "open_poi":
 		st.Tab = tabMap
 		lat := strings.TrimSpace(r.Values["lat"])
 		lng := strings.TrimSpace(r.Values["lng"])
 		name := strings.TrimSpace(r.Values["name"])
+		st.PlaceLabel = name
+		st.City = ""
 		if lat != "" && lng != "" {
 			st.Place = lat + "," + lng
 			st.Markers = st.Place
@@ -230,6 +296,52 @@ func (a *app) actionPage(ctx context.Context, r *ext.UIRequest) (*wire.ActionRes
 		}
 		st.Zoom = 15
 		st.Run = st.Place != ""
+	case "view_place":
+		name := strings.TrimSpace(r.Values["name"])
+		st.Tab = tabMap
+		st.Place = name
+		st.PlaceLabel = name
+		st.Markers = ""
+		st.City = ""
+		st.Zoom = 15
+		st.Run = name != ""
+	case "prepare_save":
+		st.Tab = tabPlaces
+		st.DraftName = strings.TrimSpace(r.Values["name"])
+		st.DraftTarget = strings.TrimSpace(r.Values["target"])
+		st.PlaceErr = ""
+		st.Run = false
+	case "save_place":
+		st.Tab = tabPlaces
+		name := strings.TrimSpace(r.Values["place_name"])
+		target := strings.TrimSpace(r.Values["place_target"])
+		fp, updated, err := a.saveUIPlace(name, target)
+		if err != nil {
+			st.DraftName = name
+			st.DraftTarget = target
+			st.PlaceErr = err.Error()
+		} else {
+			st.DraftName = ""
+			st.DraftTarget = ""
+			st.PlaceErr = ""
+			verb := "已保存常用地点"
+			if updated {
+				verb = "已更新常用地点"
+			}
+			toast = fmt.Sprintf("%s「%s」", verb, clip(fp.Name, 20))
+		}
+	case "delete_place":
+		name := strings.TrimSpace(r.Values["name"])
+		if !a.removeUIPlace(name) {
+			toast = fmt.Sprintf("「%s」未在本页保存列表里（若来自扩展设置，请到 设置 › 扩展 › 高德地图 修改）", clip(name, 20))
+		} else {
+			toast = fmt.Sprintf("已删除常用地点「%s」", clip(name, 20))
+			st.Tab = tabPlaces
+			st.PlaceErr = ""
+			if normalizePlaceKey(st.Place) == normalizePlaceKey(name) {
+				st.Place, st.PlaceLabel, st.Run = "", "", false
+			}
+		}
 	case "zoom_in":
 		if st.Zoom == 0 {
 			st.Zoom = 14
@@ -252,7 +364,7 @@ func (a *app) actionPage(ctx context.Context, r *ext.UIRequest) (*wire.ActionRes
 	if err != nil {
 		return nil, err
 	}
-	return &wire.ActionResult{View: v}, nil
+	return &wire.ActionResult{View: v, Toast: toast}, nil
 }
 
 // imagePage answers ui.image for static map refs produced by buildPage.
@@ -330,8 +442,15 @@ func (a *app) buildPage(ctx context.Context, st uiState) (*wire.View, error) {
 		sections = a.routeSections(ctx, st)
 	case tabMap:
 		sections = a.mapSections(ctx, st)
+	case tabPlaces:
+		sections = a.placesSections(st)
 	case tabUsage:
 		sections = a.usageSections(ctx, st, u)
+	}
+
+	placesBadge := ""
+	if n := len(a.fixedPlaces()); n > 0 {
+		placesBadge = strconv.Itoa(n)
 	}
 
 	return &wire.View{
@@ -345,6 +464,7 @@ func (a *app) buildPage(ctx context.Context, st uiState) (*wire.View, error) {
 				{Value: tabSearch, Title: "搜地点"},
 				{Value: tabRoute, Title: "算路线"},
 				{Value: tabMap, Title: "看地图"},
+				{Value: tabPlaces, Title: "常用地点", Badge: placesBadge},
 				{Value: tabUsage, Title: "天气与额度"},
 			},
 		},
@@ -470,8 +590,8 @@ func (a *app) routeSections(ctx context.Context, st uiState) []wire.Section {
 	form := wire.Section{
 		Title: "路线规划",
 		Items: []wire.Component{
-			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "from", Label: "起点", Value: st.From, Placeholder: "地名、地址或 WGS-84 纬度,经度"},
-			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "to", Label: "终点", Value: st.To, Placeholder: "地名、地址或 WGS-84 纬度,经度"},
+			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "from", Label: "起点", Value: st.From, Placeholder: "地名、地址、常用地点名（如 家）或 WGS-84 纬度,经度"},
+			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "to", Label: "终点", Value: st.To, Placeholder: "地名、地址、常用地点名（如 公司）或 WGS-84 纬度,经度"},
 			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "waypoints", Label: "途经点（驾车可选）", Value: st.Waypoints, Placeholder: "多个用顿号、逗号或分号分隔"},
 			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "city", Label: "城市（可选）", Value: st.City, Placeholder: "同名地点消歧，如 北京"},
 			{Type: wire.ComponentField, Kind: wire.FieldKindChoice, Name: "mode", Label: "出行方式", Value: st.Mode, Choices: []wire.Choice{
@@ -489,17 +609,44 @@ func (a *app) routeSections(ctx context.Context, st uiState) []wire.Section {
 				{Value: "avoid_highways", Title: "不走高速"},
 			}},
 			{Type: wire.ComponentButton, Title: "规划路线", Action: &wire.Action{ID: "route", Submit: true}},
+			{Type: wire.ComponentButton, Title: "互换起点与终点", Action: &wire.Action{ID: "swap_route", Submit: true}},
 		},
 	}
+	var commuteItems []wire.Component
+	if home, company, ok := a.findCommutePair(); ok {
+		commuteItems = append(commuteItems,
+			wire.Component{
+				Type:   wire.ComponentButton,
+				Title:  fmt.Sprintf("%s → %s（一键算路）", clip(home.Name, 10), clip(company.Name, 10)),
+				Action: &wire.Action{ID: "quick_route", Values: map[string]string{"from": home.Name, "to": company.Name}},
+			},
+			wire.Component{
+				Type:   wire.ComponentButton,
+				Title:  fmt.Sprintf("%s → %s（一键算路）", clip(company.Name, 10), clip(home.Name, 10)),
+				Action: &wire.Action{ID: "quick_route", Values: map[string]string{"from": company.Name, "to": home.Name}},
+			},
+		)
+	} else if fps := a.fixedPlaces(); len(fps) > 0 {
+		commuteItems = append(commuteItems, wire.Component{
+			Type:   wire.ComponentButton,
+			Title:  fmt.Sprintf("从常用地点选起终点（%d 个）", len(fps)),
+			Action: &wire.Action{ID: "tab", Values: map[string]string{"tab": tabPlaces}},
+		})
+	}
 	if !st.Run || st.From == "" || st.To == "" {
-		return []wire.Section{form, {
+		out := []wire.Section{form}
+		if len(commuteItems) > 0 {
+			out = append(out, wire.Section{Title: "快捷通勤", Items: commuteItems})
+		}
+		out = append(out, wire.Section{
 			Items: []wire.Component{{
 				Type:     wire.ComponentEmpty,
 				Icon:     "car",
 				Title:    "填好起点和终点即可算路",
-				Subtitle: "支持驾车（含途经点）、公交地铁、步行、骑行与电动车，并生成路线示意图。",
+				Subtitle: "支持写「家」「公司」等常用地点、驾车途经点、公交地铁、步行、骑行与电动车。",
 			}},
-		}}
+		})
+		return out
 	}
 
 	wps := splitList(st.Waypoints)
@@ -533,22 +680,14 @@ func (a *app) routeSections(ctx context.Context, st uiState) []wire.Section {
 	}
 	out := []wire.Section{form, {Title: "规划结果", Items: resultItems}}
 
-	// Build a static map preview using the cached endpoint/waypoint lookups.
+	// Build a static map preview using the exact same cached endpoint/waypoint resolution order as toolRoute.
+	fromAt, fromGiven, _ := pointArg(in.FromLatitude, in.FromLongitude, "起点")
+	toAt, toGiven, _ := pointArg(in.ToLatitude, in.ToLongitude, "终点")
 	var stops []place
-	city := st.City
-	if fromPl, err := a.resolvePoint(ctx, st.From, city); err == nil {
+	if fromPl, toPl, viaPls, rerr := a.resolveRouteStops(ctx, st.From, fromAt, fromGiven, st.To, toAt, toGiven, wps, st.City, st.Mode); rerr == nil {
 		stops = append(stops, fromPl)
-		if city == "" {
-			city = fromPl.citycode
-		}
-		for _, w := range wps {
-			if wpPl, err := a.resolvePoint(ctx, w, city); err == nil {
-				stops = append(stops, wpPl)
-			}
-		}
-		if toPl, err := a.resolvePoint(ctx, st.To, city); err == nil {
-			stops = append(stops, toPl)
-		}
+		stops = append(stops, viaPls...)
+		stops = append(stops, toPl)
 	}
 	if len(stops) >= 2 {
 		q := url.Values{}
@@ -603,8 +742,8 @@ func (a *app) mapSections(ctx context.Context, st uiState) []wire.Section {
 	form := wire.Section{
 		Title: "查看静态地图",
 		Items: []wire.Component{
-			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "place", Label: "中心地点或坐标", Value: st.Place, Placeholder: "地名、地址或 WGS-84 纬度,经度"},
-			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "markers", Label: "标注点（可选，最多 10 个）", Value: st.Markers, Placeholder: "多个用分号或换行分隔"},
+			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "place", Label: "中心地点或坐标", Value: st.Place, Placeholder: "地名、地址、常用地点名（如 家）或 WGS-84 纬度,经度"},
+			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "markers", Label: "标注点（可选，最多 10 个）", Value: st.Markers, Placeholder: "多个用分号或换行分隔，支持常用地点名"},
 			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "city", Label: "城市（可选）", Value: st.City, Placeholder: "如 北京、上海"},
 			{Type: wire.ComponentField, Kind: wire.FieldKindToggle, Name: "traffic", Label: "显示实时路况", Value: boolText(st.Traffic)},
 			{Type: wire.ComponentButton, Title: "生成地图", Action: &wire.Action{ID: "map", Submit: true}},
@@ -616,7 +755,7 @@ func (a *app) mapSections(ctx context.Context, st uiState) []wire.Section {
 				Type:     wire.ComponentEmpty,
 				Icon:     "location",
 				Title:    "输入地点或坐标生成地图",
-				Subtitle: "支持标注最多 10 个地点、叠加实时路况与缩放预览。",
+				Subtitle: "支持写「家」「公司」等常用地点、标注最多 10 个地点、叠加实时路况与缩放预览。",
 			}},
 		}}
 	}
@@ -625,6 +764,17 @@ func (a *app) mapSections(ctx context.Context, st uiState) []wire.Section {
 	q := url.Values{}
 	var center place
 	hasCenter := false
+	rawMarkers := splitMarkers(st.Markers)
+	if len(rawMarkers) > staticMapMarkersMost {
+		rawMarkers = rawMarkers[:staticMapMarkersMost]
+	}
+	needMarkerCity := false
+	for _, m := range rawMarkers {
+		if !a.isFixedOrCoord(m) {
+			needMarkerCity = true
+			break
+		}
+	}
 	if st.Place != "" {
 		pl, err := a.resolvePoint(ctx, st.Place, city)
 		if err != nil {
@@ -635,12 +785,13 @@ func (a *app) mapSections(ctx context.Context, st uiState) []wire.Section {
 		if city == "" {
 			city = pl.citycode
 		}
+		if city == "" && needMarkerCity {
+			if c, cerr := a.cityCode(ctx, pl.at); cerr == nil {
+				city = c
+			}
+		}
 	}
 
-	rawMarkers := splitMarkers(st.Markers)
-	if len(rawMarkers) > staticMapMarkersMost {
-		rawMarkers = rawMarkers[:staticMapMarkersMost]
-	}
 	var markers []place
 	for _, m := range rawMarkers {
 		pl, err := a.resolvePoint(ctx, m, city)
@@ -714,21 +865,211 @@ func (a *app) mapSections(ctx context.Context, st uiState) []wire.Section {
 	if !hasCenter && len(markers) > 0 {
 		target = markers[0]
 	}
+	useTarget := target.at.String()
+	weatherTarget := target.at.String()
+	displayName := target.name
+	var matchedFixed fixedPlace
+	isFixed := false
+	if st.Place != "" {
+		if fp, ok := a.matchFixedPlace(st.Place); ok && len(rawMarkers) <= 1 &&
+			(len(rawMarkers) == 0 || normalizePlaceKey(rawMarkers[0]) == normalizePlaceKey(st.Place)) {
+			isFixed = true
+			matchedFixed = fp
+			useTarget = fp.Name
+			weatherTarget = fp.Name
+			displayName = fp.Name
+		}
+	}
+	if !isFixed && st.PlaceLabel != "" {
+		displayName = st.PlaceLabel
+	}
+	items = append(items,
+		wire.Component{
+			Type:   wire.ComponentButton,
+			Title:  "设为算路起点",
+			Action: &wire.Action{ID: "use_from", Values: map[string]string{"place": useTarget}},
+		},
+		wire.Component{
+			Type:   wire.ComponentButton,
+			Title:  "设为算路终点",
+			Action: &wire.Action{ID: "use_to", Values: map[string]string{"place": useTarget}},
+		},
+		wire.Component{
+			Type:   wire.ComponentButton,
+			Title:  "查当地天气",
+			Action: &wire.Action{ID: "quick_weather", Values: map[string]string{"weather_city": weatherTarget}},
+		},
+	)
+	if !isFixed {
+		draftName := ""
+		if d := strings.TrimSpace(displayName); d != "" && d != target.at.String() {
+			draftName = d
+		}
+		draftTarget := target.at.String()
+		if draftName != "" {
+			draftTarget = draftName + " " + target.at.String()
+		}
+		items = append(items, wire.Component{
+			Type:  wire.ComponentButton,
+			Title: "存为常用地点",
+			Action: &wire.Action{
+				ID:     "prepare_save",
+				Values: map[string]string{"name": draftName, "target": draftTarget},
+			},
+		})
+	} else if matchedFixed.Source == "ui" {
+		items = append(items, wire.Component{
+			Type:  wire.ComponentButton,
+			Title: "删除常用地点",
+			Role:  wire.ButtonRoleDestructive,
+			Action: &wire.Action{
+				ID:      "delete_place",
+				Values:  map[string]string{"name": matchedFixed.Name},
+				Confirm: fmt.Sprintf("要从常用地点里删掉「%s」吗？", clip(matchedFixed.Name, 20)),
+			},
+		})
+	}
 	items = append(items, wire.Component{
 		Type:  wire.ComponentLink,
-		Title: "在高德地图中打开 " + clip(target.name, 30),
-		URL:   amapMarkerURL(target.at, target.name),
+		Title: "在高德地图中打开 " + clip(displayName, 30),
+		URL:   amapMarkerURL(target.at, displayName),
 	})
 	return []wire.Section{form, {Title: "地图预览", Items: items}}
 }
 
+func (a *app) placesSections(st uiState) []wire.Section {
+	var sections []wire.Section
+	if home, company, ok := a.findCommutePair(); ok {
+		sections = append(sections, wire.Section{
+			Title: "一键通勤",
+			Items: []wire.Component{
+				{
+					Type:   wire.ComponentButton,
+					Title:  fmt.Sprintf("%s → %s（规划路线）", clip(home.Name, 10), clip(company.Name, 10)),
+					Action: &wire.Action{ID: "quick_route", Values: map[string]string{"from": home.Name, "to": company.Name}},
+				},
+				{
+					Type:   wire.ComponentButton,
+					Title:  fmt.Sprintf("%s → %s（规划路线）", clip(company.Name, 10), clip(home.Name, 10)),
+					Action: &wire.Action{ID: "quick_route", Values: map[string]string{"from": company.Name, "to": home.Name}},
+				},
+			},
+		})
+	}
+
+	fps := a.fixedPlaces()
+	if len(fps) == 0 {
+		sections = append(sections, wire.Section{
+			Title: "已保存的常用地点",
+			Items: []wire.Component{{
+				Type:   wire.ComponentEmpty,
+				Icon:   "location",
+				Title:  "还没有常用地点",
+				Detail: "在下面添加「家」「公司」或常去地点，或在 设置 › 扩展 › 高德地图 配置；之后可直接问助手「回家要多久」或在页面一键算路。",
+			}},
+		})
+	} else {
+		rows := make([]wire.Component, 0, len(fps))
+		for _, fp := range fps {
+			icon := "location"
+			if canonicalSlotKey(fp.Name) == "home" {
+				icon = "home"
+			}
+			tone := wire.ToneNeutral
+			if fp.Source == "config" {
+				tone = wire.TonePositive
+			}
+			sub := fp.summary()
+			if len(fp.Aliases) > 0 {
+				sub += " · 别名：" + strings.Join(fp.Aliases[:min(len(fp.Aliases), 3)], "、")
+			}
+			rowActions := []wire.RowAction{
+				{
+					Title:  "设为起点",
+					Icon:   "car",
+					Action: wire.Action{ID: "use_from", Values: map[string]string{"place": fp.Name}},
+				},
+				{
+					Title:  "设为终点",
+					Icon:   "location",
+					Action: wire.Action{ID: "use_to", Values: map[string]string{"place": fp.Name}},
+				},
+				{
+					Title:  "查天气",
+					Icon:   "cloud",
+					Action: wire.Action{ID: "quick_weather", Values: map[string]string{"weather_city": fp.Name}},
+				},
+			}
+			if fp.Source == "ui" {
+				rowActions = append(rowActions, wire.RowAction{
+					Title: "删除",
+					Icon:  "trash",
+					Role:  wire.ButtonRoleDestructive,
+					Action: wire.Action{
+						ID:      "delete_place",
+						Values:  map[string]string{"name": fp.Name},
+						Confirm: fmt.Sprintf("要从常用地点里删掉「%s」吗？", clip(fp.Name, 20)),
+					},
+				})
+			}
+			rows = append(rows, wire.Component{
+				Type:     wire.ComponentRow,
+				Icon:     icon,
+				Title:    clip(fp.Name, 80),
+				Subtitle: clip(sub, 300),
+				Badge:    &wire.Badge{Text: fp.sourceLabel(), Tone: tone},
+				Action:   &wire.Action{ID: "view_place", Values: map[string]string{"name": fp.Name}},
+				Actions:  rowActions,
+			})
+		}
+		sections = append(sections, wire.Section{
+			Title:  fmt.Sprintf("已保存的常用地点（%d 个，点选看地图）", len(fps)),
+			Footer: "「扩展设置」来自 设置 › 扩展 › 高德地图（同名时优先）；「页面保存」存在扩展数据目录 places.json（仅限本机存储）。",
+			Items:  rows,
+		})
+	}
+
+	formItems := make([]wire.Component, 0, 4)
+	if st.PlaceErr != "" {
+		formItems = append(formItems, wire.Component{
+			Type:     wire.ComponentRow,
+			Icon:     "warning",
+			Title:    "保存失败",
+			Subtitle: clip(st.PlaceErr, 400),
+			Badge:    &wire.Badge{Text: "请修改", Tone: wire.ToneDanger},
+		})
+	}
+	formItems = append(formItems,
+		wire.Component{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "place_name", Label: "地点名称", Value: st.DraftName, Placeholder: "如 家、公司、父母家"},
+		wire.Component{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "place_target", Label: "地址、地名或 WGS-84 坐标", Value: st.DraftTarget, Placeholder: "地址、地名，或 39.9032,116.3978，也可 名称 纬度,经度"},
+		wire.Component{Type: wire.ComponentButton, Title: "保存到常用地点", Action: &wire.Action{ID: "save_place", Submit: true}},
+	)
+	sections = append(sections, wire.Section{
+		Title:  "添加常用地点",
+		Footer: "在「算路线」「看地图」「天气与额度」以及与助手对话时，都可以直接写这里保存的名字或「家」「公司」。",
+		Items:  formItems,
+	})
+	return sections
+}
+
 func (a *app) usageSections(ctx context.Context, st uiState, u usage) []wire.Section {
+	weatherItems := []wire.Component{
+		{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "weather_city", Label: "城市、区县或常用地点", Value: st.WeatherCity, Placeholder: "如 杭州、北京市朝阳区、330100 或 家"},
+		{Type: wire.ComponentButton, Title: "查天气", Action: &wire.Action{ID: "weather", Submit: true}},
+	}
+	for i, fp := range a.fixedPlaces() {
+		if i == 3 {
+			break
+		}
+		weatherItems = append(weatherItems, wire.Component{
+			Type:   wire.ComponentButton,
+			Title:  fmt.Sprintf("查「%s」天气", clip(fp.Name, 8)),
+			Action: &wire.Action{ID: "quick_weather", Values: map[string]string{"weather_city": fp.Name}},
+		})
+	}
 	weatherForm := wire.Section{
 		Title: "中国城市天气",
-		Items: []wire.Component{
-			{Type: wire.ComponentField, Kind: wire.FieldKindText, Name: "weather_city", Label: "城市或区县", Value: st.WeatherCity, Placeholder: "如 杭州、北京市朝阳区、330100"},
-			{Type: wire.ComponentButton, Title: "查天气", Action: &wire.Action{ID: "weather", Submit: true}},
-		},
+		Items: weatherItems,
 	}
 	var sections []wire.Section
 	sections = append(sections, weatherForm)

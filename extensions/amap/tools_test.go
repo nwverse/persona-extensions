@@ -12,7 +12,7 @@ import (
 
 func TestToolsAreListedWithSchemas(t *testing.T) {
 	list := toolList()
-	if len(list) != 10 {
+	if len(list) != 11 {
 		t.Fatalf("%d tools", len(list))
 	}
 	seen := map[string]bool{}
@@ -501,4 +501,96 @@ func TestParseLatLng(t *testing.T) {
 			t.Errorf("parseLatLng(%q) unexpectedly succeeded", bad)
 		}
 	}
+}
+
+func TestFixedPlacesInTools(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	// Empty amap_places points to Settings, in-app page, and Persona list_places without calling AMap.
+	emptyRes := mustCall(t, a, "amap_places", `{}`)
+	wantIn(t, emptyRes, "还没有配置常用地点", "设置 › 扩展 › 高德地图", "常用地点", "list_places")
+	if f.count("") != 0 {
+		t.Fatalf("empty amap_places made %d AMap requests", f.count(""))
+	}
+
+	dir := t.TempDir()
+	a.initPlaces(placeConfig{
+		Home:    "天安门广场 39.9032,116.3978",
+		Company: "北京南站",
+		Places:  []string{"西湖边: 杭州"},
+	}, dir)
+	if _, _, err := a.saveUIPlace("西单集合点", "西单"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Listing and inspecting places uses 0 AMap requests.
+	listText := mustCall(t, a, "amap_places", `{}`)
+	wantIn(t, listText, "共 4 个", "1. 家", "2. 公司 · 北京南站", "3. 西湖边 · 杭州", "4. 西单集合点 · 西单 · 来源：页面保存")
+	aliasText := mustCall(t, a, "amap_places", `{"name":"work"}`)
+	wantIn(t, aliasText, "高德地图常用地点「公司」", "来源：扩展设置", "work")
+	missText := mustCall(t, a, "amap_places", `{"name":"老家"}`)
+	wantIn(t, missText, "没有「老家」", "家", "公司", "list_places")
+	if f.count("") != 0 {
+		t.Fatalf("amap_places queries made %d AMap requests", f.count(""))
+	}
+
+	// Route directly using configured places and aliases ("回家" / "home" -> "work"):
+	// Pinned "家" requires 0 location lookups; "公司" is searched globally without needing home's city.
+	beforeSearch := f.count("/v5/place/text")
+	text := mustCall(t, a, "amap_route", `{"from":"home","to":"work"}`)
+	if f.count("/v5/place/text") != beforeSearch+1 {
+		t.Fatalf("expected 1 search (for company) and 0 for pinned home, got %d", f.count("/v5/place/text")-beforeSearch)
+	}
+	if q := f.last("/v5/place/text"); q.Get("keywords") != "北京南站" || q.Get("region") != "" {
+		t.Fatalf("company fixed search query = %v", q)
+	}
+	if q := f.last("/v5/direction/driving"); q.Get("origin") != amapLocation(point{39.9032, 116.3978}) {
+		t.Fatalf("driving origin = %q", q.Get("origin"))
+	}
+	wantIn(t, text, "驾车 家（天安门广场） → 公司（北京市丰台区）")
+
+	// When an unconfigured origin goes to a pinned fixed destination ("天安门" -> "家"),
+	// destination resolves first and supplies the city hint (010) to the unconfigured origin.
+	text = mustCall(t, a, "amap_route", `{"from":"天安门","to":"我家"}`)
+	if q := f.last("/v5/place/text"); q.Get("keywords") != "天安门" || q.Get("region") != "010" {
+		t.Fatalf("origin should get destination city hint 010: %v", q)
+	}
+	wantIn(t, text, "驾车 天安门（北京市东城区） → 家（天安门广场）")
+
+	// Nearby around fixed place ("家") uses pinned WGS-84 coordinates directly.
+	beforeSearch = f.count("/v5/place/text")
+	text = mustCall(t, a, "amap_nearby", `{"place":"家里","keywords":"咖啡"}`)
+	if f.count("/v5/place/text") != beforeSearch {
+		t.Fatalf("nearby on pinned place should not call text search")
+	}
+	if q := f.last("/v5/place/around"); q.Get("location") != amapLocation(point{39.9032, 116.3978}) {
+		t.Fatalf("around location = %q", q.Get("location"))
+	}
+	wantIn(t, text, "家（天安门广场） 周围 1 公里 内找「咖啡」")
+
+	// Distance batch accepts fixed places in origins and destination.
+	text = mustCall(t, a, "amap_distance", `{"origins":["家","西单集合点"],"destination":"company","sort":"distance"}`)
+	wantIn(t, text, "高德驾车距离测量（到 公司（北京市丰台区））", "1. 西单集合点（北京市西城区）", "2. 家（天安门广场）")
+
+	// Static map accepts fixed places in place, markers, and path.
+	res := mustCallResult(t, a, "amap_static_map", `{"place":"家","markers":["家","公司"],"path":["home","西单集合点","company"]}`)
+	wantIn(t, res.Text, "中心：家（天安门广场）", "- A. 家（天安门广场）", "- B. 公司（北京市丰台区）", "连线：家（天安门广场） → 西单集合点（北京市西城区） → 公司（北京市丰台区）")
+	if len(res.Images) != 1 {
+		t.Fatalf("expected static map image for fixed places")
+	}
+
+	// Weather on a fixed place with coords uses reverse geocoding to get district adcode;
+	// fixed place with city name resolves its target globally ("杭州" -> 330100).
+	text = mustCall(t, a, "amap_weather", `{"city":"我家","days":1}`)
+	if q := f.last("/v3/weather/weatherInfo"); q.Get("city") != "110101" {
+		t.Fatalf("weather adcode from home coords = %q, want 110101", q.Get("city"))
+	}
+	wantIn(t, text, "家（北京东城区） 天气（中国气象局，经高德）：")
+
+	text = mustCall(t, a, "amap_weather", `{"city":"西湖边","days":0}`)
+	if q := f.last("/v3/weather/weatherInfo"); q.Get("city") != "330100" {
+		t.Fatalf("weather adcode from 西湖边 = %q, want 330100", q.Get("city"))
+	}
+	wantIn(t, text, "西湖边（")
 }

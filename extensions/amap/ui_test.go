@@ -66,12 +66,15 @@ func TestUISearchAndOpenPOIImage(t *testing.T) {
 	f := newFake(t)
 	a, _ := testApp(t, f)
 
-	// Initial render makes zero AMap calls.
+	// Initial render makes zero AMap calls and includes the 5 expected tabs.
 	v, err := a.renderPage(context.Background(), &ext.UIRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	checkValidView(t, v, false)
+	if v.Tabs == nil || len(v.Tabs.Items) != 5 {
+		t.Fatalf("expected 5 tabs, got %+v", v.Tabs)
+	}
 	if f.count("") != 0 {
 		t.Fatalf("initial render made %d requests", f.count(""))
 	}
@@ -206,4 +209,155 @@ func TestUIRouteWithWaypointsAndUsageTab(t *testing.T) {
 	if err := exttest.CheckView(rendered, false); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestUISavedPlacesAndCommuteFlow(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+	dir := t.TempDir()
+	// Pre-configure one place from Extension Settings ("西单商圈"), while Home & Company will be added in UI.
+	a.initPlaces(placeConfig{Places: []string{"西单商圈: 西单"}}, dir)
+
+	// Switching to 常用地点 tab spends 0 AMap quota and shows Settings entry without a delete action.
+	res, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "tab", Values: map[string]string{"tab": tabPlaces},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, res.View, false)
+	if res.View.Tabs.Value != tabPlaces || res.View.Tabs.Items[3].Badge != "1" {
+		t.Fatalf("unexpected places tab view: %+v", res.View.Tabs)
+	}
+	if f.count("") != 0 {
+		t.Fatalf("places tab render called AMap %d times", f.count(""))
+	}
+
+	// Refused save (name colliding with Settings "西单商圈") keeps draft and renders inline error.
+	badRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "save_place",
+		State:  res.View.State,
+		Values: map[string]string{"place_name": "西单商圈", "place_target": "天安门"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, badRes.View, false)
+	wantIn(t, string(mustJSON(t, badRes.View)), "保存失败", "已在扩展设置里配置")
+
+	// Save Home (pinned WGS-84) and Company in UI -> unlocks one-tap commute section.
+	res, err = a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "save_place",
+		State:  badRes.View.State,
+		Values: map[string]string{"place_name": "家", "place_target": "天安门 39.9032,116.3978"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, res.View, false)
+	wantIn(t, res.Toast, "已保存常用地点「家」")
+
+	res, err = a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "save_place",
+		State:  res.View.State,
+		Values: map[string]string{"place_name": "公司", "place_target": "北京南站"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, res.View, false)
+	if res.View.Tabs.Items[3].Badge != "3" {
+		t.Fatalf("expected badge 3, got %q", res.View.Tabs.Items[3].Badge)
+	}
+	wantIn(t, string(mustJSON(t, res.View)), "一键通勤", "家 → 公司（规划路线）", "公司 → 家（规划路线）", "扩展设置", "页面保存")
+
+	// One-tap commute triggers quick_route into tabRoute with static map preview.
+	routeRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "quick_route",
+		State:  res.View.State,
+		Values: map[string]string{"from": "家", "to": "公司"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, routeRes.View, false)
+	if routeRes.View.Tabs.Value != tabRoute || len(wire.ImageRefs(routeRes.View)) != 1 {
+		t.Fatalf("quick_route result invalid: tab=%q refs=%v", routeRes.View.Tabs.Value, wire.ImageRefs(routeRes.View))
+	}
+	wantIn(t, string(mustJSON(t, routeRes.View)), "驾车 家（天安门） → 公司（北京市丰台区）")
+
+	// Swap route reverses endpoints cleanly.
+	swapRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "swap_route",
+		State:  routeRes.View.State,
+		Values: map[string]string{"from": "家", "to": "公司", "mode": "driving", "prefer": "recommended"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, swapRes.View, false)
+	wantIn(t, string(mustJSON(t, swapRes.View)), "驾车 公司（北京市丰台区） → 家（天安门）")
+
+	// Tapping a UI-saved place row opens it in tabMap, offering shortcuts + destructive Delete button.
+	mapRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "view_place",
+		State:  res.View.State,
+		Values: map[string]string{"name": "家"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, mapRes.View, false)
+	mapJSON := string(mustJSON(t, mapRes.View))
+	wantIn(t, mapJSON, "设为算路起点", "设为算路终点", "查当地天气", "删除常用地点")
+
+	// Deleting a UI-saved place removes it and returns to tabPlaces.
+	delRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "delete_place",
+		State:  mapRes.View.State,
+		Values: map[string]string{"name": "家"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, delRes.View, false)
+	if delRes.View.Tabs.Value != tabPlaces || delRes.View.Tabs.Items[3].Badge != "2" {
+		t.Fatalf("after delete: tab=%q badge=%q", delRes.View.Tabs.Value, delRes.View.Tabs.Items[3].Badge)
+	}
+	wantIn(t, delRes.Toast, "已删除常用地点「家」")
+
+	// Searching and saving a POI from open_poi -> prepare_save prefills DraftName & DraftTarget.
+	searchRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "open_poi",
+		State:  delRes.View.State,
+		Values: map[string]string{"lat": "39.9032", "lng": "116.3978", "name": "天安门"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, searchRes.View, false)
+	wantIn(t, string(mustJSON(t, searchRes.View)), "在高德地图中打开 天安门", "存为常用地点")
+
+	prepRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "prepare_save",
+		State:  searchRes.View.State,
+		Values: map[string]string{"name": "天安门", "target": "天安门 39.903200,116.397800"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, prepRes.View, false)
+	wantIn(t, string(mustJSON(t, prepRes.View)), "天安门 39.903200,116.397800")
+
+	// Quick weather shortcut on fixed place resolves cleanly.
+	wRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "quick_weather",
+		State:  prepRes.View.State,
+		Values: map[string]string{"weather_city": "西单商圈"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, wRes.View, false)
+	wantIn(t, string(mustJSON(t, wRes.View)), "西单商圈（")
 }

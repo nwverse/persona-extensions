@@ -49,7 +49,7 @@ func (a *app) toolDistance(ctx context.Context, in args) (string, error) {
 		}
 	}
 	if len(rawOrigins) == 0 {
-		return "", errors.New("要给 origins：至少一个起点（地名、地址或 WGS-84「纬度,经度」）")
+		return "", errors.New("要给 origins：至少一个起点（地名、地址、常用地点名如「家」，或 WGS-84「纬度,经度」）")
 	}
 	if len(rawOrigins) > distanceOriginsMost {
 		return "", fmt.Errorf("origins 一次最多支持 %d 个起点", distanceOriginsMost)
@@ -59,17 +59,24 @@ func (a *app) toolDistance(ctx context.Context, in args) (string, error) {
 		return "", err
 	}
 	if !destGiven && in.Destination == "" {
-		return "", errors.New("要给终点：destination（地名、地址或 WGS-84「纬度,经度」），或 destination_latitude 和 destination_longitude")
+		return "", errors.New("要给终点：destination（地名、地址、常用地点名如「公司」，或 WGS-84「纬度,经度」），或 destination_latitude 和 destination_longitude")
 	}
 	city := in.City
 	var dest place
+	anyOriginNeedsCity := false
+	for _, o := range rawOrigins {
+		if !a.isFixedOrCoord(o) {
+			anyOriginNeedsCity = true
+			break
+		}
+	}
 	if destGiven {
 		name := in.Destination
 		if name == "" {
 			name = destAt.String()
 		}
 		dest = place{name: name, at: destAt}
-		if city == "" {
+		if city == "" && anyOriginNeedsCity {
 			if c, err := a.cityCode(ctx, destAt); err == nil {
 				city = c
 			}
@@ -81,6 +88,11 @@ func (a *app) toolDistance(ctx context.Context, in args) (string, error) {
 		}
 		if city == "" {
 			city = dest.citycode
+		}
+		if city == "" && anyOriginNeedsCity {
+			if c, err := a.cityCode(ctx, dest.at); err == nil {
+				city = c
+			}
 		}
 	}
 

@@ -73,13 +73,56 @@ func (a *app) search(ctx context.Context, keywords, city string, cityOnly bool, 
 	return ans.Pois, nil
 }
 
-// place is somewhere a tool resolved: its name, WGS-84 point and, when known, its city code and where AMap put it
-// (city and district, for the answer, so a same-named place in another city shows).
+// place is somewhere a tool resolved: its name, WGS-84 point and, when known, its city/ad codes and where AMap put
+// it (city and district, for the answer, so a same-named place in another city shows).
 type place struct {
 	name     string
 	at       point
 	citycode string
+	adcode   string
 	where    string
+}
+
+// isFixedOrCoord reports whether s is a literal WGS-84 point or matches a configured/saved fixed place.
+func (a *app) isFixedOrCoord(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	if _, ok := parseLatLng(s); ok {
+		return true
+	}
+	_, ok := a.matchFixedPlace(s)
+	return ok
+}
+
+// resolveFixedPlace resolves a configured or UI-saved place name/alias without letting another endpoint's city hint
+// constrain a global anchor.
+func (a *app) resolveFixedPlace(ctx context.Context, text string) (place, bool, error) {
+	fp, ok := a.matchFixedPlace(text)
+	if !ok {
+		return place{}, false, nil
+	}
+	if fp.HasCoord {
+		where := fp.Target
+		if strings.EqualFold(strings.TrimSpace(where), strings.TrimSpace(fp.Name)) {
+			where = ""
+		}
+		return place{name: fp.Name, at: fp.coord(), where: where}, true, nil
+	}
+	target := fp.Target
+	if target == "" {
+		target = fp.Name
+	}
+	pl, err := a.locate(ctx, target, "")
+	if err != nil {
+		return place{}, true, fmt.Errorf("常用地点「%s」（%s）解析失败：%w", fp.Name, target, err)
+	}
+	pl.name = fp.Name
+	if pl.where == "" && target != "" && !strings.EqualFold(target, fp.Name) {
+		pl.where = target
+	}
+	return pl, true, nil
 }
 
 // addressLike is text written as an address (a number with a road, lane or house word) rather than a place's name.
@@ -87,11 +130,15 @@ func addressLike(text string) bool {
 	return strings.ContainsAny(text, "0123456789０１２３４５６７８９") && strings.ContainsAny(text, "路街道巷弄号村镇栋幢室")
 }
 
-// resolvePoint turns either WGS-84 "lat,lng" or a place name/address into a place, preferring city for name lookups.
+// resolvePoint turns WGS-84 "lat,lng", a configured/saved fixed place, or a place name/address into a place, preferring
+// city for unconfigured name lookups.
 func (a *app) resolvePoint(ctx context.Context, text, city string) (place, error) {
 	text = strings.TrimSpace(text)
 	if p, ok := parseLatLng(text); ok {
 		return place{name: p.String(), at: p}, nil
+	}
+	if pl, matched, err := a.resolveFixedPlace(ctx, text); matched {
+		return pl, err
 	}
 	pl, err := a.locate(ctx, text, city)
 	if err != nil {
@@ -153,7 +200,7 @@ func (a *app) locateByGeocode(ctx context.Context, text, city string) (place, bo
 			if d := g.District.String(); d != "" && d != where {
 				where += d
 			}
-			return place{name: text, at: p, citycode: g.CityCode.String(), where: where}, coarseLevels[g.Level.String()], nil
+			return place{name: text, at: p, citycode: g.CityCode.String(), adcode: g.AdCode.String(), where: where}, coarseLevels[g.Level.String()], nil
 		}
 	}
 	return place{}, false, errNotFound{text}
@@ -179,7 +226,7 @@ func (a *app) locateBySearch(ctx context.Context, text, city string) (place, err
 			if d := p.AdName.String(); d != "" && d != where {
 				where += d
 			}
-			return place{name: p.Name.String(), at: at, citycode: p.CityCode.String(), where: where}, nil
+			return place{name: p.Name.String(), at: at, citycode: p.CityCode.String(), adcode: p.AdCode.String(), where: where}, nil
 		}
 	}
 	return place{}, errNotFound{text}
@@ -246,16 +293,13 @@ func (a *app) toolNearby(ctx context.Context, in args) (string, error) {
 	name := ""
 	if !ok {
 		if in.Place == "" {
-			return "", errors.New("要给中心点：latitude/longitude（用户说「附近」时先用 phone_location_current），或 place（地址或地名）")
+			return "", errors.New("要给中心点：latitude/longitude（用户说「附近」时先用 phone_location_current），或 place（地址、地名或常用地点名如「家」「公司」；未配置时可查 amap_places / list_places）")
 		}
-		pl, err := a.locate(ctx, in.Place, in.City)
+		pl, err := a.resolvePoint(ctx, in.Place, in.City)
 		if err != nil {
 			return "", err
 		}
-		center, name = pl.at, in.Place
-		if pl.where != "" {
-			name += "（" + pl.where + "）"
-		}
+		center, name = pl.at, pl.label()
 	} else {
 		name = center.String()
 	}
@@ -564,4 +608,52 @@ func (a *app) toolInputTips(ctx context.Context, in args) (string, error) {
 		return fmt.Sprintf("高德在%s没有找到「%s」的输入提示。", where, in.Keywords), nil
 	}
 	return b.String(), nil
+}
+
+func (a *app) toolPlaces(_ context.Context, in args) (string, error) {
+	if in.Name != "" {
+		fp, ok := a.matchFixedPlace(in.Name)
+		if !ok {
+			all := a.fixedPlaces()
+			if len(all) == 0 {
+				return fmt.Sprintf("高德地图扩展里还没有配置「%s」或其他常用地点。可以在 设置 › 扩展 › 高德地图 或「高德地图 › 常用地点」页面添加；如果在 Persona 通用常用地点（list_places）里存过，也可以先查 list_places 拿到地址或坐标。", in.Name), nil
+			}
+			names := make([]string, len(all))
+			for i, p := range all {
+				names[i] = p.Name
+			}
+			return fmt.Sprintf("高德地图扩展的常用地点里没有「%s」（目前已配置：%s）。如果不确定通用常用地点，也可以查 list_places。", in.Name, strings.Join(names, "、")), nil
+		}
+		return formatFixedPlaceAnswer(fp), nil
+	}
+	all := a.fixedPlaces()
+	if len(all) == 0 {
+		return "高德地图扩展里还没有配置常用地点。用户可以在 设置 › 扩展 › 高德地图 填写「家」「公司」「其他常用地点」，或在「高德地图 › 常用地点」页面添加；如果在 Persona 通用常用地点里存过，也可以用 list_places 查看。", nil
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "高德地图已配置的常用地点（共 %d 个；坐标均为 WGS-84）：", len(all))
+	for i, fp := range all {
+		line := fmt.Sprintf("\n%d. %s · %s · 来源：%s", i+1, fp.Name, fp.summary(), fp.sourceLabel())
+		if len(fp.Aliases) > 0 {
+			line += "（别名：" + strings.Join(fp.Aliases, "、") + "）"
+		}
+		b.WriteString(line)
+	}
+	b.WriteString("\n在 amap_route、amap_nearby、amap_distance、amap_static_map、amap_weather 里可直接填名称（如「家」「公司」），不花高德额度。")
+	return b.String(), nil
+}
+
+func formatFixedPlaceAnswer(fp fixedPlace) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "高德地图常用地点「%s」：\n- 位置：%s\n- 来源：%s", fp.Name, fp.summary(), fp.sourceLabel())
+	if len(fp.Aliases) > 0 {
+		fmt.Fprintf(&b, "\n- 可直接使用的别名：%s", strings.Join(fp.Aliases, "、"))
+	}
+	fmt.Fprintf(&b, "\n- 用法：在 amap_route / amap_nearby / amap_distance / amap_static_map / amap_weather 里可直接填「%s」", fp.Name)
+	if fp.HasCoord {
+		fmt.Fprintf(&b, "，也可直接传 WGS-84 坐标 %s。", fp.coord().String())
+	} else {
+		b.WriteString("（由扩展自动解析位置）。")
+	}
+	return b.String()
 }

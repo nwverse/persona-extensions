@@ -4,13 +4,13 @@
 
 Places, routes and weather in China for the Persona assistant, from the [AMap Web Service API](https://lbs.amap.com/api/webservice/summary) with the user's own key. Design: [#590](https://github.com/nwverse/persona-extensions/issues/590).
 
-Who it serves: everyday assistant users and anyone who wants an in-app map/route/quota workbench. The user fills in a key once in 设置 › 扩展 › 高德地图, and gets ten read-only assistant tools plus a dedicated「高德地图」page and overview card.
+Who it serves: everyday assistant users and anyone who wants an in-app map/route/quota workbench. The user fills in a key (and optionally fixed places such as `家`, `公司` and other frequent places) in 设置 › 扩展 › 高德地图, and gets eleven read-only assistant tools plus a dedicated「高德地图」page and overview card.
 
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |
-| `connectors` | `amap`, capabilities `status` and `tools` | `amap_search`, `amap_input_tips`, `amap_nearby`, `amap_geocode`, `amap_reverse_geocode`, `amap_district`, `amap_route`, `amap_distance`, `amap_static_map` and `amap_weather`, all read-only, with no confirmation card. |
-| `ui` | `amap` (`nav_page`, icon `location`), `amap-card` (`overview_card`) | Interactive place search, route planner (with driving waypoints), static map preview with zoom/traffic toggles served via `ui.image`, city weather, and a zero-network monthly usage overview card. |
-| `skills` | `amap` | When to use which tool, getting the user's location or saved places first, and how to treat the quota. |
+| `connectors` | `amap`, capabilities `status` and `tools` | `amap_search`, `amap_input_tips`, `amap_nearby`, `amap_geocode`, `amap_reverse_geocode`, `amap_district`, `amap_route`, `amap_distance`, `amap_static_map`, `amap_weather` and `amap_places`, all read-only, with no confirmation card. |
+| `ui` | `amap` (`nav_page`, icon `location`), `amap-card` (`overview_card`) | Interactive place search, route planner (with driving waypoints and one-tap commute), static map preview with zoom/traffic toggles and "save to places" served via `ui.image`, `常用地点` saved-place manager (`places.json`), city/place weather, and a zero-network monthly usage overview card. |
+| `skills` | `amap` | When to use which tool, using fixed/saved places (`amap_places` / direct aliases) or phone location first, and how to treat the quota. |
 
 ## The key
 
@@ -22,7 +22,19 @@ The key is sent only to `restapi.amap.com`, in the query string AMap requires. I
 
 **Checked before it is saved** (`settings_check`): one geocoding request with the new key (a public landmark). AMap refusing the key keeps the old settings and says why in words. A used-up allowance or a busy answer still means AMap knows the key, so it is saved. The first key of a new install cannot be checked, because the extension does not run until it has one. The program therefore tries the key once when it starts, and a refused key shows in the connector status straight away.
 
-There is no other configuration.
+## Configuration (fixed places)
+
+Fixed places can be configured in **设置 › 扩展 › 高德地图** and/or managed inside the app on the **高德地图 › 常用地点** tab (`places.json` in the extension's data directory, `0600`).
+
+| Setting | Type | Meaning |
+| --- | --- | --- |
+| `home` | `string` | Saved as `家` (with built-in aliases `home`, `我家`, `家里`, `my home`). Accepts a full address, landmark/POI name, WGS-84 `lat,lng`, or pinned `<label> <lat>,<lng>`. |
+| `company` | `string` | Saved as `公司` (with built-in aliases `company`, `work`, `office`, `单位`, `办公室`, `my office`). Same formats as `home`. |
+| `places` | `string[]` (max 20) | Additional named places: `名称: 目标` (ASCII `:` or full-width `：`), `名称 纬度,经度`, or a place name directly. Targets support addresses, POI names, or WGS-84 coordinates. |
+
+- **Settings validation**: `settings.check` validates syntax, coordinate ranges (`[-90,90]` / `[-180,180]`, not `0,0`), non-empty names, no bare unnamed coordinates, and duplicate names offline before probing AMap with the API key.
+- **Precedence**: Extension Settings entries take precedence over UI-saved entries in `places.json` on duplicate names or the canonical `home` / `company` slots, so UI state never silently shadows Settings.
+- **No extra quota when pinned with coordinates**: fixed places given with WGS-84 coordinates resolve in memory without querying AMap search or geocoding. Named/address fixed places are resolved globally (without inheriting another route endpoint's city hint) and cached like normal lookups.
 
 ## The tools
 
@@ -32,23 +44,24 @@ Every coordinate the tools take or give is **WGS-84 `纬度,经度`**, the syste
 | --- | --- | --- |
 | `amap_search` | `keywords`; `city` (a preference, not a limit); `city_only`; `limit` 1–10, default 5 | Name (category), address, point, phone, today's opening hours, rating, cost per person in ¥. |
 | `amap_input_tips` | `keywords`; `city`; `city_only`; optional `latitude` + `longitude` bias; `limit` 1–10, default 5 | Autocomplete suggestions: name, district, address, point (when available), adcode. |
-| `amap_nearby` | `latitude` + `longitude`, or `place` (looked up first, preferring `city`); `keywords`; `radius_meters` 1–50000, default 1000; `sort` `distance` (default) or `weight`; `limit` | As above with the distance in metres, nearest first. Without keywords AMap's default categories: food, shopping, daily services. |
+| `amap_nearby` | `latitude` + `longitude`, or `place` (address, POI name, or fixed place such as `家`/`公司`, preferring `city` when not a fixed place); `keywords`; `radius_meters` 1–50000, default 1000; `sort` `distance` (default) or `weight`; `limit` | As above with the distance in metres, nearest first. Without keywords AMap's default categories: food, shopping, daily services. |
 | `amap_geocode` | `address`; `city` | Up to three matches: formatted address, point, match level (门址, 兴趣点, 区县…), city, district, adcode. |
 | `amap_reverse_geocode` | `latitude`, `longitude` | Address, street number with direction and distance, the areas the point is inside, business areas, three nearby places. |
 | `amap_district` | optional `keywords` (province/city/district name or adcode, empty for China); `subdistrict` 0–2, default 1 | Administrative hierarchy: level, adcode, citycode, WGS-84 center and bounded child districts. |
-| `amap_route` | `mode` `driving` (default), `walking`, `cycling`, `ebike` or `transit`; each end as `*_latitude` + `*_longitude` or a name or address (`from`, `to`); `waypoints` (up to 16 stops for `driving`, names/addresses or WGS-84 `lat,lng`); `city` (where to look names up); `prefer` (driving: `recommended`, `fastest`, `avoid_congestion`, `avoid_tolls`, `avoid_highways`); `depart_at` (transit, Beijing time `2026-11-16 08:30`); `alternatives` 1–3; `steps` | Distance in km and time in minutes. Driving adds traffic lights, tolls, a restriction that cannot be avoided, the three main roads and AMap's taxi fare estimate. Transit gives each plan's time, fare, total walking and legs: `步行 880 米 → 地铁2号线内环 前门→宣武门（2 站） → …`. `steps` adds up to 15 turn-by-turn instructions. |
-| `amap_distance` | `origins` (1–20 names, addresses or WGS-84 `lat,lng`); `destination` or `destination_latitude` + `destination_longitude`; `mode` `driving` (default), `walking` or `straight`; `city`; `sort` `input` (default), `distance` or `duration` | Batch distance and duration from each origin to the destination, optionally sorted by nearest or fastest. |
-| `amap_static_map` | `latitude` + `longitude` or `place`; `markers` (up to 10, labelled A–J); `path` (2–20 points connected with a blue polyline); `city`; `zoom` 1–17; `width` / `height` 100–1024 (default 600×400); `traffic` | A standalone text summary plus a PNG map image (`ConnectorToolImage`, auto-falling back from `scale=2` to `scale=1` if over 1 MiB). |
-| `amap_weather` | `city` (name or adcode); `days` 0–4, default 3 | The live report (weather, °C, humidity, wind direction and force in 级, report time) and each day's day and night weather, low~high °C and wind. Data from the China Meteorological Administration through AMap. |
+| `amap_route` | `mode` `driving` (default), `walking`, `cycling`, `ebike` or `transit`; each end as `*_latitude` + `*_longitude` or a fixed place name/alias, address, or POI name (`from`, `to`); `waypoints` (up to 16 stops for `driving`, fixed places, names/addresses, or WGS-84 `lat,lng`); `city` (where to look unconfigured names up); `prefer` (driving: `recommended`, `fastest`, `avoid_congestion`, `avoid_tolls`, `avoid_highways`); `depart_at` (transit, Beijing time `2026-11-16 08:30`); `alternatives` 1–3; `steps` | Distance in km and time in minutes. Driving adds traffic lights, tolls, a restriction that cannot be avoided, the three main roads and AMap's taxi fare estimate. Transit gives each plan's time, fare, total walking and legs: `步行 880 米 → 地铁2号线内环 前门→宣武门（2 站） → …`. `steps` adds up to 15 turn-by-turn instructions. |
+| `amap_distance` | `origins` (1–20 fixed places, names, addresses, or WGS-84 `lat,lng`); `destination` or `destination_latitude` + `destination_longitude`; `mode` `driving` (default), `walking` or `straight`; `city`; `sort` `input` (default), `distance` or `duration` | Batch distance and duration from each origin to the destination, optionally sorted by nearest or fastest. |
+| `amap_static_map` | `latitude` + `longitude` or `place` (supports fixed place names); `markers` (up to 10, labelled A–J); `path` (2–20 points connected with a blue polyline); `city`; `zoom` 1–17; `width` / `height` 100–1024 (default 600×400); `traffic` | A standalone text summary plus a PNG map image (`ConnectorToolImage`, auto-falling back from `scale=2` to `scale=1` if over 1 MiB). |
+| `amap_weather` | `city` (name, 6-digit adcode, fixed place name such as `家`/`公司`, or WGS-84 `lat,lng`); `days` 0–4, default 3 | The live report (weather, °C, humidity, wind direction and force in 级, report time) and each day's day and night weather, low~high °C and wind. Data from the China Meteorological Administration through AMap. |
+| `amap_places` | optional `name` (fixed place name or alias such as `家`, `work`) | Read-only (0 AMap quota): lists fixed places configured in Settings or saved in `常用地点`, or details for a matching entry with source and aliases. |
 
-A place given by name (a route's end, or the centre of a nearby search) is looked up in one of two ways:
+A place given by name (a route's end, or the centre of a nearby search) is first checked against configured/saved fixed places (`家`, `公司`, custom entries and built-in aliases), which resolve globally without adopting another endpoint's `city` hint. An unconfigured name or address is looked up in one of two ways:
 
 - An **address**, meaning text with a number and a road, lane or house word (`阜通东大街6号`), is geocoded, which spends the larger allowance. A match no finer than a district (国家, 省, 市, 区县, 开发区, 乡镇, 未知) is searched for instead.
 - A **name** (`东方明珠`, `人民广场`) costs one keyword search. Geocoding matches bare names poorly: without a city, 东方明珠 went to a shop of that name in another province.
 
-Each falls back on the other, and a lookup is cached for a month. Names repeat across cities, so a route looks a name up in the `city` given, else in the other end's city: a point's city comes from reverse geocoding, and for two names the second is looked up in the first one's city. The answer shows each looked-up end with its city and district (`东方明珠（上海市浦东新区）`), so a wrong match is visible. Transit needs each end's city code, which comes from the same lookups. A route between two points less than 20 m apart is not asked for.
+Each falls back on the other, and a lookup is cached for a month. Names repeat across cities, so a route looks an unconfigured name up in the `city` given, else in the other end's city: a point's city (or a fixed place's city, reverse-geocoded when needed) comes from that endpoint, and when only the destination is a fixed place or coordinate and `city` is omitted, the destination resolves first to supply the origin's city hint. The answer shows each resolved place with its city and district (`东方明珠（上海市浦东新区）`), so a wrong match is visible. Transit needs each end's city code, which comes from the same lookups. A route between two points less than 20 m apart is not asked for.
 
-When the user says "here" or "near me", the skill has the assistant call `phone_location_current` first. For "home" or "work" it calls `list_places` first. The extension itself never reads the phone or the saved places. It plans routes but does not open navigation; `phone_maps_navigate` does.
+When the user says "here" or "near me", the skill has the assistant call `phone_location_current` first. For "home" or "work", the user can pass `"家"` / `"公司"` directly to the AMap tools (or inspect them quota-free with `amap_places`), falling back to Persona's generic `list_places` if none are configured in the extension. It plans routes but does not open navigation; `phone_maps_navigate` does.
 
 ### Coordinates
 
@@ -74,7 +87,7 @@ AMap's free allowances are monthly and shared by everything in a group. For a ve
 
 ## Privacy
 
-Search words, addresses and coordinates, including the user's current position when the assistant passes it on, go from the hub machine to `restapi.amap.com`. Nothing else is sent, and `permissions.network` lists only that host. The program keeps answers in memory only; on disk it keeps the counts and pauses in `usage.json`, never a query or a point. Logs carry error codes and counts only.
+Search words, addresses and coordinates (including resolved fixed places and the user's current position when the assistant passes it on) go from the hub machine to `restapi.amap.com`. Nothing else is sent, and `permissions.network` lists only that host. Query results are cached in memory only. On disk in the extension's data directory, `usage.json` (0600) keeps only request counts and quota pauses, and if the user adds places in the in-app `常用地点` tab, those places are stored locally in `places.json` (0600). Places configured in Extension Settings are stored in Persona's own extension configuration and read via `initialize`. Logs carry error codes, counts, and config parse warnings without secrets.
 
 ## Development
 

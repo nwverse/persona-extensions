@@ -48,7 +48,7 @@ func (a *app) toolStaticMap(ctx context.Context, in args) (wire.ConnectorCallRes
 		return wire.ConnectorCallResult{}, fmt.Errorf("path 最多支持 %d 个点", staticMapPathMost)
 	}
 	if !hasCenter && in.Place == "" && len(rawMarkers) == 0 && len(rawPath) == 0 {
-		return wire.ConnectorCallResult{}, errors.New("要给中心点（latitude/longitude 或 place）、标注点（markers）或路线点（path）中的至少一项")
+		return wire.ConnectorCallResult{}, errors.New("要给中心点（latitude/longitude 或 place，也可填常用地点名如「家」）、标注点（markers）或路线点（path）中的至少一项")
 	}
 
 	width := 600
@@ -61,6 +61,21 @@ func (a *app) toolStaticMap(ctx context.Context, in args) (wire.ConnectorCallRes
 	}
 
 	city := in.City
+	needPointCity := false
+	for _, m := range rawMarkers {
+		if !a.isFixedOrCoord(m) {
+			needPointCity = true
+			break
+		}
+	}
+	if !needPointCity {
+		for _, p := range rawPath {
+			if !a.isFixedOrCoord(p) {
+				needPointCity = true
+				break
+			}
+		}
+	}
 	var centerPlace place
 	if hasCenter {
 		name := in.Place
@@ -68,7 +83,7 @@ func (a *app) toolStaticMap(ctx context.Context, in args) (wire.ConnectorCallRes
 			name = center.String()
 		}
 		centerPlace = place{name: name, at: center}
-		if city == "" && (len(rawMarkers) > 0 || len(rawPath) > 0) {
+		if city == "" && needPointCity {
 			if c, err := a.cityCode(ctx, center); err == nil {
 				city = c
 			}
@@ -82,6 +97,11 @@ func (a *app) toolStaticMap(ctx context.Context, in args) (wire.ConnectorCallRes
 		hasCenter = true
 		if city == "" {
 			city = pl.citycode
+		}
+		if city == "" && needPointCity {
+			if c, err := a.cityCode(ctx, pl.at); err == nil {
+				city = c
+			}
 		}
 	}
 
