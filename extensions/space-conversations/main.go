@@ -16,10 +16,14 @@ import (
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
+
+	"github.com/nwverse/persona-extensions/pluginkit"
 )
 
+var manifest = pluginkit.PackagedManifest(authorManifest)
+
 //go:embed persona-extension.json
-var manifest json.RawMessage
+var authorManifest json.RawMessage
 
 func main() { ext.Main(program()) }
 
