@@ -1,5 +1,15 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.46 (pre-release)
+
+Six-facet user profile summary, mobile-friendly subpage, and `memory.entries` export (no `state.json` schema change; no external seeds required).
+
+- **Six-facet profile summary (`internal/profile`).** Compiles settled entries across all six facets (`interaction`, `tools`, `judgement`, `workflow`, `world` + factual `people`, `persona` + recent highlights) into a readable "Who I am" overview persisted in `profile-summary.json`. Refreshes after each daily pass (single model synthesis call when the input fingerprint changes, with automatic fallback to deterministic aggregation) and initializes deterministically on startup when absent.
+- **Pluggable input source (`InputProvider`).** Decouples summary generation from `store.State` via `InputProvider` (default `EntriesProvider`), so future periodic cross-event overview pattern entries can be plugged in without rewriting the subpage or `memory.entries` outlet.
+- **Scene-graded privacy isolation.** General overview and six-facet summaries include only non-sensitive general entries (`categories: []`, excluding `people` evaluations/inferences and `life` entries in work-only mode). Sensitive categories (`health`, `finance`, `relationships`, `emotion`, `legal_id`) are isolated per category with full `categories` and `origin_space` metadata and `standing: false` so the hub's scene filter withholds them on lockscreen, outbound, dispatch and third-party scenes.
+- **Mobile-friendly profile subpage (`page_profile.go`).** Adds a "Who I am (profile summary)" entry card on the Start tab and a vertical, mobile-readable subpage with overview, recent highlights, all six facet sections, blank-user onboarding guidance, sensitive-section notice, and an instant refresh button.
+- **Native `memory.entries` export (`internal/memsrc`).** Exports `profile:overview`, `profile:<facet>`, and scene-gated `profile:cat:<category>` through the existing `memory_sources` / `memory.entries` protocol without changing connector or contribution IDs.
+
 ## 0.2.0-beta.45 (pre-release)
 
 Recall denoising, priority ranking and dormancy tuning (outlet filtering only; no entries are deleted from state).
