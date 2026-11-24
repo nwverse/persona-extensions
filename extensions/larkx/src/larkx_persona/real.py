@@ -193,6 +193,11 @@ def _inline_images(rich):
     return out
 
 
+def _clean_id(value):
+    s = str(value or "").strip()
+    return "" if s == "0" else s
+
+
 def normalize(msg, extract_key):
     """A message of LarkAgentX's, live or from history, as the connector keeps it. Pure, for the tests."""
     msg_type = msg.get("msg_type") or 0
@@ -223,14 +228,29 @@ def normalize(msg, extract_key):
     at = float(msg.get("create_time") or 0)
     if at > 1e12:
         at /= 1000
-    root = str(msg.get("root_id") or "")
-    parent = str(msg.get("parent_id") or "")
+    msg_id = _clean_id(msg.get("msg_id"))
+    root = _clean_id(msg.get("root_id"))
+    parent = _clean_id(msg.get("parent_id"))
+    chat_type = msg.get("chat_type")
+    scope = str(msg.get("scope") or "").strip()
+    anchor = _clean_id(msg.get("anchor"))
+    thread_id = _clean_id(msg.get("thread_id"))
+    topic_id = ""
+    if chat_type != 1:
+        if scope == "topic":
+            topic_id = anchor or thread_id or root or (msg_id if name != "SYSTEM" else "")
+        elif scope == "chat":
+            topic_id = root
+        elif chat_type == 3 and name != "SYSTEM":
+            topic_id = anchor or thread_id or root or msg_id
+        else:
+            topic_id = thread_id or root
     return {
-        "id": str(msg.get("msg_id") or ""), "chat": str(msg.get("chat_id") or ""),
-        "chat_kind": "dm" if msg.get("chat_type") == 1 else "group",
+        "id": msg_id, "chat": str(msg.get("chat_id") or ""),
+        "chat_kind": "dm" if chat_type == 1 else "group",
         "position": int(msg.get("position") or 0), "sender": str(msg.get("from_id") or ""), "type": name,
-        "text": text, "at": at or time.time(), "root": "" if root == "0" else root,
-        "parent": "" if parent == "0" else parent, "at_me": bool(msg.get("at_me")), "media": media,
+        "text": text, "at": at or time.time(), "root": root,
+        "parent": parent, "topic_id": topic_id, "at_me": bool(msg.get("at_me")), "media": media,
         "mentions": mentions,
     }
 

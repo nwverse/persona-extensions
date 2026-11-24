@@ -195,7 +195,108 @@ class AgentTopicTest(unittest.TestCase):
     def test_the_setting_off_sends_no_thread(self):
         self.c.topics = False
         self.c._on_live(message("m1", "g1", 1, kind="group", sender=ME, text="/agent 新问题"))
-        self.assertNotIn("thread", self.handed()["message"])
+        got = self.handed()["message"]
+        self.assertNotIn("thread", got)
+        self.assertEqual(got["chat_id"], "g1")
+        self.assertEqual(got["chat_kind"], "group")
+        self.assertNotIn("topic_id", got)
+
+    def test_direct_chat_emits_direct_routing_without_topic_or_legacy_thread(self):
+        self.c._on_live(message("m1", "c_dm", 1, kind="dm", sender=ME, text="/agent 私聊提问"))
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "c_dm")
+        self.assertEqual(got["chat_kind"], "direct")
+        self.assertNotIn("topic_id", got)
+        self.assertNotIn("thread", got)
+
+        self.hub.got.clear()
+        self.c._on_live(message("m2", "c_dm", 2, kind="dm", sender=ME, text="/agent 引用回复", root="m1"))
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "c_dm")
+        self.assertEqual(got["chat_kind"], "direct")
+        self.assertNotIn("topic_id", got)
+        self.assertNotIn("thread", got)
+
+    def test_regular_group_emits_group_routing_and_keeps_legacy_thread(self):
+        self.c._on_live(message("m1", "g_reg", 1, kind="group", sender=ME, text="/agent 群里普通消息"))
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "g_reg")
+        self.assertEqual(got["chat_kind"], "group")
+        self.assertNotIn("topic_id", got)
+        self.assertEqual(got["thread"], "g_reg:m1")
+
+    def test_topic_reply_emits_topic_routing_and_keeps_legacy_thread(self):
+        self.c._on_live(message("m2", "g_reg", 2, kind="group", sender=ME, text="/agent 话题里追问", root="m1"))
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "g_reg")
+        self.assertEqual(got["chat_kind"], "topic")
+        self.assertEqual(got["topic_id"], "m1")
+        self.assertEqual(got["thread"], "g_reg:m1")
+
+    def test_explicit_thread_id_and_topic_group_root_emit_topic_routing(self):
+        m_thread = message("m10", "g_reg", 10, kind="group", sender=ME, text="/agent 带 thread_id", root="m9")
+        m_thread["thread_id"] = "omt_thread_1"
+        self.c._on_live(m_thread)
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "g_reg")
+        self.assertEqual(got["chat_kind"], "topic")
+        self.assertEqual(got["topic_id"], "omt_thread_1")
+        self.assertEqual(got["thread"], "g_reg:m9")
+
+        self.hub.got.clear()
+        m_topic_root = message("m20", "g_topic", 1, kind="group", sender=ME, text="/agent 话题群首条")
+        m_topic_root["topic_id"] = "m20"
+        self.c._on_live(m_topic_root)
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "g_topic")
+        self.assertEqual(got["chat_kind"], "topic")
+        self.assertEqual(got["topic_id"], "m20")
+        self.assertEqual(got["thread"], "g_topic:m20")
+
+        self.hub.got.clear()
+        m_zero = message("m21", "g_reg", 11, kind="group", sender=ME, text="/agent 零哨兵", root="0")
+        m_zero["thread_id"] = "0"
+        self.c._on_live(m_zero)
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "g_reg")
+        self.assertEqual(got["chat_kind"], "group")
+        self.assertNotIn("topic_id", got)
+        self.assertEqual(got["thread"], "g_reg:0")
+
+    def test_self_mention_carries_structured_routing_and_legacy_thread(self):
+        m = message("m3", "g1", 3, kind="group", sender=ME, text="@Example 总结", root="m1")
+        m["mentions"] = [{"id": ME, "start": 0, "end": 8, "label": "@Example"}]
+        self.c._on_live(m)
+        got = self.handed()["message"]
+        self.assertEqual(got["text"], "总结")
+        self.assertEqual(got["chat_id"], "g1")
+        self.assertEqual(got["chat_kind"], "topic")
+        self.assertEqual(got["topic_id"], "m1")
+        self.assertEqual(got["thread"], "g1:m1")
+
+    def test_manifest_configuration_sections_are_valid_and_preserve_defaults(self):
+        allowed_sections = {"connection", "channel", "inbox", "advanced"}
+        with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+        props = manifest["configuration"]["properties"]
+        self.assertEqual(
+            set(props.keys()),
+            {"region", "triage_rules", "agent_reply_suffix", "agent_mention", "agent_group_topics"},
+        )
+        for name, spec in props.items():
+            self.assertIn("section", spec, name)
+            self.assertIsInstance(spec["section"], str, name)
+            self.assertIn(spec["section"], allowed_sections, name)
+        self.assertEqual(props["region"]["section"], "connection")
+        self.assertEqual(props["region"]["default"], "feishu")
+        self.assertEqual(props["triage_rules"]["section"], "inbox")
+        self.assertEqual(props["triage_rules"]["default"], "")
+        self.assertEqual(props["agent_reply_suffix"]["section"], "channel")
+        self.assertEqual(props["agent_reply_suffix"]["default"], AGENT_SUFFIX)
+        self.assertEqual(props["agent_mention"]["section"], "channel")
+        self.assertIs(props["agent_mention"]["default"], True)
+        self.assertEqual(props["agent_group_topics"]["section"], "advanced")
+        self.assertIs(props["agent_group_topics"]["default"], True)
 
     def test_initialize_and_the_manifest(self):
         got = {}

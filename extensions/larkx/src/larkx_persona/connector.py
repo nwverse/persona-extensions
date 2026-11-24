@@ -380,6 +380,7 @@ class Connector:
 
     def _hand_over(self, m, request):
         message = {"id": m["id"], "text": request or AGENT_EMPTY}
+        message.update(_channel_routing(m))
         thread = self._thread(m)
         if thread:
             message["thread"] = thread
@@ -997,6 +998,30 @@ def mention_request(text, mentions, me):
 
 def _kind_label(kind):
     return "私聊" if kind == "dm" else "群"
+
+
+def _channel_routing(m):
+    """Additive routing metadata (chat_id, chat_kind, topic_id) for channel.receive; older hubs ignore these fields."""
+    out = {}
+    chat_id = str(m.get("chat") or "").strip()
+    if chat_id:
+        out["chat_id"] = chat_id
+    raw_kind = str(m.get("chat_kind") or "").strip().lower()
+    if raw_kind in ("dm", "direct", "p2p"):
+        out["chat_kind"] = "direct"
+        return out
+    topic_id = ""
+    for key in ("topic_id", "thread_id", "root"):
+        value = str(m.get(key) or "").strip()
+        if value and value != "0":
+            topic_id = value
+            break
+    if topic_id:
+        out["chat_kind"] = "topic"
+        out["topic_id"] = topic_id
+    else:
+        out["chat_kind"] = "group"
+    return out
 
 
 def _line(m):

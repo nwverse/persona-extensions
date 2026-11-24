@@ -799,6 +799,25 @@ class NormalizeTest(unittest.TestCase):
         document = normalize({"msg_type_name": "FILE", "content_data": {"key": "k", "name": "a.pdf"}}, self.key)
         self.assertEqual(document["media"], [{"kind": "file", "name": "a.pdf"}])
 
+    def test_routing_topic_id_extraction(self):
+        dm = normalize({"msg_id": "10", "chat_id": "c_dm", "chat_type": 1, "root_id": "9", "scope": "chat", "anchor": ""}, self.key)
+        self.assertEqual((dm["chat_kind"], dm["topic_id"]), ("dm", ""))
+
+        reg = normalize({"msg_id": "11", "chat_id": "g1", "chat_type": 2, "root_id": "0", "scope": "chat", "anchor": ""}, self.key)
+        self.assertEqual((reg["chat_kind"], reg["topic_id"]), ("group", ""))
+
+        reply = normalize({"msg_id": "12", "chat_id": "g1", "chat_type": 2, "root_id": "11", "scope": "topic", "anchor": "11"}, self.key)
+        self.assertEqual((reply["chat_kind"], reply["topic_id"]), ("group", "11"))
+
+        topic_group_root = normalize({"msg_id": "13", "chat_id": "g_topic", "chat_type": 3, "msg_type_name": "TEXT", "root_id": "0"}, self.key)
+        self.assertEqual((topic_group_root["chat_kind"], topic_group_root["topic_id"]), ("group", "13"))
+
+        dispatched_topic_root = normalize({"msg_id": "14", "chat_id": "g_topic2", "chat_type": 2, "scope": "topic", "anchor": "14"}, self.key)
+        self.assertEqual((dispatched_topic_root["chat_kind"], dispatched_topic_root["topic_id"]), ("group", "14"))
+
+        explicit_thread = normalize({"msg_id": "15", "chat_id": "g1", "chat_type": 2, "thread_id": "omt_99", "root_id": "11"}, self.key)
+        self.assertEqual((explicit_thread["chat_kind"], explicit_thread["topic_id"]), ("group", "omt_99"))
+
 
 if __name__ == "__main__":
     unittest.main()
