@@ -446,7 +446,7 @@ func fakeCLI(t *testing.T, home, dir, version, statusAnswer string) string {
 func shellStreamer(homes map[string]string) StreamRunner {
 	return func(ctx context.Context, m *Machine, s string, in io.Reader, out io.Writer, _ time.Duration) error {
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-c", s)
-		cmd.Env = []string{"HOME=" + homes[m.ID], "PATH=/usr/bin:/bin"}
+		cmd.Env = []string{"HOME=" + homes[m.ID], "PATH=/usr/bin:/bin", "DKL_CANDIDATES=" + homeCandidates(homes[m.ID])}
 		cmd.Stdin, cmd.Stdout = in, out
 		var stderr strings.Builder
 		cmd.Stderr = &stderr
@@ -502,7 +502,7 @@ func TestCopyInstallScript(t *testing.T) {
 		}
 		// The installed CLI is the one the extension's lookup finds.
 		cmd := exec.Command("/bin/sh", "-c", resolveCLIScript+"\nprintf '%s' \"$DKL\"")
-		cmd.Env = []string{"HOME=" + homes["old-box"], "PATH=/usr/bin:/bin"}
+		cmd.Env = []string{"HOME=" + homes["old-box"], "PATH=/usr/bin:/bin", "DKL_CANDIDATES=" + homeCandidates(homes["old-box"])}
 		if out, _ := cmd.Output(); string(out) != link {
 			t.Fatalf("lookup finds %q", out)
 		}
@@ -603,7 +603,7 @@ func TestRefreshScriptReadsCLILayout(t *testing.T) {
 	}
 	run := func(ctx context.Context, _ *Machine, s string, _ time.Duration) (string, error) {
 		cmd := exec.CommandContext(ctx, "/bin/sh", "-s")
-		cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+		cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "DKL_CANDIDATES=" + homeCandidates(home)}
 		cmd.Stdin = strings.NewReader(s)
 		out, err := cmd.Output()
 		return string(out), err
@@ -624,4 +624,11 @@ func TestRefreshScriptReadsCLILayout(t *testing.T) {
 	if cat.Platform == "" {
 		t.Fatal("no platform")
 	}
+}
+
+// homeCandidates limits the CLI lookup to install locations inside a test HOME, so a test never runs
+// the real CLI installed on the machine that runs it.
+func homeCandidates(home string) string {
+	return filepath.Join(home, ".disklessly", "bin", "disklessly") + " " + filepath.Join(home, ".local", "bin", "disklessly") + " " +
+		filepath.Join(home, ".linuxbrew", "bin", "disklessly")
 }

@@ -35,14 +35,15 @@ const cliDaysFlag = "--days 7"
 
 // resolveCLIScript sets DKL to the disklessly CLI on the target machine, or leaves it empty. The
 // lookup order matches search-as-code's findDisklessly: $DISKLESSLY_BIN, PATH, then the usual
-// install locations.
+// install locations. DKL_CANDIDATES (space separated) replaces the install locations; tests set it so
+// a machine's real CLI is never run.
 const resolveCLIScript = `DKL=""
 if [ -n "$DISKLESSLY_BIN" ] && [ -x "$DISKLESSLY_BIN" ] && [ ! -d "$DISKLESSLY_BIN" ]; then
   DKL="$DISKLESSLY_BIN"
 elif command -v disklessly >/dev/null 2>&1; then
   DKL=disklessly
 else
-  for c in "$HOME/.disklessly/bin/disklessly" "$HOME/.local/bin/disklessly" /opt/homebrew/opt/disklessly-cli/bin/disklessly /usr/local/opt/disklessly-cli/bin/disklessly /home/linuxbrew/.linuxbrew/opt/disklessly-cli/bin/disklessly "$HOME/.linuxbrew/opt/disklessly-cli/bin/disklessly" /usr/local/bin/disklessly /opt/homebrew/bin/disklessly /home/linuxbrew/.linuxbrew/bin/disklessly "$HOME/.linuxbrew/bin/disklessly" /Applications/Disklessly.app/Contents/MacOS/disklessly; do
+  for c in ${DKL_CANDIDATES:-"$HOME/.disklessly/bin/disklessly" "$HOME/.local/bin/disklessly" /opt/homebrew/opt/disklessly-cli/bin/disklessly /usr/local/opt/disklessly-cli/bin/disklessly /home/linuxbrew/.linuxbrew/opt/disklessly-cli/bin/disklessly "$HOME/.linuxbrew/opt/disklessly-cli/bin/disklessly" /usr/local/bin/disklessly /opt/homebrew/bin/disklessly /home/linuxbrew/.linuxbrew/bin/disklessly "$HOME/.linuxbrew/bin/disklessly" /Applications/Disklessly.app/Contents/MacOS/disklessly}; do
     if [ -x "$c" ] && [ ! -d "$c" ]; then DKL="$c"; break; fi
   done
 fi`

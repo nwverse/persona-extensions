@@ -209,7 +209,7 @@ func TestSessionArchiveScriptKeepsFilesWhenCLIRefuses(t *testing.T) {
 
 	// Without any CLI the script reports it and still touches nothing.
 	cmd = exec.Command("sh", "-c", BuildItemCleanScript(item, nil))
-	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "DKL_CANDIDATES=" + filepath.Join(home, "no-such-cli")}
 	out, _ = cmd.CombinedOutput()
 	if o := parseSessionRun(string(out)); o.exitCode != cliExitMissing {
 		t.Fatalf("missing CLI outcome: %+v\n%s", o, out)
