@@ -17,7 +17,7 @@ from test_connector import ME, Backend, Hub, message  # noqa: E402
 from larkx_persona import main  # noqa: E402
 from larkx_persona.connector import AGENT_SUFFIX, AGENT_SUFFIX_LEAST, AGENT_SUFFIX_MOST, Connector, agent_request  # noqa: E402
 from larkx_persona.main import Plugin  # noqa: E402
-from larkx_persona.real import own_chat_ok  # noqa: E402
+from larkx_persona.real import normalize, own_chat_ok  # noqa: E402
 from larkx_persona.store import Store  # noqa: E402
 from larkx_persona.wire import RpcError  # noqa: E402
 
@@ -263,6 +263,20 @@ class AgentTopicTest(unittest.TestCase):
         self.assertNotIn("topic_id", got)
         self.assertEqual(got["thread"], "g_reg:0")
 
+        self.hub.got.clear()
+        m_chat_scope_thread = normalize(
+            {"msg_id": "m22", "chat_id": "g_reg", "chat_type": 2, "position": 12, "from_id": ME,
+             "msg_type": 4, "msg_type_name": "TEXT", "content": "/agent 显式话题", "create_time": time.time(),
+             "scope": "chat", "root_id": "0", "thread_id": "omt_99"},
+            lambda *_: "",
+        )
+        self.c._on_live(m_chat_scope_thread)
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "g_reg")
+        self.assertEqual(got["chat_kind"], "topic")
+        self.assertEqual(got["topic_id"], "omt_99")
+        self.assertEqual(got["thread"], "g_reg:m22")
+
     def test_self_mention_carries_structured_routing_and_legacy_thread(self):
         m = message("m3", "g1", 3, kind="group", sender=ME, text="@Example 总结", root="m1")
         m["mentions"] = [{"id": ME, "start": 0, "end": 8, "label": "@Example"}]
@@ -297,6 +311,7 @@ class AgentTopicTest(unittest.TestCase):
         self.assertIs(props["agent_mention"]["default"], True)
         self.assertEqual(props["agent_group_topics"]["section"], "advanced")
         self.assertIs(props["agent_group_topics"]["default"], True)
+        self.assertEqual(manifest["engines"]["persona"], ">=202611241250")
 
     def test_initialize_and_the_manifest(self):
         got = {}

@@ -19,6 +19,12 @@ REPO = pathlib.Path(__file__).resolve().parent.parent
 _spec = importlib.util.spec_from_file_location('manifest', pathlib.Path(__file__).with_name('manifest.py'))
 manifest = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(manifest)
+_cf_spec = importlib.util.spec_from_file_location('config_form', pathlib.Path(__file__).with_name('config_form.py'))
+config_form = importlib.util.module_from_spec(_cf_spec)
+_cf_spec.loader.exec_module(config_form)
+_cat_spec = importlib.util.spec_from_file_location('catalog', pathlib.Path(__file__).with_name('catalog.py'))
+catalog = importlib.util.module_from_spec(_cat_spec)
+_cat_spec.loader.exec_module(catalog)
 
 EXT_ID = 'starter-kit'
 # Junk planted in the source tree: every basename here must be filtered out by scripts/package.sh.
@@ -107,6 +113,83 @@ class LooksPackageTests(unittest.TestCase):
             files = {n.name.split('/', 1)[1] for n in t.getmembers() if n.isfile()}
         self.assertLessEqual(wanted, files)
         self.assertFalse([f for f in files if not f.startswith(('looks/', 'assets/')) and f not in (manifest.NEW, manifest.OLD)])
+
+
+def _assert_pre_section_strict_schema(schema):
+    """Independent pre-section strict form check matching Persona Hub before nwverse/persona#14833."""
+    if not schema:
+        return
+    allowed_describing = {'type', 'title', 'description', 'default', 'x-confirm'}
+    allowed_by_type = {
+        'string': {'enum', 'oneOf', 'format', 'x-os', 'pattern', 'minLength', 'maxLength'},
+        'integer': {'enum', 'oneOf', 'minimum', 'maximum'},
+        'number': {'enum', 'oneOf', 'minimum', 'maximum'},
+        'boolean': set(),
+        'array': {'items', 'minItems', 'maxItems', 'uniqueItems'},
+        'object': {'properties', 'required'},
+    }
+
+    def walk(node, path):
+        props = node.get('properties') or {}
+        for name, spec in props.items():
+            t = spec.get('type')
+            if t not in allowed_by_type:
+                raise ValueError('%s%s: unsupported type %r' % (path, name, t))
+            unknown = set(spec) - allowed_describing - allowed_by_type[t]
+            if unknown:
+                raise ValueError('%s%s: unknown pre-section keys %r' % (path, name, sorted(unknown)))
+            if t == 'object':
+                walk(spec, path + name + '.')
+            elif t == 'array' and isinstance(spec.get('items'), dict):
+                item = spec['items']
+                item_unknown = set(item) - allowed_describing - allowed_by_type.get(item.get('type'), set())
+                if item_unknown:
+                    raise ValueError('%s%s.items: unknown pre-section keys %r' % (path, name, sorted(item_unknown)))
+
+    walk(schema, '')
+
+
+class LegacyManifestCompatibilityTests(unittest.TestCase):
+    """Packaged persona-extension.json retains configuration section hints (gated by engines.persona), while
+    packaged persona-plugin.json strips section hints so older strict schemas still accept it."""
+
+    def test_larkx_package_projects_section_out_of_legacy_manifest(self):
+        tmp = pathlib.Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, tmp)
+        (tmp / 'scripts').mkdir()
+        for name in ('package.sh', 'manifest.py', 'catalog.py', 'config_form.py', 'icons.py'):
+            shutil.copy2(REPO / 'scripts' / name, tmp / 'scripts' / name)
+        shutil.copytree(REPO / 'extensions' / 'larkx', tmp / 'extensions' / 'larkx')
+        r = subprocess.run(['bash', 'scripts/package.sh', 'larkx'], cwd=tmp, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
+
+        source = json.loads((tmp / 'extensions' / 'larkx' / manifest.NEW).read_text())
+        tarball = tmp / 'dist' / ('larkx-%s.tar.gz' % source['version'])
+        with tarfile.open(tarball, 'r:gz') as t:
+            ext_manifest = json.loads(t.extractfile('larkx/persona-extension.json').read().decode('utf-8'))
+            legacy_manifest = json.loads(t.extractfile('larkx/persona-plugin.json').read().decode('utf-8'))
+
+        # New-hub manifest matches catalog inventory, enforces engines.persona gate, and keeps section hints.
+        self.assertEqual(ext_manifest, catalog.source_entry(source)['manifest'])
+        self.assertEqual(ext_manifest['engines']['persona'], '>=202611241250')
+        config_form.check(ext_manifest)
+        for prop in ext_manifest['configuration']['properties'].values():
+            self.assertIn('section', prop)
+
+        # Older strict schema rejects the section-annotated manifest...
+        with self.assertRaises(config_form.Refused):
+            config_form.check(ext_manifest, allow_section=False)
+        with self.assertRaises(ValueError):
+            _assert_pre_section_strict_schema(ext_manifest['configuration'])
+
+        # ...and accepts the legacy persona-plugin.json projection, which preserves all keys and defaults.
+        for name, prop in legacy_manifest['configuration']['properties'].items():
+            self.assertNotIn('section', prop, name)
+            expected = dict(ext_manifest['configuration']['properties'][name])
+            expected.pop('section', None)
+            self.assertEqual(prop, expected, name)
+        config_form.check(legacy_manifest, allow_section=False)
+        _assert_pre_section_strict_schema(legacy_manifest['configuration'])
 
 
 if __name__ == '__main__':

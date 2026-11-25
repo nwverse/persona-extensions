@@ -56,6 +56,36 @@ def source_entry(source):
     return entry
 
 
+def strip_configuration_sections(manifest):
+    """Return a copy of manifest with configuration `section` hints stripped recursively for pre-section hubs."""
+    out = dict(manifest)
+    cfg = out.get("configuration")
+    if isinstance(cfg, dict):
+        out["configuration"] = _strip_schema_sections(cfg)
+    return out
+
+
+def _strip_schema_sections(node):
+    if not isinstance(node, dict):
+        return node
+    out = {}
+    for k, v in node.items():
+        if k == "section":
+            continue
+        if k == "properties" and isinstance(v, dict):
+            out[k] = {name: _strip_schema_sections(prop) for name, prop in v.items()}
+        elif k == "items" and isinstance(v, dict):
+            out[k] = _strip_schema_sections(v)
+        else:
+            out[k] = v
+    return out
+
+
+def legacy_manifest(source):
+    """Project a source manifest to the legacy persona-plugin.json form accepted by older strict hub schemas."""
+    return strip_configuration_sections(source_entry(source)["manifest"])
+
+
 def entry_inventory(entry):
     """The exact source-owned fields covered by generation provenance."""
     result = {"manifest": entry["manifest"], "tags": entry.get("tags", [])}

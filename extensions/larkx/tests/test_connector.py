@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-from larkx_persona.connector import DM_UNKNOWN, KEEP_DAYS, Connector, mention_request  # noqa: E402
+from larkx_persona.connector import DM_UNKNOWN, KEEP_DAYS, Connector, _channel_routing, mention_request  # noqa: E402
 from larkx_persona.real import normalize  # noqa: E402
 from larkx_persona.store import Store  # noqa: E402
 from larkx_persona.wire import RpcError  # noqa: E402
@@ -817,6 +817,25 @@ class NormalizeTest(unittest.TestCase):
 
         explicit_thread = normalize({"msg_id": "15", "chat_id": "g1", "chat_type": 2, "thread_id": "omt_99", "root_id": "11"}, self.key)
         self.assertEqual((explicit_thread["chat_kind"], explicit_thread["topic_id"]), ("group", "omt_99"))
+
+        # Regression: scope="chat" with no root ("0" or "") still honors an explicit nonempty thread_id in groups.
+        chat_scope_zero_root = normalize(
+            {"msg_id": "16", "chat_id": "g1", "chat_type": 2, "scope": "chat", "root_id": "0", "thread_id": "omt_99"}, self.key
+        )
+        self.assertEqual((chat_scope_zero_root["chat_kind"], chat_scope_zero_root["topic_id"]), ("group", "omt_99"))
+        self.assertEqual(_channel_routing(chat_scope_zero_root), {"chat_id": "g1", "chat_kind": "topic", "topic_id": "omt_99"})
+
+        chat_scope_empty_root = normalize(
+            {"msg_id": "17", "chat_id": "g1", "chat_type": 2, "scope": "chat", "root_id": "", "thread_id": "omt_100"}, self.key
+        )
+        self.assertEqual((chat_scope_empty_root["chat_kind"], chat_scope_empty_root["topic_id"]), ("group", "omt_100"))
+        self.assertEqual(_channel_routing(chat_scope_empty_root), {"chat_id": "g1", "chat_kind": "topic", "topic_id": "omt_100"})
+
+        dm_with_thread = normalize(
+            {"msg_id": "18", "chat_id": "c_dm", "chat_type": 1, "scope": "chat", "root_id": "9", "thread_id": "omt_99"}, self.key
+        )
+        self.assertEqual((dm_with_thread["chat_kind"], dm_with_thread["topic_id"]), ("dm", ""))
+        self.assertEqual(_channel_routing(dm_with_thread), {"chat_id": "c_dm", "chat_kind": "direct"})
 
 
 if __name__ == "__main__":

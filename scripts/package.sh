@@ -17,7 +17,7 @@ rm -rf "${out:?}" && mkdir -p "$out/bin"
 # hubs from before tags (nwverse/persona#2424) refuse a manifest with them. Only persona-extension.json is committed;
 # stop writing persona-plugin.json once the compatibility period ends (docs/reference.md, "Compatibility").
 scripts/manifest.py packaged "$id" >"$out/persona-extension.json"
-cp "$out/persona-extension.json" "$out/persona-plugin.json"
+scripts/manifest.py legacy "$id" >"$out/persona-plugin.json"
 # Package source-owned assets (icons and their licenses) alongside skills, instructions and looks.
 for extra in skills assistant looks assets; do
   [ -d "$src/$extra" ] && cp -R "$src/$extra" "$out/"

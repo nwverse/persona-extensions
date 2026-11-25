@@ -12,6 +12,7 @@
     "消息"
   ],
   "engines": {
+    "persona": ">=202611241250",
     "plugin_protocol": 1
   },
   "runtime": {

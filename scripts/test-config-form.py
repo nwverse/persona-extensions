@@ -9,6 +9,9 @@ import unittest
 spec = importlib.util.spec_from_file_location('config_form', pathlib.Path(__file__).with_name('config_form.py'))
 config_form = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config_form)
+cat_spec = importlib.util.spec_from_file_location('catalog', pathlib.Path(__file__).with_name('catalog.py'))
+catalog = importlib.util.module_from_spec(cat_spec)
+cat_spec.loader.exec_module(catalog)
 
 FORM = json.loads('''{"type": "object", "properties": {
   "url": {"type": "string", "title": "地址", "format": "uri"},
@@ -81,6 +84,7 @@ class SubsetTests(unittest.TestCase):
         self.assertEqual(refused({"type": "object", "properties": {"a": {"type": "string", "pattern": r"^\p{Han}+$"}}}), "")
 
     def test_section_hints_accept_valid_values_and_refuse_invalid_ones(self):
+        gate = {"engines": {"persona": ">=202611241250"}}
         valid = {"type": "object", "properties": {
             "url": {"type": "string", "format": "uri", "section": "connection"},
             "rules": {"type": "string", "section": "inbox"},
@@ -92,17 +96,52 @@ class SubsetTests(unittest.TestCase):
                 "plain": {"type": "string"},
             }},
         }}
-        self.assertEqual(refused(valid), "")
+        self.assertEqual(refused(valid, gate), "")
+        self.assertEqual(refused(valid, {"engines": {"persona": ">=202611241250 <202701010000"}}), "")
+        # Using section requires an explicit engines.persona gate >= 202611241250.
+        self.assertIn("engines.persona", refused(valid))
+        self.assertIn("engines.persona", refused(valid, {"engines": {"persona": ">=202611041602"}}))
+        self.assertEqual(refused({"type": "object", "properties": {"a": {"type": "string", "section": ""}}}), "")
         for bad in ("general", "unknown", "Connection", "ADVANCED", " connection", "inbox "):
-            err = refused({"type": "object", "properties": {"a": {"type": "string", "section": bad}}})
+            err = refused({"type": "object", "properties": {"a": {"type": "string", "section": bad}}}, gate)
             self.assertIn("connection, channel, inbox or advanced", err, bad)
         for bad in (None, 123, True, False, [], {}):
-            err = refused({"type": "object", "properties": {"a": {"type": "string", "section": bad}}})
+            err = refused({"type": "object", "properties": {"a": {"type": "string", "section": bad}}}, gate)
             self.assertIn("section: a string", err, repr(bad))
         err = refused({"type": "object", "properties": {"g": {"type": "object", "properties": {
-            "n": {"type": "string", "section": "bogus"}}}}})
+            "n": {"type": "string", "section": "bogus"}}}}}, gate)
         self.assertIn("g.n", err)
         self.assertIn("connection, channel, inbox or advanced", err)
+
+    def test_legacy_projection_strips_section_recursively_for_pre_section_strict_schema(self):
+        source = {
+            "id": "demo",
+            "version": "1.0.0",
+            "tags": ["demo"],
+            "icon": "assets/icon.png",
+            "engines": {"persona": ">=202611241250"},
+            "configuration": {
+                "type": "object",
+                "properties": {
+                    "section": {"type": "string", "section": "connection", "default": "keep-name"},
+                    "nested": {"type": "object", "section": "advanced", "properties": {
+                        "host": {"type": "string", "section": "connection"},
+                    }},
+                    "items_list": {"type": "array", "section": "channel", "items": {"type": "string", "section": "channel"}},
+                },
+            },
+        }
+        with self.assertRaises(config_form.Refused):
+            config_form.check(catalog.source_entry(source)["manifest"], allow_section=False)
+        projected = catalog.legacy_manifest(source)
+        config_form.check(projected, allow_section=False)
+        self.assertIn("section", projected["configuration"]["properties"])
+        self.assertNotIn("section", projected["configuration"]["properties"]["section"])
+        self.assertEqual(projected["configuration"]["properties"]["section"]["default"], "keep-name")
+        self.assertNotIn("section", projected["configuration"]["properties"]["nested"])
+        self.assertNotIn("section", projected["configuration"]["properties"]["nested"]["properties"]["host"])
+        self.assertNotIn("section", projected["configuration"]["properties"]["items_list"])
+        self.assertNotIn("section", projected["configuration"]["properties"]["items_list"]["items"])
 
 
 class ConfiguredTests(unittest.TestCase):
