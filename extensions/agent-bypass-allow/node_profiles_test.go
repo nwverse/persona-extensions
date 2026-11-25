@@ -17,9 +17,22 @@ import (
 // Assistant profiles live beside the extension's node-plugins directory. The
 // node program must follow new and removed channels without a config_dirs edit.
 func TestNodeDiscoversAssistantProfiles(t *testing.T) {
-	root := t.TempDir()
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	home := filepath.Join(root, "home", "me")
 	t.Setenv("HOME", home)
+	// On macOS the synthetic root is below /private/var/folders. Keep system
+	// protection elsewhere, but do not reject scratch deletions inside this root.
+	oldSys := systemDirs
+	systemDirs = nil
+	for _, s := range oldSys {
+		if r := resolve(s, true); !within(root, r) {
+			systemDirs = append(systemDirs, s, r)
+		}
+	}
+	t.Cleanup(func() { systemDirs = oldSys })
 	personaHome := filepath.Join(root, "state", "persona")
 	data := filepath.Join(personaHome, "node-plugins", "agent-bypass-allow", "data")
 	profiles := filepath.Join(personaHome, "profiles")
