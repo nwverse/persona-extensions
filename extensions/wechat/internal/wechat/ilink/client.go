@@ -188,6 +188,8 @@ func (c *Client) call(ctx context.Context, method, path string, body any, authed
 	resp, err := c.http.Do(req)
 	if err != nil {
 		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			return nil, &Error{Code: CodeTimeout, Msg: "iLink call timed out", Retry: true}
 		case ctx.Err() != nil:
 			return nil, &Error{Code: CodeAborted, Msg: "iLink call cancelled", Retry: true}
 		case errors.Is(cctx.Err(), context.DeadlineExceeded):

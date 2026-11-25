@@ -1,6 +1,7 @@
 package wechat
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/hex"
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -72,8 +74,10 @@ type fakeILink struct {
 	image    []byte
 	// failSends: how many sendmessage calls to keep and then answer HTTP 500 (the answer lost on the way back).
 	failSends int
-	clientIDs []string        // every sendmessage's client_id, repeated ones too
-	kept      map[string]bool // client_ids iLink has: a repeat is not posted again
+	// failedSend signals that a scripted HTTP 500 response has been written, before the retry wait.
+	failedSend chan struct{}
+	clientIDs  []string        // every sendmessage's client_id, repeated ones too
+	kept       map[string]bool // client_ids iLink has: a repeat is not posted again
 }
 
 type sentText struct{ To, Context, Text string }
@@ -136,8 +140,12 @@ func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		if f.failSends > 0 {
 			f.failSends--
+			failed := f.failedSend
 			f.mu.Unlock()
 			w.WriteHeader(http.StatusInternalServerError)
+			if failed != nil {
+				failed <- struct{}{}
+			}
 			return
 		}
 	case "/ilink/bot/getconfig":
@@ -250,6 +258,29 @@ func eventually(t *testing.T, what string, ok func() bool) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %s", what)
+}
+
+func captureLog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var out bytes.Buffer
+	writer, flags := log.Writer(), log.Flags()
+	log.SetOutput(&out)
+	log.SetFlags(0)
+	t.Cleanup(func() {
+		log.SetOutput(writer)
+		log.SetFlags(flags)
+	})
+	return &out
+}
+
+func sendLogLines(s string) []string {
+	var out []string
+	for _, line := range strings.Split(strings.TrimSpace(s), "\n") {
+		if strings.HasPrefix(line, "wechat: send ") {
+			out = append(out, line)
+		}
+	}
+	return out
 }
 
 // sentTo waits for the bot to have sent a text to peer containing want; it returns that text.
@@ -427,6 +458,110 @@ func TestSendNeedsTheOwnersChat(t *testing.T) {
 	got := r.sentTo(owner, "10 点有周会")
 	if got.Context == "" || !strings.HasPrefix(got.Text, "**明天**") || strings.Contains(got.Text, "x.png") { // WeChat shows bold, not pictures
 		t.Fatalf("sent %+v", got)
+	}
+}
+
+// Every piece gets one final send log with its inbound message, hub ref, result and duration; the text stays out.
+func TestSendLogsEachPiece(t *testing.T) {
+	wait := sendRetryWait
+	sendRetryWait = time.Millisecond
+	t.Cleanup(func() { sendRetryWait = wait })
+	r := newRig(t, true)
+	ctx := context.Background()
+	r.ilink.say(owner, "在吗")
+	eventually(t, "the message at the hub", func() bool { return len(r.hub.got()) == 1 })
+	eventually(t, "serving", func() bool { return r.bot.Status(ctx).State == wire.ConnectorStateOk })
+	logs := captureLog(t)
+
+	p := wire.ChannelSendParams{Ref: "run-1:4", ReplyTo: "message:42", Text: strings.Repeat("answer-body-", 300),
+		Kind: wire.ChannelSendKindAnswer}
+	if _, err := r.bot.Send(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	lines := sendLogLines(logs.String())
+	if len(lines) != 2 {
+		t.Fatalf("got %d send logs, want one for each of two pieces: %q", len(lines), logs.String())
+	}
+	for i, line := range lines {
+		for _, want := range []string{`reply_to="message:42"`, `ref="run-1:4"`, "part=" + strconv.Itoa(i+1) + "/2",
+			"result=success", "duration="} {
+			if !strings.Contains(line, want) {
+				t.Errorf("piece %d log %q does not contain %q", i+1, line, want)
+			}
+		}
+	}
+	if strings.Contains(logs.String(), "answer-body-") {
+		t.Fatal("send logs contain the answer text")
+	}
+
+	logs.Reset()
+	r.ilink.mu.Lock()
+	r.ilink.failSends = 3
+	r.ilink.mu.Unlock()
+	p = wire.ChannelSendParams{Ref: "run-2:5", ReplyTo: "message:43", Text: "not-delivered-body",
+		Kind: wire.ChannelSendKindAnswer}
+	if _, err := r.bot.Send(ctx, p); err == nil {
+		t.Fatal("the send should fail after all three attempts")
+	}
+	lines = sendLogLines(logs.String())
+	if len(lines) != 1 {
+		t.Fatalf("got %d failure logs, want one: %q", len(lines), logs.String())
+	}
+	for _, want := range []string{`reply_to="message:43"`, `ref="run-2:5"`, "part=1/1", "result=failure",
+		"duration=", "error_type=http", "error=iLink answered HTTP 500"} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("failure log %q does not contain %q", lines[0], want)
+		}
+	}
+	if strings.Contains(logs.String(), p.Text) {
+		t.Fatal("failure log contains the answer text")
+	}
+}
+
+// Cancelling the wait after a retryable response is still a final failure and must not skip the piece's log.
+func TestSendLogsCancellationDuringRetry(t *testing.T) {
+	wait := sendRetryWait
+	sendRetryWait = time.Hour
+	t.Cleanup(func() { sendRetryWait = wait })
+	r := newRig(t, true)
+	r.ilink.say(owner, "在吗")
+	eventually(t, "the message at the hub", func() bool { return len(r.hub.got()) == 1 })
+	r.ilink.mu.Lock()
+	r.ilink.failSends = 1
+	r.ilink.failedSend = make(chan struct{}, 1)
+	r.ilink.mu.Unlock()
+	logs := captureLog(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := wire.ChannelSendParams{Ref: "run-3:6", ReplyTo: "message:44", Text: "cancelled", Kind: wire.ChannelSendKindAnswer}
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.bot.Send(ctx, p)
+		done <- err
+	}()
+	select {
+	case <-r.ilink.failedSend:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first retryable send did not finish")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a cancelled send should fail")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling the retry wait did not stop the send")
+	}
+	lines := sendLogLines(logs.String())
+	if len(lines) != 1 {
+		t.Fatalf("got %d cancellation logs, want one: %q", len(lines), logs.String())
+	}
+	for _, want := range []string{`reply_to="message:44"`, `ref="run-3:6"`, "part=1/1", "result=failure",
+		"duration=", "error_type=aborted"} {
+		if !strings.Contains(lines[0], want) {
+			t.Errorf("cancellation log %q does not contain %q", lines[0], want)
+		}
 	}
 }
 
