@@ -224,6 +224,30 @@ func TestSettingsCheck(t *testing.T) {
 	a.hostURL, a.noLoop = f.hostURL, true
 	secrets := map[string]string{"api_key": f.apiKey, "ed25519_private_key": f.privPEM}
 	ctx := context.Background()
+	// Hub saves secrets one at a time: either half must pass local validation while the other is unset.
+	if ok, msg := a.checkSettings(ctx, json.RawMessage(tradeCfg), map[string]string{"api_key": f.apiKey}); !ok {
+		t.Fatalf("api_key alone refused: %s", msg)
+	}
+	if ok, _ := a.checkSettings(ctx, json.RawMessage(tradeCfg), map[string]string{"api_key": "bad key with spaces"}); ok {
+		t.Fatal("malformed api_key alone accepted")
+	}
+	if ok, msg := a.checkSettings(ctx, json.RawMessage(tradeCfg), map[string]string{"ed25519_private_key": f.privPEM}); !ok {
+		t.Fatalf("ed25519_private_key alone refused: %s", msg)
+	}
+	// Single-line PEM (as pasted into password/SecureField or CLI) and literal \n escapes must also parse.
+	flatPEM := strings.ReplaceAll(strings.TrimSpace(f.privPEM), "\n", " ")
+	escapedPEM := strings.ReplaceAll(strings.TrimSpace(f.privPEM), "\n", `\n`)
+	for label, pemVal := range map[string]string{"single-line": flatPEM, "escaped": escapedPEM} {
+		if ok, msg := a.checkSettings(ctx, json.RawMessage(tradeCfg), map[string]string{"api_key": f.apiKey, "ed25519_private_key": pemVal}); !ok {
+			t.Fatalf("%s PEM refused: %s", label, msg)
+		}
+	}
+	if ok, _ := a.checkSettings(ctx, json.RawMessage(tradeCfg), map[string]string{"ed25519_private_key": "-----BEGIN PRIVATE KEY-----"}); ok {
+		t.Fatal("truncated PEM accepted")
+	}
+	if ok, _ := a.checkSettings(ctx, json.RawMessage(tradeCfg), map[string]string{"ed25519_private_key": "not a key"}); ok {
+		t.Fatal("malformed ed25519_private_key alone accepted")
+	}
 	if ok, msg := a.checkSettings(ctx, json.RawMessage(tradeCfg), secrets); !ok {
 		t.Fatalf("good key refused: %s", msg)
 	}

@@ -241,19 +241,33 @@ func (a *app) settings(ctx context.Context, method string, raw json.RawMessage) 
 	return map[string]any{"ok": false, "error": msg}, nil
 }
 
-// checkSettings checks proposed settings; Binance is asked only when the key or the proxy changes (a guard setting
-// changed alone is checked here, so a slow network cannot keep the user from tightening a limit).
+// checkSettings checks proposed settings; Binance is asked only when both secrets are present and the key or the proxy
+// changes (a guard setting changed alone is checked here, so a slow network cannot keep the user from tightening a
+// limit). Because the hub stores secrets one at a time, saving either api_key or ed25519_private_key while the other is
+// still unset checks its shape and lets it be saved; the extension stays not_signed_in with writes locked until both
+// secrets are present and pass checkKey.
 func (a *app) checkSettings(ctx context.Context, rawCfg json.RawMessage, secrets map[string]string) (bool, string) {
 	cfg, err := parseConfig(rawCfg)
 	if err != nil {
 		return false, "设置有误：" + err.Error()
 	}
-	s, err := newSigner(secrets["api_key"], secrets["ed25519_private_key"])
+	apiKey := strings.TrimSpace(secrets["api_key"])
+	privPEM := strings.TrimSpace(secrets["ed25519_private_key"])
+	if apiKey == "" && privPEM == "" {
+		return true, ""
+	}
+	if apiKey == "" || privPEM == "" {
+		if err := validateAPIKey(apiKey); err != nil {
+			return false, err.Error()
+		}
+		if _, err := parseEd25519PrivateKey(privPEM); err != nil {
+			return false, err.Error()
+		}
+		return true, ""
+	}
+	s, err := newSigner(apiKey, privPEM)
 	if err != nil {
 		return false, err.Error()
-	}
-	if s == nil {
-		return true, ""
 	}
 	a.mu.RLock()
 	same := secrets["api_key"] == a.apiKey && secrets["ed25519_private_key"] == a.privPEM && a.perms.Checked && a.locked == "" &&

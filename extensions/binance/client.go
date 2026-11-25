@@ -44,6 +44,68 @@ type signer struct {
 	priv   ed25519.PrivateKey
 }
 
+// validateAPIKey checks the shape of a Binance API key before saving or signing.
+func validateAPIKey(apiKey string) error {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil
+	}
+	if len(apiKey) > 128 || strings.ContainsAny(apiKey, " \t\r\n") {
+		return errors.New("API Key does not look like a Binance key")
+	}
+	return nil
+}
+
+// parseEd25519PrivateKey reads a PKCS#8 Ed25519 private key in PEM (standard multi-line, single-line with spaces or
+// literal "\n" escapes as produced by single-line secret inputs, or bare base64 PKCS#8 DER).
+func parseEd25519PrivateKey(privPEM string) (ed25519.PrivateKey, error) {
+	privPEM = strings.TrimSpace(privPEM)
+	if privPEM == "" {
+		return nil, nil
+	}
+	normalized := strings.ReplaceAll(privPEM, `\n`, "\n")
+	var der []byte
+	if block, _ := pem.Decode([]byte(normalized)); block != nil {
+		der = block.Bytes
+	} else {
+		const (
+			beginMarker = "-----BEGIN PRIVATE KEY-----"
+			endMarker   = "-----END PRIVATE KEY-----"
+		)
+		body := normalized
+		if i := strings.Index(body, beginMarker); i >= 0 {
+			j := strings.Index(body[i+len(beginMarker):], endMarker)
+			if j < 0 {
+				return nil, errors.New("Ed25519 private key is not PEM (-----BEGIN PRIVATE KEY-----)")
+			}
+			body = body[i+len(beginMarker) : i+len(beginMarker)+j]
+		} else if strings.Contains(body, "-----BEGIN ") {
+			return nil, errors.New("Ed25519 private key is not PEM (-----BEGIN PRIVATE KEY-----)")
+		}
+		compact := strings.Map(func(r rune) rune {
+			switch r {
+			case ' ', '\t', '\r', '\n':
+				return -1
+			}
+			return r
+		}, body)
+		decoded, err := base64.StdEncoding.DecodeString(compact)
+		if err != nil || len(decoded) == 0 {
+			return nil, errors.New("Ed25519 private key is not PEM (-----BEGIN PRIVATE KEY-----)")
+		}
+		der = decoded
+	}
+	k, err := x509.ParsePKCS8PrivateKey(der)
+	if err != nil {
+		return nil, errors.New("Ed25519 private key cannot be read (PKCS#8 expected)")
+	}
+	priv, ok := k.(ed25519.PrivateKey)
+	if !ok {
+		return nil, errors.New("the private key is not an Ed25519 key")
+	}
+	return priv, nil
+}
+
 // newSigner reads the API key and a PKCS#8 Ed25519 private key in PEM.
 func newSigner(apiKey, privPEM string) (*signer, error) {
 	apiKey = strings.TrimSpace(apiKey)
@@ -54,20 +116,12 @@ func newSigner(apiKey, privPEM string) (*signer, error) {
 	if apiKey == "" || privPEM == "" {
 		return nil, errors.New("both API Key and Ed25519 private key are needed")
 	}
-	if len(apiKey) > 128 || strings.ContainsAny(apiKey, " \t\r\n") {
-		return nil, errors.New("API Key does not look like a Binance key")
+	if err := validateAPIKey(apiKey); err != nil {
+		return nil, err
 	}
-	block, _ := pem.Decode([]byte(privPEM))
-	if block == nil {
-		return nil, errors.New("Ed25519 private key is not PEM (-----BEGIN PRIVATE KEY-----)")
-	}
-	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	priv, err := parseEd25519PrivateKey(privPEM)
 	if err != nil {
-		return nil, errors.New("Ed25519 private key cannot be read (PKCS#8 expected)")
-	}
-	priv, ok := k.(ed25519.PrivateKey)
-	if !ok {
-		return nil, errors.New("the private key is not an Ed25519 key")
+		return nil, err
 	}
 	return &signer{apiKey: apiKey, priv: priv}, nil
 }
