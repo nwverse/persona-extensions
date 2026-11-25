@@ -33,6 +33,14 @@
       "license_file": "assets/LICENSE",
       "attribution": "LINUX DO. Official icon asset, with the upstream repository license notice preserved in each package. Trademark rights are separate from copyright licensing."
     },
+    "magpie-usage": {
+      "repository": "https://github.com/yetone/magpie",
+      "revision": "053aa2d188bc66445cde45edfef9896ddbb0a58e",
+      "license": "MIT",
+      "license_url": "https://raw.githubusercontent.com/yetone/magpie/053aa2d188bc66445cde45edfef9896ddbb0a58e/LICENSE",
+      "license_file": "assets/LICENSE",
+      "attribution": "yetone. Official Magpie icon from build/windows/icon-256.png, with the upstream license notice preserved."
+    },
     "mnemo": {
       "repository": "https://github.com/szupzj18/mnemo",
       "revision": "d4da6e2b0ce5f0580a01b5f9c61dada75d19b16d",
@@ -664,6 +672,17 @@
       "height": 512,
       "trademark_owner": "Miniflux project",
       "usage": "Exact Raycast extension icon used to identify the corresponding public service."
+    },
+    "magpie-usage": {
+      "path": "assets/icon.png",
+      "source_id": "magpie-usage",
+      "source_url": "https://raw.githubusercontent.com/yetone/magpie/053aa2d188bc66445cde45edfef9896ddbb0a58e/build/windows/icon-256.png",
+      "sha256": "5512c5ce51526ca87731af1e120a0de8e8e6555d108385bd817b5ea084929ed4",
+      "format": "png",
+      "width": 256,
+      "height": 256,
+      "trademark_owner": "yetone",
+      "usage": "Official Magpie icon used to identify the integration."
     },
     "mnemo": {
       "path": "assets/icon.png",

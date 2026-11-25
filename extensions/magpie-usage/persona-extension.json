@@ -1,0 +1,23 @@
+{
+  "manifest_version": 1,
+  "id": "magpie-usage",
+  "name": "Magpie Subscription Usage",
+  "version": "0.1.0",
+  "icon": "assets/icon.png",
+  "description": "Shows the subscription allowance windows of Magpie's Claude and Codex accounts in Persona.",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/magpie-usage/README.md",
+  "tags": ["Magpie", "subscriptions", "quota"],
+  "engines": {"extension_protocol": 1},
+  "activation_events": ["on_startup"],
+  "runtime": {"command": {
+    "linux-amd64": "bin/magpie-usage-linux-amd64",
+    "linux-arm64": "bin/magpie-usage-linux-arm64",
+    "darwin-amd64": "bin/magpie-usage-darwin-amd64",
+    "darwin-arm64": "bin/magpie-usage-darwin-arm64"
+  }},
+  "contributes": {
+    "usage": [{"id": "magpie", "name": "Magpie Subscription Usage"}]
+  },
+  "permissions": {"launcher_keys": true}
+}
