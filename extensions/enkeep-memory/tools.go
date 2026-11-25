@@ -501,9 +501,13 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		if err := strictDecode(raw, &in); err != nil {
 			return "", err
 		}
-		r, err := a.c.QueueRerunWithin(strings.TrimSpace(in.From), strings.TrimSpace(in.To), a.localDay(), in.Force, toolWait)
+		from, to, today := strings.TrimSpace(in.From), strings.TrimSpace(in.To), a.localDay()
+		r, err := a.c.QueueRerunWithin(from, to, today, in.Force, toolWait)
+		if errors.Is(err, curate.ErrBusy) {
+			return a.queueRerun(from, to, today, in.Force)
+		}
 		if err != nil {
-			return "", a.busy(err)
+			return "", err
 		}
 		var b strings.Builder
 		if r.Force {
@@ -538,6 +542,14 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		}
 		if len(p.Forced) > 0 {
 			fmt.Fprintf(&b, " Queued with force (read again although already read with this prompt), waiting: %s.", span(p.Forced))
+		}
+		if pendN, pendF := a.pendingRerunDays(); len(pendN) > 0 || len(pendF) > 0 {
+			if len(pendN) > 0 {
+				fmt.Fprintf(&b, " Pending queue (joins after current run): %s.", span(pendN))
+			}
+			if len(pendF) > 0 {
+				fmt.Fprintf(&b, " Pending force queue (joins at front after current run): %s.", span(pendF))
+			}
 		}
 		if pr := p.Running; pr != nil {
 			fmt.Fprintf(&b, " Running now: %s %s", pr.Kind, pr.Period)

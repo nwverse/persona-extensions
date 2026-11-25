@@ -400,7 +400,7 @@ func TestToolSplit(t *testing.T) {
 }
 
 // While a pass holds the store's lock (a daily run holds it for tens of minutes), the tools answer at once: the status
-// from the pages' snapshot, mark_wrong queued and applied when the lock frees, rerun and resettle "busy".
+// from the pages' snapshot, mark_wrong and rerun queued and applied when the lock frees, resettle "busy".
 func TestToolsWhileAPassRuns(t *testing.T) {
 	a, st := toolApp(t)
 	toolWait = 100 * time.Millisecond
@@ -429,8 +429,23 @@ func TestToolsWhileAPassRuns(t *testing.T) {
 	if err != nil || !strings.Contains(text, "1 waiting") || !strings.Contains(text, "Running now: daily 2026-11-08") || !strings.Contains(text, "State as of") {
 		t.Fatalf("status during a run: %q %v", text, err)
 	}
-	if _, err = quick("enkeep_rerun", map[string]any{"from": "2026-11-02", "to": "2026-11-02"}); err == nil || !strings.Contains(err.Error(), "busy: daily 2026-11-08") {
-		t.Fatalf("rerun during a run: %v", err)
+	// Invalid rerun arguments still fail immediately even while busy.
+	if _, err = quick("enkeep_rerun", map[string]any{"from": "2026-11-08", "to": "2026-11-09"}); err == nil {
+		t.Fatal("rerun accepted today while busy")
+	}
+	// Valid rerun (normal and force) returns Queued instead of busy, persists reruns-queue.json, and shows in status.
+	text, err = quick("enkeep_rerun", map[string]any{"from": "2026-11-02", "to": "2026-11-03"})
+	if err != nil || !strings.Contains(text, "Queued 2 day(s)") || !strings.Contains(text, "daily 2026-11-08 is running") {
+		t.Fatalf("rerun during a run: %q %v", text, err)
+	}
+	text, err = quick("enkeep_rerun", map[string]any{"from": "2026-11-05", "to": "2026-11-06", "force": true})
+	if err != nil || !strings.Contains(text, "Queued 2 day(s) with force") || !strings.Contains(text, "daily 2026-11-08 is running") {
+		t.Fatalf("force rerun during a run: %q %v", text, err)
+	}
+	status, err := quick("enkeep_rerun_status", map[string]any{})
+	if err != nil || !strings.Contains(status, "Pending queue (joins after current run): 2026-11-02, 2026-11-03") ||
+		!strings.Contains(status, "Pending force queue (joins at front after current run): 2026-11-05, 2026-11-06") {
+		t.Fatalf("status with pending reruns: %q %v", status, err)
 	}
 	if _, err = quick("enkeep_resettle_preview", map[string]any{}); err == nil || !strings.Contains(err.Error(), "busy") {
 		t.Fatalf("resettle during a run: %v", err)
@@ -442,7 +457,7 @@ func TestToolsWhileAPassRuns(t *testing.T) {
 	if !st.S.Entries["i-0000000001"].Live() {
 		t.Fatal("marked while the run held the lock")
 	}
-	// the pass ends: the queued mark is applied
+	// the pass ends: both queued marks and queued reruns are applied without disturbing already-queued days
 	a.mu.Lock()
 	a.running = ""
 	a.mu.Unlock()
@@ -451,13 +466,18 @@ func TestToolsWhileAPassRuns(t *testing.T) {
 	for {
 		st.Lock()
 		live := st.S.Entries["i-0000000001"].Live()
+		rq := slices.Clone(st.S.RerunQueue)
+		fq := slices.Clone(st.S.ForceReruns)
 		st.Unlock()
-		_, qerr := os.Stat(filepath.Join(st.Dir, marksFile))
-		if !live && os.IsNotExist(qerr) {
+		_, merr := os.Stat(filepath.Join(st.Dir, marksFile))
+		_, rerr := os.Stat(filepath.Join(st.Dir, rerunsFile))
+		if !live && os.IsNotExist(merr) && os.IsNotExist(rerr) &&
+			slices.Equal(rq, []string{"2026-11-01", "2026-11-02", "2026-11-03"}) &&
+			slices.Equal(fq, []string{"2026-11-05", "2026-11-06"}) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("queued mark not applied: live=%v queue=%v", live, qerr)
+			t.Fatalf("queued writes not applied: live=%v marks=%v reruns=%v rq=%v fq=%v", live, merr, rerr, rq, fq)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

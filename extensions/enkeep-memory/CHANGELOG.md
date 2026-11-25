@@ -1,5 +1,14 @@
 # enkeep-memory changelog
 
+## 0.2.3
+
+- **Queue `enkeep_rerun` requests while a pass holds the store lock.** Instead of returning `busy` after the user
+  approves an `enkeep_rerun` card while a daily or fast pass is running, `enkeep_rerun` validates the date range,
+  persists the request to `reruns-queue.json` beside `state.json`, and returns `Queued` immediately. Pending requests
+  are merged into `State.RerunQueue` / `State.ForceReruns` (leaving already-queued days intact) as soon as the lock
+  frees, before `tick` starts the next day (and on startup if the process restarted), and are surfaced by
+  `enkeep_rerun_status`.
+
 ## 0.2.2
 
 - **Collaboration evaluation: recall like a search, not every subject.** The recall arms weigh each name in an
