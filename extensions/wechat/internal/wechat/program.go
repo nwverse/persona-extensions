@@ -32,7 +32,7 @@ var Network = []string{"*.weixin.qq.com"}
 // while a turn goes on.
 func Channel() wire.ChannelItem {
 	return wire.ChannelItem{ID: ID, Name: Name, Kind: "im", Connector: ID, Bind: "qr",
-		Description: "在个人微信里私聊机器人：扫码绑定，消息进主对话，回答以纯文字发回", // i18n-ignore: as the hub registers it
+		Description: "在个人微信里私聊机器人：扫码绑定，消息进主对话，回答以文字和图片发回", // i18n-ignore: as the hub registers it
 		Capabilities: wire.ChannelCapabilities{ImagesIn: true, ImagesOut: true, FilesIn: true, VoiceIn: true, Format: "plain",
 			MaxText: MaxText, Asks: "text", Push: true, Typing: true}}
 }

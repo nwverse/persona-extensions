@@ -2,6 +2,7 @@ package wechat
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/md5"
 	"encoding/base64"
@@ -87,7 +88,20 @@ type fakeILink struct {
 	// failUploads: how many CDN uploads to answer HTTP 500, once okUploads uploads were kept.
 	failUploads int
 	okUploads   int
+	// answers are what the next calls of a path answer, one each, before the rest of serve; the zero fakeAnswer lets
+	// a call be answered as usual. A sendmessage answered so is not kept.
+	answers map[string][]fakeAnswer
+	// requests are every request's host (as the bot named it), path and Authorization.
+	requests []fakeRequest
 }
+
+// fakeAnswer is an HTTP status (200 when 0) and a JSON body (none when nil).
+type fakeAnswer struct {
+	status int
+	body   map[string]any
+}
+
+type fakeRequest struct{ Host, Path, Auth string }
 
 type sentText struct{ To, Context, Text string }
 
@@ -106,6 +120,9 @@ func newFakeILink(t *testing.T) *fakeILink {
 }
 
 func (f *fakeILink) RoundTrip(r *http.Request) (*http.Response, error) {
+	f.mu.Lock()
+	f.requests = append(f.requests, fakeRequest{Host: r.URL.Host, Path: r.URL.Path, Auth: r.Header.Get("Authorization")})
+	f.mu.Unlock()
 	u, _ := url.Parse(f.srv.URL)
 	r2 := r.Clone(r.Context())
 	r2.URL.Scheme, r2.URL.Host, r2.Host = u.Scheme, u.Host, u.Host
@@ -120,6 +137,24 @@ func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	out := map[string]any{"ret": 0}
 	f.mu.Lock()
+	if as := f.answers[r.URL.Path]; len(as) > 0 {
+		a := as[0]
+		f.answers[r.URL.Path] = as[1:]
+		if a.status != 0 || a.body != nil {
+			switch r.URL.Path {
+			case "/ilink/bot/sendmessage":
+				f.clientIDs = append(f.clientIDs, body["msg"].(map[string]any)["client_id"].(string))
+			case "/ilink/bot/getuploadurl":
+				f.uploadReq = append(f.uploadReq, body)
+			}
+			f.mu.Unlock()
+			w.WriteHeader(cmp.Or(a.status, http.StatusOK))
+			if a.body != nil {
+				_ = json.NewEncoder(w).Encode(a.body)
+			}
+			return
+		}
+	}
 	switch r.URL.Path {
 	case "/ilink/bot/get_bot_qrcode":
 		out = map[string]any{"qrcode": "QC", "qrcode_img_content": "https://liteapp.weixin.qq.com/q/example"}
@@ -770,8 +805,9 @@ func TestSendRetryKeepsTheClientID(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("the owner got %d copies: %+v", len(sent), sent)
 	}
-	if clientID("other", 0) == ids[0] || clientID(p.Ref, 1) == ids[0] {
-		t.Fatal("another ref or piece must get another client_id")
+	if contentID("other", "text", 0, p.Text) == ids[0] || contentID(p.Ref, "text", 1, p.Text) == ids[0] ||
+		contentID(p.Ref, "text", 0, "另一个答案") == ids[0] {
+		t.Fatal("another ref, place or text must get another client_id")
 	}
 }
 
@@ -879,8 +915,8 @@ func TestSendSendsPicturesAfterTheText(t *testing.T) {
 	}
 }
 
-// A picture that can't be sent at all (not base64) is skipped; one WeChat keeps refusing fails the send, which the
-// hub tries again with the same ref.
+// A picture that can't be sent at all (not base64) is skipped; one whose upload keeps failing in a way that may pass
+// (HTTP 500) fails the send, which the hub tries again with the same ref.
 func TestSendPictureFailures(t *testing.T) {
 	wait := sendRetryWait
 	sendRetryWait = time.Millisecond
@@ -938,7 +974,7 @@ func (r *rig) progressOf(ref string) (sendProgress, bool) {
 	r.bot.mu.Lock()
 	defer r.bot.mu.Unlock()
 	if pr, ok := r.bot.progress[ref]; ok {
-		return *pr, true
+		return pr, true
 	}
 	return sendProgress{}, false
 }
@@ -965,7 +1001,9 @@ func runResumeScenario(t *testing.T, r *rig, ref string, send func(wire.ChannelS
 	if sends != 2 || urls != 4 || ups != 1 { // the text and picture 1 sent; picture 1 and picture 2's three tries asked
 		t.Fatalf("after the failure: %d sendmessage, %d getuploadurl, %d uploads", sends, urls, ups)
 	}
-	if pr, ok := r.progressOf(ref); !ok || pr != (sendProgress{parts: 1, images: 2, partsDone: 1, imagesDone: 1}) {
+	ids := newSendIDs(ref, splitText(p.Text), p.Images)
+	if pr, ok := r.progressOf(ref); !ok || len(pr.done) != 2 || !pr.done[ids.parts[0]] || !pr.done[ids.images[0]] ||
+		len(pr.skipped) != 0 || pr.uploadOf != ids.images[1] || pr.upload.Query != "" {
 		t.Fatalf("progress after the failure: %+v %v", pr, ok)
 	}
 	logs := captureLog(t)
@@ -1008,8 +1046,10 @@ func TestProgramResumesAtTheFailedPicture(t *testing.T) {
 	})
 }
 
-// A ref sent again with another number of pictures (or of pieces) is another message: it goes from the start.
-func TestSendOfChangedContentStartsOver(t *testing.T) {
+// A ref sent again with other content: what WeChat confirmed of it is not sent again, and what is new goes under
+// client_ids of its own, so iLink does not take it for a repeat (a new picture in the place of a refused one, the same
+// number of pictures; a new text with fewer pieces).
+func TestSendOfChangedContent(t *testing.T) {
 	r := pictureSendRig(t)
 	ctx := context.Background()
 	ref := "run-10:1"
@@ -1021,34 +1061,44 @@ func TestSendOfChangedContentStartsOver(t *testing.T) {
 		t.Fatal("the first send should fail")
 	}
 	sends, urls, ups := r.ilink.calls()
-	logs := captureLog(t)
-	one := two
-	one.Images = two.Images[:1]
-	if _, err := r.bot.Send(ctx, one); err != nil {
+	other := two
+	other.Images = []wire.ChannelBlob{testPicture(1), testPicture(3)} // picture 2 replaced
+	if _, err := r.bot.Send(ctx, other); err != nil {
 		t.Fatal(err)
 	}
 	sends2, urls2, ups2 := r.ilink.calls()
-	if sends2-sends != 2 || urls2-urls != 1 || ups2-ups != 1 { // the text and the picture again
-		t.Fatalf("changed content: %d sendmessage, %d getuploadurl, %d uploads, want 2, 1, 1", sends2-sends, urls2-urls, ups2-ups)
+	if sends2-sends != 1 || urls2-urls != 1 || ups2-ups != 1 { // only the new picture
+		t.Fatalf("changed content: %d sendmessage, %d getuploadurl, %d uploads, want 1, 1, 1", sends2-sends, urls2-urls, ups2-ups)
 	}
-	if strings.Contains(logs.String(), "resume") {
-		t.Fatalf("a changed send resumed: %q", logs.String())
+	_, plain := r.ilink.sentPictures(t)
+	want := []wire.ChannelBlob{testPicture(1), testPicture(3)}
+	if len(plain) != 2 || len(r.ilink.texts()) != 1 {
+		t.Fatalf("iLink holds %d pictures and %d texts", len(plain), len(r.ilink.texts()))
+	}
+	for i, data := range plain {
+		if base64.StdEncoding.EncodeToString(data) != want[i].Data {
+			t.Fatalf("picture %d is not the one sent last", i+1)
+		}
+	}
+	oldIDs, newIDs := newSendIDs(ref, splitText(two.Text), two.Images), newSendIDs(ref, splitText(other.Text), other.Images)
+	if oldIDs.images[0] != newIDs.images[0] || oldIDs.images[1] == newIDs.images[1] || oldIDs.parts[0] != newIDs.parts[0] {
+		t.Fatal("the same content at the same place must keep its client_id, and other content must not")
 	}
 	if _, ok := r.progressOf(ref); ok {
 		t.Fatal("progress is kept after the send went through")
 	}
 
-	// Another number of text pieces.
+	// A new text, in fewer pieces: its one piece goes; the picture WeChat has is not sent again.
 	long := wire.ChannelSendParams{Ref: "run-10:2", Text: strings.Repeat("answer-body-", 300), Kind: wire.ChannelSendKindAnswer,
-		Images: []wire.ChannelBlob{testPicture(3)}}
+		Images: []wire.ChannelBlob{testPicture(4), testPicture(5)}}
 	r.ilink.mu.Lock()
-	r.ilink.failUploads = 3
+	r.ilink.okUploads, r.ilink.failUploads = 1, 3
 	r.ilink.mu.Unlock()
 	if _, err := r.bot.Send(ctx, long); err == nil {
 		t.Fatal("the long send should fail")
 	}
-	if pr, ok := r.progressOf("run-10:2"); !ok || pr.partsDone != 2 || pr.parts != 2 || pr.imagesDone != 0 {
-		t.Fatalf("progress %+v %v", pr, ok)
+	if pr, ok := r.progressOf("run-10:2"); !ok || len(pr.done) != 3 {
+		t.Fatalf("progress %+v %v: want two pieces and a picture", pr, ok)
 	}
 	short := long
 	short.Text = "short"
@@ -1056,36 +1106,46 @@ func TestSendOfChangedContentStartsOver(t *testing.T) {
 	if _, err := r.bot.Send(ctx, short); err != nil {
 		t.Fatal(err)
 	}
-	if after, _, _ := r.ilink.calls(); after-before != 2 { // its one piece and its picture, none skipped as done
-		t.Fatalf("changed piece count: %d sendmessage calls, want 2", after-before)
+	if after, _, _ := r.ilink.calls(); after-before != 2 { // the new piece and the picture not yet sent
+		t.Fatalf("changed text: %d sendmessage calls, want 2", after-before)
+	}
+	if got := r.ilink.texts(); got[len(got)-1].Text != "short" {
+		t.Fatalf("the new text was not sent: %+v", got[len(got)-1])
 	}
 }
 
-// Progress is bounded: past progressMost refs the oldest is dropped (its send starts over); a ref seen again does not
-// take another place.
+// Progress is bounded: past progressMost refs the oldest is dropped (its send starts over); a ref kept again does not
+// take another place. What is kept is read for the pieces and pictures of the send at hand only.
 func TestSendProgressKeepsTheLatestRefs(t *testing.T) {
 	b := New(Options{}, &memSecrets{})
-	for i := range progressMost + 1 {
-		b.noteSent("ref-"+strconv.Itoa(i), 1, 1, 1, 0)
+	ids := func(ref string) sendIDs { return newSendIDs(ref, []string{"text"}, []wire.ChannelBlob{testPicture(1)}) }
+	partDone := func(ref string) sendProgress {
+		return sendProgress{done: map[string]bool{ids(ref).parts[0]: true}}
 	}
-	b.noteSent("ref-"+strconv.Itoa(progressMost), 1, 1, 1, 1) // seen again
+	for i := range progressMost + 1 {
+		b.keep("ref-"+strconv.Itoa(i), partDone("ref-"+strconv.Itoa(i)))
+	}
+	newest := "ref-" + strconv.Itoa(progressMost)
+	all := partDone(newest)
+	all.done[ids(newest).images[0]] = true
+	b.keep(newest, all) // kept again
 	if len(b.progress) != progressMost || len(b.progressOrder) != progressMost {
 		t.Fatalf("%d refs kept, %d in order, want %d", len(b.progress), len(b.progressOrder), progressMost)
 	}
-	if d, i := b.resume("ref-0", 1, 1); d != 0 || i != 0 {
-		t.Fatalf("the oldest ref is kept: %d %d", d, i)
+	if pr := b.resume("ref-0", ids("ref-0")); len(pr.done) != 0 {
+		t.Fatalf("the oldest ref is kept: %+v", pr)
 	}
-	if d, i := b.resume("ref-1", 1, 1); d != 1 || i != 0 {
-		t.Fatalf("the second oldest ref: %d %d", d, i)
+	if pr := b.resume("ref-1", ids("ref-1")); len(pr.done) != 1 {
+		t.Fatalf("the second oldest ref: %+v", pr)
 	}
-	if d, i := b.resume("ref-"+strconv.Itoa(progressMost), 1, 1); d != 1 || i != 1 {
-		t.Fatalf("the newest ref: %d %d", d, i)
+	if pr := b.resume(newest, ids(newest)); len(pr.done) != 2 {
+		t.Fatalf("the newest ref: %+v", pr)
 	}
-	if d, i := b.resume("ref-2", 1, 2); d != 0 || i != 0 || len(b.progress) != progressMost-1 || len(b.progressOrder) != progressMost-1 {
-		t.Fatalf("a changed ref is dropped: %d %d, %d kept", d, i, len(b.progress))
+	if pr := b.resume("ref-2", newSendIDs("ref-2", []string{"other text"}, nil)); len(pr.done) != 0 {
+		t.Fatalf("progress of other content: %+v", pr)
 	}
-	b.noteSent("", 1, 1, 1, 1)
-	if len(b.progress) != progressMost-1 {
+	b.keep("", partDone(""))
+	if len(b.progress) != progressMost {
 		t.Fatal("progress kept without a ref")
 	}
 }

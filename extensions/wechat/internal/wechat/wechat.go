@@ -71,7 +71,7 @@ type Bot struct {
 	replied map[string]time.Time
 	quotes  *quoteStore
 	// progress is how far each ref's channel.send got, oldest ref first in progressOrder (chat.go sendProgress).
-	progress      map[string]*sendProgress
+	progress      map[string]sendProgress
 	progressOrder []string
 }
 
@@ -285,6 +285,7 @@ func (b *Bot) unbind(ctx context.Context, token string) {
 	b.st.Old = rememberToken(b.st.Old, b.st.Creds.Token)
 	b.st.Creds, b.st.Cursor, b.st.Context = nil, "", ""
 	b.typing = nil
+	b.forgetSendsLocked()
 	b.saveLocked(ctx)
 	if b.quotes != nil {
 		b.quotes.reset()

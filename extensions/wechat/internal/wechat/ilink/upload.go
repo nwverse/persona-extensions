@@ -66,14 +66,15 @@ func (c *Client) UploadImage(ctx context.Context, peer string, data []byte) (Upl
 	if err != nil {
 		return Uploaded{}, err
 	}
-	if err := ret(out, "the picture's upload"); err != nil {
+	if err := refusal(out, "the picture's upload"); err != nil {
 		return Uploaded{}, err
 	}
 	target, err := uploadURL(strings.TrimSpace(str(out, "upload_full_url")), str(out, "upload_param"), fileKeyHex)
 	if err != nil {
 		return Uploaded{}, err
 	}
-	// One try: the caller tries a failure that may pass again, waiting between tries, with a fresh upload URL.
+	// One try: the caller tries a failure that may pass again, waiting between tries, with a fresh upload URL. The
+	// request carries no Authorization: the bot token is iLink's, not the CDN's.
 	query, err := c.putCDN(ctx, target, cipher)
 	if err != nil {
 		return Uploaded{}, err
@@ -130,11 +131,11 @@ func (c *Client) putCDN(ctx context.Context, target string, cipher []byte) (stri
 }
 
 // SendImage sends an uploaded picture to peer as the bot, in the chat of contextToken; clientID makes the send
-// idempotent on iLink's side.
-func (c *Client) SendImage(ctx context.Context, peer, contextToken, clientID string, u Uploaded) error {
+// idempotent on iLink's side. It returns the server message id, which a later ref_msg.svr_id can reference.
+func (c *Client) SendImage(ctx context.Context, peer, contextToken, clientID string, u Uploaded) (string, error) {
 	if strings.TrimSpace(peer) == "" || strings.TrimSpace(contextToken) == "" || strings.TrimSpace(clientID) == "" ||
 		u.Query == "" || !hex32.MatchString(u.KeyHex) || u.CipherSize <= 0 {
-		return &Error{Code: CodeProtocol, Msg: "incomplete iLink picture message"}
+		return "", &Error{Code: CodeProtocol, Msg: "incomplete iLink picture message"}
 	}
 	item := map[string]any{"type": itemImage, "image_item": map[string]any{
 		// The key goes both ways WeChat carries it: media.aes_key is base64 of the key's hex text, as openclaw-weixin
@@ -154,7 +155,10 @@ func (c *Client) SendImage(ctx context.Context, peer, contextToken, clientID str
 	}
 	out, err := c.call(ctx, http.MethodPost, "ilink/bot/sendmessage", map[string]any{"msg": msg, "base_info": c.baseInfo()}, true, apiTimeout, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return ret(out, "the picture")
+	if err := refusal(out, "the picture"); err != nil {
+		return "", err
+	}
+	return responseMessageID(out["message_id"]), nil
 }

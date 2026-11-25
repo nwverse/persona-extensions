@@ -34,7 +34,9 @@ func newFake(t *testing.T, h func(w http.ResponseWriter, r *http.Request, body m
 			return
 		}
 		var body map[string]any
-		if b, _ := io.ReadAll(r.Body); len(b) > 0 {
+		b, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(b)) // a CDN upload's handler reads the picture
+		if len(b) > 0 && r.Header.Get("Content-Type") == "application/json" {
 			if err := json.Unmarshal(b, &body); err != nil {
 				t.Errorf("request body is not JSON: %s", b)
 			}
