@@ -397,15 +397,13 @@ func TestAgyAssistantWrites(t *testing.T) {
 
 	asstWrite := func(tool, target string) map[string]any {
 		return map[string]any{
-			"hookEventName":  "PreToolUse",
 			"conversationId": "34c13c41-220e-4c50-98c4-a2fa536c8f32",
-			"cwd":            e.home,
 			"workspacePaths": []string{e.home, asstDir},
 			"transcriptPath": e.transcript(),
 			"toolCall": map[string]any{
 				"id":   "call_w1",
 				"name": tool,
-				"args": map[string]any{"Path": target, "Content": "# weekly\n"},
+				"args": map[string]any{"TargetFile": target, "CodeContent": "# weekly\n"},
 			},
 		}
 	}
@@ -415,11 +413,41 @@ func TestAgyAssistantWrites(t *testing.T) {
 		t.Fatalf("assistant_writes off: got %q", got)
 	}
 
-	// 2. Enabled: allows write_file and edit_file inside ~/.persona/assistant.
+	// 2. Enabled: allows every supported agy write tool inside ~/.persona/assistant.
+	// These are the documented PreToolUse payloads: no hookEventName or top-level cwd,
+	// and TargetFile rather than Claude Code's file_path.
 	writeJSON(t, filepath.Join(e.data, optionsFile), `{"assistant_writes":true}`)
 	for _, tool := range []string{"write_file", "write_to_file", "edit_file", "replace_file_content"} {
 		if got := strings.TrimSpace(e.hook(t, asstWrite(tool, charter), now, nil)); got != agyAllowOutput {
 			t.Errorf("%s in assistant dir: got %q", tool, got)
+		}
+	}
+
+	// ACP additionalDirectories are extra workspace roots, not a new primary project.
+	// Persona's current-session supervision directory must not hide the assistant workspace.
+	supervisionDir := filepath.Join(e.agyDir, "persona-supervision", "34c13c41-220e-4c50-98c4-a2fa536c8f32")
+	if err := os.MkdirAll(supervisionDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []string{"write_file", "write_to_file", "edit_file", "replace_file_content"} {
+		req := asstWrite(tool, charter)
+		req["workspacePaths"] = []string{asstDir, supervisionDir}
+		if got := strings.TrimSpace(e.hook(t, req, now, nil)); got != agyAllowOutput {
+			t.Errorf("%s with Persona supervision workspace: got %q", tool, got)
+		}
+	}
+
+	// Lookalike directories for another conversation, outside agyDir, or at another path remain untrusted.
+	for _, extra := range []string{
+		filepath.Join(e.agyDir, "persona-supervision", "not-a-uuid"),
+		filepath.Join(e.agyDir, "persona-supervision", "00000000-0000-4000-8000-000000000001"),
+		filepath.Join(e.home, "persona-supervision", "34c13c41-220e-4c50-98c4-a2fa536c8f32"),
+		filepath.Join(e.agyDir, "other-data", "34c13c41-220e-4c50-98c4-a2fa536c8f32"),
+	} {
+		req := asstWrite("write_file", charter)
+		req["workspacePaths"] = []string{asstDir, extra}
+		if got := e.hook(t, req, now, nil); got != "" {
+			t.Errorf("untrusted workspace %s: got %q", extra, got)
 		}
 	}
 
@@ -484,6 +512,73 @@ func TestAgyAssistantWrites(t *testing.T) {
 	writeJSON(t, filepath.Join(e.agyDir, "settings.json"), `{"toolPermission":"request-review","permissions":{"ask":["write_file(~/.persona/**)"]}}`)
 	if got := e.hook(t, asstWrite("edit_file", charter), now, nil); got != "" {
 		t.Errorf("write_file ask rule on edit_file: got %q", got)
+	}
+}
+
+func TestAgyHookEventShapes(t *testing.T) {
+	e := newAgyTestEnv(t, "")
+	hooksFile := filepath.Join(e.gemini, "config", "hooks.json")
+	writeJSON(t, hooksFile, `{
+		"other-plugin": {
+			"PreInvocation": [{"type":"command","command":"before-model","timeout":5}],
+			"Stop": [{"type":"command","command":"on-stop","timeout":5}]
+		}
+	}`)
+	cmd := agyHookCommand("/opt/bin/"+currentExtensionID, e.gemini, e.data)
+	changed, err := installAgyHookWith(hooksFile, agyMatcherFor(true), cmd)
+	if err != nil || !changed {
+		t.Fatalf("installAgyHookWith: changed=%v err=%v", changed, err)
+	}
+	b, err := os.ReadFile(hooksFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(b, &top); err != nil {
+		t.Fatal(err)
+	}
+	var ours struct {
+		PreToolUse []map[string]json.RawMessage `json:"PreToolUse"`
+	}
+	if err := json.Unmarshal(top[currentExtensionID], &ours); err != nil || len(ours.PreToolUse) != 1 {
+		t.Fatalf("our PreToolUse groups: %+v, err=%v", ours.PreToolUse, err)
+	}
+	group := ours.PreToolUse[0]
+	if _, ok := group["command"]; ok {
+		t.Fatal("PreToolUse matcher group must not be a flat command handler")
+	}
+	var matcher string
+	if err := json.Unmarshal(group["matcher"], &matcher); err != nil || matcher != agyMatcherFor(true) {
+		t.Errorf("matcher=%q, err=%v", matcher, err)
+	}
+	var handlers []struct {
+		Type    string `json:"type"`
+		Command string `json:"command"`
+		Timeout int    `json:"timeout"`
+	}
+	if err := json.Unmarshal(group["hooks"], &handlers); err != nil || len(handlers) != 1 {
+		t.Fatalf("PreToolUse handlers: %+v, err=%v", handlers, err)
+	}
+	if h := handlers[0]; h.Type != "command" || h.Command != cmd || h.Timeout != hookTimeout {
+		t.Errorf("PreToolUse handler: %+v", h)
+	}
+
+	// Non-tool events intentionally use flat handlers; their shape is not the PreToolUse defect.
+	var other struct {
+		PreInvocation []map[string]json.RawMessage `json:"PreInvocation"`
+		Stop          []map[string]json.RawMessage `json:"Stop"`
+	}
+	if err := json.Unmarshal(top["other-plugin"], &other); err != nil {
+		t.Fatal(err)
+	}
+	for event, entries := range map[string][]map[string]json.RawMessage{"PreInvocation": other.PreInvocation, "Stop": other.Stop} {
+		if len(entries) != 1 || entries[0]["command"] == nil {
+			t.Errorf("%s flat handlers: %+v", event, entries)
+			continue
+		}
+		if entries[0]["hooks"] != nil || entries[0]["matcher"] != nil {
+			t.Errorf("%s unexpectedly changed to a matcher group: %+v", event, entries[0])
+		}
 	}
 }
 
