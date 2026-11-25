@@ -5,6 +5,11 @@
 - **The weekly report waits for the running overview.** A pass is recorded as tried when it starts, so the report
   took a running week's overview for a failed one and went out without its section (2026-W47). It now waits until
   the pass ends; a failed pass still does not hold it.
+- **The profile summary from the overview is synthesised.** After an overview pass the summary is written again with
+  the daily pass's one synthesis call, not left as the patterns strung together until the next daily pass.
+- **Recent highlights: only what the user is doing.** Only ⑥ entries of a doing or focus type (current work, focus,
+  goal) make them; a ⑤ line (a repository's status, a decision on a rule, a colleague's commitment) no longer does,
+  even in the user's own words.
 
 ## 0.2.0-beta.48 (pre-release)
 
