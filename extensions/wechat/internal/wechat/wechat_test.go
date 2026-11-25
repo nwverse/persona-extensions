@@ -95,10 +95,12 @@ type fakeILink struct {
 	requests []fakeRequest
 }
 
-// fakeAnswer is an HTTP status (200 when 0) and a JSON body (none when nil).
+// fakeAnswer is an HTTP status (200 when 0) and a JSON body (none when nil); hang answers nothing until the caller
+// gives up.
 type fakeAnswer struct {
 	status int
 	body   map[string]any
+	hang   bool
 }
 
 type fakeRequest struct{ Host, Path, Auth string }
@@ -140,6 +142,14 @@ func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 	if as := f.answers[r.URL.Path]; len(as) > 0 {
 		a := as[0]
 		f.answers[r.URL.Path] = as[1:]
+		if a.hang {
+			f.mu.Unlock()
+			select {
+			case <-r.Context().Done():
+			case <-time.After(10 * time.Second):
+			}
+			return
+		}
 		if a.status != 0 || a.body != nil {
 			switch r.URL.Path {
 			case "/ilink/bot/sendmessage":
@@ -805,9 +815,8 @@ func TestSendRetryKeepsTheClientID(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("the owner got %d copies: %+v", len(sent), sent)
 	}
-	if contentID("other", "text", 0, p.Text) == ids[0] || contentID(p.Ref, "text", 1, p.Text) == ids[0] ||
-		contentID(p.Ref, "text", 0, "另一个答案") == ids[0] {
-		t.Fatal("another ref, place or text must get another client_id")
+	if newSendIDs("other", []string{p.Text}, nil).parts[0] == ids[0] || newSendIDs(p.Ref, []string{"另一个答案"}, nil).parts[0] == ids[0] {
+		t.Fatal("another ref or text must get another client_id")
 	}
 }
 
@@ -1002,7 +1011,7 @@ func runResumeScenario(t *testing.T, r *rig, ref string, send func(wire.ChannelS
 		t.Fatalf("after the failure: %d sendmessage, %d getuploadurl, %d uploads", sends, urls, ups)
 	}
 	ids := newSendIDs(ref, splitText(p.Text), p.Images)
-	if pr, ok := r.progressOf(ref); !ok || len(pr.done) != 2 || !pr.done[ids.parts[0]] || !pr.done[ids.images[0]] ||
+	if pr, ok := r.progressOf(ref); !ok || pr.sum != ids.sum || len(pr.done) != 2 || !pr.done[ids.parts[0]] || !pr.done[ids.images[0]] ||
 		len(pr.skipped) != 0 || pr.uploadOf != ids.images[1] || pr.upload.Query != "" {
 		t.Fatalf("progress after the failure: %+v %v", pr, ok)
 	}
@@ -1046,9 +1055,9 @@ func TestProgramResumesAtTheFailedPicture(t *testing.T) {
 	})
 }
 
-// A ref sent again with other content: what WeChat confirmed of it is not sent again, and what is new goes under
-// client_ids of its own, so iLink does not take it for a repeat (a new picture in the place of a refused one, the same
-// number of pictures; a new text with fewer pieces).
+// A ref sent again with other content (the hub fetches an answer's pictures again when it sends the answer again) is
+// another message: it is sent again from the start, every piece under a new client_id, so iLink takes none of it for a
+// repeat of what was sent before. The progress kept for the old content is dropped.
 func TestSendOfChangedContent(t *testing.T) {
 	r := pictureSendRig(t)
 	ctx := context.Background()
@@ -1060,35 +1069,37 @@ func TestSendOfChangedContent(t *testing.T) {
 	if _, err := r.bot.Send(ctx, two); err == nil {
 		t.Fatal("the first send should fail")
 	}
-	sends, urls, ups := r.ilink.calls()
+	r.ilink.mu.Lock()
+	first := slices.Clone(r.ilink.clientIDs)
+	r.ilink.mu.Unlock()
 	other := two
-	other.Images = []wire.ChannelBlob{testPicture(1), testPicture(3)} // picture 2 replaced
+	other.Images = []wire.ChannelBlob{testPicture(1), testPicture(3)} // picture 2 replaced: as many pictures as before
+	before := r.tally()
 	if _, err := r.bot.Send(ctx, other); err != nil {
 		t.Fatal(err)
 	}
-	sends2, urls2, ups2 := r.ilink.calls()
-	if sends2-sends != 1 || urls2-urls != 1 || ups2-ups != 1 { // only the new picture
-		t.Fatalf("changed content: %d sendmessage, %d getuploadurl, %d uploads, want 1, 1, 1", sends2-sends, urls2-urls, ups2-ups)
+	if got := r.tally().minus(before); got != (tally{sends: 3, uploadURLs: 2, cdn: 2}) { // the text and both pictures again
+		t.Fatalf("changed content: calls %+v, want all of it sent again", got)
 	}
-	_, plain := r.ilink.sentPictures(t)
-	want := []wire.ChannelBlob{testPicture(1), testPicture(3)}
-	if len(plain) != 2 || len(r.ilink.texts()) != 1 {
-		t.Fatalf("iLink holds %d pictures and %d texts", len(plain), len(r.ilink.texts()))
-	}
-	for i, data := range plain {
-		if base64.StdEncoding.EncodeToString(data) != want[i].Data {
-			t.Fatalf("picture %d is not the one sent last", i+1)
+	r.ilink.mu.Lock()
+	again := slices.Clone(r.ilink.clientIDs[len(first):])
+	r.ilink.mu.Unlock()
+	for _, id := range again {
+		if slices.Contains(first, id) {
+			t.Fatalf("client_id %s of the old content is used for the new one", id)
 		}
 	}
-	oldIDs, newIDs := newSendIDs(ref, splitText(two.Text), two.Images), newSendIDs(ref, splitText(other.Text), other.Images)
-	if oldIDs.images[0] != newIDs.images[0] || oldIDs.images[1] == newIDs.images[1] || oldIDs.parts[0] != newIDs.parts[0] {
-		t.Fatal("the same content at the same place must keep its client_id, and other content must not")
+	_, plain := r.ilink.sentPictures(t)
+	texts := r.ilink.texts()
+	if len(plain) != 3 || !samePicture(plain[1], testPicture(1)) || !samePicture(plain[2], testPicture(3)) ||
+		len(texts) != 2 || texts[1].Text != "看图" {
+		t.Fatalf("iLink holds %d pictures and %d texts, want the new message whole after the old one's start", len(plain), len(texts))
 	}
 	if _, ok := r.progressOf(ref); ok {
 		t.Fatal("progress is kept after the send went through")
 	}
 
-	// A new text, in fewer pieces: its one piece goes; the picture WeChat has is not sent again.
+	// A new text, in fewer pieces: the new text and both pictures go.
 	long := wire.ChannelSendParams{Ref: "run-10:2", Text: strings.Repeat("answer-body-", 300), Kind: wire.ChannelSendKindAnswer,
 		Images: []wire.ChannelBlob{testPicture(4), testPicture(5)}}
 	r.ilink.mu.Lock()
@@ -1102,12 +1113,12 @@ func TestSendOfChangedContent(t *testing.T) {
 	}
 	short := long
 	short.Text = "short"
-	before, _, _ := r.ilink.calls()
+	before = r.tally()
 	if _, err := r.bot.Send(ctx, short); err != nil {
 		t.Fatal(err)
 	}
-	if after, _, _ := r.ilink.calls(); after-before != 2 { // the new piece and the picture not yet sent
-		t.Fatalf("changed text: %d sendmessage calls, want 2", after-before)
+	if got := r.tally().minus(before); got.sends != 3 { // the new piece and both pictures
+		t.Fatalf("changed text: %d sendmessage calls, want 3", got.sends)
 	}
 	if got := r.ilink.texts(); got[len(got)-1].Text != "short" {
 		t.Fatalf("the new text was not sent: %+v", got[len(got)-1])
@@ -1115,12 +1126,12 @@ func TestSendOfChangedContent(t *testing.T) {
 }
 
 // Progress is bounded: past progressMost refs the oldest is dropped (its send starts over); a ref kept again does not
-// take another place. What is kept is read for the pieces and pictures of the send at hand only.
+// take another place. What is kept for other content under a ref is dropped.
 func TestSendProgressKeepsTheLatestRefs(t *testing.T) {
 	b := New(Options{}, &memSecrets{})
 	ids := func(ref string) sendIDs { return newSendIDs(ref, []string{"text"}, []wire.ChannelBlob{testPicture(1)}) }
 	partDone := func(ref string) sendProgress {
-		return sendProgress{done: map[string]bool{ids(ref).parts[0]: true}}
+		return sendProgress{sum: ids(ref).sum, done: map[string]bool{ids(ref).parts[0]: true}}
 	}
 	for i := range progressMost + 1 {
 		b.keep("ref-"+strconv.Itoa(i), partDone("ref-"+strconv.Itoa(i)))
@@ -1141,11 +1152,12 @@ func TestSendProgressKeepsTheLatestRefs(t *testing.T) {
 	if pr := b.resume(newest, ids(newest)); len(pr.done) != 2 {
 		t.Fatalf("the newest ref: %+v", pr)
 	}
-	if pr := b.resume("ref-2", newSendIDs("ref-2", []string{"other text"}, nil)); len(pr.done) != 0 {
-		t.Fatalf("progress of other content: %+v", pr)
+	if pr := b.resume("ref-2", newSendIDs("ref-2", []string{"other text"}, nil)); len(pr.done) != 0 ||
+		len(b.progress) != progressMost-1 || len(b.progressOrder) != progressMost-1 {
+		t.Fatalf("progress of other content is kept: %+v, %d refs", pr, len(b.progress))
 	}
 	b.keep("", partDone(""))
-	if len(b.progress) != progressMost {
+	if len(b.progress) != progressMost-1 {
 		t.Fatal("progress kept without a ref")
 	}
 }

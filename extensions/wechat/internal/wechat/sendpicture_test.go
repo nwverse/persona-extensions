@@ -114,7 +114,7 @@ func TestSendSkipsAPictureWeChatRefuses(t *testing.T) {
 	r.ilink.mu.Lock()
 	last := r.ilink.clientIDs[len(r.ilink.clientIDs)-1]
 	r.ilink.mu.Unlock()
-	if last != ids.note(oneNotSent) {
+	if last != ids.note(1) {
 		t.Fatal("the note is not the last message")
 	}
 	if _, ok := r.progressOf(p.Ref); ok {
@@ -450,5 +450,60 @@ func TestUnbindForgetsSendProgress(t *testing.T) {
 	b.bound(t.Context(), ilink.Credentials{BotID: "bot-b", UserID: "account-b", Token: "token-b"})
 	if len(b.progress) != 0 || len(b.progressOrder) != 0 {
 		t.Fatalf("%d refs kept after binding another account", len(b.progress))
+	}
+}
+
+// A send still going at sendDeadline stops as a failure that may pass, well before the hub's 2-minute call timeout
+// and the upload's own 60 s; what it got is kept, and the hub's retry goes on from there.
+func TestSendStopsAtTheDeadline(t *testing.T) {
+	if sendDeadline <= 0 || sendDeadline > 2*time.Minute-15*time.Second {
+		t.Fatalf("sendDeadline %s leaves the hub's 2-minute call timeout too little room", sendDeadline)
+	}
+	r := pictureSendRig(t)
+	ctx := context.Background()
+	prev := sendDeadline
+	sendDeadline = 300 * time.Millisecond
+	t.Cleanup(func() { sendDeadline = prev })
+	logs := captureLog(t)
+	r.ilink.answer("/c2c/upload", fakeAnswer{}, fakeAnswer{hang: true}) // picture 2's upload never answers
+	p := wire.ChannelSendParams{Ref: "run-19:1", ReplyTo: "message:80", Text: "两张图", Kind: wire.ChannelSendKindAnswer,
+		Images: []wire.ChannelBlob{testPicture(1), testPicture(2)}}
+	started := time.Now()
+	_, err := r.bot.Send(ctx, p)
+	took := time.Since(started)
+	var sf sendFailed
+	if !errors.As(err, &sf) {
+		t.Fatalf("a send out of time: %v", err)
+	}
+	if took > 5*time.Second {
+		t.Fatalf("the send took %s: it did not stop at its deadline", took)
+	}
+	ids := newSendIDs(p.Ref, splitText(p.Text), p.Images)
+	if pr, ok := r.progressOf(p.Ref); !ok || len(pr.done) != 2 || !pr.done[ids.parts[0]] || !pr.done[ids.images[0]] {
+		t.Fatalf("progress %+v %v: want the text and picture 1", pr, ok)
+	}
+	var picture2 string
+	for _, l := range sendLogLines(logs.String()) {
+		if strings.Contains(l, "image=2/2") {
+			picture2 = l
+		}
+	}
+	if !strings.Contains(picture2, "result=failure") || !strings.Contains(picture2, "error_type=timeout") {
+		t.Fatalf("picture 2's log %q", picture2)
+	}
+	if !strings.Contains(logs.String(), `ref="run-19:1" stopped: out of time (300ms at most)`) {
+		t.Fatalf("no deadline log: %q", logs.String())
+	}
+
+	sendDeadline = prev
+	before := r.tally()
+	if _, err := r.bot.Send(ctx, p); err != nil { // the hub sends the ref again
+		t.Fatal(err)
+	}
+	if got := r.tally().minus(before); got != (tally{sends: 1, uploadURLs: 1, cdn: 1}) {
+		t.Fatalf("the retry made %+v calls, want picture 2 only", got)
+	}
+	if pics, _ := r.ilink.sentPictures(t); len(pics) != 2 || len(r.ilink.texts()) != 1 {
+		t.Fatalf("iLink holds %d pictures and %d texts", len(pics), len(r.ilink.texts()))
 	}
 }

@@ -109,10 +109,12 @@ func (c *Client) putCDN(ctx context.Context, target string, cipher []byte) (stri
 	req.Header.Set("Content-Type", "application/octet-stream")
 	resp, err := c.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
+		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded): // the caller's deadline, reported as call reports it
+			return "", &Error{Code: CodeTimeout, Msg: "picture upload timed out", Retry: true}
+		case ctx.Err() != nil:
 			return "", &Error{Code: CodeAborted, Msg: "picture upload cancelled", Retry: true}
-		}
-		if errors.Is(cctx.Err(), context.DeadlineExceeded) {
+		case errors.Is(cctx.Err(), context.DeadlineExceeded):
 			return "", &Error{Code: CodeTimeout, Msg: "picture upload timed out", Retry: true}
 		}
 		return "", &Error{Code: CodeNetwork, Msg: "picture upload failed", Retry: true, err: err}

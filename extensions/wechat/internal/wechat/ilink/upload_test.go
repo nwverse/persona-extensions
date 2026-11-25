@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"testing"
+	"time"
 )
 
 // cdnRequest is a CDN upload the fake got.
@@ -207,5 +208,36 @@ func TestPictureFailuresThatMayPass(t *testing.T) {
 	f.send = httpStatus(http.StatusBadGateway)
 	if _, err := c.SendImage(context.Background(), "owner@im", "CT", "cid", up); CodeOf(err) != CodeHTTP || !Retryable(err) {
 		t.Errorf("a picture send's server error: %v", err)
+	}
+}
+
+// An upload still going when the caller's deadline passes is a timeout, as a call's is; a cancelled one is aborted.
+func TestUploadImageOutOfTime(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		ctx  func() (context.Context, context.CancelFunc)
+		code Code
+	}{
+		{name: "past the deadline", code: CodeTimeout, ctx: func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), 100*time.Millisecond)
+		}},
+		{name: "cancelled", code: CodeAborted, ctx: func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			time.AfterFunc(100*time.Millisecond, cancel)
+			return ctx, cancel
+		}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newUploadFake(t) // one each: the slow CDN answer outlasts the call
+			f.cdn = func(w http.ResponseWriter) bool {
+				time.Sleep(300 * time.Millisecond)
+				return false
+			}
+			ctx, cancel := tt.ctx()
+			defer cancel()
+			if _, err := f.client("BT", "").UploadImage(ctx, "owner@im", []byte("picture")); CodeOf(err) != tt.code || !Retryable(err) {
+				t.Errorf("%v, want %s", err, tt.code)
+			}
+		})
 	}
 }
