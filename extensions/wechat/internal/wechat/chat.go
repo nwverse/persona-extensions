@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"log"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,8 @@ import (
 const (
 	// imagesMost is how many pictures one message brings the hub (docs/extensions/channels.md "Protocol").
 	imagesMost = 4
+	// messageMediaMost is the hub's raw image + file budget for one message, before Base64 reaches the process RPC.
+	messageMediaMost = ilink.MaxFile
 	// typingEvery is how often "typing…" is shown again while the hub keeps asking for it.
 	typingEvery = 5 * time.Second
 	maxSeen     = 200
@@ -161,9 +164,10 @@ func clientID(ref string, i int) string {
 }
 
 // compose is the owner's message as the hub takes it: the text (a voice message's transcript), the quote, the
-// pictures; files and videos are only named, the bot cannot pass them on yet.
+// pictures, and downloaded documents and videos as files.
 func (b *Bot) compose(ctx context.Context, c *ilink.Client, m ilink.Message) wire.ChannelMessage {
 	out := wire.ChannelMessage{ID: m.ID, Text: strings.TrimSpace(m.Text), Quote: m.Quote}
+	total := 0
 	for _, md := range m.Media {
 		switch md.Kind {
 		case ilink.MediaImage:
@@ -177,25 +181,62 @@ func (b *Bot) compose(ctx context.Context, c *ilink.Client, m ilink.Message) wir
 				out.Unsupported = append(out.Unsupported, "一张没下载下来的图片") // i18n-ignore: what the assistant reads
 				continue
 			}
+			if len(data) > messageMediaMost-total {
+				out.Unsupported = append(out.Unsupported, "一张太大的图片") // i18n-ignore: what the assistant reads
+				continue
+			}
 			out.Images = append(out.Images, wire.ChannelBlob{Mime: http.DetectContentType(data), Data: base64.StdEncoding.EncodeToString(data)})
+			total += len(data)
 		case ilink.MediaVoice:
 			if out.Text == "" {
 				out.Unsupported = append(out.Unsupported, "一段没有转写的语音") // i18n-ignore: what the assistant reads
 			}
-		case ilink.MediaFile:
-			name := md.FileName
-			if name == "" {
-				name = "一个文件" // i18n-ignore: what the assistant reads
+		case ilink.MediaFile, ilink.MediaVideo:
+			name, unsupported := md.FileName, "一段视频" // i18n-ignore: what the assistant reads
+			if md.Kind == ilink.MediaVideo {
+				name = "video.mp4"
+			} else if name == "" {
+				name, unsupported = "file", "一个文件" // i18n-ignore: what the assistant reads
 			} else {
-				name = "文件「" + name + "」" // i18n-ignore: what the assistant reads
+				unsupported = "文件「" + name + "」" // i18n-ignore: what the assistant reads
 			}
-			out.Unsupported = append(out.Unsupported, name)
-		case ilink.MediaVideo:
-			out.Unsupported = append(out.Unsupported, "一段视频") // i18n-ignore: what the assistant reads
+			if md.Size > int64(messageMediaMost-total) {
+				out.Unsupported = append(out.Unsupported, unsupported)
+				continue
+			}
+			data, err := c.Download(ctx, md)
+			if err != nil {
+				log.Printf("wechat: downloading a file: %v", err)
+				out.Unsupported = append(out.Unsupported, unsupported)
+				continue
+			}
+			if len(data) > messageMediaMost-total {
+				out.Unsupported = append(out.Unsupported, unsupported)
+				continue
+			}
+			out.Files = append(out.Files, wire.ChannelBlob{Name: name, Mime: fileMIME(md, data), Data: base64.StdEncoding.EncodeToString(data)})
+			total += len(data)
 		}
 	}
 	out.Unsupported = slices.Compact(out.Unsupported)
 	return out
+}
+
+// fileMIME keeps the filename's document type; unknown extensions use the decrypted bytes. iLink videos are MP4.
+func fileMIME(md ilink.Media, data []byte) string {
+	if md.Kind == ilink.MediaVideo {
+		return "video/mp4"
+	}
+	switch strings.ToLower(filepath.Ext(md.FileName)) {
+	case ".pdf":
+		return "application/pdf"
+	case ".doc":
+		return "application/msword"
+	case ".docx":
+		return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+	default:
+		return http.DetectContentType(data)
+	}
 }
 
 // typing is the owner's chat showing that the bot is writing.

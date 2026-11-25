@@ -16,8 +16,12 @@ import (
 // cdnOrigin serves media that has an encrypted query but no full URL.
 const cdnOrigin = "https://novac2c.cdn.weixin.qq.com"
 
-// MaxMedia is the largest media Download accepts (decrypted).
-const MaxMedia = 8 << 20
+const (
+	// MaxMedia is the largest picture or voice Download accepts (decrypted).
+	MaxMedia = 8 << 20
+	// MaxFile is the largest file or video Download accepts, and the hub's raw budget for one message's attachments.
+	MaxFile = 40 << 20
+)
 
 var hex32 = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
 
@@ -45,14 +49,25 @@ func (c *Client) Download(ctx context.Context, m Media) ([]byte, error) {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, &Error{Code: CodeHTTP, Msg: "media download answered HTTP " + resp.Status, Retry: resp.StatusCode >= 500}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxMedia+aes.BlockSize+1))
+	limit := MaxMedia
+	if m.Kind == MediaFile || m.Kind == MediaVideo {
+		limit = MaxFile
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit+aes.BlockSize+1)))
 	if err != nil {
 		return nil, &Error{Code: CodeNetwork, Msg: "media download failed", Retry: true, err: err}
 	}
-	if len(data) > MaxMedia+aes.BlockSize {
+	if len(data) > limit+aes.BlockSize {
 		return nil, &Error{Code: CodeBadResponse, Msg: "media too large"}
 	}
-	return DecryptECB(data, key)
+	plain, err := DecryptECB(data, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(plain) > limit { // PKCS#7 can hide up to fifteen extra bytes inside the same final cipher block.
+		return nil, &Error{Code: CodeBadResponse, Msg: "media too large"}
+	}
+	return plain, nil
 }
 
 func mediaURL(m Media) (string, error) {

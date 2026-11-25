@@ -62,16 +62,16 @@ func (s *memSecrets) state(t *testing.T) state {
 
 // fakeILink is iLink: QR statuses as scripted, messages as queued, what the bot sends recorded.
 type fakeILink struct {
-	t        *testing.T
-	srv      *httptest.Server
-	mu       sync.Mutex
-	statuses []map[string]any
-	queue    []map[string]any
-	seq      int
-	replaced bool
-	sent     []sentText
-	typing   []bool
-	image    []byte
+	t         *testing.T
+	srv       *httptest.Server
+	mu        sync.Mutex
+	statuses  []map[string]any
+	queue     []map[string]any
+	seq       int
+	replaced  bool
+	sent      []sentText
+	typing    []bool
+	downloads map[string][]byte
 	// failSends: how many sendmessage calls to keep and then answer HTTP 500 (the answer lost on the way back).
 	failSends int
 	// failedSend signals that a scripted HTTP 500 response has been written, before the retry wait.
@@ -153,8 +153,13 @@ func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 	case "/ilink/bot/sendtyping":
 		f.typing = append(f.typing, body["status"] == float64(1))
 	case "/c2c/download":
+		data := f.downloads[r.URL.Query().Get("encrypted_query_param")]
 		f.mu.Unlock()
-		_, _ = w.Write(f.image)
+		if data == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = w.Write(data)
 		return
 	}
 	f.mu.Unlock()
@@ -406,23 +411,118 @@ func TestTokenReplacedUnbinds(t *testing.T) {
 	}
 }
 
-// A picture goes with the message (decrypted); a file is named, the bot cannot pass it on.
-func TestPictureGoesWithTheMessage(t *testing.T) {
+// A picture, documents and a video go with the message, all downloaded and decrypted. Videos are files to the hub.
+func TestMediaGoesWithTheMessage(t *testing.T) {
 	r := newRig(t, true)
 	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
 	png := append([]byte("\x89PNG\r\n\x1a\n"), make([]byte, 64)...)
-	enc, _ := ilink.EncryptECB(png, key)
+	pdf := append([]byte("%PDF-1.7\n"), []byte("synthetic PDF bytes")...)
+	word := []byte("synthetic Word document bytes")
+	video := append([]byte{0, 0, 0, 24}, []byte("ftypmp42synthetic video bytes")...)
+	downloads := map[string][]byte{}
+	for query, plain := range map[string][]byte{"I": png, "F": pdf, "W": word, "V": video} {
+		enc, err := ilink.EncryptECB(plain, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		downloads[query] = enc
+	}
 	r.ilink.mu.Lock()
-	r.ilink.image = enc
+	r.ilink.downloads = downloads
 	r.ilink.mu.Unlock()
-	r.ilink.say(owner, "", map[string]any{"type": 2, "image_item": map[string]any{"aeskey": hex.EncodeToString(key),
-		"media": map[string]any{"encrypt_query_param": "Q"}}},
-		map[string]any{"type": 4, "file_item": map[string]any{"file_name": "合同.pdf", "media": map[string]any{"encrypt_query_param": "F"}}})
+	key64 := base64.StdEncoding.EncodeToString(key)
+	r.ilink.say(owner, "",
+		map[string]any{"type": 2, "image_item": map[string]any{"aeskey": hex.EncodeToString(key),
+			"media": map[string]any{"encrypt_query_param": "I"}}},
+		map[string]any{"type": 4, "file_item": map[string]any{"file_name": "report.pdf", "len": strconv.Itoa(len(pdf)),
+			"media": map[string]any{"encrypt_query_param": "F", "aes_key": key64}}},
+		map[string]any{"type": 4, "file_item": map[string]any{"file_name": "notes.doc",
+			"media": map[string]any{"encrypt_query_param": "W", "aes_key": key64}}},
+		map[string]any{"type": 5, "video_item": map[string]any{
+			"media": map[string]any{"encrypt_query_param": "V", "aes_key": key64}}})
 	eventually(t, "the message at the hub", func() bool { return len(r.hub.got()) == 1 })
 	m := r.hub.got()[0]
-	if len(m.Images) != 1 || m.Images[0].Mime != "image/png" || m.Images[0].Data != base64.StdEncoding.EncodeToString(png) ||
-		len(m.Unsupported) != 1 || m.Unsupported[0] != "文件「合同.pdf」" {
-		t.Fatalf("handed %+v", m)
+	if len(m.Images) != 1 || m.Images[0].Mime != "image/png" || m.Images[0].Data != base64.StdEncoding.EncodeToString(png) {
+		t.Fatalf("image handed %+v", m.Images)
+	}
+	if len(m.Files) != 3 || len(m.Unsupported) != 0 {
+		t.Fatalf("handed files=%+v unsupported=%v", m.Files, m.Unsupported)
+	}
+	for i, want := range []struct {
+		name, mime string
+		plain      []byte
+	}{{"report.pdf", "application/pdf", pdf}, {"notes.doc", "application/msword", word}, {"video.mp4", "video/mp4", video}} {
+		got := m.Files[i]
+		if got.Name != want.name || got.Mime != want.mime || got.Data != base64.StdEncoding.EncodeToString(want.plain) {
+			t.Errorf("file %d handed %+v, want name=%q mime=%q plaintext", i, got, want.name, want.mime)
+		}
+	}
+}
+
+// One failed download does not hide the other attachments; a wholly failed file still reaches the hub as unsupported.
+func TestFailedMediaDownloadKeepsTheRest(t *testing.T) {
+	r := newRig(t, true)
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	pdf := []byte("%PDF-1.7\nsynthetic PDF bytes")
+	enc, err := ilink.EncryptECB(pdf, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.ilink.mu.Lock()
+	r.ilink.downloads = map[string][]byte{"F": enc}
+	r.ilink.mu.Unlock()
+	key64 := base64.StdEncoding.EncodeToString(key)
+	r.ilink.say(owner, "",
+		map[string]any{"type": 4, "file_item": map[string]any{"file_name": "report.pdf",
+			"media": map[string]any{"encrypt_query_param": "F", "aes_key": key64}}},
+		map[string]any{"type": 5, "video_item": map[string]any{
+			"media": map[string]any{"encrypt_query_param": "missing", "aes_key": key64}}})
+	eventually(t, "the mixed message at the hub", func() bool { return len(r.hub.got()) == 1 })
+	m := r.hub.got()[0]
+	if len(m.Files) != 1 || m.Files[0].Name != "report.pdf" || len(m.Unsupported) != 1 || m.Unsupported[0] != "一段视频" {
+		t.Fatalf("mixed message handed %+v", m)
+	}
+
+	r.ilink.say(owner, "", map[string]any{"type": 4, "file_item": map[string]any{"file_name": "broken.pdf",
+		"media": map[string]any{"encrypt_query_param": "broken"}}})
+	eventually(t, "the failed file at the hub", func() bool { return len(r.hub.got()) == 2 })
+	m = r.hub.got()[1]
+	if len(m.Files) != 0 || len(m.Unsupported) != 1 || m.Unsupported[0] != "文件「broken.pdf」" {
+		t.Fatalf("failed file handed %+v", m)
+	}
+}
+
+// The raw attachment budget applies before Base64 reaches the process RPC. Unknown sizes are checked after download;
+// a declared oversize attachment is skipped without downloading it.
+func TestMessageMediaBudget(t *testing.T) {
+	f := newFakeILink(t)
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	plain := make([]byte, 8<<20)
+	copy(plain, "\x89PNG\r\n\x1a\n")
+	enc, err := ilink.EncryptECB(plain, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.downloads = map[string][]byte{"F": enc}
+	f.mu.Unlock()
+	c, err := ilink.New(ilink.Options{BaseURL: "https://ilinkai.weixin.qq.com", Token: "BT", Agent: "Persona/test",
+		HTTP: &http.Client{Transport: f}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key64 := base64.StdEncoding.EncodeToString(key)
+	media := make([]ilink.Media, 8)
+	media[0] = ilink.Media{Kind: ilink.MediaImage, Query: "F", KeyHex: hex.EncodeToString(key)}
+	for i := 0; i < 7; i++ {
+		media[i+1] = ilink.Media{Kind: ilink.MediaFile, Query: "F", KeyB64: key64,
+			FileName: fmt.Sprintf("%d.pdf", i), Size: int64(len(plain))}
+	}
+	media[5].Size = 0 // the fifth file is still downloaded, then rejected by the decrypted-size guard
+	got := (&Bot{}).compose(context.Background(), c, ilink.Message{Media: media})
+	if len(got.Images) != 1 || len(got.Files) != 4 || len(got.Unsupported) != 3 ||
+		got.Unsupported[0] != "文件「4.pdf」" || got.Unsupported[1] != "文件「5.pdf」" || got.Unsupported[2] != "文件「6.pdf」" {
+		t.Fatalf("budget handed %d images, %d files and %d unsupported, want 1, 4 and 3", len(got.Images), len(got.Files), len(got.Unsupported))
 	}
 }
 
