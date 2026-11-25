@@ -168,7 +168,7 @@ func TestDelete(t *testing.T) {
 }
 
 func TestSpikeCountsDistinctDaysNotMinuteBuckets(t *testing.T) {
-	buildHour := func(date string, perMin int64) store.Day {
+	buildHour := func(date, machine string, perMin int64) store.Day {
 		base, _ := time.ParseInLocation("2006-01-02 15", date+" 09", loc)
 		var buckets []store.Bucket
 		for m := 0; m < 10; m++ {
@@ -186,15 +186,19 @@ func TestSpikeCountsDistinctDaysNotMinuteBuckets(t *testing.T) {
 				Input:  0,
 			})
 		}
-		return store.Day{Date: date, Machine: "m-a", Buckets: buckets}
+		return store.Day{Date: date, Machine: machine, Buckets: buckets}
 	}
 
-	// Steady usage: 2,000 tokens/hour (10 x 200) on 3 prior days AND today -> ratio is 1x, never a spike.
+	// Steady usage across two machines: 2,000 tokens/hour total (10x100 per machine) on 3 prior days AND today -> 1x, no spike.
 	steady := &store.State{Format: 1, Days: []store.Day{
-		buildHour("2026-11-10", 200),
-		buildHour("2026-11-11", 200),
-		buildHour("2026-11-12", 200),
-		buildHour("2026-11-13", 200),
+		buildHour("2026-11-10", "m-a", 100),
+		buildHour("2026-11-10", "m-b", 100),
+		buildHour("2026-11-11", "m-a", 100),
+		buildHour("2026-11-11", "m-b", 100),
+		buildHour("2026-11-12", "m-a", 100),
+		buildHour("2026-11-12", "m-b", 100),
+		buildHour("2026-11-13", "m-a", 100),
+		buildHour("2026-11-13", "m-b", 100),
 	}}
 	f := Open("")
 	got, err := f.Alerts(steady, nowAt("2026-11-13 09:30"), loc)
@@ -207,10 +211,13 @@ func TestSpikeCountsDistinctDaysNotMinuteBuckets(t *testing.T) {
 
 	// Real 6x spike: 12,000 tokens/hour today vs 2,000 tokens/hour mean -> should report 6 倍, not 60+ 倍.
 	spiked := &store.State{Format: 1, Days: []store.Day{
-		buildHour("2026-11-10", 200),
-		buildHour("2026-11-11", 200),
-		buildHour("2026-11-12", 200),
-		buildHour("2026-11-13", 1200),
+		buildHour("2026-11-10", "m-a", 100),
+		buildHour("2026-11-10", "m-b", 100),
+		buildHour("2026-11-11", "m-a", 100),
+		buildHour("2026-11-11", "m-b", 100),
+		buildHour("2026-11-12", "m-a", 100),
+		buildHour("2026-11-12", "m-b", 100),
+		buildHour("2026-11-13", "m-a", 1200),
 	}}
 	g := Open("")
 	got, err = g.Alerts(spiked, nowAt("2026-11-13 09:30"), loc)

@@ -102,7 +102,9 @@ func (a *App) renderState(ctx context.Context, ps pageState) (*wire.View, error)
 // Act answers a button.
 func (a *App) Act(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, error) {
 	var ps pageState
-	_ = r.DecodeState(&ps)
+	if err := r.DecodeState(&ps); err != nil {
+		ps = pageState{}
+	}
 	switch r.Action {
 	case "tab":
 		ps.Tab = r.Values["tab"]
@@ -119,6 +121,7 @@ func (a *App) Act(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, er
 		}
 		return &wire.ActionResult{View: v}, nil
 	case "filter":
+		ps.Tab = tabDetail
 		if v, ok := r.Values["machine"]; ok {
 			ps.Machine = v
 		}
@@ -340,9 +343,10 @@ func (a *App) detail(st *store.State, ps pageState, now time.Time, loc *time.Loc
 		segmented("range", "days", strconv.Itoa(ps.days()), []wire.Choice{
 			{Value: "7", Title: "7 天"}, {Value: "30", Title: "30 天"}, {Value: "90", Title: "90 天"},
 		}),
-		choice("filter", "machine", "机器", ps.Machine, machines),
-		choice("filter", "model", "模型", ps.Model, models),
-		choice("filter", "launcher", "启动器", ps.Launcher, append([]string{""}, launchers...)),
+		choice("machine", "机器", ps.Machine, machines),
+		choice("model", "模型", ps.Model, models),
+		choice("launcher", "启动器", ps.Launcher, append([]string{""}, launchers...)),
+		{Type: wire.ComponentButton, Title: "应用筛选", Action: &wire.Action{ID: "filter", Submit: true}},
 	}
 	if len(rows) == 0 {
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: "这个范围里没有用量。"})
@@ -361,7 +365,7 @@ func (a *App) detail(st *store.State, ps pageState, now time.Time, loc *time.Loc
 }
 
 // choice is a drop-down that filters one dimension. The empty value keeps all of them.
-func choice(action, name, title, value string, options []string) wire.Component {
+func choice(name, title, value string, options []string) wire.Component {
 	choices := []wire.Choice{{Value: "", Title: "全部" + title}}
 	for _, o := range options {
 		if o == "" {
@@ -371,7 +375,6 @@ func choice(action, name, title, value string, options []string) wire.Component 
 	}
 	return wire.Component{
 		Type: wire.ComponentField, Kind: "choice", Name: name, Label: title, Value: value, Choices: choices,
-		Action: &wire.Action{ID: action, Submit: true},
 	}
 }
 

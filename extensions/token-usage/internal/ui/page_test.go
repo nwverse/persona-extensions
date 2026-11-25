@@ -206,6 +206,18 @@ func TestActReturnsUpdatedViewsForNavigationFiltersAndBudgets(t *testing.T) {
 	if res.View.Tabs == nil || res.View.Tabs.Value != tabDetail {
 		t.Fatalf("tab view Tabs.Value = %#v, want %q", res.View.Tabs, tabDetail)
 	}
+	hasFilterSubmit := false
+	for _, it := range res.View.Sections[0].Items {
+		if it.Type == wire.ComponentField && it.Action != nil {
+			t.Fatalf("choice field %q should not attach non-schema Action", it.Name)
+		}
+		if it.Type == wire.ComponentButton && it.Action != nil && it.Action.ID == "filter" && it.Action.Submit {
+			hasFilterSubmit = true
+		}
+	}
+	if !hasFilterSubmit {
+		t.Fatalf("detail view missing submit button for filter action")
+	}
 
 	// Change range on detail tab -> preserves tab and updates days.
 	res, err = a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
