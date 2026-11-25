@@ -478,11 +478,11 @@ func openTask(t *Task) *wire.Action {
 }
 
 func cancelAction(t *Task) wire.Action {
-	return wire.Action{ID: "cancel:" + t.ID, Confirm: fmt.Sprintf("取消任务「%s」？", t.Title)}
+	return wire.Action{ID: "cancel:" + t.ID, Confirm: fmt.Sprintf("取消任务「%s」？", cmpOr(firstLinePreview(t.Title, 40), t.ID))}
 }
 
 func retryAction(t *Task) wire.Action {
-	return wire.Action{ID: "retry:" + t.ID, Confirm: fmt.Sprintf("重新排队「%s」？", t.Title)}
+	return wire.Action{ID: "retry:" + t.ID, Confirm: fmt.Sprintf("重新排队「%s」？", cmpOr(firstLinePreview(t.Title, 40), t.ID))}
 }
 
 func activeRow(t *Task, machines map[string]string, loc *time.Location) wire.Component {
@@ -516,7 +516,7 @@ func activeRow(t *Task, machines map[string]string, loc *time.Location) wire.Com
 		subtitle = strings.Join(meta, " · ")
 	}
 	return wire.Component{
-		Type: wire.ComponentRow, Key: "active-" + t.ID, Title: t.Title, Subtitle: subtitle, Badge: badge,
+		Type: wire.ComponentRow, Key: "active-" + t.ID, Title: cmpOr(truncateRunes(t.Title, detailTextMost), t.ID), Subtitle: truncateRunes(subtitle, detailTextMost), Badge: badge,
 		Action:  openTask(t),
 		Actions: []wire.RowAction{{Title: "取消任务", Role: wire.ButtonRoleDestructive, Swipe: true, Action: cancelAction(t)}},
 	}
@@ -552,6 +552,6 @@ func terminalRow(t *Task, loc *time.Location) wire.Component {
 	if t.FinishedAt != nil {
 		meta = append(meta, t.FinishedAt.In(loc).Format("01-02 15:04"))
 	}
-	return wire.Component{Type: wire.ComponentRow, Key: "term-" + t.ID, Title: t.Title, Subtitle: strings.Join(meta, " · "), Badge: badge,
+	return wire.Component{Type: wire.ComponentRow, Key: "term-" + t.ID, Title: cmpOr(truncateRunes(t.Title, detailTextMost), t.ID), Subtitle: truncateRunes(strings.Join(meta, " · "), detailTextMost), Badge: badge,
 		Action: openTask(t), Actions: actions}
 }

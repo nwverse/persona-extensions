@@ -150,11 +150,17 @@ func BuildOutcomeDecision(t *Task) (OutcomeDecisionPayload, bool) {
 }
 
 func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
 	runes := []rune(strings.TrimSpace(s))
 	if len(runes) <= max {
 		return string(runes)
 	}
-	return string(runes[:max]) + "…"
+	if max == 1 {
+		return string(runes[:1])
+	}
+	return string(runes[:max-1]) + "…"
 }
 
 // DecisionWriter posts idempotent outcome decisions to the Persona Hub using the `todos.write` scope.
