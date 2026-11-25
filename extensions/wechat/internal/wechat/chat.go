@@ -58,7 +58,7 @@ func (b *Bot) handle(ctx context.Context, c *ilink.Client, creds ilink.Credentia
 		b.stranger(ctx, c, m)
 		return
 	}
-	msg := b.compose(ctx, c, m)
+	msg := b.compose(ctx, c, creds.UserID, m)
 	if empty(msg) {
 		return
 	}
@@ -104,9 +104,10 @@ func (b *Bot) send(ctx context.Context, c *ilink.Client, peer, contextToken, rep
 	for i, part := range parts {
 		started := time.Now()
 		var err error
+		var serverID string
 		id := clientID(ref, i) // the same for every attempt: a retry after a lost answer must not post it again
 		for attempt := range 3 {
-			if err = c.SendText(ctx, peer, contextToken, id, part); err == nil || !ilink.Retryable(err) {
+			if serverID, err = c.SendTextWithID(ctx, peer, contextToken, id, part); err == nil || !ilink.Retryable(err) {
 				break
 			}
 			if !sleep(ctx, time.Duration(attempt+1)*sendRetryWait) {
@@ -122,8 +123,21 @@ func (b *Bot) send(ctx context.Context, c *ilink.Client, peer, contextToken, rep
 		}
 		log.Printf("wechat: send reply_to=%q ref=%q part=%d/%d result=success duration=%s",
 			replyTo, ref, i+1, len(parts), took)
+		b.rememberOutbound(peer, serverID, part)
 	}
 	return true
+}
+
+func (b *Bot) rememberOutbound(peer, serverID, text string) {
+	if b.quotes == nil || serverID == "" {
+		return
+	}
+	b.mu.Lock()
+	owner := b.st.Creds != nil && b.st.Creds.UserID == peer
+	b.mu.Unlock()
+	if owner {
+		b.quotes.put(quoteCacheID(peer, serverID), text, nil)
+	}
 }
 
 // Send is the hub's channel.send: text to the owner, in the chat of their latest message. Before the owner has
@@ -165,8 +179,26 @@ func clientID(ref string, i int) string {
 
 // compose is the owner's message as the hub takes it: the text (a voice message's transcript), the quote, the
 // pictures, and downloaded documents and videos as files.
-func (b *Bot) compose(ctx context.Context, c *ilink.Client, m ilink.Message) wire.ChannelMessage {
+func (b *Bot) compose(ctx context.Context, c *ilink.Client, account string, m ilink.Message) wire.ChannelMessage {
 	out := wire.ChannelMessage{ID: m.ID, Text: strings.TrimSpace(m.Text), Quote: m.Quote}
+	if b.quotes != nil {
+		media := make([]quoteMedia, 0, len(m.Media))
+		for _, md := range m.Media {
+			media = append(media, quoteMedia{Kind: string(md.Kind), Name: md.FileName, Size: md.Size})
+		}
+		b.quotes.put(quoteCacheID(account, m.SvrID), out.Text, media)
+		restored := b.quotes.lookup(quoteCacheID(account, m.QuoteID))
+		if restored != "" && m.Partial != nil {
+			if selected, ok := ilink.ResolvePartialQuote(restored, *m.Partial); ok {
+				restored = selected
+			} else {
+				restored = ""
+			}
+		}
+		if restored != "" {
+			out.Quote = joinQuote(out.Quote, restored)
+		}
+	}
 	total := 0
 	for _, md := range m.Media {
 		switch md.Kind {
@@ -220,6 +252,27 @@ func (b *Bot) compose(ctx context.Context, c *ilink.Client, m ilink.Message) wir
 	}
 	out.Unsupported = slices.Compact(out.Unsupported)
 	return out
+}
+
+func quoteCacheID(account, serverID string) string {
+	if strings.TrimSpace(serverID) == "" {
+		return ""
+	}
+	digest := sha256.Sum256([]byte(account))
+	return hex.EncodeToString(digest[:]) + "\x00" + serverID
+}
+
+func joinQuote(inline, restored string) string {
+	switch {
+	case restored == "":
+		return inline
+	case inline == "":
+		return restored
+	case inline == restored:
+		return inline
+	default:
+		return inline + "\n" + restored
+	}
 }
 
 // fileMIME keeps the filename's document type; unknown extensions use the decrypted bytes. iLink videos are MP4.

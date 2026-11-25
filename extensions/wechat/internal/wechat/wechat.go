@@ -48,6 +48,8 @@ type Options struct {
 	// Lang is the user's language as the hub said it at this start (en, zh-Hans, ja): what the bot writes for people
 	// reads in it (zh-Hans when not said).
 	Lang string
+	// DataDir is the extension-owned local directory for the quote index (empty means memory-only).
+	DataDir string
 	// NewClient makes the iLink client for a base URL and token (ilink.New when nil).
 	NewClient func(base, token string) (*ilink.Client, error)
 	Now       func() time.Time
@@ -67,6 +69,7 @@ type Bot struct {
 	wake    chan struct{}
 	typing  *typing // the owner's chat shows the bot writing (the hub says while a turn goes on)
 	replied map[string]time.Time
+	quotes  *quoteStore
 }
 
 // state is what is kept in the hub (sealed): never logged.
@@ -91,6 +94,7 @@ func New(opt Options, secrets Secrets) *Bot {
 		opt.Now = time.Now
 	}
 	return &Bot{opt: opt, secrets: secrets, wake: make(chan struct{}, 1), replied: map[string]time.Time{},
+		quotes: openQuoteStore(opt.DataDir, opt.Now),
 		status: wire.ConnectorStatus{State: wire.ConnectorStateNotSignedIn, Error: t(langOf(opt.Lang), "wechat.not_bound")}}
 }
 
@@ -279,6 +283,9 @@ func (b *Bot) unbind(ctx context.Context, token string) {
 	b.st.Creds, b.st.Cursor, b.st.Context = nil, "", ""
 	b.typing = nil
 	b.saveLocked(ctx)
+	if b.quotes != nil {
+		b.quotes.reset()
+	}
 }
 
 func rememberToken(old []string, token string) []string {

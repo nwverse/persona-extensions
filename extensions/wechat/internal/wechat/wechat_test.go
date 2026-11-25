@@ -74,6 +74,8 @@ type fakeILink struct {
 	downloads map[string][]byte
 	// failSends: how many sendmessage calls to keep and then answer HTTP 500 (the answer lost on the way back).
 	failSends int
+	// sendID is the server message_id answered for a successful send.
+	sendID string
 	// failedSend signals that a scripted HTTP 500 response has been written, before the retry wait.
 	failedSend chan struct{}
 	clientIDs  []string        // every sendmessage's client_id, repeated ones too
@@ -147,6 +149,9 @@ func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 				failed <- struct{}{}
 			}
 			return
+		}
+		if f.sendID != "" {
+			out["message_id"] = f.sendID
 		}
 	case "/ilink/bot/getconfig":
 		out["typing_ticket"] = "TT"
@@ -242,7 +247,7 @@ func newRig(t *testing.T, bound bool) *rig {
 		data, _ := json.Marshal(st)
 		r.secrets.data = data
 	}
-	r.bot = New(Options{Hub: r.hub, Agent: "Persona/test", Now: r.clock.now,
+	r.bot = New(Options{Hub: r.hub, Agent: "Persona/test", Now: r.clock.now, DataDir: t.TempDir(),
 		NewClient: func(base, token string) (*ilink.Client, error) {
 			return ilink.New(ilink.Options{BaseURL: base, Token: token, Agent: "Persona/test", HTTP: &http.Client{Transport: r.ilink}})
 		}}, r.secrets)
@@ -519,7 +524,7 @@ func TestMessageMediaBudget(t *testing.T) {
 			FileName: fmt.Sprintf("%d.pdf", i), Size: int64(len(plain))}
 	}
 	media[5].Size = 0 // the fifth file is still downloaded, then rejected by the decrypted-size guard
-	got := (&Bot{}).compose(context.Background(), c, ilink.Message{Media: media})
+	got := (&Bot{}).compose(context.Background(), c, owner, ilink.Message{Media: media})
 	if len(got.Images) != 1 || len(got.Files) != 4 || len(got.Unsupported) != 3 ||
 		got.Unsupported[0] != "文件「4.pdf」" || got.Unsupported[1] != "文件「5.pdf」" || got.Unsupported[2] != "文件「6.pdf」" {
 		t.Fatalf("budget handed %d images, %d files and %d unsupported, want 1, 4 and 3", len(got.Images), len(got.Files), len(got.Unsupported))

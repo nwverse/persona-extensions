@@ -255,6 +255,48 @@ func TestGetUpdates(t *testing.T) {
 	}
 }
 
+func TestDecodeSvrIDAndIncompleteQuote(t *testing.T) {
+	m := wireMessage{MessageID: json.RawMessage(`9007199254740993`), FromUserID: "owner@im", ContextToken: "CT", Items: []wireItem{{
+		Type: itemText, TextItem: &struct {
+			Text string `json:"text"`
+		}{Text: "reply"},
+	}}}
+	m.Items[0].RefMsg = &struct {
+		Title       string           `json:"title"`
+		MessageItem *wireItem        `json:"message_item"`
+		SvrID       json.RawMessage  `json:"svr_id"`
+		PartialText *wirePartialText `json:"partial_text"`
+	}{Title: "title", SvrID: json.RawMessage(`"4242"`)}
+	got, ok := decode(m)
+	if !ok || got.SvrID != "9007199254740993" || got.QuoteID != "4242" || got.Quote != "title" {
+		t.Fatalf("decoded ID-only quote = %+v, %v", got, ok)
+	}
+	m.Items[0].RefMsg.MessageItem = &wireItem{Type: itemText, TextItem: &struct {
+		Text string `json:"text"`
+	}{Text: "inline original"}}
+	got, ok = decode(m)
+	if !ok || got.QuoteID != "" || got.Quote != "title\ninline original" {
+		t.Fatalf("decoded inline quote = %+v, %v", got, ok)
+	}
+	m.Items[0].RefMsg.MessageItem = nil
+	m.Items[0].RefMsg.SvrID = json.RawMessage(`9007199254740994`)
+	got, ok = decode(m)
+	if !ok || got.QuoteID != "9007199254740994" {
+		t.Fatalf("decoded numeric svr_id = %+v, %v", got, ok)
+	}
+}
+
+func TestSendTextWithIDKeepsLargeServerID(t *testing.T) {
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ret":0,"message_id":18446744073709551615}`))
+	})
+	id, err := f.client("BT", "").SendTextWithID(context.Background(), "owner@im", "CT", "cid", "回答")
+	if err != nil || id != "18446744073709551615" {
+		t.Fatalf("server id = %q, error = %v", id, err)
+	}
+}
+
 func TestGetUpdatesTimeoutKeepsCursor(t *testing.T) {
 	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
 		writeJSON(w, map[string]any{"ret": -1})

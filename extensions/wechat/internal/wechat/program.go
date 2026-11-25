@@ -78,7 +78,7 @@ func (p *program) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[str
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.bot == nil {
-		opt := Options{Hub: channelHub{hub}, Agent: p.agent, Lang: in.Hub.Locale}
+		opt := Options{Hub: channelHub{hub}, Agent: p.agent, Lang: in.Hub.Locale, DataDir: in.Info().DataDir}
 		if p.options != nil {
 			p.options(&opt)
 		}

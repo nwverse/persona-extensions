@@ -10,6 +10,8 @@ Install **WeChat** from Persona's public extension marketplace, then open **Sett
 
 Only the person who bound the bot can send messages into Persona. Other senders receive a rate-limited explanation and never enter the hub conversation. Text, pictures, documents, videos and WeChat's voice transcript come in; videos are delivered as files. Pictures and files share a 40 MiB per-message budget; excess attachments are described as unsupported. Plain-text replies are chunked at 3,500 characters; the channel supports questions, push messages and typing indicators.
 
+When a quoted message contains only `svr_id`, the extension restores its text or media summary from `quote-index.json` in the extension data directory; `partial_text` selections are resolved against the cached text. The index holds up to 2,048 entries and 4 MiB of indexed data: sent and received text is retained for 30 days, while media kind, filename and size are retained for 7 days. Startup and message activity remove expired and oldest entries; the file is replaced atomically with mode `0600`. An absent, unreadable or corrupt index leaves the main message and the existing quote fallback unchanged.
+
 Conversation routing, `/new` and turn execution belong to the hub, not this extension. See [Persona's channel documentation](https://github.com/nwverse/persona/blob/main/docs/extensions/channels.md).
 
 ## Upgrading from the built-in
@@ -27,6 +29,8 @@ A hub with the built-in must support registry handoff before installing this sam
 
 The only network grant is `*.weixin.qq.com`, matching the previous iLink/media-CDN allowlist. API and redirect origins are restricted to HTTPS Tencent hosts. Tokens and message contents are not logged. Polling, outbound retries, message deduplication and stable send refs retain the built-in implementation.
 
+The quote index contains message text and media metadata in plaintext on local disk, but no tokens, CDN URLs, decryption keys or downloaded media. Entries are scoped to the bound account; logging out or changing accounts clears the index.
+
 The implementation was moved from Persona's MIT-licensed Go plugin. Its iLink wire behavior follows Tencent's MIT-licensed `openclaw-weixin` v2.4.6; the Go client does not embed Tencent's plugin runtime. [License notices](assistant/THIRD_PARTY_NOTICES.md) ship in the package.
 
 ## Development
@@ -36,6 +40,6 @@ go -C extensions/wechat test -race ./...
 scripts/package.sh wechat
 ```
 
-The tests cover QR binding and verification steps, owner-only forwarding, media, typing, revoked tokens, reply retries and duplicate refs, official SDK connector/channel conformance, manifest/runtime consistency, all three locale catalogs, and loading a literal synthetic legacy credential blob without requesting a QR.
+The tests cover QR binding and verification steps, owner-only forwarding, media, typing, revoked tokens, reply retries and duplicate refs, quote restoration, retention, eviction, corruption and concurrent access, official SDK connector/channel conformance, manifest/runtime consistency, all three locale catalogs, and loading a literal synthetic legacy credential blob without requesting a QR.
 
 Local tests are not production acceptance: inspect the installed hub's QR/status UI and verify single-poller ownership, credential reuse and one test-conversation round trip separately. Never test against the user's primary conversation.
