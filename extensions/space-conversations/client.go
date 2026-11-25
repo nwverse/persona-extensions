@@ -141,8 +141,8 @@ func (c *Client) Create(ctx context.Context, title, slug, description string, ca
 	return out, err
 }
 
-func (c *Client) Archive(ctx context.Context, track Track) error {
-	return c.call(ctx, http.MethodPut, "/api/v1/assistant/tracks/"+url.PathEscape(track.Slug), map[string]any{"revision": track.Revision, "archived": !track.Archived}, nil)
+func (c *Client) Archive(ctx context.Context, track Track, archived bool) error {
+	return c.call(ctx, http.MethodPut, "/api/v1/assistant/tracks/"+url.PathEscape(track.Slug), map[string]any{"revision": track.Revision, "archived": archived}, nil)
 }
 
 func (c *Client) Start(ctx context.Context, slug, prompt string) (string, string, error) {

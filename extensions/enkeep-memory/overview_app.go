@@ -20,6 +20,7 @@ import (
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/memsrc"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -102,9 +103,16 @@ func (a *app) overviewDue(week string) bool {
 	return a.ov != nil && a.ov.Snapshot().Weeks[week] == nil && !a.attempted(kindOverview+"@"+week)
 }
 
-// overviewSettled: the week's overview ran, or was tried and failed, or is off: the weekly report need not wait.
+// overviewSettled: the week's overview ran, or was tried and is no longer running (it failed), or is off: the weekly
+// report need not wait. A try is recorded when the pass starts, so a running pass is not settled.
 func (a *app) overviewSettled(week string) bool {
-	return a.ov == nil || a.ov.Snapshot().Weeks[week] != nil || a.attempted(kindOverview+"@"+week)
+	if a.ov == nil || a.ov.Snapshot().Weeks[week] != nil {
+		return true
+	}
+	a.mu.Lock()
+	running := a.running == kindOverview+" "+week
+	a.mu.Unlock()
+	return !running && a.attempted(kindOverview+"@"+week)
 }
 
 // monthDue is the month to consolidate on the week starting monday, once the week's overview is settled: on the
@@ -158,7 +166,7 @@ func (a *app) runOverview(ctx context.Context, kind, period string) error {
 }
 
 // commit writes a pass's result and settles it against the newest snapshot at once (marks made while it ran).
-func (a *app) commit(n *overview.State) error {
+func (a *app) commit(ctx context.Context, n *overview.State) error {
 	err := a.ov.Update(func(s *overview.State) (bool, error) {
 		*s = *n
 		return true, nil
@@ -168,14 +176,15 @@ func (a *app) commit(n *overview.State) error {
 	}
 	if st, err := a.snapshotState(); err == nil {
 		a.overviewRefresh(st)
-		a.overviewProfile(st)
+		a.overviewProfile(ctx, st)
 	}
 	return nil
 }
 
-// overviewProfile rebuilds the profile summary from the new patterns, without a model and only when its basis changed;
-// the next daily pass polishes it with its own call as before. It reads the snapshot, never the curated state.
-func (a *app) overviewProfile(st *store.State) {
+// overviewProfile writes the profile summary again from the new patterns when its basis changed, with the same one
+// synthesis call the daily pass makes (a deterministic summary strings the patterns together; it is kept only when the
+// model fails). It reads the snapshot, never the curated state.
+func (a *app) overviewProfile(ctx context.Context, st *store.State) {
 	if prev, err := profile.Load(a.c.St.Dir); err != nil || prev == nil {
 		return
 	}
@@ -183,7 +192,8 @@ func (a *app) overviewProfile(st *store.State) {
 	if lang == "" {
 		lang = a.c.Lang
 	}
-	if _, err := profile.Refresh(context.Background(), st, a.c.St.Dir, profile.Options{Provider: a.c.ProfileInput, Lang: lang, SkipModel: true}); err != nil {
+	o := profile.Options{Provider: a.c.ProfileInput, Model: a.c.Model, Tier: model.Small, Lang: lang, Now: a.c.Now, Logf: a.logf}
+	if _, err := profile.Refresh(ctx, st, a.c.St.Dir, o); err != nil {
 		a.logf("enkeep-memory: overview: profile summary: %v", err)
 	}
 }
@@ -216,7 +226,7 @@ func (a *app) overviewWeek(ctx context.Context, r *overview.Runner, st *store.St
 		run.Error = err.Error()
 	}
 	n.Weeks[week] = run
-	if cerr := a.commit(n); cerr != nil {
+	if cerr := a.commit(ctx, n); cerr != nil {
 		return cerr
 	}
 	a.logf("enkeep-memory: overview %s: %d call(s), %d pattern(s) made or moved, %v", week, run.Calls, len(run.Changed), run.Counts)
@@ -238,7 +248,7 @@ func (a *app) overviewMonth(ctx context.Context, r *overview.Runner, st *store.S
 		run.Error = err.Error()
 	}
 	n.Months[month] = run
-	if cerr := a.commit(n); cerr != nil {
+	if cerr := a.commit(ctx, n); cerr != nil {
 		return cerr
 	}
 	lang := a.c.Cfg.Language
