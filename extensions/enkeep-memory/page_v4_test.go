@@ -14,6 +14,7 @@ import (
 	exits "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/hubapi"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -442,14 +443,28 @@ func TestWeeklyReport(t *testing.T) {
 	if len(h.sent) != 1 {
 		t.Fatalf("sent %d", len(h.sent))
 	}
+	// The push is the short summary (the hub refuses a body over 1000 characters); the full text is on the page.
 	body := h.sent[0]
-	for _, want := range []string{"week 2026-W46", "1 new in effect", "选项要写全称", "not measurable", "How the people cards are used"} {
+	for _, want := range []string{"week 2026-W46", "1 new in effect", "Periodic overview"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("the report does not say %q: %s", want, body)
+			t.Errorf("the summary does not say %q: %s", want, body)
 		}
+	}
+	if _, sum, _ := strings.Cut(body, "\n"); len([]rune(sum)) > overview.SummaryMost {
+		t.Errorf("summary of %d characters", len([]rune(sum)))
 	}
 	if strings.Contains(body, "新生效") {
 		t.Errorf("not in the target language: %s", body)
+	}
+	full := overview.ReportIn(a.c.St.Dir, "weekly", "2026-W46")
+	for _, want := range []string{"week 2026-W46", "1 new in effect", "选项要写全称", "not measurable", "How the people cards are used", "Cross-event overview"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("the full report does not say %q: %s", want, full)
+		}
+	}
+	_, v := render(t, a, page{Tab: tabStart, Open: "ovr:weekly:2026-W46"}, "en")
+	if !strings.Contains(v, "选项要写全称") {
+		t.Errorf("the report page does not show the full text: %s", v)
 	}
 	// Looked at once a week.
 	if err := a.weeklyTick(context.Background(), next.Add(time.Hour)); err != nil || len(h.sent) != 1 {

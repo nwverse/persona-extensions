@@ -120,7 +120,7 @@ func (c *Curator) Publish() {
 	if ps, err := profile.Load(c.St.Dir); err == nil && ps != nil {
 		s.Profile = ps
 	} else {
-		s.Profile = profile.Build(st, c.now(), c.language())
+		s.Profile = profile.BuildWith(st, c.ProfileInput, c.now(), c.language())
 	}
 	var days []string
 	for d := range c.St.S.Funnel {
@@ -141,4 +141,7 @@ func (c *Curator) Publish() {
 	c.Live.mu.Lock()
 	c.Live.snap = s
 	c.Live.mu.Unlock()
+	if c.OnPublish != nil {
+		c.OnPublish(s.State)
+	}
 }

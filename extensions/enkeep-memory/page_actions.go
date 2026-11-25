@@ -88,7 +88,7 @@ func (a *app) v4Action(ctx context.Context, s *page, act string, values map[stri
 		if lang == "" {
 			lang = c.Lang
 		}
-		_, err = profile.Refresh(ctx, c.St.S, c.St.Dir, profile.Options{Lang: lang, SkipModel: true, Force: true})
+		_, err = profile.Refresh(ctx, c.St.S, c.St.Dir, profile.Options{Provider: c.ProfileInput, Lang: lang, SkipModel: true, Force: true})
 		c.St.Unlock()
 		if err == nil {
 			toast = t.s("已按当前稳定条目刷新侧写汇总", "Profile summary refreshed from settled entries")
@@ -334,7 +334,7 @@ func (a *app) withdraw(ctx context.Context) {
 		profLang = c.Lang
 	}
 	if prev, err := profile.Load(c.St.Dir); err == nil && prev != nil {
-		_, _ = profile.Refresh(ctx, s, c.St.Dir, profile.Options{Lang: profLang, SkipModel: true, Force: true})
+		_, _ = profile.Refresh(ctx, s, c.St.Dir, profile.Options{Provider: c.ProfileInput, Lang: profLang, SkipModel: true, Force: true})
 	}
 	in := exitIndex(c.St.Dir)
 	if len(in) == 0 {

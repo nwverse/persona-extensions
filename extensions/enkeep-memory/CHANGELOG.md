@@ -1,5 +1,47 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.48 (pre-release)
+
+The periodic cross-event overview (docs/periodic-overview.md): a layer above the daily curation that finds the same
+way of deciding across projects, people, sources and weeks, checks it against counter-examples, and keeps it in its
+own file. The daily curation and `state.json` are unchanged.
+
+- **Weekly synthesis (L1).** After the week's curation pass, each of the six facets' classes and actions with
+  evidence in the four weeks before are projected by time, project, people and source kind and synthesised into
+  patterns (at most two calls per facet). A pattern is used only when code counts at least two scenes (projects or
+  source kinds), three independent quoted unit·days and two ISO weeks, a capable stranger's default that differs, and
+  a counter-example search (likely contradicting entries over sixty days, judged by a model) that does not overturn
+  it: an exception makes it `scoped`, recent counter-examples at 25% or more make it `drifting` (not used).
+- **Monthly consolidation (L2).** On the first Monday of a month: quiet but often-seen classes looked at again, alike
+  patterns merged, the counter-search again for every pattern through the gate; drifting two months running →
+  retired, project-bound and quiet for ninety days → `era_closed`. A principle is no longer dropped by the 40-day
+  dormancy alone.
+- **Light refresh (L3).** On every published snapshot, without a model: a pattern whose evidence the user marked
+  wrong, deleted or forgot is counted again and leaves the exits at once; marking it right brings it back.
+- **Exit.** Used patterns are answered by `memory.entries` beside the curated entries, connector and contribution
+  ids unchanged: `ov:pattern:<id>` standing, rank 950–985; a pattern resting on any categorised evidence or a
+  restricted space as `ov:cat:<category>:<id>`, never standing, rank 900, with every category and the space.
+- **Weekly report.** The push is a summary of at most 300 characters (the hub refuses a body over 1000, which is why
+  the 2026-W47 report was not sent); the full report, with the overview's section, is on the new start-tab page
+  Periodic overview, with the monthly ones.
+- **Forward check and spot check.** Before each weekly synthesis, the patterns kept so far predict the week's real
+  choices (two options, scored by code) against the scattered entries in as many characters and against no memory.
+  `enkeep_overview_run` also runs a backtest (patterns from before a week only) and a model's blind spot check kept
+  for the user to go over.
+- **Tools.** `enkeep_overview_status` (read) and `enkeep_overview_run` (write: weekly, monthly, backtest, audit, or
+  sending a week's report again).
+- **Models.** The overview's calls name their own chain (`model.Request.Models`): Claude only, a configured long or
+  short model of another family is not used for it. Within the shared limit (four at once).
+- **Profile summary.** `OverviewBackedProvider` (`internal/overview`) feeds the six-facet summary from the used
+  patterns first; a facet with a general pattern no longer lists the scattered entries it was made from, a facet
+  with none falls back to the settled entries. The synthesis writes each facet as a coherent description built from
+  the patterns, not a few entries strung together (summary version 2, so every summary is written again).
+- **Recent highlights are the user's own.** Only ⑥ entries and ⑤ lines in the user's own words with no one else's
+  make them, and the model drops any item about what someone else did, arranged or is pushing.
+- **One `memory.entries` entry per facet.** `profile:<facet>` carries the facet's description alone, with its
+  subjects, and is recalled on its own (not standing: `profile:overview` is the standing one).
+- **`page` command.** Also draws the profile summary, the periodic overview and the latest weekly report.
+
 ## 0.2.0-beta.47 (pre-release)
 
 Fix View schema validation failures (HTTP 502) on subpages with large data sets:

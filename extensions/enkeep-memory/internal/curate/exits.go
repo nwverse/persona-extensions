@@ -60,12 +60,13 @@ func (c *Curator) afterDaily(ctx context.Context, m model.Model, day string, run
 // refreshProfile updates profile-summary.json after each daily pass. Never fails the daily run on model errors.
 func (c *Curator) refreshProfile(ctx context.Context, m model.Model, day string, run *store.Run) {
 	sum, err := profile.Refresh(ctx, c.St.S, c.St.Dir, profile.Options{
-		Model: m,
-		Tier:  tier(c.Cfg.DailyTier),
-		Lang:  c.language(),
-		Day:   day,
-		Now:   c.now,
-		Logf:  c.logf,
+		Provider: c.ProfileInput,
+		Model:    m,
+		Tier:     tier(c.Cfg.DailyTier),
+		Lang:     c.language(),
+		Day:      day,
+		Now:      c.now,
+		Logf:     c.logf,
 	})
 	if err != nil {
 		c.logf("profile summary %s: %v", day, err)

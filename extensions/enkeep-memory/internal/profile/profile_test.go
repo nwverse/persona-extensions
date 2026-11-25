@@ -249,3 +249,32 @@ func TestBuildWithCustomProvider(t *testing.T) {
 		t.Fatalf("unexpected overview: %q", sum.Overview)
 	}
 }
+
+// Recent highlights are the user's own: a world line resting on a colleague's words, or about a person, never makes
+// them; one in the user's own words does. A model answer replaces them with the ones it kept about the user.
+func TestRecentOnlyOwn(t *testing.T) {
+	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	st := sampleState()
+	ev := func(who string) []entry.Evidence {
+		return []entry.Evidence{{Source: "S1", Ref: "chat/c1", Day: "2026-11-23", Who: who, Role: "user", Quote: "q"}}
+	}
+	st.Entries["w-colleague"] = &entry.Entry{ID: "w-colleague", Facet: entry.World, Grain: entry.Action,
+		Text: "colleague-a 约了周四的分工会", Status: entry.Stable, Count: 2, Kinds: []string{"S1"}, Last: "2026-11-23",
+		Tagged: true, Origin: entry.Behavior, Evidence: ev("person:p2")}
+	st.Entries["w-rel"] = &entry.Entry{ID: "w-rel", Facet: entry.World, Grain: entry.Action, Subject: "person:p3",
+		Predicate: "owns", Text: "colleague-b 在推动扩量", Status: entry.Stable, Count: 2, Kinds: []string{"S1"},
+		Last: "2026-11-23", Tagged: true, Origin: entry.Behavior, Evidence: ev(entry.WhoSelf)}
+	st.Entries["w-own"] = &entry.Entry{ID: "w-own", Facet: entry.World, Grain: entry.Action,
+		Text: "在给 project-y 写迁移方案", Status: entry.Stable, Count: 2, Kinds: []string{"S1"}, Last: "2026-11-23",
+		Tagged: true, Origin: entry.Behavior, Evidence: ev(entry.WhoSelf)}
+	sum := Build(st, now, "zh-Hans")
+	joined := strings.Join(sum.Recent, "|")
+	if strings.Contains(joined, "colleague") || !strings.Contains(joined, "project-y") || !strings.Contains(joined, "稳定性治理") {
+		t.Fatalf("recent = %v", sum.Recent)
+	}
+	fm := &fakeModel{resp: `{"overview":"o","sections":{"judgement":"j"},"recent":["在写 project-y 的迁移方案"]}`}
+	out, err := Refresh(context.Background(), st, t.TempDir(), Options{Model: fm, Lang: "zh-Hans", Now: func() time.Time { return now }})
+	if err != nil || len(out.Recent) != 1 || out.Recent[0] != "在写 project-y 的迁移方案" {
+		t.Fatalf("%v %+v", err, out.Recent)
+	}
+}

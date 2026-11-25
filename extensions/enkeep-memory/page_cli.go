@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"os"
 	"path/filepath"
 	"time"
@@ -47,6 +48,10 @@ func pageCmd(args []string) error {
 		return err
 	}
 	a := &app{c: &curate.Curator{St: st, Cfg: curate.Defaults(), Loc: loc, Live: &curate.Live{}}, exitDir: *dataDir, hubLoc: loc}
+	a.openOverview(*stateDir) // the overview's patterns, the profile summary they feed, the saved reports
+	st.Lock()
+	a.c.Publish()
+	st.Unlock()
 	day := *today
 	if day == "" {
 		day = time.Now().In(loc).Format("2006-01-02")
@@ -180,6 +185,11 @@ func drawAll(a *app, today string) (map[string]*wire.View, map[string]any) {
 	}
 	if longestRun != "" {
 		pages["run"] = page{Tab: tabReports, Open: longestRun}
+	}
+	pages["profile"] = page{Tab: tabStart, Open: "profile"}
+	pages["overview"] = page{Tab: tabStart, Open: "overview"}
+	if ws := overview.ReportsIn(a.c.St.Dir, "weekly"); len(ws) > 0 {
+		pages["overview-weekly"] = page{Tab: tabStart, Open: "ovr:weekly:" + ws[0]}
 	}
 	views := map[string]*wire.View{}
 	var bad []string

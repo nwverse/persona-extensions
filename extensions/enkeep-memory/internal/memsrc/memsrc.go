@@ -72,13 +72,27 @@ var (
 	spaceRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 )
 
-// item is a pooled entry (either a curated state entry or a profile summary entry) with its order key.
+// item is a pooled entry with its order key: a curated entry (e), or one made elsewhere in the extension (x): the profile summary's or the overview's patterns.
 type item struct {
 	e        *entry.Entry
-	syn      *Entry
+	x        *Entry
 	standing bool
 	rank     int
 	last     string
+}
+
+// Extra is an entry made elsewhere in the extension (the periodic overview's patterns, internal/overview), answered
+// beside the curated ones in the same order: Last is its newest evidence day.
+type Extra struct {
+	Entry Entry
+	Last  string
+}
+
+func (it item) id() string {
+	if it.x != nil {
+		return it.x.ID
+	}
+	return it.e.ID
 }
 
 // key is the cursor: the last answered entry's place in the order.
@@ -87,13 +101,6 @@ type key struct {
 	R int    `json:"r"`
 	L string `json:"l"`
 	I string `json:"i"`
-}
-
-func (it item) id() string {
-	if it.syn != nil {
-		return it.syn.ID
-	}
-	return it.e.ID
 }
 
 func (it item) key() key { return key{it.standing, it.rank, it.last, it.id()} }
@@ -368,12 +375,17 @@ type Counts struct{ Entries, Active, Standing, Backfilled int }
 
 // Page answers one memory.entries page of st. The order is standing first, then rank, then newest; after is the
 // last answered entry's place, so pages stay consistent while entries come and go between them.
-func Page(st *store.State, p Params) (Result, Counts, error) {
-	return PageWithProfile(st, nil, p)
+func Page(st *store.State, p Params) (Result, Counts, error) { return PageWith(st, nil, nil, p) }
+
+// PageWithProfile is Page with the user profile summary's entries.
+func PageWithProfile(st *store.State, sum *profile.Summary, p Params) (Result, Counts, error) {
+	return PageWith(st, sum, nil, p)
 }
 
-// PageWithProfile answers one memory.entries page of st together with the user profile summary entries when present.
-func PageWithProfile(st *store.State, sum *profile.Summary, p Params) (Result, Counts, error) {
+// PageWith is Page with the profile summary's entries and extras answered among the curated entries. An extra whose
+// id, facet or space the protocol would refuse, or whose text is empty or taken, is left out; its text, categories and
+// subjects are cut to the protocol's bounds.
+func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (Result, Counts, error) {
 	var from *key
 	if p.After != "" {
 		b, err := base64.RawURLEncoding.DecodeString(p.After)
@@ -406,10 +418,43 @@ func PageWithProfile(st *store.State, sum *profile.Summary, p Params) (Result, C
 	for _, pit := range profileItems(sum) {
 		all = append(all, pit)
 		n.Entries++
-		if pit.syn.Status == "active" {
+		if pit.x.Status == "active" {
 			n.Active++
 		}
 		if pit.standing {
+			n.Standing++
+		}
+	}
+	for _, x := range extras {
+		e := x.Entry
+		if !idRe.MatchString(e.ID) || strings.TrimSpace(e.Text) == "" || st.Entries[e.ID] != nil || strings.HasPrefix(e.ID, "profile:") {
+			continue
+		}
+		e.Text = clip(strings.TrimSpace(e.Text), MaxText)
+		if !facetRe.MatchString(e.Facet) {
+			e.Facet = ""
+		}
+		if !spaceRe.MatchString(e.OriginSpace) {
+			e.OriginSpace = ""
+		}
+		e.Categories = e.Categories[:min(len(e.Categories), MaxCats)]
+		var subj []string
+		for _, s := range e.Subjects {
+			if s = strings.TrimSpace(s); s != "" && len(subj) < MaxSubjects {
+				subj = append(subj, clip(s, MaxSubject))
+			}
+		}
+		e.Subjects = subj
+		e.Rank = min(max(e.Rank, 0), 1000)
+		if e.Status == "" {
+			e.Status = "active"
+		}
+		all = append(all, item{x: &e, standing: e.Standing, rank: e.Rank, last: x.Last})
+		n.Entries++
+		if e.Status == "active" {
+			n.Active++
+		}
+		if e.Standing {
 			n.Standing++
 		}
 	}
@@ -471,7 +516,7 @@ func profileItems(sum *profile.Summary) []item {
 			Rank:     995,
 			Subjects: []string{"用户侧写", "我是怎样的人", "关于我", "profile", "summary"},
 		}
-		out = append(out, item{syn: &e, standing: e.Standing, rank: e.Rank, last: day})
+		out = append(out, item{x: &e, standing: e.Standing, rank: e.Rank, last: day})
 	}
 	facetKeywords := map[entry.Facet][]string{
 		entry.Interaction: {"用户侧写", "和AI交互", "偏好", "规矩", "interaction"},
@@ -497,19 +542,23 @@ func profileItems(sum *profile.Summary) []item {
 		if !idRe.MatchString(id) {
 			continue
 		}
+		// One entry per facet, recalled on its own: the section's synthesized description; the points joined only when
+		// there is none (no model yet).
+		text := strings.TrimSpace(sec.Summary)
+		if text == "" {
+			var parts []string
+			for i, pt := range sec.Points {
+				if i >= 5 {
+					break
+				}
+				parts = append(parts, strings.TrimRight(strings.TrimSpace(pt.Text), "。.;；"))
+			}
+			text = strings.Join(parts, "；") + "。"
+		}
 		var b strings.Builder
 		b.WriteString(facetTitles[sec.Facet])
 		b.WriteString("：")
-		if strings.TrimSpace(sec.Summary) != "" {
-			b.WriteString(strings.TrimSpace(sec.Summary))
-		}
-		for i, pt := range sec.Points {
-			if i >= 5 {
-				break
-			}
-			b.WriteString(" - ")
-			b.WriteString(pt.Text)
-		}
+		b.WriteString(text)
 		subjs := append([]string(nil), facetKeywords[sec.Facet]...)
 		for _, s := range sec.Subjects {
 			if len(subjs) >= MaxSubjects {
@@ -524,11 +573,11 @@ func profileItems(sum *profile.Summary) []item {
 			Text:     clip(b.String(), MaxText),
 			Facet:    string(sec.Facet),
 			Status:   "active",
-			Standing: true,
+			Standing: false, // the overview entry is the standing one; each facet comes in by its subjects
 			Rank:     990,
 			Subjects: subjs,
 		}
-		out = append(out, item{syn: &e, standing: e.Standing, rank: e.Rank, last: day})
+		out = append(out, item{x: &e, standing: e.Standing, rank: e.Rank, last: day})
 	}
 	for _, sens := range sum.Sensitive {
 		if len(sens.Points) == 0 || sens.Category == "" {
@@ -558,7 +607,7 @@ func profileItems(sum *profile.Summary) []item {
 		if spaceRe.MatchString(sens.OriginSpace) {
 			e.OriginSpace = sens.OriginSpace
 		}
-		out = append(out, item{syn: &e, standing: e.Standing, rank: e.Rank, last: day})
+		out = append(out, item{x: &e, standing: e.Standing, rank: e.Rank, last: day})
 	}
 	return out
 }
@@ -566,8 +615,8 @@ func profileItems(sum *profile.Summary) []item {
 // entryOf is what the protocol carries of an entry, with its categories and space (Tags). A space slug the protocol
 // would refuse is left out; the entry's categories still grade it.
 func entryOf(st *store.State, it item) Entry {
-	if it.syn != nil {
-		return *it.syn
+	if it.x != nil {
+		return *it.x
 	}
 	e := it.e
 	x := Entry{ID: e.ID, Text: clip(strings.TrimSpace(recall.Line(e)), MaxText), Status: Status(e), Standing: it.standing,

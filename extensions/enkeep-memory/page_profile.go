@@ -20,7 +20,7 @@ func (a *app) profileSnapshot(st *store.State) *profile.Summary {
 	if lang == "" {
 		lang = a.c.Lang
 	}
-	return profile.Build(st, time.Now(), lang)
+	return profile.BuildWith(st, a.c.ProfileInput, time.Now(), lang)
 }
 
 // profileCard is the entry row on the Start tab opening the user profile summary subpage.
@@ -51,7 +51,7 @@ func (a *app) profileCard(t tr, st *store.State) wire.Section {
 // profilePage renders the mobile-friendly user profile summary subpage (Open: "profile").
 func (a *app) profilePage(t tr, st *store.State, sum *profile.Summary) *wire.View {
 	if sum == nil {
-		sum = profile.Build(st, time.Now(), a.c.Lang)
+		sum = profile.BuildWith(st, a.c.ProfileInput, time.Now(), a.c.Lang)
 	}
 	v := &wire.View{Title: t.s("用户侧写", "Profile summary")}
 

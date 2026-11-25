@@ -261,8 +261,10 @@ func TestPageWithProfile(t *testing.T) {
 	if strings.Contains(ov.Text, "runs three times") {
 		t.Errorf("profile:overview leaked sensitive text: %s", ov.Text)
 	}
-	if _, ok := byID["profile:interaction"]; !ok {
-		t.Errorf("missing profile:interaction in %v", ids(r))
+	// Each facet is an entry of its own, recalled by its subjects (not standing: the overview is), its text the
+	// section's description rather than the points strung after it.
+	if pi, ok := byID["profile:interaction"]; !ok || pi.Standing || strings.Contains(pi.Text, " - ") || len(pi.Subjects) == 0 {
+		t.Errorf("profile:interaction %+v in %v", pi, ids(r))
 	}
 	hp, ok := byID["profile:cat:health"]
 	if !ok {
@@ -292,4 +294,32 @@ func TestPageWithProfile(t *testing.T) {
 
 func timeNowFixture() time.Time {
 	return time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+}
+
+// Extras (the overview's patterns) are answered among the curated entries in the same order; one the protocol would
+// refuse is left out, and one clashing with a curated id never replaces it.
+func TestPageWithExtras(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{}}
+	extras := []Extra{
+		{Entry: Entry{ID: "ov:pattern:aa", Text: "a pattern", Facet: "judgement", Standing: true, Rank: 960}, Last: "2026-11-20"},
+		{Entry: Entry{ID: "ov:cat:health:bb", Text: "a health pattern", Categories: []string{"health"}, Rank: 900, OriginSpace: "Bad Space"}},
+		{Entry: Entry{ID: "bad id with spaces", Text: "x"}},
+		{Entry: Entry{ID: "ov:pattern:empty", Text: "  "}},
+	}
+	res, n, err := PageWith(st, nil, extras, Params{Contribution: "memory", Limit: 10})
+	if err != nil || n.Entries != 2 || n.Standing != 1 || len(res.Entries) != 2 {
+		t.Fatalf("%v %+v %+v", err, n, res)
+	}
+	if res.Entries[0].ID != "ov:pattern:aa" || res.Entries[0].Status != "active" || res.Entries[1].OriginSpace != "" {
+		t.Fatalf("%+v", res.Entries)
+	}
+	// Paged one at a time, the cursor walks over extras too.
+	res, _, _ = PageWith(st, nil, extras, Params{Contribution: "memory", Limit: 1})
+	if !res.HasMore || res.After == "" {
+		t.Fatalf("%+v", res)
+	}
+	res2, _, err := PageWith(st, nil, extras, Params{Contribution: "memory", Limit: 1, After: res.After})
+	if err != nil || len(res2.Entries) != 1 || res2.Entries[0].ID != "ov:cat:health:bb" {
+		t.Fatalf("%v %+v", err, res2)
+	}
 }

@@ -39,7 +39,7 @@ import (
 
 const (
 	FileName           = "profile-summary.json"
-	CurrentVersion     = 1
+	CurrentVersion     = 2 // 2: patterns first, coherent sections, recent highlights only the user's own
 	ModeDeterministic  = "deterministic"
 	ModeModel          = "model"
 	MaxPointsPerFacet  = 8
@@ -74,6 +74,12 @@ type CandidateItem struct {
 	OriginSpace string
 	Subjects    []string
 	IsFocus     bool // current_focus / active recent highlight
+	// Own: about what the user themself is doing or keeping an eye on (a ⑥ entry, or a ⑤ project line in the user's
+	// own words with no one else's). Only these make the recent highlights: a colleague's meeting or rollout does not.
+	// A pattern is a way of doing things, not news: never Own.
+	Own bool
+	// Pattern: a cross-event pattern of the periodic overview (internal/overview), not a single entry.
+	Pattern bool
 }
 
 // InputProvider supplies normalized candidate items for building a profile Summary.
@@ -128,6 +134,7 @@ func (EntriesProvider) Items(st *store.State) []CandidateItem {
 			OriginSpace: e.OriginSpace,
 			Subjects:    collectEntrySubjects(st, e),
 			IsFocus:     e.Type == "current_focus",
+			Own:         own(e),
 		})
 	}
 	return out
@@ -162,9 +169,10 @@ type Section struct {
 
 // Point is one grounded bullet inside a section.
 type Point struct {
-	ID   string `json:"id"`
-	Text string `json:"text"`
-	Last string `json:"last,omitempty"`
+	ID      string `json:"id"`
+	Text    string `json:"text"`
+	Last    string `json:"last,omitempty"`
+	Pattern bool   `json:"pattern,omitempty"` // a cross-event pattern (CandidateItem.Pattern)
 }
 
 // SensitiveSection groups stable entries of one sensitive category apart from the general profile.
@@ -214,6 +222,30 @@ func entryCategories(e *entry.Entry) []string {
 	}
 	sort.Strings(cats)
 	return cats
+}
+
+// own says whether e is about what the user themself does or watches: a ⑥ entry, or a ⑤ line (no person's card,
+// no relation whose subject is a person) that rests on at least one of the user's own lines and on no one else's.
+func own(e *entry.Entry) bool {
+	switch {
+	case e.Facet == entry.Persona:
+		return !e.Inferred
+	case e.Facet != entry.World && e.Facet != entry.Workflow:
+		return false
+	case e.Person != "" || strings.HasPrefix(e.Subject, "person:") || e.ReportedOnly || e.Inferred:
+		return false
+	}
+	self := false
+	for _, ev := range e.Evidence {
+		switch {
+		case ev.Quote == "":
+		case ev.Who == entry.WhoSelf && !ev.Reported:
+			self = true
+		case strings.HasPrefix(ev.Who, "person:"):
+			return false
+		}
+	}
+	return self
 }
 
 // eligible says whether an entry may enter the profile summary at all (general or sensitive).
@@ -491,7 +523,7 @@ func BuildWith(st *store.State, src InputProvider, now time.Time, lang string) *
 				continue
 			}
 			seen[key] = true
-			pts = append(pts, Point{ID: it.ID, Text: it.Text, Last: it.Last})
+			pts = append(pts, Point{ID: it.ID, Text: it.Text, Last: it.Last, Pattern: it.Pattern})
 			picked = append(picked, it)
 			if len(pts) >= MaxPointsPerFacet {
 				break
@@ -512,12 +544,12 @@ func BuildWith(st *store.State, src InputProvider, now time.Time, lang string) *
 		sum.Sections = append(sum.Sections, sec)
 	}
 
-	// Build recent highlights (IsFocus + general items active within RecentDays).
+	// Build recent highlights: the user's own current focus and doings active within RecentDays, never someone else's.
 	cutoff := now.AddDate(0, 0, -RecentDays).Format("2006-01-02")
 	var recentCandidates []CandidateItem
 	for _, f := range []entry.Facet{entry.Persona, entry.World, entry.Workflow} {
 		for _, it := range generalByFacet[f] {
-			if it.IsFocus || (it.Last != "" && it.Last >= cutoff) {
+			if (it.IsFocus || it.Own) && !it.Pattern && (it.IsFocus || it.Last != "" && it.Last >= cutoff) {
 				recentCandidates = append(recentCandidates, it)
 			}
 		}

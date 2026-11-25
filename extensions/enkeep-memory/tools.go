@@ -88,6 +88,12 @@ var readTools = []tool{
 		"with an entry the curator has, updated, the same as before, or skipped and why. Writes nothing; enkeep_seed_import " +
 		"(a write, confirmed on the phone) imports the same arguments. " + seedFormat,
 		InputSchema: seedSchema()},
+	{Name: "enkeep_overview_status", Description: "Show enkeep memory's periodic cross-event overview: its patterns per " +
+		"facet by lifecycle (core_stable, scoped, candidate, drifting, era_closed, retired), the last weekly and monthly " +
+		"passes (model calls, what they made or moved), the forward checks (the patterns predicting a week's real choices " +
+		"against the scattered entries and no memory), the last blind spot check, the weekly report's push, and how many " +
+		"overview entries memory.entries answers. Read-only.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}}},
 }
 
 var writeTools = []tool{
@@ -126,6 +132,51 @@ var writeTools = []tool{
 			"ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "1 to 20 entry ids (memory-extension:<id> or <id>)"},
 			"reason": map[string]any{"type": "string", "description": "why the entries are wrong (at most 300 characters)"},
 		}}},
+	{Name: "enkeep_overview_run", Description: "Run a pass of enkeep memory's periodic cross-event overview now, in the " +
+		"background: weekly (the week's cross-event synthesis, period YYYY-Www), monthly (consolidation and drift, period " +
+		"YYYY-MM), backtest (patterns built only from what came before the week YYYY-Www, checked against its real choices; " +
+		"the kept patterns are not changed), audit (a model's blind spot check of up to 30 used patterns, kept for the user " +
+		"to go over), or report (send the weekly report of week YYYY-Www again, its short summary to the user's phone, when " +
+		"its push failed). A write: the hub confirms it on the user's phone unless its rules allow it. Uses Claude models " +
+		"only, within the extension's shared limit of calls. enkeep_overview_status (coding Agents) shows the result.",
+		InputSchema: map[string]any{"type": "object", "required": []string{"kind"}, "properties": map[string]any{
+			"kind":   map[string]any{"type": "string", "enum": []string{"weekly", "monthly", "backtest", "audit", "report"}},
+			"period": map[string]any{"type": "string", "pattern": `^\d{4}-(W\d{2}|\d{2})$`, "description": "YYYY-Www for weekly, backtest and report; YYYY-MM for monthly; not used by audit"},
+		}}},
+}
+
+// overviewArgs checks enkeep_overview_run's arguments: the pass's kind and its period.
+func overviewArgs(raw json.RawMessage) (kind, period string, err error) {
+	var in struct {
+		Kind   string `json:"kind"`
+		Period string `json:"period"`
+	}
+	if err := strictDecode(raw, &in); err != nil {
+		return "", "", err
+	}
+	period = strings.TrimSpace(in.Period)
+	week := func() error {
+		if _, err := curate.WeekDays(period); err != nil || !strings.Contains(period, "-W") {
+			return errors.New("period is a week, YYYY-Www")
+		}
+		return nil
+	}
+	switch in.Kind {
+	case "weekly":
+		return kindOverview, period, week()
+	case "backtest":
+		return kindBacktest, period, week()
+	case "report":
+		return "report", period, week()
+	case "monthly":
+		if _, err := time.Parse("2006-01", period); err != nil {
+			return "", "", errors.New("period is a month, YYYY-MM")
+		}
+		return kindOverviewMonth, period, nil
+	case "audit":
+		return kindAudit, time.Now().UTC().Format("2006-01-02T15:04"), nil
+	}
+	return "", "", errors.New("kind is weekly, monthly, backtest, audit or report")
 }
 
 // seedFormat is the seeds' general format, in both seed tools' descriptions.
@@ -301,6 +352,22 @@ func (a *app) describe(name string, raw json.RawMessage) (string, error) {
 			fmt.Fprintf(&b, "\n- %s", cut(it.Text, 80))
 		}
 		return b.String(), nil
+	case "enkeep_overview_run":
+		kind, period, err := overviewArgs(raw)
+		if err != nil {
+			return "", err
+		}
+		switch kind {
+		case kindOverview:
+			return "enkeep 记忆：现在跑 " + period + " 的周级跨事总览（从你自己的记录里找跨项目、跨来源反复出现的取舍，只用 Claude 模型，大约 20 次调用）。不发给任何人，不删数据。", nil
+		case kindOverviewMonth:
+			return "enkeep 记忆：现在跑 " + period + " 的月度巩固（合并重复的模式、重新核对反例、标出在变和已结束的）。不发给任何人，不删数据。", nil
+		case kindBacktest:
+			return "enkeep 记忆：用 " + period + " 之前的记录建一份临时模式，检验它能不能预测这一周你的真实取舍（和散点条目、不带记忆对比）。不改现有模式，不发给任何人。", nil
+		case kindAudit:
+			return "enkeep 记忆：让模型盲判抽查最多 30 条在用的跨事模式，结果留给你在插件页上核对。不改模式，不发给任何人。", nil
+		}
+		return "enkeep 记忆：把 " + period + " 的周报重新推送到你的手机（短摘要，全文在插件页「定期总览」）。", nil
 	case "enkeep_mark_wrong":
 		ids, reason, err := markArgs(raw)
 		if err != nil {
@@ -402,6 +469,30 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 			return "", err
 		}
 		return a.c.Seeds(exits.Usable).Text(), nil
+	case "enkeep_overview_status":
+		if err := strictDecode(raw, &struct{}{}); err != nil {
+			return "", err
+		}
+		return a.overviewStatus(), nil
+	case "enkeep_overview_run":
+		kind, period, err := overviewArgs(raw)
+		if err != nil {
+			return "", err
+		}
+		if kind == "report" {
+			body, err := a.weeklySend(ctx, period, time.Now(), true)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("The weekly report of %s was sent (%d characters): %s", period, len([]rune(body)), body), nil
+		}
+		if a.ov == nil {
+			return "", errors.New("the overview is off: its state could not be read (see the hub's log)")
+		}
+		if !a.start(context.WithoutCancel(ctx), kind, period) {
+			return "", a.busy(curate.ErrBusy)
+		}
+		return fmt.Sprintf("Started %s %s in the background; enkeep_overview_status shows the result when it is done.", kind, period), nil
 	case "enkeep_rerun":
 		var in struct {
 			From, To string

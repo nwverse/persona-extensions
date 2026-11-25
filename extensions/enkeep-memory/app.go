@@ -18,6 +18,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -47,6 +48,7 @@ type app struct {
 	recalls   *store.RecallLog // the old enkeep_recall's counts (recall.json, up to 0.2.0-beta.43), with their own lock
 	marksMu   sync.Mutex       // the queued marks' file (marks.go)
 	done      []doneWrite      // the last actions.do answers by request id (tools.go doOnce)
+	ov        *overview.Holder // the periodic overview's state (overview_app.go); nil: off
 }
 
 func newApp() *app { return &app{} }
@@ -115,7 +117,8 @@ func (a *app) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]
 		// Four calls at once in the daily pass: what the project's limit allows (model.LimitConcurrent, design v2
 		// §4.7); every call still waits for a turn of the shared limiter, reruns behind the scheduled passes.
 		Workers: model.LimitConcurrent}
-	st.Lock() // nothing runs yet: the health page's first snapshot
+	a.openOverview(st.Dir) // before the first snapshot: its light refresh runs on every one
+	st.Lock()              // nothing runs yet: the health page's first snapshot
 	a.recalls = store.OpenRecall(st.Dir, st.S.Recall)
 	st.S.Recall = nil // moved to recall.json; dropped from state.json at its next save
 	if prev, err := profile.Load(st.Dir); err == nil && prev == nil && len(st.S.Entries) > 0 {
@@ -123,7 +126,7 @@ func (a *app) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]
 		if lang == "" {
 			lang = in.Hub.Locale
 		}
-		_ = profile.Save(st.Dir, profile.Build(st.S, time.Now(), lang))
+		_ = profile.Save(st.Dir, profile.BuildWith(st.S, a.c.ProfileInput, time.Now(), lang))
 	}
 	a.c.Publish()
 	st.Unlock()
@@ -203,6 +206,18 @@ func (a *app) tick(ctx context.Context) {
 	if weeklyDue && !a.ran("weekly", lastWeek) {
 		a.start(ctx, "weekly", lastWeek)
 		return
+	}
+	// The periodic overview (overview_app.go): the week's cross-event synthesis once the week's pass has run, and on
+	// the first Monday of a month the month's consolidation; before the report, which carries them, and the reruns.
+	if weeklyDue && a.ran("weekly", lastWeek) && a.overviewDue(lastWeek) {
+		a.start(ctx, kindOverview, lastWeek)
+		return
+	}
+	if weeklyDue {
+		if month := a.monthDue(monday, lastWeek); month != "" {
+			a.start(ctx, kindOverviewMonth, month)
+			return
+		}
 	}
 	// The weekly report to the user, once the week's pass has run (weekly_report.go): not held back by reruns either.
 	if err := a.weeklyTick(ctx, time.Now()); err != nil {
@@ -347,7 +362,7 @@ func triedKey(kind, period string) string {
 	switch kind {
 	case "daily":
 		return period
-	case "synth", "backfill":
+	case "synth", "backfill", kindOverview, kindOverviewMonth, kindBacktest, kindAudit:
 		return kind + "@" + period
 	}
 	return kind + " " + period
@@ -419,6 +434,9 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 	if kind == "backfill" {
 		a.tried = append(a.tried, "backfill@"+period)
 	}
+	if strings.HasPrefix(kind, kindOverview) {
+		a.tried = append(a.tried, kind+"@"+period)
+	}
 	a.mu.Unlock()
 	// A rerun (a past day read again, its synthesis, the first-run replay) is counted apart in the cost line and waits
 	// behind the scheduled passes for a model turn (model.Limiter).
@@ -431,7 +449,8 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 	if rerun {
 		ctx = model.WithPriority(model.WithClass(ctx, model.ClassRerun), model.PriorityLow)
 	}
-	prompt := map[string]string{"daily": schema.DailyPrompt, "backfill": schema.DailyPrompt, "weekly": schema.WeeklyPrompt, "synth": schema.SynthPrompt}[kind]
+	prompt := map[string]string{"daily": schema.DailyPrompt, "backfill": schema.DailyPrompt, "weekly": schema.WeeklyPrompt, "synth": schema.SynthPrompt,
+		kindOverview: overview.Prompt, kindOverviewMonth: overview.Prompt, kindBacktest: overview.Prompt, kindAudit: overview.Prompt}[kind]
 	log.Printf("enkeep-memory: %s %s starts (prompt=%s ruleset=%s)", kind, period, prompt, schema.Ruleset)
 	go func() {
 		var err error
@@ -455,6 +474,8 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 			}
 		} else if kind == "synth" {
 			_, err = a.c.RunSynth(ctx, period, false)
+		} else if strings.HasPrefix(kind, kindOverview) {
+			err = a.runOverview(ctx, kind, period)
 		} else {
 			_, err = a.c.RunWeekly(ctx, period, false)
 			if days, werr := curate.WeekDays(period); err == nil && werr == nil {

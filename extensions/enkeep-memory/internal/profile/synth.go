@@ -30,6 +30,7 @@ type synthInFacet struct {
 type synthOutput struct {
 	Overview string            `json:"overview"`
 	Sections map[string]string `json:"sections"`
+	Recent   *[]string         `json:"recent"`
 }
 
 // synthesize polishes the general (non-sensitive) overview and six-facet summaries with a single model call.
@@ -66,7 +67,7 @@ func synthesize(ctx context.Context, m model.Model, tier model.Tier, base *Summa
 		Tier:      tier,
 		System:    synthPrompt,
 		User:      string(rawIn),
-		MaxTokens: 1200,
+		MaxTokens: 1600,
 		Schema:    synthSchema,
 	})
 	if err != nil {
@@ -92,6 +93,18 @@ func synthesize(ctx context.Context, m model.Model, tier model.Tier, base *Summa
 			out.Sections[i].Summary = clipRunes(s, 280)
 			applied = true
 		}
+	}
+	// The recent highlights as the model kept them: only the user's own (it drops what others did). Each kept one is
+	// a rewrite of an input item, so it is grounded; an answer without the list keeps the deterministic ones.
+	if parsed.Recent != nil {
+		var rec []string
+		for _, r := range *parsed.Recent {
+			if r = cleanLine(r); r != "" && len(rec) < MaxRecent {
+				rec = append(rec, clipRunes(r, 120))
+			}
+		}
+		out.Recent = rec
+		applied = true
 	}
 	if applied {
 		out.Mode = ModeModel
