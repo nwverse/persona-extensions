@@ -224,28 +224,15 @@ func entryCategories(e *entry.Entry) []string {
 	return cats
 }
 
-// own says whether e is about what the user themself does or watches: a ⑥ entry, or a ⑤ line (no person's card,
-// no relation whose subject is a person) that rests on at least one of the user's own lines and on no one else's.
+// ownTypes are the ⑥ types that say what the user is doing or keeping an eye on now (the prompt's keys and the
+// class names they are filed under).
+var ownTypes = []string{"current_work", "current_focus", "goal", "在做的事", "目标", "关注"}
+
+// own says whether e is about what the user themself is doing or watching lately: a ⑥ entry of a doing or focus type,
+// not a reading. A ⑤ line is never: on a live history it is a repository's status, a decision on a rule or someone
+// else's commitment far more often than the user's own doing, even when it rests on the user's words.
 func own(e *entry.Entry) bool {
-	switch {
-	case e.Facet == entry.Persona:
-		return !e.Inferred
-	case e.Facet != entry.World && e.Facet != entry.Workflow:
-		return false
-	case e.Person != "" || strings.HasPrefix(e.Subject, "person:") || e.ReportedOnly || e.Inferred:
-		return false
-	}
-	self := false
-	for _, ev := range e.Evidence {
-		switch {
-		case ev.Quote == "":
-		case ev.Who == entry.WhoSelf && !ev.Reported:
-			self = true
-		case strings.HasPrefix(ev.Who, "person:"):
-			return false
-		}
-	}
-	return self
+	return e.Facet == entry.Persona && !e.Inferred && slices.Contains(ownTypes, strings.ToLower(strings.TrimSpace(e.Type)))
 }
 
 // eligible says whether an entry may enter the profile summary at all (general or sensitive).

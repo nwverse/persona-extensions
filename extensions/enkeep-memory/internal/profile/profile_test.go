@@ -250,8 +250,8 @@ func TestBuildWithCustomProvider(t *testing.T) {
 	}
 }
 
-// Recent highlights are the user's own: a world line resting on a colleague's words, or about a person, never makes
-// them; one in the user's own words does. A model answer replaces them with the ones it kept about the user.
+// Recent highlights are the user's own doings: a world line (a colleague's meeting, someone's rollout, a host's
+// status, even in the user's own words) never makes them; a ⑥ current-work entry does. A model answer replaces them with the ones it kept about the user.
 func TestRecentOnlyOwn(t *testing.T) {
 	now := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
 	st := sampleState()
@@ -264,12 +264,15 @@ func TestRecentOnlyOwn(t *testing.T) {
 	st.Entries["w-rel"] = &entry.Entry{ID: "w-rel", Facet: entry.World, Grain: entry.Action, Subject: "person:p3",
 		Predicate: "owns", Text: "colleague-b 在推动扩量", Status: entry.Stable, Count: 2, Kinds: []string{"S1"},
 		Last: "2026-11-23", Tagged: true, Origin: entry.Behavior, Evidence: ev(entry.WhoSelf)}
-	st.Entries["w-own"] = &entry.Entry{ID: "w-own", Facet: entry.World, Grain: entry.Action,
+	st.Entries["w-status"] = &entry.Entry{ID: "w-status", Facet: entry.World, Grain: entry.Action, Type: "status",
+		Text: "host-b 上没有仓库凭据", Status: entry.Stable, Count: 2, Kinds: []string{"S3"}, Last: "2026-11-23",
+		Tagged: true, Origin: entry.Behavior, Evidence: ev(entry.WhoSelf)}
+	st.Entries["p-own"] = &entry.Entry{ID: "p-own", Facet: entry.Persona, Grain: entry.Action, Type: "current_work",
 		Text: "在给 project-y 写迁移方案", Status: entry.Stable, Count: 2, Kinds: []string{"S1"}, Last: "2026-11-23",
 		Tagged: true, Origin: entry.Behavior, Evidence: ev(entry.WhoSelf)}
 	sum := Build(st, now, "zh-Hans")
 	joined := strings.Join(sum.Recent, "|")
-	if strings.Contains(joined, "colleague") || !strings.Contains(joined, "project-y") || !strings.Contains(joined, "稳定性治理") {
+	if strings.Contains(joined, "colleague") || strings.Contains(joined, "host-b") || !strings.Contains(joined, "project-y") || !strings.Contains(joined, "稳定性治理") {
 		t.Fatalf("recent = %v", sum.Recent)
 	}
 	fm := &fakeModel{resp: `{"overview":"o","sections":{"judgement":"j"},"recent":["在写 project-y 的迁移方案"]}`}

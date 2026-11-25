@@ -404,6 +404,24 @@ class AgentPrefixTest(unittest.TestCase):
         got = self.handed()["message"]
         self.assertEqual((got["text"], got["thread"]), ("新问题", "g1:m1"))
 
+    def test_custom_prefix_triggers_in_muted_group_while_non_mention_stays_out_of_inbox(self):
+        self.use("/ai")
+        self.backend.chats["g1"] = {"name": "安静群", "last_position": 0, "mute": "muted"}
+        self.c._on_live(message("m1", "g1", 1, kind="group", text="群里的日常消息"))
+        self.assertEqual(self.c.inbox_collect({})["things"], [])
+        self.assertEqual(self.c.store.chat("g1")["mute"], "muted")
+        self.nothing_handed()
+        self.c._on_live(message("m2", "g1", 2, kind="group", sender=ME, text="/ai 总结一下"))
+        got = self.handed()["message"]
+        self.assertEqual((got["text"], got["thread"]), ("总结一下", "g1:m2"))
+        out = self.c.channel_send({"ref": "r_muted_ai", "text": "好的", "kind": "answer", "reply_to": "m2"})
+        self.assertEqual(out, {"message_id": "m_new"})
+        self.assertEqual(self.backend.sent, [("g1", "好的\n\n" + AGENT_SUFFIX, "m2")])
+        self.hub.received.clear()
+        self.hub.got.clear()
+        self.c._on_live(message("m3", "g1", 3, kind="group", sender=ME, text="/agent 不触发"))
+        self.nothing_handed()
+
     def test_custom_prefix_in_post_rich_text_ignores_title(self):
         self.use("/ai")
         self.c._on_live(message("m1", "c1", 1, sender=ME, msg_type="POST", text="[富文本] 示例标题\n/ai 检查"))

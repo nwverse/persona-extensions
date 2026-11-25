@@ -809,8 +809,11 @@ class RealBackend:
         return [normalize(m, self._extract_key) for m in self._client.pull_history(chat, positions)]
 
     def chat_info(self, chat):
-        info = self._client.get_chat_info(chat) or {}
-        return {"name": info.get("name") or "", "last_position": int(info.get("lastMessagePosition") or 0)}
+        info = self._client.get_chat_info(chat)
+        if not isinstance(info, dict):
+            info = {}
+        return {"name": info.get("name") or "", "last_position": int(info.get("lastMessagePosition") or 0),
+                "mute": mute_state(info)}
 
     def user_name(self, user, chat):
         return self._client.get_user_name(user, chat)
@@ -820,6 +823,29 @@ class RealBackend:
         url = media.message_resource_url(msg_id, key, chat, host=self._auth.region.file_host)
         data, mime = media.download(self._auth, url, max_bytes=most)
         return mime or "application/octet-stream", data
+
+
+def _remind_state(value):
+    if type(value) is not bool:
+        return None
+    return "normal" if value else "muted"
+
+
+def mute_state(info):
+    """The verified whole-chat reminder state; isMuteAtAll is a different setting and is never used here."""
+    if not isinstance(info, dict):
+        return "unknown"
+    states = []
+    settings = info.get("userSetting")
+    if isinstance(settings, dict):
+        state = _remind_state(settings.get("isRemind"))
+        if state is not None:
+            states.append(state)
+    state = _remind_state(info.get("isRemind"))
+    if state is not None:
+        states.append(state)
+    return states[0] if states and len(set(states)) == 1 else "unknown"
+
 
 def mention_parts(text, mentions):
     """Split only exact @name occurrences of explicit, numeric user ids; longest names win at the same position."""

@@ -35,7 +35,7 @@ type App struct {
 func program() ext.Program {
 	a := &App{}
 	return ext.Program{
-		ID: "space-conversations", Version: "0.1.0", Manifest: manifest,
+		ID: "space-conversations", Version: "0.1.1", Manifest: manifest,
 		Init: func(_ context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
 			a.mu.Lock()
 			a.client = NewClient(in.Hub.URL, in.Hub.Token)
@@ -97,7 +97,16 @@ func homeView(ctx context.Context, c *Client) (*wire.View, error) {
 		if t.Archived || t.Builtin || t.Config.Sidebar.Group != "spaces" {
 			continue
 		}
-		items = append(items, wire.Component{Type: wire.ComponentRow, Title: t.Title, Detail: t.Description, Icon: "chat", Action: action("open", map[string]string{"slug": t.Slug})})
+		if len(items) >= wire.ItemsMost {
+			break
+		}
+		items = append(items, wire.Component{
+			Type:     wire.ComponentRow,
+			Title:    clipRunes(cmp.Or(strings.TrimSpace(t.Title), t.Slug), wire.StringMost),
+			Subtitle: clipRunes(strings.TrimSpace(t.Description), wire.StringMost),
+			Icon:     "chat",
+			Action:   action("open", map[string]string{"slug": t.Slug}),
+		})
 		count++
 	}
 	if count == 0 {
@@ -125,31 +134,45 @@ func spaceView(ctx context.Context, c *Client, slug string) (*wire.View, error) 
 	if err != nil {
 		return nil, err
 	}
-	items := []wire.Component{
-		{Type: wire.ComponentText, Text: track.Description, Style: "secondary"},
-		button("edit", "编辑 SPACE.md", map[string]string{"slug": slug}),
+	title := clipRunes(cmp.Or(strings.TrimSpace(track.Title), track.Slug), wire.StringMost)
+	var items []wire.Component
+	if desc := clipRunes(strings.TrimSpace(track.Description), wire.StringMost); desc != "" {
+		items = append(items, wire.Component{Type: wire.ComponentText, Text: desc, Style: "secondary"})
 	}
+	items = append(items, button("edit", "编辑 SPACE.md", map[string]string{"slug": slug}))
 	if track.Archived {
 		items = append(items, button("unarchive", "恢复空间", map[string]string{"slug": slug}))
 	} else {
 		items = append(items, button("archive", "归档空间", map[string]string{"slug": slug}))
 	}
-	sections := []wire.Section{{Title: track.Title, Items: items}}
+	sections := []wire.Section{{Title: title, Items: items}}
+	fixedItems := len(items)
 	if !track.Archived {
 		sections = append(sections, wire.Section{Title: "新对话", Items: []wire.Component{
 			{Type: wire.ComponentField, Name: "prompt", Label: "消息", Kind: wire.FieldKindMultiline, Placeholder: "说说想在这个空间里处理的事"},
 			{Type: wire.ComponentButton, Title: "开始对话", Action: &wire.Action{ID: "start", Submit: true, Values: map[string]string{"slug": slug}}},
 		}})
+		fixedItems += 2
 	}
+	maxRows := wire.ItemsMost - fixedItems
 	rows := []wire.Component{}
 	for _, chat := range conversations {
-		rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: chat.Title, Detail: chat.LastText, Icon: "chat", Action: action("chat", map[string]string{"slug": slug, "sid": chat.SessionID, "mid": cmp.Or(chat.MachineID, machine)})})
+		if len(rows) >= maxRows {
+			break
+		}
+		rows = append(rows, wire.Component{
+			Type:     wire.ComponentRow,
+			Title:    clipRunes(cmp.Or(strings.TrimSpace(chat.Title), strings.TrimSpace(chat.SessionID), "未命名对话"), wire.StringMost),
+			Subtitle: clipRunes(strings.TrimSpace(chat.LastText), wire.StringMost),
+			Icon:     "chat",
+			Action:   action("chat", map[string]string{"slug": slug, "sid": chat.SessionID, "mid": cmp.Or(chat.MachineID, machine)}),
+		})
 	}
 	if len(rows) == 0 {
 		rows = append(rows, wire.Component{Type: wire.ComponentEmpty, Title: "还没有对话"})
 	}
 	sections = append(sections, wire.Section{Title: "最近对话", Items: rows})
-	return &wire.View{Title: track.Title, Sections: sections, RefreshAfter: 30}, nil
+	return &wire.View{Title: title, State: slug, Sections: sections, RefreshAfter: 30}, nil
 }
 
 func newView() *wire.View {
@@ -167,7 +190,7 @@ func editView(ctx context.Context, c *Client, slug string) (*wire.View, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &wire.View{Title: "编辑 SPACE.md", State: md.Digest, Sections: []wire.Section{{Items: []wire.Component{
+	return &wire.View{Title: "编辑 SPACE.md", State: slug, Sections: []wire.Section{{Items: []wire.Component{
 		{Type: wire.ComponentText, Text: "SPACE.md 是这个空间长期保留的说明。Persona 管理的状态块不可在这里修改。", Style: "secondary"},
 		{Type: wire.ComponentField, Name: "content", Label: "SPACE.md", Kind: wire.FieldKindMultiline, Value: md.Content},
 		{Type: wire.ComponentButton, Title: "保存", Action: &wire.Action{ID: "save", Submit: true, Values: map[string]string{"slug": slug, "digest": md.Digest}}},
@@ -221,12 +244,17 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if err != nil {
 			return nil, err
 		}
+		archived := r.Action == "archive"
 		for _, track := range tracks {
 			if track.Slug == slug {
-				if err := c.Archive(ctx, track); err != nil {
+				if err := c.Archive(ctx, track, archived); err != nil {
 					return nil, err
 				}
-				return &wire.ActionResult{View: homeAfterMutation(ctx, c), Toast: "空间状态已更新"}, nil
+				v, err := homeView(ctx, c)
+				if err != nil {
+					return nil, err
+				}
+				return &wire.ActionResult{View: v, Toast: "空间状态已更新"}, nil
 			}
 		}
 		return nil, errors.New("空间不存在")
@@ -245,9 +273,18 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 }
 
-func homeAfterMutation(ctx context.Context, c *Client) *wire.View {
-	v, _ := homeView(ctx, c)
-	return v
+func clipRunes(s string, max int) string {
+	if max <= 0 || utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	n := 0
+	for i := range s {
+		if n == max {
+			return s[:i]
+		}
+		n++
+	}
+	return s
 }
 
 func conversationURL(machine, slug, sid string) string {
