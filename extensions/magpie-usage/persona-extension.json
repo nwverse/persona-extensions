@@ -8,7 +8,7 @@
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/magpie-usage/README.md",
   "tags": ["Magpie", "subscriptions", "quota"],
-  "engines": {"extension_protocol": 1},
+  "engines": {"persona": ">=202611211238", "extension_protocol": 1},
   "activation_events": ["on_startup"],
   "runtime": {"command": {
     "linux-amd64": "bin/magpie-usage-linux-amd64",
