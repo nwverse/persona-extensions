@@ -35,7 +35,7 @@ type App struct {
 func program() ext.Program {
 	a := &App{}
 	return ext.Program{
-		ID: "space-conversations", Version: "0.1.1", Manifest: manifest,
+		ID: "space-conversations", Version: "0.1.2", Manifest: manifest,
 		Init: func(_ context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
 			a.mu.Lock()
 			a.client = NewClient(in.Hub.URL, in.Hub.Token)
@@ -65,17 +65,35 @@ func (a *App) render(ctx context.Context, r *ext.UIRequest) (*wire.View, error) 
 	if err != nil {
 		return nil, err
 	}
-	slug := r.State
+	slug := strings.TrimSpace(r.State)
 	switch r.Contribution {
 	case "new":
 		return newView(), nil
 	case "edit":
+		if slug == "" {
+			// Opened as an entry of its own (an extension's settings list every page): no space is chosen yet.
+			return pickerView(ctx, c, "编辑 SPACE.md", "选择要编辑 SPACE.md 的空间。", "edit")
+		}
 		return editView(ctx, c, slug)
 	case "space":
+		if slug == "" {
+			return pickerView(ctx, c, "空间", "选择一个空间。", "open")
+		}
 		return spaceView(ctx, c, slug)
 	default:
 		return homeView(ctx, c)
 	}
+}
+
+// actionSlug is the space an action is about: the action's own value (UI version 4 and later), else the page's
+// state, which every client sends back with an action.
+func actionSlug(r *ext.UIRequest) string {
+	return cmp.Or(strings.TrimSpace(r.Values["slug"]), strings.TrimSpace(r.State))
+}
+
+// notice answers an action with a hint instead of an error: an action error reaches the app as a failed page.
+func notice(text string) (*wire.ActionResult, error) {
+	return &wire.ActionResult{Toast: text}, nil
 }
 
 func action(id string, values map[string]string) *wire.Action {
@@ -91,7 +109,12 @@ func homeView(ctx context.Context, c *Client) (*wire.View, error) {
 	if err != nil {
 		return nil, err
 	}
-	items := []wire.Component{button("new", "新建空间", nil)}
+	items := spaceRows([]wire.Component{button("new", "新建空间", nil)}, tracks, "open")
+	return &wire.View{Title: "空间对话", Sections: []wire.Section{{Title: "空间", Items: items}}, RefreshAfter: 60}, nil
+}
+
+// spaceRows appends a row per active space, each sending actionID with its slug, or an empty state when there is none.
+func spaceRows(items []wire.Component, tracks []Track, actionID string) []wire.Component {
 	count := 0
 	for _, t := range tracks {
 		if t.Archived || t.Builtin || t.Config.Sidebar.Group != "spaces" {
@@ -105,14 +128,27 @@ func homeView(ctx context.Context, c *Client) (*wire.View, error) {
 			Title:    clipRunes(cmp.Or(strings.TrimSpace(t.Title), t.Slug), wire.StringMost),
 			Subtitle: clipRunes(strings.TrimSpace(t.Description), wire.StringMost),
 			Icon:     "chat",
-			Action:   action("open", map[string]string{"slug": t.Slug}),
+			Action:   action(actionID, map[string]string{"slug": t.Slug}),
 		})
 		count++
 	}
 	if count == 0 {
 		items = append(items, wire.Component{Type: wire.ComponentEmpty, Title: "还没有空间", Detail: "为一件长期关心的事建立空间，相关对话和 SPACE.md 会留在这里。"})
 	}
-	return &wire.View{Title: "空间对话", Sections: []wire.Section{{Title: "空间", Items: items}}, RefreshAfter: 60}, nil
+	return items
+}
+
+// pickerView is a page that needs a space but was opened without one: the spaces to choose from.
+func pickerView(ctx context.Context, c *Client, title, hint, actionID string) (*wire.View, error) {
+	tracks, err := c.Tracks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	items := spaceRows([]wire.Component{{Type: wire.ComponentText, Text: hint, Style: "secondary"}}, tracks, actionID)
+	if len(items) < wire.ItemsMost {
+		items = append(items, button("new", "新建空间", nil))
+	}
+	return &wire.View{Title: title, Sections: []wire.Section{{Items: items}}, RefreshAfter: 60}, nil
 }
 
 func spaceView(ctx context.Context, c *Client, slug string) (*wire.View, error) {
@@ -128,7 +164,8 @@ func spaceView(ctx context.Context, c *Client, slug string) (*wire.View, error) 
 		}
 	}
 	if track == nil {
-		return &wire.View{Title: "空间不可用", Sections: []wire.Section{{Items: []wire.Component{{Type: wire.ComponentEmpty, Title: "空间不存在或扩展已停用"}, button("home", "返回空间对话", nil)}}}}, nil
+		items := spaceRows([]wire.Component{{Type: wire.ComponentEmpty, Title: "这个空间不存在", Detail: "它可能已被删除。可以从下面选择其他空间。"}}, tracks, "open")
+		return &wire.View{Title: "空间不可用", Sections: []wire.Section{{Items: items}}}, nil
 	}
 	machine, conversations, err := c.Conversations(ctx, slug)
 	if err != nil {
@@ -202,7 +239,7 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	if err != nil {
 		return nil, err
 	}
-	slug := r.Values["slug"]
+	slug := actionSlug(r)
 	switch r.Action {
 	case "home":
 		return &wire.ActionResult{Push: &wire.Push{UI: "home"}}, nil
@@ -217,11 +254,11 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	case "create":
 		title := strings.TrimSpace(r.Values["title"])
 		if title == "" || utf8.RuneCountInString(title) > 80 {
-			return nil, errors.New("请输入不超过 80 个字符的空间名称")
+			return notice("请输入不超过 80 个字符的空间名称")
 		}
 		slug = strings.TrimSpace(r.Values["slug"])
 		if !validSlug(slug) {
-			return nil, errors.New("标识须以字母开头，只含小写字母、数字和连字符，且不能使用保留名称")
+			return notice("标识须以字母开头，只含小写字母、数字和连字符，且不能使用保留名称")
 		}
 		var cats []string
 		for _, cat := range strings.Split(r.Values["categories"], ",") {
@@ -235,6 +272,9 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		return &wire.ActionResult{Push: &wire.Push{UI: "space", State: track.Slug}, Toast: "空间已创建"}, nil
 	case "save":
+		if slug == "" {
+			return notice("先选择一个空间")
+		}
 		if err := c.PutSpaceMD(ctx, slug, r.Values["content"], r.Values["digest"]); err != nil {
 			return nil, err
 		}
@@ -257,17 +297,25 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 				return &wire.ActionResult{View: v, Toast: "空间状态已更新"}, nil
 			}
 		}
-		return nil, errors.New("空间不存在")
+		return notice("空间不存在")
 	case "start":
 		prompt := strings.TrimSpace(r.Values["prompt"])
 		if prompt == "" {
-			return nil, errors.New("先写一条消息")
+			return notice("先写一条消息")
 		}
-		mid, sid, err := c.Start(ctx, slug, prompt)
+		if slug == "" {
+			return notice("先选择一个空间")
+		}
+		if _, _, err := c.Start(ctx, slug, prompt); err != nil {
+			return nil, err
+		}
+		// The refreshed page lists the new conversation; its row opens it. No persona://tracks link here: hubs before
+		// the handoff was accepted refuse the whole answer, which would fail a conversation that did start.
+		v, err := spaceView(ctx, c, slug)
 		if err != nil {
 			return nil, err
 		}
-		return &wire.ActionResult{OpenURL: conversationURL(mid, slug, sid)}, nil
+		return &wire.ActionResult{View: v, Toast: "对话已开始"}, nil
 	default:
 		return nil, fmt.Errorf("未知操作 %q", r.Action)
 	}

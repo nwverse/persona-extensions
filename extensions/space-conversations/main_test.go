@@ -323,3 +323,110 @@ func TestRenderedViewsPassWireValidationAndPreserveState(t *testing.T) {
 		}
 	})
 }
+
+func spacesHub(t *testing.T, calls *[]string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		*calls = append(*calls, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/api/v1/assistant/tracks" && r.Method == http.MethodGet:
+			_, _ = w.Write([]byte(`{"tracks":[{"slug":"reading","kind":"space","title":"阅读","revision":1,"config":{"sidebar":{"group":"spaces"}}}]}`))
+		case r.URL.Path == "/api/v1/assistant":
+			_, _ = w.Write([]byte(`{"machine_id":"computer-example","conversations":[{"session_id":"session-example","title":"第一本书","space":"reading"}]}`))
+		case r.URL.Path == "/api/v1/assistant/conversations" && r.Method == http.MethodPost:
+			_, _ = w.Write([]byte(`{"session":{"session_id":"session-new","machine_id":"computer-example"}}`))
+		case r.URL.Path == "/api/v1/assistant/tracks/reading/space-md":
+			_, _ = w.Write([]byte(`{"content":"# 阅读\n","digest":"digest-example"}`))
+		default:
+			// An empty slug collapses /tracks//space-md to /tracks/space-md, which the hub refuses.
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"error":"this extension was not granted this part of the hub's API"}`))
+		}
+	}))
+}
+
+// Every client lists each extension_page as an entry of its own, so space and edit open without a slug.
+func TestPagesOpenedWithoutASlugOfferTheSpaces(t *testing.T) {
+	var calls []string
+	srv := spacesHub(t, &calls)
+	defer srv.Close()
+	a := &App{client: NewClient(srv.URL, "test-token")}
+	for _, ui := range []string{"space", "edit"} {
+		calls = nil
+		v, err := a.render(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: ui}})
+		if err != nil {
+			t.Fatalf("%s without a slug: %v", ui, err)
+		}
+		if err := wire.CheckView(v); err != nil {
+			t.Fatalf("%s view invalid: %v", ui, err)
+		}
+		want := map[string]string{"space": "open", "edit": "edit"}[ui]
+		var row *wire.Component
+		for i, it := range v.Sections[0].Items {
+			if it.Type == wire.ComponentRow {
+				row = &v.Sections[0].Items[i]
+			}
+		}
+		if row == nil || row.Action.ID != want || row.Action.Values["slug"] != "reading" {
+			t.Fatalf("%s should list the spaces with %q rows: %#v", ui, want, v)
+		}
+		for _, call := range calls {
+			if strings.Contains(call, "space-md") {
+				t.Fatalf("%s called the hub with an empty slug: %v", ui, calls)
+			}
+		}
+	}
+	// a row of the edit picker pushes the edit page for that space
+	res, err := a.action(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: "edit", Action: "edit", Values: map[string]string{"slug": "reading"}}})
+	if err != nil || res.Push == nil || res.Push.UI != "edit" || res.Push.State != "reading" {
+		t.Fatalf("edit pick = %#v, %v", res, err)
+	}
+}
+
+// An action without its own values (an older app, or values lost on the way) still knows its space from the page state.
+func TestActionsFallBackToThePageState(t *testing.T) {
+	var calls []string
+	srv := spacesHub(t, &calls)
+	defer srv.Close()
+	a := &App{client: NewClient(srv.URL, "test-token")}
+	res, err := a.action(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: "space", State: "reading", Action: "edit"}})
+	if err != nil || res.Push == nil || res.Push.State != "reading" {
+		t.Fatalf("edit from state = %#v, %v", res, err)
+	}
+}
+
+// Validation problems are hints, not RPC errors: the hub turns an action error into a failed page (HTTP 502).
+func TestValidationAnswersWithAToast(t *testing.T) {
+	var calls []string
+	srv := spacesHub(t, &calls)
+	defer srv.Close()
+	a := &App{client: NewClient(srv.URL, "test-token")}
+	for _, r := range []wire.UIParams{
+		{Contribution: "space", State: "reading", Action: "start", Values: map[string]string{"slug": "reading"}},
+		{Contribution: "new", Action: "create", Values: map[string]string{"title": "", "slug": "reading"}},
+		{Contribution: "new", Action: "create", Values: map[string]string{"title": "阅读", "slug": "new"}},
+		{Contribution: "space", Action: "archive", Values: map[string]string{"slug": "missing"}},
+		{Contribution: "edit", Action: "save", Values: map[string]string{"content": "x"}},
+	} {
+		res, err := a.action(context.Background(), &ext.UIRequest{UIParams: r})
+		if err != nil || res == nil || res.Toast == "" {
+			t.Fatalf("%s %v = %#v, %v; want a toast", r.Action, r.Values, res, err)
+		}
+	}
+}
+
+// Starting a conversation answers with the refreshed page and no persona: link, which older hubs refuse outright.
+func TestStartAnswersWithTheRefreshedSpace(t *testing.T) {
+	var calls []string
+	srv := spacesHub(t, &calls)
+	defer srv.Close()
+	a := &App{client: NewClient(srv.URL, "test-token")}
+	res, err := a.action(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: "space", State: "reading", Action: "start", Values: map[string]string{"prompt": "今天读什么"}}})
+	if err != nil || res.View == nil || res.OpenURL != "" || res.Toast == "" {
+		t.Fatalf("start = %#v, %v", res, err)
+	}
+	if err := wire.CheckView(res.View); err != nil {
+		t.Fatal(err)
+	}
+}
