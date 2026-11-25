@@ -26,6 +26,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -772,35 +773,92 @@ func collabNames(st *store.State) collabNameIndex {
 			continue
 		}
 		for _, n := range memsrc.Subjects(st, e) {
-			if r := []rune(n); len(r) < 2 || (len(n) == len(r) && len(r) < 3) {
+			if r := []rune(n); len(r) < 2 || (len(n) == len(r) && len(r) < 3) || collabGeneric[n] {
 				continue
 			}
 			idx[n] = append(idx[n], e)
 		}
 	}
+	// A name behind very many entries ("Persona", a word for the user) names nothing in particular: the hub's recall
+	// would not bring all of them in by it either.
+	for n, es := range idx {
+		if len(es) > collabNameMost {
+			delete(idx, n)
+		}
+	}
 	return idx
 }
+
+// collabGeneric are words for the user and the assistant, never a subject to recall by.
+var collabGeneric = map[string]bool{"用户": true, "助手": true, "我": true, "the user": true, "user": true, "assistant": true, "AI": true}
+
+// collabIdent is an identifier-like name in a situation (a repository, a service, a tool): long enough to name one.
+var collabIdent = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_.]*-[A-Za-z0-9_.-]{3,}|[A-Za-z][A-Za-z0-9_]{7,}`)
+
+// collabNameMost is the most entries one name may bring in before it counts as too common to name anything.
+const collabNameMost = 150
 
 // recall is what mentioning the incident's names brings in, as the hub's recall would: the entries whose subjects the
 // situation names, first seen before the day, not already in the standing memory, highest rank first, in budget
 // bytes. entities false leaves out the world and people entries (the ablation).
 func (idx collabNameIndex) recall(st *store.State, f heFilter, day, situation, standing string, budget int, entities bool) string {
-	seen := map[string]bool{}
+	// hits: how specifically the situation's names point at an entry, each name weighing by how few entries it is
+	// behind (idf), so "Persona" brings in less than a repository's own name.
+	hits := map[string]float64{}
+	total := float64(max(1, len(st.Entries)))
+	idf := func(df int) float64 { return math.Log(total / float64(1+df)) }
 	var cands []*entry.Entry
+	add := func(e *entry.Entry, w float64) {
+		if hits[e.ID] == 0 {
+			cands = append(cands, e)
+		}
+		hits[e.ID] += w
+	}
 	for n, es := range idx {
 		if !strings.Contains(situation, n) {
 			continue
 		}
+		w := idf(len(es))
 		for _, e := range es {
-			if seen[e.ID] || f.entryOut(st, e, day) || (!entities && (e.Facet == entry.World || e.Facet == entry.People)) {
+			if f.entryOut(st, e, day) || (!entities && (e.Facet == entry.World || e.Facet == entry.People)) {
 				continue
 			}
-			seen[e.ID] = true
-			cands = append(cands, e)
+			add(e, w)
+		}
+	}
+	// A fact that names the thing in its text without carrying it as a subject (an older world line) is found by the
+	// name too, as a search would.
+	if entities {
+		names := map[string]bool{}
+		for n := range idx {
+			if strings.Contains(situation, n) && len([]rune(n)) >= 4 {
+				names[n] = true
+			}
+		}
+		for _, n := range collabIdent.FindAllString(situation, -1) { // a repository, a service, a command named in it
+			names[n] = true
+		}
+		for n := range names {
+			var found []*entry.Entry
+			for _, e := range st.Entries {
+				if (e.Facet == entry.World || e.Facet == entry.People) && strings.Contains(e.Shown(), n) {
+					found = append(found, e)
+				}
+			}
+			w := idf(len(found))
+			for _, e := range found {
+				if !memsrc.Pageable(st, e) || len(e.Cats()) > 0 || e.OriginSpace != "" || e.Inferred || f.entryOut(st, e, day) {
+					continue
+				}
+				add(e, w)
+			}
 		}
 	}
 	sort.Slice(cands, func(i, j int) bool {
 		a, b := cands[i], cands[j]
+		if hits[a.ID] != hits[b.ID] {
+			return hits[a.ID] > hits[b.ID]
+		}
 		if ra, rb := memsrc.Rank(a), memsrc.Rank(b); ra != rb {
 			return ra > rb
 		}

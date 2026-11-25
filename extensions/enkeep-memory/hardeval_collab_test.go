@@ -85,3 +85,20 @@ func TestCollabRecall(t *testing.T) {
 		t.Fatalf("ablation = %q", noent)
 	}
 }
+
+// A world fact that names a repository only in its text is found by that name; a name behind many entries weighs
+// less than the repository's own.
+func TestCollabRecallByIdentifier(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"w-repo": {ID: "w-repo", Facet: entry.World, Type: "decision", Text: "repo-shared-x is a shared repository; personal parts get their own", Status: entry.Stable, Count: 1, First: "2026-11-01", Last: "2026-11-01", Tagged: true, Origin: entry.Behavior},
+	}}
+	for i := 0; i < 30; i++ {
+		id := "j-" + strings.Repeat("a", i+1)
+		st.Entries[id] = &entry.Entry{ID: id, Facet: entry.Judgement, Text: "general rule " + id, Status: entry.Stable, Count: 5, First: "2026-11-01", Last: "2026-11-10", Tagged: true, Origin: entry.Behavior, Scopes: []entry.Scope{{Kind: entry.ScopeProject, Name: "platform-x"}}}
+	}
+	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}}
+	got := collabNames(st).recall(st, f, "2026-11-16", "the user asks whether to create a repo next to repo-shared-x on platform-x", "", 200, true)
+	if !strings.HasPrefix(got, "- repo-shared-x is a shared repository") {
+		t.Fatalf("recall = %q", got)
+	}
+}
