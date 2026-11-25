@@ -194,11 +194,41 @@ class AgentTopicTest(unittest.TestCase):
 
     def test_the_setting_off_sends_no_thread(self):
         self.c.topics = False
+        # Regular group request: no thread, no topic_id, no group/topic split classification.
         self.c._on_live(message("m1", "g1", 1, kind="group", sender=ME, text="/agent 新问题"))
         got = self.handed()["message"]
-        self.assertNotIn("thread", got)
         self.assertEqual(got["chat_id"], "g1")
-        self.assertEqual(got["chat_kind"], "group")
+        self.assertNotIn("thread", got)
+        self.assertNotIn("chat_kind", got)
+        self.assertNotIn("topic_id", got)
+
+        # Topic reply when agent_group_topics=False also suppresses topic routing so it goes to the channel target.
+        self.hub.got.clear()
+        self.c._on_live(message("m2", "g1", 2, kind="group", sender=ME, text="/agent 话题内追问", root="m1"))
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "g1")
+        self.assertNotIn("thread", got)
+        self.assertNotIn("chat_kind", got)
+        self.assertNotIn("topic_id", got)
+
+        # Topic group root message with explicit topic_id also suppresses topic routing when topics=False.
+        self.hub.got.clear()
+        m_topic = message("m3", "g_topic", 3, kind="group", sender=ME, text="/agent 话题群")
+        m_topic["topic_id"] = "m3"
+        self.c._on_live(m_topic)
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "g_topic")
+        self.assertNotIn("thread", got)
+        self.assertNotIn("chat_kind", got)
+        self.assertNotIn("topic_id", got)
+
+        # Direct chats still emit direct routing.
+        self.hub.got.clear()
+        self.c._on_live(message("m4", "c_dm", 1, kind="dm", sender=ME, text="/agent 私聊"))
+        got = self.handed()["message"]
+        self.assertEqual(got["chat_id"], "c_dm")
+        self.assertEqual(got["chat_kind"], "direct")
+        self.assertNotIn("thread", got)
         self.assertNotIn("topic_id", got)
 
     def test_direct_chat_emits_direct_routing_without_topic_or_legacy_thread(self):
@@ -311,7 +341,7 @@ class AgentTopicTest(unittest.TestCase):
         self.assertIs(props["agent_mention"]["default"], True)
         self.assertEqual(props["agent_group_topics"]["section"], "advanced")
         self.assertIs(props["agent_group_topics"]["default"], True)
-        self.assertEqual(manifest["engines"]["persona"], ">=202611241250")
+        self.assertNotIn("persona", manifest.get("engines", {}))
 
     def test_initialize_and_the_manifest(self):
         got = {}

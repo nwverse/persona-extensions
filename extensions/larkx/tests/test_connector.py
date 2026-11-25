@@ -1085,6 +1085,25 @@ class NormalizeTest(unittest.TestCase):
         self.assertEqual((dm_with_thread["chat_kind"], dm_with_thread["topic_id"]), ("dm", ""))
         self.assertEqual(_channel_routing(dm_with_thread), {"chat_id": "c_dm", "chat_kind": "direct"})
 
+        # Regression: chat_type=3 topic-group root still gets msg_id even when scope="chat" and no root/thread IDs.
+        topic_group_chat_scope = normalize(
+            {"msg_id": "19", "chat_id": "g_topic", "chat_type": 3, "msg_type_name": "TEXT",
+             "scope": "chat", "root_id": "0", "thread_id": ""}, self.key
+        )
+        self.assertEqual((topic_group_chat_scope["chat_kind"], topic_group_chat_scope["topic_id"]), ("group", "19"))
+        self.assertEqual(_channel_routing(topic_group_chat_scope), {"chat_id": "g_topic", "chat_kind": "topic", "topic_id": "19"})
+
+        topic_group_system = normalize(
+            {"msg_id": "20", "chat_id": "g_topic", "chat_type": 3, "msg_type_name": "SYSTEM",
+             "scope": "chat", "root_id": "0", "thread_id": ""}, self.key
+        )
+        self.assertEqual((topic_group_system["chat_kind"], topic_group_system["topic_id"]), ("group", ""))
+
+        # When agent_group_topics is off (topics=False), group/topic messages suppress chat_kind and topic_id.
+        self.assertEqual(_channel_routing(reply, topics=False), {"chat_id": "g1"})
+        self.assertEqual(_channel_routing(topic_group_chat_scope, topics=False), {"chat_id": "g_topic"})
+        self.assertEqual(_channel_routing(dm_with_thread, topics=False), {"chat_id": "c_dm", "chat_kind": "direct"})
+
 
 if __name__ == "__main__":
     unittest.main()

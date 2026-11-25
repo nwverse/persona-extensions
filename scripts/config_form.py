@@ -25,9 +25,6 @@ KEYS_FOR = {
 }
 FORMATS = ("uri", "email", "hostname", "machine", "launcher")
 SECTIONS = ("connection", "channel", "inbox", "advanced")
-# First hub build supporting optional configuration property `section` hints (nwverse/persona#14833).
-SECTION_MIN_PERSONA_BUILD = 202611241250
-PERSONA_LOWER_BOUND = re.compile(r">=\+?0*([1-9][0-9]*)")
 SYSTEMS = ("darwin", "linux", "windows")
 FIELD_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_-]{0,63}")
 HOSTNAME = re.compile(r"(?:[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)*[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?")
@@ -44,29 +41,6 @@ def check(manifest, allow_section=True):
     """Raise Refused when a hub would refuse manifest's configuration (or what refers to it)."""
     fields = parse(manifest.get("configuration"), allow_section=allow_section)
     check_configured(manifest, fields or [])
-    if allow_section and _uses_section(fields or []):
-        _check_section_engine_gate(manifest)
-
-
-def _uses_section(fields):
-    for f in fields:
-        if f.get("section"):
-            return True
-        if f.get("items") and _uses_section([f["items"]]):
-            return True
-        if f.get("fields") and _uses_section(f["fields"]):
-            return True
-    return False
-
-
-def _check_section_engine_gate(manifest):
-    engines = manifest.get("engines")
-    spec = engines.get("persona") if isinstance(engines, dict) else ""
-    if not isinstance(spec, str) or not spec.strip():
-        raise Refused("engines.persona: configuration section hints require persona >=%d" % SECTION_MIN_PERSONA_BUILD)
-    bounds = [int(m.group(1)) for m in PERSONA_LOWER_BOUND.finditer(spec)]
-    if not bounds or max(bounds) < SECTION_MIN_PERSONA_BUILD:
-        raise Refused("engines.persona: configuration section hints require persona >=%d" % SECTION_MIN_PERSONA_BUILD)
 
 
 def parse(schema, allow_section=True):

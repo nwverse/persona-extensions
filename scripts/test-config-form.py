@@ -84,7 +84,6 @@ class SubsetTests(unittest.TestCase):
         self.assertEqual(refused({"type": "object", "properties": {"a": {"type": "string", "pattern": r"^\p{Han}+$"}}}), "")
 
     def test_section_hints_accept_valid_values_and_refuse_invalid_ones(self):
-        gate = {"engines": {"persona": ">=202611241250"}}
         valid = {"type": "object", "properties": {
             "url": {"type": "string", "format": "uri", "section": "connection"},
             "rules": {"type": "string", "section": "inbox"},
@@ -96,20 +95,17 @@ class SubsetTests(unittest.TestCase):
                 "plain": {"type": "string"},
             }},
         }}
-        self.assertEqual(refused(valid, gate), "")
-        self.assertEqual(refused(valid, {"engines": {"persona": ">=202611241250 <202701010000"}}), "")
-        # Using section requires an explicit engines.persona gate >= 202611241250.
-        self.assertIn("engines.persona", refused(valid))
-        self.assertIn("engines.persona", refused(valid, {"engines": {"persona": ">=202611041602"}}))
+        # Additive section metadata does not force an engines.persona lower bound.
+        self.assertEqual(refused(valid), "")
         self.assertEqual(refused({"type": "object", "properties": {"a": {"type": "string", "section": ""}}}), "")
         for bad in ("general", "unknown", "Connection", "ADVANCED", " connection", "inbox "):
-            err = refused({"type": "object", "properties": {"a": {"type": "string", "section": bad}}}, gate)
+            err = refused({"type": "object", "properties": {"a": {"type": "string", "section": bad}}})
             self.assertIn("connection, channel, inbox or advanced", err, bad)
         for bad in (None, 123, True, False, [], {}):
-            err = refused({"type": "object", "properties": {"a": {"type": "string", "section": bad}}}, gate)
+            err = refused({"type": "object", "properties": {"a": {"type": "string", "section": bad}}})
             self.assertIn("section: a string", err, repr(bad))
         err = refused({"type": "object", "properties": {"g": {"type": "object", "properties": {
-            "n": {"type": "string", "section": "bogus"}}}}}, gate)
+            "n": {"type": "string", "section": "bogus"}}}}})
         self.assertIn("g.n", err)
         self.assertIn("connection, channel, inbox or advanced", err)
 
@@ -119,7 +115,7 @@ class SubsetTests(unittest.TestCase):
             "version": "1.0.0",
             "tags": ["demo"],
             "icon": "assets/icon.png",
-            "engines": {"persona": ">=202611241250"},
+            "engines": {"plugin_protocol": 1},
             "configuration": {
                 "type": "object",
                 "properties": {
@@ -135,6 +131,7 @@ class SubsetTests(unittest.TestCase):
             config_form.check(catalog.source_entry(source)["manifest"], allow_section=False)
         projected = catalog.legacy_manifest(source)
         config_form.check(projected, allow_section=False)
+        self.assertNotIn("persona", projected.get("engines", {}))
         self.assertIn("section", projected["configuration"]["properties"])
         self.assertNotIn("section", projected["configuration"]["properties"]["section"])
         self.assertEqual(projected["configuration"]["properties"]["section"]["default"], "keep-name")

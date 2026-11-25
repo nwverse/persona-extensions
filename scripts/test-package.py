@@ -150,7 +150,7 @@ def _assert_pre_section_strict_schema(schema):
 
 
 class LegacyManifestCompatibilityTests(unittest.TestCase):
-    """Packaged persona-extension.json retains configuration section hints (gated by engines.persona), while
+    """Packaged persona-extension.json retains configuration section hints without raising engines.persona, while
     packaged persona-plugin.json strips section hints so older strict schemas still accept it."""
 
     def test_larkx_package_projects_section_out_of_legacy_manifest(self):
@@ -169,9 +169,10 @@ class LegacyManifestCompatibilityTests(unittest.TestCase):
             ext_manifest = json.loads(t.extractfile('larkx/persona-extension.json').read().decode('utf-8'))
             legacy_manifest = json.loads(t.extractfile('larkx/persona-plugin.json').read().decode('utf-8'))
 
-        # New-hub manifest matches catalog inventory, enforces engines.persona gate, and keeps section hints.
+        # Neither manifest raises an engines.persona lower bound for additive section metadata.
         self.assertEqual(ext_manifest, catalog.source_entry(source)['manifest'])
-        self.assertEqual(ext_manifest['engines']['persona'], '>=202611241250')
+        self.assertNotIn('persona', ext_manifest.get('engines', {}))
+        self.assertNotIn('persona', legacy_manifest.get('engines', {}))
         config_form.check(ext_manifest)
         for prop in ext_manifest['configuration']['properties'].values():
             self.assertIn('section', prop)

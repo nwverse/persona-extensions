@@ -401,8 +401,6 @@ def normalize(msg, extract_key):
     if chat_type != 1:
         if scope == "topic":
             topic_id = anchor or thread_id or root or (msg_id if name != "SYSTEM" else "")
-        elif scope == "chat":
-            topic_id = thread_id or root
         elif chat_type == 3 and name != "SYSTEM":
             topic_id = anchor or thread_id or root or msg_id
         else:
