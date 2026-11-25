@@ -162,34 +162,65 @@ func (a *app) queueRerun(from, to, today string, force bool) (string, error) {
 }
 
 // applyReruns merges any pending requests from reruns-queue.json into State.RerunQueue / State.ForceReruns without
-// disturbing days already queued, saves and publishes the snapshot, then removes the queue file.
+// disturbing days already queued, saves and publishes the snapshot, then trims the applied requests from the file.
+// Lock order: never hold a.rerunsMu while waiting for a.c.St.Lock(), so concurrent enkeep_rerun calls never block.
 func (a *app) applyReruns() {
 	a.rerunsMu.Lock()
-	defer a.rerunsMu.Unlock()
-	q := a.readReruns()
-	if len(q) == 0 {
+	hasPending := len(a.readReruns()) > 0
+	a.rerunsMu.Unlock()
+	if !hasPending {
 		return
 	}
 	a.c.St.Lock()
 	defer a.c.St.Unlock()
-	totalQueued := 0
-	for _, req := range q {
-		r, err := a.c.QueueRerunLocked(req.From, req.To, req.Today, req.Force)
-		if err != nil {
-			a.logf("enkeep-memory: queued rerun %s..%s: %v", req.From, req.To, err)
-			continue
-		}
-		totalQueued += len(r.Queued)
-	}
-	if totalQueued > 0 {
-		if err := a.c.St.Save(); err != nil {
-			a.logf("enkeep-memory: queued reruns save: %v", err) // keep the queue file to retry on next tick/start
+	for {
+		a.rerunsMu.Lock()
+		q := a.readReruns()
+		a.rerunsMu.Unlock()
+		if len(q) == 0 {
 			return
 		}
-		a.c.Publish()
+		totalQueued := 0
+		for _, req := range q {
+			r, err := a.c.QueueRerunLocked(req.From, req.To, req.Today, req.Force)
+			if err != nil {
+				a.logf("enkeep-memory: queued rerun %s..%s: %v", req.From, req.To, err)
+				continue
+			}
+			totalQueued += len(r.Queued)
+		}
+		if totalQueued > 0 {
+			if err := a.c.St.Save(); err != nil {
+				a.logf("enkeep-memory: queued reruns save: %v", err) // keep the queue file to retry on next tick/start
+				return
+			}
+			a.c.Publish()
+		}
+		// Trim only the prefix we applied so any request appended during St.Save() is preserved and processed next.
+		a.rerunsMu.Lock()
+		cur := a.readReruns()
+		n := min(len(q), len(cur))
+		rest := cur[n:]
+		var werr error
+		if len(rest) == 0 {
+			if err := os.Remove(a.rerunsPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+				werr = err
+			}
+		} else {
+			b, err := json.Marshal(rest)
+			if err == nil {
+				err = os.WriteFile(a.rerunsPath(), b, 0o600)
+			}
+			werr = err
+		}
+		a.rerunsMu.Unlock()
+		if werr != nil {
+			a.logf("enkeep-memory: %s: %v", rerunsFile, werr)
+			return
+		}
+		a.logf("enkeep-memory: queued reruns merged: %d day(s) added from %d request(s)", totalQueued, len(q))
+		if len(rest) == 0 {
+			return
+		}
 	}
-	if err := os.Remove(a.rerunsPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		a.logf("enkeep-memory: %s: %v", rerunsFile, err)
-	}
-	a.logf("enkeep-memory: queued reruns merged: %d day(s) added from %d request(s)", totalQueued, len(q))
 }
