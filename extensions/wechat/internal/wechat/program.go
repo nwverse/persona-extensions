@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"slices"
 	"sync"
 
@@ -150,10 +151,16 @@ func (p *program) channel(ctx context.Context, method string, params json.RawMes
 		if sp.Ref == "" {
 			return nil, errors.New("channel.send without a ref")
 		}
-		key := messageSum(splitText(sp.Text), sp.Images)
-		res, err := p.sent.do(sp.Ref, key, func() (wire.ChannelSendResult, error) { return b.Send(ctx, sp) })
-		if errors.Is(err, errCannotSend) {
+		ctx, cancel := context.WithTimeout(ctx, sendDeadline) // waiting for an earlier send of the ref counts too
+		defer cancel()
+		res, err := p.sent.do(ctx, sp.Ref, b.sendKey(sp), func() (wire.ChannelSendResult, error) { return b.Send(ctx, sp) })
+		switch {
+		case errors.Is(err, errCannotSend):
 			return nil, ext.CannotSend(err.Error())
+		case errors.Is(err, errStillSending):
+			log.Printf("wechat: send reply_to=%q ref=%q stopped: out of time (%s at most) waiting for the ref's earlier send",
+				sp.ReplyTo, sp.Ref, sendDeadline)
+			return nil, sendFailed{b.lang()}
 		}
 		return res, err
 	case "typing":
@@ -185,10 +192,10 @@ func (s hubSecrets) Delete(ctx context.Context) error { return s.hub.DeleteSecre
 // doneMost is how many sent refs the program remembers.
 const doneMost = 256
 
-// sentRefs runs each channel.send once by its ref and content (a failed one may go again). A send still running holds
-// its ref, so the hub's retry of it (it timed out waiting) waits for that send instead of sending the message again.
-// The same ref with other content (messageSum) is another message: it waits for a send of the ref still running, then
-// goes, and replaces what was remembered for the ref.
+// sentRefs runs each channel.send once by its ref and key (Bot.sendKey: the binding and the content; a failed one may
+// go again). A send still running holds its ref, so the hub's retry of it (it timed out waiting) waits for that send
+// instead of sending the message again. The same ref with another key is another message: it waits for a send of the
+// ref still running, then goes, and replaces what was remembered for the ref. A wait ends with ctx: errStillSending.
 type sentRefs struct {
 	mu    sync.Mutex
 	sent  map[string]*sentRef
@@ -196,13 +203,16 @@ type sentRefs struct {
 }
 
 type sentRef struct {
-	key  string // the content sent (messageSum)
+	key  string // Bot.sendKey
 	done chan struct{}
 	res  wire.ChannelSendResult
 	err  error
 }
 
-func (r *sentRefs) do(ref, key string, send func() (wire.ChannelSendResult, error)) (wire.ChannelSendResult, error) {
+// errStillSending: the call's time ran out waiting for an earlier send of its ref.
+var errStillSending = errors.New("an earlier send of the ref is still running")
+
+func (r *sentRefs) do(ctx context.Context, ref, key string, send func() (wire.ChannelSendResult, error)) (wire.ChannelSendResult, error) {
 	r.mu.Lock()
 	for {
 		prev, ok := r.sent[ref]
@@ -221,7 +231,11 @@ func (r *sentRefs) do(ref, key string, send func() (wire.ChannelSendResult, erro
 		default:
 		}
 		r.mu.Unlock()
-		<-prev.done
+		select {
+		case <-prev.done:
+		case <-ctx.Done():
+			return wire.ChannelSendResult{}, errStillSending
+		}
 		if prev.key == key {
 			return prev.res, prev.err
 		}

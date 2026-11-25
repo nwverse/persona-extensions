@@ -100,7 +100,7 @@ func (b *Bot) send(ctx context.Context, c *ilink.Client, peer, contextToken, rep
 		return false
 	}
 	parts := splitText(text)
-	ids := newSendIDs(ref, peer, parts, nil)
+	ids := newSendIDs(ref, peer, 0, parts, nil)
 	for i, part := range parts {
 		if !b.sendPiece(ctx, c, peer, contextToken, replyTo, ref, partOf(i, len(parts)), ids.parts[i], part) {
 			return false
@@ -184,16 +184,22 @@ func (b *Bot) rememberOutbound(peer, serverID, text string, media []quoteMedia) 
 // stops the send (sendFailed), and so does sendDeadline: the hub sends the same ref again, and what WeChat confirmed of
 // it is remembered by ref (sendProgress), so the next send of the ref goes on from the piece or picture that failed.
 func (b *Bot) Send(ctx context.Context, p wire.ChannelSendParams) (wire.ChannelSendResult, error) {
+	parts := splitText(p.Text)
+	sum := ""
+	if p.Ref != "" {
+		sum = messageSum(parts, p.Images)
+	}
 	b.mu.Lock()
 	c, creds, contextToken, gen := b.client, b.st.Creds, b.st.Context, b.sendGen
+	round := b.roundLocked(p.Ref, sum)
 	b.mu.Unlock()
 	if creds == nil || c == nil || contextToken == "" {
 		return wire.ChannelSendResult{}, errCannotSend
 	}
 	ctx, cancel := context.WithTimeout(ctx, sendDeadline)
 	defer cancel()
-	peer, parts := creds.UserID, splitText(p.Text)
-	ids := newSendIDs(p.Ref, peer, parts, p.Images)
+	peer := creds.UserID
+	ids := sendIDsOf(p.Ref, peer, round, sum, len(parts), len(p.Images))
 	pr := b.resume(p.Ref, gen, ids)
 	if textDone, imagesDone := countIn(pr.done, ids.parts), countIn(pr.done, ids.images); textDone > 0 || imagesDone > 0 {
 		log.Printf("wechat: send reply_to=%q ref=%q resume text=%d/%d image=%d/%d",
@@ -242,37 +248,90 @@ func (b *Bot) Send(ctx context.Context, p wire.ChannelSendParams) (wire.ChannelS
 	return wire.ChannelSendResult{}, nil
 }
 
-// sendDeadline is how long one channel.send may take. The hub waits 2 minutes for a call to a connector's extension,
-// and restarts the extension after three calls in a row time out (Persona's server/internal/extmgr/extensions.go,
-// CallTimeout, and server/internal/extension/host/host.go, StrikesToKill). A send still going at sendDeadline stops as
-// a failure that may pass, before the hub gives up on the call; what it got is kept for the hub's retry. Tests shorten
-// it.
+// sendDeadline is how long one channel.send may take, counted from the call (program.channel: waiting for an earlier
+// send of the same ref counts too). The hub waits 2 minutes for a call to a connector's extension, and restarts the
+// extension after three calls in a row time out (Persona's server/internal/extmgr/extensions.go, CallTimeout, and
+// server/internal/extension/host/host.go, StrikesToKill). A send still going at sendDeadline stops as a failure that
+// may pass, before the hub gives up on the call; what it got is kept for the hub's retry. Tests shorten it.
 var sendDeadline = 100 * time.Second
 
 // sendIDs are the client_ids of one send's text pieces and pictures. With a ref, each comes from the ref, the WeChat it
-// goes to (peer), sum (a digest of all the send's text and pictures) and the piece's kind and place: the hub's retry of
-// the same message has the same ids, so iLink may keep a repeat once and the progress kept by ref knows them. Other
-// content under the same ref has another sum and so new ids for every piece: it is sent again from the start, and
-// iLink takes none of it for a repeat; nor does it take the same message to a WeChat bound later for one sent before.
-// (The hub fetches an answer's pictures again each time it sends the answer, and a picture it could not fetch stays a
-// link in the text: its retry of an answer may differ.) Without a ref the ids are random.
+// goes to (peer), the send's round (roundLocked), sum (a digest of all its text and pictures) and the piece's kind and
+// place: the hub's retry of the same message has the same ids, so iLink may keep a repeat once and the progress kept
+// by ref knows them. Other content under the same ref is a new round with new ids for every piece, and so is content
+// that comes back after other content (A, B, then A again): it is sent again from the start, and iLink takes none of
+// it for a repeat; nor does it take the same message to a WeChat bound later for one sent before. (The hub fetches an
+// answer's pictures again each time it sends the answer, and a picture it could not fetch stays a link in the text:
+// its retry of an answer may differ.) Without a ref the ids are random.
 type sendIDs struct {
 	ref, peer, sum string
+	round          int
 	parts, images  []string
 }
 
-func newSendIDs(ref, peer string, parts []string, images []wire.ChannelBlob) sendIDs {
-	ids := sendIDs{ref: ref, peer: peer}
+// newSendIDs are the ids of parts and images sent to peer under ref in round.
+func newSendIDs(ref, peer string, round int, parts []string, images []wire.ChannelBlob) sendIDs {
+	sum := ""
 	if ref != "" {
-		ids.sum = messageSum(parts, images)
+		sum = messageSum(parts, images)
 	}
-	for i := range parts {
+	return sendIDsOf(ref, peer, round, sum, len(parts), len(images))
+}
+
+// sendIDsOf are the ids of n text pieces and m pictures whose digest is sum (messageSum).
+func sendIDsOf(ref, peer string, round int, sum string, n, m int) sendIDs {
+	ids := sendIDs{ref: ref, peer: peer, sum: sum, round: round}
+	for i := range n {
 		ids.parts = append(ids.parts, ids.id("text", i))
 	}
-	for i := range images {
+	for i := range m {
 		ids.images = append(ids.images, ids.id("image", i))
 	}
 	return ids
+}
+
+// roundsMost is how many refs' rounds the bot keeps; past it the oldest is dropped.
+const roundsMost = 256
+
+// sendRound is the latest content sent under a ref (its messageSum) and which round of the ref it is.
+type sendRound struct {
+	sum string
+	n   int
+}
+
+// roundLocked is the round of ref's send of the content sum, b.mu held: the latest round when sum is the latest
+// content sent under ref (the hub sends it again), the next round when it is not. Without a ref it is 0.
+func (b *Bot) roundLocked(ref, sum string) int {
+	if ref == "" {
+		return 0
+	}
+	r, ok := b.rounds[ref]
+	if ok && r.sum == sum {
+		return r.n
+	}
+	if b.rounds == nil {
+		b.rounds = map[string]sendRound{}
+	}
+	if !ok {
+		b.roundOrder = append(b.roundOrder, ref)
+		for len(b.roundOrder) > roundsMost {
+			delete(b.rounds, b.roundOrder[0])
+			b.roundOrder = b.roundOrder[1:]
+		}
+	}
+	r = sendRound{sum: sum, n: r.n + 1}
+	b.rounds[ref] = r
+	return r.n
+}
+
+// sendKey tells one channel.send under a ref from another at the program's entry (sentRefs): the binding's sending
+// generation (Bot.sendGen) and the message's content, so a send to a WeChat bound later is not answered with what
+// was sent to one before.
+func (b *Bot) sendKey(p wire.ChannelSendParams) string {
+	b.mu.Lock()
+	gen := b.sendGen
+	b.mu.Unlock()
+	return strconv.FormatUint(gen, 10) + ":" + messageSum(splitText(p.Text), p.Images)
 }
 
 // messageSum is a digest of a send's text pieces and pictures: what tells one message under a ref from another.
@@ -299,17 +358,18 @@ func (s sendIDs) id(kind string, i int) string {
 		_, _ = rand.Read(r[:])
 		return "persona-" + hex.EncodeToString(r[:])
 	}
-	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s|%d:%s|%s|%s|%d", len(s.ref), s.ref, len(s.peer), s.peer, s.sum, kind, i))
+	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s|%d:%s|%d|%s|%s|%d", len(s.ref), s.ref, len(s.peer), s.peer, s.round, s.sum, kind, i))
 	return "persona-" + hex.EncodeToString(sum[:12])
 }
 
 // progressMost is how many refs' progress the bot keeps; past it the oldest is dropped (its send then starts over).
 const progressMost = 64
 
-// sendProgress is how far a ref's channel.send of the content sum got, by client_id (sendIDs).
+// sendProgress is how far a ref's channel.send of the content sum in round got, by client_id (sendIDs).
 type sendProgress struct {
-	// sum is the content's digest (sendIDs.sum).
-	sum string
+	// sum and round are the send's (sendIDs).
+	sum   string
+	round int
 	// done are the text pieces and pictures WeChat confirmed, and the pictures skipped: none is sent again.
 	done map[string]bool
 	// skipped are the pictures skipped as unsendable, for the text that says how many were not sent.
@@ -339,10 +399,10 @@ func countIn(set map[string]bool, ids []string) int {
 }
 
 // resume is what is kept of ref's send for a send that started in sending generation gen (Bot.sendGen). What was kept
-// for other content under the ref (another sum) is dropped: that send starts over. Nothing is kept without a ref, or
+// for other content under the ref, or another round of it, is dropped: that send starts over. Nothing is kept without a ref, or
 // for a send that started before the binding changed.
 func (b *Bot) resume(ref string, gen uint64, ids sendIDs) sendProgress {
-	pr := sendProgress{sum: ids.sum, done: map[string]bool{}, skipped: map[string]bool{}}
+	pr := sendProgress{sum: ids.sum, round: ids.round, done: map[string]bool{}, skipped: map[string]bool{}}
 	if ref == "" {
 		return pr
 	}
@@ -355,7 +415,7 @@ func (b *Bot) resume(ref string, gen uint64, ids sendIDs) sendProgress {
 	switch {
 	case !ok:
 		return pr
-	case kept.sum != ids.sum:
+	case kept.sum != ids.sum || kept.round != ids.round:
 		b.forgetLocked(ref)
 		return pr
 	}

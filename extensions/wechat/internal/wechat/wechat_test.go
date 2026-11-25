@@ -815,9 +815,10 @@ func TestSendRetryKeepsTheClientID(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("the owner got %d copies: %+v", len(sent), sent)
 	}
-	if newSendIDs("other", owner, []string{p.Text}, nil).parts[0] == ids[0] || newSendIDs(p.Ref, owner, []string{"另一个答案"}, nil).parts[0] == ids[0] ||
-		newSendIDs(p.Ref, "other@im.wechat", []string{p.Text}, nil).parts[0] == ids[0] {
-		t.Fatal("another ref, text or WeChat must get another client_id")
+	if newSendIDs("other", owner, 1, []string{p.Text}, nil).parts[0] == ids[0] || newSendIDs(p.Ref, owner, 1, []string{"另一个答案"}, nil).parts[0] == ids[0] ||
+		newSendIDs(p.Ref, "other@im.wechat", 1, []string{p.Text}, nil).parts[0] == ids[0] ||
+		newSendIDs(p.Ref, owner, 2, []string{p.Text}, nil).parts[0] == ids[0] {
+		t.Fatal("another ref, text, WeChat or round must get another client_id")
 	}
 }
 
@@ -1011,7 +1012,7 @@ func runResumeScenario(t *testing.T, r *rig, ref string, send func(wire.ChannelS
 	if sends != 2 || urls != 4 || ups != 1 { // the text and picture 1 sent; picture 1 and picture 2's three tries asked
 		t.Fatalf("after the failure: %d sendmessage, %d getuploadurl, %d uploads", sends, urls, ups)
 	}
-	ids := newSendIDs(ref, owner, splitText(p.Text), p.Images)
+	ids := newSendIDs(ref, owner, 1, splitText(p.Text), p.Images)
 	if pr, ok := r.progressOf(ref); !ok || pr.sum != ids.sum || len(pr.done) != 2 || !pr.done[ids.parts[0]] || !pr.done[ids.images[0]] ||
 		len(pr.skipped) != 0 || pr.uploadOf != ids.images[1] || pr.upload.Query != "" {
 		t.Fatalf("progress after the failure: %+v %v", pr, ok)
@@ -1131,10 +1132,10 @@ func TestSendOfChangedContent(t *testing.T) {
 func TestSendProgressKeepsTheLatestRefs(t *testing.T) {
 	b := New(Options{}, &memSecrets{})
 	ids := func(ref string) sendIDs {
-		return newSendIDs(ref, owner, []string{"text"}, []wire.ChannelBlob{testPicture(1)})
+		return newSendIDs(ref, owner, 1, []string{"text"}, []wire.ChannelBlob{testPicture(1)})
 	}
 	partDone := func(ref string) sendProgress {
-		return sendProgress{sum: ids(ref).sum, done: map[string]bool{ids(ref).parts[0]: true}}
+		return sendProgress{sum: ids(ref).sum, round: 1, done: map[string]bool{ids(ref).parts[0]: true}}
 	}
 	for i := range progressMost + 1 {
 		b.keep("ref-"+strconv.Itoa(i), 0, partDone("ref-"+strconv.Itoa(i)))
@@ -1155,7 +1156,7 @@ func TestSendProgressKeepsTheLatestRefs(t *testing.T) {
 	if pr := b.resume(newest, 0, ids(newest)); len(pr.done) != 2 {
 		t.Fatalf("the newest ref: %+v", pr)
 	}
-	if pr := b.resume("ref-2", 0, newSendIDs("ref-2", owner, []string{"other text"}, nil)); len(pr.done) != 0 ||
+	if pr := b.resume("ref-2", 0, newSendIDs("ref-2", owner, 1, []string{"other text"}, nil)); len(pr.done) != 0 ||
 		len(b.progress) != progressMost-1 || len(b.progressOrder) != progressMost-1 {
 		t.Fatalf("progress of other content is kept: %+v, %d refs", pr, len(b.progress))
 	}

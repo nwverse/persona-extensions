@@ -76,6 +76,9 @@ type Bot struct {
 	// sendGen counts binding changes that dropped the progress (forgetSendsLocked): a send keeps or reads progress
 	// only in the generation it started in.
 	sendGen uint64
+	// rounds are the latest round of each ref's send, oldest ref first in roundOrder (chat.go roundLocked).
+	rounds     map[string]sendRound
+	roundOrder []string
 }
 
 // state is what is kept in the hub (sealed): never logged.

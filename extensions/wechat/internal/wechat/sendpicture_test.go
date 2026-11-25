@@ -111,7 +111,7 @@ func TestSendSkipsAPictureWeChatRefuses(t *testing.T) {
 	if len(texts) != 2 || texts[0].Text != "三张图" || texts[1].Text != oneNotSent {
 		t.Fatalf("texts %+v", texts)
 	}
-	ids := newSendIDs(p.Ref, owner, splitText(p.Text), p.Images)
+	ids := newSendIDs(p.Ref, owner, 1, splitText(p.Text), p.Images)
 	r.ilink.mu.Lock()
 	last := r.ilink.clientIDs[len(r.ilink.clientIDs)-1]
 	r.ilink.mu.Unlock()
@@ -164,7 +164,7 @@ func TestSendCountsSkippedPicturesAcrossTheHubsRetry(t *testing.T) {
 	ctx := context.Background()
 	p := wire.ChannelSendParams{Ref: "run-12:1", Kind: wire.ChannelSendKindAnswer,
 		Images: []wire.ChannelBlob{testPicture(1), testPicture(2), testPicture(3)}}
-	ids := newSendIDs(p.Ref, owner, nil, p.Images)
+	ids := newSendIDs(p.Ref, owner, 1, nil, p.Images)
 	// Picture 1 refused by the CDN; picture 2's three uploads fail in a way that may pass.
 	failed := fakeAnswer{status: http.StatusInternalServerError}
 	r.ilink.answer("/c2c/upload", fakeAnswer{status: http.StatusBadRequest}, failed, failed, failed)
@@ -228,7 +228,7 @@ func TestSendKeepsAnUploadTheCDNTook(t *testing.T) {
 		!strings.Contains(lines[0], "error=iLink answered HTTP 500") {
 		t.Fatalf("logs %q", lines)
 	}
-	id := newSendIDs(p.Ref, owner, nil, p.Images).images[0]
+	id := newSendIDs(p.Ref, owner, 1, nil, p.Images).images[0]
 	if pr, ok := r.progressOf(p.Ref); !ok || pr.uploadOf != id || pr.upload.Query == "" || len(pr.done) != 0 {
 		t.Fatalf("progress %+v %v", pr, ok)
 	}
@@ -479,7 +479,7 @@ func TestSendStopsAtTheDeadline(t *testing.T) {
 	if took > 5*time.Second {
 		t.Fatalf("the send took %s: it did not stop at its deadline", took)
 	}
-	ids := newSendIDs(p.Ref, owner, splitText(p.Text), p.Images)
+	ids := newSendIDs(p.Ref, owner, 1, splitText(p.Text), p.Images)
 	if pr, ok := r.progressOf(p.Ref); !ok || len(pr.done) != 2 || !pr.done[ids.parts[0]] || !pr.done[ids.images[0]] {
 		t.Fatalf("progress %+v %v: want the text and picture 1", pr, ok)
 	}
@@ -606,5 +606,117 @@ func TestSendRunningAcrossAnUnbind(t *testing.T) {
 	r.sentTo(other, "看图")
 	if pics, _ := r.ilink.sentPictures(t); len(pics) != 1 || pics[0].To != other {
 		t.Fatalf("pictures %+v", pics)
+	}
+}
+
+// programSender sends through the program's channel.send, as the hub does.
+func programSender(p *program) func(wire.ChannelSendParams) error {
+	return func(sp wire.ChannelSendParams) error {
+		sp.Contribution = ID
+		params, _ := json.Marshal(sp)
+		_, err := p.channel(context.Background(), "send", params)
+		return err
+	}
+}
+
+// rebindTo logs the bot out and binds another WeChat, which then writes to the bot.
+func (r *rig) rebindTo(peer string) {
+	r.t.Helper()
+	if err := r.bot.Logout(context.Background()); err != nil {
+		r.t.Fatal(err)
+	}
+	r.bot.bound(context.Background(), ilink.Credentials{Token: "BT2", BotID: "bot2@im.bot", UserID: peer, BaseURL: "https://ilinkai.weixin.qq.com/"})
+	r.ilink.say(peer, "你好")
+	eventually(r.t, "the new WeChat's chat", func() bool {
+		r.bot.mu.Lock()
+		defer r.bot.mu.Unlock()
+		return r.bot.client != nil && r.bot.st.Creds != nil && r.bot.st.Creds.UserID == peer && r.bot.st.Context != ""
+	})
+}
+
+// Through the program and the fake iLink, which keeps a client_id once: a ref whose content goes from A to B and back
+// to A is three messages, all three delivered under client_ids of their own; A sent again right after is not sent.
+func TestProgramSendsEachContentChangeUnderARef(t *testing.T) {
+	r := pictureSendRig(t)
+	send := programSender(&program{bot: r.bot})
+	a := wire.ChannelSendParams{Ref: "run-22:1", Text: "甲", Kind: wire.ChannelSendKindAnswer, Images: []wire.ChannelBlob{testPicture(1)}}
+	b := wire.ChannelSendParams{Ref: "run-22:1", Text: "乙", Kind: wire.ChannelSendKindAnswer}
+	for i, sp := range []wire.ChannelSendParams{a, b, a} {
+		if err := send(sp); err != nil {
+			t.Fatalf("send %d: %v", i+1, err)
+		}
+	}
+	var got []string
+	for _, s := range r.ilink.texts() {
+		got = append(got, s.Text)
+	}
+	if !slices.Equal(got, []string{"甲", "乙", "甲"}) {
+		t.Fatalf("the owner got %q, want A, B, A", got)
+	}
+	if pics, plain := r.ilink.sentPictures(t); len(pics) != 2 || !samePicture(plain[1], testPicture(1)) {
+		t.Fatalf("the owner got %d pictures, want A's twice", len(pics))
+	}
+	r.ilink.mu.Lock()
+	ids := slices.Clone(r.ilink.clientIDs)
+	r.ilink.mu.Unlock()
+	if len(ids) != 5 || len(slices.Compact(slices.Sorted(slices.Values(ids)))) != 5 {
+		t.Fatalf("client_ids %q: want five, all different", ids)
+	}
+	before := r.tally()
+	if err := send(a); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.tally().minus(before); got != (tally{}) {
+		t.Fatalf("A again: calls %+v, want none", got)
+	}
+}
+
+// Through the program: what was sent under a ref to one WeChat does not answer the same ref and content once another
+// WeChat is bound; the new WeChat gets the message.
+func TestProgramSendsAfterARebind(t *testing.T) {
+	r := pictureSendRig(t)
+	send := programSender(&program{bot: r.bot})
+	sp := wire.ChannelSendParams{Ref: "run-23:1", Text: "换绑前后", Kind: wire.ChannelSendKindAnswer}
+	if err := send(sp); err != nil {
+		t.Fatal(err)
+	}
+	const other = "other@im.wechat"
+	r.rebindTo(other)
+	if err := send(sp); err != nil {
+		t.Fatal(err)
+	}
+	r.sentTo(other, "换绑前后")
+	before := r.tally()
+	if err := send(sp); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.tally().minus(before); got != (tally{}) {
+		t.Fatalf("the same content to the same WeChat again: calls %+v, want none", got)
+	}
+}
+
+// Through the program: a send that waits for a slow send of its ref with other content gets sendDeadline counted from
+// its own call, the wait included, not a full sendDeadline after the wait.
+func TestProgramQueuedSendSharesTheDeadline(t *testing.T) {
+	r := pictureSendRig(t)
+	prev := sendDeadline
+	sendDeadline = time.Second
+	t.Cleanup(func() { sendDeadline = prev })
+	r.ilink.answer("/c2c/upload", fakeAnswer{hang: true}, fakeAnswer{hang: true}) // both pictures' uploads never answer
+	send := programSender(&program{bot: r.bot})
+	a := wire.ChannelSendParams{Ref: "run-24:1", Text: "甲", Kind: wire.ChannelSendKindAnswer, Images: []wire.ChannelBlob{testPicture(1)}}
+	b := wire.ChannelSendParams{Ref: "run-24:1", Text: "乙", Kind: wire.ChannelSendKindAnswer, Images: []wire.ChannelBlob{testPicture(2)}}
+	aDone := make(chan error, 1)
+	go func() { aDone <- send(a) }()
+	eventually(t, "A's upload", func() bool { return len(r.ilink.cdnUploads()) == 1 })
+	time.Sleep(300 * time.Millisecond)
+	started := time.Now()
+	errB := send(b)
+	took := time.Since(started)
+	if errA := <-aDone; errA == nil || errB == nil {
+		t.Fatalf("A: %v, B: %v: both should run out of time", errA, errB)
+	}
+	if took > sendDeadline+400*time.Millisecond {
+		t.Fatalf("B took %s: its wait for A and its own send took more than its %s", took, sendDeadline)
 	}
 }

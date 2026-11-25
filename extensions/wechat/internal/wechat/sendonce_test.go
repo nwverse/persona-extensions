@@ -30,9 +30,9 @@ func TestSentRefsWaitForRunningSend(t *testing.T) {
 		err error
 	}
 	results := make(chan result, 2)
-	go func() { res, err := r.do("ref1", "k", send); results <- result{res, err} }()
+	go func() { res, err := r.do(context.Background(), "ref1", "k", send); results <- result{res, err} }()
 	<-started
-	go func() { res, err := r.do("ref1", "k", send); results <- result{res, err} }()
+	go func() { res, err := r.do(context.Background(), "ref1", "k", send); results <- result{res, err} }()
 	// Give the retry time to reach the running send: it must wait for it, not send again or answer early.
 	time.Sleep(50 * time.Millisecond)
 	if n := sends.Load(); n != 1 {
@@ -52,7 +52,7 @@ func TestSentRefsWaitForRunningSend(t *testing.T) {
 	if n := sends.Load(); n != 1 {
 		t.Fatalf("sent %d times", n)
 	}
-	if res, err := r.do("ref1", "k", send); err != nil || res.MessageID != "m1" || sends.Load() != 1 {
+	if res, err := r.do(context.Background(), "ref1", "k", send); err != nil || res.MessageID != "m1" || sends.Load() != 1 {
 		t.Fatalf("again later: %+v %v, %d send(s)", res, err, sends.Load())
 	}
 }
@@ -68,36 +68,36 @@ func TestSentRefsRetryAfterFailure(t *testing.T) {
 		}
 		return wire.ChannelSendResult{MessageID: "m2"}, nil
 	}
-	if _, err := r.do("ref2", "k", send); err == nil {
+	if _, err := r.do(context.Background(), "ref2", "k", send); err == nil {
 		t.Fatal("the first send did not fail")
 	}
 	if len(r.sent) != 0 || len(r.order) != 0 {
 		t.Fatalf("a failed send is remembered: %v %v", r.sent, r.order)
 	}
-	if res, err := r.do("ref2", "k", send); err != nil || res.MessageID != "m2" {
+	if res, err := r.do(context.Background(), "ref2", "k", send); err != nil || res.MessageID != "m2" {
 		t.Fatalf("retry: %+v %v", res, err)
 	}
-	if res, err := r.do("ref2", "k", send); err != nil || res.MessageID != "m2" || sends.Load() != 2 {
+	if res, err := r.do(context.Background(), "ref2", "k", send); err != nil || res.MessageID != "m2" || sends.Load() != 2 {
 		t.Fatalf("again later: %+v %v, %d send(s)", res, err, sends.Load())
 	}
 	later := 0 // sends of the later refs
 	sendLater := func() (wire.ChannelSendResult, error) { later++; return wire.ChannelSendResult{}, nil }
 	for i := range doneMost {
-		_, _ = r.do("later-"+strconv.Itoa(i), "k", sendLater)
+		_, _ = r.do(context.Background(), "later-"+strconv.Itoa(i), "k", sendLater)
 	}
 	if len(r.sent) > doneMost || len(r.order) > doneMost {
 		t.Fatalf("remembers %d sends", len(r.sent))
 	}
 	// The oldest (ref2) is forgotten and goes again; the next oldest and the newest are still remembered.
-	_, _ = r.do("later-0", "k", sendLater)
+	_, _ = r.do(context.Background(), "later-0", "k", sendLater)
 	if later != doneMost {
 		t.Fatal("the second oldest ref was sent again: more than the oldest was forgotten")
 	}
-	_, _ = r.do("ref2", "k", send)
+	_, _ = r.do(context.Background(), "ref2", "k", send)
 	if sends.Load() != 3 {
 		t.Fatalf("the oldest ref was not forgotten: %d send(s)", sends.Load())
 	}
-	_, _ = r.do("later-"+strconv.Itoa(doneMost-1), "k", sendLater)
+	_, _ = r.do(context.Background(), "later-"+strconv.Itoa(doneMost-1), "k", sendLater)
 	if later != doneMost {
 		t.Fatal("the newest ref was sent again")
 	}
@@ -130,7 +130,7 @@ func waiterOfAFailedSend(t *testing.T, wait time.Duration) bool {
 		return wire.ChannelSendResult{MessageID: "m3"}, nil
 	}
 	first := make(chan error, 1)
-	go func() { _, err := r.do("ref3", "k", send); first <- err }()
+	go func() { _, err := r.do(context.Background(), "ref3", "k", send); first <- err }()
 	<-started
 	type woke struct {
 		err   error
@@ -143,9 +143,9 @@ func waiterOfAFailedSend(t *testing.T, wait time.Duration) bool {
 	}
 	again := make(chan result, 1)
 	go func() {
-		_, err := r.do("ref3", "k", send)
+		_, err := r.do(context.Background(), "ref3", "k", send)
 		waited <- woke{err, sends.Load()}
-		res, err := r.do("ref3", "k", send)
+		res, err := r.do(context.Background(), "ref3", "k", send)
 		again <- result{res, err}
 	}()
 	time.Sleep(wait)
@@ -233,9 +233,9 @@ func TestSentRefsOtherContentUnderARef(t *testing.T) {
 		}
 	}
 	a, b := make(chan wire.ChannelSendResult, 1), make(chan wire.ChannelSendResult, 1)
-	go func() { res, _ := r.do("ref", "A", sendOf("a", true)); a <- res }()
+	go func() { res, _ := r.do(context.Background(), "ref", "A", sendOf("a", true)); a <- res }()
 	<-started
-	go func() { res, _ := r.do("ref", "B", sendOf("b", false)); b <- res }()
+	go func() { res, _ := r.do(context.Background(), "ref", "B", sendOf("b", false)); b <- res }()
 	time.Sleep(50 * time.Millisecond) // give B time to reach the running send of A: it must wait for it
 	if n := sends.Load(); n != 1 {
 		t.Fatalf("other content under the ref went while the ref's send ran: %d sends", n)
@@ -247,13 +247,43 @@ func TestSentRefsOtherContentUnderARef(t *testing.T) {
 	if res := <-b; res.MessageID != "b" || sends.Load() != 2 {
 		t.Fatalf("B: %+v, %d sends", res, sends.Load())
 	}
-	if res, _ := r.do("ref", "B", sendOf("b2", false)); res.MessageID != "b" || sends.Load() != 2 {
+	if res, _ := r.do(context.Background(), "ref", "B", sendOf("b2", false)); res.MessageID != "b" || sends.Load() != 2 {
 		t.Fatalf("B again: %+v, %d sends: it went twice", res, sends.Load())
 	}
-	if res, _ := r.do("ref", "A", sendOf("a2", false)); res.MessageID != "a2" || sends.Load() != 3 {
+	if res, _ := r.do(context.Background(), "ref", "A", sendOf("a2", false)); res.MessageID != "a2" || sends.Load() != 3 {
 		t.Fatalf("A after B: %+v, %d sends: other content than the last is another message", res, sends.Load())
 	}
 	if len(r.sent) != 1 || len(r.order) != 1 {
 		t.Fatalf("one ref remembered as %d sends, %d in order", len(r.sent), len(r.order))
+	}
+}
+
+// A send waiting for an earlier send of its ref stops when its context ends (errStillSending) and sends nothing; so
+// does the hub's retry waiting on the same content.
+func TestSentRefsWaitEndsWithItsContext(t *testing.T) {
+	var r sentRefs
+	started, release, first := make(chan struct{}), make(chan struct{}), make(chan error, 1)
+	go func() {
+		_, err := r.do(context.Background(), "ref", "A", func() (wire.ChannelSendResult, error) {
+			close(started)
+			<-release
+			return wire.ChannelSendResult{}, nil
+		})
+		first <- err
+	}()
+	<-started
+	var sends atomic.Int32
+	other := func() (wire.ChannelSendResult, error) { sends.Add(1); return wire.ChannelSendResult{}, nil }
+	for _, key := range []string{"B", "A"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		_, err := r.do(ctx, "ref", key, other)
+		cancel()
+		if !errors.Is(err, errStillSending) || sends.Load() != 0 {
+			t.Fatalf("%s waiting past its context: %v, %d sends", key, err, sends.Load())
+		}
+	}
+	close(release)
+	if err := <-first; err != nil {
+		t.Fatal(err)
 	}
 }
