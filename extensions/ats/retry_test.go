@@ -79,6 +79,34 @@ func TestErrorsARetryCannotFixEndTheTaskAfterOneAttempt(t *testing.T) {
 	}
 }
 
+func TestSessionStartFailureRetriesWithSelectedEngine(t *testing.T) {
+	r := newRig(t)
+	one := 1
+	task := r.enqueue(EnqueueInput{AgentType: AgentCodex, MaxRetries: &one})
+	r.tick()
+	r.hub.set("session-1", func(s *hubSession) { s.StartError = "engine unavailable" })
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateQueued || got.NotBefore == nil {
+		t.Fatalf("after the start failure: %+v", got)
+	}
+
+	r.now = got.NotBefore.Add(time.Second)
+	r.tick()
+	got = r.task(task.ID)
+	if got.State != StateRunning || got.AttemptNo != 2 || got.Exec == nil || got.Exec.SessionID != "session-2" {
+		t.Fatalf("retry did not start: %+v", got)
+	}
+	if len(r.hub.created) != 2 {
+		t.Fatalf("sessions started: %d", len(r.hub.created))
+	}
+	for i, req := range r.hub.created {
+		if req.AgentType != AgentCodex || req.Launcher != AgentCodex || req.PermissionMode != "plan" || got.Attempts[i].Harness != AgentCodex {
+			t.Errorf("attempt %d: request %+v attempt %+v", i+1, req, got.Attempts[i])
+		}
+	}
+}
+
 // failOnce runs a writable task's first attempt: the agent leaves work (committed or not), the acceptance
 // command fails, and the task waits for its second attempt.
 func failOnce(t *testing.T, r *rig, task *Task, commit bool) *Task {

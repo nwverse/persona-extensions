@@ -1,0 +1,26 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["overview", "sections", "recent"],
+  "properties": {
+    "overview": {
+      "type": "string",
+      "description": "2 to 4 sentences on the user's working style as a whole."
+    },
+    "sections": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Facet key to a 2-3 sentence synthesized description, patterns first, for each facet in the input."
+    },
+    "recent": {
+      "type": "array",
+      "maxItems": 4,
+      "items": {
+        "type": "string"
+      },
+      "description": "What the user themself is doing or watching lately; never someone else's actions."
+    }
+  }
+}

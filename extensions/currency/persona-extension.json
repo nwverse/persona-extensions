@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "currency",
   "name": "汇率和单位换算",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "icon": "assets/icon.png",
   "description": "换算常用货币与日常单位。汇率使用注明日期的欧洲央行参考数据；长度、质量、温度、体积、面积、速度、时长和数据单位在 hub 本地换算。",
   "publisher": "nwverse",
@@ -20,7 +20,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/currency.mjs",
-      "sha256": "54c6ad0719e1fec8fb55ebb622d0194cfd62a28c85b25c919159657f0fa71f47"
+      "sha256": "158b3935807754a18d64afe377051bf327b00c5cc5d5b263effad9708aaa4661"
     }
   },
   "contributes": {

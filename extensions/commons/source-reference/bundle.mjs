@@ -157,7 +157,8 @@ var fields = {
   grid: ["tiles", "max_columns"],
   carousel: ["title", "tiles", "width"],
   graph: ["nodes", "edges", "layout", "direction", "selected", "folded"],
-  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"]
+  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"],
+  map: ["title", "alt", "caption", "aspect", "viewport", "markers", "routes", "links", "static", "show_list"]
 };
 function pathPart(parent, ...segments) {
   return parent + segments.map((segment) => `${segment.length}:${segment}`).join("");
@@ -767,7 +768,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "commons", name: "Wikimedia Commons \u56FE\u7247\u68C0\u7D22", version: "0.1.3", icon: "assets/icon.png", description: "\u641C\u7D22 Wikimedia Commons \u56FE\u7247\uFF0C\u67E5\u770B\u4F5C\u8005\u3001\u8BB8\u53EF\u3001\u7F29\u7565\u56FE\u548C\u539F\u59CB\u8BF4\u660E\u9875\u3002\u5185\u5BB9\u7531 hub \u901A\u8FC7\u516C\u5F00 API \u83B7\u53D6\uFF0C\u65E0\u9700\u8D26\u53F7\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/commons/README.md", tags: ["\u56FE\u7247", "Wikimedia Commons", "\u8BB8\u53EF"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/commons.mjs", sha256: "" } }, contributes: { connectors: [{ id: "commons", name: "Wikimedia Commons", capabilities: ["status", "tools"], hosts: ["commons.wikimedia.org", "upload.wikimedia.org", "thumb.wikimedia.org"], agent_tools: ["commons_*"] }], ui: [{ id: "search", title: "\u56FE\u7247\u68C0\u7D22", placement: "nav_page", icon: "doc" }] }, permissions: { network: ["commons.wikimedia.org", "upload.wikimedia.org", "thumb.wikimedia.org"] } };
+var persona_extension_default = { manifest_version: 1, id: "commons", name: "Wikimedia Commons \u56FE\u7247\u68C0\u7D22", version: "0.1.4", icon: "assets/icon.png", description: "\u641C\u7D22 Wikimedia Commons \u56FE\u7247\uFF0C\u67E5\u770B\u4F5C\u8005\u3001\u8BB8\u53EF\u3001\u7F29\u7565\u56FE\u548C\u539F\u59CB\u8BF4\u660E\u9875\u3002\u5185\u5BB9\u7531 hub \u901A\u8FC7\u516C\u5F00 API \u83B7\u53D6\uFF0C\u65E0\u9700\u8D26\u53F7\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/commons/README.md", tags: ["\u56FE\u7247", "Wikimedia Commons", "\u8BB8\u53EF"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/commons.mjs", sha256: "" } }, contributes: { connectors: [{ id: "commons", name: "Wikimedia Commons", capabilities: ["status", "tools"], hosts: ["commons.wikimedia.org", "upload.wikimedia.org", "thumb.wikimedia.org"], agent_tools: ["commons_*"] }], ui: [{ id: "search", title: "\u56FE\u7247\u68C0\u7D22", placement: "nav_page", icon: "doc" }] }, permissions: { network: ["commons.wikimedia.org", "upload.wikimedia.org", "thumb.wikimedia.org"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 2 << 20, fresh: 60 * 6e4, cache: 30, cacheBytes: 2 << 20, gap: 200 });

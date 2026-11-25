@@ -44,7 +44,7 @@ func (a *app) memoryPage(p memsrc.Params) (memsrc.Result, memsrc.Counts, error) 
 	if snap == nil || snap.State == nil {
 		return memsrc.Result{}, memsrc.Counts{}, &ext.Error{Code: "not_ready", Message: "enkeep memory has not loaded its entries yet"}
 	}
-	return memsrc.Page(snap.State, p)
+	return memsrc.PageWith(snap.State, snap.Profile, a.overviewExtras(), p)
 }
 
 // memoryReading reads every page as the hub would (200 a page, at most 5 pages) and says what came back, for

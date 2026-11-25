@@ -242,15 +242,15 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 	var err error
 	switch name {
 	case "amap_search":
-		text, err = a.toolSearch(ctx, in)
+		return a.toolSearch(ctx, in)
 	case "amap_nearby":
-		text, err = a.toolNearby(ctx, in)
+		return a.toolNearby(ctx, in)
 	case "amap_geocode":
 		text, err = a.toolGeocode(ctx, in)
 	case "amap_reverse_geocode":
 		text, err = a.toolReverse(ctx, in)
 	case "amap_route":
-		text, err = a.toolRoute(ctx, in)
+		return a.toolRoute(ctx, in)
 	case "amap_distance":
 		text, err = a.toolDistance(ctx, in)
 	case "amap_district":

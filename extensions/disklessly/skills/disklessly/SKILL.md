@@ -1,6 +1,6 @@
 ---
 name: disklessly
-description: 用户的 Persona 机器磁盘与 Coding Agent 冷会话管理（经本机 disklessly MCP 服务器）：自动接入本机与 ~/.persona/config.json、~/.ssh/config 中的 SSH 远程机器，查看多机根分区水位（80% 橙色预警、90% 红色告警）、扫描可回收缓存（Go、Node/Python、Docker、Rust/Xcode、系统与临时日志）与 Claude Code / Codex 会话冷热分布；生成 Dry-Run 安全清理计划，按机器或分类执行清理并记录 df 实测释放空间，或把 >7 天冷会话上云；搜索已上云的对话并恢复。只读用 mcp__disklessly__disklessly_machines_status / disklessly_scan / disklessly_history / disklessly_sessions_search / disklessly_sessions_status；清理、上云、恢复与机器节点变更按对话权限先请用户确认。
+description: 用户的 Persona 机器磁盘与 Coding Agent 冷会话管理（经本机 disklessly MCP 服务器）：自动接入本机与 ~/.persona/config.json、~/.ssh/config 中的 SSH 远程机器，查看多机根分区水位（80% 橙色预警、90% 红色告警）、扫描可回收缓存（Go、Node/Python、Docker、Rust/Xcode、系统与临时日志）与 Claude Code / Codex 会话冷热分布；生成 Dry-Run 安全清理计划，按机器或分类执行清理并记录 df 实测释放空间，或把 >7 天冷会话上云；搜索已上云的对话并恢复。只读用 mcp__disklessly__disklessly_machines_status / disklessly_scan / disklessly_history / disklessly_sessions_search / disklessly_sessions_status；清理、上云（冷会话、文件、文件夹和 App）、恢复与机器节点变更按对话权限先请用户确认。
 ---
 
 # Disklessly 机器磁盘与冷会话管理（mcp__disklessly__* 工具）
@@ -36,3 +36,4 @@ Disklessly 插件把本机和 SSH 远程机器的磁盘水位监控、可重建�
 - `disklessly_sessions_restore {machine, id}`：把一个已上云的会话恢复到原路径，返回继续对话的命令（`claude --resume <id>` 或 `codex resume <id>`；其他 Agent 没有该命令），告诉用户在对应机器上运行。来自另一台设备的会话不会在本机恢复，请在原设备上恢复。
 - `disklessly_machine_upsert {host, id?, name?, user?, port?, identity_file?}`：新增或修改一台 SSH 远程机器节点。
 - `disklessly_machine_delete {machine}`：移除一台远程机器节点（本机 `local` 不可移除）。
+- `disklessly_files_offload {machine, paths, dry_run?}`：把用户点名的文件、文件夹或 App（`/Applications` 或个人文件夹里的 `.app`）上云：文件和文件夹由 `disklessly offload` 上传并在原处留下 `.disklessly` 占位文件，App 由 `disklessly pack` 打包并留下替身 App，读回校验后才删除本地原件，返回每项结果和 `df` 实测释放空间。先用 `dry_run: true` 检查（个人文件夹以外、标准文件夹本身、资源库、App 包内部、符号链接、密钥目录、已有占位文件的路径会被拒绝，并给出原因），把可上云的项目和预计体积告诉用户，确认后再执行。CLI 缺失或过旧时它会报错，不会自动安装：先说明要装什么、装在哪台电脑，经用户确认后用 `disklessly_cli_install`。取回已上云的文件可在那台电脑上运行 `disklessly fetch <占位文件>`。

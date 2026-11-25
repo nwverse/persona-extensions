@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"image"
 	"image/color"
 	"image/png"
@@ -237,7 +238,14 @@ func testApp(t *testing.T, f *fakeAMap) (*app, *clock) {
 
 func callResult(t *testing.T, a *app, name, raw string) (wire.ConnectorCallResult, error) {
 	t.Helper()
-	return a.callTool(context.Background(), name, []byte(raw))
+	res, err := a.callTool(context.Background(), name, []byte(raw))
+	if err == nil {
+		rawRes, _ := json.Marshal(res)
+		if verr := wire.ValidateJSON("ConnectorCallResult", rawRes); verr != nil {
+			t.Fatalf("%s ConnectorCallResult schema: %v", name, verr)
+		}
+	}
+	return res, err
 }
 
 func mustCallResult(t *testing.T, a *app, name, raw string) wire.ConnectorCallResult {

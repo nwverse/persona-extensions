@@ -5,8 +5,10 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
@@ -39,8 +41,8 @@ func TestPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Standing first (stable, usable in the resident exits), then rank, then newest; dead entries and evaluations out.
-	want := []string{"i-stable", "p-card", "w-shift", "j-dorm", "u-cand"}
+	// Standing first (stable, usable in the resident exits), then rank (active > candidate > dormant), then newest; dead entries and evaluations out.
+	want := []string{"i-stable", "p-card", "w-shift", "u-cand", "j-dorm"}
 	if !slices.Equal(ids(r), want) || r.HasMore || r.After != "" || !r.Tagged {
 		t.Fatalf("page %v (want %v) more %v after %q tagged %v", ids(r), want, r.HasMore, r.After, r.Tagged)
 	}
@@ -69,7 +71,8 @@ func TestPage(t *testing.T) {
 				t.Errorf("shifting %+v", e) // shifting: active, but not in the resident block
 			}
 		case "i-stable":
-			if e.Rank != 10 || e.Facet != "interaction" {
+			// core facet (400) + class (100) + evidence min(150, 5*2*12=120) = 620
+			if e.Rank != 620 || e.Facet != "interaction" {
 				t.Errorf("rank or facet %+v", e)
 			}
 		}
@@ -169,4 +172,154 @@ func TestPageSize(t *testing.T) {
 	}
 }
 
+// Low-value weak relation triples (depends_on, collaborates_with, about, member_of, same_circle, waiting_on, ...)
+// stay out of memory.entries without deleting them from state, unless pinned, edited or confirmed right by the user.
+// Substantive relations (owns, decides, reports_to, means) stay in.
+func TestWeakRelationsFiltered(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"rel-dep":     {ID: "rel-dep", Facet: entry.World, Predicate: "depends_on", Text: "service-a depends on service-b", Status: entry.Stable, Count: 5, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-collab":  {ID: "rel-collab", Facet: entry.World, Predicate: "collaborates_with", Text: "user-a works with user-b", Status: entry.Stable, Count: 8, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-about":   {ID: "rel-about", Facet: entry.World, Predicate: "about", Text: "doc-a is about project-x", Status: entry.Stable, Count: 3, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-member":  {ID: "rel-member", Facet: entry.World, Predicate: "member_of", Text: "user-b belongs to team-a", Status: entry.Stable, Count: 3, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-pinned":  {ID: "rel-pinned", Facet: entry.World, Predicate: "depends_on", Text: "core-a depends on core-b", Status: entry.Stable, Pinned: true, Count: 1, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-edited":  {ID: "rel-edited", Facet: entry.World, Predicate: "collaborates_with", Text: "raw", User: &entry.UserEdit{Text: "key partner"}, Status: entry.Stable, Count: 1, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-confirm": {ID: "rel-confirm", Facet: entry.World, Predicate: "depends_on", Text: "confirmed dep", Verdicts: []entry.Verdict{{Mark: "right", By: "user"}}, Status: entry.Stable, Count: 1, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-owns":    {ID: "rel-owns", Facet: entry.World, Predicate: "owns", Text: "user-b is responsible for project-x", Status: entry.Stable, Count: 2, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-means":   {ID: "rel-means", Facet: entry.World, Predicate: "means", Text: "abbr-x means service-x", Status: entry.Stable, Count: 2, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+	}}
+	r, n, err := Page(st, Params{Contribution: "memory", Limit: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := ids(r)
+	for _, drop := range []string{"rel-dep", "rel-collab", "rel-about", "rel-member"} {
+		if slices.Contains(got, drop) {
+			t.Errorf("weak relation %s leaked into memory.entries: %v", drop, got)
+		}
+		if st.Entries[drop] == nil {
+			t.Errorf("weak relation %s was deleted from state", drop)
+		}
+	}
+	for _, keep := range []string{"rel-pinned", "rel-edited", "rel-confirm", "rel-owns", "rel-means"} {
+		if !slices.Contains(got, keep) {
+			t.Errorf("expected %s to stay in memory.entries: %v", keep, got)
+		}
+	}
+	if n.Entries != 5 {
+		t.Errorf("pool count = %d, want 5", n.Entries)
+	}
+}
+
+// Rank puts pinned first, then core behavioral/persona rules (abstract > class > durable > action), then substantive
+// people/world entries ahead of transient world status facts, so a 1000-entry hub fetch keeps the most useful entries.
+func TestRankPrioritizesUseful(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"w-status":   {ID: "w-status", Facet: entry.World, Type: "status", Grain: entry.Action, Text: "build-x passed today", Status: entry.Stable, Count: 20, Kinds: []string{"S1", "S3"}, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"w-decision": {ID: "w-decision", Facet: entry.World, Type: "decision", Grain: entry.Action, Text: "project-x keeps plugins decoupled", Status: entry.Stable, Count: 2, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"j-class":    {ID: "j-class", Facet: entry.Judgement, Grain: entry.Class, Text: "validate on a small sample first", Status: entry.Stable, Count: 2, Last: "2026-11-01", Tagged: true, Origin: entry.Behavior},
+		"j-abstract": {ID: "j-abstract", Facet: entry.Judgement, Grain: entry.Abstract, Text: "prefer incremental rollout over big-bang", Status: entry.Stable, Count: 2, Last: "2026-11-01", Tagged: true, Origin: entry.Behavior},
+		"pinned":     {ID: "pinned", Facet: entry.World, Type: "status", Grain: entry.Action, Text: "pinned note", Status: entry.Stable, Pinned: true, Count: 1, Last: "2026-10-01", Tagged: true, Origin: entry.Behavior},
+	}}
+	r, _, err := Page(st, Params{Contribution: "memory", Limit: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"pinned", "j-abstract", "j-class", "w-decision", "w-status"}
+	if !slices.Equal(ids(r), want) {
+		t.Fatalf("order = %v, want %v", ids(r), want)
+	}
+}
+
 func itoa(i int) string { b, _ := json.Marshal(i); return string(b) }
+
+func TestPageWithProfile(t *testing.T) {
+	st := state()
+	st.Entries["u-health"] = &entry.Entry{
+		ID: "u-health", Facet: entry.Persona, Text: "user-a runs three times a week", Status: entry.Stable,
+		Count: 3, Last: "2026-11-06", Tagged: true, Origin: entry.Behavior,
+		Categories: []entry.Category{{Name: entry.CatHealth, By: entry.ByModel}}, OriginSpace: "health",
+	}
+	sum := profile.Build(st, timeNowFixture(), "zh-Hans")
+	r, _, err := PageWithProfile(st, sum, Params{Contribution: "memory", Limit: 200})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Tagged {
+		t.Fatal("expected tagged=true")
+	}
+	byID := map[string]Entry{}
+	for _, e := range r.Entries {
+		byID[e.ID] = e
+	}
+	ov, ok := byID["profile:overview"]
+	if !ok {
+		t.Fatalf("missing profile:overview in %v", ids(r))
+	}
+	if !ov.Standing || len(ov.Categories) != 0 || ov.Facet != "persona" {
+		t.Errorf("unexpected profile:overview: %+v", ov)
+	}
+	if strings.Contains(ov.Text, "runs three times") {
+		t.Errorf("profile:overview leaked sensitive text: %s", ov.Text)
+	}
+	// Each facet is an entry of its own, recalled by its subjects (not standing: the overview is), its text the
+	// section's description rather than the points strung after it.
+	if pi, ok := byID["profile:interaction"]; !ok || pi.Standing || strings.Contains(pi.Text, " - ") || len(pi.Subjects) == 0 {
+		t.Errorf("profile:interaction %+v in %v", pi, ids(r))
+	}
+	hp, ok := byID["profile:cat:health"]
+	if !ok {
+		t.Fatalf("missing profile:cat:health in %v", ids(r))
+	}
+	if hp.Standing || !slices.Equal(hp.Categories, []string{"health"}) || hp.OriginSpace != "health" {
+		t.Errorf("sensitive profile entry must not be standing and must carry category+space: %+v", hp)
+	}
+	// Pagination with limit=2 across profile + regular entries stays consistent.
+	var paged []string
+	p := Params{Contribution: "memory", Limit: 2}
+	for i := 0; i < 20; i++ {
+		pr, _, err := PageWithProfile(st, sum, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		paged = append(paged, ids(pr)...)
+		if !pr.HasMore {
+			break
+		}
+		p.After = pr.After
+	}
+	if !slices.Equal(paged, ids(r)) {
+		t.Fatalf("paged %v != full %v", paged, ids(r))
+	}
+}
+
+func timeNowFixture() time.Time {
+	return time.Date(2026, 11, 24, 0, 0, 0, 0, time.UTC)
+}
+
+// Extras (the overview's patterns) are answered among the curated entries in the same order; one the protocol would
+// refuse is left out, and one clashing with a curated id never replaces it.
+func TestPageWithExtras(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{}}
+	extras := []Extra{
+		{Entry: Entry{ID: "ov:pattern:aa", Text: "a pattern", Facet: "judgement", Standing: true, Rank: 960}, Last: "2026-11-20"},
+		{Entry: Entry{ID: "ov:cat:health:bb", Text: "a health pattern", Categories: []string{"health"}, Rank: 900, OriginSpace: "Bad Space"}},
+		{Entry: Entry{ID: "bad id with spaces", Text: "x"}},
+		{Entry: Entry{ID: "ov:pattern:empty", Text: "  "}},
+	}
+	res, n, err := PageWith(st, nil, extras, Params{Contribution: "memory", Limit: 10})
+	if err != nil || n.Entries != 2 || n.Standing != 1 || len(res.Entries) != 2 {
+		t.Fatalf("%v %+v %+v", err, n, res)
+	}
+	if res.Entries[0].ID != "ov:pattern:aa" || res.Entries[0].Status != "active" || res.Entries[1].OriginSpace != "" {
+		t.Fatalf("%+v", res.Entries)
+	}
+	// Paged one at a time, the cursor walks over extras too.
+	res, _, _ = PageWith(st, nil, extras, Params{Contribution: "memory", Limit: 1})
+	if !res.HasMore || res.After == "" {
+		t.Fatalf("%+v", res)
+	}
+	res2, _, err := PageWith(st, nil, extras, Params{Contribution: "memory", Limit: 1, After: res.After})
+	if err != nil || len(res2.Entries) != 1 || res2.Entries[0].ID != "ov:cat:health:bb" {
+		t.Fatalf("%v %+v", err, res2)
+	}
+}

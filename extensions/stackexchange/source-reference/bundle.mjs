@@ -157,7 +157,8 @@ var fields = {
   grid: ["tiles", "max_columns"],
   carousel: ["title", "tiles", "width"],
   graph: ["nodes", "edges", "layout", "direction", "selected", "folded"],
-  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"]
+  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"],
+  map: ["title", "alt", "caption", "aspect", "viewport", "markers", "routes", "links", "static", "show_list"]
 };
 function pathPart(parent, ...segments) {
   return parent + segments.map((segment) => `${segment.length}:${segment}`).join("");
@@ -767,7 +768,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "stackexchange", name: "Stack Exchange", version: "0.1.2", icon: "assets/icon.png", description: "Search developer questions on Stack Overflow and selected Stack Exchange sites. Read accepted or highly voted answers with code, attribution and original links. Anonymous, read-only public API access.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/stackexchange/README.md", tags: ["Development", "Questions", "Answers", "Stack Overflow"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/stackexchange.mjs", sha256: "" } }, contributes: { connectors: [{ id: "stackexchange", name: "Stack Exchange", capabilities: ["status", "tools"], hosts: ["api.stackexchange.com"], agent_tools: ["stackexchange_*"] }], ui: [{ id: "answers", title: "Stack Exchange", placement: "nav_page", icon: "search" }] }, permissions: { network: ["api.stackexchange.com"] } };
+var persona_extension_default = { manifest_version: 1, id: "stackexchange", name: "Stack Exchange", version: "0.1.3", icon: "assets/icon.png", description: "Search developer questions on Stack Overflow and selected Stack Exchange sites. Read accepted or highly voted answers with code, attribution and original links. Anonymous, read-only public API access.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/stackexchange/README.md", tags: ["Development", "Questions", "Answers", "Stack Overflow"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/stackexchange.mjs", sha256: "" } }, contributes: { connectors: [{ id: "stackexchange", name: "Stack Exchange", capabilities: ["status", "tools"], hosts: ["api.stackexchange.com"], agent_tools: ["stackexchange_*"] }], ui: [{ id: "answers", title: "Stack Exchange", placement: "nav_page", icon: "search" }] }, permissions: { network: ["api.stackexchange.com"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 2 << 20, fresh: 60 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 1e3 });

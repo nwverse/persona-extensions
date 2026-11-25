@@ -11,6 +11,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/hubapi"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/readings"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/signals"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -49,7 +50,33 @@ func (c *Curator) afterDaily(ctx context.Context, m model.Model, day string, run
 		}
 	}
 	c.readings(ctx, day, run)
-	return c.compileExits(ctx, m, run)
+	if err := c.compileExits(ctx, m, run); err != nil {
+		return err
+	}
+	c.refreshProfile(ctx, m, day, run)
+	return nil
+}
+
+// refreshProfile updates profile-summary.json after each daily pass. Never fails the daily run on model errors.
+func (c *Curator) refreshProfile(ctx context.Context, m model.Model, day string, run *store.Run) {
+	sum, err := profile.Refresh(ctx, c.St.S, c.St.Dir, profile.Options{
+		Provider: c.ProfileInput,
+		Model:    m,
+		Tier:     tier(c.Cfg.DailyTier),
+		Lang:     c.language(),
+		Day:      day,
+		Now:      c.now,
+		Logf:     c.logf,
+	})
+	if err != nil {
+		c.logf("profile summary %s: %v", day, err)
+		run.Notes = append(run.Notes, "用户侧写汇总保存失败："+err.Error())
+		return
+	}
+	if sum != nil {
+		run.Counts["profile_covered"] = sum.CoveredCount
+		run.Counts["profile_sources"] = sum.SourceCount
+	}
 }
 
 // readings computes the period's readings (internal/readings) with the cards of the two weeks, and opens or closes

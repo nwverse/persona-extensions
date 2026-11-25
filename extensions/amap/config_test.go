@@ -2,9 +2,11 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -167,12 +169,115 @@ func TestConfigPrecedenceAliasesAndUIStore(t *testing.T) {
 		t.Fatal("deleted UI place returned after reload")
 	}
 
-	// Enforce strict uniqueness on config validation.
-	if _, err := parseConfigPlaces(placeConfig{
-		Home:   "天安门",
-		Places: []string{"家: 西单"},
-	}, true, nil); err == nil || !strings.Contains(err.Error(), "重名") {
-		t.Fatalf("expected duplicate name error, got %v", err)
+	// Enforce strict uniqueness on config validation, including canonical home/company aliases.
+	for _, cfg := range []placeConfig{
+		{Home: "天安门", Places: []string{"家: 西单"}},
+		{Home: "天安门", Places: []string{"home: 西单"}},
+		{Home: "天安门", Places: []string{"我家: 西单"}},
+		{Company: "北京南站", Places: []string{"office: 西单"}},
+		{Places: []string{"home: 天安门", "家里: 西单"}},
+	} {
+		if _, err := parseConfigPlaces(cfg, true, nil); err == nil || !strings.Contains(err.Error(), "重名") {
+			t.Errorf("parseConfigPlaces(%+v): expected duplicate name error, got %v", cfg, err)
+		}
+	}
+}
+
+func TestUIPlacesCanonicalSlotDeduplicationAndPersistence(t *testing.T) {
+	dir := t.TempDir()
+	a := newApp()
+	a.logf = t.Logf
+	a.probe = false
+	a.initPlaces(placeConfig{}, dir)
+
+	// Saving "家" then "home" updates the same canonical slot in place instead of creating two UI entries.
+	if _, updated, err := a.saveUIPlace("家", "天安门"); err != nil || updated {
+		t.Fatalf("save 家: updated=%v err=%v", updated, err)
+	}
+	if fp, updated, err := a.saveUIPlace("home", "西单"); err != nil || !updated || fp.Name != "home" {
+		t.Fatalf("save home should update existing canonical slot: fp=%+v updated=%v err=%v", fp, updated, err)
+	}
+	if fps := a.fixedPlaces(); len(fps) != 1 || fps[0].Name != "home" || fps[0].Target != "西单" {
+		t.Fatalf("expected 1 canonical home entry, got %+v", fps)
+	}
+
+	// Same for company aliases ("公司" -> "office").
+	if _, updated, err := a.saveUIPlace("公司", "北京南站"); err != nil || updated {
+		t.Fatalf("save 公司: updated=%v err=%v", updated, err)
+	}
+	if fp, updated, err := a.saveUIPlace("office", "天安门"); err != nil || !updated || fp.Name != "office" {
+		t.Fatalf("save office should update existing canonical slot: fp=%+v updated=%v err=%v", fp, updated, err)
+	}
+	if fps := a.fixedPlaces(); len(fps) != 2 {
+		t.Fatalf("expected 2 canonical entries (home+company), got %+v", fps)
+	}
+
+	// Legacy places.json with duplicate canonical slots deduplicates on reload.
+	if err := os.WriteFile(filepath.Join(dir, "places.json"), mustJSON(t, storedPlaces{Places: []fixedPlace{
+		{Name: "家", Target: "天安门"},
+		{Name: "home", Target: "西单"},
+		{Name: "公司", Target: "北京南站"},
+		{Name: "office", Target: "王府井"},
+	}}), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if loaded := readUIPlaces(filepath.Join(dir, "places.json"), t.Logf); len(loaded) != 2 {
+		t.Fatalf("readUIPlaces should deduplicate canonical slots, got %+v", loaded)
+	}
+
+	// Disk persistence failure returns an error and leaves in-memory state unchanged.
+	badDir := filepath.Join(t.TempDir(), "missing-parent", "nested")
+	failApp := newApp()
+	failApp.logf = t.Logf
+	failApp.probe = false
+	failApp.initPlaces(placeConfig{}, badDir)
+	if _, _, err := failApp.saveUIPlace("机场", "40.0799,116.6031"); err == nil {
+		t.Fatal("expected error when places.json cannot be written")
+	}
+	if fps := failApp.fixedPlaces(); len(fps) != 0 {
+		t.Fatalf("failed save mutated in-memory places: %+v", fps)
+	}
+
+	// Disk persistence failure on delete also leaves in-memory state unchanged.
+	delDir := t.TempDir()
+	delApp := newApp()
+	delApp.logf = t.Logf
+	delApp.probe = false
+	delApp.initPlaces(placeConfig{}, delDir)
+	if _, _, err := delApp.saveUIPlace("机场", "40.0799,116.6031"); err != nil {
+		t.Fatalf("seed 机场: %v", err)
+	}
+	delApp.placesMu.Lock()
+	delApp.placesFile = filepath.Join(badDir, "places.json")
+	delApp.placesMu.Unlock()
+	if delApp.removeUIPlace("机场") {
+		t.Fatal("removeUIPlace should return false when places.json cannot be written")
+	}
+	if _, ok := delApp.matchFixedPlace("机场"); !ok {
+		t.Fatal("failed delete mutated in-memory places")
+	}
+
+	// Concurrent saves serialize cleanly and match the final on-disk places.json.
+	concDir := t.TempDir()
+	concApp := newApp()
+	concApp.logf = t.Logf
+	concApp.probe = false
+	concApp.initPlaces(placeConfig{}, concDir)
+	var wg sync.WaitGroup
+	for i := range 10 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if _, _, err := concApp.saveUIPlace(fmt.Sprintf("地点%d", i), "天安门"); err != nil {
+				t.Errorf("concurrent saveUIPlace(%d): %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	mem := concApp.fixedPlaces()
+	disk := readUIPlaces(filepath.Join(concDir, "places.json"), t.Logf)
+	if len(mem) != 10 || len(disk) != 10 {
+		t.Fatalf("concurrent saves diverged: mem=%d disk=%d", len(mem), len(disk))
 	}
 }
 

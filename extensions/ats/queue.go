@@ -10,6 +10,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -56,6 +57,14 @@ const (
 	PermissionReadOnlyDash = "read-only"
 	PermissionDefault      = "default"
 )
+
+// Agent engines ATS can request when it creates a session.
+const (
+	AgentClaude = "claude"
+	AgentCodex  = "codex"
+)
+
+var agentTypePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 
 // Priority levels for offline-compute-style multi-factor scheduling.
 const (
@@ -183,6 +192,7 @@ type Task struct {
 	ModelTier          string            `json:"model_tier"`
 	QuotaWeight        float64           `json:"quota_weight"`
 	Machine            string            `json:"machine,omitempty"`
+	AgentType          string            `json:"agent_type,omitempty"`
 	PermissionProfile  string            `json:"permission_profile"`
 	Workspace          WorkspaceSpec     `json:"workspace"`
 	Acceptance         *AcceptanceSpec   `json:"acceptance,omitempty"`
@@ -287,6 +297,29 @@ func DefaultQueueConfig() QueueConfig {
 		RetryMaxDelay:      30 * time.Minute,
 		ReserveHeadroomPct: 30,
 	}
+}
+
+// NormalizeAgentType defaults to Claude and checks the identifier session creation accepts.
+// Whether the chosen machine supports the engine is decided when its session is created.
+func NormalizeAgentType(raw string) (string, error) {
+	s := strings.TrimSpace(strings.ToLower(raw))
+	if s == "" {
+		return AgentClaude, nil
+	}
+	if !agentTypePattern.MatchString(s) {
+		return "", errors.New("agent_type must be a lowercase engine identifier of 1-32 letters, digits, _ or -")
+	}
+	return s, nil
+}
+
+// effectiveAgentType supplies the legacy default without rewriting old queue records.
+func effectiveAgentType(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return AgentClaude
 }
 
 // NormalizePermissionProfile defaults to "readonly"; only "default" grants write access.
@@ -500,6 +533,7 @@ type EnqueueInput struct {
 	Priority          string
 	Difficulty        string
 	Machine           string
+	AgentType         string
 	AcceptanceCommand string
 	PermissionProfile string
 	Labels            map[string]string
@@ -813,6 +847,10 @@ func (q *Queue) Enqueue(in EnqueueInput) (EnqueueResult, error) {
 	if err != nil {
 		return EnqueueResult{}, err
 	}
+	agentType, err := NormalizeAgentType(in.AgentType)
+	if err != nil {
+		return EnqueueResult{}, err
+	}
 
 	prio, diff, tier, machine, weight, labels, err := ExtractSchedulingTags(
 		in.Priority,
@@ -932,6 +970,7 @@ func (q *Queue) Enqueue(in EnqueueInput) (EnqueueResult, error) {
 		ModelTier:         tier,
 		QuotaWeight:       weight,
 		Machine:           machine,
+		AgentType:         agentType,
 		PermissionProfile: perm,
 		Workspace: WorkspaceSpec{
 			Repo:    repo,
@@ -995,7 +1034,7 @@ func (q *Queue) LeaseTask(taskID, workerID, machine string, now time.Time) (*Tas
 		WorkerID:       workerID,
 		Machine:        strings.TrimSpace(machine),
 		ModelTier:      t.ModelTier,
-		Harness:        "claude",
+		Harness:        effectiveAgentType(t.AgentType),
 		State:          StateRunning,
 		LeasedAt:       now,
 		LeaseExpiresAt: now.Add(q.cfg.LeaseTTL),

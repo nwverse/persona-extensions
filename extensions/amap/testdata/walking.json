@@ -18,6 +18,7 @@
       "orientation": "西",
       "road_name": "",
       "step_distance": "26",
+      "polyline": "116.403847,39.906834;116.403520,39.906834",
       "cost": {
        "duration": "21"
       }
@@ -27,6 +28,7 @@
       "orientation": "南",
       "road_name": "",
       "step_distance": "77",
+      "polyline": "116.403520,39.906834;116.403510,39.906120",
       "cost": {
        "duration": "62"
       }
@@ -36,6 +38,7 @@
       "orientation": "西",
       "road_name": "",
       "step_distance": "33",
+      "polyline": "116.403510,39.906120;116.403100,39.906130",
       "cost": {
        "duration": "26"
       }
@@ -45,6 +48,7 @@
       "orientation": "北",
       "road_name": "",
       "step_distance": "148",
+      "polyline": "116.403100,39.906130;116.399500,39.912500;116.397026,39.918058",
       "cost": {
        "duration": "118"
       }

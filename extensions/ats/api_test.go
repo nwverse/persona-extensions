@@ -70,11 +70,11 @@ func TestPostTaskQueuesAReadOnlyTaskForTheTodo(t *testing.T) {
 	}
 	task := taskOf(t, ans)
 	if task["state"] != StateQueued || task["permission_profile"] != PermissionReadonly || task["todo_id"] != "todo_1" ||
-		task["priority"] != PriorityP2 || task["repo"] != "/srv/code/app" || task["acceptance"] != "go test ./..." {
+		task["priority"] != PriorityP2 || task["repo"] != "/srv/code/app" || task["acceptance"] != "go test ./..." || task["agent_type"] != AgentClaude {
 		t.Fatalf("task: %v", task)
 	}
 	stored, err := a.queue.GetTask(task["id"].(string))
-	if err != nil || stored.Source != AssistantSource || stored.Labels[PersonaTodoLabel] != "todo_1" || !stored.SubmittedAt.Equal(testStart) {
+	if err != nil || stored.Source != AssistantSource || stored.Labels[PersonaTodoLabel] != "todo_1" || stored.AgentType != AgentClaude || !stored.SubmittedAt.Equal(testStart) {
 		t.Fatalf("stored: %+v %v", stored, err)
 	}
 
@@ -88,6 +88,26 @@ func TestPostTaskQueuesAReadOnlyTaskForTheTodo(t *testing.T) {
 	}
 	if w := taskOf(t, first); w["permission_profile"] != PermissionDefault || w["priority"] != PriorityP0 || w["model_tier"] != TierStrong {
 		t.Fatalf("a writing task: %v", w)
+	}
+}
+
+func TestPostTaskCanChooseAnEngine(t *testing.T) {
+	a := newTestApp(t)
+	body := `{"todo_id":"todo_1","prompt":"Fix it","repo":"/srv/code/app","agent_type":"codex","idempotency_key":"engine-choice"}`
+	first := call(t, a, "POST", "/tasks", body)
+	if first.Status != http.StatusCreated || taskOf(t, first)["agent_type"] != AgentCodex {
+		t.Fatalf("explicit engine: %d %v", first.Status, first.Body)
+	}
+	stored, err := a.queue.GetTask(taskOf(t, first)["id"].(string))
+	if err != nil || stored.AgentType != AgentCodex {
+		t.Fatalf("stored engine: %+v %v", stored, err)
+	}
+
+	// An idempotent replay keeps the first task's engine, even if the retry asks for another one.
+	replay := call(t, a, "POST", "/tasks", strings.Replace(body, `"agent_type":"codex"`, `"agent_type":"claude"`, 1))
+	if replay.Status != http.StatusOK || replay.Body["created"] != false || taskOf(t, replay)["agent_type"] != AgentCodex ||
+		taskOf(t, replay)["id"] != taskOf(t, first)["id"] {
+		t.Fatalf("engine-changing replay: %d %v", replay.Status, replay.Body)
 	}
 }
 
@@ -113,6 +133,7 @@ func TestPostTaskRefusesWhatItMustNotQueue(t *testing.T) {
 		"an unknown qos":          {`{"todo_id":"todo_1","prompt":"x","repo":"/srv/code/app","qos":"instant"}`, 400, "invalid_qos"},
 		"another to-do by label":  {`{"todo_id":"todo_1","prompt":"x","repo":"/srv/code/app","labels":{"persona_todo":"todo_2"}}`, 400, "invalid_labels"},
 		"another to-do by tag":    {`{"todo_id":"todo_1","prompt":"x","repo":"/srv/code/app","tags":["persona_todo=todo_2"]}`, 400, "invalid_tags"},
+		"an invalid engine":       {`{"todo_id":"todo_1","prompt":"x","repo":"/srv/code/app","agent_type":"bad engine"}`, 400, "invalid"},
 		"an unknown profile":      {`{"todo_id":"todo_1","prompt":"x","repo":"/srv/code/app","permission_profile":"bypassPermissions"}`, 400, "invalid"},
 		"an unknown priority":     {`{"todo_id":"todo_1","prompt":"x","repo":"/srv/code/app","priority":"p9"}`, 400, "invalid"},
 		"an unknown field":        {`{"todo_id":"todo_1","prompt":"x","repo":"/srv/code/app","worker":"anything"}`, 400, "invalid_body"},

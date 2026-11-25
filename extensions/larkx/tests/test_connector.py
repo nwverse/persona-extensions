@@ -441,6 +441,51 @@ class ConnectorTest(unittest.TestCase):
         self.assertNotIn("text", m)
         self.assertEqual(self.c.thread_media({"ref": m["media"][0]["ref"]})["data"], base64.b64encode(b"png").decode())
 
+    def test_a_rich_post_keeps_markdown_text_and_inline_media(self):
+        self.sign_in()
+        rich = NormalizeTest()
+        data = rich.tree(("paragraph",), {
+            "paragraph": rich.node(3, children=("link", "space", "bold", "break", "image")),
+            "link": rich.node(6, fields=((1, "https://example.com/docs"), (2, "文档"))),
+            "space": rich.node(1, " "),
+            "bold": rich.node(7, "重点"),
+            "break": rich.node(1, "\n"),
+            "image": rich.node(2, fields=((2, "img_synthetic"),)),
+        })
+        data["title"] = "周报"
+        m = normalize({"msg_id": "m_rich", "chat_id": "c1", "chat_type": 1, "position": 1, "from_id": "u_a",
+                       "msg_type": 2, "msg_type_name": "POST", "content": "[富文本] 周报\n正文",
+                       "create_time": 1793000000, "content_data": data}, rich.key)
+        self.c._on_live(m)
+        out = self.c.thread_page({"thread": "c1", "limit": 5})["messages"][0]
+        self.assertEqual(out["text"], "\\[富文本\\] 周报\n[文档](https://example.com/docs) **重点**\n\\[图片\\]")
+        self.assertEqual(out["format"], "markdown")
+        self.assertEqual(out["media"], [{"kind": "image", "ref": "m:m_rich:img_synthetic"}])
+        self.assertEqual(m["text"], "[富文本] 周报\n文档 https://example.com/docs 重点\n[图片]")
+        self.assertEqual(self.c.store.message("m_rich")["markdown"], out["text"])
+
+    def test_a_leading_markdown_link_is_not_mistaken_for_a_media_placeholder(self):
+        self.sign_in()
+        m = message("m_link", "c1", 1, text="原始文本", media=[{"kind": "image", "key": "k"}])
+        m["markdown"] = "[文档](https://example.com/docs)"
+        self.c.on_message(m)
+        out = self.c.thread_page({"thread": "c1", "limit": 5})["messages"][0]
+        self.assertEqual((out["text"], out["format"]), (m["markdown"], "markdown"))
+
+    def test_history_backfill_keeps_the_same_markdown_representation(self):
+        self.sign_in()
+        rich = NormalizeTest()
+        data = rich.rich((7, rich.prop((1, "历史粗体"))))
+        old = normalize({"msg_id": "m_old", "chat_id": "c1", "chat_type": 1, "position": 1, "from_id": "u_a",
+                         "msg_type": 4, "msg_type_name": "TEXT", "content": "历史粗体", "create_time": 1793000000,
+                         "content_data": data}, rich.key)
+        self.c.store.touch_chat("c1", "dm", old["at"])
+        self.backend.chats["c1"] = {"name": "", "last_position": 1}
+        self.backend.older = {1: old}
+        out = self.c.thread_page({"thread": "c1", "limit": 1})["messages"][0]
+        self.assertEqual((out["text"], out["format"]), ("**历史粗体**", "markdown"))
+        self.assertEqual(out["at"], "2026-10-26T07:33:20Z")
+
     def test_the_archive_walks_to_the_end_and_never_repeats(self):
         self.sign_in()
         for i in range(1, 4):
@@ -666,6 +711,96 @@ class NormalizeTest(unittest.TestCase):
         ids = [str(i) for i in range(1, len(elements) + 1)]
         return {"richText": {"elementIds": ids, "elements": {"dictionary": {
             i: {"tag": tag, "property": prop} for i, (tag, prop) in zip(ids, elements)}}}}
+
+    def node(self, tag, text=None, children=(), fields=None):
+        """A synthetic tree node; fields can override TextProperty.content for links and images."""
+        fields = ((1, text),) if fields is None and text is not None else (fields or ())
+        return {"tag": tag, "property": self.prop(*fields), "childIds": list(children)}
+
+    def tree(self, roots, nodes):
+        return {"richText": {"elementIds": list(roots), "elements": {"dictionary": nodes}}}
+
+    def test_styles_and_literal_markup_become_safe_markdown(self):
+        data = self.rich((7, self.prop((1, "粗体"))), (1, self.prop((1, " "))),
+                         (8, self.prop((1, "斜体"))), (1, self.prop((1, " "))),
+                         (9, self.prop((1, "下划线"))), (1, self.prop((1, " *literal* [label] <script>"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "原始纯文本", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "原始纯文本")
+        self.assertEqual(m["markdown"], "**粗体** *斜体* 下划线 \\*literal\\* \\[label\\] \\<script\\>")
+
+    def test_nested_unordered_and_ordered_lists_keep_their_structure(self):
+        nodes = {
+            "ul": self.node(26, children=("first", "second")),
+            "first": self.node(28, "第一项", ("nested",)),
+            "nested": self.node(27, children=("nested-item",)),
+            "nested-item": self.node(28, "嵌套项"),
+            "second": self.node(28, "第二项"),
+            "ol": self.node(27, children=("one", "two")),
+            "one": self.node(28, "甲"),
+            "two": self.node(28, "乙"),
+        }
+        data = self.tree(("ul", "ol"), nodes)
+        m = normalize({"msg_type": 2, "msg_type_name": "POST", "content": "原始纯文本", "content_data": data}, self.key)
+        self.assertEqual(m["text"], "原始纯文本")
+        self.assertEqual(m["markdown"], "\\[富文本\\] \n- 第一项\n  1. 嵌套项\n- 第二项\n\n1. 甲\n2. 乙")
+
+    def test_text_and_media_around_a_nested_list_keep_child_order(self):
+        nodes = {
+            "list": self.node(26, children=("item",)),
+            "item": self.node(28, children=("before", "nested", "after", "image")),
+            "before": self.node(1, "之前"),
+            "nested": self.node(26, children=("nested-item",)),
+            "nested-item": self.node(28, "子项"),
+            "after": self.node(1, "之后"),
+            "image": self.node(2, fields=((2, "img_synthetic"),)),
+        }
+        data = self.tree(("list",), nodes)
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "原始纯文本", "content_data": data}, self.key)
+        self.assertEqual(m["markdown"], "- 之前\n  - 子项\n  之后\\[图片\\]")
+
+    def test_a_non_integer_tag_falls_back_without_losing_the_message(self):
+        data = self.rich((1, self.prop((1, "bad tag"))))
+        data["richText"]["elements"]["dictionary"]["1"]["tag"] = []
+        for name, number in (("TEXT", 4), ("POST", 2)):
+            m = normalize({"msg_type": number, "msg_type_name": name, "content": "原始纯文本", "content_data": data}, self.key)
+            self.assertEqual((m["text"], m["markdown"]), ("原始纯文本", ""))
+
+    def test_inline_and_block_code_use_safe_delimiters(self):
+        data = self.rich((30, self.prop((1, "a`b"))), (1, self.prop((1, "\n"))),
+                         (31, self.prop((1, "print('<ok>')\n```"))), (1, self.prop((1, " "))),
+                         (30, self.prop((1, "`tick`"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "原始纯文本", "content_data": data}, self.key)
+        self.assertEqual(m["markdown"], "``a`b``\n\n````\nprint('<ok>')\n```\n````\n\n `` `tick` ``")
+
+    def test_inline_code_newlines_cannot_open_an_html_block(self):
+        data = self.rich((30, self.prop((1, "before\n\n<script>alert(1)</script>\nafter"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "原始纯文本", "content_data": data}, self.key)
+        self.assertEqual(m["markdown"], "`before  <script>alert(1)</script> after`")
+
+    def test_a_code_block_after_text_starts_its_fence_on_a_new_line(self):
+        data = self.rich((1, self.prop((1, "before"))), (31, self.prop((1, "<script>alert(1)</script>"))),
+                         (1, self.prop((1, "after"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "原始纯文本", "content_data": data}, self.key)
+        self.assertEqual(m["markdown"], "before\n```\n<script>alert(1)</script>\n```\n\nafter")
+
+    def test_links_keep_titles_and_reject_active_schemes(self):
+        data = self.rich((6, self.prop((1, "https://example.com/docs"), (2, "文档 [v1]"))),
+                         (1, self.prop((1, " "))), (17, self.prop((1, "https://example.com/plain"))),
+                         (1, self.prop((1, " "))), (6, self.prop((1, "javascript:alert(1)"), (2, "危险链接"))),
+                         (1, self.prop((1, " "))), (6, self.prop((1, "https://example.com/a(b)"), (2, "括号"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "原始纯文本", "content_data": data}, self.key)
+        self.assertEqual(m["markdown"], "[文档 \\[v1\\]](https://example.com/docs) <https://example.com/plain> 危险链接 "
+                                        "[括号](https://example.com/a%28b%29)")
+        self.assertNotIn("](javascript:", m["markdown"])
+
+    def test_rich_markdown_does_not_move_plain_mention_spans(self):
+        data = self.rich((7, self.prop((1, "重要"))), (1, self.prop((1, " "))),
+                         (5, self.prop((1, "7001"), (2, "@Example"))), (1, self.prop((1, " 总结"))))
+        m = normalize({"msg_type": 4, "msg_type_name": "TEXT", "content": "重要 @Example 总结", "content_data": data}, self.key)
+        self.assertEqual(m["markdown"], "**重要** \\@Example 总结")
+        self.assertEqual(m["text"], "重要 @Example 总结")
+        self.assertEqual(m["mentions"], [{"id": "7001", "start": 3, "end": 11, "label": "@Example"}])
+        self.assertEqual(mention_request(m["text"], m["mentions"], "7001"), "重要  总结")
 
     def test_a_pasted_doc_link_keeps_its_title_and_address(self):
         # 2026-11-12: LarkAgentX's text dropped the A element whole, so only the words before the link arrived.

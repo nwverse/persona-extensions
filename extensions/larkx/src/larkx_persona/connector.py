@@ -797,8 +797,12 @@ class Connector:
         media = [_thread_media(m["id"], x) for x in m["media"]]
         if media:
             out["media"] = media
-        if m["text"] and not (media and m["text"].startswith("[")):
-            out["text"] = m["text"]
+        markdown = m.get("markdown") or ""
+        display_text = markdown or m["text"]
+        if display_text and not (media and not markdown and display_text.startswith("[")):
+            out["text"] = display_text
+            if markdown:
+                out["format"] = "markdown"
         elif not media:
             out["text"] = "[消息]"
         if m["parent"]:

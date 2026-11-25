@@ -55,15 +55,15 @@ func call(t *testing.T, a *app, name string, args any) (string, error) {
 	return out.(map[string]any)["text"].(string), nil
 }
 
-// The connector lists four read tools and four writes; the rerun tool queues the days once, refuses days not over and more than 31, and the
+// The connector lists five read tools and five writes; the rerun tool queues the days once, refuses days not over and more than 31, and the
 // status tool says what is done and what waits.
 func TestRerunTool(t *testing.T) {
 	a, st := toolApp(t)
 	list, err := a.connector(t.Context(), "tools.list", nil)
-	if err != nil || len(list.(map[string]any)["tools"].([]tool)) != 4 {
+	if err != nil || len(list.(map[string]any)["tools"].([]tool)) != 5 {
 		t.Fatalf("tools.list: %v %v", list, err)
 	}
-	if list, err = a.connector(t.Context(), "actions.list", nil); err != nil || len(list.(map[string]any)["tools"].([]tool)) != 4 {
+	if list, err = a.connector(t.Context(), "actions.list", nil); err != nil || len(list.(map[string]any)["tools"].([]tool)) != 5 {
 		t.Fatalf("actions.list: %v %v", list, err)
 	}
 	st.S.Reruns = []string{"2026-11-03@" + schema.DailyPrompt} // done with the current prompt already

@@ -34,6 +34,10 @@ type Request struct {
 	MaxTokens int             //
 	Schema    json.RawMessage // the JSON schema of the answer
 	Timeout   int             // seconds for the whole call; 0: by tier (callTimeout)
+	// Models, when set, is the call's own chain of candidates in place of the route's (the primary models and the
+	// size's fallback): the periodic overview asks for named models only (internal/overview). A hub without
+	// "models" still runs the call on the purpose's model, as for every routed call.
+	Models []string
 }
 
 // Response is a call's answer and what it cost.
@@ -146,7 +150,7 @@ func (h Hub) once(ctx context.Context, r Request) (Response, error) {
 		}
 		defer release()
 	}
-	if h.Route.Enabled() {
+	if h.Route.Enabled() || h.Route != nil && len(r.Models) > 0 {
 		return h.Route.complete(ctx, r, h.chained, h.legacy)
 	}
 	return h.legacy(ctx, r)
