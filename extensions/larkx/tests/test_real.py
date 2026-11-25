@@ -133,6 +133,26 @@ class RealTest(unittest.TestCase):
             element.tag, element.property = tag, prop
         m = self.normalized(self.frame([self.message("9005", 4, tc.SerializeToString())]))[0]
         self.assertEqual(m["text"], "请看一下 示例文档 " + url)
+        self.assertEqual(m["markdown"], "请看一下 \\[示例文档\\](%s)" % url)
+
+    def test_real_style_link_and_formatting_tag_descriptors(self):
+        P = self.P
+        content = P.TextContent()
+        rich = content.richText
+        rich.elementIds.extend(["bold", "space", "link"])
+        rich.elements.dictionary["bold"].tag = 7
+        rich.elements.dictionary["bold"].property = P.TextProperty(content="粗体").SerializeToString()
+        rich.elements.dictionary["space"].tag = 1
+        rich.elements.dictionary["space"].property = P.TextProperty(content=" ").SerializeToString()
+        rich.elements.dictionary["link"].tag = 6
+        rich.elements.dictionary["link"].property = self.anchor(
+            href="https://example.com/docs", content="文档").SerializeToString()
+        m = self.normalized(self.frame([self.message("9006", 4, content.SerializeToString())]))[0]
+        self.assertEqual(m["markdown"], "**粗体** [文档](https://example.com/docs)")
+        tags = P.RichTextElement.DESCRIPTOR.enum_types_by_name["Tag"].values_by_name
+        self.assertEqual({name: tags[name].number for name in ("B", "I", "U", "UL", "OL", "LI", "CODE", "CODE_BLOCK")},
+                         {"B": 7, "I": 8, "U": 9, "UL": 26, "OL": 27, "LI": 28, "CODE": 30, "CODE_BLOCK": 31})
+        self.assertEqual(P.TextProperty.DESCRIPTOR.fields_by_name["content"].number, 1)
 
     def test_the_link_fields_real_py_reads_are_larkagentxs(self):
         # real.py reads an A element's href, content and textContent by number. LarkAgentX's proto.proto has no

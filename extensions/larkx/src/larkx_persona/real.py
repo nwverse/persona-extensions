@@ -6,11 +6,14 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
+import string
 import subprocess
 import sys
 import tarfile
 import time
+import urllib.parse
 import urllib.request
 import zlib
 from pathlib import Path
@@ -140,6 +143,8 @@ def _linked(rich, always=False):
         if not isinstance(v, dict):
             continue
         tag, prop = v.get("tag", 1), v.get("property")
+        if not isinstance(tag, int) or isinstance(tag, bool):
+            tag = 0
         if not prop:
             continue
         piece, user_id = None, ""
@@ -174,6 +179,158 @@ def _linked(rich, always=False):
     return text, spans
 
 
+_MARKDOWN_ESCAPES = frozenset(string.punctuation)
+_LIST, _ORDERED_LIST, _LIST_ITEM = 26, 27, 28
+
+
+def _escape_markdown(value):
+    """Literal text, not a chance for message content to inject Markdown or raw HTML."""
+    return "".join("\\" + char if char in _MARKDOWN_ESCAPES else char for char in value)
+
+
+def _safe_markdown_link(href, title=""):
+    """An HTTP(S) Markdown link, or inert text when its address is malformed or has another scheme."""
+    href, title = href.strip(), title.strip()
+    try:
+        parsed = urllib.parse.urlsplit(href)
+        safe = parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
+    except ValueError:
+        safe = False
+    safe = safe and not any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in href)
+    if not safe:
+        return _escape_markdown(title or href)
+    # These characters can close or reshape an inline destination. Percent-encoding them leaves ordinary URLs intact.
+    destination = href
+    for char, encoded in (("\\", "%5C"), ("(", "%28"), (")", "%29"), ("<", "%3C"), (">", "%3E")):
+        destination = destination.replace(char, encoded)
+    if not title or title == href:
+        return "<%s>" % destination
+    return "[%s](%s)" % (_escape_markdown(title), destination)
+
+
+def _inline_code(value):
+    if not value:
+        return ""
+    # A blank line can end the paragraph containing a code span. CommonMark renders line endings in a span as spaces.
+    value = re.sub(r"\r\n?|\n", " ", value)
+    longest = max([len(run) for run in re.findall(r"`+", value)] or [0])
+    fence = "`" * (longest + 1)
+    padding = " " if value[:1] in ("`", " ") or value[-1:] in ("`", " ") else ""
+    return fence + padding + value + padding + fence
+
+
+def _code_block(value):
+    longest = max([len(run) for run in re.findall(r"`+", value)] or [0])
+    fence = "`" * max(3, longest + 1)
+    return fence + "\n" + value + ("" if value.endswith("\n") else "\n") + fence
+
+
+def _markdown(rich):
+    """A safe Markdown display form of LarkAgentX's decoded richText, or None when it cannot be rebuilt.
+
+    The plain normalized text remains authoritative for mentions, /agent and archives. This tree walk retains child
+    order and list nesting; unknown containers still render their children instead of discarding readable text.
+    """
+    try:
+        dictionary = rich["elements"]["dictionary"]
+    except (KeyError, TypeError, IndexError):
+        return None
+    if not isinstance(dictionary, dict):
+        return None
+    ids = rich.get("elementIds")
+    ids = [key for key in ids if isinstance(key, str)] if isinstance(ids, list) else []
+    seen = set()
+
+    def render(key, depth=0, item=""):
+        if key in seen or key not in dictionary:
+            return ""
+        seen.add(key)
+        element = dictionary[key]
+        if not isinstance(element, dict):
+            return ""
+        tag, prop = element.get("tag", 1), element.get("property")
+        if not isinstance(tag, int) or isinstance(tag, bool):
+            tag = 0
+        children = element.get("childIds")
+        children = [child for child in children if isinstance(child, str)] if isinstance(children, list) else []
+
+        def render_children(at_depth=None):
+            return "".join(render(child, depth if at_depth is None else at_depth) for child in children)
+
+        if tag in (_LIST, _ORDERED_LIST):
+            out = _escape_markdown(_string(prop, 1)) + "\n" if prop else ""
+            number = 0
+            for child in children:
+                target = dictionary.get(child)
+                if isinstance(target, dict) and target.get("tag") == _LIST_ITEM and child not in seen:
+                    number += 1
+                    marker = "- " if tag == _LIST else "%d. " % number
+                    out += render(child, depth, marker)
+                else:
+                    out += render(child, depth)
+            return out + ("\n" if out and depth == 0 else "")
+        if tag == _LIST_ITEM:
+            own = _escape_markdown(_string(prop, 1)) if prop else ""
+            indent = "  " * depth
+            out = indent + (item or "- ") + own
+            for child in children:
+                target = dictionary.get(child)
+                nested = isinstance(target, dict) and target.get("tag") in (_LIST, _ORDERED_LIST)
+                piece = render(child, depth + 1 if nested else depth)
+                if not piece:
+                    continue
+                if nested:
+                    if not out.endswith("\n"):
+                        out += "\n"
+                    out += piece
+                elif out.endswith("\n"):
+                    out += indent + "  " + piece
+                else:
+                    out += piece
+            return out if out.endswith("\n") else out + "\n"
+        if tag == 30:  # CODE
+            return _inline_code(_string(prop, 1) if prop else "") + render_children()
+        if tag == 31:  # CODE_BLOCK
+            # A fence is only a fence at the start of a line, including when the preceding element was plain text.
+            return "\n" + _code_block(_string(prop, 1) if prop else "") + "\n\n" + render_children()
+        if tag == 32:  # HR
+            return "---\n\n" + render_children()
+
+        if tag == _ANCHOR:
+            own = _safe_markdown_link(_string(prop, 1), _string(prop, 2) or _string(prop, 3)) if prop else ""
+        elif tag == 17:  # LINK / LinkProperty.url
+            own = _safe_markdown_link(_string(prop, 1)) if prop else ""
+        elif tag == _AT:
+            own = _escape_markdown(_string(prop, 2)) if prop else ""
+        elif tag in _TEXT_TAGS or tag in (23, 24, 25, _LIST_ITEM, 29):
+            own = _escape_markdown(_string(prop, 1)) if prop else ""
+        else:
+            own = _escape_markdown(_PLACEHOLDERS[tag]) if prop and tag in _PLACEHOLDERS else ""
+        body = own + render_children()
+        if tag == _PARAGRAPH:
+            return body.rstrip("\n") + "\n\n" if body or prop else ""
+        if tag in (23, 24, 25):  # H1, H2, H3
+            return "%s %s\n\n" % ("#" * (tag - 22), body.strip("\n")) if body.strip("\n") else ""
+        if tag == 29:  # QUOTE
+            body = body.rstrip("\n")
+            return "\n".join("> " + line for line in body.split("\n")) + "\n\n" if body else ""
+        if tag == 7 and body.strip():  # B
+            return "**%s**" % body
+        if tag == 8 and body.strip():  # I
+            return "*%s*" % body
+        # U has no portable Markdown form. Keep its escaped text rather than emitting raw HTML.
+        return body
+
+    rest = [key for key in dictionary if key not in ids]
+    if not ids:
+        try:
+            rest.sort(key=int)
+        except (TypeError, ValueError):
+            pass
+    out = "".join(render(key) for key in ids + rest).rstrip()
+    return out or None
+
+
 def _inline_images(rich):
     """The inline images of a POST, in display order. ImageProperty.token/originKey/middleKey/thumbKey are 2/4/5/6."""
     try:
@@ -202,7 +359,9 @@ def normalize(msg, extract_key):
     text = msg.get("content") or ""
     mentions = _mentions(data, text)
     post = name == "POST"
-    linked = _linked(data.get("richText"), always=post) if name in ("TEXT", "POST") and isinstance(data, dict) else None
+    rich = data.get("richText") if name in ("TEXT", "POST") and isinstance(data, dict) else None
+    linked = _linked(rich, always=post) if name in ("TEXT", "POST") else None
+    markdown = _markdown(rich) if name in ("TEXT", "POST") else None
     if linked and linked[0]:  # an empty rebuild keeps LarkAgentX's text, as its own `extract_rich_text(...) or text` does
         head = "[富文本] %s\n" % data.get("title", "") if name == "POST" else ""
         text = (head + linked[0]).rstrip() if head else linked[0]
@@ -211,7 +370,10 @@ def normalize(msg, extract_key):
         mentions = [dict(m, start=m["start"] + len(head), end=m["end"] + len(head)) for m in linked[1]]
         if any(text[m["start"]:m["end"]] != m["label"] for m in mentions):
             mentions = []
-    media = _inline_images(data.get("richText")) if post and isinstance(data, dict) else []
+    if markdown and post:
+        head = "[富文本] %s" % data.get("title", "")
+        markdown = (_escape_markdown(head) + "\n" + markdown).rstrip()
+    media = _inline_images(rich) if post else []
     if name in ("IMAGE", "STICKER") and key:
         media = [{"kind": name.lower(), "key": key}]
     elif name == "FILE":
@@ -231,7 +393,7 @@ def normalize(msg, extract_key):
         "position": int(msg.get("position") or 0), "sender": str(msg.get("from_id") or ""), "type": name,
         "text": text, "at": at or time.time(), "root": "" if root == "0" else root,
         "parent": "" if parent == "0" else parent, "at_me": bool(msg.get("at_me")), "media": media,
-        "mentions": mentions,
+        "mentions": mentions, "markdown": markdown or "",
     }
 
 
@@ -285,6 +447,8 @@ def _mentions(data, text):
         if not isinstance(element, dict):
             return []
         tag, prop = element.get("tag", 1), element.get("property")
+        if not isinstance(tag, int) or isinstance(tag, bool):
+            tag = 0
         if not prop:
             continue
         if tag in (1, 3, 7, 8, 9, 17):
