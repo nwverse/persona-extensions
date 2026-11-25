@@ -211,6 +211,17 @@
       "trademark_owner": "Persona / nwverse",
       "usage": "Official Persona app branding for this Persona-native tool or pack, not the logo of an external data provider."
     },
+    "binance": {
+      "path": "assets/icon.png",
+      "source_id": "raycast",
+      "source_url": "https://raw.githubusercontent.com/raycast/extensions/dfa15bf5d53b5c97722f9d4df1b1e0af939a81ab/extensions/binance/assets/binance-logo.png",
+      "sha256": "f9c3af7dbf4c700816f0c70bc7f8f0e4eaa7332a67f1a1b6dd86bdf2c2733581",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "Binance",
+      "usage": "Exact Raycast extension icon used to identify the corresponding public service."
+    },
     "bitbucket": {
       "path": "assets/icon.png",
       "source_id": "raycast",
