@@ -4,7 +4,7 @@
   "name": "Magpie Subscription Usage",
   "version": "0.1.0",
   "icon": "assets/icon.png",
-  "description": "Shows the subscription allowance windows of Magpie's Claude and Codex accounts in Persona.",
+  "description": "Shows subscription allowance windows from Magpie accounts in Persona.",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/magpie-usage/README.md",
   "tags": ["Magpie", "subscriptions", "quota"],
@@ -34,6 +34,34 @@
         "title": "Remote Magpie HTTPS address (optional)",
         "description": "Leave empty to read local Magpie. Save this address before setting a dedicated read-only Magpie quota key.",
         "format": "uri"
+      },
+      "include_providers": {
+        "type": "array",
+        "title": "Only sync these providers (optional)",
+        "description": "Leave empty to sync all Magpie subscription providers that report periodic allowance windows. Example: claude, antigravity.",
+        "maxItems": 32,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$"
+        }
+      },
+      "exclude_providers": {
+        "type": "array",
+        "title": "Exclude providers (optional)",
+        "description": "Skip these Magpie providers, such as codex when Persona already reads local Codex usage.",
+        "maxItems": 32,
+        "uniqueItems": true,
+        "items": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$"
+        }
+      },
+      "anonymous_names": {
+        "type": "boolean",
+        "title": "Hide account names (anonymous mode)",
+        "description": "Show opaque per-account aliases instead of Magpie account aliases or usernames in Persona.",
+        "default": false
       }
     }
   },

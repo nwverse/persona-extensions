@@ -48,7 +48,7 @@ Legacy protocol names and UI placements, such as `plugin_protocol` and `plugin_p
 
 ## Extension-specific setup
 
-- [Magpie Subscription Usage](extensions/magpie-usage.md) uses a Magpie launcher and an extension-backed subscription usage source.
+- [Magpie Subscription Usage](extensions/magpie-usage.md): no launcher or account key needed for local Magpie on the Persona manager machine (`http://127.0.0.1:3425`); syncs subscription accounts with periodic allowance windows automatically, with optional provider filters, anonymous mode and HTTPS remote Magpie settings.
 - [GitHub](extensions/github.md): sign in through **Settings → Connectors → GitHub**, either by sharing a computer's `gh` login (that computer must be online and the extension uses its `gh_login` permission) or through the device flow. The hub must reach `github.com`, `api.github.com` and GitHub's avatar and CI-log hosts.
 - [Home Assistant](extensions/homeassistant.md): fill in the address and a long-lived access token in its settings; the hub must reach Home Assistant. A local package starts sandboxed and needs `personad extension sandbox homeassistant off`, see [Network and sandbox](extensions/homeassistant.md#network-and-sandbox).
 - [LINUX DO](extensions/linuxdo.md): no account; the hub must reach `linux.do`. The in-app reader fetches on the hub, while opening the original web page also requires network access on the device.
