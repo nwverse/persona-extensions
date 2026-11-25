@@ -18,6 +18,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/recall"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
@@ -71,12 +72,27 @@ var (
 	spaceRe = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
 )
 
-// item is a pooled entry with its order key.
+// item is a pooled entry with its order key: a curated entry (e), or one made elsewhere in the extension (x): the profile summary's or the overview's patterns.
 type item struct {
 	e        *entry.Entry
+	x        *Entry
 	standing bool
 	rank     int
 	last     string
+}
+
+// Extra is an entry made elsewhere in the extension (the periodic overview's patterns, internal/overview), answered
+// beside the curated ones in the same order: Last is its newest evidence day.
+type Extra struct {
+	Entry Entry
+	Last  string
+}
+
+func (it item) id() string {
+	if it.x != nil {
+		return it.x.ID
+	}
+	return it.e.ID
 }
 
 // key is the cursor: the last answered entry's place in the order.
@@ -87,7 +103,7 @@ type key struct {
 	I string `json:"i"`
 }
 
-func (it item) key() key { return key{it.standing, it.rank, it.last, it.e.ID} }
+func (it item) key() key { return key{it.standing, it.rank, it.last, it.id()} }
 
 // before says whether a comes before b: standing first, then rank, then newest, then id.
 func before(a, b key) bool {
@@ -103,9 +119,64 @@ func before(a, b key) bool {
 	return a.I < b.I
 }
 
+// weakPredicates are low-value relation triples (e.g. "A depends on B", "A works with B") that crowd memory.entries
+// without actionable guidance. They stay in state and are only filtered at the memory.entries outlet unless the user
+// explicitly pinned, edited or confirmed them.
+var weakPredicates = map[string]bool{
+	"about":             true,
+	"allocated":         true,
+	"assigned":          true,
+	"blocked_by":        true,
+	"collaborates_with": true,
+	"depends_on":        true,
+	"member_of":         true,
+	"same_circle":       true,
+	"serves":            true,
+	"waiting_on":        true,
+}
+
+// substantiveWorldTypes are world-facet types that carry durable project/ownership/decision value over transient status.
+var substantiveWorldTypes = map[string]bool{
+	"committed":  true,
+	"decided":    true,
+	"decides":    true,
+	"decision":   true,
+	"means":      true,
+	"mentors":    true,
+	"owns":       true,
+	"reports_to": true,
+	"role":       true,
+	"term":       true,
+}
+
+func userConfirmedRight(e *entry.Entry) bool {
+	for i := len(e.Verdicts) - 1; i >= 0; i-- {
+		if e.Verdicts[i].By == "user" {
+			return e.Verdicts[i].Mark == "right"
+		}
+	}
+	return false
+}
+
+// IsWeakRelation says whether e is a low-value relation triple excluded from memory.entries. Nothing is deleted from
+// state; user-pinned, user-edited or user-confirmed entries are always kept.
+func IsWeakRelation(e *entry.Entry) bool {
+	if e == nil || e.Facet != entry.World || e.Predicate == "" {
+		return false
+	}
+	if !weakPredicates[strings.ToLower(strings.TrimSpace(e.Predicate))] {
+		return false
+	}
+	if e.Pinned || (e.User != nil && strings.TrimSpace(e.User.Text) != "") || userConfirmedRight(e) {
+		return false
+	}
+	return true
+}
+
 // Pool says whether an entry is answered: live, settled or on its way (not one the user deleted, merged, retired or
-// marked wrong), never a card's evaluation or inference about a person, and not life content when the user chose
-// "work only". The same gate as enkeep_recall's, without its category look-up: grading by category is the hub's.
+// marked wrong), never a card's evaluation or inference about a person, never a low-value weak relation triple, and
+// not life content when the user chose "work only". The same gate as enkeep_recall's, without its category look-up:
+// grading by category is the hub's.
 func Pool(st *store.State, e *entry.Entry) bool {
 	if !e.Live() {
 		return false
@@ -118,6 +189,9 @@ func Pool(st *store.State, e *entry.Entry) bool {
 		}
 	}
 	if e.Facet == entry.People && (e.Part == entry.PartUserEval || e.Part == entry.PartInferred || e.Inferred) {
+		return false
+	}
+	if IsWeakRelation(e) {
 		return false
 	}
 	if e.Domain == entry.Life && st.Onboarding != nil && st.Onboarding.Use == entry.Work {
@@ -140,13 +214,54 @@ func Status(e *entry.Entry) string {
 	return "candidate"
 }
 
-// Rank is the plugin's own order among alike entries (the exits' sortEntries): sightings × source kinds, pinned
-// first; 0 to 1000.
+// Rank orders entries by usefulness (0 to 1000, pinned 1000) so the hub's bounded memory.entries fetch (at most 1000
+// entries, re-sorted by standing then rank) keeps the highest-value rules, judgements, workflows, tools, persona and
+// substantive people/world entries first.
 func Rank(e *entry.Entry) int {
 	if e.Pinned {
 		return 1000
 	}
-	return min(999, e.Count*max(1, len(e.Kinds)))
+	var score int
+	switch e.Facet {
+	case entry.Interaction, entry.Judgement, entry.Workflow, entry.Tools, entry.Persona:
+		score = 400
+	case entry.People:
+		score = 200
+	default: // World and any other facet
+		typ := strings.ToLower(strings.TrimSpace(e.Type))
+		pred := strings.ToLower(strings.TrimSpace(e.Predicate))
+		switch {
+		case substantiveWorldTypes[typ] || substantiveWorldTypes[pred]:
+			score = 220
+		case typ == "status":
+			score = 80
+		default:
+			score = 180
+		}
+	}
+	switch e.Grain {
+	case entry.Abstract:
+		score += 160
+	case entry.Class:
+		score += 100
+	default:
+		if slices.Contains(e.Flags, "durable") {
+			score += 60
+		}
+	}
+	if (e.Origin != entry.Behavior && e.Origin != "" && e.Origin != entry.Seed) ||
+		(e.User != nil && strings.TrimSpace(e.User.Text) != "") ||
+		userConfirmedRight(e) {
+		score += 120
+	}
+	score += min(120, max(0, e.Count)*max(1, len(e.Kinds))*12)
+	switch Status(e) {
+	case "dormant":
+		score /= 2
+	case "candidate":
+		score = score * 3 / 4
+	}
+	return max(0, min(999, score))
 }
 
 // Tagged says whether the entry's categories and space were decided by the tagging rules: its own mark, or, for a
@@ -260,7 +375,17 @@ type Counts struct{ Entries, Active, Standing, Backfilled int }
 
 // Page answers one memory.entries page of st. The order is standing first, then rank, then newest; after is the
 // last answered entry's place, so pages stay consistent while entries come and go between them.
-func Page(st *store.State, p Params) (Result, Counts, error) {
+func Page(st *store.State, p Params) (Result, Counts, error) { return PageWith(st, nil, nil, p) }
+
+// PageWithProfile is Page with the user profile summary's entries.
+func PageWithProfile(st *store.State, sum *profile.Summary, p Params) (Result, Counts, error) {
+	return PageWith(st, sum, nil, p)
+}
+
+// PageWith is Page with the profile summary's entries and extras answered among the curated entries. An extra whose
+// id, facet or space the protocol would refuse, or whose text is empty or taken, is left out; its text, categories and
+// subjects are cut to the protocol's bounds.
+func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (Result, Counts, error) {
 	var from *key
 	if p.After != "" {
 		b, err := base64.RawURLEncoding.DecodeString(p.After)
@@ -288,6 +413,49 @@ func Page(st *store.State, p Params) (Result, Counts, error) {
 		}
 		if !Tagged(st, e) {
 			n.Backfilled++
+		}
+	}
+	for _, pit := range profileItems(sum) {
+		all = append(all, pit)
+		n.Entries++
+		if pit.x.Status == "active" {
+			n.Active++
+		}
+		if pit.standing {
+			n.Standing++
+		}
+	}
+	for _, x := range extras {
+		e := x.Entry
+		if !idRe.MatchString(e.ID) || strings.TrimSpace(e.Text) == "" || st.Entries[e.ID] != nil || strings.HasPrefix(e.ID, "profile:") {
+			continue
+		}
+		e.Text = clip(strings.TrimSpace(e.Text), MaxText)
+		if !facetRe.MatchString(e.Facet) {
+			e.Facet = ""
+		}
+		if !spaceRe.MatchString(e.OriginSpace) {
+			e.OriginSpace = ""
+		}
+		e.Categories = e.Categories[:min(len(e.Categories), MaxCats)]
+		var subj []string
+		for _, s := range e.Subjects {
+			if s = strings.TrimSpace(s); s != "" && len(subj) < MaxSubjects {
+				subj = append(subj, clip(s, MaxSubject))
+			}
+		}
+		e.Subjects = subj
+		e.Rank = min(max(e.Rank, 0), 1000)
+		if e.Status == "" {
+			e.Status = "active"
+		}
+		all = append(all, item{x: &e, standing: e.Standing, rank: e.Rank, last: x.Last})
+		n.Entries++
+		if e.Status == "active" {
+			n.Active++
+		}
+		if e.Standing {
+			n.Standing++
 		}
 	}
 	sort.Slice(all, func(i, j int) bool { return before(all[i].key(), all[j].key()) })
@@ -322,9 +490,134 @@ func Page(st *store.State, p Params) (Result, Counts, error) {
 	return res, n, nil
 }
 
+// profileItems converts a profile summary into memory.entries items. General overview and six-facet summaries carry no
+// sensitive categories and are standing; sensitive category summaries carry their exact categories and origin_space and
+// are never standing so the hub's scene filter gates them.
+func profileItems(sum *profile.Summary) []item {
+	if sum == nil || sum.SourceCount == 0 {
+		return nil
+	}
+	day := sum.Day
+	if day == "" && len(sum.GeneratedAt) >= 10 {
+		day = sum.GeneratedAt[:10]
+	}
+	var out []item
+	if strings.TrimSpace(sum.Overview) != "" {
+		text := "用户侧写汇总（我是怎样的人）：" + strings.TrimSpace(sum.Overview)
+		if len(sum.Recent) > 0 {
+			text += " 近况：" + strings.Join(sum.Recent[:min(len(sum.Recent), 3)], "；")
+		}
+		e := Entry{
+			ID:       "profile:overview",
+			Text:     clip(text, MaxText),
+			Facet:    string(entry.Persona),
+			Status:   "active",
+			Standing: true,
+			Rank:     995,
+			Subjects: []string{"用户侧写", "我是怎样的人", "关于我", "profile", "summary"},
+		}
+		out = append(out, item{x: &e, standing: e.Standing, rank: e.Rank, last: day})
+	}
+	facetKeywords := map[entry.Facet][]string{
+		entry.Interaction: {"用户侧写", "和AI交互", "偏好", "规矩", "interaction"},
+		entry.Tools:       {"用户侧写", "工具", "环境", "机器", "tools"},
+		entry.Judgement:   {"用户侧写", "默认判断", "决策", "取舍", "judgement"},
+		entry.Workflow:    {"用户侧写", "做事方式", "处理流程", "workflow"},
+		entry.World:       {"用户侧写", "项目", "实体", "联系人", "world"},
+		entry.Persona:     {"用户侧写", "关于我", "近况", "个人风格", "persona"},
+	}
+	facetTitles := map[entry.Facet]string{
+		entry.Interaction: "用户侧写·和AI交互",
+		entry.Tools:       "用户侧写·AI与工具",
+		entry.Judgement:   "用户侧写·默认判断",
+		entry.Workflow:    "用户侧写·处理流程与方式",
+		entry.World:       "用户侧写·实体与来往的人",
+		entry.Persona:     "用户侧写·人物理解与近况",
+	}
+	for _, sec := range sum.Sections {
+		if len(sec.Points) == 0 {
+			continue
+		}
+		id := "profile:" + string(sec.Facet)
+		if !idRe.MatchString(id) {
+			continue
+		}
+		// One entry per facet, recalled on its own: the section's synthesized description; the points joined only when
+		// there is none (no model yet).
+		text := strings.TrimSpace(sec.Summary)
+		if text == "" {
+			var parts []string
+			for i, pt := range sec.Points {
+				if i >= 5 {
+					break
+				}
+				parts = append(parts, strings.TrimRight(strings.TrimSpace(pt.Text), "。.;；"))
+			}
+			text = strings.Join(parts, "；") + "。"
+		}
+		var b strings.Builder
+		b.WriteString(facetTitles[sec.Facet])
+		b.WriteString("：")
+		b.WriteString(text)
+		subjs := append([]string(nil), facetKeywords[sec.Facet]...)
+		for _, s := range sec.Subjects {
+			if len(subjs) >= MaxSubjects {
+				break
+			}
+			if !slices.Contains(subjs, s) {
+				subjs = append(subjs, clip(s, MaxSubject))
+			}
+		}
+		e := Entry{
+			ID:       id,
+			Text:     clip(b.String(), MaxText),
+			Facet:    string(sec.Facet),
+			Status:   "active",
+			Standing: false, // the overview entry is the standing one; each facet comes in by its subjects
+			Rank:     990,
+			Subjects: subjs,
+		}
+		out = append(out, item{x: &e, standing: e.Standing, rank: e.Rank, last: day})
+	}
+	for _, sens := range sum.Sensitive {
+		if len(sens.Points) == 0 || sens.Category == "" {
+			continue
+		}
+		id := "profile:cat:" + sens.Category
+		if !idRe.MatchString(id) {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString("用户侧写（敏感分类 ")
+		b.WriteString(sens.Category)
+		b.WriteString("）：")
+		if strings.TrimSpace(sens.Summary) != "" {
+			b.WriteString(strings.TrimSpace(sens.Summary))
+		}
+		e := Entry{
+			ID:         id,
+			Text:       clip(b.String(), MaxText),
+			Facet:      string(entry.Persona),
+			Status:     "active",
+			Categories: []string{sens.Category},
+			Standing:   false,
+			Rank:       900,
+			Subjects:   []string{"用户侧写", sens.Category, "profile"},
+		}
+		if spaceRe.MatchString(sens.OriginSpace) {
+			e.OriginSpace = sens.OriginSpace
+		}
+		out = append(out, item{x: &e, standing: e.Standing, rank: e.Rank, last: day})
+	}
+	return out
+}
+
 // entryOf is what the protocol carries of an entry, with its categories and space (Tags). A space slug the protocol
 // would refuse is left out; the entry's categories still grade it.
 func entryOf(st *store.State, it item) Entry {
+	if it.x != nil {
+		return *it.x
+	}
 	e := it.e
 	x := Entry{ID: e.ID, Text: clip(strings.TrimSpace(recall.Line(e)), MaxText), Status: Status(e), Standing: it.standing,
 		Rank: it.rank, Subjects: Subjects(st, e)}

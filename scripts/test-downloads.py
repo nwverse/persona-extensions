@@ -67,10 +67,33 @@ class DownloadTests(unittest.TestCase):
             catalog.icon_url("demo", "assets/icon.png", "main")
 
     def test_rfc3339_rejects_invalid_and_naive_timestamps(self):
-        for timestamp in ("2026-01-02T03:04:05Z", "2026-01-02T03:04:05.1+08:00"):
-            catalog.validate_downloads_timestamp(timestamp)
-        for timestamp in (None, "2026-01-02", "2026-01-02T03:04:05", "2026-13-01T00:00:00Z"):
-            with self.assertRaises(ValueError):
+        valid_timestamps = [
+            "2026-01-02T03:04:05Z",
+            "2026-01-02T03:04:05+08:00",
+            "2026-01-02T03:04:05-08:30",
+            "2026-01-02T03:04:05+23:59",
+            "2026-01-02T03:04:05.1+08:00",
+        ]
+        valid_timestamps.extend(f"2026-01-02T03:04:05.{fraction}Z" for fraction in
+                                ("1", "12", "123", "1234", "12345", "123456", "1234567"))
+        for timestamp in valid_timestamps:
+            with self.subTest(timestamp=timestamp):
+                catalog.validate_downloads_timestamp(timestamp)
+        invalid_timestamps = (
+            None,
+            "2026-01-02",
+            "2026-01-02T03:04:05",
+            "2026-01-02T03:04:05.1",
+            "2026-13-01T00:00:00Z",
+            "2026-02-30T00:00:00Z",
+            "2026-01-02T24:00:00Z",
+            "2026-01-02T03:04:05.Z",
+            "2026-01-02T03:04:05+24:00",
+            "2026-01-02T03:04:05-24:00",
+            "2026-01-02T03:04:05+00:60",
+        )
+        for timestamp in invalid_timestamps:
+            with self.subTest(timestamp=timestamp), self.assertRaises(ValueError):
                 catalog.validate_downloads_timestamp(timestamp)
 
 

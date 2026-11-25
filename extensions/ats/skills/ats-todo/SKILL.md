@@ -26,6 +26,7 @@ ATS 是 Persona 里的 Agent 任务队列：一个任务就是在用户选的电
    - `repo`（必填）：仓库在那台电脑上的绝对路径或 `~/` 开头的路径，必须在用户允许的目录里；`ref` 可选，分支、标签或提交，默认 `HEAD`；
    - `acceptance`：一条验收用的 shell 命令（在任务的工作目录里跑，退出码 0 算通过）。尽量给，没有验收命令的任务事后只能说「跑完了」；
    - `permission_profile`：默认 `readonly`（Agent 只调查、不改东西）；要改代码才传 `default`，并在用户确认时说清这是可写任务。可写任务的改动提交在那台电脑上的 `ats/<任务>-<次数>` 分支（Agent 没提交的改动由 ATS 提交到这个分支），不会 push；
+   - `agent_type`：可选，默认 `claude`。用户明确选择引擎时才传它的名称（例如 `codex`）；没提就省略，不要自己改默认引擎；
    - `priority`：`p0` 紧急、`p1` 高、`p2` 默认、`p3` 后台；`difficulty`：`easy`、`medium`（默认）、`hard`、`extreme`，决定用哪一档模型；
    - `machine`：只想在某台电脑上跑时填电脑的名字；`title`：队列页显示的标题；`idempotency_key`：同一个 key 重复提交只会有一个任务。
 

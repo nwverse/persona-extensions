@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/nwverse/persona/sdk/go/wire"
 )
 
 // Places: keyword search and around search (POI 2.0, the search allowance), geocoding and reverse geocoding (the LBS
@@ -262,46 +264,63 @@ func (a *app) reverse(ctx context.Context, p point, all bool) (regeocode, error)
 	return ans.Regeocode.V, nil
 }
 
-func (a *app) toolSearch(ctx context.Context, in args) (string, error) {
+func (a *app) toolSearch(ctx context.Context, in args) (wire.ConnectorCallResult, error) {
 	if in.Keywords == "" {
-		return "", errors.New("要给 keywords：搜什么")
+		return wire.ConnectorCallResult{}, errors.New("要给 keywords：搜什么")
 	}
 	pois, err := a.search(ctx, in.Keywords, in.City, in.CityOnly, limitOr(in.Limit, 5, 10))
 	if err != nil {
-		return "", err
+		return wire.ConnectorCallResult{}, err
 	}
 	where := "全国"
 	if in.City != "" {
 		where = in.City
 	}
 	if len(pois) == 0 {
-		return fmt.Sprintf("高德在%s没搜到「%s」。", where, in.Keywords), nil
+		return wire.ConnectorCallResult{Text: fmt.Sprintf("高德在%s没搜到「%s」。", where, in.Keywords)}, nil
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "高德在%s搜「%s」（坐标为 WGS-84 纬度,经度）：", where, in.Keywords)
 	for i, p := range pois {
 		b.WriteString("\n" + poiLine(i+1, p, nil))
 	}
-	return b.String(), nil
+	res := wire.ConnectorCallResult{Text: b.String()}
+	if mc := buildPOIMapComponent(
+		"",
+		fmt.Sprintf("搜索「%s」", in.Keywords),
+		fmt.Sprintf("高德在%s搜索「%s」的结果分布图", where, in.Keywords),
+		pois,
+		nil,
+		"",
+		false,
+	); mc != nil {
+		res.Views = []wire.View{{
+			Title:    clipFit(fmt.Sprintf("高德搜索：%s", in.Keywords), 120),
+			Sections: []wire.Section{{Items: []wire.Component{*mc}}},
+		}}
+	}
+	return res, nil
 }
 
-func (a *app) toolNearby(ctx context.Context, in args) (string, error) {
+func (a *app) toolNearby(ctx context.Context, in args) (wire.ConnectorCallResult, error) {
 	center, ok, err := pointArg(in.Latitude, in.Longitude, "中心点")
 	if err != nil {
-		return "", err
+		return wire.ConnectorCallResult{}, err
 	}
 	name := ""
+	centerShortName := ""
 	if !ok {
 		if in.Place == "" {
-			return "", errors.New("要给中心点：latitude/longitude（用户说「附近」时先用 phone_location_current），或 place（地址、地名或常用地点名如「家」「公司」；未配置时可查 amap_places / list_places）")
+			return wire.ConnectorCallResult{}, errors.New("要给中心点：latitude/longitude（用户说「附近」时先用 phone_location_current），或 place（地址、地名或常用地点名如「家」「公司」；未配置时可查 amap_places / list_places）")
 		}
 		pl, err := a.resolvePoint(ctx, in.Place, in.City)
 		if err != nil {
-			return "", err
+			return wire.ConnectorCallResult{}, err
 		}
-		center, name = pl.at, pl.label()
+		center, name, centerShortName = pl.at, pl.label(), pl.name
 	} else {
 		name = center.String()
+		centerShortName = "当前位置"
 	}
 	radius := limitOr(in.RadiusMeters, 1000, 50000)
 	limit := limitOr(in.Limit, 5, 10)
@@ -318,11 +337,11 @@ func (a *app) toolNearby(ctx context.Context, in args) (string, error) {
 	}
 	body, err := a.client.get(ctx, groupSearch, "/v5/place/around", q, searchFor)
 	if err != nil {
-		return "", err
+		return wire.ConnectorCallResult{}, err
 	}
 	var ans poiAnswer
 	if err := json.Unmarshal(body, &ans); err != nil {
-		return "", errBadAnswer
+		return wire.ConnectorCallResult{}, errBadAnswer
 	}
 	pois := ans.Pois
 	what := in.Keywords
@@ -330,7 +349,7 @@ func (a *app) toolNearby(ctx context.Context, in args) (string, error) {
 		what = "吃饭、购物和生活服务的地方"
 	}
 	if len(pois) == 0 {
-		return fmt.Sprintf("高德在 %s 周围 %s 内没搜到%s。", name, distanceWords(float64(radius)), quoted(what)), nil
+		return wire.ConnectorCallResult{Text: fmt.Sprintf("高德在 %s 周围 %s 内没搜到%s。", name, distanceWords(float64(radius)), quoted(what))}, nil
 	}
 	if !byWeight {
 		// AMap ignores the distance order for a keyword-only search: order what it gave.
@@ -341,7 +360,132 @@ func (a *app) toolNearby(ctx context.Context, in args) (string, error) {
 	for i, p := range pois {
 		b.WriteString("\n" + poiLine(i+1, p, &center))
 	}
-	return b.String(), nil
+	res := wire.ConnectorCallResult{Text: b.String()}
+	titleSubject := in.Keywords
+	if titleSubject == "" {
+		titleSubject = "周边地点"
+	}
+	if mc := buildPOIMapComponent(
+		"",
+		fmt.Sprintf("%s附近 · %s", clipFit(centerShortName, 30), titleSubject),
+		fmt.Sprintf("高德在%s周围 %s 内找到的 %d 处%s", centerShortName, distanceWords(float64(radius)), len(pois), what),
+		pois,
+		&center,
+		centerShortName,
+		false,
+	); mc != nil {
+		res.Views = []wire.View{{
+			Title:    clipFit(fmt.Sprintf("高德周边：%s", titleSubject), 120),
+			Sections: []wire.Section{{Items: []wire.Component{*mc}}},
+		}}
+	}
+	return res, nil
+}
+
+func buildPOIMapComponent(mapKey, title, alt string, pois []poi, center *point, centerName string, showList bool) *wire.Component {
+	pins := make([]placePin, 0, len(pois)+1)
+	var firstPt point
+	var firstName string
+	hasFirst := false
+
+	if center != nil && center.valid() {
+		label := clipFit(centerName, 180)
+		if label == "" {
+			label = "搜索中心"
+		}
+		pins = append(pins, placePin{
+			id:       "center",
+			at:       *center,
+			kind:     wire.MapMarkerKindPin,
+			label:    label,
+			subtitle: "搜索中心",
+			icon:     markerIconForName(centerName),
+			tone:     wire.TonePositive,
+		})
+	}
+
+	for i, p := range pois {
+		at, ok := parseAMapLocation(p.Location.String())
+		if !ok || !at.valid() {
+			continue
+		}
+		poiName := p.Name.String()
+		if poiName == "" {
+			poiName = fmt.Sprintf("地点 %d", i+1)
+		}
+		if !hasFirst {
+			firstPt, firstName, hasFirst = at, poiName, true
+		}
+		label := fmt.Sprintf("%d. %s", i+1, poiName)
+		sub, detail := poiMetadata(p, center)
+		pin := placePin{
+			id:       fmt.Sprintf("poi-%d", i+1),
+			at:       at,
+			kind:     wire.MapMarkerKindPin,
+			label:    label,
+			subtitle: sub,
+			detail:   detail,
+			icon:     "location",
+		}
+		if center == nil && i == 0 {
+			pin.tone = wire.TonePositive
+		} else {
+			pin.color = wire.ColorBlue
+		}
+		pins = append(pins, pin)
+	}
+
+	if !hasFirst {
+		return nil
+	}
+	var links []wire.MapLink
+	if firstName != "" {
+		links = []wire.MapLink{{
+			Title: "在高德地图中打开 " + clipFit(firstName, 30),
+			URL:   amapMarkerURL(firstPt, firstName),
+		}}
+	}
+	poiCount := len(pins)
+	if center != nil && center.valid() {
+		poiCount--
+	}
+	caption := fmt.Sprintf("共 %d 处地点 · 点击查看位置与详情", poiCount)
+	return buildPlacesMapComponent(mapKey, title, alt, caption, wire.ImageAspectWide, nil, pins, links, showList)
+}
+
+func poiMetadata(p poi, center *point) (subtitle, detail string) {
+	var sub []string
+	if center != nil {
+		if d := poiDistance(p, *center); !math.IsInf(d, 1) {
+			sub = append(sub, distanceWords(d))
+		}
+	}
+	if c := category(p.Type.String()); c != "" && !strings.Contains(p.Name.String(), c) {
+		sub = append(sub, c)
+	}
+	addr := address(p.CityName.String(), p.AdName.String(), p.Address.String())
+	if addr != "" && (center == nil || len(sub) < 2) {
+		sub = append(sub, addr)
+	}
+
+	var details []string
+	if addr != "" {
+		details = append(details, "地址："+addr)
+	}
+	biz := p.Business.V
+	if tel := phones(biz.Tel.String()); tel != "" {
+		details = append(details, "电话："+tel)
+	}
+	if h := biz.OpentimeToday.String(); h != "" {
+		details = append(details, "营业时间："+h)
+	}
+	if r, ok := biz.Rating.num(); ok && r > 0 {
+		details = append(details, "评分 "+biz.Rating.String())
+	}
+	if c, ok := biz.Cost.num(); ok && c > 0 {
+		details = append(details, "人均 ¥"+strconv.FormatFloat(c, 'f', -1, 64))
+	}
+	return clipFit(strings.Join(sub, " · "), 200), clipFit(strings.Join(details, " · "), 2000)
 }
 
 func quoted(s string) string {

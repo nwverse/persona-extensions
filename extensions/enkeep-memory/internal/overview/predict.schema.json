@@ -1,0 +1,1 @@
+{"type":"object","additionalProperties":false,"required":["answers"],"properties":{"answers":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","pick"],"properties":{"id":{"type":"string"},"pick":{"type":"string","enum":["A","B"]}}}}}}

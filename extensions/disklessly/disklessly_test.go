@@ -491,7 +491,7 @@ func TestMCPOverStdio(t *testing.T) {
 	}
 	listRes := rpc("tools/list", map[string]any{})
 	tList, _ := listRes["tools"].([]any)
-	if len(tList) != len(tools) || len(tools) != 11 {
+	if len(tList) != len(tools) || len(tools) != 12 {
 		t.Fatalf("tools/list count = %d, want 11", len(tList))
 	}
 

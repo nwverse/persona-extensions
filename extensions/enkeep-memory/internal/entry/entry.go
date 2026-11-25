@@ -80,7 +80,7 @@ const (
 	Candidate Status = "candidate"
 	Stable    Status = "stable"
 	Shifting  Status = "shifting" // recent counter-examples ≥ 25%: shown, not exported
-	Dormant   Status = "dormant"  // quiet for 40 active days; a confirmed entry is asked about once, not dropped
+	Dormant   Status = "dormant"  // quiet for 90 active days (180 for established entries); a confirmed entry is asked about once, not dropped
 	Retired   Status = "retired"  // superseded, invalidated (valid_to set) or merged into another
 )
 

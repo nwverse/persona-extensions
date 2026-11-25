@@ -153,6 +153,72 @@ func TestUISearchAndOpenPOIImage(t *testing.T) {
 	}
 }
 
+func TestUISearchRendersPOICostWithoutPanic(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+	// Queue recorded coffee fixture whose POIs contain business.cost ("59.00", "107.00").
+	f.queue("/v5/place/text", fixture(t, "around-coffee"))
+
+	res, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "search",
+		Values: map[string]string{"keywords": "咖啡", "city": "北京"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, res.View, false)
+	wantIn(t, string(mustJSON(t, res.View)), "¥59/人", "¥107/人")
+}
+
+func TestUIRoutePreviewKeepsDestinationMarkerBeyondLimit(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	// Start + 10 waypoints + destination = 12 stops (> staticMapMarkersMost = 10).
+	wps := []string{
+		"39.910,116.380", "39.911,116.381", "39.912,116.382", "39.913,116.383", "39.914,116.384",
+		"39.915,116.385", "39.916,116.386", "39.917,116.387", "39.918,116.388", "39.919,116.389",
+	}
+	res, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "route",
+		Values: map[string]string{
+			"from":      "39.900,116.370",
+			"to":        "39.930,116.410",
+			"waypoints": strings.Join(wps, ";"),
+			"mode":      "driving",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, res.View, false)
+	refs := wire.ImageRefs(res.View)
+	if len(refs) != 1 {
+		t.Fatalf("expected 1 route map ref, got %v", refs)
+	}
+	if _, err := a.imagePage(context.Background(), &ext.ImageRequest{UIImageParams: wire.UIImageParams{
+		Contribution: pageUI, Ref: refs[0], Width: 640,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	q := f.last("/v3/staticmap")
+	markers := strings.Split(q.Get("markers"), "|")
+	if len(markers) != staticMapMarkersMost {
+		t.Fatalf("expected %d markers, got %d: %v", staticMapMarkersMost, len(markers), markers)
+	}
+	if !strings.HasPrefix(markers[0], "mid,0x2E7D32,A:") {
+		t.Fatalf("expected green A start marker, got %q", markers[0])
+	}
+	wantDest := "mid,0xE53935,J:" + amapLocation(point{39.930, 116.410})
+	if markers[len(markers)-1] != wantDest {
+		t.Fatalf("last marker = %q, want red J destination %q", markers[len(markers)-1], wantDest)
+	}
+	pathStops := strings.Split(strings.TrimPrefix(q.Get("paths"), "5,0x1976D2,1,,:"), ";")
+	if len(pathStops) != 12 {
+		t.Fatalf("expected all 12 stops on route path, got %d", len(pathStops))
+	}
+}
+
 func TestUIRouteWithWaypointsAndUsageTab(t *testing.T) {
 	f := newFake(t)
 	a, _ := testApp(t, f)
@@ -360,4 +426,183 @@ func TestUISavedPlacesAndCommuteFlow(t *testing.T) {
 	}
 	checkValidView(t, wRes.View, false)
 	wantIn(t, string(mustJSON(t, wRes.View)), "西单商圈（")
+}
+
+func findComponentByType(v *wire.View, typ string) *wire.Component {
+	for si := range v.Sections {
+		for ii := range v.Sections[si].Items {
+			if v.Sections[si].Items[ii].Type == typ {
+				return &v.Sections[si].Items[ii]
+			}
+		}
+	}
+	return nil
+}
+
+func TestUIv12InteractiveMapViews(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	// 1. UI v12 search renders interactive ComponentMap with POI open_poi actions; v11 keeps static ui.image.
+	v11Res, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action:    "search",
+		UIVersion: 11,
+		Values:    map[string]string{"keywords": "北京南站", "city": "北京"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, v11Res.View, false)
+	if findComponentByType(v11Res.View, wire.ComponentMap) != nil || len(wire.ImageRefs(v11Res.View)) != 1 {
+		t.Fatalf("UI v11 search should keep static image fallback, got refs=%v", wire.ImageRefs(v11Res.View))
+	}
+
+	sRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action:    "search",
+		UIVersion: 12,
+		Values:    map[string]string{"keywords": "北京南站", "city": "北京"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, sRes.View, false)
+	sMap := findComponentByType(sRes.View, wire.ComponentMap)
+	if sMap == nil || sMap.Key != "search-map" || !sMap.ShowList || len(sMap.Markers) != 2 {
+		t.Fatalf("expected interactive search ComponentMap, got %+v", sMap)
+	}
+	if sMap.Markers[0].Action == nil || sMap.Markers[0].Action.ID != "open_poi" || sMap.Markers[0].Detail == "" {
+		t.Fatalf("expected open_poi action + detail on search marker: %+v", sMap.Markers[0])
+	}
+	if len(wire.ImageRefs(sRes.View)) != 0 {
+		t.Fatalf("UI v12 interactive search should not emit static image ref, got %v", wire.ImageRefs(sRes.View))
+	}
+
+	// 2. Tapping open_poi in v12 opens tabMap with centered ComponentMap; toggling traffic falls back to ui.image.
+	poiAct := sMap.Markers[0].Action
+	mRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action:    poiAct.ID,
+		UIVersion: 12,
+		State:     sRes.View.State,
+		Values:    poiAct.Values,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, mRes.View, false)
+	mMap := findComponentByType(mRes.View, wire.ComponentMap)
+	if mMap == nil || mMap.Key != "map-viewer" || mMap.ShowList || mMap.Viewport == nil {
+		t.Fatalf("expected centered ComponentMap in tabMap, got %+v", mMap)
+	}
+
+	mTraffic, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action:    "toggle_traffic",
+		UIVersion: 12,
+		State:     mRes.View.State,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, mTraffic.View, false)
+	if findComponentByType(mTraffic.View, wire.ComponentMap) != nil || len(wire.ImageRefs(mTraffic.View)) != 1 {
+		t.Fatalf("traffic enabled should switch to ui.image PNG preview")
+	}
+	wantIn(t, string(mustJSON(t, mTraffic.View)), "含实时路况")
+
+	mBack, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action:    "toggle_traffic",
+		UIVersion: 12,
+		State:     mTraffic.View.State,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, mBack.View, false)
+	if findComponentByType(mBack.View, wire.ComponentMap) == nil {
+		t.Fatalf("toggling traffic off should return interactive ComponentMap")
+	}
+
+	// 3. UI v12 route tab renders multi-alternative route ComponentMap + traffic toggle + navigation link.
+	rRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action:    "route",
+		UIVersion: 12,
+		Values: map[string]string{
+			"from":      "天安门",
+			"to":        "北京南站",
+			"waypoints": "西单",
+			"mode":      "driving",
+			"prefer":    "recommended",
+		},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, rRes.View, false)
+	rMap := findComponentByType(rRes.View, wire.ComponentMap)
+	if rMap == nil || rMap.Key != "route-map" || !rMap.ShowList || len(rMap.Routes) != 2 || len(rMap.Routes[0].Points) < 5 {
+		t.Fatalf("expected interactive route ComponentMap with 2 decoded routes, got %+v", rMap)
+	}
+	if len(rMap.Markers) != 3 || len(rMap.Links) != 1 {
+		t.Fatalf("expected origin + waypoint + destination and nav link, got markers=%d links=%d", len(rMap.Markers), len(rMap.Links))
+	}
+
+	// Traffic toggle on route tab switches to static ui.image, then restores interactive ComponentMap.
+	rTraffic, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action:    "toggle_traffic",
+		UIVersion: 12,
+		State:     rRes.View.State,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, rTraffic.View, false)
+	if findComponentByType(rTraffic.View, wire.ComponentMap) != nil || len(wire.ImageRefs(rTraffic.View)) != 1 {
+		t.Fatalf("route traffic toggle should switch to static image preview")
+	}
+	rRestore, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action:    "toggle_traffic",
+		UIVersion: 12,
+		State:     rTraffic.View.State,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, rRestore.View, false)
+	if findComponentByType(rRestore.View, wire.ComponentMap) == nil {
+		t.Fatalf("disabling route traffic should restore interactive ComponentMap")
+	}
+
+	// Transit route in UI v12 includes multi-plan routes and transfer stops.
+	tRes, err := a.actionPage(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action:    "route",
+		UIVersion: 12,
+		Values:    map[string]string{"from": "天安门", "to": "北京南站", "mode": "transit"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkValidView(t, tRes.View, false)
+	tMap := findComponentByType(tRes.View, wire.ComponentMap)
+	if tMap == nil || len(tMap.Routes) != 2 || tMap.Routes[0].Mode != wire.MapTravelModeTransit {
+		t.Fatalf("expected interactive transit ComponentMap, got %+v", tMap)
+	}
+
+	// End-to-end SDK protocol check at UIVersion 12 and 11.
+	b := &app{logf: t.Logf, tune: tuneFor(f, newClock())}
+	h := startWithKey(t, b, testKey)
+	for _, ver := range []int{11, 12} {
+		var actionRes wire.ActionResult
+		if err := h.Call("ui.action", wire.UIParams{
+			Contribution: pageUI,
+			Placement:    wire.PlacementNavPage,
+			Size:         wire.SizeFull,
+			UIVersion:    ver,
+			Action:       "route",
+			Values:       map[string]string{"from": "天安门", "to": "北京南站", "mode": "driving"},
+		}, &actionRes); err != nil {
+			t.Fatalf("ui.action UIVersion %d: %v", ver, err)
+		}
+		if err := exttest.CheckView(mustJSON(t, actionRes.View), false); err != nil {
+			t.Fatalf("CheckView UIVersion %d: %v", ver, err)
+		}
+	}
 }

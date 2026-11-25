@@ -177,6 +177,21 @@ var tools = []tool{
 		},
 		description: "给未安装或版本过旧的机器安装 / 升级 disklessly CLI（优先 Homebrew），装好后运行 disklessly version 确认，再重新读取这台机器的会话索引，返回新的状态。会在目标机器上安装软件，需要确认。",
 	},
+	{
+		name:        "disklessly_files_offload",
+		readOnly:    false,
+		destructive: true,
+		required:    []string{"machine", "paths"},
+		props: map[string]any{
+			"machine": str("目标机器 ID 或 SSH Host 别名"),
+			"paths": map[string]any{
+				"type": "array", "minItems": 1, "maxItems": offloadMaxRun, "items": map[string]any{"type": "string"},
+				"description": "要上云的文件、文件夹或 App（/Applications 或个人文件夹里的 .app）的绝对路径，最多 50 个",
+			},
+			"dry_run": map[string]any{"type": "boolean", "description": "若为 true 只检查每个路径能否上云（原因、类型），并说明 CLI 是否已安装，不移动任何东西"},
+		},
+		description: "把指定机器上的文件和文件夹（disklessly offload，原处留下 .disklessly 占位文件）或 App（disklessly pack，原处留下替身 App）上传到 disklessly 的存储，读回校验后才删除本地原件，返回每项结果和 df 实测释放空间。个人文件夹以外、标准文件夹、资源库、App 包内部、符号链接和密钥目录会被拒绝。CLI 缺失或过旧时报错并指向 disklessly_cli_install，不会自动安装。会删除本地原件，执行前请与用户确认，最好先 dry_run。",
+	},
 }
 
 func (t tool) schema() map[string]any {
@@ -652,6 +667,17 @@ func (m *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return nil
 		})
 		return out, cmp.Or(werr, err)
+
+	case "disklessly_files_offload":
+		var in struct {
+			Machine string   `json:"machine"`
+			Paths   []string `json:"paths"`
+			DryRun  bool     `json:"dry_run"`
+		}
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		return m.filesOffload(ctx, in.Machine, in.Paths, in.DryRun)
 
 	case "disklessly_machine_upsert":
 		var in struct {

@@ -10,7 +10,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
-// resettleCurator: 50 active days; the user really had data on the first 10, the last 40 were recorded as active by
+// resettleCurator: 100 active days; the user really had data on the first 10, the last 90 were recorded as active by
 // daily runs that never reached the model (the bug before 0.2.0-beta.21). An entry seen on day 10 was put to sleep.
 func resettleCurator(t *testing.T) (*Curator, *entry.Entry) {
 	t.Helper()
@@ -18,7 +18,7 @@ func resettleCurator(t *testing.T) (*Curator, *entry.Entry) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ds := days(50)
+	ds := days(100)
 	st.S.ActiveDays = ds
 	for i, d := range ds {
 		calls := 3
@@ -35,7 +35,7 @@ func resettleCurator(t *testing.T) (*Curator, *entry.Entry) {
 	if err := st.Save(); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Date(2026, 2, 23, 12, 0, 0, 0, time.UTC)
+	now := time.Date(2026, 4, 20, 12, 0, 0, 0, time.UTC)
 	return &Curator{St: st, Loc: time.UTC, Now: func() time.Time { return now }}, e
 }
 
@@ -43,20 +43,20 @@ func resettleCurator(t *testing.T) (*Curator, *entry.Entry) {
 // file, not the event log. Applying moves it; a second call finds nothing to move.
 func TestResettle(t *testing.T) {
 	c, e := resettleCurator(t)
-	today := days(50)[49]
+	today := days(100)[99]
 	before, _ := os.ReadFile(filepath.Join(c.St.Dir, "state.json"))
 
 	r, err := c.Resettle(today, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.DroppedDays) != 40 || r.Moves["dormant→candidate"] != 1 || r.Changed() != 1 || r.Applied {
+	if len(r.DroppedDays) != 90 || r.Moves["dormant→candidate"] != 1 || r.Changed() != 1 || r.Applied {
 		t.Fatalf("dry run: %+v", r)
 	}
 	if r.Before[entry.Dormant] != 1 || r.After[entry.Dormant] != 0 || r.After[entry.Candidate] != 1 {
 		t.Fatalf("counts: %+v → %+v", r.Before, r.After)
 	}
-	if e.Status != entry.Dormant || len(c.St.S.ActiveDays) != 50 {
+	if e.Status != entry.Dormant || len(c.St.S.ActiveDays) != 100 {
 		t.Fatalf("the dry run changed the state: %s, %d days", e.Status, len(c.St.S.ActiveDays))
 	}
 	after, _ := os.ReadFile(filepath.Join(c.St.Dir, "state.json"))
@@ -83,15 +83,15 @@ func TestResettle(t *testing.T) {
 // A day without any run in the ledger, or with evidence on it, is kept: nothing proves it empty.
 func TestResettleKeepsUnprovenDays(t *testing.T) {
 	c, _ := resettleCurator(t)
-	ds := days(50)
-	c.St.S.Runs = c.St.S.Runs[:45] // no ledger for the last 5 days
+	ds := days(100)
+	c.St.S.Runs = c.St.S.Runs[:95] // no ledger for the last 5 days
 	c.St.S.Entries["e3"] = &entry.Entry{ID: "e3", Grain: entry.Action, Facet: entry.World, Origin: entry.Behavior,
 		Status: entry.Candidate, First: ds[20], Last: ds[20], Evidence: []entry.Evidence{{Ref: "chats/d", Day: ds[20]}}}
-	r, err := c.Resettle(ds[49], false)
+	r, err := c.Resettle(ds[99], false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(r.DroppedDays) != 34 { // days 11..45 without day 21
+	if len(r.DroppedDays) != 84 { // days 11..95 without day 21
 		t.Fatalf("dropped %d: %v", len(r.DroppedDays), r.DroppedDays)
 	}
 }

@@ -229,7 +229,7 @@ func parseConfigPlaces(cfg placeConfig, strict bool, logf func(string, ...any)) 
 	seen := map[string]string{}
 
 	addOne := func(fp fixedPlace) error {
-		key := normalizePlaceKey(fp.Name)
+		key := canonicalSlotKey(fp.Name)
 		if prev, dup := seen[key]; dup {
 			return fmt.Errorf("常用地点名称重复：「%s」和「%s」重名了", fp.Name, prev)
 		}
@@ -322,6 +322,9 @@ func validatePlaceConfigRaw(raw json.RawMessage) error {
 }
 
 func (a *app) initPlaces(cfg placeConfig, dataDir string) {
+	a.placesSaveMu.Lock()
+	defer a.placesSaveMu.Unlock()
+
 	cps, _ := parseConfigPlaces(cfg, false, a.logf)
 
 	var ups []fixedPlace
@@ -364,7 +367,7 @@ func readUIPlaces(file string, logf func(string, ...any)) []fixedPlace {
 		if !fp.HasCoord && fp.Target == "" {
 			fp.Target = fp.Name
 		}
-		k := normalizePlaceKey(fp.Name)
+		k := canonicalSlotKey(fp.Name)
 		if seen[k] {
 			continue
 		}
@@ -376,27 +379,23 @@ func readUIPlaces(file string, logf func(string, ...any)) []fixedPlace {
 	return out
 }
 
-func (a *app) saveUIPlaces(list []fixedPlace) {
-	a.placesMu.Lock()
-	file := a.placesFile
-	a.placesMu.Unlock()
+func writeUIPlacesFile(file string, list []fixedPlace) error {
 	if file == "" {
-		return
+		return nil
 	}
 	b, err := json.Marshal(storedPlaces{Places: list})
 	if err != nil {
-		return
+		return err
 	}
-	a.placesSaveMu.Lock()
-	defer a.placesSaveMu.Unlock()
 	tmp := file + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		a.logf("amap: places not saved: %v", err)
-		return
+		return err
 	}
 	if err := os.Rename(tmp, file); err != nil {
-		a.logf("amap: places not saved: %v", err)
+		_ = os.Remove(tmp)
+		return err
 	}
+	return nil
 }
 
 // fixedPlaces returns Extension Settings places followed by UI-saved places (config wins on duplicate names).
@@ -486,17 +485,20 @@ func (a *app) saveUIPlace(rawName, rawTarget string) (fp fixedPlace, updated boo
 		Aliases:  defaultAliasesFor(name),
 	}
 
+	slot := canonicalSlotKey(name)
+	a.placesSaveMu.Lock()
+	defer a.placesSaveMu.Unlock()
+
 	a.placesMu.Lock()
 	for _, cp := range a.configPlaces {
-		if normalizePlaceKey(cp.Name) == normalizePlaceKey(name) ||
-			((canonicalSlotKey(cp.Name) == "home" || canonicalSlotKey(cp.Name) == "company") && canonicalSlotKey(cp.Name) == canonicalSlotKey(name)) {
+		if canonicalSlotKey(cp.Name) == slot {
 			a.placesMu.Unlock()
 			return fixedPlace{}, false, fmt.Errorf("「%s」已在扩展设置里配置，请到 设置 › 扩展 › 高德地图 修改，或换一个名字保存", cp.Name)
 		}
 	}
 	idx := -1
 	for i, up := range a.uiPlaces {
-		if normalizePlaceKey(up.Name) == normalizePlaceKey(name) {
+		if canonicalSlotKey(up.Name) == slot {
 			idx = i
 			break
 		}
@@ -512,19 +514,30 @@ func (a *app) saveUIPlace(rawName, rawTarget string) (fp fixedPlace, updated boo
 		}
 		next = append(next, fp)
 	}
-	a.uiPlaces = next
+	file := a.placesFile
 	a.placesMu.Unlock()
 
-	a.saveUIPlaces(next)
+	if err := writeUIPlacesFile(file, next); err != nil {
+		if a.logf != nil {
+			a.logf("amap: places not saved: %v", err)
+		}
+		return fixedPlace{}, false, errors.New("常用地点保存失败，请检查数据目录是否可写后重试")
+	}
+
+	a.placesMu.Lock()
+	a.uiPlaces = next
+	a.placesMu.Unlock()
 	return fp, updated, nil
 }
 
-// removeUIPlace deletes a UI-saved place by exact name.
-func (a *app) removeUIPlace(name string) bool {
+func (a *app) deleteUIPlace(name string) (bool, error) {
 	k := normalizePlaceKey(name)
 	if k == "" {
-		return false
+		return false, nil
 	}
+	a.placesSaveMu.Lock()
+	defer a.placesSaveMu.Unlock()
+
 	a.placesMu.Lock()
 	idx := -1
 	for i, up := range a.uiPlaces {
@@ -535,14 +548,29 @@ func (a *app) removeUIPlace(name string) bool {
 	}
 	if idx < 0 {
 		a.placesMu.Unlock()
-		return false
+		return false, nil
 	}
 	next := make([]fixedPlace, 0, len(a.uiPlaces)-1)
 	next = append(next, a.uiPlaces[:idx]...)
 	next = append(next, a.uiPlaces[idx+1:]...)
-	a.uiPlaces = next
+	file := a.placesFile
 	a.placesMu.Unlock()
 
-	a.saveUIPlaces(next)
-	return true
+	if err := writeUIPlacesFile(file, next); err != nil {
+		if a.logf != nil {
+			a.logf("amap: places not saved: %v", err)
+		}
+		return false, errors.New("常用地点删除失败，请检查数据目录是否可写后重试")
+	}
+
+	a.placesMu.Lock()
+	a.uiPlaces = next
+	a.placesMu.Unlock()
+	return true, nil
+}
+
+// removeUIPlace deletes a UI-saved place by exact name.
+func (a *app) removeUIPlace(name string) bool {
+	removed, err := a.deleteUIPlace(name)
+	return err == nil && removed
 }

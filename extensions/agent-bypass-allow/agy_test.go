@@ -31,6 +31,16 @@ func newAgyTestEnv(t *testing.T, settingsJSON string) agyTestEnv {
 	if real, err := filepath.EvalSymlinks(home); err == nil {
 		home = real
 	}
+	// On macOS t.TempDir is under /private/var/folders, inside systemDirs (/private): drop systemDirs
+	// that contain the synthetic home (same as newBox in scratch_test.go) so e.project counts as a workDir.
+	oldSys := systemDirs
+	systemDirs = nil
+	for _, s := range oldSys {
+		if r := resolve(s, true); !within(home, r) {
+			systemDirs = append(systemDirs, s, r)
+		}
+	}
+	t.Cleanup(func() { systemDirs = oldSys })
 	t.Setenv("HOME", home)
 	e := agyTestEnv{
 		home:    home,

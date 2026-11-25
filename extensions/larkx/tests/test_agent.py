@@ -12,7 +12,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from test_connector import ME, Backend, Hub, message  # noqa: E402
+from test_connector import ME, Backend, Hub, NormalizeTest, message  # noqa: E402
 
 from larkx_persona import main  # noqa: E402
 from larkx_persona.connector import (  # noqa: E402
@@ -20,7 +20,7 @@ from larkx_persona.connector import (  # noqa: E402
     Connector, agent_request, normalize_agent_prefix,
 )
 from larkx_persona.main import Plugin  # noqa: E402
-from larkx_persona.real import own_chat_ok  # noqa: E402
+from larkx_persona.real import normalize, own_chat_ok  # noqa: E402
 from larkx_persona.store import Store  # noqa: E402
 from larkx_persona.wire import RpcError  # noqa: E402
 
@@ -414,6 +414,48 @@ class AgentPrefixTest(unittest.TestCase):
         self.hub.got.clear()
         self.c._on_live(message("m2", "c1", 2, sender=ME, msg_type="POST", text="[富文本] 示例标题\n/agent 不触发"))
         self.nothing_handed()
+
+    def test_custom_prefix_coexists_with_rich_text_markdown(self):
+        self.use("/ai")
+        rich = NormalizeTest()
+        data = rich.tree(("paragraph",), {
+            "paragraph": rich.node(3, children=("cmd", "bold", "space", "link")),
+            "cmd": rich.node(1, "/ai 检查 "),
+            "bold": rich.node(7, "重点"),
+            "space": rich.node(1, " "),
+            "link": rich.node(6, fields=((1, "https://example.com/docs"), (2, "文档"))),
+        })
+        data["title"] = "周报"
+        m = normalize({
+            "msg_id": "m_rich_ai", "chat_id": "c1", "chat_type": 1, "position": 1, "from_id": ME,
+            "msg_type": 2, "msg_type_name": "POST", "content": "[富文本] 周报\n/ai 检查 重点",
+            "content_data": data,
+        }, rich.key)
+        self.c._on_live(m)
+        self.assertEqual(self.handed()["message"]["text"], "检查 重点 文档 https://example.com/docs")
+        out = self.c.channel_send({"ref": "r_rich_ai", "text": "收到", "kind": "answer", "reply_to": "m_rich_ai"})
+        self.assertEqual(out, {"message_id": "m_new"})
+        page_msg = self.c.thread_page({"thread": "c1", "limit": 5})["messages"][0]
+        self.assertEqual(page_msg["format"], "markdown")
+        self.assertEqual(page_msg["text"], "\\[富文本\\] 周报\n\\/ai 检查 **重点** [文档](https://example.com/docs)")
+        # Default /agent in a rich-text Markdown POST does not trigger when a custom prefix is set.
+        self.hub.received.clear()
+        self.hub.got.clear()
+        other = rich.tree(("paragraph",), {
+            "paragraph": rich.node(3, children=("cmd", "bold")),
+            "cmd": rich.node(1, "/agent "),
+            "bold": rich.node(7, "不触发"),
+        })
+        other["title"] = "周报"
+        m2 = normalize({
+            "msg_id": "m_rich_default", "chat_id": "c1", "chat_type": 1, "position": 2, "from_id": ME,
+            "msg_type": 2, "msg_type_name": "POST", "content": "[富文本] 周报\n/agent 不触发",
+            "content_data": other,
+        }, rich.key)
+        self.c._on_live(m2)
+        self.nothing_handed()
+        page_msg2 = self.c.thread_page({"thread": "c1", "limit": 5})["messages"][-1]
+        self.assertEqual((page_msg2["format"], page_msg2["text"]), ("markdown", "\\[富文本\\] 周报\n\\/agent **不触发**"))
 
     def test_chinese_prefix_and_empty_request(self):
         self.use("/助手")

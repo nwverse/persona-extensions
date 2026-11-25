@@ -502,6 +502,8 @@ func (a *app) startPage(ctx context.Context, t tr, st *store.State) []wire.Secti
 				ext.Open("open:onboarding", "", page{Tab: tabStart, Open: "onboarding"}, t.s("三个问题", "Three questions")))}})
 		}
 	}
+	// The profile summary card: one-tap entry to the "who I am" overview.
+	out = append(out, a.profileCard(t, st))
 	// The start card: each facet in one row.
 	counts := facetCounts(st)
 	var rows []wire.Component
@@ -544,6 +546,7 @@ func (a *app) startPage(ctx context.Context, t tr, st *store.State) []wire.Secti
 	out = append(out, wire.Section{Title: t.s("各方面进度", "Facets at a glance"),
 		Footer: t.s("助手只用「已定」的条目（敏感类除外）。「观察中」的是只看到过一两次的做法、判断和事实，大多只见过一次：在别的日子再看到、又没有反例，就会自己定下来，你不用做什么；一直停在观察中也正常。哪一面还没定下什么，这一面在助手那里就空着，不用泛泛的默认画像去填。",
 			"The assistant only uses settled entries (sensitive ones aside). Entries being watched were seen once or twice, most of them once: seen again on another day with nothing against them, they settle by themselves; there is nothing for you to do, and many stay watched. A facet with nothing settled stays empty for the assistant; it is never filled with generic defaults."), Items: rows})
+	out = append(out, a.overviewCard(t)) // the periodic overview (page_overview.go): patterns and the full reports
 	out = append(out, a.sourcesSection(ctx, t, st)...)
 	out = append(out, a.exitsSection(ctx, t, st))
 	out = append(out, moreSection(t))

@@ -72,6 +72,7 @@ type fakeHub struct {
 	sessions   map[string]*hubSession
 	replies    map[string]string
 	created    []sessionRequest
+	requests   []sessionRequest
 	interrupts []string
 	attached   []string
 	createErr  error
@@ -95,6 +96,7 @@ func (f *fakeHub) Machines(context.Context) ([]hubMachine, error) {
 func (f *fakeHub) CreateSession(_ context.Context, req sessionRequest) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.requests = append(f.requests, req)
 	if f.createErr != nil {
 		return "", f.createErr
 	}

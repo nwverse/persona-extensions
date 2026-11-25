@@ -210,6 +210,9 @@ func (rt *Route) complete(ctx context.Context, r Request, call func(context.Cont
 		return rt.old(ctx, r, est, size, legacy, "hub without models")
 	}
 	chain := rt.models(size)
+	if len(r.Models) > 0 {
+		chain = r.Models[:min(len(r.Models), 8)]
+	}
 	rr := r
 	if rt.Timeout > 0 {
 		rr.Timeout = rt.Timeout
