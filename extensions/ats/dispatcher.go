@@ -227,9 +227,15 @@ func (d *dispatcher) prepare(ctx context.Context, t *Task, att Attempt) bool {
 	if !readonly {
 		mode = cfg.writeMode()
 	}
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	agentType := effectiveAgentType(att.Harness, t.AgentType)
+	launcher := ""
+	if agentType != AgentClaude {
+		// AgentType alone does not stop the hub's default Claude launcher from being picked.
+		launcher = agentType
+	}
+	cctx, cancel := context.WithTimeout(ctx, sessionStartTimeout(agentType))
 	sid, err := d.api.CreateSession(cctx, sessionRequest{
-		MachineID: e.MachineID, Cwd: ws.Path, AgentType: "claude", Prompt: buildPrompt(t, ws, readonly, prev, resume != ""),
+		MachineID: e.MachineID, Cwd: ws.Path, AgentType: agentType, Launcher: launcher, Prompt: buildPrompt(t, ws, readonly, prev, resume != ""),
 		PermissionMode: mode, Model: cfg.model(cmpOr(att.ModelTier, t.ModelTier)), TabName: "ATS · " + firstLinePreview(t.Title, 40), Async: true,
 	})
 	cancel()

@@ -70,7 +70,7 @@ Served by the hub at `/api/v1/extensions/ats/…`.
 | `GET /tasks?todo_id=&state=&priority=&limit=` | Tasks, newest first, and the scheduler's state (admission mode, remaining quota, counts) |
 | `GET /tasks/{id}` | The task with its prompt and attempts |
 | `GET /tasks/{id}/evidence` | State, verdict, `verified`, the acceptance command, the last report (exit code, output tail, the agent's summary, artifacts) and the reference of the decision written to the to-do |
-| `POST /tasks` | Queues a task: `todo_id`, `prompt`, `repo` (required); `ref`, `title`, `acceptance`, `permission_profile`, `priority`, `difficulty`, `machine`, `qos`, `pool`, `tags`, `labels`, `idempotency_key` |
+| `POST /tasks` | Queues a task: `todo_id`, `prompt`, `repo` (required); `ref`, `title`, `acceptance`, `agent_type` (`claude` by default; for example `codex`), `permission_profile`, `priority`, `difficulty`, `machine`, `qos`, `pool`, `tags`, `labels`, `idempotency_key` |
 
 ## Permissions
 
@@ -90,4 +90,4 @@ go -C extensions/ats test ./...
 scripts/package.sh ats
 ```
 
-Version 0.4.0 replaces the stdio MCP server and the external worker interface of 0.3.0, which could queue tasks but had nothing to run them. Version 0.5.0 stops retrying failures that would repeat, lets a retry go on from the previous attempt, adds the task page and rewords the queue page, the to-do decision and the confirmation.
+Version 0.4.0 replaces the stdio MCP server and the external worker interface of 0.3.0, which could queue tasks but had nothing to run them. Version 0.5.0 stops retrying failures that would repeat, lets a retry go on from the previous attempt, adds the task page and rewords the queue page, the to-do decision and the confirmation. Version 0.6.0 lets a new task choose an agent engine such as `codex`, keeps `claude` as the default for omitted values and older queue records, and carries the choice through attempts and retries.

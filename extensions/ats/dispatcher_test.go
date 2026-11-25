@@ -35,8 +35,11 @@ func TestWritingTaskRunsInItsOwnWorktreeAndPassesAcceptance(t *testing.T) {
 	}
 	req := r.hub.created[0]
 	wt := got.Exec.Worktree
-	if req.Cwd != wt || req.MachineID != testMachine || req.PermissionMode != "acceptEdits" || !req.Async || req.AgentType != "claude" {
+	if req.Cwd != wt || req.MachineID != testMachine || req.PermissionMode != "acceptEdits" || !req.Async || req.AgentType != AgentClaude || req.Launcher != "" {
 		t.Fatalf("session request: %+v", req)
+	}
+	if len(got.Attempts) != 1 || got.Attempts[0].Harness != AgentClaude {
+		t.Fatalf("attempts: %+v", got.Attempts)
 	}
 	if !strings.HasPrefix(wt, r.worker.data) || got.Exec.Branch != "ats/"+task.ID+"-1" {
 		t.Fatalf("worktree %s branch %s", wt, got.Exec.Branch)
@@ -141,6 +144,67 @@ func TestReadonlyTaskRunsInPlanModeAndEndsUnverifiedWithoutAcceptance(t *testing
 	}
 	if out := runGit(t, r.repo, "branch", "--list", "ats/*"); out != "" {
 		t.Fatalf("branches left: %s", out)
+	}
+}
+
+func TestSelectedEngineAndPermissionModeReachSessionCreation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		permission string
+		wantMode   string
+	}{
+		"read only": {PermissionReadonly, "plan"},
+		"writable":  {PermissionDefault, "acceptEdits"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			task := r.enqueue(EnqueueInput{AgentType: AgentCodex, PermissionProfile: tc.permission})
+			r.tick()
+			if len(r.hub.created) != 1 {
+				t.Fatalf("sessions started: %d", len(r.hub.created))
+			}
+			req := r.hub.created[0]
+			if req.AgentType != AgentCodex || req.Launcher != AgentCodex || req.PermissionMode != tc.wantMode || req.MachineID != testMachine {
+				t.Fatalf("session request: %+v", req)
+			}
+			got := r.task(task.ID)
+			if len(got.Attempts) != 1 || got.Attempts[0].Harness != AgentCodex {
+				t.Fatalf("attempts: %+v", got.Attempts)
+			}
+		})
+	}
+}
+
+func TestSynchronousEngineStartGetsTheLongerBudget(t *testing.T) {
+	c := newHubClient("http://example.com", "token")
+	if got := sessionStartTimeout(AgentClaude); got != 30*time.Second {
+		t.Fatalf("Claude start timeout: %s", got)
+	}
+	if got := sessionStartTimeout(AgentCodex); got <= 100*time.Second {
+		t.Fatalf("Codex start timeout %s does not cover the hub's startup budget", got)
+	}
+	if c.sessionClientFor(AgentClaude) != c.client || c.sessionClientFor(AgentCodex) != c.syncStartClient {
+		t.Fatal("the engine did not select its session-start HTTP client")
+	}
+	if c.syncStartClient.Timeout != sessionStartTimeout(AgentCodex) || c.client.Timeout != 20*time.Second {
+		t.Fatalf("HTTP timeouts: default %s synchronous %s", c.client.Timeout, c.syncStartClient.Timeout)
+	}
+}
+
+func TestSessionCreationRejectionDoesNotChangeEngineOrPermission(t *testing.T) {
+	r := newRig(t)
+	zero := 0
+	r.hub.createErr = errors.New("unsupported engine and permission combination")
+	task := r.enqueue(EnqueueInput{AgentType: AgentCodex, PermissionProfile: PermissionDefault, MaxRetries: &zero})
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateFailed || got.FailureReason != "infra_error" || got.Exec != nil {
+		t.Fatalf("after refusal: %+v", got)
+	}
+	if len(r.hub.requests) != 1 || r.hub.requests[0].AgentType != AgentCodex || r.hub.requests[0].Launcher != AgentCodex || r.hub.requests[0].PermissionMode != "acceptEdits" {
+		t.Fatalf("session requests: %+v", r.hub.requests)
+	}
+	if len(r.hub.created) != 0 || len(r.hub.attached) != 0 {
+		t.Fatalf("a refused session was used: created %+v attached %+v", r.hub.created, r.hub.attached)
 	}
 }
 
@@ -261,6 +325,17 @@ func TestRestartPicksTheAttemptUpWhereItWas(t *testing.T) {
 	r := newRig(t)
 	task := r.enqueue(EnqueueInput{AcceptanceCommand: "true"})
 	r.tick()
+
+	// Simulate a queue written before agent_type existed: the active attempt has no engine fields either.
+	r.q.mu.Lock()
+	stored := r.q.tasks[task.ID]
+	stored.AgentType = ""
+	stored.Attempts[len(stored.Attempts)-1].Harness = ""
+	saveErr := r.q.saveLocked()
+	r.q.mu.Unlock()
+	if saveErr != nil {
+		t.Fatal(saveErr)
+	}
 	dir, nodeData := filepath.Dir(r.q.dataFile), r.worker.data
 
 	// Both programs restart, long after the lease would have run out.
@@ -276,6 +351,9 @@ func TestRestartPicksTheAttemptUpWhereItWas(t *testing.T) {
 	got := r.task(task.ID)
 	if got.State != StateRunning || got.AttemptNo != 1 || got.Exec.SessionID != "session-1" {
 		t.Fatalf("after the restart: %s attempt %d exec %+v", got.State, got.AttemptNo, got.Exec)
+	}
+	if got.AgentType != "" || got.Attempts[0].Harness != "" || viewTask(got, false).AgentType != AgentClaude {
+		t.Fatalf("legacy engine fields changed after the restart: %+v", got)
 	}
 	if len(r.hub.created) != 1 {
 		t.Fatalf("the restart started %d sessions", len(r.hub.created))

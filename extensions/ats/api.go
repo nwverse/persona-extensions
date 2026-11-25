@@ -97,6 +97,7 @@ type taskView struct {
 	Difficulty    string     `json:"difficulty"`
 	ModelTier     string     `json:"model_tier"`
 	Machine       string     `json:"machine,omitempty"`
+	AgentType     string     `json:"agent_type"`
 	Permission    string     `json:"permission_profile"`
 	Repo          string     `json:"repo"`
 	Ref           string     `json:"ref"`
@@ -117,7 +118,7 @@ func viewTask(t *Task, withPrompt bool) taskView {
 	v := taskView{
 		ID: t.ID, Title: t.Title, State: t.State, Verdict: t.Verdict, TodoID: t.TodoID(),
 		Priority: t.Priority, Difficulty: t.Difficulty, ModelTier: t.ModelTier, Machine: t.Machine,
-		Permission: t.PermissionProfile, Repo: t.Workspace.Repo, Ref: t.Workspace.BaseSHA,
+		AgentType: effectiveAgentType(t.AgentType), Permission: t.PermissionProfile, Repo: t.Workspace.Repo, Ref: t.Workspace.BaseSHA,
 		AttemptNo: t.AttemptNo, RetriesLeft: t.RetriesLeft, SubmittedAt: t.SubmittedAt, FinishedAt: t.FinishedAt,
 	}
 	// How the previous attempt failed says nothing about the one running now.
@@ -231,6 +232,7 @@ type enqueueRequest struct {
 	QoS               string            `json:"qos"`
 	Pool              string            `json:"pool"`
 	Machine           string            `json:"machine"`
+	AgentType         string            `json:"agent_type"`
 	Acceptance        string            `json:"acceptance"`
 	PermissionProfile string            `json:"permission_profile"`
 	Tags              []string          `json:"tags"`
@@ -319,7 +321,7 @@ func (a *atsApp) enqueueInput(req enqueueRequest) (EnqueueInput, error) {
 	return EnqueueInput{
 		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey), Title: strings.TrimSpace(req.Title), Prompt: req.Prompt,
 		Repo: repo, BaseSHA: ref, QoS: strings.TrimSpace(req.QoS), Pool: strings.TrimSpace(req.Pool),
-		Priority: req.Priority, Difficulty: req.Difficulty, Machine: req.Machine,
+		Priority: req.Priority, Difficulty: req.Difficulty, Machine: req.Machine, AgentType: req.AgentType,
 		AcceptanceCommand: req.Acceptance, PermissionProfile: req.PermissionProfile, Labels: req.Labels, Tags: req.Tags,
 		Source:      AssistantSource,
 		ExternalRef: &ExternalRef{System: AssistantSource, ID: PersonaSystemID, Conversation: todo},
