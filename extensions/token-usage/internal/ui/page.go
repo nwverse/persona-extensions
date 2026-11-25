@@ -34,11 +34,21 @@ const (
 
 // pageState is what a page remembers between draws.
 type pageState struct {
-	Tab      string `json:"tab,omitempty"`
-	Days     int    `json:"days,omitempty"`
-	Machine  string `json:"machine,omitempty"`
-	Model    string `json:"model,omitempty"`
-	Launcher string `json:"launcher,omitempty"`
+	Tab        string `json:"tab,omitempty"`
+	Days       int    `json:"days,omitempty"`
+	Machine    string `json:"machine,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Launcher   string `json:"launcher,omitempty"`
+	BudgetSpan string `json:"budget_span,omitempty"`
+}
+
+func (p pageState) tab() string {
+	switch p.Tab {
+	case tabDetail, tabBudget:
+		return p.Tab
+	default:
+		return tabOverview
+	}
 }
 
 func (p pageState) days() int {
@@ -46,6 +56,13 @@ func (p pageState) days() int {
 		return p.Days
 	}
 	return 30
+}
+
+func (p pageState) budgetSpan() string {
+	if p.BudgetSpan == budget.Weekly {
+		return budget.Weekly
+	}
+	return budget.Daily
 }
 
 // App draws both contributions from one store.
@@ -68,9 +85,11 @@ func (a *App) Page(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 	if err := r.DecodeState(&ps); err != nil {
 		ps = pageState{}
 	}
-	if ps.Tab == "" {
-		ps.Tab = tabOverview
-	}
+	return a.renderState(ctx, ps)
+}
+
+func (a *App) renderState(ctx context.Context, ps pageState) (*wire.View, error) {
+	ps.Tab = ps.tab()
 	var view *wire.View
 	err := a.st.View(func(st *store.State) error {
 		var err error
@@ -87,22 +106,61 @@ func (a *App) Act(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, er
 	switch r.Action {
 	case "tab":
 		ps.Tab = r.Values["tab"]
+		v, err := a.renderState(ctx, ps)
+		if err != nil {
+			return nil, err
+		}
+		return &wire.ActionResult{View: v}, nil
 	case "range":
 		ps.Days, _ = strconv.Atoi(r.Values["days"])
+		v, err := a.renderState(ctx, ps)
+		if err != nil {
+			return nil, err
+		}
+		return &wire.ActionResult{View: v}, nil
 	case "filter":
-		ps.Machine = r.Values["machine"]
-		ps.Model = r.Values["model"]
-		ps.Launcher = r.Values["launcher"]
+		if v, ok := r.Values["machine"]; ok {
+			ps.Machine = v
+		}
+		if v, ok := r.Values["model"]; ok {
+			ps.Model = v
+		}
+		if v, ok := r.Values["launcher"]; ok {
+			ps.Launcher = v
+		}
+		v, err := a.renderState(ctx, ps)
+		if err != nil {
+			return nil, err
+		}
+		return &wire.ActionResult{View: v}, nil
+	case "budget-span":
+		ps.Tab = tabBudget
+		ps.BudgetSpan = r.Values["span"]
+		v, err := a.renderState(ctx, ps)
+		if err != nil {
+			return nil, err
+		}
+		return &wire.ActionResult{View: v}, nil
 	case "budget-set":
-		if err := a.setBudget(r.Values); err != nil {
+		if err := a.setBudget(r.Values, ps.budgetSpan()); err != nil {
 			return &wire.ActionResult{Toast: err.Error()}, nil
 		}
-		return &wire.ActionResult{Toast: "已保存预算"}, nil
+		ps.Tab = tabBudget
+		v, err := a.renderState(ctx, ps)
+		if err != nil {
+			return nil, err
+		}
+		return &wire.ActionResult{View: v, Toast: "已保存预算"}, nil
 	case "budget-delete":
 		if err := a.bf.Delete(r.Values["span"], r.Values["model"]); err != nil {
 			return &wire.ActionResult{Toast: err.Error()}, nil
 		}
-		return &wire.ActionResult{Toast: "已删除预算"}, nil
+		ps.Tab = tabBudget
+		v, err := a.renderState(ctx, ps)
+		if err != nil {
+			return nil, err
+		}
+		return &wire.ActionResult{View: v, Toast: "已删除预算"}, nil
 	case "export":
 		return a.export(ps)
 	}
@@ -129,7 +187,7 @@ func (a *App) page(ctx context.Context, st *store.State, ps pageState) (*wire.Vi
 	case tabDetail:
 		v.Sections = a.detail(st, ps, now, loc)
 	case tabBudget:
-		v.Sections = a.budgets(st, now, loc)
+		v.Sections = a.budgets(st, ps, now, loc)
 	default:
 		v.Sections = a.overview(ctx, st, ps, now, loc)
 	}
@@ -169,7 +227,7 @@ func (a *App) overview(ctx context.Context, st *store.State, ps pageState, now t
 			trendChart(r),
 		},
 	})
-	sections = append(sections, ranking("按模型", "模型", r.Models))
+	sections = append(sections, ranking("按模型", "模型", named(r.Models, modelName)))
 	sections = append(sections, ranking("按机器", "机器", named(r.Machines, machineName)))
 	sections = append(sections, ranking("按启动器", "启动器", named(r.Launchers, launcherName)))
 
@@ -354,7 +412,7 @@ func (a *App) export(ps pageState) (*wire.ActionResult, error) {
 }
 
 // budgets is the third tab: the budgets and their progress, and the form for a new one.
-func (a *App) budgets(st *store.State, now time.Time, loc *time.Location) []wire.Section {
+func (a *App) budgets(st *store.State, ps pageState, now time.Time, loc *time.Location) []wire.Section {
 	statuses, err := a.bf.Statuses(st, now, loc)
 	items := []wire.Component{}
 	if err != nil {
@@ -396,7 +454,7 @@ func (a *App) budgets(st *store.State, now time.Time, loc *time.Location) []wire
 	}
 	form := []wire.Component{
 		{Type: wire.ComponentField, Kind: "choice", Name: "model", Label: "范围", Choices: modelChoices},
-		{Type: wire.ComponentSegmented, Name: "span", Value: budget.Daily, Choices: []wire.Choice{
+		{Type: wire.ComponentSegmented, Name: "span", Value: ps.budgetSpan(), Choices: []wire.Choice{
 			{Value: budget.Daily, Title: "每日"}, {Value: budget.Weekly, Title: "每周"},
 		}, Action: &wire.Action{ID: "budget-span"}},
 		{Type: wire.ComponentField, Kind: "number", Name: "limit", Label: "上限（token）", Placeholder: "1000000"},
@@ -406,12 +464,15 @@ func (a *App) budgets(st *store.State, now time.Time, loc *time.Location) []wire
 }
 
 // setBudget reads the form and stores the budget.
-func (a *App) setBudget(values map[string]string) error {
+func (a *App) setBudget(values map[string]string, fallbackSpan string) error {
 	limit, err := strconv.ParseInt(strings.TrimSpace(values["limit"]), 10, 64)
 	if err != nil {
 		return fmt.Errorf("上限要填一个整数")
 	}
 	span := values["span"]
+	if span == "" {
+		span = fallbackSpan
+	}
 	if span == "" {
 		span = budget.Daily
 	}

@@ -186,3 +186,124 @@ func flatten(v *wire.View) string {
 	}
 	return b.String()
 }
+
+func TestActReturnsUpdatedViewsForNavigationFiltersAndBudgets(t *testing.T) {
+	a := newApp(t, false)
+
+	// Switch to detail tab.
+	res, err := a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "tab", Values: map[string]string{"tab": tabDetail},
+	}})
+	if err != nil {
+		t.Fatalf("tab action error: %v", err)
+	}
+	if res.View == nil {
+		t.Fatalf("tab action returned nil View; state change would be discarded by SDK")
+	}
+	if err := wire.CheckView(res.View); err != nil {
+		t.Fatalf("detail view invalid: %v", err)
+	}
+	if res.View.Tabs == nil || res.View.Tabs.Value != tabDetail {
+		t.Fatalf("tab view Tabs.Value = %#v, want %q", res.View.Tabs, tabDetail)
+	}
+
+	// Change range on detail tab -> preserves tab and updates days.
+	res, err = a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "range", State: res.View.State, Values: map[string]string{"days": "7"},
+	}})
+	if err != nil || res.View == nil {
+		t.Fatalf("range action = %#v, %v", res, err)
+	}
+	if err := wire.CheckView(res.View); err != nil {
+		t.Fatalf("range view invalid: %v", err)
+	}
+	var ps pageState
+	if err := (&ext.UIRequest{UIParams: wire.UIParams{State: res.View.State}}).DecodeState(&ps); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if ps.Tab != tabDetail || ps.Days != 7 {
+		t.Fatalf("after range: state = %+v, want tab=detail days=7", ps)
+	}
+
+	// Filter updates keep previously set filter dimensions when only one key is sent.
+	res, err = a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "filter", State: res.View.State, Values: map[string]string{"model": "alpha"},
+	}})
+	if err != nil || res.View == nil {
+		t.Fatalf("filter model = %#v, %v", res, err)
+	}
+	res, err = a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "filter", State: res.View.State, Values: map[string]string{"machine": "m-a"},
+	}})
+	if err != nil || res.View == nil {
+		t.Fatalf("filter machine = %#v, %v", res, err)
+	}
+	if err := wire.CheckView(res.View); err != nil {
+		t.Fatalf("filtered view invalid: %v", err)
+	}
+	ps = pageState{}
+	_ = (&ext.UIRequest{UIParams: wire.UIParams{State: res.View.State}}).DecodeState(&ps)
+	if ps.Model != "alpha" || ps.Machine != "m-a" {
+		t.Fatalf("after filters: state = %+v, want model=alpha machine=m-a", ps)
+	}
+
+	// Switch budget form span to weekly, then save without repeating span in submit values.
+	res, err = a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "budget-span", State: `{"tab":"budget"}`, Values: map[string]string{"span": budget.Weekly},
+	}})
+	if err != nil || res.View == nil {
+		t.Fatalf("budget-span = %#v, %v", res, err)
+	}
+	if err := wire.CheckView(res.View); err != nil {
+		t.Fatalf("budget-span view invalid: %v", err)
+	}
+	foundWeekly := false
+	for _, it := range res.View.Sections[1].Items {
+		if it.Type == wire.ComponentSegmented && it.Name == "span" && it.Value == budget.Weekly {
+			foundWeekly = true
+		}
+	}
+	if !foundWeekly {
+		t.Fatalf("budget-span did not update segmented control value to %q", budget.Weekly)
+	}
+
+	res, err = a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "budget-set", State: res.View.State, Values: map[string]string{"model": "alpha", "limit": "50000"},
+	}})
+	if err != nil || res.View == nil {
+		t.Fatalf("budget-set must return refreshed View, got res=%#v err=%v", res, err)
+	}
+	if err := wire.CheckView(res.View); err != nil {
+		t.Fatalf("budget-set view invalid: %v", err)
+	}
+	if !strings.Contains(flatten(res.View), "每周 · alpha") {
+		t.Fatalf("budget-set refreshed view missing saved weekly alpha budget:\n%s", flatten(res.View))
+	}
+
+	// Delete budget returns refreshed View without deleted budget.
+	res, err = a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "budget-delete", State: res.View.State, Values: map[string]string{"span": budget.Weekly, "model": "alpha"},
+	}})
+	if err != nil || res.View == nil {
+		t.Fatalf("budget-delete must return refreshed View, got res=%#v err=%v", res, err)
+	}
+	if err := wire.CheckView(res.View); err != nil {
+		t.Fatalf("budget-delete view invalid: %v", err)
+	}
+	if strings.Contains(flatten(res.View), "每周 · alpha") {
+		t.Fatalf("budget-delete refreshed view still shows deleted budget:\n%s", flatten(res.View))
+	}
+}
+
+func TestOverviewHandlesEmptyModelName(t *testing.T) {
+	s := store.Open("")
+	t0, _ := time.ParseInLocation("2006-01-02 15", "2026-11-13 09", loc)
+	_, _ = s.Merge("m-a", []store.Bucket{
+		{Minute: t0.Unix(), Model: "", Input: 500, Requests: 1},
+	}, loc)
+	a := New(s, budget.Open(""), hub.New("", "", nil), fixedNow, func() *time.Location { return loc })
+	v := render(t, a, "")
+	if !strings.Contains(flatten(v), "（未命名）") {
+		t.Fatalf("empty model should render as （未命名）:\n%s", flatten(v))
+	}
+}

@@ -166,3 +166,58 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("left %+v, want only the weekly budget", left)
 	}
 }
+
+func TestSpikeCountsDistinctDaysNotMinuteBuckets(t *testing.T) {
+	buildHour := func(date string, perMin int64) store.Day {
+		base, _ := time.ParseInLocation("2006-01-02 15", date+" 09", loc)
+		var buckets []store.Bucket
+		for m := 0; m < 10; m++ {
+			buckets = append(buckets, store.Bucket{
+				Minute: base.Add(time.Duration(m) * time.Minute).Unix(),
+				Model:  "alpha",
+				Input:  perMin,
+			})
+		}
+		// Include zero-valued minute buckets (as produced by hub backfill).
+		for m := 10; m < 20; m++ {
+			buckets = append(buckets, store.Bucket{
+				Minute: base.Add(time.Duration(m) * time.Minute).Unix(),
+				Model:  "alpha",
+				Input:  0,
+			})
+		}
+		return store.Day{Date: date, Machine: "m-a", Buckets: buckets}
+	}
+
+	// Steady usage: 2,000 tokens/hour (10 x 200) on 3 prior days AND today -> ratio is 1x, never a spike.
+	steady := &store.State{Format: 1, Days: []store.Day{
+		buildHour("2026-11-10", 200),
+		buildHour("2026-11-11", 200),
+		buildHour("2026-11-12", 200),
+		buildHour("2026-11-13", 200),
+	}}
+	f := Open("")
+	got, err := f.Alerts(steady, nowAt("2026-11-13 09:30"), loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("steady multi-bucket usage falsely triggered spike alert: %+v", got)
+	}
+
+	// Real 6x spike: 12,000 tokens/hour today vs 2,000 tokens/hour mean -> should report 6 倍, not 60+ 倍.
+	spiked := &store.State{Format: 1, Days: []store.Day{
+		buildHour("2026-11-10", 200),
+		buildHour("2026-11-11", 200),
+		buildHour("2026-11-12", 200),
+		buildHour("2026-11-13", 1200),
+	}}
+	g := Open("")
+	got, err = g.Alerts(spiked, nowAt("2026-11-13 09:30"), loc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || !strings.Contains(got[0].Body, "6 倍") {
+		t.Fatalf("expected single 6x spike notice, got %+v", got)
+	}
+}
