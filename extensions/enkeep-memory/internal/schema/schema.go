@@ -13,7 +13,7 @@ import (
 // the same chat-day is digested again only when the prompt actually changed (and raw answers stay comparable).
 const (
 	TriagePrompt = "triage/2"
-	DailyPrompt  = "daily/16"
+	DailyPrompt  = "daily/17"
 	WeeklyPrompt = "weekly/2"
 	MemoryPrompt = "memory/2"
 	SynthPrompt  = "synth/1"
@@ -152,9 +152,17 @@ type Observation struct {
 	Sensitive  string         `json:"sensitive,omitempty"` // emotion | finance | health | family, or ""
 	Scope      string         `json:"scope,omitempty"`     // global, or the project, runtime, machine or tool
 	Durable    bool           `json:"durable,omitempty"`   // the user said it holds from now on ("always", "remember this")
-	Impact     ObsImpact      `json:"impact"`
-	Evidence   []Evidence     `json:"evidence"`
-	Confidence string         `json:"confidence"` // high | medium | low
+	// daily/17: how far it reaches and how long it holds, the principle behind it, and for a way of thinking its
+	// dimension and a few words naming the behaviour (entry.Leverage).
+	Reach             string     `json:"reach,omitempty"`
+	Horizon           string     `json:"horizon,omitempty"`
+	Principle         string     `json:"principle,omitempty"`
+	PrincipleInferred bool       `json:"principle_inferred,omitempty"`
+	Dimension         string     `json:"dimension,omitempty"`
+	Hint              string     `json:"hint,omitempty"`
+	Impact            ObsImpact  `json:"impact"`
+	Evidence          []Evidence `json:"evidence"`
+	Confidence        string     `json:"confidence"` // high | medium | low
 }
 
 // ObsCommitment is a promise as the model reads it: from and to are "me" (the user) or a known id or name.

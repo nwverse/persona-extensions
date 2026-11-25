@@ -180,3 +180,19 @@ func TestSettleOneSightingFacts(t *testing.T) {
 		}
 	}
 }
+
+// A core principle (evidence in four ISO weeks) is not put to sleep by quiet days: the user is asked once.
+func TestSettleRootedAsksInsteadOfSleeping(t *testing.T) {
+	ds := days(250)
+	s := &store.State{ActiveDays: ds}
+	e := &entry.Entry{Facet: entry.Judgement, Grain: entry.Class, Origin: entry.Behavior, Status: entry.Stable, Last: ds[21]}
+	tally := Tally{For: occ(ds[0], ds[7], ds[14], ds[21]), Days: []string{ds[0], ds[7], ds[14], ds[21]}}
+	d, ask := Settle(s, e, tally, ds[230])
+	if d.Status != entry.Stable || !ask {
+		t.Fatalf("rooted: %+v ask %v", d, ask)
+	}
+	e.Flags = []string{flagAskedDormant}
+	if d, ask := Settle(s, e, tally, ds[230]); d.Status != entry.Stable || ask {
+		t.Errorf("asked once: %+v ask %v", d, ask)
+	}
+}

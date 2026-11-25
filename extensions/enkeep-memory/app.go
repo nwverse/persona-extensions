@@ -49,6 +49,7 @@ type app struct {
 	marksMu   sync.Mutex       // the queued marks' file (marks.go)
 	done      []doneWrite      // the last actions.do answers by request id (tools.go doOnce)
 	ov        *overview.Holder // the periodic overview's state (overview_app.go); nil: off
+	lastFast  time.Time        // the correction fast path's last look (curate.RunFast)
 }
 
 func newApp() *app { return &app{} }
@@ -166,6 +167,24 @@ func (a *app) schedule(ctx context.Context) {
 	}
 }
 
+// fast runs the correction fast path (curate.RunFast) when no other run is in progress, holding the run slot while
+// it does.
+func (a *app) fast(ctx context.Context) {
+	a.mu.Lock()
+	if a.running != "" {
+		a.mu.Unlock()
+		return
+	}
+	a.running = "fast"
+	a.mu.Unlock()
+	if _, err := a.c.RunFast(ctx); err != nil {
+		log.Printf("enkeep-memory: fast path: %v", err)
+	}
+	a.mu.Lock()
+	a.running = ""
+	a.mu.Unlock()
+}
+
 func (a *app) tick(ctx context.Context) {
 	c := a.c
 	nowFn := c.Now
@@ -222,6 +241,14 @@ func (a *app) tick(ctx context.Context) {
 	// The weekly report to the user, once the week's pass has run (weekly_report.go): not held back by reruns either.
 	if err := a.weeklyTick(ctx, time.Now()); err != nil {
 		log.Printf("enkeep-memory: weekly report: %v", err)
+	}
+	// The correction fast path (curate.RunFast): every fast_minutes, before the reruns (they are the low-priority
+	// queue; a correction is wanted in this hour, not after a backfill).
+	// It runs here, in the tick, when nothing else does: a look that finds nothing costs no model call and must not
+	// take a tick from the reruns.
+	if every := time.Duration(c.Cfg.FastMinutes) * time.Minute; every > 0 && nowFn().Sub(a.lastFast) >= every {
+		a.lastFast = nowFn()
+		a.fast(ctx)
 	}
 	// rerun_range: only completed local days are rerun, one at a time with the current daily prompt. An early daily
 	// must not suppress the formal pass after the day ends. Each day runs only once per prompt.

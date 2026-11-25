@@ -41,8 +41,9 @@ func TestPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Standing first (stable, usable in the resident exits), then rank (active > candidate > dormant), then newest; dead entries and evaluations out.
-	want := []string{"i-stable", "p-card", "w-shift", "u-cand", "j-dorm"}
+	// The standing set first (here the one stable rule), then by score (entry.Score, not by how new); dead entries and
+	// evaluations out. A people card never stands.
+	want := []string{"i-stable", "w-shift", "p-card", "u-cand", "j-dorm"}
 	if !slices.Equal(ids(r), want) || r.HasMore || r.After != "" || !r.Tagged {
 		t.Fatalf("page %v (want %v) more %v after %q tagged %v", ids(r), want, r.HasMore, r.After, r.Tagged)
 	}
@@ -53,7 +54,7 @@ func TestPage(t *testing.T) {
 	if st2["i-stable"] != "active" || st2["w-shift"] != "active" || st2["u-cand"] != "candidate" || st2["j-dorm"] != "dormant" {
 		t.Errorf("statuses %v", st2)
 	}
-	if n.Entries != 5 || n.Active != 3 || n.Standing != 2 || n.Backfilled != 0 {
+	if n.Entries != 5 || n.Active != 3 || n.Standing != 1 || n.Backfilled != 0 {
 		t.Errorf("counts %+v", n)
 	}
 	for _, e := range r.Entries {
@@ -63,7 +64,7 @@ func TestPage(t *testing.T) {
 				t.Errorf("tagged entry %+v", e)
 			}
 		case "p-card":
-			if !slices.Equal(e.Subjects, []string{"Alex Park"}) || !e.Standing {
+			if !slices.Equal(e.Subjects, []string{"Alex Park"}) || e.Standing {
 				t.Errorf("card %+v", e)
 			}
 		case "w-shift":
@@ -71,8 +72,8 @@ func TestPage(t *testing.T) {
 				t.Errorf("shifting %+v", e) // shifting: active, but not in the resident block
 			}
 		case "i-stable":
-			// core facet (400) + class (100) + evidence min(150, 5*2*12=120) = 620
-			if e.Rank != 620 || e.Facet != "interaction" {
+			// the first of the standing set
+			if e.Rank != rankStand || !e.Standing || e.Facet != "interaction" {
 				t.Errorf("rank or facet %+v", e)
 			}
 		}
@@ -167,14 +168,15 @@ func TestPageSize(t *testing.T) {
 	if len(b) > 1<<20 || !r.HasMore || r.After == "" || len(r.Entries) == 0 || len(r.Entries) >= 300 {
 		t.Fatalf("%d bytes, %d entries, more %v", len(b), len(r.Entries), r.HasMore)
 	}
-	if n := len([]rune(r.Entries[0].Text)); n != MaxText {
+	if n := len([]rune(r.Entries[len(r.Entries)-1].Text)); n != MaxText { // one not standing: its whole text
 		t.Errorf("text clipped to %d", n)
 	}
 }
 
 // Low-value weak relation triples (depends_on, collaborates_with, about, member_of, same_circle, waiting_on, ...)
-// stay out of memory.entries without deleting them from state, unless pinned, edited or confirmed right by the user.
-// Substantive relations (owns, decides, reports_to, means) stay in.
+// are answered last (0.2.0-beta.52: the hub reads every page, so they no longer crowd out the rest; the record is kept
+// for recall), never standing, and stay out of the pool the overview and the exits read. Pinned, edited or
+// confirmed ones count as any other.
 func TestWeakRelationsFiltered(t *testing.T) {
 	st := &store.State{Entries: map[string]*entry.Entry{
 		"rel-dep":     {ID: "rel-dep", Facet: entry.World, Predicate: "depends_on", Text: "service-a depends on service-b", Status: entry.Stable, Count: 5, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
@@ -192,12 +194,20 @@ func TestWeakRelationsFiltered(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := ids(r)
-	for _, drop := range []string{"rel-dep", "rel-collab", "rel-about", "rel-member"} {
-		if slices.Contains(got, drop) {
-			t.Errorf("weak relation %s leaked into memory.entries: %v", drop, got)
+	first := len(got)
+	for _, weak := range []string{"rel-dep", "rel-collab", "rel-about", "rel-member"} {
+		i := slices.Index(got, weak)
+		if i < 0 {
+			t.Errorf("weak relation %s not answered: %v", weak, got)
 		}
-		if st.Entries[drop] == nil {
-			t.Errorf("weak relation %s was deleted from state", drop)
+		first = min(first, i)
+		if Pool(st, st.Entries[weak]) {
+			t.Errorf("weak relation %s in the pool", weak)
+		}
+	}
+	for _, e := range r.Entries[first:] {
+		if !IsWeakRelation(st.Entries[e.ID]) || e.Standing {
+			t.Errorf("weak relations are answered last, not standing: %v", got)
 		}
 	}
 	for _, keep := range []string{"rel-pinned", "rel-edited", "rel-confirm", "rel-owns", "rel-means"} {
@@ -205,8 +215,8 @@ func TestWeakRelationsFiltered(t *testing.T) {
 			t.Errorf("expected %s to stay in memory.entries: %v", keep, got)
 		}
 	}
-	if n.Entries != 5 {
-		t.Errorf("pool count = %d, want 5", n.Entries)
+	if n.Entries != 9 {
+		t.Errorf("answered = %d, want 9", n.Entries)
 	}
 }
 
@@ -255,7 +265,7 @@ func TestPageWithProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing profile:overview in %v", ids(r))
 	}
-	if !ov.Standing || len(ov.Categories) != 0 || ov.Facet != "persona" {
+	if ov.Standing || ov.Rank != 995 || len(ov.Categories) != 0 || ov.Facet != "persona" { // too long to stand: recalled
 		t.Errorf("unexpected profile:overview: %+v", ov)
 	}
 	if strings.Contains(ov.Text, "runs three times") {
@@ -301,7 +311,7 @@ func timeNowFixture() time.Time {
 func TestPageWithExtras(t *testing.T) {
 	st := &store.State{Entries: map[string]*entry.Entry{}}
 	extras := []Extra{
-		{Entry: Entry{ID: "ov:pattern:aa", Text: "a pattern", Facet: "judgement", Standing: true, Rank: 960}, Last: "2026-11-20"},
+		{Entry: Entry{ID: "ov:pattern:aa", Text: "a pattern", Facet: "judgement", Rank: 960}, Last: "2026-11-20", Score: 80, Kind: entry.KindUnderstanding},
 		{Entry: Entry{ID: "ov:cat:health:bb", Text: "a health pattern", Categories: []string{"health"}, Rank: 900, OriginSpace: "Bad Space"}},
 		{Entry: Entry{ID: "bad id with spaces", Text: "x"}},
 		{Entry: Entry{ID: "ov:pattern:empty", Text: "  "}},

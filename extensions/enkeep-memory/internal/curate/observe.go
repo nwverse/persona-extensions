@@ -412,7 +412,8 @@ func selfCheck(u *Unit, ev []obsEvidence) ([]obsEvidence, string) {
 // obsFields are an observation's own words, by name: what the language checks read and the rewrite gets.
 func obsFields(o *schema.Observation) map[string]*string {
 	return map[string]*string{"text": &o.Text, "situation": &o.Situation, "choice": &o.Choice, "rejected": &o.Rejected,
-		"why": &o.Why, "exception": &o.Exception, "pitfall": &o.Pitfall, "fix": &o.Fix, "action": &o.Impact.Action}
+		"why": &o.Why, "exception": &o.Exception, "pitfall": &o.Pitfall, "fix": &o.Fix, "action": &o.Impact.Action,
+		"principle": &o.Principle, "hint": &o.Hint}
 }
 
 func factFields(it *schema.Item) map[string]*string {
@@ -703,6 +704,8 @@ func (c *Curator) checkObservation(w *verify.Window, u *Unit, k *known, tier str
 	if o.Durable {
 		e.Flags = append(e.Flags, flagDurable)
 	}
+	e.Leverage = (&entry.Leverage{Reach: o.Reach, Horizon: o.Horizon, Principle: o.Principle,
+		PrincipleInferred: o.PrincipleInferred, Dimension: o.Dimension, Hint: o.Hint}).Normalize()
 	if o.Confidence == "low" && !slices.Contains(e.Flags, verify.LowConfidence) {
 		e.Flags = append(e.Flags, verify.LowConfidence)
 	}

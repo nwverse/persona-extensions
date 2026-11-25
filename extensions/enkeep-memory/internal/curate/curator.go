@@ -153,6 +153,11 @@ func (c *Curator) ownerNames(ctx context.Context) []string {
 // from the start of the day to now, and kb.day says whether the chat had messages that day. Other kinds count only
 // when they changed within the day.
 func (c *Curator) units(ctx context.Context, day string) ([]Unit, error) {
+	return c.unitsWhere(ctx, day, nil)
+}
+
+// unitsWhere is units, only those keep (by kind and id) wants read; nil: every one.
+func (c *Curator) unitsWhere(ctx context.Context, day string, keep func(kind, id string) bool) ([]Unit, error) {
 	start, err := time.ParseInLocation("2006-01-02", day, c.Loc)
 	if err != nil {
 		return nil, err
@@ -167,7 +172,7 @@ func (c *Curator) units(ctx context.Context, day string) ([]Unit, error) {
 	for _, e := range entries {
 		kind := e.Kind
 		byDay := kind == "chats" || srcs.DayKind(kind) // read with Day: listed whenever active since the day began
-		if kind == "" || !slices.Contains(unitKinds, kind) || (!byDay && !e.Updated.Before(end)) {
+		if kind == "" || !slices.Contains(unitKinds, kind) || (!byDay && !e.Updated.Before(end)) || (keep != nil && !keep(kind, e.ID)) {
 			continue
 		}
 		u, ok, err := c.unit(ctx, kind, e, day)
