@@ -94,14 +94,24 @@ func openNamedLedger(dir, name string) (*ledger, error) {
 	if err := json.Unmarshal(b, &l.st); err != nil {
 		return nil, errors.New(name + " is damaged; move it away to start over")
 	}
-	if l.st.Results == nil {
-		l.st.Results = map[string]writeResult{}
-	}
+	normalizeLedgerState(&l.st)
 	return l, nil
 }
 
 func emptyState() ledgerState {
 	return ledgerState{Results: map[string]writeResult{}, Notified: map[string]string{}, Snap: map[string]float64{}}
+}
+
+func normalizeLedgerState(s *ledgerState) {
+	if s.Results == nil {
+		s.Results = map[string]writeResult{}
+	}
+	if s.Notified == nil {
+		s.Notified = map[string]string{}
+	}
+	if s.Snap == nil {
+		s.Snap = map[string]float64{}
+	}
 }
 
 // roll starts a new day's allowance (caller holds mu).
@@ -151,6 +161,7 @@ func (l *ledger) update(fn func(st *ledgerState) error) error {
 	if err != nil {
 		l.st = ledgerState{}
 		_ = json.Unmarshal(before, &l.st)
+		normalizeLedgerState(&l.st)
 	}
 	return err
 }

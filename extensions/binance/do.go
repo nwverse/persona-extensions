@@ -147,7 +147,7 @@ func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json
 	err = a.client().signed(ctx, marketHost(mkt), "POST", orderPath(mkt), q, &st)
 	if err != nil && orderOutcomeUnknown(err) {
 		// The order may or may not be at Binance: never send it again; ask by the client id.
-		found, verdict := a.resolveUnknown(mkt, p.Args.Symbol, cid)
+		found, verdict := a.resolveUnknown(ctx, mkt, p.Args.Symbol, cid)
 		switch verdict {
 		case verdictFound:
 			st, err = found, nil
@@ -315,14 +315,23 @@ const (
 // (-2013) twice, two seconds apart, counts as absent; a query that fails on the way says nothing.
 var resolveTries, resolveGap = 4, 2 * time.Second
 
-func (a *app) resolveUnknown(mkt, symbol, cid string) (orderStatus, verdict) {
+func (a *app) resolveUnknown(ctx context.Context, mkt, symbol, cid string) (orderStatus, verdict) {
 	absent := 0
 	for i := 0; i < resolveTries; i++ {
-		if i > 0 {
-			time.Sleep(resolveGap)
+		if ctx.Err() != nil {
+			return orderStatus{}, verdictUnknown
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		st, err := a.queryOrder(ctx, mkt, symbol, 0, cid)
+		if i > 0 {
+			timer := time.NewTimer(resolveGap)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return orderStatus{}, verdictUnknown
+			case <-timer.C:
+			}
+		}
+		qctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+		st, err := a.queryOrder(qctx, mkt, symbol, 0, cid)
 		cancel()
 		var ae *apiError
 		switch {

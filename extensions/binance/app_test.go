@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -360,5 +362,118 @@ func TestMarketOrderCountsWorstCase(t *testing.T) {
 	_, err := planOrder(env, marketSpot, json.RawMessage(`{"symbol":"BTCUSDT","side":"BUY","type":"MARKET","quantity":"0.1"}`))
 	if err == nil || !strings.Contains(err.Error(), "单笔上限") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestLedgerRollbackKeepsMapsNonNil(t *testing.T) {
+	l, err := openLedger("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := l.update(func(s *ledgerState) error {
+		return errors.New("boom")
+	}); err == nil {
+		t.Fatal("expected rollback error")
+	}
+	if err := l.update(func(s *ledgerState) error {
+		s.Results["req-1"] = writeResult{Text: "ok"}
+		s.Notified["spot:BTCUSDT:1"] = "FILLED"
+		s.Snap["2026-01-01"] = 100
+		return nil
+	}); err != nil {
+		t.Fatalf("update after rollback failed: %v", err)
+	}
+}
+
+func TestResolveUnknownRespectsContext(t *testing.T) {
+	f := newFakeBinance(t)
+	a := testApp(t, f, tradeCfg, t.TempDir())
+	oldGap := resolveGap
+	resolveGap = 5 * time.Second
+	t.Cleanup(func() { resolveGap = oldGap })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	_, v := a.resolveUnknown(ctx, marketSpot, "BTCUSDT", "cid-cancel")
+	if v != verdictUnknown {
+		t.Fatalf("got verdict %v, want verdictUnknown", v)
+	}
+	if time.Since(start) > time.Second {
+		t.Fatalf("resolveUnknown ignored canceled context and took %v", time.Since(start))
+	}
+}
+
+func TestLoopRefreshesStaleFuturesRulesIndependently(t *testing.T) {
+	f := newFakeBinance(t)
+	a := newApp()
+	a.hostURL, a.noLoop = f.hostURL, true
+	in := &ext.Init{InitializeParams: wire.InitializeParams{
+		Config:    json.RawMessage(tradeCfg),
+		Secrets:   map[string]string{"api_key": f.apiKey, "ed25519_private_key": f.privPEM},
+		Extension: &wire.ExtensionInfo{ID: "binance", DataDir: t.TempDir()},
+	}}
+	if _, err := a.init(context.Background(), in, nil); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	// First round: spot rules succeed, USD-M exchangeInfo fails transiently.
+	f.on("GET fapi.binance.com /fapi/v1/exchangeInfo", func(url.Values) (int, any) {
+		return 503, map[string]any{"msg": "unavailable"}
+	})
+	a.round(context.Background(), now, func(string, time.Duration, time.Time) bool { return true })
+	if a.market.rulesAge(marketSpot, now) > time.Minute {
+		t.Fatalf("spot rules not populated")
+	}
+	if a.market.rulesAge(marketUSDM, now) <= 2*time.Hour {
+		t.Fatalf("expected usdm rules to still be stale after 503")
+	}
+	// Next round 15s later: spot rules are fresh and periodic "rules" is not due, but stale usdm rules must refresh.
+	f.on("GET fapi.binance.com /fapi/v1/exchangeInfo", fixed(map[string]any{"symbols": []any{futSymbol("BTCUSDT", 0)}}))
+	next := now.Add(15 * time.Second)
+	a.round(context.Background(), next, func(string, time.Duration, time.Time) bool { return false })
+	if a.market.rulesAge(marketUSDM, next) > time.Minute {
+		t.Fatalf("usdm rules stayed stale despite spot being fresh")
+	}
+}
+
+func TestIncomeChunksSevenDayWindowsAndTransfersSetsLimit(t *testing.T) {
+	f := newFakeBinance(t)
+	a := testApp(t, f, tradeCfg, t.TempDir())
+	var incomeWindows int
+	f.on("GET fapi.binance.com /fapi/v1/income", func(q url.Values) (int, any) {
+		incomeWindows++
+		st, err1 := strconv.ParseInt(q.Get("startTime"), 10, 64)
+		et, err2 := strconv.ParseInt(q.Get("endTime"), 10, 64)
+		if err1 != nil || err2 != nil || et < st || et-st > int64((7*24*time.Hour)/time.Millisecond) {
+			t.Errorf("income window out of 7d bound: start=%s end=%s", q.Get("startTime"), q.Get("endTime"))
+		}
+		return 200, []map[string]string{{"symbol": "BTCUSDT", "incomeType": "FUNDING_FEE", "income": "1.5", "asset": "USDT"}}
+	})
+	out, err := a.callTool(context.Background(), "binance_income", json.RawMessage(`{"days": 20}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if incomeWindows != 3 {
+		t.Fatalf("expected 3 seven-day windows for 20 days, got %d", incomeWindows)
+	}
+	if !strings.Contains(out, "FUNDING_FEE USDT: 4.5") {
+		t.Fatalf("unexpected income summary:\n%s", out)
+	}
+
+	var depLimit, wdLimit string
+	f.on("GET api.binance.com /sapi/v1/capital/deposit/hisrec", func(q url.Values) (int, any) {
+		depLimit = q.Get("limit")
+		return 200, []any{}
+	})
+	f.on("GET api.binance.com /sapi/v1/capital/withdraw/history", func(q url.Values) (int, any) {
+		wdLimit = q.Get("limit")
+		return 200, []any{}
+	})
+	if _, err := a.callTool(context.Background(), "binance_transfers", json.RawMessage(`{"days": 30}`)); err != nil {
+		t.Fatal(err)
+	}
+	if depLimit != "1000" || wdLimit != "1000" {
+		t.Fatalf("expected explicit limit=1000 for deposits/withdrawals, got dep=%q wd=%q", depLimit, wdLimit)
 	}
 }

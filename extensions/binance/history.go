@@ -99,16 +99,27 @@ func (a *app) toolIncome(ctx context.Context, raw json.RawMessage) (string, erro
 		return "", err
 	}
 	days := daysArg(in.Days, 7, 30)
+	const window = 7 * 24 * time.Hour // USD-M /fapi/v1/income allows at most 7 days per request
 	end := a.now()
-	q := url.Values{"startTime": {ms(end.Add(-time.Duration(days) * 24 * time.Hour))}, "endTime": {ms(end)}, "limit": {"1000"}}
-	var rows []struct {
+	start := end.Add(-time.Duration(days) * 24 * time.Hour)
+	type incomeRow struct {
 		Symbol     string `json:"symbol"`
 		IncomeType string `json:"incomeType"`
 		Income     string `json:"income"`
 		Asset      string `json:"asset"`
 	}
-	if err := a.client().signed(ctx, hostUSDM, "GET", "/fapi/v1/income", q, &rows); err != nil {
-		return "", err
+	var rows []incomeRow
+	for from := start; from.Before(end); from = from.Add(window) {
+		to := from.Add(window)
+		if to.After(end) {
+			to = end
+		}
+		q := url.Values{"startTime": {ms(from)}, "endTime": {ms(to.Add(-time.Millisecond))}, "limit": {"1000"}}
+		var page []incomeRow
+		if err := a.client().signed(ctx, hostUSDM, "GET", "/fapi/v1/income", q, &page); err != nil {
+			return "", err
+		}
+		rows = append(rows, page...)
 	}
 	sum := map[string]float64{}
 	for _, r := range rows {
@@ -139,7 +150,7 @@ func (a *app) toolTransfers(ctx context.Context, raw json.RawMessage) (string, e
 	}
 	days := daysArg(in.Days, 30, 90)
 	end := a.now()
-	q := url.Values{"startTime": {ms(end.Add(-time.Duration(days) * 24 * time.Hour))}, "endTime": {ms(end)}}
+	q := url.Values{"startTime": {ms(end.Add(-time.Duration(days) * 24 * time.Hour))}, "endTime": {ms(end)}, "limit": {"1000"}}
 	var deps []struct {
 		Coin       string `json:"coin"`
 		Amount     string `json:"amount"`
@@ -165,9 +176,15 @@ func (a *app) toolTransfers(ctx context.Context, raw json.RawMessage) (string, e
 	for _, d := range deps {
 		fmt.Fprintf(&b, "%s | %s %s | %s | status %d\n", time.UnixMilli(d.InsertTime).UTC().Format("2006-01-02 15:04"), d.Amount, d.Coin, d.Network, d.Status)
 	}
+	if len(deps) >= 1000 {
+		b.WriteString("(deposit limit 1000 reached; narrow days to see all)\n")
+	}
 	fmt.Fprintf(&b, "Withdrawals, last %d days: %d (records only; this extension cannot withdraw)\n", days, len(wds))
 	for _, w := range wds {
 		fmt.Fprintf(&b, "%s | %s %s | %s | status %d\n", w.ApplyTime, w.Amount, w.Coin, w.Network, w.Status)
+	}
+	if len(wds) >= 1000 {
+		b.WriteString("(withdrawal limit 1000 reached; narrow days to see all)\n")
 	}
 	return b.String(), nil
 }
