@@ -1,5 +1,11 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.51 (pre-release)
+
+- **The profile synthesis is no longer cut off.** Its reply bound goes from 1,600 to 4,000 tokens: with a coherent
+  description per facet the live replies ran to 2,500–3,200 and were cut at the bound, so the summary fell back to
+  the patterns strung together.
+
 ## 0.2.0-beta.50 (pre-release)
 
 - **Recent highlights again.** With the overview feeding the profile summary, a facet with a pattern dropped its
