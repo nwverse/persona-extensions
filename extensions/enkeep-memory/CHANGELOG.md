@@ -1,5 +1,11 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.50 (pre-release)
+
+- **Recent highlights again.** With the overview feeding the profile summary, a facet with a pattern dropped its
+  scattered entries, the current-work ones the recent highlights come from among them, so the live summary had none.
+  What the user is doing now is kept.
+
 ## 0.2.0-beta.49 (pre-release)
 
 - **The weekly report waits for the running overview.** A pass is recorded as tried when it starts, so the report

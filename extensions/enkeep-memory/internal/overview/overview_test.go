@@ -604,6 +604,18 @@ func TestOverviewBackedProvider(t *testing.T) {
 	if !found || strings.Contains(sum.Overview, "rests after heavy days") {
 		t.Fatalf("judgement section %+v", sum.Sections)
 	}
+	// What the user is doing now stays, though its facet has a pattern: the recent highlights come from it.
+	st.Entries["n1"] = &entry.Entry{ID: "n1", Facet: entry.Persona, Grain: entry.Action, Type: "current_work", Text: "writing the migration plan",
+		Status: entry.Stable, Origin: entry.Behavior, Tagged: true, First: "2026-11-20", Last: "2026-11-20", Count: 2,
+		Evidence: []entry.Evidence{{Source: entry.SrcAssistant, Ref: "unit/n1", Day: "2026-11-20", Who: entry.WhoSelf, Role: "user", Quote: "q"}}}
+	s.Patterns["ov:persona0001"] = &Pattern{ID: "ov:persona0001", Facet: "persona", Lifecycle: Core, Text: "asks why"}
+	if !slices.ContainsFunc(prov.Items(st), func(it profile.CandidateItem) bool { return it.ID == "n1" }) {
+		t.Fatal("the current work was dropped with its facet's scattered entries")
+	}
+	if sum := profile.BuildWith(st, prov, now, "zh-Hans"); !slices.ContainsFunc(sum.Recent, func(r string) bool { return strings.Contains(r, "migration plan") }) {
+		t.Fatalf("recent %v", sum.Recent)
+	}
+	delete(st.Entries, "n1")
 	if base := (OverviewBackedProvider{}).Items(st); len(base) != len(profile.EntriesProvider{}.Items(st)) {
 		t.Fatal("no overview state: not the curated entries")
 	}
