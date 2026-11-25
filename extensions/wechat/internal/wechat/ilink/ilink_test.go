@@ -255,6 +255,95 @@ func TestGetUpdates(t *testing.T) {
 	}
 }
 
+func TestDecodeVoiceMetadataAndTranscriptFlag(t *testing.T) {
+	m := wireMessage{
+		MessageID: json.RawMessage(`1001`), FromUserID: "owner@im", ContextToken: "CT",
+		Items: []wireItem{
+			{
+				Type: itemVoice,
+				VoiceItem: &struct {
+					Media         *wireMedia `json:"media"`
+					EncodeType    int        `json:"encode_type"`
+					BitsPerSample int        `json:"bits_per_sample"`
+					SampleRate    int        `json:"sample_rate"`
+					PlayTime      int        `json:"playtime"`
+					Text          string     `json:"text"`
+				}{
+					Media:         &wireMedia{EncryptQueryParam: "vq1", AESKey: "vk1"},
+					EncodeType:    VoiceEncodeSILK,
+					BitsPerSample: 16,
+					SampleRate:    24000,
+					PlayTime:      3200,
+					Text:          "转写文本",
+				},
+			},
+			{
+				Type: itemVoice,
+				VoiceItem: &struct {
+					Media         *wireMedia `json:"media"`
+					EncodeType    int        `json:"encode_type"`
+					BitsPerSample int        `json:"bits_per_sample"`
+					SampleRate    int        `json:"sample_rate"`
+					PlayTime      int        `json:"playtime"`
+					Text          string     `json:"text"`
+				}{
+					Media:         &wireMedia{EncryptQueryParam: "vq2", AESKey: "vk2"},
+					EncodeType:    VoiceEncodePCM,
+					BitsPerSample: 16,
+					SampleRate:    16000,
+					PlayTime:      1500,
+					Text:          "  \t\n ",
+				},
+			},
+		},
+	}
+	got, ok := decode(m)
+	if !ok {
+		t.Fatal("decode failed")
+	}
+	if got.Text != "转写文本" {
+		t.Fatalf("text = %q, want only non-whitespace transcript", got.Text)
+	}
+	if len(got.Media) != 2 {
+		t.Fatalf("media count = %d, want 2", len(got.Media))
+	}
+	if !got.Media[0].Transcribed || got.Media[0].EncodeType != VoiceEncodeSILK || got.Media[0].SampleRate != 24000 ||
+		got.Media[0].BitsPerSample != 16 || got.Media[0].PlayTime != 3200 {
+		t.Errorf("transcribed voice media = %+v", got.Media[0])
+	}
+	if got.Media[1].Transcribed || got.Media[1].EncodeType != VoiceEncodePCM || got.Media[1].SampleRate != 16000 ||
+		got.Media[1].BitsPerSample != 16 || got.Media[1].PlayTime != 1500 {
+		t.Errorf("untranscribed voice media = %+v", got.Media[1])
+	}
+}
+
+func TestDownloadVoiceSizeLimits(t *testing.T) {
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	atLimit, err := EncryptECB(make([]byte, MaxMedia), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overLimit, err := EncryptECB(make([]byte, MaxMedia+1), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloads := map[string][]byte{"at": atLimit, "over": overLimit}
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		_, _ = w.Write(downloads[r.URL.Query().Get("encrypted_query_param")])
+	})
+	c := f.client("BT", "")
+	key64 := base64.StdEncoding.EncodeToString(key)
+
+	got, err := c.Download(context.Background(), Media{Kind: MediaVoice, Query: "at", KeyB64: key64})
+	if err != nil || len(got) != MaxMedia {
+		t.Fatalf("voice at MaxMedia: len=%d err=%v", len(got), err)
+	}
+	got, err = c.Download(context.Background(), Media{Kind: MediaVoice, Query: "over", KeyB64: key64})
+	if err == nil || CodeOf(err) != CodeBadResponse || !errors.Is(err, ErrMediaTooLarge) || got != nil {
+		t.Fatalf("voice over MaxMedia: len=%d err=%v, want ErrMediaTooLarge", len(got), err)
+	}
+}
+
 func TestDecodeSvrIDAndIncompleteQuote(t *testing.T) {
 	m := wireMessage{MessageID: json.RawMessage(`9007199254740993`), FromUserID: "owner@im", ContextToken: "CT", Items: []wireItem{{
 		Type: itemText, TextItem: &struct {

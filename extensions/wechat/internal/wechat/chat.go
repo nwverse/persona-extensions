@@ -320,8 +320,8 @@ func clientID(ref string, i int) string {
 	return "persona-" + hex.EncodeToString(sum[:12])
 }
 
-// compose is the owner's message as the hub takes it: the text (a voice message's transcript), the quote, the
-// pictures, and downloaded documents and videos as files.
+// compose is the owner's message as the hub takes it: the text (including a voice message's transcript when WeChat
+// provides one), the quote, the pictures, and downloaded documents, videos and untranscribed voice audio as files.
 func (b *Bot) compose(ctx context.Context, c *ilink.Client, account string, m ilink.Message) wire.ChannelMessage {
 	out := wire.ChannelMessage{ID: m.ID, Text: strings.TrimSpace(m.Text), Quote: m.Quote}
 	if b.quotes != nil {
@@ -343,6 +343,7 @@ func (b *Bot) compose(ctx context.Context, c *ilink.Client, account string, m il
 		}
 	}
 	total := 0
+	voiceFiles := 0
 	for _, md := range m.Media {
 		switch md.Kind {
 		case ilink.MediaImage:
@@ -363,9 +364,17 @@ func (b *Bot) compose(ctx context.Context, c *ilink.Client, account string, m il
 			out.Images = append(out.Images, wire.ChannelBlob{Mime: http.DetectContentType(data), Data: base64.StdEncoding.EncodeToString(data)})
 			total += len(data)
 		case ilink.MediaVoice:
-			if out.Text == "" {
-				out.Unsupported = append(out.Unsupported, "一段没有转写的语音") // i18n-ignore: what the assistant reads
+			if md.Transcribed {
+				continue
 			}
+			blob, n, unsupported := downloadVoiceFallback(ctx, c, md, messageMediaMost-total, voiceFiles)
+			if unsupported != "" {
+				out.Unsupported = append(out.Unsupported, unsupported)
+				continue
+			}
+			out.Files = append(out.Files, blob)
+			total += n
+			voiceFiles++
 		case ilink.MediaFile, ilink.MediaVideo:
 			name, unsupported := md.FileName, "一段视频" // i18n-ignore: what the assistant reads
 			if md.Kind == ilink.MediaVideo {
