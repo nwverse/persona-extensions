@@ -738,8 +738,8 @@ class Connector:
         mentioned = any(m["at_me"] for m in unanswered)
         kind = "dm" if dm else ("mention" if mentioned else "group")
         if last["mine"]:
-            return self._ruled({"thread": thread, "kind": kind, "done": "replied", "last": last_id,
-                                "at": rfc3339(last["at"]), "why": "你后来回复了"}, "fyi")
+            # Keep last absent on settlement: the hub uses it to recognize a reply it sent for a suggestion.
+            return self._ruled({"thread": thread, "kind": kind, "done": "replied", "why": "你后来回复了"}, "fyi")
         opted_in = chat["id"] in self.inbox_triage_chats
         if kind == "group" and not opted_in and chat.get("mute") == "muted":
             return None
