@@ -173,7 +173,7 @@ func TestPageSize(t *testing.T) {
 	}
 }
 
-// Relation triples come in three kinds (0.2.0-beta.53): the skeleton (depends_on, collaborates_with, member_of,
+// Relation triples come in three kinds (0.2.0): the skeleton (depends_on, collaborates_with, member_of,
 // assigned) is in the pool and ranked by its score like any entry, never standing; noise (about, same_circle) and
 // passing edges not seen for staleDays are weak: answered last, never standing, out of the pool. Pinned, edited or
 // confirmed ones count as any other.

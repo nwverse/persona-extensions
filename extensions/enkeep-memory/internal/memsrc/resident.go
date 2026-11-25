@@ -31,11 +31,11 @@ const (
 	rankStand = 989 // the first standing entry's rank; the set counts down from it
 	// residentOverhead is what the hub adds to each line ("- " and a line end).
 	residentOverhead = 3
-	// PatternShare is the part of the room the overview's cross-event patterns are offered first (0.2.0-beta.53): a
+	// PatternShare is the part of the room the overview's cross-event patterns are offered first (0.2.0): a
 	// pattern scores at most 70, so without it the single entries above 70 (hard rules at 90) and the short lines that
 	// fill what is left kept every pattern out (none standing at 1400 bytes, none of the rules side at 4096).
 	PatternShare = 0.25
-	// spillFloor is the least score a line takes the room the other side left with (0.2.0-beta.53): below it the
+	// spillFloor is the least score a line takes the room the other side left with (0.2.0): below it the
 	// leftover bytes went to short fragments (a story's character, a one-line self-description).
 	spillFloor = 50
 )

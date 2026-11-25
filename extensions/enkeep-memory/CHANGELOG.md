@@ -1,6 +1,11 @@
 # enkeep-memory changelog
 
-## 0.2.0-beta.53 (pre-release)
+## 0.2.0
+
+The first stable release. It ships what was prepared as 0.2.0-beta.53 (never published), listed below; from now on
+releases are numbered without a pre-release suffix (0.2.1, …). The hub sees 0.2.0 as newer than every 0.2.0-beta.N,
+so installs on a beta upgrade to it. The beta entries below keep their headings: those versions were published as
+pre-releases.
 
 The daily pass looks for the user's own thinking moves first, and the people-and-project skeleton is back in recall.
 

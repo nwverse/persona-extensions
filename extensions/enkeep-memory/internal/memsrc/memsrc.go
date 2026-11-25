@@ -131,7 +131,7 @@ func before(a, b key) bool {
 	return a.I < b.I
 }
 
-// Relation predicates, in three kinds (0.2.0-beta.53, design l0-leverage §13; the collaboration gap analysis §4.4):
+// Relation predicates, in three kinds (0.2.0, design l0-leverage §13; the collaboration gap analysis §4.4):
 //   - the skeleton (assigned, depends_on, member_of, collaborates_with, with owns, role and reports_to): who is
 //     responsible for what, which team, what depends on what, who works with whom. Never standing (a world entry has
 //     no standing kind), but ranked by its score in recall and fed to the overview and the evaluations like any entry;
