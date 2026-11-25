@@ -1,5 +1,13 @@
 # enkeep-memory changelog
 
+## 0.2.2
+
+- **Collaboration evaluation: recall like a search, not every subject.** The recall arms weigh each name in an
+  incident by how few entries it points at (a repository's own name over the platform's), and find a world fact by an
+  identifier named only in its text. The first version matched every subject, and common names filled the recall
+  budget with unrelated rules. With it, the entity ablation goes the expected way on the baseline snapshot: without
+  the world and people entries, entity incidents avoided fall from 10% to 0% and wrong actions rise from 44% to 49%.
+
 ## 0.2.1
 
 - **Avoid untracked `MarkShown` writes when rendering the review tab.** Opening the review tab now records unseen
