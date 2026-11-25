@@ -1,5 +1,11 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.49 (pre-release)
+
+- **The weekly report waits for the running overview.** A pass is recorded as tried when it starts, so the report
+  took a running week's overview for a failed one and went out without its section (2026-W47). It now waits until
+  the pass ends; a failed pass still does not hold it.
+
 ## 0.2.0-beta.48 (pre-release)
 
 The periodic cross-event overview (docs/periodic-overview.md): a layer above the daily curation that finds the same

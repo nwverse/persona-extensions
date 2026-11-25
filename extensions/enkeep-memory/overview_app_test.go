@@ -154,7 +154,14 @@ func TestWeeklyReportWaitsForOverview(t *testing.T) {
 		t.Fatalf("did not wait: %v", err)
 	}
 	a.mu.Lock()
-	a.tried = append(a.tried, kindOverview+"@2026-W47") // tried and failed
+	a.tried = append(a.tried, kindOverview+"@2026-W47") // started: recorded as tried while it runs
+	a.running = kindOverview + " 2026-W47"
+	a.mu.Unlock()
+	if err := a.weeklyTick(context.Background(), now); err != nil || loadLedger(a.c.St.Dir).Week != "" {
+		t.Fatalf("did not wait for the running overview: %v", err)
+	}
+	a.mu.Lock()
+	a.running = "" // it failed
 	a.mu.Unlock()
 	if err := a.weeklyTick(context.Background(), now); err != nil || loadLedger(a.c.St.Dir).Week != "2026-W47" {
 		t.Fatalf("held by a failed overview: %v", err)

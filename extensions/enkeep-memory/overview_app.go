@@ -102,9 +102,16 @@ func (a *app) overviewDue(week string) bool {
 	return a.ov != nil && a.ov.Snapshot().Weeks[week] == nil && !a.attempted(kindOverview+"@"+week)
 }
 
-// overviewSettled: the week's overview ran, or was tried and failed, or is off: the weekly report need not wait.
+// overviewSettled: the week's overview ran, or was tried and is no longer running (it failed), or is off: the weekly
+// report need not wait. A try is recorded when the pass starts, so a running pass is not settled.
 func (a *app) overviewSettled(week string) bool {
-	return a.ov == nil || a.ov.Snapshot().Weeks[week] != nil || a.attempted(kindOverview+"@"+week)
+	if a.ov == nil || a.ov.Snapshot().Weeks[week] != nil {
+		return true
+	}
+	a.mu.Lock()
+	running := a.running == kindOverview+" "+week
+	a.mu.Unlock()
+	return !running && a.attempted(kindOverview+"@"+week)
 }
 
 // monthDue is the month to consolidate on the week starting monday, once the week's overview is settled: on the
