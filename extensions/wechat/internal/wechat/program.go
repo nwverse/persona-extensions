@@ -158,6 +158,11 @@ func (p *program) channel(ctx context.Context, method string, params json.RawMes
 		switch {
 		case errors.Is(err, errCannotSend), errors.Is(err, errRebound):
 			return nil, ext.CannotSend(err.Error())
+		case err != nil && b.sendGeneration() != gen:
+			// Failed (out of time waiting for the ref, or a send that ran across the change) after the WeChat the call
+			// came in for was unbound: the hub's retry would come in for the WeChat bound now, so it hears cannot_send.
+			log.Printf("wechat: send reply_to=%q ref=%q failed after the WeChat it came in for was unbound: %v", sp.ReplyTo, sp.Ref, err)
+			return nil, ext.CannotSend(errRebound.Error())
 		case errors.Is(err, errStillSending):
 			log.Printf("wechat: send reply_to=%q ref=%q stopped: out of time (%s at most) waiting for the ref's earlier send",
 				sp.ReplyTo, sp.Ref, sendDeadline)

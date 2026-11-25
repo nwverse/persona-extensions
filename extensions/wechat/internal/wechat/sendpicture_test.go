@@ -599,7 +599,7 @@ func TestSendRunningAcrossAnUnbind(t *testing.T) {
 		return r.bot.client != nil && r.bot.st.Creds != nil && r.bot.st.Creds.UserID == other && r.bot.st.Context != ""
 	})
 	before := r.tally()
-	if _, err := r.bot.Send(context.Background(), p); err != nil { // the hub sends the ref again
+	if _, err := r.bot.Send(context.Background(), p); err != nil { // a later send of the ref, for the WeChat bound now
 		t.Fatal(err)
 	}
 	if got := r.tally().minus(before); got != (tally{sends: 2, uploadURLs: 1, cdn: 1}) {
@@ -723,10 +723,22 @@ func TestProgramQueuedSendSharesTheDeadline(t *testing.T) {
 	}
 }
 
-// Through the program: a send that came in for one WeChat and waits for an earlier send of its ref (other content)
-// while that WeChat is unbound and another bound sends nothing when its turn comes: the hub hears cannot_send, which it
-// does not try again, and the WeChat bound now gets none of it.
+// Through the program: B came in for one WeChat and waits for an earlier send A of its ref (other content) while that
+// WeChat is unbound and another bound. However the two end, neither goes to the WeChat bound now, and both answer
+// cannot_send, which the hub does not try again (a retry would come in for the WeChat bound now):
+//   - A ends first (it ran across the rebind and failed): B's turn comes, and it sends nothing.
+//   - B's call ends first, A still holding the ref (errStillSending: its time ran out, or the hub gave up on it).
 func TestProgramQueuedSendAcrossARebind(t *testing.T) {
+	for _, bFirst := range []bool{false, true} {
+		name := "A ends first"
+		if bFirst {
+			name = "B's call ends first"
+		}
+		t.Run(name, func(t *testing.T) { queuedSendAcrossARebind(t, bFirst) })
+	}
+}
+
+func queuedSendAcrossARebind(t *testing.T, bFirst bool) {
 	r := pictureSendRig(t)
 	p := &program{bot: r.bot}
 	call := func(ctx context.Context, sp wire.ChannelSendParams) error {
@@ -748,10 +760,12 @@ func TestProgramQueuedSendAcrossARebind(t *testing.T) {
 	b := wire.ChannelSendParams{Ref: "run-25:1", Text: "乙", Kind: wire.ChannelSendKindAnswer}
 	ctxA, cancelA := context.WithCancel(context.Background())
 	defer cancelA()
+	ctxB, cancelB := context.WithCancel(context.Background())
+	defer cancelB()
 	aDone, bDone := make(chan error, 1), make(chan error, 1)
 	go func() { aDone <- call(ctxA, a) }()
 	eventually(t, "A's upload", func() bool { return len(r.ilink.cdnUploads()) == 1 })
-	go func() { bDone <- call(context.Background(), b) }()
+	go func() { bDone <- call(ctxB, b) }()
 	select {
 	case <-bWaits: // B came in for the owner's WeChat and waits for A
 	case <-time.After(5 * time.Second):
@@ -764,13 +778,27 @@ func TestProgramQueuedSendAcrossARebind(t *testing.T) {
 		t.Fatalf("B ended while A still held the ref: %v", err)
 	default:
 	}
-	cancelA()
-	if err := <-aDone; err == nil {
-		t.Fatal("A should fail: it was cancelled")
+	cannotSend := func(who string, err error) {
+		t.Helper()
+		var ee *ext.Error
+		if !errors.As(err, &ee) || ee.Code != wire.ChannelErrorCodeCannotSend {
+			t.Fatalf("%s after the rebind: %v, want cannot_send", who, err)
+		}
 	}
-	var ee *ext.Error
-	if err := <-bDone; !errors.As(err, &ee) || ee.Code != wire.ChannelErrorCodeCannotSend {
-		t.Fatalf("B after the rebind: %v, want cannot_send", err)
+	if bFirst {
+		cancelB() // B's wait ends the way its deadline ends it: errStillSending
+		cannotSend("B", <-bDone)
+		select {
+		case err := <-aDone:
+			t.Fatalf("A ended before it was cancelled: %v", err)
+		default:
+		}
+		cancelA()
+		cannotSend("A", <-aDone)
+	} else {
+		cancelA()
+		cannotSend("A", <-aDone)
+		cannotSend("B", <-bDone)
 	}
 	for _, s := range r.ilink.texts() {
 		if s.To == other || s.Text == "乙" {
