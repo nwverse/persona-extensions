@@ -712,8 +712,16 @@ func isAgyPersonaSupervisionDir(dir string, req hookInput) bool {
 	if !agyConversationID.MatchString(id) {
 		return false
 	}
-	realDir := resolve(filepath.Clean(dir), true)
-	realRoot := resolve(filepath.Clean(req.agyDir), true)
+	cleanDir, ok := physical(dir)
+	if !ok {
+		return false
+	}
+	realDir := resolve(cleanDir, true)
+	cleanRoot, ok := physical(req.agyDir)
+	if !ok {
+		return false
+	}
+	realRoot := resolve(cleanRoot, true)
 	rel, err := filepath.Rel(realRoot, realDir)
 	if err != nil || rel == "." {
 		return false

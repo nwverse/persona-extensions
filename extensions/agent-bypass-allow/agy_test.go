@@ -451,6 +451,30 @@ func TestAgyAssistantWrites(t *testing.T) {
 		}
 	}
 
+	// The current conversation id itself must be valid before its supervision root can be ignored.
+	malformedSession := asstWrite("write_file", charter)
+	malformedSession["conversationId"] = "not-a-uuid"
+	malformedSession["workspacePaths"] = []string{asstDir, filepath.Join(e.agyDir, "persona-supervision", "not-a-uuid")}
+	malformedSession["transcriptPath"] = filepath.Join(e.agyDir, "brain", "not-a-uuid", ".system_generated", "logs", "transcript.jsonl")
+	if got := e.hook(t, malformedSession, now, nil); got != "" {
+		t.Errorf("malformed current conversation id: got %q", got)
+	}
+
+	// Clean must not erase a symlink before resolving ..: the kernel reads this path outside agyDir.
+	outside := filepath.Join(e.home, "outside-session")
+	if err := os.MkdirAll(filepath.Join(outside, "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(e.agyDir, "session-link")
+	if err := os.Symlink(filepath.Join(outside, "nested"), link); err != nil {
+		t.Fatal(err)
+	}
+	escaped := asstWrite("write_file", charter)
+	escaped["workspacePaths"] = []string{asstDir, link + "/../persona-supervision/34c13c41-220e-4c50-98c4-a2fa536c8f32"}
+	if got := e.hook(t, escaped, now, nil); got != "" {
+		t.Errorf("symlink plus .. escape: got %q", got)
+	}
+
 	// 3. Protected paths inside ~/.persona/assistant must all ask.
 	for _, rel := range []string{
 		".claude/settings.json",
