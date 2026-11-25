@@ -5,7 +5,7 @@ See the 5-hour and weekly subscription allowance for each Claude or Codex accoun
 ## Install and configure
 
 1. Use a Persona hub and manager with the [usage extension point](https://github.com/nwverse/persona/pull/12434). Add the [official extension market](../installation.md#register-the-public-market), choose **Magpie Subscription Usage**, and approve access to launcher-backed requests.
-2. Create a dedicated launcher in **Settings → Models** with Magpie as its base URL. Use `http://127.0.0.1:3425/v1` when the manager and Magpie run on the same host. Leave the key field empty for a keyless loopback endpoint.
+2. Create a dedicated **Codex launcher** in **Settings → Models**, with a default model and Magpie as its base URL. Use `http://127.0.0.1:3425/v1` when the manager and Magpie run on the same host. The Codex launcher form allows an empty key for a keyless loopback endpoint. The launcher type does not filter which Magpie accounts appear.
 3. For a protected remote Magpie, use an HTTPS address reachable by the manager. Set the launcher's key to a Magpie **read-only** gateway key. If Magpie restricts the key to particular accounts, enable quota visibility for those accounts. Use this launcher for quota collection. A read-only key cannot run models.
 4. Add the following item to `usage.sources` in the Persona manager's `manager.json`. Set `launcher` to the actual launcher ID. Keep any existing usage sources. Open the admin **Usage sources** page to reload the saved configuration.
 
