@@ -11,7 +11,9 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/memsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
+	"github.com/nwverse/persona/sdk/go/wire"
 )
 
 // overviewApp is v4App with the overview's state open and one used pattern resting on a seeded entry.
@@ -258,4 +260,38 @@ func mustJSON(v any) []byte {
 
 func weeklyRun(week string) *store.Run {
 	return &store.Run{ID: "w-" + week, Kind: "weekly", Period: week, Finished: "x"}
+}
+
+// The profile page on a phone: a facet's sources are short one-line titles, at most four; a pattern is marked and opens
+// the periodic overview, not an entry page that does not exist.
+func TestProfilePagePatternPoints(t *testing.T) {
+	a := v4App(t)
+	long := strings.Repeat("在改动现有系统之前先备好变更、验证和回滚办法", 4)
+	sum := &profile.Summary{Version: profile.CurrentVersion, CoveredCount: 1, SourceCount: 6, Sections: []profile.Section{{
+		Facet: entry.Workflow, Summary: "改动前先备好回滚。", SourceCount: 6,
+		Points: []profile.Point{{ID: "ov:0123456789", Text: long, Last: "2026-11-23", Pattern: true},
+			{ID: "w-1", Text: "b"}, {ID: "w-2", Text: "c"}, {ID: "w-3", Text: "d"}, {ID: "w-4", Text: "e"}},
+	}}}
+	st, done := a.read()
+	v := a.profilePage(trOf("zh-Hans"), st, sum)
+	done()
+	if err := wire.CheckView(v); err != nil {
+		t.Fatal(err)
+	}
+	var rows []wire.Component
+	for _, sec := range v.Sections {
+		for _, it := range sec.Items {
+			if it.Type == wire.ComponentRow && it.Action != nil && strings.HasPrefix(it.Action.ID, "open:") && !strings.HasPrefix(it.Action.ID, "open:facet:") {
+				rows = append(rows, it)
+			}
+		}
+	}
+	if len(rows) != 4 {
+		t.Fatalf("%d source rows", len(rows))
+	}
+	p := rows[0]
+	if len([]rune(p.Title)) > 26 || !strings.HasSuffix(p.Title, "…") || !strings.Contains(p.Subtitle, "跨事模式") ||
+		!strings.Contains(string(mustJSON(p.Action)), "overview") {
+		t.Fatalf("%+v %+v", p, p.Action)
+	}
 }

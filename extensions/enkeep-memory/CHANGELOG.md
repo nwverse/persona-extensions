@@ -5,6 +5,9 @@
 - **Recent highlights again.** With the overview feeding the profile summary, a facet with a pattern dropped its
   scattered entries, the current-work ones the recent highlights come from among them, so the live summary had none.
   What the user is doing now is kept.
+- **Profile page on a phone.** Under each facet's description, at most four sources, each a one-line title cut with
+  an ellipsis (a long line was clipped at the screen's edge); a cross-event pattern is marked and opens the periodic
+  overview (it opened an entry page that did not exist).
 
 ## 0.2.0-beta.49 (pre-release)
 
