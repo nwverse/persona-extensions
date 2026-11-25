@@ -1,5 +1,13 @@
 # enkeep-memory changelog
 
+## 0.2.1
+
+- **Avoid untracked `MarkShown` writes when rendering the review tab.** Opening the review tab now records unseen
+  proposals synchronously via a non-blocking lock when idle instead of spawning an untracked goroutine on every render,
+  deduplicates and flushes pending marks when a curation run finishes (or via at most one tracked worker if another
+  holder briefly owns the store lock), and skips state and overview writes in the read-only `enkeep-memory page`
+  subcommand.
+
 ## 0.2.0
 
 The first stable release. It ships what was prepared as 0.2.0-beta.53 (never published), listed below; from now on
