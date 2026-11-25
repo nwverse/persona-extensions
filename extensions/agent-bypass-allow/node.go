@@ -42,10 +42,11 @@ type node struct {
 	matcher    string // the Claude entries' matcher (matcherFor)
 	agyMatcher string // the Antigravity entries' matcher (agyMatcherFor)
 
-	mu         sync.Mutex
-	dirs       []dirState
-	configured []string
-	profiles   string // Persona's assistant channel profiles, beside node-plugins
+	mu            sync.Mutex
+	dirs          []dirState
+	configured    []string
+	agyConfigured []string
+	profiles      string // Persona's assistant channel profiles, beside node-plugins
 
 	// beatWG is the heartbeat ticker goroutine. cleanup joins it before it removes the heartbeat, so a beat
 	// already due cannot land during cleanup and recreate the file (a fresh heartbeat with the entry still in
@@ -100,6 +101,7 @@ func (n *node) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]a
 		return nil, fmt.Errorf("no data directory")
 	}
 	n.configured = c.dirs()
+	n.agyConfigured = append([]string(nil), c.AgyDirs...)
 	// <persona home>/node-plugins/<storage>/data identifies the same Persona
 	// home whose profiles/<launcher> directories the assistant selects. Do not
 	// infer it from HOME: PERSONA_HOME may point somewhere else.
@@ -131,7 +133,7 @@ func (n *node) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]a
 	n.beat()
 	n.mu.Lock()
 	n.install(c.dirs())
-	n.installAgy(c.AgyDirs)
+	n.installAgy(n.agyConfigured)
 	n.mu.Unlock()
 	n.beatWG.Add(1)
 	go func() {
@@ -166,6 +168,7 @@ func (n *node) refresh() {
 	n.mu.Lock()
 	defer n.mu.Unlock()
 	n.install(nil)
+	n.installAgy(n.agyConfigured)
 }
 
 // install puts the entry into each explicitly configured directory and each
