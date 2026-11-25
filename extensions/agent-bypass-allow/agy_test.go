@@ -539,6 +539,158 @@ func TestAgyAssistantWrites(t *testing.T) {
 	}
 }
 
+func TestAgyAssistantWritesRuntimeWorkspaces(t *testing.T) {
+	e := newAgyTestEnv(t, `{"toolPermission":"request-review","agentMode":"default"}`)
+	const conversationID = "34c13c41-220e-4c50-98c4-a2fa536c8f32"
+	hash := strings.Repeat("0123456789abcdef", 4)
+	asstDir := filepath.Join(e.home, ".persona", "assistant")
+	supervisionDir := filepath.Join(e.agyDir, "antigravity-cli", "persona-supervision", conversationID)
+	runtimeDir := filepath.Join(e.home, ".persona", "runtime-packages", "persona-antigravity-runtime", hash)
+	for _, dir := range []string{filepath.Join(asstDir, "charters"), supervisionDir, runtimeDir} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	charter := filepath.Join(asstDir, "charters", "weekly.md")
+	now := time.Now()
+	writeJSON(t, filepath.Join(e.data, optionsFile), `{"assistant_writes":true}`)
+
+	writeReq := func(tool string, workspaces []string, target string) map[string]any {
+		return map[string]any{
+			"conversationId": conversationID,
+			"workspacePaths": workspaces,
+			"transcriptPath": e.transcript(),
+			"toolCall": map[string]any{
+				"id":   "call_runtime_workspace",
+				"name": tool,
+				"args": map[string]any{"TargetFile": target, "CodeContent": "# weekly\n"},
+			},
+		}
+	}
+	realWorkspaces := []string{asstDir, supervisionDir, runtimeDir}
+
+	t.Run("real three workspace combination", func(t *testing.T) {
+		for _, tool := range []string{"write_file", "edit_file"} {
+			if got := strings.TrimSpace(e.hook(t, writeReq(tool, realWorkspaces, charter), now, nil)); got != agyAllowOutput {
+				t.Errorf("%s with assistant, nested supervision, and runtime package workspaces: got %q", tool, got)
+			}
+		}
+	})
+
+	t.Run("jarvis runtime root", func(t *testing.T) {
+		jarvisAsst := filepath.Join(e.home, ".jarvis", "assistant")
+		jarvisRuntime := filepath.Join(e.home, ".jarvis", "runtime-packages", "persona-antigravity-runtime", hash)
+		if err := os.MkdirAll(filepath.Join(jarvisAsst, "charters"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(jarvisRuntime, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		target := filepath.Join(jarvisAsst, "charters", "weekly.md")
+		req := writeReq("write_file", []string{jarvisAsst, supervisionDir, jarvisRuntime}, target)
+		if got := strings.TrimSpace(e.hook(t, req, now, nil)); got != agyAllowOutput {
+			t.Errorf("jarvis assistant and runtime package workspaces: got %q", got)
+		}
+	})
+
+	t.Run("runtime package is not an assistant workspace", func(t *testing.T) {
+		for _, workspaces := range [][]string{{runtimeDir}, {supervisionDir, runtimeDir}} {
+			req := writeReq("write_file", workspaces, charter)
+			if got := e.hook(t, req, now, nil); got != "" {
+				t.Errorf("workspaces without an assistant directory %v: got %q", workspaces, got)
+			}
+		}
+	})
+
+	t.Run("runtime package does not become writable", func(t *testing.T) {
+		target := filepath.Join(runtimeDir, "payload.txt")
+		if got := e.hook(t, writeReq("write_file", realWorkspaces, target), now, nil); got != "" {
+			t.Errorf("write into runtime package: got %q", got)
+		}
+	})
+
+	t.Run("invalid runtime package layouts and hashes", func(t *testing.T) {
+		runtimeRoot := filepath.Dir(runtimeDir)
+		for name, extra := range map[string]string{
+			"63 hex characters":  filepath.Join(runtimeRoot, strings.Repeat("a", 63)),
+			"65 hex characters":  filepath.Join(runtimeRoot, strings.Repeat("a", 65)),
+			"uppercase hash":     filepath.Join(runtimeRoot, strings.Repeat("A", 64)),
+			"non-hex hash":       filepath.Join(runtimeRoot, strings.Repeat("g", 64)),
+			"missing hash":       runtimeRoot,
+			"extra child":        filepath.Join(runtimeDir, "nested"),
+			"wrong package name": filepath.Join(filepath.Dir(runtimeRoot), "other-runtime", hash),
+			"wrong home root":    filepath.Join(e.home, ".other", "runtime-packages", "persona-antigravity-runtime", hash),
+		} {
+			t.Run(name, func(t *testing.T) {
+				req := writeReq("write_file", []string{asstDir, supervisionDir, extra}, charter)
+				if got := e.hook(t, req, now, nil); got != "" {
+					t.Errorf("untrusted runtime workspace %s: got %q", extra, got)
+				}
+			})
+		}
+	})
+
+	t.Run("nested supervision requires current conversation and exact layout", func(t *testing.T) {
+		for name, extra := range map[string]string{
+			"another conversation": filepath.Join(e.agyDir, "antigravity-cli", "persona-supervision", "00000000-0000-4000-8000-000000000001"),
+			"malformed id":         filepath.Join(e.agyDir, "antigravity-cli", "persona-supervision", "not-a-uuid"),
+			"extra child":          filepath.Join(supervisionDir, "nested"),
+			"wrong directory":      filepath.Join(e.agyDir, "antigravity-cli", "other-data", conversationID),
+			"ordinary project":     e.project,
+		} {
+			t.Run(name, func(t *testing.T) {
+				req := writeReq("write_file", []string{asstDir, extra, runtimeDir}, charter)
+				if got := e.hook(t, req, now, nil); got != "" {
+					t.Errorf("untrusted workspace %s: got %q", extra, got)
+				}
+			})
+		}
+	})
+
+	t.Run("runtime package symlink and dotdot escapes", func(t *testing.T) {
+		outside := filepath.Join(e.home, "work", "runtime-outside")
+		if err := os.MkdirAll(filepath.Join(outside, "nested"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		runtimeRoot := filepath.Dir(runtimeDir)
+		directLink := filepath.Join(runtimeRoot, strings.Repeat("b", 64))
+		if err := os.Symlink(outside, directLink); err != nil {
+			t.Fatal(err)
+		}
+		dotdotLink := filepath.Join(runtimeRoot, "escape-link")
+		if err := os.Symlink(filepath.Join(outside, "nested"), dotdotLink); err != nil {
+			t.Fatal(err)
+		}
+		for name, extra := range map[string]string{
+			"direct symlink":         directLink,
+			"symlink followed by ..": dotdotLink + "/../" + hash,
+		} {
+			t.Run(name, func(t *testing.T) {
+				req := writeReq("write_file", []string{asstDir, supervisionDir, extra}, charter)
+				if got := e.hook(t, req, now, nil); got != "" {
+					t.Errorf("escaping runtime workspace %s: got %q", extra, got)
+				}
+			})
+		}
+	})
+
+	t.Run("nested supervision symlink and dotdot escape", func(t *testing.T) {
+		outside := filepath.Join(e.home, "work", "supervision-outside", "nested")
+		if err := os.MkdirAll(outside, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(e.agyDir, "nested-session-link")
+		if err := os.Symlink(outside, link); err != nil {
+			t.Fatal(err)
+		}
+		escaped := link + "/../antigravity-cli/persona-supervision/" + conversationID
+		req := writeReq("write_file", []string{asstDir, escaped, runtimeDir}, charter)
+		if got := e.hook(t, req, now, nil); got != "" {
+			t.Errorf("escaping nested supervision workspace %s: got %q", escaped, got)
+		}
+	})
+}
+
 func TestAgyHookEventShapes(t *testing.T) {
 	e := newAgyTestEnv(t, "")
 	hooksFile := filepath.Join(e.gemini, "config", "hooks.json")
