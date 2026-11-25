@@ -201,6 +201,8 @@ type sentRefs struct {
 	mu    sync.Mutex
 	sent  map[string]*sentRef
 	order []string // the refs sent successfully, oldest first
+	// waiting, when set (tests), is told the ref each time a send starts waiting for an earlier send of it.
+	waiting func(ref string)
 }
 
 type sentRef struct {
@@ -232,6 +234,9 @@ func (r *sentRefs) do(ctx context.Context, ref, key string, send func() (wire.Ch
 		default:
 		}
 		r.mu.Unlock()
+		if r.waiting != nil {
+			r.waiting(ref)
+		}
 		select {
 		case <-prev.done:
 		case <-ctx.Done():

@@ -735,6 +735,14 @@ func TestProgramQueuedSendAcrossARebind(t *testing.T) {
 		_, err := p.channel(ctx, "send", params)
 		return err
 	}
+	// Only B waits for an earlier send of the ref (A does not): the signal says B has read the binding it came in for.
+	bWaits := make(chan struct{}, 1)
+	p.sent.waiting = func(string) {
+		select {
+		case bWaits <- struct{}{}:
+		default:
+		}
+	}
 	r.ilink.answer("/c2c/upload", fakeAnswer{hang: true}) // A's picture holds the ref until A is cancelled
 	a := wire.ChannelSendParams{Ref: "run-25:1", Text: "甲", Kind: wire.ChannelSendKindAnswer, Images: []wire.ChannelBlob{testPicture(1)}}
 	b := wire.ChannelSendParams{Ref: "run-25:1", Text: "乙", Kind: wire.ChannelSendKindAnswer}
@@ -744,7 +752,11 @@ func TestProgramQueuedSendAcrossARebind(t *testing.T) {
 	go func() { aDone <- call(ctxA, a) }()
 	eventually(t, "A's upload", func() bool { return len(r.ilink.cdnUploads()) == 1 })
 	go func() { bDone <- call(context.Background(), b) }()
-	time.Sleep(100 * time.Millisecond) // give B time to come in for the owner's WeChat and wait for A
+	select {
+	case <-bWaits: // B came in for the owner's WeChat and waits for A
+	case <-time.After(5 * time.Second):
+		t.Fatal("B did not wait for A")
+	}
 	const other = "other@im.wechat"
 	r.rebindTo(other)
 	select {
