@@ -815,8 +815,9 @@ func TestSendRetryKeepsTheClientID(t *testing.T) {
 	if len(sent) != 1 {
 		t.Fatalf("the owner got %d copies: %+v", len(sent), sent)
 	}
-	if newSendIDs("other", []string{p.Text}, nil).parts[0] == ids[0] || newSendIDs(p.Ref, []string{"另一个答案"}, nil).parts[0] == ids[0] {
-		t.Fatal("another ref or text must get another client_id")
+	if newSendIDs("other", owner, []string{p.Text}, nil).parts[0] == ids[0] || newSendIDs(p.Ref, owner, []string{"另一个答案"}, nil).parts[0] == ids[0] ||
+		newSendIDs(p.Ref, "other@im.wechat", []string{p.Text}, nil).parts[0] == ids[0] {
+		t.Fatal("another ref, text or WeChat must get another client_id")
 	}
 }
 
@@ -1010,7 +1011,7 @@ func runResumeScenario(t *testing.T, r *rig, ref string, send func(wire.ChannelS
 	if sends != 2 || urls != 4 || ups != 1 { // the text and picture 1 sent; picture 1 and picture 2's three tries asked
 		t.Fatalf("after the failure: %d sendmessage, %d getuploadurl, %d uploads", sends, urls, ups)
 	}
-	ids := newSendIDs(ref, splitText(p.Text), p.Images)
+	ids := newSendIDs(ref, owner, splitText(p.Text), p.Images)
 	if pr, ok := r.progressOf(ref); !ok || pr.sum != ids.sum || len(pr.done) != 2 || !pr.done[ids.parts[0]] || !pr.done[ids.images[0]] ||
 		len(pr.skipped) != 0 || pr.uploadOf != ids.images[1] || pr.upload.Query != "" {
 		t.Fatalf("progress after the failure: %+v %v", pr, ok)
@@ -1129,34 +1130,36 @@ func TestSendOfChangedContent(t *testing.T) {
 // take another place. What is kept for other content under a ref is dropped.
 func TestSendProgressKeepsTheLatestRefs(t *testing.T) {
 	b := New(Options{}, &memSecrets{})
-	ids := func(ref string) sendIDs { return newSendIDs(ref, []string{"text"}, []wire.ChannelBlob{testPicture(1)}) }
+	ids := func(ref string) sendIDs {
+		return newSendIDs(ref, owner, []string{"text"}, []wire.ChannelBlob{testPicture(1)})
+	}
 	partDone := func(ref string) sendProgress {
 		return sendProgress{sum: ids(ref).sum, done: map[string]bool{ids(ref).parts[0]: true}}
 	}
 	for i := range progressMost + 1 {
-		b.keep("ref-"+strconv.Itoa(i), partDone("ref-"+strconv.Itoa(i)))
+		b.keep("ref-"+strconv.Itoa(i), 0, partDone("ref-"+strconv.Itoa(i)))
 	}
 	newest := "ref-" + strconv.Itoa(progressMost)
 	all := partDone(newest)
 	all.done[ids(newest).images[0]] = true
-	b.keep(newest, all) // kept again
+	b.keep(newest, 0, all) // kept again
 	if len(b.progress) != progressMost || len(b.progressOrder) != progressMost {
 		t.Fatalf("%d refs kept, %d in order, want %d", len(b.progress), len(b.progressOrder), progressMost)
 	}
-	if pr := b.resume("ref-0", ids("ref-0")); len(pr.done) != 0 {
+	if pr := b.resume("ref-0", 0, ids("ref-0")); len(pr.done) != 0 {
 		t.Fatalf("the oldest ref is kept: %+v", pr)
 	}
-	if pr := b.resume("ref-1", ids("ref-1")); len(pr.done) != 1 {
+	if pr := b.resume("ref-1", 0, ids("ref-1")); len(pr.done) != 1 {
 		t.Fatalf("the second oldest ref: %+v", pr)
 	}
-	if pr := b.resume(newest, ids(newest)); len(pr.done) != 2 {
+	if pr := b.resume(newest, 0, ids(newest)); len(pr.done) != 2 {
 		t.Fatalf("the newest ref: %+v", pr)
 	}
-	if pr := b.resume("ref-2", newSendIDs("ref-2", []string{"other text"}, nil)); len(pr.done) != 0 ||
+	if pr := b.resume("ref-2", 0, newSendIDs("ref-2", owner, []string{"other text"}, nil)); len(pr.done) != 0 ||
 		len(b.progress) != progressMost-1 || len(b.progressOrder) != progressMost-1 {
 		t.Fatalf("progress of other content is kept: %+v, %d refs", pr, len(b.progress))
 	}
-	b.keep("", partDone(""))
+	b.keep("", 0, partDone(""))
 	if len(b.progress) != progressMost-1 {
 		t.Fatal("progress kept without a ref")
 	}

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -131,7 +132,7 @@ func (p *program) connector(ctx context.Context, method string, params json.RawM
 	return nil, ext.UnknownMethod(ext.ConnectorNamespace + "." + method)
 }
 
-// channel answers the channel namespace: channel.send (once per ref) and channel.typing.
+// channel answers the channel namespace: channel.send (once per ref and content) and channel.typing.
 func (p *program) channel(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	if c := ext.Contribution(params); c != "" && c != ID {
 		return nil, &ext.Error{Code: wire.ErrorCodeNoContribution, Message: "no channel " + c}
@@ -149,7 +150,8 @@ func (p *program) channel(ctx context.Context, method string, params json.RawMes
 		if sp.Ref == "" {
 			return nil, errors.New("channel.send without a ref")
 		}
-		res, err := p.sent.do(sp.Ref, func() (wire.ChannelSendResult, error) { return b.Send(ctx, sp) })
+		key := messageSum(splitText(sp.Text), sp.Images)
+		res, err := p.sent.do(sp.Ref, key, func() (wire.ChannelSendResult, error) { return b.Send(ctx, sp) })
 		if errors.Is(err, errCannotSend) {
 			return nil, ext.CannotSend(err.Error())
 		}
@@ -183,8 +185,10 @@ func (s hubSecrets) Delete(ctx context.Context) error { return s.hub.DeleteSecre
 // doneMost is how many sent refs the program remembers.
 const doneMost = 256
 
-// sentRefs runs each channel.send once by its ref (a failed one may go again). A send still running holds its ref,
-// so the hub's retry of it (it timed out waiting) waits for that send instead of sending the message again.
+// sentRefs runs each channel.send once by its ref and content (a failed one may go again). A send still running holds
+// its ref, so the hub's retry of it (it timed out waiting) waits for that send instead of sending the message again.
+// The same ref with other content (messageSum) is another message: it waits for a send of the ref still running, then
+// goes, and replaces what was remembered for the ref.
 type sentRefs struct {
 	mu    sync.Mutex
 	sent  map[string]*sentRef
@@ -192,22 +196,41 @@ type sentRefs struct {
 }
 
 type sentRef struct {
+	key  string // the content sent (messageSum)
 	done chan struct{}
 	res  wire.ChannelSendResult
 	err  error
 }
 
-func (r *sentRefs) do(ref string, send func() (wire.ChannelSendResult, error)) (wire.ChannelSendResult, error) {
+func (r *sentRefs) do(ref, key string, send func() (wire.ChannelSendResult, error)) (wire.ChannelSendResult, error) {
 	r.mu.Lock()
-	if prev, ok := r.sent[ref]; ok {
+	for {
+		prev, ok := r.sent[ref]
+		if !ok {
+			break
+		}
+		select {
+		case <-prev.done: // sent: the same content was sent; other content is another message
+			if prev.key == key {
+				r.mu.Unlock()
+				return prev.res, prev.err
+			}
+			delete(r.sent, ref)
+			r.order = slices.DeleteFunc(r.order, func(o string) bool { return o == ref })
+			continue
+		default:
+		}
 		r.mu.Unlock()
 		<-prev.done
-		return prev.res, prev.err
+		if prev.key == key {
+			return prev.res, prev.err
+		}
+		r.mu.Lock() // other content: look again, it goes after what holds the ref now
 	}
 	if r.sent == nil {
 		r.sent = map[string]*sentRef{}
 	}
-	cur := &sentRef{done: make(chan struct{})}
+	cur := &sentRef{key: key, done: make(chan struct{})}
 	r.sent[ref] = cur
 	r.mu.Unlock()
 	cur.res, cur.err = send()

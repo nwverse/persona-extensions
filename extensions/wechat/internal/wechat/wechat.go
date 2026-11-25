@@ -73,6 +73,9 @@ type Bot struct {
 	// progress is how far each ref's channel.send got, oldest ref first in progressOrder (chat.go sendProgress).
 	progress      map[string]sendProgress
 	progressOrder []string
+	// sendGen counts binding changes that dropped the progress (forgetSendsLocked): a send keeps or reads progress
+	// only in the generation it started in.
+	sendGen uint64
 }
 
 // state is what is kept in the hub (sealed): never logged.

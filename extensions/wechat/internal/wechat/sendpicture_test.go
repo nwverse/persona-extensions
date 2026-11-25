@@ -3,6 +3,7 @@ package wechat
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -110,7 +111,7 @@ func TestSendSkipsAPictureWeChatRefuses(t *testing.T) {
 	if len(texts) != 2 || texts[0].Text != "三张图" || texts[1].Text != oneNotSent {
 		t.Fatalf("texts %+v", texts)
 	}
-	ids := newSendIDs(p.Ref, splitText(p.Text), p.Images)
+	ids := newSendIDs(p.Ref, owner, splitText(p.Text), p.Images)
 	r.ilink.mu.Lock()
 	last := r.ilink.clientIDs[len(r.ilink.clientIDs)-1]
 	r.ilink.mu.Unlock()
@@ -163,7 +164,7 @@ func TestSendCountsSkippedPicturesAcrossTheHubsRetry(t *testing.T) {
 	ctx := context.Background()
 	p := wire.ChannelSendParams{Ref: "run-12:1", Kind: wire.ChannelSendKindAnswer,
 		Images: []wire.ChannelBlob{testPicture(1), testPicture(2), testPicture(3)}}
-	ids := newSendIDs(p.Ref, nil, p.Images)
+	ids := newSendIDs(p.Ref, owner, nil, p.Images)
 	// Picture 1 refused by the CDN; picture 2's three uploads fail in a way that may pass.
 	failed := fakeAnswer{status: http.StatusInternalServerError}
 	r.ilink.answer("/c2c/upload", fakeAnswer{status: http.StatusBadRequest}, failed, failed, failed)
@@ -227,7 +228,7 @@ func TestSendKeepsAnUploadTheCDNTook(t *testing.T) {
 		!strings.Contains(lines[0], "error=iLink answered HTTP 500") {
 		t.Fatalf("logs %q", lines)
 	}
-	id := newSendIDs(p.Ref, nil, p.Images).images[0]
+	id := newSendIDs(p.Ref, owner, nil, p.Images).images[0]
 	if pr, ok := r.progressOf(p.Ref); !ok || pr.uploadOf != id || pr.upload.Query == "" || len(pr.done) != 0 {
 		t.Fatalf("progress %+v %v", pr, ok)
 	}
@@ -442,7 +443,7 @@ func TestUnbindForgetsSendProgress(t *testing.T) {
 	b := New(Options{}, &memSecrets{})
 	b.st.Creds = &ilink.Credentials{BotID: "bot-a", UserID: "account-a", Token: "token-a"}
 	b.loaded = true
-	b.keep("ref", sendProgress{done: map[string]bool{"persona-x": true}})
+	b.keep("ref", 0, sendProgress{done: map[string]bool{"persona-x": true}})
 	b.bound(t.Context(), ilink.Credentials{BotID: "bot-a", UserID: "account-a", Token: "token-a2"}) // the same account again
 	if len(b.progress) != 1 {
 		t.Fatal("binding the same account again dropped the progress")
@@ -478,7 +479,7 @@ func TestSendStopsAtTheDeadline(t *testing.T) {
 	if took > 5*time.Second {
 		t.Fatalf("the send took %s: it did not stop at its deadline", took)
 	}
-	ids := newSendIDs(p.Ref, splitText(p.Text), p.Images)
+	ids := newSendIDs(p.Ref, owner, splitText(p.Text), p.Images)
 	if pr, ok := r.progressOf(p.Ref); !ok || len(pr.done) != 2 || !pr.done[ids.parts[0]] || !pr.done[ids.images[0]] {
 		t.Fatalf("progress %+v %v: want the text and picture 1", pr, ok)
 	}
@@ -505,5 +506,105 @@ func TestSendStopsAtTheDeadline(t *testing.T) {
 	}
 	if pics, _ := r.ilink.sentPictures(t); len(pics) != 2 || len(r.ilink.texts()) != 1 {
 		t.Fatalf("iLink holds %d pictures and %d texts", len(pics), len(r.ilink.texts()))
+	}
+}
+
+// Through the program: a ref that went through and then comes again with other content (another picture) is sent
+// again whole, under new client_ids; the same content again is not sent.
+func TestProgramSendsChangedContentUnderARef(t *testing.T) {
+	r := pictureSendRig(t)
+	ctx := context.Background()
+	p := &program{bot: r.bot}
+	send := func(sp wire.ChannelSendParams) error {
+		sp.Contribution = ID
+		params, _ := json.Marshal(sp)
+		_, err := p.channel(ctx, "send", params)
+		return err
+	}
+	a := wire.ChannelSendParams{Ref: "run-20:1", Text: "看图", Kind: wire.ChannelSendKindAnswer, Images: []wire.ChannelBlob{testPicture(1)}}
+	if err := send(a); err != nil {
+		t.Fatal(err)
+	}
+	r.ilink.mu.Lock()
+	first := slices.Clone(r.ilink.clientIDs)
+	r.ilink.mu.Unlock()
+	b := a
+	b.Images = []wire.ChannelBlob{testPicture(3)}
+	before := r.tally()
+	if err := send(b); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.tally().minus(before); got != (tally{sends: 2, uploadURLs: 1, cdn: 1}) {
+		t.Fatalf("other content under a sent ref: calls %+v, want the text and the picture again", got)
+	}
+	r.ilink.mu.Lock()
+	again := slices.Clone(r.ilink.clientIDs[len(first):])
+	r.ilink.mu.Unlock()
+	for _, id := range again {
+		if slices.Contains(first, id) {
+			t.Fatalf("client_id %s of the first content is used for the second", id)
+		}
+	}
+	_, plain := r.ilink.sentPictures(t)
+	if len(plain) != 2 || !samePicture(plain[1], testPicture(3)) || len(r.ilink.texts()) != 2 {
+		t.Fatalf("iLink holds %d pictures and %d texts", len(plain), len(r.ilink.texts()))
+	}
+	before = r.tally()
+	if err := send(b); err != nil {
+		t.Fatal(err)
+	}
+	if got := r.tally().minus(before); got != (tally{}) {
+		t.Fatalf("the same content again: calls %+v, want none", got)
+	}
+}
+
+// A send still running when the WeChat is unbound keeps no progress when it then fails: another WeChat bound after it
+// gets all of the same ref and content, none of it skipped as sent or its picture taken from the old upload.
+func TestSendRunningAcrossAnUnbind(t *testing.T) {
+	r := pictureSendRig(t)
+	r.ilink.answer("/c2c/upload", fakeAnswer{hang: true})
+	p := wire.ChannelSendParams{Ref: "run-21:1", Text: "看图", Kind: wire.ChannelSendKindAnswer, Images: []wire.ChannelBlob{testPicture(1)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := r.bot.Send(ctx, p)
+		done <- err
+	}()
+	eventually(t, "the picture's upload", func() bool { return len(r.ilink.cdnUploads()) == 1 })
+	if err := r.bot.Logout(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	cancel() // the old send fails after the unbind
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("the old send should fail")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the old send did not end")
+	}
+	if pr, ok := r.progressOf(p.Ref); ok {
+		t.Fatalf("a send that ran across the unbind kept its progress: %+v", pr)
+	}
+
+	const other = "other@im.wechat"
+	r.bot.bound(context.Background(), ilink.Credentials{Token: "BT2", BotID: "bot2@im.bot", UserID: other, BaseURL: "https://ilinkai.weixin.qq.com/"})
+	r.ilink.say(other, "你好")
+	eventually(t, "the new WeChat's chat", func() bool {
+		r.bot.mu.Lock()
+		defer r.bot.mu.Unlock()
+		return r.bot.client != nil && r.bot.st.Creds != nil && r.bot.st.Creds.UserID == other && r.bot.st.Context != ""
+	})
+	before := r.tally()
+	if _, err := r.bot.Send(context.Background(), p); err != nil { // the hub sends the ref again
+		t.Fatal(err)
+	}
+	if got := r.tally().minus(before); got != (tally{sends: 2, uploadURLs: 1, cdn: 1}) {
+		t.Fatalf("the new WeChat's send: calls %+v, want the text, an upload and the picture", got)
+	}
+	r.sentTo(other, "看图")
+	if pics, _ := r.ilink.sentPictures(t); len(pics) != 1 || pics[0].To != other {
+		t.Fatalf("pictures %+v", pics)
 	}
 }

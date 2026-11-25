@@ -100,7 +100,7 @@ func (b *Bot) send(ctx context.Context, c *ilink.Client, peer, contextToken, rep
 		return false
 	}
 	parts := splitText(text)
-	ids := newSendIDs(ref, parts, nil)
+	ids := newSendIDs(ref, peer, parts, nil)
 	for i, part := range parts {
 		if !b.sendPiece(ctx, c, peer, contextToken, replyTo, ref, partOf(i, len(parts)), ids.parts[i], part) {
 			return false
@@ -185,7 +185,7 @@ func (b *Bot) rememberOutbound(peer, serverID, text string, media []quoteMedia) 
 // it is remembered by ref (sendProgress), so the next send of the ref goes on from the piece or picture that failed.
 func (b *Bot) Send(ctx context.Context, p wire.ChannelSendParams) (wire.ChannelSendResult, error) {
 	b.mu.Lock()
-	c, creds, contextToken := b.client, b.st.Creds, b.st.Context
+	c, creds, contextToken, gen := b.client, b.st.Creds, b.st.Context, b.sendGen
 	b.mu.Unlock()
 	if creds == nil || c == nil || contextToken == "" {
 		return wire.ChannelSendResult{}, errCannotSend
@@ -193,14 +193,14 @@ func (b *Bot) Send(ctx context.Context, p wire.ChannelSendParams) (wire.ChannelS
 	ctx, cancel := context.WithTimeout(ctx, sendDeadline)
 	defer cancel()
 	peer, parts := creds.UserID, splitText(p.Text)
-	ids := newSendIDs(p.Ref, parts, p.Images)
-	pr := b.resume(p.Ref, ids)
+	ids := newSendIDs(p.Ref, peer, parts, p.Images)
+	pr := b.resume(p.Ref, gen, ids)
 	if textDone, imagesDone := countIn(pr.done, ids.parts), countIn(pr.done, ids.images); textDone > 0 || imagesDone > 0 {
 		log.Printf("wechat: send reply_to=%q ref=%q resume text=%d/%d image=%d/%d",
 			p.ReplyTo, p.Ref, textDone, len(parts), imagesDone, len(p.Images))
 	}
 	failed := func() (wire.ChannelSendResult, error) {
-		b.keep(p.Ref, pr)
+		b.keep(p.Ref, gen, pr)
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			log.Printf("wechat: send reply_to=%q ref=%q stopped: out of time (%s at most); the hub's retry goes on from here",
 				p.ReplyTo, p.Ref, sendDeadline)
@@ -249,30 +249,22 @@ func (b *Bot) Send(ctx context.Context, p wire.ChannelSendParams) (wire.ChannelS
 // it.
 var sendDeadline = 100 * time.Second
 
-// sendIDs are the client_ids of one send's text pieces and pictures. With a ref, each comes from the ref, sum (a digest
-// of all the send's text and pictures) and the piece's kind and place: the hub's retry of the same message has the
-// same ids, so iLink may keep a repeat once and the progress kept by ref knows them. Other content under the same ref
-// has another sum and so new ids for every piece: it is sent again from the start, and iLink takes none of it for a
-// repeat. (The hub fetches an answer's pictures again each time it sends the answer, and a picture it could not fetch
-// stays a link in the text: its retry of an answer may differ.) Without a ref the ids are random.
+// sendIDs are the client_ids of one send's text pieces and pictures. With a ref, each comes from the ref, the WeChat it
+// goes to (peer), sum (a digest of all the send's text and pictures) and the piece's kind and place: the hub's retry of
+// the same message has the same ids, so iLink may keep a repeat once and the progress kept by ref knows them. Other
+// content under the same ref has another sum and so new ids for every piece: it is sent again from the start, and
+// iLink takes none of it for a repeat; nor does it take the same message to a WeChat bound later for one sent before.
+// (The hub fetches an answer's pictures again each time it sends the answer, and a picture it could not fetch stays a
+// link in the text: its retry of an answer may differ.) Without a ref the ids are random.
 type sendIDs struct {
-	ref, sum      string
-	parts, images []string
+	ref, peer, sum string
+	parts, images  []string
 }
 
-func newSendIDs(ref string, parts []string, images []wire.ChannelBlob) sendIDs {
-	ids := sendIDs{ref: ref}
+func newSendIDs(ref, peer string, parts []string, images []wire.ChannelBlob) sendIDs {
+	ids := sendIDs{ref: ref, peer: peer}
 	if ref != "" {
-		h := sha256.New()
-		for _, part := range parts {
-			_, _ = fmt.Fprintf(h, "text %d\n", len(part))
-			_, _ = io.WriteString(h, part)
-		}
-		for _, img := range images {
-			_, _ = fmt.Fprintf(h, "image %d\n", len(img.Data))
-			_, _ = io.WriteString(h, img.Data)
-		}
-		ids.sum = hex.EncodeToString(h.Sum(nil))
+		ids.sum = messageSum(parts, images)
 	}
 	for i := range parts {
 		ids.parts = append(ids.parts, ids.id("text", i))
@@ -281,6 +273,20 @@ func newSendIDs(ref string, parts []string, images []wire.ChannelBlob) sendIDs {
 		ids.images = append(ids.images, ids.id("image", i))
 	}
 	return ids
+}
+
+// messageSum is a digest of a send's text pieces and pictures: what tells one message under a ref from another.
+func messageSum(parts []string, images []wire.ChannelBlob) string {
+	h := sha256.New()
+	for _, part := range parts {
+		_, _ = fmt.Fprintf(h, "text %d\n", len(part))
+		_, _ = io.WriteString(h, part)
+	}
+	for _, img := range images {
+		_, _ = fmt.Fprintf(h, "image %d\n", len(img.Data))
+		_, _ = io.WriteString(h, img.Data)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // note is the client_id of the text that says n pictures were not sent.
@@ -293,7 +299,7 @@ func (s sendIDs) id(kind string, i int) string {
 		_, _ = rand.Read(r[:])
 		return "persona-" + hex.EncodeToString(r[:])
 	}
-	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s|%s|%s|%d", len(s.ref), s.ref, s.sum, kind, i))
+	sum := sha256.Sum256(fmt.Appendf(nil, "%d:%s|%d:%s|%s|%s|%d", len(s.ref), s.ref, len(s.peer), s.peer, s.sum, kind, i))
 	return "persona-" + hex.EncodeToString(sum[:12])
 }
 
@@ -332,15 +338,19 @@ func countIn(set map[string]bool, ids []string) int {
 	return n
 }
 
-// resume is what is kept of ref's send. What was kept for other content under the ref (another sum) is dropped: that
-// send starts over. Nothing is kept without a ref.
-func (b *Bot) resume(ref string, ids sendIDs) sendProgress {
+// resume is what is kept of ref's send for a send that started in sending generation gen (Bot.sendGen). What was kept
+// for other content under the ref (another sum) is dropped: that send starts over. Nothing is kept without a ref, or
+// for a send that started before the binding changed.
+func (b *Bot) resume(ref string, gen uint64, ids sendIDs) sendProgress {
 	pr := sendProgress{sum: ids.sum, done: map[string]bool{}, skipped: map[string]bool{}}
 	if ref == "" {
 		return pr
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if gen != b.sendGen {
+		return pr
+	}
 	kept, ok := b.progress[ref]
 	switch {
 	case !ok:
@@ -355,13 +365,17 @@ func (b *Bot) resume(ref string, ids sendIDs) sendProgress {
 	return pr
 }
 
-// keep records pr as how far ref's send got: it failed, and the hub sends the ref again.
-func (b *Bot) keep(ref string, pr sendProgress) {
+// keep records pr as how far ref's send got: it failed, and the hub sends the ref again. A send that started in another
+// sending generation (gen) than the bot's now went to a binding no longer there: what it got is not kept.
+func (b *Bot) keep(ref string, gen uint64, pr sendProgress) {
 	if ref == "" {
 		return
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if gen != b.sendGen {
+		return
+	}
 	if b.progress == nil {
 		b.progress = map[string]sendProgress{}
 	}
@@ -390,9 +404,11 @@ func (b *Bot) forgetLocked(ref string) {
 	b.progressOrder = slices.DeleteFunc(b.progressOrder, func(r string) bool { return r == ref })
 }
 
-// forgetSendsLocked drops every ref's progress, b.mu held: what it says was sent went to a WeChat no longer bound.
+// forgetSendsLocked drops every ref's progress, b.mu held: what it says was sent went to a WeChat no longer bound. It
+// starts a new sending generation, so a send still running for that WeChat does not keep its progress when it ends.
 func (b *Bot) forgetSendsLocked() {
 	b.progress, b.progressOrder = nil, nil
+	b.sendGen++
 }
 
 // imageResult is how sending one picture ended.
