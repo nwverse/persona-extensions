@@ -808,8 +808,10 @@ func (idx collabNameIndex) recall(st *store.State, f heFilter, day, situation, s
 	total := float64(max(1, len(st.Entries)))
 	idf := func(df int) float64 { return math.Log(total / float64(1+df)) }
 	var cands []*entry.Entry
+	seen := map[string]bool{}
 	add := func(e *entry.Entry, w float64) {
-		if hits[e.ID] == 0 {
+		if !seen[e.ID] {
+			seen[e.ID] = true
 			cands = append(cands, e)
 		}
 		hits[e.ID] += w
