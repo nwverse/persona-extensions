@@ -370,8 +370,10 @@ class AgentSuffixTest(unittest.TestCase):
         self.addCleanup(setattr, main, "Connector", real)
         plugin = Plugin({"id": "larkx", "version": "0", "contributes": {}}, lambda *_: None)
         plugin.initialize({"protocol": main.PROTOCOL, "extension": {"data_dir": self.dir.name},
-                           "config": {"triage_rules": "规则", "agent_reply_suffix": "— AI 代答"}})
+                           "config": {"triage_rules": "规则", "agent_reply_suffix": "— AI 代答",
+                                      "inbox_triage_chats": ["g1", "g2"]}})
         self.assertEqual(got, {"rules": "规则", "suffix": "— AI 代答"})
+        self.assertEqual(plugin.connector.inbox_triage_chats, {"g1", "g2"})
 
 
 class PluginRoutingTest(unittest.TestCase):

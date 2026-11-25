@@ -387,6 +387,9 @@ def normalize(msg, extract_key):
         at /= 1000
     root = str(msg.get("root_id") or "")
     parent = str(msg.get("parent_id") or "")
+    if root in ("", "0") and msg.get("chat_type") != 1 and msg.get("scope") == "topic":
+        # LarkAgentX identifies roots in topic groups before any replies arrive.
+        root = str(msg.get("msg_id") or "")
     return {
         "id": str(msg.get("msg_id") or ""), "chat": str(msg.get("chat_id") or ""),
         "chat_kind": "dm" if msg.get("chat_type") == 1 else "group",

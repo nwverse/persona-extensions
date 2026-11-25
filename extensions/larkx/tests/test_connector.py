@@ -236,6 +236,80 @@ class ConnectorTest(unittest.TestCase):
         self.assertEqual(thing["extra"]["rule_tier"], "noise")
         self.assertEqual(thing["rules"], self.c.rules)
 
+    def test_opted_in_product_question_and_followup_reach_model_triage(self):
+        self.sign_in()
+        self.c.inbox_triage_chats = {"g1"}
+        self.c.rules = "Questions about the reports I own need my attention."
+        self.backend.chats["g1"] = {"name": "Reports", "mute": "unknown"}
+        question = message("q1", "g1", 1, kind="group", text="Does the report support nightly builds?")
+        question["mentions"] = [{"label": "@HelpBot"}]
+        self.c.on_message(question)
+        first = self.thing("g1")
+        self.assertNotIn("tier", first)
+        self.assertEqual(first["extra"]["rule_tier"], "noise")
+        self.assertEqual(first["rules"], self.c.rules)
+        self.assertIn("@HelpBot", first["context"])
+
+        self.c.store.mute_chat("g1", "muted", time.time())
+        self.c.on_message(message("a1", "g1", 2, kind="group", text="Anyone bringing lunch?", root="lunch"))
+        self.c.on_message(message("q2", "g1", 3, kind="group", text="Could you add support?", root="q1"))
+        followup = self.thing("g1:q1")
+        self.assertNotIn("tier", followup)
+        self.assertEqual(followup["extra"]["rule_tier"], "noise")
+        self.assertEqual(followup["last"], "3")
+        self.assertIn("Does the report support nightly builds?", followup["context"])
+        self.assertIn("最新消息：", followup["context"])
+        self.assertNotIn("lunch", followup["context"])
+        self.assertIn("Could you add support?", followup["preview"])
+        self.assertNotIn("g1", {t["thread"] for t in self.c.inbox_collect({})["things"]})
+
+        unrelated = self.thing("g1:lunch")
+        self.assertNotIn("tier", unrelated)
+        self.assertEqual(unrelated["extra"]["rule_tier"], "noise")
+        self.assertNotIn("the report", unrelated["context"])
+        self.c.on_message(message("u1", "g2", 1, kind="group", text="Anyone bringing lunch?"))
+        self.assertEqual(self.thing("g2")["tier"], "noise")
+
+    def test_only_same_topic_reply_settles_even_after_interleaved_activity(self):
+        self.sign_in()
+        self.c.on_message(message("q1", "g1", 1, kind="group", at_me=True, root="q1"))
+        self.c.on_message(message("q2", "g1", 2, kind="group", at_me=True, root="q2"))
+        self.c.on_message(message("mine", "g1", 3, kind="group", sender=ME, root="q2"))
+        for position in range(4, 14):
+            self.c.on_message(message("other%d" % position, "g1", position, kind="group"))
+        self.assertEqual(self.thing("g1:q1")["kind"], "mention")
+        self.assertNotIn("done", self.thing("g1:q1"))
+        self.assertEqual(self.thing("g1:q2")["done"], "replied")
+        self.assertNotIn("done", self.thing("g1"))
+        self.c.on_message(message("answer", "g1", 14, kind="group", sender=ME, root="q1"))
+        self.assertEqual(self.thing("g1:q1")["done"], "replied")
+
+    def test_inbox_topic_reply_and_legacy_group_reply_keep_their_routes(self):
+        self.sign_in()
+        self.c.on_message(message("q1", "g1", 1, kind="group", root="q1"))
+        self.c.on_message(message("q2", "g1", 2, kind="group", root="q2"))
+        self.c.on_message(message("q3", "g1", 3, kind="group", root="q1"))
+        thread = self.thing("g1:q1")["thread"]
+        page = self.c.thread_page({"thread": thread, "limit": 1})
+        self.assertEqual([m["id"] for m in page["messages"]], ["q3"])
+        older = self.c.thread_page({"thread": thread, "before": page["before"]})
+        self.assertEqual([m["id"] for m in older["messages"]], ["q1"])
+        self.assertEqual(self.c.thread_page({"thread": "g1"})["chat"]["reply"], "larkx_send")
+        for _ in range(2):
+            self.c.inbox_reply({"thread": thread, "text": "Topic answer", "client_id": "one"})
+        self.c.inbox_reply({"thread": "g1", "text": "Group answer", "client_id": "two"})
+        self.assertEqual(self.backend.sent, [("g1", "Topic answer", "q1"), ("g1", "Group answer", None)])
+
+    def test_topic_group_root_opens_a_topic_before_a_reply_exists(self):
+        self.sign_in()
+        normalized = normalize({"msg_id": "q1", "chat_id": "g1", "chat_type": 2, "scope": "topic",
+                                "msg_type_name": "TEXT", "position": 1, "content": "Can you help?",
+                                "at_me": True}, lambda *_: "")
+        self.c.on_message(normalized)
+        self.assertEqual(self.thing("g1:q1")["last"], "1")
+        self.c.on_message(message("q2", "g1", 2, kind="group", root="q1"))
+        self.assertEqual(self.thing("g1:q1")["last"], "2")
+
     def test_a_stale_mute_state_is_refreshed_and_a_failure_falls_back_to_unknown(self):
         self.sign_in()
         self.backend.chats["g1"] = {"name": "项目群", "last_position": 0, "mute": "normal"}
@@ -409,7 +483,7 @@ class ConnectorTest(unittest.TestCase):
         self.assertNotIn("parent=", lines[4])
 
         # Inbox context keeps _line(m) clean without raw message or topic ids.
-        context = self.thing("g1")["context"]
+        context = self.thing("g1:m1")["context"]
         self.assertIn("周五开会吗", context)
         self.assertIn("我也行", context)
         self.assertNotIn("[id=", context)

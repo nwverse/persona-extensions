@@ -14,7 +14,7 @@ from .wire import RpcError
 ID = "larkx"
 SECRETS = "connector.secrets."
 
-# A chat is an inbox thing while it moved in the last few days; how much of it the thing carries for triage.
+# Inbox activity window, maximum chats polled, and per-thread context size.
 INBOX_DAYS = 3
 INBOX_MOST = 200
 CONTEXT_LINES = 8
@@ -129,6 +129,7 @@ class Connector:
         # The user's own triage rules (setting triage_rules): handed over with every inbox item, the hub uses them
         # instead of its global ones. The hub reads at most 4000 characters.
         self.rules = (rules or "").strip()[:4000]
+        self.inbox_triage_chats = frozenset()
         # The line every /agent answer ends with (setting agent_reply_suffix). Blank or too short keeps AGENT_SUFFIX: an
         # answer is always marked as written by AI. Stripped after the cut too, since a message is matched against it
         # rstripped.
@@ -695,8 +696,8 @@ class Connector:
     # inbox
 
     def inbox_collect(self, _):
-        since = time.time() - INBOX_DAYS * 86400
         things, checked, now = [], 0, time.time()
+        since = now - INBOX_DAYS * 86400
         for chat in self.store.chats_since(since, INBOX_MOST):
             stale = now - (chat.get("checked_at") or 0) >= MUTE_REFRESH_SECONDS
             if self._signed_in and chat["kind"] == "group" and stale and checked < MUTE_REFRESH_MOST:
@@ -711,18 +712,24 @@ class Connector:
                     self._log("checking the chat mute state failed: %s" % type(e).__name__)
                 self.store.mute_chat(chat["id"], mute, now)
                 chat = self.store.chat(chat["id"]) or dict(chat, mute=mute, checked_at=now)
-            thing = self._thing(chat)
-            if thing:
-                things.append(thing)
+            if chat["kind"] == "dm":
+                recent = self.store.messages(chat["id"], 0, CONTEXT_LINES)
+                scopes = {"": [m for m in recent if m["type"] != "SYSTEM"]}
+            else:
+                scopes = self.store.inbox_topics(chat["id"], since, CONTEXT_LINES)
+            for root, recent in scopes.items():
+                thing = self._thing(chat, root, recent)
+                if thing:
+                    things.append(thing)
         return {"things": things}
 
-    def _thing(self, chat):
-        recent = self.store.messages(chat["id"], 0, CONTEXT_LINES)
-        recent = [m for m in recent if m["type"] != "SYSTEM"]
+    def _thing(self, chat, root, recent):
         if not recent:
             return None
         last = recent[-1]
         dm = chat["kind"] == "dm"
+        thread = "%s:%s" % (chat["id"], root) if root else chat["id"]
+        last_id = str(last["position"] or last["id"])
         unanswered = []
         for m in reversed(recent):
             if m["mine"]:
@@ -731,22 +738,32 @@ class Connector:
         mentioned = any(m["at_me"] for m in unanswered)
         kind = "dm" if dm else ("mention" if mentioned else "group")
         if last["mine"]:
-            return self._ruled({"thread": chat["id"], "kind": kind, "done": "replied", "why": "你后来回复了"}, "fyi")
-        if not dm and not mentioned and chat.get("mute") == "muted":
+            return self._ruled({"thread": thread, "kind": kind, "done": "replied", "last": last_id,
+                                "at": rfc3339(last["at"]), "why": "你后来回复了"}, "fyi")
+        opted_in = chat["id"] in self.inbox_triage_chats
+        if kind == "group" and not opted_in and chat.get("mute") == "muted":
             return None
         title = _title(chat)
+        reply_to = "回复会以你本人的身份发给『%s』" % title
+        if not dm:
+            where = "的这个话题" if root else ""
+            reply_to = "回复会以你本人的身份发到群『%s』%s，群里所有人都能看到" % (title, where)
+        if root or (kind == "group" and opted_in):
+            older = "\n".join(_inbox_line(m) for m in recent[:-1])
+            context = ("较早的消息：\n" + older + "\n\n" if older else "") + "最新消息：\n" + _inbox_line(last)
+        else:
+            context = "\n".join(_line(m) for m in recent)
         thing = {
-            "thread": chat["id"], "kind": kind, "title": title, "sender": last["sender_name"],
+            "thread": thread, "kind": kind, "title": title, "sender": last["sender_name"],
             "label": {"dm": "私聊", "mention": "群里 @ 了你", "group": "群消息"}[kind],
-            "preview": last["text"][:200], "context": "\n".join(_line(m) for m in recent),
-            "at": rfc3339(last["at"]), "last": str(last["position"] or last["id"]),
-            "can_reply": True,
-            "reply_to": ("回复会以你本人的身份发给『%s』" % title) if dm else ("回复会以你本人的身份发到群『%s』，群里所有人都能看到" % title),
+            "preview": last["text"][:200], "context": context,
+            "at": rfc3339(last["at"]), "last": last_id,
+            "can_reply": True, "reply_to": reply_to,
             "tags": [{"key": "chat", "value": chat["id"], "name": title}],
         }
         if last["sender"]:
             thing["tags"].append({"key": "sender", "value": last["sender"], "name": last["sender_name"]})
-        if kind == "group" and chat.get("mute") != "normal":
+        if kind == "group" and not opted_in and chat.get("mute") != "normal":
             # Unknown mute state keeps the old fixed fold. Confirmed normal groups use model triage instead.
             thing["tier"], thing["why"] = "noise", "规则：群消息，没有 @ 你"
         # The fallback tier (capability fallback): used only when the triage model can't be called.
@@ -761,7 +778,8 @@ class Connector:
     def inbox_reply(self, p):
         thread, text = _required(p, "thread"), _required(p, "text")
         key = p.get("client_id") or hashlib.sha256(("%s|%s|%s" % (thread, p.get("last"), text)).encode()).hexdigest()
-        self._send_once("reply:" + key, thread, text, None)
+        chat, _, root = thread.partition(":")
+        self._send_once("reply:" + key, chat, text, root or None)
         return {}
 
     # threads
@@ -770,16 +788,22 @@ class Connector:
         thread = _required(p, "thread")
         limit = min(int(p.get("limit") or 20), THREAD_MOST)
         before = int(p.get("before") or 0)
-        chat = self.store.chat(thread)
+        chat_id, _, root = thread.partition(":")
+        chat = self.store.chat(chat_id)
         if chat is None:
             raise RpcError("没有这个会话")
-        rows = self.store.messages(thread, before, limit)
-        if len(rows) < limit and self._signed_in:
-            rows = self._fetch_older(thread, before, limit, rows)
+        if root:
+            rows = self.store.topic_messages(chat_id, root, before, limit)
+        else:
+            rows = self.store.messages(chat_id, before, limit)
+            if len(rows) < limit and self._signed_in:
+                rows = self._fetch_older(chat_id, before, limit, rows)
         out = {
-            "chat": {"id": thread, "name": _title(chat), "kind": chat["kind"], "reply": "larkx_send"},
+            "chat": {"id": thread, "name": _title(chat), "kind": chat["kind"]},
             "messages": [self._thread_message(m) for m in rows],
         }
+        if not root:
+            out["chat"]["reply"] = "larkx_send"
         if rows and rows[0]["position"] > 1:
             out["before"] = str(rows[0]["position"])
         return out
@@ -1026,6 +1050,11 @@ def _kind_label(kind):
 
 def _line(m):
     return "%s（%s）：%s" % (m["sender_name"] or "系统", local_time(m["at"]), m["text"])
+
+
+def _inbox_line(m):
+    names = dict.fromkeys(mention["label"] for mention in m["mentions"] if mention.get("label"))
+    return _line(m) + ("（提及：%s）" % "、".join(names) if names else "")
 
 
 def _message_line(m):
