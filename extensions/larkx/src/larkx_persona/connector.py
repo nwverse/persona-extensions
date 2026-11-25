@@ -18,6 +18,9 @@ SECRETS = "connector.secrets."
 INBOX_DAYS = 3
 INBOX_MOST = 200
 CONTEXT_LINES = 8
+# Refresh only stale group mute states, with a bounded number of upstream calls in one inbox poll.
+MUTE_REFRESH_SECONDS = 3600
+MUTE_REFRESH_MOST = 10
 # An archive call reads this many messages at most, whatever the number of chats it asks for.
 ARCHIVE_ROWS = 500
 THREAD_MOST = 50
@@ -693,8 +696,21 @@ class Connector:
 
     def inbox_collect(self, _):
         since = time.time() - INBOX_DAYS * 86400
-        things = []
+        things, checked, now = [], 0, time.time()
         for chat in self.store.chats_since(since, INBOX_MOST):
+            stale = now - (chat.get("checked_at") or 0) >= MUTE_REFRESH_SECONDS
+            if self._signed_in and chat["kind"] == "group" and stale and checked < MUTE_REFRESH_MOST:
+                checked += 1
+                # A failed check is unknown for this poll and backs off until the next refresh window.
+                mute = "unknown"
+                try:
+                    mute = (self.backend.chat_info(chat["id"]) or {}).get("mute") or "unknown"
+                    if mute not in ("muted", "normal", "unknown"):
+                        mute = "unknown"
+                except Exception as e:
+                    self._log("checking the chat mute state failed: %s" % type(e).__name__)
+                self.store.mute_chat(chat["id"], mute, now)
+                chat = self.store.chat(chat["id"]) or dict(chat, mute=mute, checked_at=now)
             thing = self._thing(chat)
             if thing:
                 things.append(thing)
@@ -716,6 +732,8 @@ class Connector:
         kind = "dm" if dm else ("mention" if mentioned else "group")
         if last["mine"]:
             return self._ruled({"thread": chat["id"], "kind": kind, "done": "replied", "why": "你后来回复了"}, "fyi")
+        if not dm and not mentioned and chat.get("mute") == "muted":
+            return None
         title = _title(chat)
         thing = {
             "thread": chat["id"], "kind": kind, "title": title, "sender": last["sender_name"],
@@ -728,8 +746,8 @@ class Connector:
         }
         if last["sender"]:
             thing["tags"].append({"key": "sender", "value": last["sender"], "name": last["sender_name"]})
-        if kind == "group":
-            # Every group message comes in here: folded by rule, so a busy group costs no model call.
+        if kind == "group" and chat.get("mute") != "normal":
+            # Unknown mute state keeps the old fixed fold. Confirmed normal groups use model triage instead.
             thing["tier"], thing["why"] = "noise", "规则：群消息，没有 @ 你"
         # The fallback tier (capability fallback): used only when the triage model can't be called.
         return self._ruled(thing, "noise" if kind == "group" else "action")
@@ -868,8 +886,11 @@ class Connector:
     def _batch(self, chat, rows):
         row = self.store.chat(chat) or {}
         rows = sorted(rows, key=lambda m: (m["at"], m["position"]))
+        info = {"id": chat, "name": _title(row), "kind": row.get("kind") or "group", "updated_at": rfc3339(rows[-1]["at"])}
+        if row.get("mute") in ("muted", "normal"):
+            info["muted"] = row["mute"] == "muted"
         return {
-            "chat": {"id": chat, "name": _title(row), "kind": row.get("kind") or "group", "updated_at": rfc3339(rows[-1]["at"])},
+            "chat": info,
             "messages": [_archive_message(m) for m in rows],
         }
 

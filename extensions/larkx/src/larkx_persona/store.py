@@ -7,7 +7,8 @@ import threading
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chats (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'group', last_at REAL NOT NULL DEFAULT 0);
+  id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'group', last_at REAL NOT NULL DEFAULT 0,
+  mute TEXT NOT NULL DEFAULT 'unknown', checked_at REAL NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS messages (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, chat TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
   sender TEXT NOT NULL DEFAULT '', sender_name TEXT NOT NULL DEFAULT '', mine INTEGER NOT NULL DEFAULT 0,
@@ -35,6 +36,12 @@ class Store:
         # Older messages have no verified safe Markdown representation and keep their original plain-text display.
         if "markdown" not in columns:
             self._db.execute("ALTER TABLE messages ADD COLUMN markdown TEXT NOT NULL DEFAULT ''")
+        # Older chats have no verified mute state. Keep their existing inbox behavior until a refresh succeeds.
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(chats)")}
+        if "mute" not in columns:
+            self._db.execute("ALTER TABLE chats ADD COLUMN mute TEXT NOT NULL DEFAULT 'unknown'")
+        if "checked_at" not in columns:
+            self._db.execute("ALTER TABLE chats ADD COLUMN checked_at REAL NOT NULL DEFAULT 0")
         # 0.1 named a direct chat it saw only through the user's own messages 私聊 ("direct chat") for good.
         self._db.execute("UPDATE chats SET name = '' WHERE kind = 'dm' AND name = '私聊'")
         self._db.commit()
@@ -73,6 +80,11 @@ class Store:
 
     def name_chat(self, chat, name):
         self._do("UPDATE chats SET name = ? WHERE id = ?", name, chat)
+
+    def mute_chat(self, chat, mute, checked_at):
+        if mute not in ("muted", "normal", "unknown"):
+            raise ValueError("unknown chat mute state")
+        self._do("UPDATE chats SET mute = ?, checked_at = ? WHERE id = ?", mute, checked_at, chat)
 
     def chat(self, chat):
         return self._one("SELECT * FROM chats WHERE id = ?", chat)
