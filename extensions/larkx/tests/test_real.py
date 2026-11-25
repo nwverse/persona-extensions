@@ -133,7 +133,7 @@ class RealTest(unittest.TestCase):
             element.tag, element.property = tag, prop
         m = self.normalized(self.frame([self.message("9005", 4, tc.SerializeToString())]))[0]
         self.assertEqual(m["text"], "请看一下 示例文档 " + url)
-        self.assertEqual(m["markdown"], "请看一下 \\[示例文档\\](%s)" % url)
+        self.assertEqual(m["markdown"], "请看一下 [示例文档](%s)" % url)
 
     def test_real_style_link_and_formatting_tag_descriptors(self):
         P = self.P
