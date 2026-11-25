@@ -8,7 +8,7 @@
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/magpie-usage/README.md",
   "tags": ["Magpie", "subscriptions", "quota"],
-  "engines": {"persona": ">=202611211238", "extension_protocol": 1},
+  "engines": {"persona": ">=202611251338", "extension_protocol": 1},
   "activation_events": ["on_startup"],
   "runtime": {"command": {
     "linux-amd64": "bin/magpie-usage-linux-amd64",
@@ -17,7 +17,30 @@
     "darwin-arm64": "bin/magpie-usage-darwin-arm64"
   }},
   "contributes": {
-    "usage": [{"id": "magpie", "name": "Magpie Subscription Usage"}]
+    "usage": [{"id": "magpie", "name": "Magpie", "direct": true, "remote_address": "remote_address", "remote_key": "magpie_quota_key"}]
   },
-  "permissions": {"launcher_keys": true}
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "local_address": {
+        "type": "string",
+        "title": "Local Magpie address",
+        "description": "On the Persona manager's machine. The default needs no setup.",
+        "format": "uri",
+        "default": "http://127.0.0.1:3425"
+      },
+      "remote_address": {
+        "type": "string",
+        "title": "Remote Magpie HTTPS address (optional)",
+        "description": "Leave empty to read local Magpie. Save this address before setting a dedicated read-only Magpie quota key.",
+        "format": "uri"
+      }
+    }
+  },
+  "secrets": [{
+    "name": "magpie_quota_key",
+    "title": "Remote Magpie quota key",
+    "description": "A dedicated Magpie read-only key with quota access. Never sent to the local endpoint."
+  }],
+  "permissions": {"network": ["127.0.0.1", "config:remote_address"]}
 }

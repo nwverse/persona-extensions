@@ -1,30 +1,17 @@
 # Magpie Subscription Usage
 
-See the 5-hour and weekly subscription allowance for each Claude or Codex account in Magpie, including Claude's separate weekly Fable window when Magpie supplies it.
+This extension shows Claude Max and Codex subscription windows from Magpie in the Persona usage sidebar, including the separate Claude Fable weekly window.
 
-## Install and configure
+## Install and sync
 
-1. Use a Persona hub build numbered `202611211238` or later and a manager with the [usage extension point](https://github.com/nwverse/persona/pull/12434). Persona v0.9.1 predates this extension point. Add the [official extension market](../installation.md#register-the-public-market), choose **Magpie Subscription Usage**, and approve access to launcher-backed requests.
-2. Create a dedicated **Codex launcher** in **Settings → Models**, with a default model and Magpie as its base URL. Use `http://127.0.0.1:3425/v1` when the manager and Magpie run on the same host. The Codex launcher form allows an empty key for a keyless loopback endpoint. The launcher type does not filter which Magpie accounts appear.
-3. For a protected remote Magpie, use an HTTPS address reachable by the manager. Set the launcher's key to a Magpie **read-only** gateway key. If Magpie restricts the key to particular accounts, enable quota visibility for those accounts. Use this launcher for quota collection. A read-only key cannot run models.
-4. Add the following item to `usage.sources` in the Persona manager's `manager.json`. Set `launcher` to the actual launcher ID. Keep any existing usage sources. Open the admin **Usage sources** page to reload the saved configuration.
+1. Use a Persona hub and manager with [direct usage sources](https://github.com/nwverse/persona/pull/15509). The extension requires hub build `202611251338` or later.
+2. Open **Settings → Extensions → Extension markets**, add the [official Persona extension market](../installation.md#register-the-public-market), and install **Magpie Subscription Usage**.
+3. Open the subscription usage popover below the sidebar. With Magpie running on the same machine as the Persona manager at `http://127.0.0.1:3425`, the accounts appear automatically during the next poll. If local Magpie uses a different port, change **Local Magpie address** in the extension's settings.
 
-```json
-{
-  "id": "src-magpie",
-  "name": "Magpie",
-  "type": "extension",
-  "extension": "magpie-usage",
-  "launcher": "magpie-usage"
-}
-```
+The local connection only reads Magpie's quota snapshot and sends no credential. Persona uses its normal sandbox proxy to reach the manager machine's local Magpie. To stop the reads, disable the contribution or the extension.
 
-Open the **Subscription usage** popover in the sidebar and look for the Magpie account rows. The manager normally polls every five minutes. Check that the extension and source are enabled and that Claude or Codex is visible in the usage bar if the rows are missing.
+## Use a remote Magpie
 
-## Quota readings
+In the extension settings, save **Remote Magpie HTTPS address**, then enter a dedicated **Remote Magpie quota key**. Use a read-only key with permission to inspect the desired quotas. The extension contacts the saved HTTPS origin over its scoped network permission, sends the key only with the quota request, and refuses redirects. If you change origins, Persona clears the old key. Clear the remote address to return to the local source.
 
-Persona's gateway transport runs `GET /v1/magpie/quotas?kept=1` against the selected launcher. Magpie serves its saved readings without asking vendors on every poll. The transport uses the launcher key only after an authentication response. The extension receives no key.
-
-The sidebar shows an alias derived from the account identifier using a per-installation secret. The alias stays stable across polls and restarts. It can change if the gateway address or the upstream account identifier changes, or if the extension's data is deleted. The returned rows carry quota percentages, sample and reset times, recognized plan names, and the supported window names. A window with no percentage or known sample time shows no numerical reading. A window without a reset time carries no reset clock. A saved reading retains its original sample time so Persona can age it, and a failed source poll leaves the previous answer marked out of date.
-
-Persona displays subscription allowances only. This connection does not publish emails, raw account labels, prepaid balances, pricing estimates, or token totals.
+Only window percentages, plan labels, sampling and reset times, and opaque per-account aliases are shown in Persona. Missing reset clocks remain absent. A failed refresh retains the last sample with Persona's normal freshness indicators. Account emails, model keys, estimates and usage ledgers stay out of the sidebar.

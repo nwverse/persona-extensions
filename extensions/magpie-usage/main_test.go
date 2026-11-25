@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -39,55 +41,56 @@ func TestProtocol(t *testing.T) {
 }
 
 func TestUsageQuery(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != "GET" || req.URL.Path != quotaPath || req.URL.RawQuery != "kept=1" ||
+			req.Header.Get("Authorization") != "" {
+			t.Error("the local request must read only quotas, without a key")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte(testQuotas))
+	}))
+	defer srv.Close()
+	h := exttest.StartWith(t, manifest, exttest.Serve(t, program()), func(init *wire.InitializeParams) {
+		init.Config, _ = json.Marshal(map[string]string{"local_address": srv.URL})
+		init.Secrets = map[string]string{"magpie_quota_key": "fixture"}
+	})
+	var raw json.RawMessage
+	if err := h.Call("usage.query", map[string]string{"contribution": "magpie", "lang": "en"}, &raw); err != nil {
+		t.Fatal(err)
+	}
+	checkUsage(t, raw)
+}
+
+func TestRemoteAuthentication(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		base   string
-		status []int
-		fails  bool
+		base, key       string
+		remote, allowed bool
 	}{
-		{"keyless loopback", "http://127.0.0.1:3425", []int{200}, false},
-		{"protected loopback", "http://[::1]:3425", []int{401, 200}, false},
-		{"protected HTTPS with prefix", "https://gateway.example.invalid/prefix", []int{403, 200}, false},
-		{"protected cleartext remote", "http://gateway.example.invalid", []int{401}, true},
-		{"not Magpie", "https://gateway.example.invalid", []int{404}, true},
-		{"rejected key", "https://gateway.example.invalid", []int{401, 403}, true},
+		{"https://magpie.example.invalid/prefix", "fixture", true, true},
+		{"https://magpie.example.invalid", "", true, false},
+		{"http://magpie.example.invalid", "fixture", true, false},
+		{"https://127.0.0.1:3425", "fixture", true, false},
+		{"https://magpie.example.invalid", "fixture", false, false},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := exttest.Start(t, manifest, exttest.Serve(t, program()))
-			var requests []quotaRequest
-			h.Answer("usage.http", func(raw json.RawMessage) (any, error) {
-				var req quotaRequest
-				if err := json.Unmarshal(raw, &req); err != nil {
-					return nil, err
-				}
-				requests = append(requests, req)
-				n := len(requests) - 1
-				status := http.StatusInternalServerError
-				if n < len(tc.status) {
-					status = tc.status[n]
-				}
-				return quotaResponse{Status: status, Body: testQuotas}, nil
-			})
-			query := map[string]string{"query_id": "q1", "base_url": tc.base, "contribution": "magpie"}
-			var raw json.RawMessage
-			err := h.Call("usage.query", query, &raw)
-			if (err != nil) != tc.fails || len(requests) != len(tc.status) {
-				t.Fatalf("calls=%d, err=%v", len(requests), err)
+		calls := 0
+		client := &http.Client{Transport: testTransport(func(req *http.Request) (*http.Response, error) {
+			calls++
+			if req.Header.Get("Authorization") != "Bearer fixture" || req.URL.Path != "/prefix"+quotaPath {
+				t.Error("wrong remote scope or authorization")
 			}
-			for i, req := range requests {
-				if req.URL != quotaPath || req.Method != "GET" || req.QueryID != "q1" {
-					t.Fatalf("unexpected request: %+v", req)
-				}
-				if i == 0 && len(req.Headers) != 0 || i == 1 && req.Headers["Authorization"] != "Bearer ${launcher_key}" {
-					t.Fatalf("unexpected authorization in request %d", i)
-				}
-			}
-			if !tc.fails {
-				checkUsage(t, raw)
-			}
-		})
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+		})}
+		_, _, err := fetchQuotas(context.Background(), client, tc.base, tc.remote, tc.key)
+		if (err == nil) != tc.allowed || (calls == 1) != tc.allowed {
+			t.Fatalf("base %s: requests=%d err=%v", tc.base, calls, err)
+		}
 	}
 }
+
+type testTransport func(*http.Request) (*http.Response, error)
+
+func (f testTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func checkUsage(t *testing.T, raw json.RawMessage) {
 	t.Helper()

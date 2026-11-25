@@ -9,6 +9,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -27,19 +28,11 @@ var authorManifest []byte
 
 var manifest = pluginkit.PackagedManifest(authorManifest)
 
-const quotaPath = "/v1/magpie/quotas?kept=1"
-
-type quotaRequest struct {
-	QueryID string            `json:"query_id"`
-	Method  string            `json:"method"`
-	URL     string            `json:"url"`
-	Headers map[string]string `json:"headers,omitempty"`
-}
-
-type quotaResponse struct {
-	Status int    `json:"status"`
-	Body   string `json:"body"`
-}
+const (
+	defaultMagpieURL = "http://127.0.0.1:3425"
+	quotaPath        = "/v1/magpie/quotas"
+	maxQuotaBody     = 4 << 20
+)
 
 type magpieAccount struct {
 	Provider  string         `json:"provider"`
@@ -85,12 +78,28 @@ func main() {
 }
 
 func program() ext.Program {
-	var hub *ext.Hub
+	var base, quotaKey string
+	var remote bool
+	client := &http.Client{
+		Timeout:       15 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
 	var secret []byte
 	return ext.Program{
 		ID: "magpie-usage", Version: "0.1.0", Manifest: manifest,
-		Init: func(_ context.Context, in *ext.Init, h *ext.Hub) (map[string]any, error) {
-			hub = h
+		Init: func(_ context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
+			cfg := struct {
+				Local  string `json:"local_address"`
+				Remote string `json:"remote_address"`
+			}{Local: defaultMagpieURL}
+			if err := in.Config(&cfg); err != nil {
+				return nil, errors.New("invalid Magpie configuration")
+			}
+			base = cfg.Local
+			if strings.TrimSpace(cfg.Remote) != "" {
+				base, remote = cfg.Remote, true
+				quotaKey = strings.TrimSpace(in.Secrets["magpie_quota_key"])
+			}
 			var err error
 			dir := in.Info().DataDir
 			if dir == "" {
@@ -109,26 +118,16 @@ func program() ext.Program {
 			}
 			var p struct {
 				Contribution string `json:"contribution"`
-				QueryID      string `json:"query_id"`
-				BaseURL      string `json:"base_url"`
 				Lang         string `json:"lang"`
 			}
-			if json.Unmarshal(raw, &p) != nil || p.Contribution != "magpie" || p.QueryID == "" || hub == nil {
+			if json.Unmarshal(raw, &p) != nil || p.Contribution != "magpie" {
 				return nil, errors.New("invalid Magpie usage query")
 			}
-			base, err := url.Parse(p.BaseURL)
-			if err != nil || base.Host == "" || base.User != nil || (base.Scheme != "http" && base.Scheme != "https") {
-				return nil, errors.New("invalid Magpie gateway address")
-			}
-			body, err := fetchQuotas(base, p.QueryID, func(req quotaRequest) (quotaResponse, error) {
-				var resp quotaResponse
-				err := hub.Call(ctx, "usage.http", req, &resp)
-				return resp, err
-			})
+			body, scope, err := fetchQuotas(ctx, client, base, remote, quotaKey)
 			if err != nil {
 				return nil, err
 			}
-			accounts, err := mapQuotas(body, secret, base.String(), p.Lang)
+			accounts, err := mapQuotas(body, secret, scope, p.Lang)
 			if err != nil {
 				return nil, err
 			}
@@ -139,25 +138,57 @@ func program() ext.Program {
 	}
 }
 
-func fetchQuotas(base *url.URL, queryID string, send func(quotaRequest) (quotaResponse, error)) (string, error) {
-	// A path relative to the launcher's gateway root also works behind a reverse proxy with a path prefix.
-	req := quotaRequest{QueryID: queryID, Method: http.MethodGet, URL: quotaPath}
-	resp, err := send(req)
-	if err != nil {
-		return "", errors.New("cannot read Magpie subscription usage")
+func fetchQuotas(ctx context.Context, client *http.Client, base string, remote bool, key string) (string, string, error) {
+	u, err := url.Parse(strings.TrimSpace(base))
+	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return "", "", errors.New("invalid Magpie address")
 	}
-	if resp.Status == http.StatusUnauthorized || resp.Status == http.StatusForbidden {
-		host := strings.ToLower(base.Hostname())
-		if base.Scheme != "https" && host != "localhost" && !net.ParseIP(host).IsLoopback() {
-			return "", errors.New("a protected remote Magpie gateway needs HTTPS")
+	host := strings.ToLower(u.Hostname())
+	local := host == "host.persona.internal" || host == "localhost" || net.ParseIP(host).IsLoopback()
+	switch {
+	case !remote && local && (u.Scheme == "http" || u.Scheme == "https"):
+		key = "" // an optional remote key must never go to the host's local service
+	case remote && !local && u.Scheme == "https" && key != "":
+	case remote:
+		return "", "", errors.New("remote Magpie requires HTTPS and a dedicated quota key")
+	default:
+		return "", "", errors.New("local Magpie requires a loopback address")
+	}
+	u.Path = strings.TrimSuffix(strings.TrimRight(u.Path, "/"), "/v1")
+	u.RawPath = ""
+	scope := u.String()
+	if host == "host.persona.internal" {
+		// The sandbox's proxy dials the host's 127.0.0.1. Keep the same alias when the sandbox is toggled.
+		loopback := *u
+		loopback.Host = "127.0.0.1"
+		if u.Port() != "" {
+			loopback.Host += ":" + u.Port()
 		}
-		req.Headers = map[string]string{"Authorization": "Bearer ${launcher_key}"}
-		resp, err = send(req)
+		scope = loopback.String()
 	}
-	if err != nil || resp.Status != http.StatusOK {
-		return "", errors.New("Magpie quota endpoint did not return usage")
+	u.Path += quotaPath
+	u.RawQuery = "kept=1"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return "", "", errors.New("invalid Magpie quota request")
 	}
-	return resp.Body, nil
+	req.Header.Set("Accept", "application/json")
+	if key != "" {
+		req.Header.Set("Authorization", "Bearer "+key)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", "", errors.New("cannot reach Magpie for subscription usage")
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", "", errors.New("Magpie quota endpoint did not return usage")
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxQuotaBody+1))
+	if err != nil || len(body) > maxQuotaBody {
+		return "", "", errors.New("invalid Magpie quota response body")
+	}
+	return string(body), scope, nil
 }
 
 func mapQuotas(body string, secret []byte, scope, lang string) ([]account, error) {
