@@ -6,11 +6,11 @@ import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { connect, type Program } from "@persona/extension";
 import type { Snapshot } from "@persona/extension/ui";
-import { Fixture, interaction, until } from "./fixtures.ts";
-async function setup(initialize = true) {
+import { Fixture, interaction, productPath, productResponse, searchPath, searchResponse, until } from "./fixtures.ts";
+async function setup(initialize = true, options: Record<string, unknown> = {}) {
   const bundle = await import(pathToFileURL(resolve("build/foodfacts.mjs")).href);
   const fixture = new Fixture(), frames: any[] = [];
-  const p = connect(bundle.createProgram(fixture.fetch, { now: () => fixture.clock, monotonic: () => fixture.clock, limits: { gap: 0 } }) as Program, line => frames.push(JSON.parse(line)));
+  const p = connect(bundle.createProgram(fixture.fetch, { now: () => fixture.clock, monotonic: () => fixture.clock, limits: { gap: 0 }, ...options }) as Program, line => frames.push(JSON.parse(line)));
   let id = 0;
   const call = async (method: string, params: unknown = {}) => {
     const request = String(++id); p.line(JSON.stringify({ id: request, method, params })); await p.drain();
@@ -122,5 +122,71 @@ test("invalid state cannot trigger arbitrary requests; pure snapshots are suppor
     const pure = h.bundle.snapshotPage(local);
     const view = await pure.render({ contribution: "products", locale: "en", ui_version: 1, hub: {}, state: h.bundle.encodeState({ q: "chocolate", found: true }) });
     assert.ok(JSON.stringify(view).includes("Nutella"));
+  } finally { h.p.close(); }
+});
+
+test("long ingredients stay within CheckView 2000-char text limits and barcode refreshes surface stale notices", async () => {
+  const h = await setup();
+  try {
+    const longIngredients = "🍫 " + "organic cocoa butter, cane sugar, roasted hazelnuts, ".repeat(60);
+    h.fixture.put(productPath, { ...productResponse, product: { ...productResponse.product, ingredients_text: longIngredients } });
+    await h.call("ui.page.mount", { session: "long", params: { contribution: "products", locale: "en", ui_version: 5 } });
+    const initial = await settled(h, "long", "foodfacts-welcome-text");
+    await h.call("ui.page.event", { session: "long", ticket: "host-ticket", interaction: interaction(initial, "foodfacts-submit", { query: "3017620422003" }) });
+    const snapshot = await settled(h, "long", "Nutella");
+    for (const section of snapshot.view.sections) {
+      for (const item of section.items) {
+        if (item.type === "text") {
+          assert.ok(Array.from(item.text).length <= 2000, `Text component ${item.key} exceeds 2000 chars: ${Array.from(item.text).length}`);
+          assert.equal(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(item.text), false, `Text component ${item.key} contains lone UTF-16 surrogates`);
+        }
+      }
+    }
+    h.fixture.put(productPath, {}, { status: 503 });
+    await h.call("ui.page.event", { session: "long", ticket: "host-ticket", interaction: interaction(snapshot, "foodfacts-refresh") });
+    const staleSnap = await settled(h, "long", "foodfacts-stale-text");
+    assert.ok(body(staleSnap).includes("HTTP 503"));
+  } finally { h.p.close(); }
+});
+
+test("connector.tools.call rejects explicit limit 0 and non-integer limits and localizes tool timeouts", async () => {
+  const h = await setup(true, { limits: { gap: 0, request: 500, tool: 20 } });
+  try {
+    for (const args of [{ query: "chocolate", limit: 0 }, { query: "chocolate", limit: 1.5 }, { query: "chocolate", limit: "5" }, "bad"]) {
+      const res = await h.call("connector.tools.call", { name: "foodfacts_search", args });
+      assert.equal(res.error?.code, "invalid", `expected invalid for args=${JSON.stringify(args)}, got ${JSON.stringify(res)}`);
+    }
+    // Raw JSON-line ExactJSON lexical edge cases that JSON.stringify would mask.
+    let rawId = 100;
+    const rawCall = async (argsJSON: string, name = "foodfacts_search") => {
+      const id = `raw-${++rawId}`;
+      h.p.line(`{"id":"${id}","method":"connector.tools.call","params":{"name":"${name}","args":${argsJSON}}}`);
+      await h.p.drain();
+      const frame = h.frames.find(frame => frame.id === id);
+      assert.ok(frame);
+      return frame;
+    };
+    for (const bad of [
+      '{"query":"chocolate","limit":0}',
+      '{"query":"chocolate","limit":1.0}',
+      '{"query":"chocolate","limit":1e1}',
+      '{"query":"chocolate","limit":1.0000000000000001}',
+      '{"query":"chocolate","limit":9223372036854775808}',
+      '{"query":"chocolate","limit":1.5,"limit":5}',
+    ]) {
+      const res = await rawCall(bad);
+      assert.equal(res.error?.code, "invalid", `expected invalid for raw args=${bad}, got ${JSON.stringify(res)}`);
+    }
+    const nullLimit = await rawCall('{"query":"chocolate","limit":null}');
+    assert.ok(nullLimit.result?.text?.includes("Nutella"), `expected default limit for null, got ${JSON.stringify(nullLimit)}`);
+    h.fixture.put(searchPath.replace("page_size=12", "page_size=5"), searchResponse);
+    const keepPriorLimit = await rawCall('{"query":"chocolate","limit":5,"limit":null}');
+    assert.ok(keepPriorLimit.result?.text?.includes("Nutella"), `expected prior limit preserved on trailing null, got ${JSON.stringify(keepPriorLimit)}`);
+    const unknown = await rawCall('"bad"', "unknown");
+    assert.equal(unknown.error?.code, "unknown_method");
+
+    h.fixture.put(searchPath.replace("chocolate", "hazelnut").replace("page_size=12", "page_size=10"), searchResponse, { delay: 500 });
+    const slow = await h.call("connector.tools.call", { name: "foodfacts_search", args: { query: "hazelnut" } });
+    assert.ok(slow.error?.message?.includes("took too long"), `expected localized slow error, got ${JSON.stringify(slow)}`);
   } finally { h.p.close(); }
 });

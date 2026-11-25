@@ -156,3 +156,118 @@ func TestConfiguredNameNotFound(t *testing.T) {
 	says(t, v, "## 不存在的城市", "没搜到", "纬度,经度", "重试")
 	saysNot(t, v, "0°C")
 }
+
+func TestPickerFallsBackToRowsWhenOverSegmentedLimits(t *testing.T) {
+	t.Run("more than 5 cities", func(t *testing.T) {
+		f := newFakeSite(t)
+		sample(t, f)
+		a := testApp(t, f, `{"cities": ["上海", "北京 39.9,116.4", "广州 23.13,113.26", "深圳 22.54,114.06", "杭州 30.27,120.15", "成都 30.57,104.07"]}`)
+		v := draw(t, a, 3, nil)
+		saysNot(t, v, "segmented")
+		says(t, v, "## 城市", "## 上海")
+		row := findRow(v, "成都")
+		if row == nil || row.Action == nil {
+			t.Fatalf("missing row for 成都 in:\n%s", texts(v))
+		}
+		// Simulate UI version 3, which does not send Action.Values (x-since: 4).
+		v = tap(t, a, 3, v, row.Action.ID, nil)
+		says(t, v, "## 成都")
+		saysNot(t, v, "## 上海")
+	})
+
+	t.Run("city name over 12 runes", func(t *testing.T) {
+		f := newFakeSite(t)
+		sample(t, f)
+		a := testApp(t, f, `{"cities": ["上海", "San Francisco 37.77,-122.42"]}`)
+		v := draw(t, a, 3, nil)
+		saysNot(t, v, "segmented")
+		says(t, v, "## 城市", "## 上海")
+		row := findRow(v, "San Francisco")
+		if row == nil || row.Action == nil {
+			t.Fatalf("missing row for San Francisco in:\n%s", texts(v))
+		}
+		v = tap(t, a, 3, v, row.Action.ID, nil)
+		says(t, v, "## San Francisco")
+		saysNot(t, v, "## 上海")
+
+		// UI v4+ passes row.Action.Values; verify tapping back to 上海 works with Values populated.
+		shRow := findRow(v, "上海")
+		if shRow == nil || shRow.Action == nil {
+			t.Fatalf("missing row for 上海 in:\n%s", texts(v))
+		}
+		v = tap(t, a, 4, v, shRow.Action.ID, shRow.Action.Values)
+		says(t, v, "## 上海")
+		saysNot(t, v, "## San Francisco")
+
+		// UI v1 also uses row fallback without Action.Values.
+		v1 := draw(t, a, 1, nil)
+		sfRow1 := findRow(v1, "San Francisco")
+		if sfRow1 == nil || sfRow1.Action == nil {
+			t.Fatalf("missing UI v1 row for San Francisco in:\n%s", texts(v1))
+		}
+		v1 = tap(t, a, 1, v1, sfRow1.Action.ID, nil)
+		says(t, v1, "## San Francisco")
+	})
+
+	t.Run("multi-byte 12-rune vs 13-rune CJK boundary", func(t *testing.T) {
+		f := newFakeSite(t)
+		sample(t, f)
+		// 12 CJK runes (36 UTF-8 bytes) still fit segmented control.
+		twelve := "新疆维吾尔自治区乌鲁木齐"
+		a := testApp(t, f, `{"cities": ["上海", "`+twelve+` 43.82,87.62"]}`)
+		v := draw(t, a, 3, nil)
+		says(t, v, "segmented", "<"+twelve+":"+twelve+">")
+
+		// 13 CJK runes exceed the 12-rune segmented limit and fall back to rows.
+		thirteen := "新疆维吾尔自治区乌鲁木齐市"
+		b := testApp(t, f, `{"cities": ["上海", "`+thirteen+` 43.82,87.62"]}`)
+		v2 := draw(t, b, 3, nil)
+		saysNot(t, v2, "segmented")
+		says(t, v2, "## 城市")
+		if row := findRow(v2, thirteen); row == nil || row.Action == nil {
+			t.Fatalf("missing row for %s in:\n%s", thirteen, texts(v2))
+		}
+	})
+
+	t.Run("invalid city actions and whitespace values leave selection unchanged", func(t *testing.T) {
+		f := newFakeSite(t)
+		sample(t, f)
+		a := testApp(t, f, `{"cities": ["上海", "San Francisco 37.77,-122.42"]}`)
+		v := draw(t, a, 3, &pageState{City: "San Francisco"})
+		says(t, v, "## San Francisco")
+
+		for _, tc := range []struct {
+			id     string
+			values map[string]string
+		}{
+			{"city", map[string]string{"city": "   "}},
+			{"city", map[string]string{"city": "不存在"}},
+			{"city:0", map[string]string{"city": "不存在"}},
+			{"city:-1", nil},
+			{"city:abc", nil},
+			{"city:999", nil},
+			{"city:", nil},
+		} {
+			got := tap(t, a, 3, v, tc.id, tc.values)
+			says(t, got, "## San Francisco")
+			if st := stateOf(t, got.State); st.City != "San Francisco" {
+				t.Errorf("action %q values %v corrupted state: %+v", tc.id, tc.values, st)
+			}
+		}
+
+		// Whitespace around a valid city name stores canonical trimmed state.
+		got := tap(t, a, 3, v, "city", map[string]string{"city": " 上海 "})
+		says(t, got, "## 上海")
+		if st := stateOf(t, got.State); st.City != "上海" {
+			t.Errorf("expected canonical trimmed state 上海, got %+v", st)
+		}
+	})
+
+	t.Run("5 cities within 12 runes still uses segmented", func(t *testing.T) {
+		f := newFakeSite(t)
+		sample(t, f)
+		a := testApp(t, f, `{"cities": ["上海", "北京 39.9,116.4", "广州 23.13,113.26", "深圳 22.54,114.06", "123456789012 30.27,120.15"]}`)
+		v := draw(t, a, 3, nil)
+		says(t, v, "segmented", "<123456789012:123456789012>")
+	})
+}

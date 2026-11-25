@@ -3,6 +3,7 @@ package wechat
 import (
 	"bytes"
 	"context"
+	"crypto/md5"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -74,13 +75,28 @@ type fakeILink struct {
 	downloads map[string][]byte
 	// failSends: how many sendmessage calls to keep and then answer HTTP 500 (the answer lost on the way back).
 	failSends int
+	// sendID is the server message_id answered for a successful send.
+	sendID string
 	// failedSend signals that a scripted HTTP 500 response has been written, before the retry wait.
 	failedSend chan struct{}
-	clientIDs  []string        // every sendmessage's client_id, repeated ones too
-	kept       map[string]bool // client_ids iLink has: a repeat is not posted again
+	clientIDs  []string          // every sendmessage's client_id, repeated ones too
+	kept       map[string]bool   // client_ids iLink has: a repeat is not posted again
+	uploadReq  []map[string]any  // getuploadurl's requests
+	uploads    map[string][]byte // what the CDN took, by the download reference it answered
+	pictures   []sentPicture
+	// failUploads: how many CDN uploads to answer HTTP 500, once okUploads uploads were kept.
+	failUploads int
+	okUploads   int
 }
 
 type sentText struct{ To, Context, Text string }
+
+// sentPicture is an image_item the bot sent: where its picture is and its key as sent (base64 of the hex key).
+type sentPicture struct {
+	To, Context, Query, AESKey string
+	ItemKey                    string // the image_item's own aeskey: the hex key
+	EncryptType, MidSize       float64
+}
 
 func newFakeILink(t *testing.T) *fakeILink {
 	f := &fakeILink{t: t}
@@ -98,8 +114,9 @@ func (f *fakeILink) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 	var body map[string]any
-	if b, _ := io.ReadAll(r.Body); len(b) > 0 {
-		_ = json.Unmarshal(b, &body)
+	raw, _ := io.ReadAll(r.Body)
+	if len(raw) > 0 {
+		_ = json.Unmarshal(raw, &body)
 	}
 	out := map[string]any{"ret": 0}
 	f.mu.Lock()
@@ -135,8 +152,15 @@ func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 			}
 			f.kept[id] = true
 			item := msg["item_list"].([]any)[0].(map[string]any)
-			f.sent = append(f.sent, sentText{To: msg["to_user_id"].(string), Context: msg["context_token"].(string),
-				Text: item["text_item"].(map[string]any)["text"].(string)})
+			if pic, ok := item["image_item"].(map[string]any); ok {
+				media := pic["media"].(map[string]any)
+				f.pictures = append(f.pictures, sentPicture{To: msg["to_user_id"].(string), Context: msg["context_token"].(string),
+					Query: media["encrypt_query_param"].(string), AESKey: media["aes_key"].(string), ItemKey: fmt.Sprint(pic["aeskey"]),
+					EncryptType: media["encrypt_type"].(float64), MidSize: pic["mid_size"].(float64)})
+			} else {
+				f.sent = append(f.sent, sentText{To: msg["to_user_id"].(string), Context: msg["context_token"].(string),
+					Text: item["text_item"].(map[string]any)["text"].(string)})
+			}
 		}
 		if f.failSends > 0 {
 			f.failSends--
@@ -147,6 +171,9 @@ func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 				failed <- struct{}{}
 			}
 			return
+		}
+		if f.sendID != "" {
+			out["message_id"] = f.sendID
 		}
 	case "/ilink/bot/getconfig":
 		out["typing_ticket"] = "TT"
@@ -160,6 +187,27 @@ func (f *fakeILink) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		_, _ = w.Write(data)
+		return
+	case "/ilink/bot/getuploadurl":
+		f.uploadReq = append(f.uploadReq, body)
+		out["upload_param"] = "UP-" + strconv.Itoa(len(f.uploadReq))
+	case "/c2c/upload":
+		if f.okUploads > 0 {
+			f.okUploads--
+		} else if f.failUploads > 0 {
+			f.failUploads--
+			f.mu.Unlock()
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		ref := "DL-" + r.URL.Query().Get("encrypted_query_param") + "-" + r.URL.Query().Get("filekey")
+		if f.uploads == nil {
+			f.uploads = map[string][]byte{}
+		}
+		f.uploads[ref] = raw
+		f.mu.Unlock()
+		w.Header().Set("x-encrypted-param", ref)
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	f.mu.Unlock()
@@ -184,6 +232,33 @@ func (f *fakeILink) say(from, text string, items ...map[string]any) {
 	defer f.mu.Unlock()
 	f.queue = append(f.queue, map[string]any{"message_id": id, "from_user_id": from, "context_token": "ctx-" + strconv.Itoa(id),
 		"message_type": 1, "item_list": items})
+}
+
+// sentPictures are the image_items the bot sent, with the picture each names decrypted by the key it sent.
+func (f *fakeILink) sentPictures(t *testing.T) ([]sentPicture, [][]byte) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var plain [][]byte
+	for _, p := range f.pictures {
+		keyHex, err := base64.StdEncoding.DecodeString(p.AESKey)
+		if err != nil {
+			t.Fatalf("aes_key %q: %v", p.AESKey, err)
+		}
+		key, err := hex.DecodeString(string(keyHex))
+		if err != nil || len(key) != 16 {
+			t.Fatalf("aes_key is not base64 of a hex key: %q", keyHex)
+		}
+		if p.ItemKey != string(keyHex) { // a receiver reads an image's key from its aeskey, as message.go does
+			t.Fatalf("image_item aeskey %q, want the hex key %q", p.ItemKey, keyHex)
+		}
+		data, err := ilink.DecryptECB(f.uploads[p.Query], key)
+		if err != nil {
+			t.Fatalf("picture %s: %v", p.Query, err)
+		}
+		plain = append(plain, data)
+	}
+	return append([]sentPicture(nil), f.pictures...), plain
 }
 
 func (f *fakeILink) texts() []sentText {
@@ -242,7 +317,7 @@ func newRig(t *testing.T, bound bool) *rig {
 		data, _ := json.Marshal(st)
 		r.secrets.data = data
 	}
-	r.bot = New(Options{Hub: r.hub, Agent: "Persona/test", Now: r.clock.now,
+	r.bot = New(Options{Hub: r.hub, Agent: "Persona/test", Now: r.clock.now, DataDir: t.TempDir(),
 		NewClient: func(base, token string) (*ilink.Client, error) {
 			return ilink.New(ilink.Options{BaseURL: base, Token: token, Agent: "Persona/test", HTTP: &http.Client{Transport: r.ilink}})
 		}}, r.secrets)
@@ -519,7 +594,7 @@ func TestMessageMediaBudget(t *testing.T) {
 			FileName: fmt.Sprintf("%d.pdf", i), Size: int64(len(plain))}
 	}
 	media[5].Size = 0 // the fifth file is still downloaded, then rejected by the decrypted-size guard
-	got := (&Bot{}).compose(context.Background(), c, ilink.Message{Media: media})
+	got := (&Bot{}).compose(context.Background(), c, owner, ilink.Message{Media: media})
 	if len(got.Images) != 1 || len(got.Files) != 4 || len(got.Unsupported) != 3 ||
 		got.Unsupported[0] != "文件「4.pdf」" || got.Unsupported[1] != "文件「5.pdf」" || got.Unsupported[2] != "文件「6.pdf」" {
 		t.Fatalf("budget handed %d images, %d files and %d unsupported, want 1, 4 and 3", len(got.Images), len(got.Files), len(got.Unsupported))
@@ -735,5 +810,399 @@ func TestTextInTheUsersLanguage(t *testing.T) {
 	c := &ilink.Credentials{UserID: "owner-fixture@example.invalid"}
 	if got := account(langEn, c); got != "WeChat user ixture" {
 		t.Fatal(got)
+	}
+}
+
+// channel.send with pictures (images_out): the text first, then each picture encrypted with a fresh key, uploaded to
+// the CDN where getuploadurl says and sent as an image_item naming it; an upload that fails is tried again; the same
+// ref again posts nothing twice; pictures alone go without text.
+func TestSendSendsPicturesAfterTheText(t *testing.T) {
+	wait := sendRetryWait
+	sendRetryWait = time.Millisecond
+	t.Cleanup(func() { sendRetryWait = wait })
+	r := newRig(t, true)
+	ctx := context.Background()
+	r.ilink.say(owner, "在吗")
+	eventually(t, "the message at the hub", func() bool { return len(r.hub.got()) == 1 })
+	eventually(t, "serving", func() bool { return r.bot.Status(ctx).State == wire.ConnectorStateOk })
+	pic1 := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{7}, 100)...)
+	pic2 := []byte("\xff\xd8\xff a second picture")
+	b64 := base64.StdEncoding.EncodeToString
+	r.ilink.mu.Lock()
+	r.ilink.failUploads = 1
+	r.ilink.mu.Unlock()
+	p := wire.ChannelSendParams{Ref: "run-7:3", Text: "图在这里", Kind: wire.ChannelSendKindAnswer,
+		Images: []wire.ChannelBlob{{Mime: "image/png", Data: b64(pic1)}, {Mime: "image/jpeg", Data: b64(pic2)}}}
+	if _, err := r.bot.Send(ctx, p); err != nil {
+		t.Fatal(err)
+	}
+	r.sentTo(owner, "图在这里")
+	pics, plain := r.ilink.sentPictures(t)
+	if len(pics) != 2 || !bytes.Equal(plain[0], pic1) || !bytes.Equal(plain[1], pic2) {
+		t.Fatalf("sent %d pictures", len(pics))
+	}
+	r.ilink.mu.Lock()
+	reqs := slices.Clone(r.ilink.uploadReq)
+	for _, pic := range pics {
+		if pic.To != owner || pic.Context == "" || pic.EncryptType != 1 || int(pic.MidSize) != len(r.ilink.uploads[pic.Query]) {
+			t.Errorf("picture %+v", pic)
+		}
+	}
+	r.ilink.mu.Unlock()
+	if len(reqs) != 3 { // the first picture's failed upload is tried again with a new upload URL
+		t.Fatalf("%d getuploadurl calls", len(reqs))
+	}
+	for i, req := range reqs {
+		src := [][]byte{pic1, pic1, pic2}[i]
+		sum := md5.Sum(src)
+		if req["media_type"] != float64(1) || req["to_user_id"] != owner || req["rawsize"] != float64(len(src)) ||
+			req["rawfilemd5"] != hex.EncodeToString(sum[:]) || req["filesize"] != float64((len(src)/16+1)*16) ||
+			req["no_need_thumb"] != true || len(req["aeskey"].(string)) != 32 || len(req["filekey"].(string)) != 32 {
+			t.Errorf("getuploadurl %v", req)
+		}
+	}
+
+	if _, err := r.bot.Send(ctx, p); err != nil { // the hub sends the same ref again: iLink keeps each once
+		t.Fatal(err)
+	}
+	if pics, _ := r.ilink.sentPictures(t); len(pics) != 2 {
+		t.Fatalf("the same ref again posted %d pictures", len(pics))
+	}
+
+	alone := wire.ChannelSendParams{Ref: "run-8:1", Kind: wire.ChannelSendKindAnswer, Images: []wire.ChannelBlob{{Mime: "image/png", Data: b64(pic1)}}}
+	texts := len(r.ilink.texts())
+	if _, err := r.bot.Send(ctx, alone); err != nil {
+		t.Fatal(err)
+	}
+	if pics, _ := r.ilink.sentPictures(t); len(pics) != 3 || len(r.ilink.texts()) != texts {
+		t.Fatalf("pictures alone: %d pictures, %d texts", len(pics), len(r.ilink.texts())-texts)
+	}
+}
+
+// A picture that can't be sent at all (not base64) is skipped; one WeChat keeps refusing fails the send, which the
+// hub tries again with the same ref.
+func TestSendPictureFailures(t *testing.T) {
+	wait := sendRetryWait
+	sendRetryWait = time.Millisecond
+	t.Cleanup(func() { sendRetryWait = wait })
+	r := newRig(t, true)
+	ctx := context.Background()
+	r.ilink.say(owner, "在吗")
+	eventually(t, "the message at the hub", func() bool { return len(r.hub.got()) == 1 })
+	eventually(t, "serving", func() bool { return r.bot.Status(ctx).State == wire.ConnectorStateOk })
+	if _, err := r.bot.Send(ctx, wire.ChannelSendParams{Ref: "a", Text: "坏图", Kind: wire.ChannelSendKindAnswer,
+		Images: []wire.ChannelBlob{{Mime: "image/png", Data: "not base64!"}}}); err != nil {
+		t.Fatalf("an undecodable picture: %v", err)
+	}
+	r.ilink.mu.Lock()
+	r.ilink.failUploads = 100
+	r.ilink.mu.Unlock()
+	_, err := r.bot.Send(ctx, wire.ChannelSendParams{Ref: "b", Kind: wire.ChannelSendKindAnswer,
+		Images: []wire.ChannelBlob{{Mime: "image/png", Data: base64.StdEncoding.EncodeToString([]byte("png"))}}})
+	var failed sendFailed
+	if !errors.As(err, &failed) {
+		t.Fatalf("a refused upload: %v", err)
+	}
+	if pics, _ := r.ilink.sentPictures(t); len(pics) != 0 {
+		t.Fatalf("sent %d pictures", len(pics))
+	}
+	r.ilink.mu.Lock()
+	tries := 100 - r.ilink.failUploads
+	r.ilink.mu.Unlock()
+	if tries != 3 { // three tries in all, each after a wait: no burst of uploads within a try
+		t.Fatalf("the CDN got %d uploads of a refused picture, want 3", tries)
+	}
+}
+
+// iLink's calls so far: every sendmessage (repeated client_ids too), getuploadurl, and CDN upload the CDN took.
+func (f *fakeILink) calls() (sends, uploadURLs, uploads int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.clientIDs), len(f.uploadReq), len(f.uploads)
+}
+
+// pictureSendRig is a bound, serving bot with the fast retries of the picture tests.
+func pictureSendRig(t *testing.T) *rig {
+	t.Helper()
+	wait := sendRetryWait
+	sendRetryWait = time.Millisecond
+	t.Cleanup(func() { sendRetryWait = wait })
+	r := newRig(t, true)
+	r.ilink.say(owner, "在吗")
+	eventually(t, "the message at the hub", func() bool { return len(r.hub.got()) == 1 })
+	eventually(t, "serving", func() bool { return r.bot.Status(context.Background()).State == wire.ConnectorStateOk })
+	return r
+}
+
+func (r *rig) progressOf(ref string) (sendProgress, bool) {
+	r.bot.mu.Lock()
+	defer r.bot.mu.Unlock()
+	if pr, ok := r.bot.progress[ref]; ok {
+		return *pr, true
+	}
+	return sendProgress{}, false
+}
+
+var testPicture = func(n byte) wire.ChannelBlob {
+	data := append([]byte("\x89PNG\r\n\x1a\n"), bytes.Repeat([]byte{n}, 64)...)
+	return wire.ChannelBlob{Mime: "image/png", Data: base64.StdEncoding.EncodeToString(data)}
+}
+
+// A send of text and two pictures whose second picture is refused fails; the same ref sent again goes on from that
+// picture: the text and the first picture are not sent, uploaded or asked an upload URL for again. Counted from what
+// iLink was asked, not from its keeping a client_id once.
+func runResumeScenario(t *testing.T, r *rig, ref string, send func(wire.ChannelSendParams) error) {
+	t.Helper()
+	p := wire.ChannelSendParams{Ref: ref, ReplyTo: "message:7", Text: "看图", Kind: wire.ChannelSendKindAnswer,
+		Images: []wire.ChannelBlob{testPicture(1), testPicture(2)}}
+	r.ilink.mu.Lock()
+	r.ilink.okUploads, r.ilink.failUploads = 1, 3 // the first picture goes; the second is refused on all three tries
+	r.ilink.mu.Unlock()
+	if err := send(p); err == nil {
+		t.Fatal("the first send should fail: the second picture is refused")
+	}
+	sends, urls, ups := r.ilink.calls()
+	if sends != 2 || urls != 4 || ups != 1 { // the text and picture 1 sent; picture 1 and picture 2's three tries asked
+		t.Fatalf("after the failure: %d sendmessage, %d getuploadurl, %d uploads", sends, urls, ups)
+	}
+	if pr, ok := r.progressOf(ref); !ok || pr != (sendProgress{parts: 1, images: 2, partsDone: 1, imagesDone: 1}) {
+		t.Fatalf("progress after the failure: %+v %v", pr, ok)
+	}
+	logs := captureLog(t)
+	if err := send(p); err != nil { // the hub sends the same ref again
+		t.Fatal(err)
+	}
+	sends2, urls2, ups2 := r.ilink.calls()
+	if sends2-sends != 1 || urls2-urls != 1 || ups2-ups != 1 { // only picture 2
+		t.Fatalf("the retry made %d sendmessage, %d getuploadurl, %d uploads calls, want one of each (picture 2)",
+			sends2-sends, urls2-urls, ups2-ups)
+	}
+	if pics, _ := r.ilink.sentPictures(t); len(pics) != 2 || len(r.ilink.texts()) != 1 {
+		t.Fatalf("iLink holds %d pictures and %d texts", len(pics), len(r.ilink.texts()))
+	}
+	if _, ok := r.progressOf(ref); ok {
+		t.Fatal("progress is kept after the send went through")
+	}
+	if !strings.Contains(logs.String(), `ref="`+ref+`" resume text=1/1 image=1/2`) {
+		t.Fatalf("no resume log: %q", logs.String())
+	}
+}
+
+func TestSendResumesAtTheFailedPicture(t *testing.T) {
+	r := pictureSendRig(t)
+	runResumeScenario(t, r, "run-9:1", func(p wire.ChannelSendParams) error {
+		_, err := r.bot.Send(context.Background(), p)
+		return err
+	})
+}
+
+// The same through the program's channel.send, where sentRefs lets a failed ref go again.
+func TestProgramResumesAtTheFailedPicture(t *testing.T) {
+	r := pictureSendRig(t)
+	p := &program{bot: r.bot}
+	runResumeScenario(t, r, "run-9:2", func(sp wire.ChannelSendParams) error {
+		sp.Contribution = ID
+		params, _ := json.Marshal(sp)
+		_, err := p.channel(context.Background(), "send", params)
+		return err
+	})
+}
+
+// A ref sent again with another number of pictures (or of pieces) is another message: it goes from the start.
+func TestSendOfChangedContentStartsOver(t *testing.T) {
+	r := pictureSendRig(t)
+	ctx := context.Background()
+	ref := "run-10:1"
+	r.ilink.mu.Lock()
+	r.ilink.okUploads, r.ilink.failUploads = 1, 3
+	r.ilink.mu.Unlock()
+	two := wire.ChannelSendParams{Ref: ref, Text: "看图", Kind: wire.ChannelSendKindAnswer, Images: []wire.ChannelBlob{testPicture(1), testPicture(2)}}
+	if _, err := r.bot.Send(ctx, two); err == nil {
+		t.Fatal("the first send should fail")
+	}
+	sends, urls, ups := r.ilink.calls()
+	logs := captureLog(t)
+	one := two
+	one.Images = two.Images[:1]
+	if _, err := r.bot.Send(ctx, one); err != nil {
+		t.Fatal(err)
+	}
+	sends2, urls2, ups2 := r.ilink.calls()
+	if sends2-sends != 2 || urls2-urls != 1 || ups2-ups != 1 { // the text and the picture again
+		t.Fatalf("changed content: %d sendmessage, %d getuploadurl, %d uploads, want 2, 1, 1", sends2-sends, urls2-urls, ups2-ups)
+	}
+	if strings.Contains(logs.String(), "resume") {
+		t.Fatalf("a changed send resumed: %q", logs.String())
+	}
+	if _, ok := r.progressOf(ref); ok {
+		t.Fatal("progress is kept after the send went through")
+	}
+
+	// Another number of text pieces.
+	long := wire.ChannelSendParams{Ref: "run-10:2", Text: strings.Repeat("answer-body-", 300), Kind: wire.ChannelSendKindAnswer,
+		Images: []wire.ChannelBlob{testPicture(3)}}
+	r.ilink.mu.Lock()
+	r.ilink.failUploads = 3
+	r.ilink.mu.Unlock()
+	if _, err := r.bot.Send(ctx, long); err == nil {
+		t.Fatal("the long send should fail")
+	}
+	if pr, ok := r.progressOf("run-10:2"); !ok || pr.partsDone != 2 || pr.parts != 2 || pr.imagesDone != 0 {
+		t.Fatalf("progress %+v %v", pr, ok)
+	}
+	short := long
+	short.Text = "short"
+	before, _, _ := r.ilink.calls()
+	if _, err := r.bot.Send(ctx, short); err != nil {
+		t.Fatal(err)
+	}
+	if after, _, _ := r.ilink.calls(); after-before != 2 { // its one piece and its picture, none skipped as done
+		t.Fatalf("changed piece count: %d sendmessage calls, want 2", after-before)
+	}
+}
+
+// Progress is bounded: past progressMost refs the oldest is dropped (its send starts over); a ref seen again does not
+// take another place.
+func TestSendProgressKeepsTheLatestRefs(t *testing.T) {
+	b := New(Options{}, &memSecrets{})
+	for i := range progressMost + 1 {
+		b.noteSent("ref-"+strconv.Itoa(i), 1, 1, 1, 0)
+	}
+	b.noteSent("ref-"+strconv.Itoa(progressMost), 1, 1, 1, 1) // seen again
+	if len(b.progress) != progressMost || len(b.progressOrder) != progressMost {
+		t.Fatalf("%d refs kept, %d in order, want %d", len(b.progress), len(b.progressOrder), progressMost)
+	}
+	if d, i := b.resume("ref-0", 1, 1); d != 0 || i != 0 {
+		t.Fatalf("the oldest ref is kept: %d %d", d, i)
+	}
+	if d, i := b.resume("ref-1", 1, 1); d != 1 || i != 0 {
+		t.Fatalf("the second oldest ref: %d %d", d, i)
+	}
+	if d, i := b.resume("ref-"+strconv.Itoa(progressMost), 1, 1); d != 1 || i != 1 {
+		t.Fatalf("the newest ref: %d %d", d, i)
+	}
+	if d, i := b.resume("ref-2", 1, 2); d != 0 || i != 0 || len(b.progress) != progressMost-1 || len(b.progressOrder) != progressMost-1 {
+		t.Fatalf("a changed ref is dropped: %d %d, %d kept", d, i, len(b.progress))
+	}
+	b.noteSent("", 1, 1, 1, 1)
+	if len(b.progress) != progressMost-1 {
+		t.Fatal("progress kept without a ref")
+	}
+}
+
+// Without a ref (the bot's own messages) nothing is kept, and a send that fails stays as it was.
+func TestSendWithoutARefKeepsNoProgress(t *testing.T) {
+	r := pictureSendRig(t)
+	r.ilink.mu.Lock()
+	r.ilink.okUploads, r.ilink.failUploads = 1, 3
+	r.ilink.mu.Unlock()
+	p := wire.ChannelSendParams{Text: "看图", Kind: wire.ChannelSendKindAnswer, Images: []wire.ChannelBlob{testPicture(1), testPicture(2)}}
+	if _, err := r.bot.Send(context.Background(), p); err == nil {
+		t.Fatal("the send should fail")
+	}
+	r.bot.mu.Lock()
+	n := len(r.bot.progress)
+	r.bot.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("%d refs kept for a send without a ref", n)
+	}
+}
+
+// Each picture gets one final send log like a text piece's (image=i/n for part=i/n): success, failure with its error
+// type, skipped with why, and cancelled; none holds the picture.
+func TestSendLogsEachPicture(t *testing.T) {
+	r := pictureSendRig(t)
+	ctx := context.Background()
+	logs := captureLog(t)
+	pic := testPicture(9)
+	big := wire.ChannelBlob{Mime: "image/png", Data: base64.StdEncoding.EncodeToString(make([]byte, ilink.MaxMedia+1))}
+	send := func(ctx context.Context, ref, replyTo string, imgs ...wire.ChannelBlob) error {
+		_, err := r.bot.Send(ctx, wire.ChannelSendParams{Ref: ref, ReplyTo: replyTo, Kind: wire.ChannelSendKindAnswer, Images: imgs})
+		return err
+	}
+	lines := func() []string {
+		var out []string
+		for _, l := range sendLogLines(logs.String()) {
+			if strings.Contains(l, " image=") {
+				out = append(out, l)
+			}
+		}
+		logs.Reset()
+		return out
+	}
+	check := func(what string, got []string, wants ...[]string) {
+		t.Helper()
+		if len(got) != len(wants) {
+			t.Fatalf("%s: %d picture logs, want %d: %q", what, len(got), len(wants), got)
+		}
+		for i, line := range got {
+			for _, want := range wants[i] {
+				if !strings.Contains(line, want) {
+					t.Errorf("%s: log %q does not contain %q", what, line, want)
+				}
+			}
+		}
+	}
+
+	if err := send(ctx, "run-l:1", "message:50", pic); err != nil {
+		t.Fatal(err)
+	}
+	check("success", lines(), []string{`reply_to="message:50"`, `ref="run-l:1"`, "image=1/1", "result=success", "duration="})
+
+	r.ilink.mu.Lock()
+	r.ilink.failUploads = 3
+	r.ilink.mu.Unlock()
+	if err := send(ctx, "run-l:2", "message:51", pic); err == nil {
+		t.Fatal("a refused picture should fail the send")
+	}
+	check("failure", lines(), []string{`reply_to="message:51"`, `ref="run-l:2"`, "image=1/1", "result=failure", "duration=",
+		"error_type=http", "error=picture upload answered HTTP 500"})
+
+	if err := send(ctx, "run-l:3", "message:52", wire.ChannelBlob{Data: "not base64!"}, wire.ChannelBlob{}, big, pic); err != nil {
+		t.Fatal(err)
+	}
+	check("skipped", lines(),
+		[]string{`ref="run-l:3"`, "image=1/4", "result=skipped", "reason=not_base64", "duration="},
+		[]string{"image=2/4", "result=skipped", "reason=empty"},
+		[]string{"image=3/4", "result=skipped", "reason=too_large"},
+		[]string{"image=4/4", "result=success"})
+
+	// Cancelled while waiting to try a refused upload again.
+	sendRetryWait = time.Hour // pictureSendRig puts it back when the test ends
+	r.ilink.mu.Lock()
+	r.ilink.failUploads = 1
+	r.ilink.mu.Unlock()
+	cctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- send(cctx, "run-l:4", "message:53", pic) }()
+	eventually(t, "the refused upload", func() bool {
+		r.ilink.mu.Lock()
+		defer r.ilink.mu.Unlock()
+		return r.ilink.failUploads == 0
+	})
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a cancelled send should fail")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling did not stop the send")
+	}
+	check("cancelled", lines(), []string{`reply_to="message:53"`, `ref="run-l:4"`, "image=1/1", "result=failure", "duration=", "error_type=aborted"})
+	sendRetryWait = time.Millisecond
+
+	// Nothing of a picture, its upload or its keys is logged.
+	logs.Reset()
+	r.ilink.mu.Lock()
+	r.ilink.failUploads = 3
+	r.ilink.mu.Unlock()
+	_ = send(ctx, "run-l:5", "message:54", pic)
+	_ = send(ctx, "run-l:6", "message:55", pic, wire.ChannelBlob{Data: "not base64!"})
+	for _, secret := range []string{pic.Data, "https://", "encrypted_query_param", "filekey", "aes", "UP-"} {
+		if strings.Contains(logs.String(), secret) {
+			t.Errorf("logs contain %q: %q", secret, logs.String())
+		}
 	}
 }

@@ -61,15 +61,18 @@ var Facets = []entry.Facet{entry.Interaction, entry.Tools, entry.Judgement, entr
 
 // Pattern is one cross-event pattern.
 type Pattern struct {
-	ID              string   `json:"id"` // ov:<10 hex>
-	Facet           string   `json:"facet"`
-	Perspective     string   `json:"perspective"`
-	Lifecycle       string   `json:"lifecycle"`
-	Text            string   `json:"text"`
-	Situation       string   `json:"situation,omitempty"`
-	Choice          string   `json:"choice,omitempty"`
-	Rejected        string   `json:"rejected,omitempty"`
-	Exception       string   `json:"exception,omitempty"`
+	ID          string `json:"id"` // ov:<10 hex>
+	Facet       string `json:"facet"`
+	Perspective string `json:"perspective"`
+	Lifecycle   string `json:"lifecycle"`
+	Text        string `json:"text"`
+	Situation   string `json:"situation,omitempty"`
+	Choice      string `json:"choice,omitempty"`
+	Rejected    string `json:"rejected,omitempty"`
+	Exception   string `json:"exception,omitempty"`
+	// Poles are both ends when the user goes both ways, each with when it holds (0.2.0-beta.52); Text says them in
+	// place of the exception.
+	Poles           []Pole   `json:"poles,omitempty"`
 	DefaultContrast string   `json:"default_contrast,omitempty"`
 	HoldsForAnyone  bool     `json:"holds_for_anyone,omitempty"`
 	EvidenceIDs     []string `json:"evidence_ids"`          // the curated entries it rests on (classes, actions)
@@ -88,6 +91,12 @@ type Pattern struct {
 	Withdrawn       string   `json:"withdrawn,omitempty"`     // the lifecycle L3 took it out of when its evidence was withdrawn
 	Created         string   `json:"created"`
 	UpdatedAt       string   `json:"updated_at"`
+}
+
+// Pole is one end of a pattern the user goes both ways on: in which situation, and what they do then.
+type Pole struct {
+	When   string `json:"when"`
+	Choice string `json:"choice"`
 }
 
 // Used says whether the pattern goes to the exits.

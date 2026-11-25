@@ -147,7 +147,7 @@ func (a *app) toolNow(ctx context.Context, name string) (string, error) {
 	case !cur.WindSpeed.OK:
 		b.WriteString("，风未知")
 	case cur.WindSpeed.Value > 0:
-		fmt.Fprintf(&b, "，%s %s", windDir(cur.WindDirection.Value), fmtWind(cur.WindSpeed.Value, w))
+		fmt.Fprintf(&b, "，%s %s", windDirLabel(cur.WindDirection), fmtWind(cur.WindSpeed.Value, w))
 	default:
 		b.WriteString("，无风")
 	}

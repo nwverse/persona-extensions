@@ -1201,6 +1201,13 @@ func isRetryableErrorClass(errClass string) bool {
 
 // CancelTask cancels a queued or running task.
 func (q *Queue) CancelTask(taskID string, now time.Time) (*Task, error) {
+	_, after, _, err := q.cancelTaskWithSnapshot(taskID, now)
+	return after, err
+}
+
+// cancelTaskWithSnapshot cancels a non-terminal task and returns its pre-cancel snapshot atomically under q.mu.
+// When the task is already terminal, canceled is false and no state changes are made.
+func (q *Queue) cancelTaskWithSnapshot(taskID string, now time.Time) (before, after *Task, canceled bool, err error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -1211,11 +1218,13 @@ func (q *Queue) CancelTask(taskID string, now time.Time) (*Task, error) {
 	}
 	t, ok := q.tasks[taskID]
 	if !ok {
-		return nil, ErrTaskNotFound
+		return nil, nil, false, ErrTaskNotFound
 	}
 	if t.IsTerminal() {
-		return cloneTask(t), nil
+		snap := cloneTask(t)
+		return snap, cloneTask(t), false, nil
 	}
+	before = cloneTask(t)
 	if len(t.Attempts) > 0 {
 		att := &t.Attempts[len(t.Attempts)-1]
 		if isActiveState(att.State) {
@@ -1228,9 +1237,10 @@ func (q *Queue) CancelTask(taskID string, now time.Time) (*Task, error) {
 	t.NotBefore = nil
 	t.FinishedAt = &now
 	if err := q.saveLocked(); err != nil {
-		return nil, err
+		q.tasks[taskID] = before
+		return nil, nil, false, err
 	}
-	return cloneTask(t), nil
+	return before, cloneTask(t), true, nil
 }
 
 // RetryTask resets a failed or canceled task back to the queued state so it can be scheduled again.

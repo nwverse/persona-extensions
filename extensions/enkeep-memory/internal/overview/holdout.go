@@ -23,6 +23,13 @@ var predictPrompt string
 //go:embed predict.schema.json
 var predictSchema []byte
 
+// PredictPrompt and PredictSchema are the forward check's question, for the hard evaluation (hardeval) to put its
+// questions the same way.
+var (
+	PredictPrompt = predictPrompt
+	PredictSchema = predictSchema
+)
+
 // The forward check (design 2.5, line 3): the user's real choices first seen in a week (a situation, what they chose
 // and what they turned down) are put as two-option questions to a model three times: with the patterns kept before
 // the week, with the scattered entries in the same number of characters, and with no memory. A question is scored by

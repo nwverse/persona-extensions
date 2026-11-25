@@ -64,6 +64,16 @@ func TestProgramWritesInTheHubsLanguage(t *testing.T) {
 	}
 }
 
+func TestProgramPassesTheExtensionDataDirectory(t *testing.T) {
+	p := &program{agent: "Persona/test"}
+	served := ext.Program{ID: ID, Version: "1.0.0", Init: p.init,
+		Namespaces: map[string]ext.Handler{ext.ConnectorNamespace: p.connector, ext.ChannelNamespace: p.channel}}
+	_ = exttest.Start(t, manifestJSON(t), exttest.Serve(t, served))
+	if p.bot == nil || p.bot.opt.DataDir == "" || p.bot.quotes.path == "" {
+		t.Fatal("the quote store did not receive the extension data directory")
+	}
+}
+
 func t2(l, key string) string { return t(l, key) }
 
 var tr = t

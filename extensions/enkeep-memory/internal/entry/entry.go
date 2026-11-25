@@ -306,6 +306,10 @@ type Entry struct {
 
 	Flags   []string `json:"flags,omitempty"`
 	Updated string   `json:"updated"`
+
+	// Leverage is how far and how long the entry reaches, and the principle behind it, as the daily pass read them
+	// (daily/17, leverage.go). Absent on entries read before; the score falls back to the other fields then.
+	Leverage *Leverage `json:"leverage,omitempty"`
 }
 
 // Shown is the text the user sees: their own version when they wrote one.

@@ -44,6 +44,9 @@ func (a *app) memoryPage(p memsrc.Params) (memsrc.Result, memsrc.Counts, error) 
 	if snap == nil || snap.State == nil {
 		return memsrc.Result{}, memsrc.Counts{}, &ext.Error{Code: "not_ready", Message: "enkeep memory has not loaded its entries yet"}
 	}
+	if p.ResidentBytes == 0 && a.c != nil {
+		p.ResidentBytes = a.c.Cfg.ResidentBytes
+	}
 	return memsrc.PageWith(snap.State, snap.Profile, a.overviewExtras(), p)
 }
 

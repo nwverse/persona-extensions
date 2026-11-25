@@ -682,6 +682,10 @@ func (req hookInput) auditConfigDir(a hookArgs) string {
 
 var agyAssistantDirName = regexp.MustCompile(`^assistant(-m-[0-9a-f]+)?$`)
 
+var agyConversationID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+var agyRuntimePackageHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
 func isAgyAssistantDir(dir, home string) bool {
 	if dir == "" || home == "" || !filepath.IsAbs(dir) || !filepath.IsAbs(home) {
 		return false
@@ -697,6 +701,67 @@ func isAgyAssistantDir(dir, home string) bool {
 		return false
 	}
 	return agyAssistantDirName.MatchString(filepath.Base(realDir))
+}
+
+// isAgyPersonaSupervisionDir says whether dir is this conversation's Persona supervision root.
+// Persona's ACP companion adds <agy dir>/persona-supervision/<conversation id> or
+// <agy dir>/antigravity-cli/persona-supervision/<conversation id> as an additional workspace root;
+// an arbitrary project or another session's directory remains an untrusted workspace.
+func isAgyPersonaSupervisionDir(dir string, req hookInput) bool {
+	if dir == "" || req.agyDir == "" || !filepath.IsAbs(dir) || !filepath.IsAbs(req.agyDir) {
+		return false
+	}
+	id := strings.TrimPrefix(req.SessionID, "agy-")
+	if !agyConversationID.MatchString(id) {
+		return false
+	}
+	cleanDir, ok := physical(dir)
+	if !ok {
+		return false
+	}
+	realDir := resolve(cleanDir, true)
+	cleanRoot, ok := physical(req.agyDir)
+	if !ok {
+		return false
+	}
+	realRoot := resolve(cleanRoot, true)
+	rel, err := filepath.Rel(realRoot, realDir)
+	if err != nil || rel == "." {
+		return false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 2 {
+		return parts[0] == "persona-supervision" && parts[1] == id
+	}
+	return len(parts) == 3 && parts[0] == "antigravity-cli" && parts[1] == "persona-supervision" && parts[2] == id
+}
+
+// isAgyPersonaRuntimePackageDir says whether dir is exactly one versioned Persona Antigravity runtime package.
+// It is only an extra-workspace exemption: it neither proves an assistant session nor makes the package writable.
+func isAgyPersonaRuntimePackageDir(dir, home string) bool {
+	if dir == "" || home == "" || !filepath.IsAbs(dir) || !filepath.IsAbs(home) {
+		return false
+	}
+	cleanDir, ok := physical(dir)
+	if !ok {
+		return false
+	}
+	realDir := resolve(cleanDir, true)
+	cleanHome, ok := physical(home)
+	if !ok {
+		return false
+	}
+	realHome := resolve(cleanHome, true)
+	rel, err := filepath.Rel(realHome, realDir)
+	if err != nil || rel == "." {
+		return false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	return len(parts) == 4 &&
+		(parts[0] == ".persona" || parts[0] == ".jarvis") &&
+		parts[1] == "runtime-packages" &&
+		parts[2] == "persona-antigravity-runtime" &&
+		agyRuntimePackageHash.MatchString(parts[3])
 }
 
 func isAgyAssistantSession(req hookInput, getenv func(string) string) bool {
@@ -731,6 +796,9 @@ func isAgyAssistantSession(req hookInput, getenv func(string) string) bool {
 			continue // companion.mjs may start agy acp in $HOME while opening the session in ~/.persona/assistant
 		}
 		if !isAgyAssistantDir(p, home) {
+			if isAgyPersonaSupervisionDir(p, req) || isAgyPersonaRuntimePackageDir(p, home) {
+				continue
+			}
 			return false
 		}
 		found = true

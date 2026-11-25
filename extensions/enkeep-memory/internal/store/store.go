@@ -383,6 +383,9 @@ type State struct {
 	// them there; the hub still forwards a session's items to its runtime, so a day up to the session's Last is read
 	// from these as well. Any runtime's sessions, not one's in particular.
 	SeenSessions map[string]*SeenSession `json:"seen_sessions,omitempty"`
+	// FastSeen: the correction fast path's place in today's assistant conversations (0.2.0-beta.52), by
+	// "<unit ref>@<day>": the last line it looked at. Older days are dropped; the daily pass reads every day whole.
+	FastSeen map[string]int `json:"fast_seen,omitempty"`
 	// SessionHistory: the days whose agent sessions the hub's session history (nwverse/persona#11529) could not
 	// list in full, by day, as the day's last completed pass found it: an older hub without history, or a machine or
 	// source that did not answer or vouch for the whole window. A day listed in full has no entry.

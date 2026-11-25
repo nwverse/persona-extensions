@@ -41,8 +41,9 @@ func TestPage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Standing first (stable, usable in the resident exits), then rank (active > candidate > dormant), then newest; dead entries and evaluations out.
-	want := []string{"i-stable", "p-card", "w-shift", "u-cand", "j-dorm"}
+	// The standing set first (here the one stable rule), then by score (entry.Score, not by how new); dead entries and
+	// evaluations out. A people card never stands.
+	want := []string{"i-stable", "w-shift", "p-card", "u-cand", "j-dorm"}
 	if !slices.Equal(ids(r), want) || r.HasMore || r.After != "" || !r.Tagged {
 		t.Fatalf("page %v (want %v) more %v after %q tagged %v", ids(r), want, r.HasMore, r.After, r.Tagged)
 	}
@@ -53,7 +54,7 @@ func TestPage(t *testing.T) {
 	if st2["i-stable"] != "active" || st2["w-shift"] != "active" || st2["u-cand"] != "candidate" || st2["j-dorm"] != "dormant" {
 		t.Errorf("statuses %v", st2)
 	}
-	if n.Entries != 5 || n.Active != 3 || n.Standing != 2 || n.Backfilled != 0 {
+	if n.Entries != 5 || n.Active != 3 || n.Standing != 1 || n.Backfilled != 0 {
 		t.Errorf("counts %+v", n)
 	}
 	for _, e := range r.Entries {
@@ -63,7 +64,7 @@ func TestPage(t *testing.T) {
 				t.Errorf("tagged entry %+v", e)
 			}
 		case "p-card":
-			if !slices.Equal(e.Subjects, []string{"Alex Park"}) || !e.Standing {
+			if !slices.Equal(e.Subjects, []string{"Alex Park"}) || e.Standing {
 				t.Errorf("card %+v", e)
 			}
 		case "w-shift":
@@ -71,8 +72,8 @@ func TestPage(t *testing.T) {
 				t.Errorf("shifting %+v", e) // shifting: active, but not in the resident block
 			}
 		case "i-stable":
-			// core facet (400) + class (100) + evidence min(150, 5*2*12=120) = 620
-			if e.Rank != 620 || e.Facet != "interaction" {
+			// the first of the standing set
+			if e.Rank != rankStand || !e.Standing || e.Facet != "interaction" {
 				t.Errorf("rank or facet %+v", e)
 			}
 		}
@@ -167,46 +168,68 @@ func TestPageSize(t *testing.T) {
 	if len(b) > 1<<20 || !r.HasMore || r.After == "" || len(r.Entries) == 0 || len(r.Entries) >= 300 {
 		t.Fatalf("%d bytes, %d entries, more %v", len(b), len(r.Entries), r.HasMore)
 	}
-	if n := len([]rune(r.Entries[0].Text)); n != MaxText {
+	if n := len([]rune(r.Entries[len(r.Entries)-1].Text)); n != MaxText { // one not standing: its whole text
 		t.Errorf("text clipped to %d", n)
 	}
 }
 
-// Low-value weak relation triples (depends_on, collaborates_with, about, member_of, same_circle, waiting_on, ...)
-// stay out of memory.entries without deleting them from state, unless pinned, edited or confirmed right by the user.
-// Substantive relations (owns, decides, reports_to, means) stay in.
+// Relation triples come in three kinds (0.2.0): the skeleton (depends_on, collaborates_with, member_of,
+// assigned) is in the pool and ranked by its score like any entry, never standing; noise (about, same_circle) and
+// passing edges not seen for staleDays are weak: answered last, never standing, out of the pool. Pinned, edited or
+// confirmed ones count as any other.
 func TestWeakRelationsFiltered(t *testing.T) {
+	defer func(f func() time.Time) { nowFn = f }(nowFn)
+	nowFn = func() time.Time { return time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC) }
 	st := &store.State{Entries: map[string]*entry.Entry{
 		"rel-dep":     {ID: "rel-dep", Facet: entry.World, Predicate: "depends_on", Text: "service-a depends on service-b", Status: entry.Stable, Count: 5, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
 		"rel-collab":  {ID: "rel-collab", Facet: entry.World, Predicate: "collaborates_with", Text: "user-a works with user-b", Status: entry.Stable, Count: 8, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
 		"rel-about":   {ID: "rel-about", Facet: entry.World, Predicate: "about", Text: "doc-a is about project-x", Status: entry.Stable, Count: 3, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
 		"rel-member":  {ID: "rel-member", Facet: entry.World, Predicate: "member_of", Text: "user-b belongs to team-a", Status: entry.Stable, Count: 3, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
-		"rel-pinned":  {ID: "rel-pinned", Facet: entry.World, Predicate: "depends_on", Text: "core-a depends on core-b", Status: entry.Stable, Pinned: true, Count: 1, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
-		"rel-edited":  {ID: "rel-edited", Facet: entry.World, Predicate: "collaborates_with", Text: "raw", User: &entry.UserEdit{Text: "key partner"}, Status: entry.Stable, Count: 1, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
-		"rel-confirm": {ID: "rel-confirm", Facet: entry.World, Predicate: "depends_on", Text: "confirmed dep", Verdicts: []entry.Verdict{{Mark: "right", By: "user"}}, Status: entry.Stable, Count: 1, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-circle":  {ID: "rel-circle", Facet: entry.World, Predicate: "same_circle", Text: "user-c and user-d share a group", Status: entry.Stable, Count: 3, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-wait":    {ID: "rel-wait", Facet: entry.World, Predicate: "waiting_on", Text: "task-a waits on user-b", Status: entry.Stable, Count: 2, Last: "2026-11-18", Tagged: true, Origin: entry.Behavior},
+		"rel-stale":   {ID: "rel-stale", Facet: entry.World, Predicate: "blocked_by", Text: "task-b blocked by review-c", Status: entry.Stable, Count: 2, Last: "2026-10-01", Tagged: true, Origin: entry.Behavior},
+		"rel-pinned":  {ID: "rel-pinned", Facet: entry.World, Predicate: "about", Text: "core-a is about core-b", Status: entry.Stable, Pinned: true, Count: 1, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-edited":  {ID: "rel-edited", Facet: entry.World, Predicate: "same_circle", Text: "raw", User: &entry.UserEdit{Text: "key partner"}, Status: entry.Stable, Count: 1, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
+		"rel-confirm": {ID: "rel-confirm", Facet: entry.World, Predicate: "about", Text: "confirmed topic", Verdicts: []entry.Verdict{{Mark: "right", By: "user"}}, Status: entry.Stable, Count: 1, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
 		"rel-owns":    {ID: "rel-owns", Facet: entry.World, Predicate: "owns", Text: "user-b is responsible for project-x", Status: entry.Stable, Count: 2, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
-		"rel-means":   {ID: "rel-means", Facet: entry.World, Predicate: "means", Text: "abbr-x means service-x", Status: entry.Stable, Count: 2, Last: "2026-11-10", Tagged: true, Origin: entry.Behavior},
 	}}
 	r, n, err := Page(st, Params{Contribution: "memory", Limit: 200})
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := ids(r)
-	for _, drop := range []string{"rel-dep", "rel-collab", "rel-about", "rel-member"} {
-		if slices.Contains(got, drop) {
-			t.Errorf("weak relation %s leaked into memory.entries: %v", drop, got)
+	first := len(got)
+	for _, weak := range []string{"rel-about", "rel-circle", "rel-stale"} {
+		i := slices.Index(got, weak)
+		if i < 0 {
+			t.Errorf("weak relation %s not answered: %v", weak, got)
 		}
-		if st.Entries[drop] == nil {
-			t.Errorf("weak relation %s was deleted from state", drop)
-		}
-	}
-	for _, keep := range []string{"rel-pinned", "rel-edited", "rel-confirm", "rel-owns", "rel-means"} {
-		if !slices.Contains(got, keep) {
-			t.Errorf("expected %s to stay in memory.entries: %v", keep, got)
+		first = min(first, i)
+		if !IsWeakRelation(st.Entries[weak]) || Pool(st, st.Entries[weak]) {
+			t.Errorf("weak relation %s in the pool", weak)
 		}
 	}
-	if n.Entries != 5 {
-		t.Errorf("pool count = %d, want 5", n.Entries)
+	for _, e := range r.Entries[first:] {
+		if !IsWeakRelation(st.Entries[e.ID]) || e.Standing {
+			t.Errorf("weak relations are answered last, not standing: %v", got)
+		}
+	}
+	for _, keep := range []string{"rel-dep", "rel-collab", "rel-member", "rel-wait", "rel-pinned", "rel-edited", "rel-confirm", "rel-owns"} {
+		i := slices.Index(got, keep)
+		if i < 0 || i > first || IsWeakRelation(st.Entries[keep]) || !Pool(st, st.Entries[keep]) {
+			t.Errorf("%s should be in the pool and ranked by its score: %v", keep, got)
+		}
+		if Rank(st.Entries[keep]) <= 9 && !st.Entries[keep].Pinned {
+			t.Errorf("%s pressed to rank %d", keep, Rank(st.Entries[keep]))
+		}
+	}
+	for _, e := range r.Entries {
+		if e.Standing && !st.Entries[e.ID].Pinned { // what the user pinned stands, whatever it is
+			t.Errorf("a relation stands: %s", e.ID)
+		}
+	}
+	if n.Entries != 11 {
+		t.Errorf("answered = %d, want 11", n.Entries)
 	}
 }
 
@@ -255,7 +278,7 @@ func TestPageWithProfile(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing profile:overview in %v", ids(r))
 	}
-	if !ov.Standing || len(ov.Categories) != 0 || ov.Facet != "persona" {
+	if ov.Standing || ov.Rank != 995 || len(ov.Categories) != 0 || ov.Facet != "persona" { // too long to stand: recalled
 		t.Errorf("unexpected profile:overview: %+v", ov)
 	}
 	if strings.Contains(ov.Text, "runs three times") {
@@ -301,7 +324,7 @@ func timeNowFixture() time.Time {
 func TestPageWithExtras(t *testing.T) {
 	st := &store.State{Entries: map[string]*entry.Entry{}}
 	extras := []Extra{
-		{Entry: Entry{ID: "ov:pattern:aa", Text: "a pattern", Facet: "judgement", Standing: true, Rank: 960}, Last: "2026-11-20"},
+		{Entry: Entry{ID: "ov:pattern:aa", Text: "a pattern", Facet: "judgement", Rank: 960}, Last: "2026-11-20", Score: 80, Kind: entry.KindUnderstanding},
 		{Entry: Entry{ID: "ov:cat:health:bb", Text: "a health pattern", Categories: []string{"health"}, Rank: 900, OriginSpace: "Bad Space"}},
 		{Entry: Entry{ID: "bad id with spaces", Text: "x"}},
 		{Entry: Entry{ID: "ov:pattern:empty", Text: "  "}},
@@ -321,5 +344,17 @@ func TestPageWithExtras(t *testing.T) {
 	res2, _, err := PageWith(st, nil, extras, Params{Contribution: "memory", Limit: 1, After: res.After})
 	if err != nil || len(res2.Entries) != 1 || res2.Entries[0].ID != "ov:cat:health:bb" {
 		t.Fatalf("%v %+v", err, res2)
+	}
+}
+
+// A rule hangs on the person or project it is for: its impact object and project scope are subjects (design
+// l0-leverage §13), so mentioning them brings it in.
+func TestSubjectsHangRules(t *testing.T) {
+	st := &store.State{}
+	e := &entry.Entry{ID: "j-1", Facet: entry.Judgement, Text: "with user-b, settle by a call, not by text",
+		Impact: entry.Impact{Moment: "reply_person", Action: "proposes a call", Object: "user-b"},
+		Scopes: []entry.Scope{{Kind: entry.ScopeProject, Name: "project-x"}, {Kind: entry.ScopeGlobal}}}
+	if got := Subjects(st, e); !slices.Equal(got, []string{"user-b", "project-x"}) {
+		t.Fatalf("subjects = %v", got)
 	}
 }

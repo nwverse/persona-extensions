@@ -133,7 +133,7 @@ func Compile(ctx context.Context, st *store.State, o Options) (*Report, error) {
 // stable: only stable entries go out (a candidate never does). What the user wrote about themself, the first-run
 // answers and the hand-written memory are stable from the start; a pinned entry counts as stable.
 func stable(e *entry.Entry) bool {
-	return e.Status == entry.Stable || e.Pinned ||
+	return e.Status == entry.Stable || e.Pinned || (entry.Hard(e) && e.Status == entry.Candidate) ||
 		(e.Origin != entry.Behavior && e.Origin != "" && e.Origin != entry.Seed && e.Status == entry.Candidate)
 }
 

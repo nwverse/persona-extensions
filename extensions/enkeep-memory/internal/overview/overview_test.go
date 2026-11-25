@@ -300,7 +300,8 @@ func TestCounterUnanswered(t *testing.T) {
 }
 
 // Privacy: a pattern resting on health-tagged evidence is answered as ov:cat:health:…, not standing, with its
-// categories; a general one as ov:pattern:…, standing, ranked between the scattered entries and the profile summary.
+// categories; a general one as ov:pattern:…, ranked between the scattered entries and the profile summary, with a
+// score and a side for the standing set (memsrc decides whether it stands: never the maker, 0.2.0-beta.52).
 func TestExitsPrivacy(t *testing.T) {
 	st := fixture()
 	s := newState()
@@ -308,20 +309,22 @@ func TestExitsPrivacy(t *testing.T) {
 		t.Fatal(err)
 	}
 	ex := Exits(s)
-	var general, health *memsrc.Entry
+	var general, health *memsrc.Extra
 	for i := range ex {
-		x := &ex[i].Entry
+		x := &ex[i]
 		switch {
-		case strings.HasPrefix(x.ID, "ov:pattern:"):
+		case strings.HasPrefix(x.Entry.ID, "ov:pattern:"):
 			general = x
-		case strings.HasPrefix(x.ID, "ov:cat:health:"):
+		case strings.HasPrefix(x.Entry.ID, "ov:cat:health:"):
 			health = x
 		}
 	}
-	if general == nil || !general.Standing || general.Rank < rankBottom || general.Rank > rankTop || len(general.Categories) != 0 {
+	if general == nil || general.Entry.Standing || general.Entry.Rank < rankBottom || general.Entry.Rank > rankTop ||
+		len(general.Entry.Categories) != 0 || general.Kind == "" || general.Score <= 0 {
 		t.Fatalf("general %+v", general)
 	}
-	if health == nil || health.Standing || health.Rank != rankCat || !slices.Contains(health.Categories, entry.CatHealth) {
+	if health == nil || health.Entry.Standing || health.Kind != "" || health.Entry.Rank != rankCat ||
+		!slices.Contains(health.Entry.Categories, entry.CatHealth) {
 		t.Fatalf("health %+v", health)
 	}
 	// The report and the summary never quote it.
@@ -618,5 +621,32 @@ func TestOverviewBackedProvider(t *testing.T) {
 	delete(st.Entries, "n1")
 	if base := (OverviewBackedProvider{}).Items(st); len(base) != len(profile.EntriesProvider{}.Items(st)) {
 		t.Fatal("no overview state: not the curated entries")
+	}
+}
+
+// A contradiction is kept as its two poles, each in its situation; a blank pole is dropped, at most two stay.
+func TestPolesText(t *testing.T) {
+	ps := cleanPoles([]Pole{{When: "a deadline is near", Choice: "ship the smaller cut"}, {When: " ", Choice: "x"},
+		{When: "the design is open", Choice: "explore widely"}, {When: "third", Choice: "dropped"}})
+	if len(ps) != 2 || ps[1].When != "the design is open" {
+		t.Fatalf("poles %+v", ps)
+	}
+	txt := Text(&Pattern{Facet: "judgement", Text: "weighs speed against breadth", Poles: ps})
+	if !strings.Contains(txt, "两端：a deadline is near时，ship the smaller cut；the design is open时，explore widely") {
+		t.Errorf("text %q", txt)
+	}
+}
+
+// A pattern scores on the entries' scale: at most 70 however wide, core above scoped, nothing unless used.
+func TestPatternScoreScale(t *testing.T) {
+	wide := &Pattern{Lifecycle: Core, ScenesCount: 50, SourcesCount: 50, ActiveWeeks: []string{"a", "b", "c", "d", "e", "f"}}
+	if s := Score(wide); s != 70 {
+		t.Errorf("wide %d", s)
+	}
+	if Score(&Pattern{Lifecycle: Core, ScenesCount: 2}) <= Score(&Pattern{Lifecycle: Scoped, ScenesCount: 2}) {
+		t.Error("core not above scoped")
+	}
+	if Score(&Pattern{Lifecycle: Candidate, ScenesCount: 9}) != 0 {
+		t.Error("an unused pattern scored")
 	}
 }

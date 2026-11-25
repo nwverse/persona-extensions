@@ -23,7 +23,11 @@ const (
 	MaxFile = 40 << 20
 )
 
-var hex32 = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+var (
+	hex32 = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+	// ErrMediaTooLarge reports a media object that exceeds Download's decrypted size cap.
+	ErrMediaTooLarge = errors.New("media too large")
+)
 
 // Download fetches m from WeChat's CDN and decrypts it (AES-128-ECB, PKCS#7).
 func (c *Client) Download(ctx context.Context, m Media) ([]byte, error) {
@@ -58,14 +62,14 @@ func (c *Client) Download(ctx context.Context, m Media) ([]byte, error) {
 		return nil, &Error{Code: CodeNetwork, Msg: "media download failed", Retry: true, err: err}
 	}
 	if len(data) > limit+aes.BlockSize {
-		return nil, &Error{Code: CodeBadResponse, Msg: "media too large"}
+		return nil, &Error{Code: CodeBadResponse, Msg: "media too large", err: ErrMediaTooLarge}
 	}
 	plain, err := DecryptECB(data, key)
 	if err != nil {
 		return nil, err
 	}
 	if len(plain) > limit { // PKCS#7 can hide up to fifteen extra bytes inside the same final cipher block.
-		return nil, &Error{Code: CodeBadResponse, Msg: "media too large"}
+		return nil, &Error{Code: CodeBadResponse, Msg: "media too large", err: ErrMediaTooLarge}
 	}
 	return plain, nil
 }

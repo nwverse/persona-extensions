@@ -1,5 +1,5 @@
 import type { FetchAdapter } from "@persona/extension/ui";
-import { limits, lookupPath, parseProduct, parseSearch, ReadError, searchPath, type LimitOptions, type Product, type SearchResult } from "./model.ts";
+import { limits, parseProduct, parseSearch, productPath, ReadError, searchPath, type LimitOptions, type Product, type ProductResult, type SearchResult } from "./model.ts";
 import { textsFor } from "./i18n.ts";
 export { limits, ReadError } from "./model.ts";
 export interface ServiceOptions { now?: () => number; monotonic?: () => number; limits?: LimitOptions; locale?: string }
@@ -10,7 +10,8 @@ export function checkSignal(signal?: AbortSignal) { if (signal?.aborted) throw c
 export function budget(parent: AbortSignal | undefined, milliseconds: number) {
   const controller = new AbortController();
   const cancel = () => controller.abort(parent?.reason ?? new DOMException("Cancelled", "AbortError"));
-  if (parent?.aborted) cancel(); else parent?.addEventListener("abort", cancel, { once: true });
+  if (parent?.aborted) { cancel(); return { signal: controller.signal, dispose: () => {} }; }
+  parent?.addEventListener("abort", cancel, { once: true });
   const timer = setTimeout(() => controller.abort(new ReadError("slow")), milliseconds);
   return { signal: controller.signal, dispose: () => { clearTimeout(timer); parent?.removeEventListener("abort", cancel); } };
 }
@@ -36,7 +37,7 @@ export class FoodFacts {
   private save(path: string, raw: unknown, at: number) {
     const bytes = new TextEncoder().encode(JSON.stringify(raw)).byteLength;
     if (bytes > this.limits.cacheBytes) return;
-    const old = this.cache.get(path); if (old) this.bytes -= old.bytes;
+    const old = this.cache.get(path); if (old) { this.bytes -= old.bytes; this.cache.delete(path); }
     this.cache.set(path, { raw, at, used: this.monotonic(), bytes }); this.bytes += bytes;
     while (this.cache.size > this.limits.cache || this.bytes > this.limits.cacheBytes) {
       const oldest = this.cache.keys().next().value as string | undefined;
@@ -75,10 +76,11 @@ export class FoodFacts {
     if (response.status !== 200) throw new ReadError("http", response.status);
     try { return JSON.parse(text); } catch { throw new ReadError("bad_answer"); }
   }
-  private async read(path: string, fresh: number, signal?: AbortSignal): Promise<{ raw: unknown; at: number; stale?: ReadError }> {
-    checkSignal(signal);
+  private async read(path: string, fresh: number, signal: AbortSignal | undefined, validate: (raw: unknown, at: number) => void): Promise<{ raw: unknown; at: number; stale?: ReadError }> {
+    if (signal?.aborted && !(signal.reason instanceof ReadError)) checkSignal(signal);
     const cached = this.cached(path, fresh); if (cached) return cached;
     const run = this.queue.then(async () => {
+      checkSignal(signal);
       const again = this.cached(path, fresh); if (again) return again;
       const pause = Math.max(0, this.limits.gap - (this.monotonic() - this.lastRequest));
       if (pause) await new Promise<void>((resolve, reject) => {
@@ -90,12 +92,16 @@ export class FoodFacts {
       const request = budget(signal, this.limits.request);
       try {
         const raw = await this.response(path, request.signal);
-        const at = this.now(); this.save(path, raw, at); this.lastOK = at; this.lastError = undefined;
+        const at = this.now(); validate(raw, at); this.save(path, raw, at); this.lastOK = at; this.lastError = undefined;
         return { raw, at };
       } catch (error) {
-        if (request.signal.aborted) throw error instanceof Error && error.name === "AbortError" ? error : new DOMException("Cancelled", "AbortError");
-        const failure = error instanceof ReadError ? error : error instanceof Error && error.name === "AbortError" ? error : new ReadError("network");
-        if (failure instanceof ReadError) this.lastError = { code: failure.code, at: this.monotonic() };
+        if (signal?.aborted && !(signal.reason instanceof ReadError)) throw error instanceof Error && error.name === "AbortError" ? error : new DOMException("Cancelled", "AbortError");
+        const failure = error instanceof ReadError ? error
+          : signal?.aborted && signal.reason instanceof ReadError ? signal.reason
+          : request.signal.aborted ? (request.signal.reason instanceof ReadError ? request.signal.reason : new ReadError("slow"))
+          : error instanceof Error && error.name === "AbortError" ? error
+          : new ReadError("network");
+        if (failure instanceof ReadError && failure.code !== "not_found") this.lastError = { code: failure.code, at: this.monotonic() };
         throw failure;
       } finally { this.lastRequest = this.monotonic(); request.dispose(); }
     });
@@ -103,6 +109,7 @@ export class FoodFacts {
     try { return await run; }
     catch (error) {
       if (error instanceof Error && error.name === "AbortError") throw error;
+      if (error instanceof ReadError && error.code === "slow") this.lastError = { code: error.code, at: this.monotonic() };
       const old = this.cached(path, Infinity);
       if (old && (!(error instanceof ReadError) || error.code !== "not_found")) return { ...old, stale: error instanceof ReadError ? error : new ReadError("network") };
       throw error;
@@ -115,12 +122,15 @@ export class FoodFacts {
       ...(this.lastError ? { error: t[this.lastError.code] } : {}) };
   }
   async search(query: string, limit = 12, refresh = false, signal?: AbortSignal): Promise<SearchResult> {
-    const rd = await this.read(searchPath(query, limit), refresh ? 0 : this.limits.fresh, signal);
+    const rd = await this.read(searchPath(query, limit), refresh ? 0 : this.limits.fresh, signal, (raw, at) => { parseSearch(raw, at); });
     return { ...parseSearch(rd.raw, rd.at), stale: rd.stale };
   }
+  async productResult(code: string, refresh = false, signal?: AbortSignal): Promise<ProductResult> {
+    const rd = await this.read(productPath(code), refresh ? 0 : this.limits.fresh, signal, (raw, at) => { parseProduct(raw, code, at); });
+    return { product: parseProduct(rd.raw, code, rd.at), at: rd.at, ...(rd.stale ? { stale: rd.stale } : {}) };
+  }
   async product(code: string, refresh = false, signal?: AbortSignal): Promise<Product> {
-    const rd = await this.read(lookupPath(code), refresh ? 0 : this.limits.fresh, signal);
-    return parseProduct(rd.raw, code, rd.at);
+    return (await this.productResult(code, refresh, signal)).product;
   }
   cacheStats() { return { entries: this.cache.size, bytes: this.bytes }; }
 }

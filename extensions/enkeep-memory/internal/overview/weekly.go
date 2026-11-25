@@ -398,6 +398,7 @@ type (
 		ID         string   `json:"id"`
 		Counters   []string `json:"counters"`
 		Exception  string   `json:"exception"`
+		Poles      []Pole   `json:"poles,omitempty"`
 		Overturned bool     `json:"overturned"`
 		Reason     string   `json:"reason"`
 	}
@@ -539,6 +540,9 @@ func (r *Runner) counterBatch(ctx context.Context, st *store.State, run *Run, ps
 			}
 		}
 		settle(st, p, counters, v.Exception, v.Overturned, v.Reason, end, cutoff, answered || len(local[pid]) == 0)
+		if ends := cleanPoles(v.Poles); len(ends) == 2 && !v.Overturned && len(counters) > 0 {
+			p.Poles = ends // both ends, each with when it holds (0.2.0-beta.52)
+		}
 		p.UpdatedAt = now
 	}
 	return nil
@@ -608,4 +612,17 @@ func addDays(day string, n int) string {
 		return day
 	}
 	return t.AddDate(0, 0, n).Format("2006-01-02")
+}
+
+// cleanPoles keeps the ends that name both a situation and a choice, clipped; at most two.
+func cleanPoles(ps []Pole) []Pole {
+	var out []Pole
+	for _, p := range ps {
+		w, c := strings.TrimSpace(p.When), strings.TrimSpace(p.Choice)
+		if w == "" || c == "" || len(out) == 2 {
+			continue
+		}
+		out = append(out, Pole{When: clip(w, 80), Choice: clip(c, 80)})
+	}
+	return out
 }

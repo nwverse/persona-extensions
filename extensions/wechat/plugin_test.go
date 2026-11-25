@@ -18,8 +18,9 @@ func TestPublishedManifestMatchesRuntime(t *testing.T) {
 	if m.ID != wechat.ID || m.Version != program().Version || version != m.Version {
 		t.Fatal("manifest/runtime identity mismatch")
 	}
-	if len(m.Contributes.Channel) != 1 || !m.Contributes.Channel[0].Capabilities.FilesIn || !wechat.Channel().Capabilities.FilesIn {
-		t.Fatal("files_in must be enabled in both manifest and runtime")
+	if len(m.Contributes.Channel) != 1 || !m.Contributes.Channel[0].Capabilities.FilesIn || !wechat.Channel().Capabilities.FilesIn ||
+		!m.Contributes.Channel[0].Capabilities.VoiceIn || !wechat.Channel().Capabilities.VoiceIn {
+		t.Fatal("files_in and voice_in must be enabled in both manifest and runtime")
 	}
 	if !reflect.DeepEqual(m.Contributes.Connectors, []wire.ConnectorItem{wechat.Item()}) || !reflect.DeepEqual(m.Contributes.Channel, []wire.ChannelItem{wechat.Channel()}) {
 		t.Fatal("manifest/runtime contributions differ")
