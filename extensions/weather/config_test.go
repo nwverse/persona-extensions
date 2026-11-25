@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"math"
 	"testing"
 )
 
@@ -100,10 +101,19 @@ func TestInitReadsConfigAndFallsBack(t *testing.T) {
 }
 
 func TestWindDir(t *testing.T) {
-	cases := map[float64]string{0: "北风", 45: "东北风", 90: "东风", 135: "东南风", 180: "南风", 225: "西南风", 270: "西风", 315: "西北风", 337.5: "北风", 22: "北风"}
+	cases := map[float64]string{
+		0: "北风", 45: "东北风", 90: "东风", 135: "东南风", 180: "南风", 225: "西南风", 270: "西风", 315: "西北风",
+		337.5: "北风", 22: "北风", 360: "北风", 405: "东北风",
+		-45: "西北风", -90: "西风", -360: "北风", -1e-20: "北风",
+	}
 	for deg, want := range cases {
 		if got := windDir(deg); got != want {
 			t.Errorf("windDir(%v) = %q, want %q", deg, got, want)
+		}
+	}
+	for _, deg := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if got := windDir(deg); got != "风" {
+			t.Errorf("windDir(%v) = %q, want %q", deg, got, "风")
 		}
 	}
 }
