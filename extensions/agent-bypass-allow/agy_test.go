@@ -845,3 +845,235 @@ func TestAgyHooksInstallUninstallAndNode(t *testing.T) {
 	cancel2()
 	n2.cleanup()
 }
+
+func TestAgyRunCommandCwdGuard(t *testing.T) {
+	e := newAgyTestEnv(t, `{"toolPermission":"always-proceed"}`)
+	now := time.Now()
+	docs := filepath.Join(e.home, "Documents")
+	sub := filepath.Join(e.project, "sub")
+	otherProj := filepath.Join(e.home, "other-proj")
+	for _, d := range []string{docs, sub, filepath.Join(otherProj, ".agents"), filepath.Join(docs, "nested")} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeJSON(t, filepath.Join(otherProj, ".agents", "settings.json"), `{"permissions":{"ask":["run_command(echo *)"]}}`)
+	escapeLink := filepath.Join(e.project, "escape-link")
+	if err := os.Symlink(filepath.Join(docs, "nested"), escapeLink); err != nil {
+		t.Fatal(err)
+	}
+	otherProjLink := filepath.Join(e.project, "other-link")
+	if err := os.Symlink(otherProj, otherProjLink); err != nil {
+		t.Fatal(err)
+	}
+
+	// Default (allow_destructive: false): relative destructive commands using args.Cwd outside scratch must ask.
+	for name, args := range map[string]map[string]any{
+		"PreToolUse Cwd=HOME rm relative":      {"CommandLine": "rm -rf Documents", "Cwd": e.home},
+		"PreToolUse Cwd=/etc overwrite":        {"CommandLine": "echo x > hosts", "Cwd": "/etc"},
+		"PreToolUse Cwd=Documents not scratch": {"CommandLine": "rm -rf notes", "Cwd": docs},
+		"PreToolUse tilde Cwd":                 {"CommandLine": "rm -rf Documents", "Cwd": "~"},
+		"PreToolUse tilde symlink+.. escape":   {"CommandLine": "rm -rf notes", "Cwd": "~/work/proj/escape-link/.."},
+		"PreToolUse ~user Cwd":                 {"CommandLine": "rm -rf notes", "Cwd": "~root"},
+		"PreToolUse empty Cwd with cwd=/etc":   {"CommandLine": "echo x > hosts", "Cwd": "", "cwd": "/etc"},
+		"PreToolUse conflicting Cwd and cwd":   {"CommandLine": "ls", "Cwd": e.project, "cwd": "/etc"},
+		"PreToolUse relative Cwd escape":       {"CommandLine": "rm -rf Documents", "Cwd": "../.."},
+		"PreToolUse non-string Cwd":            {"CommandLine": "ls", "Cwd": 123},
+		"PreToolUse target project ask rule":   {"CommandLine": "echo hi", "Cwd": otherProj},
+		"PreToolUse symlink target ask rule":   {"CommandLine": "echo hi", "Cwd": otherProjLink},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := e.hook(t, e.preToolReq("run_command", args), now, nil); got != "" {
+				t.Errorf("%s: got %q, want empty stdout (ask)", name, got)
+			}
+		})
+	}
+
+	// Relative deletion inside a project subdirectory specified by args.Cwd is still scratch.
+	if got := strings.TrimSpace(e.hook(t, e.preToolReq("run_command", map[string]any{"CommandLine": "rm -rf build", "Cwd": sub}), now, nil)); got != agyAllowOutput {
+		t.Errorf("Cwd inside scratch project: got %q, want allow", got)
+	}
+
+	// ACP session/request_permission also honors rawInput.Cwd.
+	acpReq := map[string]any{
+		"jsonrpc": "2.0",
+		"id":      8,
+		"method":  "session/request_permission",
+		"params": map[string]any{
+			"sessionId":      "34c13c41-220e-4c50-98c4-a2fa536c8f32",
+			"workspacePaths": []string{e.project},
+			"transcriptPath": e.transcript(),
+			"toolCall": map[string]any{
+				"toolCallId": "call_8",
+				"name":       "run_command",
+				"rawInput":   map[string]any{"CommandLine": "rm -rf Documents", "Cwd": e.home},
+			},
+			"options": []map[string]any{{"optionId": "opt_once", "kind": "allow_once"}},
+		},
+	}
+	if got := e.hook(t, acpReq, now, nil); got != "" {
+		t.Errorf("ACP Cwd=HOME rm relative: got %q, want ask", got)
+	}
+
+	// With allow_destructive: true, protected targets (/, $HOME) via args.Cwd must still ask.
+	writeJSON(t, filepath.Join(e.data, optionsFile), `{"allow_destructive":true}`)
+	for name, args := range map[string]map[string]any{
+		"override Cwd=/ rm .":    {"CommandLine": "rm -rf .", "Cwd": "/"},
+		"override Cwd=/ rm *":    {"CommandLine": "rm -rf *", "Cwd": "/"},
+		"override Cwd=HOME rm .": {"CommandLine": "rm -rf .", "Cwd": e.home},
+		"override Cwd=HOME rm *": {"CommandLine": "rm -rf *", "Cwd": e.home},
+		"override Cwd=sub rm ..": {"CommandLine": "rm -rf ..", "Cwd": docs},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := e.hook(t, e.preToolReq("run_command", args), now, nil); got != "" {
+				t.Errorf("%s: got %q, want ask", name, got)
+			}
+		})
+	}
+	// Ordinary deletion under Documents with allow_destructive: true still goes through.
+	if got := strings.TrimSpace(e.hook(t, e.preToolReq("run_command", map[string]any{"CommandLine": "rm -rf cache", "Cwd": docs}), now, nil)); got != agyAllowOutput {
+		t.Errorf("override Cwd=Documents rm cache: got %q, want allow", got)
+	}
+}
+
+func TestAgyAssistantSessionSymlinkAndDanglingEscapes(t *testing.T) {
+	e := newAgyTestEnv(t, `{"toolPermission":"request-review","agentMode":"default"}`)
+	const conversationID = "34c13c41-220e-4c50-98c4-a2fa536c8f32"
+	hash := strings.Repeat("0123456789abcdef", 4)
+	asstDir := filepath.Join(e.home, ".persona", "assistant")
+	outside := filepath.Join(e.home, "outside-untrusted")
+	for _, d := range []string{
+		filepath.Join(asstDir, "charters"),
+		filepath.Join(outside, "nested"),
+		filepath.Join(e.home, ".persona", "runtime-packages", "persona-antigravity-runtime"),
+		filepath.Join(e.agyDir, "persona-supervision"),
+	} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	charter := filepath.Join(asstDir, "charters", "weekly.md")
+	writeJSON(t, filepath.Join(e.data, optionsFile), `{"assistant_writes":true}`)
+	now := time.Now()
+
+	asstLink := filepath.Join(asstDir, "escape-link")
+	homeLink := filepath.Join(e.home, "home-link")
+	brainLink := filepath.Join(e.agyDir, "brain", "brain-link")
+	danglingRuntime := filepath.Join(e.home, ".persona", "runtime-packages", "persona-antigravity-runtime", hash)
+	danglingSupervision := filepath.Join(e.agyDir, "persona-supervision", conversationID)
+	danglingBrain := filepath.Join(e.agyDir, "brain", "dangling-brain")
+	for link, target := range map[string]string{
+		asstLink:            filepath.Join(outside, "nested"),
+		homeLink:            filepath.Join(outside, "nested"),
+		brainLink:           filepath.Join(outside, "nested"),
+		danglingRuntime:     filepath.Join(outside, "missing-runtime"),
+		danglingSupervision: filepath.Join(outside, "missing-supervision"),
+		danglingBrain:       filepath.Join(outside, "missing-brain"),
+	} {
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	makeReq := func(workspaces []string, transcript string) map[string]any {
+		return map[string]any{
+			"conversationId": conversationID,
+			"workspacePaths": workspaces,
+			"transcriptPath": transcript,
+			"toolCall": map[string]any{
+				"id":   "call_escape",
+				"name": "write_file",
+				"args": map[string]any{"TargetFile": charter, "CodeContent": "# note\n"},
+			},
+		}
+	}
+
+	cases := map[string]map[string]any{
+		"assistant dir symlink+.. escape":    makeReq([]string{asstLink + "/.."}, e.transcript()),
+		"home skip symlink+.. escape":        makeReq([]string{asstDir, homeLink + "/.."}, e.transcript()),
+		"brain transcript symlink+.. escape": makeReq([]string{asstDir}, brainLink+"/../transcript.jsonl"),
+		"dangling runtime package link":      makeReq([]string{asstDir, danglingRuntime}, e.transcript()),
+		"dangling supervision link":          makeReq([]string{asstDir, danglingSupervision}, e.transcript()),
+		"dangling brain transcript link":     makeReq([]string{asstDir}, filepath.Join(danglingBrain, "transcript.jsonl")),
+	}
+	for name, req := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := e.hook(t, req, now, nil); got != "" {
+				t.Errorf("%s: got %q, want empty stdout (ask)", name, got)
+			}
+		})
+	}
+}
+
+func TestInstallAgyHookMergesExistingKeyWithoutDuplicates(t *testing.T) {
+	for name, initial := range map[string]string{
+		"existing Stop event under our key": `{
+			"agent-bypass-allow": {
+				"Stop": [{"type": "command", "command": "user-stop", "timeout": 5}]
+			}
+		}`,
+		"existing non-owned PreToolUse under our key": `{
+			"agent-bypass-allow": {
+				"PreToolUse": [{"matcher": ".*", "hooks": [{"type": "command", "command": "other-guard", "timeout": 5}]}]
+			}
+		}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			e := newAgyTestEnv(t, "")
+			hooksFile := filepath.Join(e.gemini, "config", "hooks.json")
+			writeJSON(t, hooksFile, initial)
+			cmd := agyHookCommand("/opt/bin/"+currentExtensionID, e.gemini, e.data)
+
+			changed, err := installAgyHookWith(hooksFile, agyHookMatcher, cmd)
+			if err != nil || !changed {
+				t.Fatalf("first installAgyHookWith: changed=%v err=%v", changed, err)
+			}
+			raw, err := os.ReadFile(hooksFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n := strings.Count(string(raw), `"`+currentExtensionID+`"`); n != 1 {
+				t.Fatalf("hooks.json has %d %q keys (want 1):\n%s", n, currentExtensionID, raw)
+			}
+			if !hasAgyHook(hooksFile) {
+				t.Fatalf("hook not installed:\n%s", raw)
+			}
+			var parsed map[string]map[string]any
+			if err := json.Unmarshal(raw, &parsed); err != nil {
+				t.Fatal(err)
+			}
+			ours := parsed[currentExtensionID]
+			if strings.Contains(initial, "user-stop") && ours["Stop"] == nil {
+				t.Fatalf("existing Stop hook was clobbered:\n%s", raw)
+			}
+			if strings.Contains(initial, "other-guard") && !strings.Contains(string(raw), "other-guard") {
+				t.Fatalf("existing other-guard hook was clobbered:\n%s", raw)
+			}
+
+			// Second install must be idempotent (changed == false).
+			changed, err = installAgyHookWith(hooksFile, agyHookMatcher, cmd)
+			if err != nil || changed {
+				t.Fatalf("second installAgyHookWith: changed=%v err=%v", changed, err)
+			}
+
+			// Uninstall must remove only our hook and preserve the user's hooks.
+			changed, err = uninstallAgyHook(hooksFile)
+			if err != nil || !changed {
+				t.Fatalf("uninstallAgyHook: changed=%v err=%v", changed, err)
+			}
+			if hasAgyHook(hooksFile) {
+				t.Fatal("our hook remained after uninstall")
+			}
+			after, err := os.ReadFile(hooksFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var wantObj, gotObj any
+			_ = json.Unmarshal([]byte(initial), &wantObj)
+			_ = json.Unmarshal(after, &gotObj)
+			if !jsonEqual(wantObj, gotObj) {
+				t.Fatalf("after uninstall hooks.json differs from initial:\n%s", after)
+			}
+		})
+	}
+}
