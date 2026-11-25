@@ -300,7 +300,7 @@ func machineProgressComponent(ms MachineStatus) wire.Component {
 	ratio := math.Max(0, math.Min(1, ms.UsedPercent/100.0))
 	return wire.Component{
 		Type:   wire.ComponentProgress,
-		Key:    "prog-" + ms.Machine.ID,
+		Key:    boundedKey("prog-", ms.Machine.ID),
 		Label:  compactUsedTotalLabel(ms.UsedBytes, ms.TotalBytes),
 		Detail: fmt.Sprintf("%.1f%% · %s", ms.UsedPercent, healthLevelText(ms.Level)),
 		Ratio:  &ratio,
@@ -323,7 +323,7 @@ func rootUsageChart(ms MachineStatus, mountPoint, keyPrefix string) wire.Compone
 	lvlNote := healthWatermarkNote(ms.Level, ms.UsedPercent, ms.TotalBytes, ms.AvailableBytes)
 	return wire.Component{
 		Type:    wire.ComponentChart,
-		Key:     keyPrefix + "-root-" + ms.Machine.ID,
+		Key:     boundedKey(keyPrefix+"-root-", ms.Machine.ID),
 		Kind:    wire.ChartKindBar,
 		Stacked: true,
 		Title:   fmt.Sprintf("根分区已用 vs 可用 (%s)", mp),
@@ -406,7 +406,7 @@ func reclaimCategoryChart(m *Machine, bd categoryBreakdown, keyPrefix string) (w
 
 	return wire.Component{
 		Type:    wire.ComponentChart,
-		Key:     keyPrefix + "-cats-" + m.ID,
+		Key:     boundedKey(keyPrefix+"-cats-", m.ID),
 		Kind:    wire.ChartKindBar,
 		Stacked: true,
 		Title:   "可回收空间分类分布",
@@ -486,7 +486,7 @@ func cleanImpactChart(ms MachineStatus, scan *Scan) (wire.Component, bool) {
 
 	return wire.Component{
 		Type:    wire.ComponentChart,
-		Key:     "plan-impact-" + ms.Machine.ID,
+		Key:     boundedKey("plan-impact-", ms.Machine.ID),
 		Kind:    wire.ChartKindBar,
 		Stacked: true,
 		Title:   "Safe 清理前后根分区对比",
@@ -520,7 +520,7 @@ func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreak
 		FormatBytes(ms.AvailableBytes), FormatBytes(ms.TotalBytes))
 	return wire.Component{
 		Type:    wire.ComponentTable,
-		Key:     keyPrefix + "-tbl-" + ms.Machine.ID,
+		Key:     boundedKey(keyPrefix+"-tbl-", ms.Machine.ID),
 		Caption: caption,
 		Columns: []wire.TableColumn{
 			{Title: "分类"},
