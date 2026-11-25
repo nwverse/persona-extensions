@@ -34,7 +34,9 @@ func newFake(t *testing.T, h func(w http.ResponseWriter, r *http.Request, body m
 			return
 		}
 		var body map[string]any
-		if b, _ := io.ReadAll(r.Body); len(b) > 0 {
+		b, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(b)) // a CDN upload's handler reads the picture
+		if len(b) > 0 && r.Header.Get("Content-Type") == "application/json" {
 			if err := json.Unmarshal(b, &body); err != nil {
 				t.Errorf("request body is not JSON: %s", b)
 			}
@@ -255,6 +257,95 @@ func TestGetUpdates(t *testing.T) {
 	}
 }
 
+func TestDecodeVoiceMetadataAndTranscriptFlag(t *testing.T) {
+	m := wireMessage{
+		MessageID: json.RawMessage(`1001`), FromUserID: "owner@im", ContextToken: "CT",
+		Items: []wireItem{
+			{
+				Type: itemVoice,
+				VoiceItem: &struct {
+					Media         *wireMedia `json:"media"`
+					EncodeType    int        `json:"encode_type"`
+					BitsPerSample int        `json:"bits_per_sample"`
+					SampleRate    int        `json:"sample_rate"`
+					PlayTime      int        `json:"playtime"`
+					Text          string     `json:"text"`
+				}{
+					Media:         &wireMedia{EncryptQueryParam: "vq1", AESKey: "vk1"},
+					EncodeType:    VoiceEncodeSILK,
+					BitsPerSample: 16,
+					SampleRate:    24000,
+					PlayTime:      3200,
+					Text:          "转写文本",
+				},
+			},
+			{
+				Type: itemVoice,
+				VoiceItem: &struct {
+					Media         *wireMedia `json:"media"`
+					EncodeType    int        `json:"encode_type"`
+					BitsPerSample int        `json:"bits_per_sample"`
+					SampleRate    int        `json:"sample_rate"`
+					PlayTime      int        `json:"playtime"`
+					Text          string     `json:"text"`
+				}{
+					Media:         &wireMedia{EncryptQueryParam: "vq2", AESKey: "vk2"},
+					EncodeType:    VoiceEncodePCM,
+					BitsPerSample: 16,
+					SampleRate:    16000,
+					PlayTime:      1500,
+					Text:          "  \t\n ",
+				},
+			},
+		},
+	}
+	got, ok := decode(m)
+	if !ok {
+		t.Fatal("decode failed")
+	}
+	if got.Text != "转写文本" {
+		t.Fatalf("text = %q, want only non-whitespace transcript", got.Text)
+	}
+	if len(got.Media) != 2 {
+		t.Fatalf("media count = %d, want 2", len(got.Media))
+	}
+	if !got.Media[0].Transcribed || got.Media[0].EncodeType != VoiceEncodeSILK || got.Media[0].SampleRate != 24000 ||
+		got.Media[0].BitsPerSample != 16 || got.Media[0].PlayTime != 3200 {
+		t.Errorf("transcribed voice media = %+v", got.Media[0])
+	}
+	if got.Media[1].Transcribed || got.Media[1].EncodeType != VoiceEncodePCM || got.Media[1].SampleRate != 16000 ||
+		got.Media[1].BitsPerSample != 16 || got.Media[1].PlayTime != 1500 {
+		t.Errorf("untranscribed voice media = %+v", got.Media[1])
+	}
+}
+
+func TestDownloadVoiceSizeLimits(t *testing.T) {
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	atLimit, err := EncryptECB(make([]byte, MaxMedia), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overLimit, err := EncryptECB(make([]byte, MaxMedia+1), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloads := map[string][]byte{"at": atLimit, "over": overLimit}
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		_, _ = w.Write(downloads[r.URL.Query().Get("encrypted_query_param")])
+	})
+	c := f.client("BT", "")
+	key64 := base64.StdEncoding.EncodeToString(key)
+
+	got, err := c.Download(context.Background(), Media{Kind: MediaVoice, Query: "at", KeyB64: key64})
+	if err != nil || len(got) != MaxMedia {
+		t.Fatalf("voice at MaxMedia: len=%d err=%v", len(got), err)
+	}
+	got, err = c.Download(context.Background(), Media{Kind: MediaVoice, Query: "over", KeyB64: key64})
+	if err == nil || CodeOf(err) != CodeBadResponse || !errors.Is(err, ErrMediaTooLarge) || got != nil {
+		t.Fatalf("voice over MaxMedia: len=%d err=%v, want ErrMediaTooLarge", len(got), err)
+	}
+}
+
 func TestDecodeSvrIDAndIncompleteQuote(t *testing.T) {
 	m := wireMessage{MessageID: json.RawMessage(`9007199254740993`), FromUserID: "owner@im", ContextToken: "CT", Items: []wireItem{{
 		Type: itemText, TextItem: &struct {
@@ -356,6 +447,48 @@ func TestSendTextAndTyping(t *testing.T) {
 	}
 	if got[2]["path"] != "/ilink/bot/sendtyping" || got[2]["status"] != float64(typingOn) || got[2]["typing_ticket"] != "TT" {
 		t.Errorf("typing %v", got[2])
+	}
+}
+
+// A photo sent as the original (12 MiB here) is downloaded; a picture past MaxPicture is refused once decrypted (its
+// ciphertext still fits under the read limit). Only received pictures get the larger limit: the same 12 MiB, or 8 MiB
+// and one byte, is refused as a voice message, and the 12 MiB photo is not uploaded as an answer's picture.
+func TestDownloadTakesAnOriginalPhoto(t *testing.T) {
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	original := bytes.Repeat([]byte{0xab}, 12<<20)
+	plains := map[string][]byte{
+		"photo":      original,
+		"big":        bytes.Repeat([]byte{0xab}, MaxPicture+1),
+		"voice-over": bytes.Repeat([]byte{0xab}, 8<<20+1),
+	}
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		plain, ok := plains[r.URL.Query().Get("encrypted_query_param")]
+		if r.URL.Path != "/c2c/download" || !ok {
+			t.Errorf("unexpected request %s", r.URL)
+			return
+		}
+		enc, err := EncryptECB(plain, key)
+		if err != nil {
+			t.Error(err)
+		}
+		_, _ = w.Write(enc)
+	})
+	c := f.client("BT", "")
+	ctx, keyHex := context.Background(), hex.EncodeToString(key)
+	got, err := c.Download(ctx, Media{Kind: MediaImage, Query: "photo", KeyHex: keyHex})
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("a 12 MiB original: %d bytes, %v", len(got), err)
+	}
+	if _, err := c.Download(ctx, Media{Kind: MediaImage, Query: "big", KeyHex: keyHex}); !errors.Is(err, ErrMediaTooLarge) {
+		t.Fatalf("a picture past MaxPicture: %v", err)
+	}
+	for _, q := range []string{"photo", "voice-over"} {
+		if _, err := c.Download(ctx, Media{Kind: MediaVoice, Query: q, KeyHex: keyHex}); !errors.Is(err, ErrMediaTooLarge) {
+			t.Fatalf("voice %s past 8 MiB: %v", q, err)
+		}
+	}
+	if _, err := c.UploadImage(ctx, "peer@im.wechat", original); CodeOf(err) != CodeProtocol {
+		t.Fatalf("uploading the 12 MiB photo: %v", err)
 	}
 }
 

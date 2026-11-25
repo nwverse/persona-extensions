@@ -47,6 +47,7 @@ type app struct {
 	route         *model.Route        // the model route; nil: every call on the purpose's model (model_route "purpose")
 	recalls       *store.RecallLog    // the old enkeep_recall's counts (recall.json, up to 0.2.0-beta.43), with their own lock
 	marksMu       sync.Mutex          // the queued marks' file (marks.go)
+	rerunsMu      sync.Mutex          // the queued reruns' file (rerun_queue.go)
 	done          []doneWrite         // the last actions.do answers by request id (tools.go doOnce)
 	ov            *overview.Holder    // the periodic overview's state (overview_app.go); nil: off
 	lastFast      time.Time           // the correction fast path's last look (curate.RunFast)
@@ -136,6 +137,7 @@ func (a *app) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]
 	a.c.Publish()
 	st.Unlock()
 	go a.applyMarks(context.WithoutCancel(ctx)) // marks a pass's run left queued when the process stopped
+	go a.applyReruns()                          // rerun requests a pass's run left queued when the process stopped
 	go a.recover(ctx)
 	go a.migrate(ctx)
 	if !a.member {
@@ -252,6 +254,9 @@ func (a *app) tick(ctx context.Context) {
 		a.lastFast = nowFn()
 		a.fast(ctx)
 	}
+	// Merge any enkeep_rerun requests persisted while a previous pass held the lock before choosing the next day
+	// (so force-queued days jump ahead before the next normal day starts).
+	a.applyReruns()
 	// rerun_range: only completed local days are rerun, one at a time with the current daily prompt. An early daily
 	// must not suppress the formal pass after the day ends. Each day runs only once per prompt.
 	// The days asked for by the enkeep_rerun tool (State.RerunQueue) run the same way.

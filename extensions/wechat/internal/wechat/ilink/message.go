@@ -23,6 +23,18 @@ const (
 	typingCancel = 2
 )
 
+// Voice encode_type values (openclaw-weixin src/api/types.ts).
+const (
+	VoiceEncodePCM      = 1
+	VoiceEncodeADPCM    = 2
+	VoiceEncodeFeature  = 3
+	VoiceEncodeSpeex    = 4
+	VoiceEncodeAMR      = 5
+	VoiceEncodeSILK     = 6
+	VoiceEncodeMP3      = 7
+	VoiceEncodeOGGSpeex = 8
+)
+
 type wireMedia struct {
 	EncryptQueryParam string `json:"encrypt_query_param"`
 	AESKey            string `json:"aes_key"`
@@ -54,8 +66,12 @@ type wireItem struct {
 		AESKey string     `json:"aeskey"`
 	} `json:"image_item"`
 	VoiceItem *struct {
-		Media *wireMedia `json:"media"`
-		Text  string     `json:"text"`
+		Media         *wireMedia `json:"media"`
+		EncodeType    int        `json:"encode_type"`
+		BitsPerSample int        `json:"bits_per_sample"`
+		SampleRate    int        `json:"sample_rate"`
+		PlayTime      int        `json:"playtime"`
+		Text          string     `json:"text"`
 	} `json:"voice_item"`
 	FileItem *struct {
 		Media    *wireMedia `json:"media"`
@@ -91,13 +107,18 @@ const (
 
 // Media is a reference to an encrypted file on WeChat's CDN; Download fetches and decrypts it.
 type Media struct {
-	Kind     MediaKind
-	URL      string
-	Query    string
-	KeyB64   string
-	KeyHex   string
-	FileName string
-	Size     int64
+	Kind          MediaKind
+	URL           string
+	Query         string
+	KeyB64        string
+	KeyHex        string
+	FileName      string
+	Size          int64
+	Transcribed   bool
+	EncodeType    int
+	SampleRate    int
+	BitsPerSample int
+	PlayTime      int
 }
 
 type PartialQuote struct {
@@ -157,7 +178,7 @@ func decode(m wireMessage) (Message, bool) {
 				text = append(text, it.TextItem.Text)
 			}
 		case itemVoice:
-			if it.VoiceItem != nil && it.VoiceItem.Text != "" {
+			if it.VoiceItem != nil && strings.TrimSpace(it.VoiceItem.Text) != "" {
 				text = append(text, it.VoiceItem.Text)
 			}
 		}
@@ -258,7 +279,13 @@ func media(it wireItem) (Media, bool) {
 		m.KeyHex = it.ImageItem.AESKey
 		return m, true
 	case it.Type == itemVoice && it.VoiceItem != nil:
-		return ref(MediaVoice, it.VoiceItem.Media), true
+		m := ref(MediaVoice, it.VoiceItem.Media)
+		m.Transcribed = strings.TrimSpace(it.VoiceItem.Text) != ""
+		m.EncodeType = it.VoiceItem.EncodeType
+		m.SampleRate = it.VoiceItem.SampleRate
+		m.BitsPerSample = it.VoiceItem.BitsPerSample
+		m.PlayTime = it.VoiceItem.PlayTime
+		return m, true
 	case it.Type == itemFile && it.FileItem != nil:
 		m := ref(MediaFile, it.FileItem.Media)
 		m.FileName = it.FileItem.FileName

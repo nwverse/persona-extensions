@@ -40,6 +40,10 @@ type Secrets interface {
 // errCannotSend: there is nowhere to send to yet (before the owner's first message); the hub hears cannot_send.
 var errCannotSend = errors.New("nowhere to send to yet")
 
+// errRebound: the WeChat a channel.send came in for is no longer bound (the send waited for an earlier send of its ref
+// while the binding changed); the hub hears cannot_send, so it does not send the message again to the WeChat bound now.
+var errRebound = errors.New("the WeChat it was for is no longer bound")
+
 // Clock and iLink are what tests replace.
 type Options struct {
 	// Hub takes the owner's messages (the plugin protocol's channel namespace).
@@ -71,8 +75,14 @@ type Bot struct {
 	replied map[string]time.Time
 	quotes  *quoteStore
 	// progress is how far each ref's channel.send got, oldest ref first in progressOrder (chat.go sendProgress).
-	progress      map[string]*sendProgress
+	progress      map[string]sendProgress
 	progressOrder []string
+	// sendGen counts binding changes that dropped the progress (forgetSendsLocked): a send keeps or reads progress
+	// only in the generation it started in.
+	sendGen uint64
+	// rounds are the latest round of each ref's send, oldest ref first in roundOrder (chat.go roundLocked).
+	rounds     map[string]sendRound
+	roundOrder []string
 }
 
 // state is what is kept in the hub (sealed): never logged.
@@ -285,6 +295,7 @@ func (b *Bot) unbind(ctx context.Context, token string) {
 	b.st.Old = rememberToken(b.st.Old, b.st.Creds.Token)
 	b.st.Creds, b.st.Cursor, b.st.Context = nil, "", ""
 	b.typing = nil
+	b.forgetSendsLocked()
 	b.saveLocked(ctx)
 	if b.quotes != nil {
 		b.quotes.reset()

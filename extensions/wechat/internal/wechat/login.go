@@ -169,6 +169,7 @@ func (b *Bot) bound(ctx context.Context, creds ilink.Credentials) wire.Connector
 		b.st.Old = rememberToken(b.st.Old, old.Token)
 		if old.BotID != creds.BotID || old.UserID != creds.UserID {
 			b.st.Cursor, b.st.Context = "", ""
+			b.forgetSendsLocked()
 			accountChanged = true
 		}
 	}

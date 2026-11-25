@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
@@ -100,5 +101,65 @@ func TestCollabRecallByIdentifier(t *testing.T) {
 	got := collabNames(st).recall(st, f, "2026-11-16", "the user asks whether to create a repo next to repo-shared-x on platform-x", "", 200, true)
 	if !strings.HasPrefix(got, "- repo-shared-x is a shared repository") {
 		t.Fatalf("recall = %q", got)
+	}
+}
+
+func TestHardEvalPatternOutRespectsCutoff(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"e-before": {
+			ID: "e-before", Facet: entry.Judgement, Text: "prefer explicit tests before refactoring",
+			Status: entry.Stable, Count: 4, First: "2026-03-01", Last: "2026-03-25",
+			Tagged: true, Origin: entry.Behavior,
+		},
+		"e-future": {
+			ID: "e-future", Facet: entry.Judgement, Text: "future rule discovered after cutoff",
+			Status: entry.Stable, Count: 4, First: "2026-03-20", Last: "2026-03-20",
+			Tagged: true, Origin: entry.Behavior,
+		},
+	}}
+	ov := &overview.State{Patterns: map[string]*overview.Pattern{
+		"ov:before": {
+			ID: "ov:before", Facet: string(entry.Judgement), Lifecycle: overview.Core,
+			Text: "keep pre-cutoff pattern even if sighted later", EvidenceIDs: []string{"e-before"},
+			ScenesCount: 2, SourcesCount: 3, LastEvidence: "2026-03-25",
+		},
+		"ov:future": {
+			ID: "ov:future", Facet: string(entry.Judgement), Lifecycle: overview.Core,
+			Text: "leaked post-cutoff pattern text", EvidenceIDs: []string{"e-future"},
+			ScenesCount: 2, SourcesCount: 3, LastEvidence: "2026-03-20",
+		},
+		"ov:pruned-future": {
+			ID: "ov:pruned-future", Facet: string(entry.Judgement), Lifecycle: overview.Core,
+			Text: "leaked pruned post-cutoff pattern", EvidenceIDs: []string{"e-gone"},
+			ScenesCount: 2, SourcesCount: 3, LastEvidence: "2026-03-20",
+		},
+		"ov:mixed": {
+			ID: "ov:mixed", Facet: string(entry.Judgement), Lifecycle: overview.Core,
+			Text: "leaked mixed pre-and-post-cutoff pattern", EvidenceIDs: []string{"e-before", "e-future"},
+			ScenesCount: 2, SourcesCount: 3, LastEvidence: "2026-03-20",
+		},
+	}}
+	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}}
+	mems := heMemories(st, ov, nil, f, "2026-03-10", 8000)
+	for _, arm := range []string{"overview", "resident"} {
+		if strings.Contains(mems[arm], "leaked post-cutoff pattern text") {
+			t.Errorf("%s arm leaked post-cutoff pattern:\n%s", arm, mems[arm])
+		}
+		if strings.Contains(mems[arm], "leaked pruned post-cutoff pattern") {
+			t.Errorf("%s arm leaked entry-less post-cutoff pattern:\n%s", arm, mems[arm])
+		}
+		if strings.Contains(mems[arm], "leaked mixed pre-and-post-cutoff pattern") {
+			t.Errorf("%s arm leaked mixed pre/post-cutoff pattern:\n%s", arm, mems[arm])
+		}
+		if !strings.Contains(mems[arm], "keep pre-cutoff pattern") {
+			t.Errorf("%s arm dropped legitimate pre-cutoff pattern:\n%s", arm, mems[arm])
+		}
+	}
+	// Empty cutoff means no cutoff: both entry-backed and entry-less patterns are kept.
+	if f.patternOut(st, ov.Patterns["ov:before"], "") {
+		t.Error("empty cutoff unexpectedly excluded entry-backed pattern")
+	}
+	if f.patternOut(st, ov.Patterns["ov:pruned-future"], "") {
+		t.Error("empty cutoff unexpectedly excluded entry-less pattern")
 	}
 }

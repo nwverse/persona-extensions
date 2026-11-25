@@ -17,13 +17,20 @@ import (
 const cdnOrigin = "https://novac2c.cdn.weixin.qq.com"
 
 const (
-	// MaxMedia is the largest picture or voice Download accepts (decrypted).
+	// MaxMedia is the largest voice Download accepts (decrypted) and the largest picture UploadImage sends.
 	MaxMedia = 8 << 20
+	// MaxPicture is the largest picture Download accepts (decrypted): room for a photo sent as the original (often
+	// 3–10 MB), which the hub scales down for the model.
+	MaxPicture = 16 << 20
 	// MaxFile is the largest file or video Download accepts, and the hub's raw budget for one message's attachments.
 	MaxFile = 40 << 20
 )
 
-var hex32 = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+var (
+	hex32 = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+	// ErrMediaTooLarge reports a media object that exceeds Download's decrypted size cap.
+	ErrMediaTooLarge = errors.New("media too large")
+)
 
 // Download fetches m from WeChat's CDN and decrypts it (AES-128-ECB, PKCS#7).
 func (c *Client) Download(ctx context.Context, m Media) ([]byte, error) {
@@ -50,7 +57,10 @@ func (c *Client) Download(ctx context.Context, m Media) ([]byte, error) {
 		return nil, &Error{Code: CodeHTTP, Msg: "media download answered HTTP " + resp.Status, Retry: resp.StatusCode >= 500}
 	}
 	limit := MaxMedia
-	if m.Kind == MediaFile || m.Kind == MediaVideo {
+	switch m.Kind {
+	case MediaImage:
+		limit = MaxPicture
+	case MediaFile, MediaVideo:
 		limit = MaxFile
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit+aes.BlockSize+1)))
@@ -58,14 +68,14 @@ func (c *Client) Download(ctx context.Context, m Media) ([]byte, error) {
 		return nil, &Error{Code: CodeNetwork, Msg: "media download failed", Retry: true, err: err}
 	}
 	if len(data) > limit+aes.BlockSize {
-		return nil, &Error{Code: CodeBadResponse, Msg: "media too large"}
+		return nil, &Error{Code: CodeBadResponse, Msg: "media too large", err: ErrMediaTooLarge}
 	}
 	plain, err := DecryptECB(data, key)
 	if err != nil {
 		return nil, err
 	}
 	if len(plain) > limit { // PKCS#7 can hide up to fifteen extra bytes inside the same final cipher block.
-		return nil, &Error{Code: CodeBadResponse, Msg: "media too large"}
+		return nil, &Error{Code: CodeBadResponse, Msg: "media too large", err: ErrMediaTooLarge}
 	}
 	return plain, nil
 }

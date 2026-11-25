@@ -40,33 +40,36 @@ func (c *Curator) QueueRerun(from, to, today string, force bool) (RerunRequest, 
 // ErrBusy: a run holds the store's lock longer than the caller waits.
 var ErrBusy = errors.New("a curation pass is running")
 
-// QueueRerunWithin is QueueRerun waiting at most wait for the store's lock (0: as long as it takes); ErrBusy when a
-// run holds it longer.
-func (c *Curator) QueueRerunWithin(from, to, today string, force bool, wait time.Duration) (RerunRequest, error) {
+// ValidateRerunDays checks from..to (YYYY-MM-DD, inclusive, before today, at most RerunMostDays) and returns the
+// expanded day list. Pure; takes no lock.
+func ValidateRerunDays(from, to, today string) ([]string, error) {
 	a, err1 := time.Parse("2006-01-02", from)
 	b, err2 := time.Parse("2006-01-02", to)
 	if err1 != nil || err2 != nil {
-		return RerunRequest{}, fmt.Errorf("from and to are days: YYYY-MM-DD")
+		return nil, fmt.Errorf("from and to are days: YYYY-MM-DD")
 	}
 	if b.Before(a) {
-		return RerunRequest{}, fmt.Errorf("to (%s) is before from (%s)", to, from)
+		return nil, fmt.Errorf("to (%s) is before from (%s)", to, from)
 	}
 	if to >= today {
-		return RerunRequest{}, fmt.Errorf("only days that are over can be read again: to must be before %s", today)
+		return nil, fmt.Errorf("only days that are over can be read again: to must be before %s", today)
 	}
 	var days []string
 	for d := a; !d.After(b); d = d.AddDate(0, 0, 1) {
 		days = append(days, d.Format("2006-01-02"))
 	}
 	if len(days) > RerunMostDays {
-		return RerunRequest{}, fmt.Errorf("at most %d days at a time (asked for %d)", RerunMostDays, len(days))
+		return nil, fmt.Errorf("at most %d days at a time (asked for %d)", RerunMostDays, len(days))
 	}
-	if wait <= 0 {
-		c.St.Lock()
-	} else if !c.St.LockWithin(wait) {
-		return RerunRequest{}, ErrBusy
+	return days, nil
+}
+
+// QueueRerunLocked merges from..to into State.RerunQueue / State.ForceReruns without saving. Caller holds c.St.Lock().
+func (c *Curator) QueueRerunLocked(from, to, today string, force bool) (RerunRequest, error) {
+	days, err := ValidateRerunDays(from, to, today)
+	if err != nil {
+		return RerunRequest{}, err
 	}
-	defer c.St.Unlock()
 	r := RerunRequest{Force: force}
 	if len(c.rerunPlanWaiting(c.St.S)) == 0 && len(c.St.S.ForceReruns) == 0 {
 		// A new batch: its gain is counted from the entries usable now.
@@ -91,10 +94,30 @@ func (c *Curator) QueueRerunWithin(from, to, today string, force bool, wait time
 	}
 	sort.Strings(c.St.S.RerunQueue)
 	sort.Strings(c.St.S.ForceReruns)
+	return r, nil
+}
+
+// QueueRerunWithin is QueueRerun waiting at most wait for the store's lock (0: as long as it takes); ErrBusy when a
+// run holds it longer.
+func (c *Curator) QueueRerunWithin(from, to, today string, force bool, wait time.Duration) (RerunRequest, error) {
+	if _, err := ValidateRerunDays(from, to, today); err != nil {
+		return RerunRequest{}, err
+	}
+	if wait <= 0 {
+		c.St.Lock()
+	} else if !c.St.LockWithin(wait) {
+		return RerunRequest{}, ErrBusy
+	}
+	defer c.St.Unlock()
+	r, err := c.QueueRerunLocked(from, to, today, force)
+	if err != nil {
+		return RerunRequest{}, err
+	}
 	if len(r.Queued) > 0 {
 		if err := c.St.Save(); err != nil {
 			return RerunRequest{}, err
 		}
+		c.Publish()
 	}
 	return r, nil
 }

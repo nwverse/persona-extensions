@@ -123,6 +123,7 @@ func fakeRunner(_ context.Context, m *Machine, script string, _ time.Duration) (
 func newTestApp(t *testing.T) *app {
 	t.Helper()
 	a := newApp(t.TempDir())
+	t.Cleanup(a.waitJobs)
 	a.store.homeDir = "" // isolate from real host ~/.ssh/config in unit tests
 	a.store.now = func() time.Time { return t0 }
 	a.now = func() time.Time { return t0 }
@@ -347,6 +348,7 @@ func TestUIViewsAndActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(res.View)
+	a.waitJobs()
 
 	// 3. Switch across all tabs and verify every view passes CheckView
 	for _, tab := range []string{tabFleet, tabItems, tabPlan, tabSessions} {
@@ -401,6 +403,7 @@ func TestUIViewsAndActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(rClean.View)
+	a.waitJobs()
 
 	// 7. New machine form & save
 	rNew, err := a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{

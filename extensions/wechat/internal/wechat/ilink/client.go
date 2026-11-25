@@ -220,8 +220,19 @@ func (c *Client) call(ctx context.Context, method, path string, body any, authed
 	return out, nil
 }
 
-// ret checks the {"ret": n} most answers carry; absent counts as 0.
+// ret checks the {"ret": n} most answers carry; absent counts as 0. A non-zero n may pass when asked again.
 func ret(out map[string]any, what string) error {
+	return retStatus(out, what, true)
+}
+
+// refusal is ret for what iLink is asked to take (sendmessage, getuploadurl): a non-zero n is its answer to that
+// message or picture, which asking again does not change. openclaw-weixin does not ask again either: its sendMessage
+// throws on a non-zero ret and is not tried again (its docs/protocol.md, "Return values and errors").
+func refusal(out map[string]any, what string) error {
+	return retStatus(out, what, false)
+}
+
+func retStatus(out map[string]any, what string, retry bool) error {
 	v, ok := out["ret"]
 	if !ok {
 		return nil
@@ -231,7 +242,7 @@ func ret(out map[string]any, what string) error {
 		return &Error{Code: CodeBadResponse, Msg: "iLink answered an invalid status for " + what, Retry: true}
 	}
 	if n != 0 {
-		return &Error{Code: CodeProtocol, Msg: fmt.Sprintf("iLink rejected %s (%d)", what, n), Retry: true}
+		return &Error{Code: CodeProtocol, Msg: fmt.Sprintf("iLink rejected %s (%d)", what, n), Retry: retry}
 	}
 	return nil
 }
@@ -365,7 +376,7 @@ func (c *Client) SendTextWithID(ctx context.Context, peer, contextToken, clientI
 	if err != nil {
 		return "", err
 	}
-	if err := ret(out, "the message"); err != nil {
+	if err := refusal(out, "the message"); err != nil {
 		return "", err
 	}
 	return responseMessageID(out["message_id"]), nil
