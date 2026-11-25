@@ -1,5 +1,7 @@
 # WeChat
 
+> **Category: Public extension** — General-purpose extension using only public Persona extension APIs; credentials and user data stay strictly in installed settings and local extension data.
+
 [Extension development](../../docs/development.md) · [Installation](../../docs/installation.md)
 
 A personal WeChat bot using Tencent's public iLink protocol. It contributes both connector and channel id `wechat`. It runs independently of `personad` through the official Go process-extension SDK; no hub runtime or TypeScript source-profile change is required for its long-polling channel.
