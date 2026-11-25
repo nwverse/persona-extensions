@@ -35,6 +35,7 @@ class Backend:
         self.send_result = "m_new"
         self.send_error = None
         self.chats = {}
+        self.chat_info_calls = []
         self.older = {}
         self.restored = []
         self.restore_error = None
@@ -95,6 +96,7 @@ class Backend:
         return [self.older[p] for p in positions if p in self.older]
 
     def chat_info(self, chat):
+        self.chat_info_calls.append(chat)
         return self.chats.get(chat, {"name": "", "last_position": 0})
 
     def user_name(self, user, chat):
@@ -153,11 +155,13 @@ class ConnectorTest(unittest.TestCase):
     def test_a_dm_waits_until_the_user_answers(self):
         self.sign_in()
         self.c.on_message(message("m1", "c1", 1))
+        self.backend.chat_info_calls.clear()
         thing = self.thing("c1")
         self.assertEqual(thing["kind"], "dm")
         self.assertEqual(thing["title"], "小明")
         self.assertNotIn("tier", thing)
         self.assertNotIn("done", thing)
+        self.assertEqual(self.backend.chat_info_calls, [])
         self.c.on_message(message("m2", "c1", 2, sender=ME, text="好"))
         self.assertEqual(self.thing("c1")["done"], "replied")
 
@@ -167,10 +171,119 @@ class ConnectorTest(unittest.TestCase):
         self.c.on_message(message("m1", "g1", 1, kind="group"))
         thing = self.thing("g1")
         self.assertEqual((thing["kind"], thing["tier"]), ("group", "noise"))
+        self.assertEqual(self.c.store.chat("g1")["mute"], "unknown")
         self.c.on_message(message("m2", "g1", 2, kind="group", at_me=True))
         thing = self.thing("g1")
         self.assertEqual(thing["kind"], "mention")
         self.assertNotIn("tier", thing)
+
+    def test_a_muted_group_without_a_mention_is_not_collected_but_is_archived(self):
+        self.sign_in()
+        self.backend.chats["g1"] = {"name": "安静群", "last_position": 0, "mute": "muted"}
+        self.c.on_message(message("m1", "g1", 1, kind="group"))
+        self.backend.chat_info_calls.clear()
+        self.assertEqual(self.c.inbox_collect({})["things"], [])
+        row = self.c.store.chat("g1")
+        self.assertEqual(row["mute"], "muted")
+        self.assertGreater(row["checked_at"], 0)
+        self.assertEqual(self.backend.chat_info_calls, ["g1"])
+        self.assertEqual(self.c.inbox_collect({})["things"], [])
+        self.assertEqual(self.backend.chat_info_calls, ["g1"])
+        batches = self.c.archive_changes({"cursor": "", "limit": 20})["batches"]
+        self.assertEqual(len(batches), 1)
+        self.assertTrue(batches[0]["chat"]["muted"])
+        self.assertEqual([m["id"] for m in batches[0]["messages"]], ["m1"])
+
+    def test_archive_chat_muted_is_present_only_when_known(self):
+        self.sign_in()
+        for i, state in enumerate(("muted", "normal", "unknown")):
+            chat = "g%d" % i
+            self.backend.chats[chat] = {"name": "群%d" % i, "last_position": 0, "mute": state}
+            self.c.on_message(message("m%d" % i, chat, 1, kind="group"))
+            self.c.store.mute_chat(chat, state, time.time())
+        batches = self.c.archive_changes({"cursor": "", "limit": 20})["batches"]
+        by_id = {b["chat"]["id"]: b["chat"] for b in batches}
+        self.assertIs(by_id["g0"]["muted"], True)
+        self.assertIs(by_id["g1"]["muted"], False)
+        self.assertNotIn("muted", by_id["g2"])
+
+    def test_a_mention_in_a_muted_group_is_still_triaged(self):
+        self.sign_in()
+        self.backend.chats["g1"] = {"name": "安静群", "last_position": 0, "mute": "muted"}
+        self.c.on_message(message("m1", "g1", 1, kind="group", at_me=True))
+        thing = self.thing("g1")
+        self.assertEqual(thing["kind"], "mention")
+        self.assertNotIn("tier", thing)
+        self.assertNotIn("done", thing)
+
+    def test_my_last_reply_still_settles_a_muted_group(self):
+        self.sign_in()
+        self.backend.chats["g1"] = {"name": "安静群", "last_position": 0, "mute": "muted"}
+        self.c.on_message(message("m1", "g1", 1, kind="group"))
+        self.c.on_message(message("m2", "g1", 2, kind="group", sender=ME))
+        thing = self.thing("g1")
+        self.assertEqual(thing["done"], "replied")
+        self.assertEqual(thing["extra"]["rule_tier"], "fyi")
+
+    def test_a_normal_group_uses_model_triage_with_the_users_rules(self):
+        self.sign_in()
+        self.c.rules = "项目动态通常归为 fyi"
+        self.backend.chats["g1"] = {"name": "项目群", "last_position": 0, "mute": "normal"}
+        self.c.on_message(message("m1", "g1", 1, kind="group"))
+        thing = self.thing("g1")
+        self.assertEqual(thing["kind"], "group")
+        self.assertNotIn("tier", thing)
+        self.assertEqual(thing["extra"]["rule_tier"], "noise")
+        self.assertEqual(thing["rules"], self.c.rules)
+
+    def test_a_stale_mute_state_is_refreshed_and_a_failure_falls_back_to_unknown(self):
+        self.sign_in()
+        self.backend.chats["g1"] = {"name": "项目群", "last_position": 0, "mute": "normal"}
+        self.c.on_message(message("m1", "g1", 1, kind="group"))
+        self.assertNotIn("tier", self.thing("g1"))
+        self.c.store.mute_chat("g1", "normal", time.time() - 3700)
+        self.backend.chats["g1"]["mute"] = "muted"
+        self.assertEqual(self.c.inbox_collect({})["things"], [])
+        self.assertEqual(self.c.store.chat("g1")["mute"], "muted")
+        checked_at = time.time() - 3700
+        self.c.store.mute_chat("g1", "muted", checked_at)
+        with mock.patch.object(self.backend, "chat_info", side_effect=RuntimeError("offline")):
+            things = self.c.inbox_collect({})["things"]
+        self.assertEqual(len(things), 1)
+        self.assertEqual(things[0]["tier"], "noise")
+        row = self.c.store.chat("g1")
+        self.assertEqual(row["mute"], "unknown")
+        self.assertGreater(row["checked_at"], checked_at)
+
+    def test_mute_refresh_is_bounded_and_later_polls_cover_the_rest(self):
+        self.sign_in()
+        for i in range(4):
+            chat = "g%d" % i
+            self.backend.chats[chat] = {"name": "群%d" % i, "last_position": 0}
+            self.c.on_message(message("m%d" % i, chat, 1, kind="group"))
+        self.backend.chat_info_calls.clear()
+        with mock.patch("larkx_persona.connector.MUTE_REFRESH_MOST", 2):
+            things = self.c.inbox_collect({})["things"]
+            self.assertEqual(len(self.backend.chat_info_calls), 2)
+            self.assertEqual(len(things), 4)
+            self.assertTrue(all(t["tier"] == "noise" for t in things))
+            self.c.inbox_collect({})
+            self.assertEqual(len(self.backend.chat_info_calls), 4)
+        self.assertTrue(all(self.c.store.chat("g%d" % i)["mute"] == "unknown" for i in range(4)))
+
+    def test_an_old_chat_database_gets_unknown_mute_state(self):
+        path = os.path.join(self.dir.name, "before-mute.db")
+        db = sqlite3.connect(path)
+        db.execute("CREATE TABLE chats (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'group', last_at REAL NOT NULL DEFAULT 0)")
+        db.execute("INSERT INTO chats (id, name, kind, last_at) VALUES ('g1', '旧群', 'group', 1)")
+        db.commit()
+        db.close()
+        store = Store(path)
+        self.addCleanup(store.close)
+        row = store.chat("g1")
+        self.assertEqual((row["mute"], row["checked_at"]), ("unknown", 0))
+        store.mute_chat("g1", "normal", 123)
+        self.assertEqual((store.chat("g1")["mute"], store.chat("g1")["checked_at"]), ("normal", 123))
 
     def test_every_item_carries_a_fallback_tier_and_the_users_rules(self):
         self.sign_in()

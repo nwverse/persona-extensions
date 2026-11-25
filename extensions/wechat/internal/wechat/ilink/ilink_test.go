@@ -3,10 +3,13 @@ package ilink
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -61,6 +64,33 @@ func (f *fake) client(token, base string) *Client {
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+func TestErrorType(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "dns", err: &Error{Code: CodeNetwork, err: &url.Error{Err: &net.DNSError{Name: "example.invalid"}}}, want: "dns"},
+		{name: "tcp", err: &Error{Code: CodeNetwork, err: &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("refused")}}, want: "tcp"},
+		{name: "tls", err: &Error{Code: CodeNetwork, err: &tls.RecordHeaderError{Msg: "bad record"}}, want: "tls"},
+		{name: "network timeout", err: &Error{Code: CodeNetwork, err: &net.OpError{Err: context.DeadlineExceeded}}, want: "timeout"},
+		{name: "client timeout", err: &Error{Code: CodeTimeout}, want: "timeout"},
+		{name: "cancelled", err: context.Canceled, want: "aborted"},
+		{name: "aborted", err: &Error{Code: CodeAborted}, want: "aborted"},
+		{name: "http", err: &Error{Code: CodeHTTP}, want: "http"},
+		{name: "other network", err: &Error{Code: CodeNetwork, err: errors.New("unknown")}, want: "network"},
+		{name: "other", err: errors.New("unknown"), want: "unknown"},
+		{name: "nil", err: nil, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ErrorType(tt.err); got != tt.want {
+				t.Errorf("ErrorType(%v) = %q, want %q", tt.err, got, tt.want)
+			}
+		})
+	}
 }
 
 func TestValidateBaseURL(t *testing.T) {
@@ -227,6 +257,19 @@ func TestGetUpdatesTimeoutKeepsCursor(t *testing.T) {
 	})
 	if _, err := f.client("BT", "").GetUpdates(context.Background(), "C"); CodeOf(err) != CodeProtocol || !Retryable(err) {
 		t.Errorf("ret -1: %v", err)
+	}
+}
+
+func TestSendTextParentDeadlineIsTimeout(t *testing.T) {
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		t.Error("an already-expired parent deadline should not reach the server")
+		writeJSON(w, map[string]any{"ret": 0})
+	})
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	err := f.client("BT", "").SendText(ctx, "owner@im", "CT", "cid", "回答")
+	if CodeOf(err) != CodeTimeout || ErrorType(err) != "timeout" {
+		t.Fatalf("parent deadline: code=%q type=%q err=%v", CodeOf(err), ErrorType(err), err)
 	}
 }
 

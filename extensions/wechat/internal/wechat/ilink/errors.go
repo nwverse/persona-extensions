@@ -1,6 +1,11 @@
 package ilink
 
-import "errors"
+import (
+	"context"
+	"crypto/tls"
+	"errors"
+	"net"
+)
 
 // Code is a stable error class; messages never carry tokens, QR codes or message text.
 type Code string
@@ -36,6 +41,45 @@ func CodeOf(err error) Code {
 		return e.Code
 	}
 	return ""
+}
+
+// ErrorType narrows network failures into the small classes used by diagnostics, while other errors keep their
+// stable iLink code.
+func ErrorType(err error) string {
+	if err == nil {
+		return ""
+	}
+	if code := CodeOf(err); code != "" && code != CodeNetwork {
+		return string(code)
+	}
+	switch {
+	case errors.Is(err, context.Canceled):
+		return string(CodeAborted)
+	case errors.Is(err, context.DeadlineExceeded):
+		return string(CodeTimeout)
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return "dns"
+	}
+	var recordHeader *tls.RecordHeaderError
+	var certificate *tls.CertificateVerificationError
+	var alert tls.AlertError
+	if errors.As(err, &recordHeader) || errors.As(err, &certificate) || errors.As(err, &alert) {
+		return "tls"
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return "timeout"
+	}
+	var op *net.OpError
+	if errors.As(err, &op) {
+		return "tcp"
+	}
+	if CodeOf(err) == CodeNetwork {
+		return string(CodeNetwork)
+	}
+	return "unknown"
 }
 
 // Retryable says whether err may go away by itself.
