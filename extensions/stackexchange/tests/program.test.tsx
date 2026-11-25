@@ -6,7 +6,7 @@ import { pathToFileURL } from "node:url";
 import { createHash } from "node:crypto";
 import { connect, type Program } from "@persona/extension";
 import type { Snapshot } from "@persona/extension/ui";
-import { Fixture, interaction, until } from "./fixtures.ts";
+import { answerPath, Fixture, interaction, until } from "./fixtures.ts";
 async function setup(initialize = true) {
   const bundle = await import(pathToFileURL(resolve("build/stackexchange.mjs")).href);
   const fixture = new Fixture(), frames: any[] = [];
@@ -136,5 +136,42 @@ test("invalid state cannot trigger arbitrary requests; pure answer snapshots are
     const pure = h.bundle.snapshotPage(local);
     const view = await pure.render({ contribution: "answers", locale: "en", ui_version: 1, hub: {}, state: h.bundle.encodeState({ q: "typescript", site: "stackoverflow", tag: "", found: true }) });
     assert.ok(JSON.stringify(view).includes("optional properties"));
+  } finally { h.p.close(); }
+});
+
+test("long answer markdown and text components stay within wire.CheckView length limits", async () => {
+  const h = await setup();
+  try {
+    const longParagraph = `<p>${"word ".repeat(5000)}</p>`; // ~25,000 chars (> 20,000 MarkdownComponent limit, < 30,000 answerMarkdown cap)
+    h.fixture.put(answerPath, {
+      items: [{
+        owner: { display_name: "Example Answerer", link: "https://stackoverflow.com/users/456/answerer" },
+        is_accepted: true, score: 21, answer_id: 70794814, question_id: 70794241,
+        content_license: "CC BY-SA 4.0", link: "https://stackoverflow.com/questions/70794241/optional-properties/70794814#70794814",
+        body: longParagraph,
+      }],
+      has_more: false, quota_remaining: 290,
+    });
+    const local = new h.bundle.StackExchange(h.fixture.fetch, {}, { locale: "en", now: () => h.fixture.clock, monotonic: () => h.fixture.clock, limits: { gap: 0 } });
+    const pure = h.bundle.snapshotPage(local);
+    const detailState = {
+      q: "typescript", site: "stackoverflow", tag: "", found: true,
+      question: {
+        id: 70794241, title: "How do optional properties work in TypeScript?",
+        url: "https://stackoverflow.com/questions/70794241/optional-properties",
+        score: 17, answerCount: 2, acceptedAnswerID: 70794814,
+        tags: ["typescript"], license: "CC BY-SA 4.0", author: "Example Author",
+      },
+    };
+    const view = await pure.render({ contribution: "answers", locale: "en", ui_version: 5, hub: {}, state: h.bundle.encodeState(detailState) });
+    const items = view.sections.flatMap((section: { items: any[] }) => section.items);
+    const md = items.find((item: { type: string }) => item.type === "markdown");
+    assert.ok(md, "expected markdown component");
+    assert.ok(Array.from(md.text as string).length <= 20_000, `markdown length ${Array.from(md.text as string).length} exceeds 20000`);
+    for (const item of items) {
+      if (item.type === "text") {
+        assert.ok(Array.from(item.text as string).length <= 2000, `text length ${Array.from(item.text as string).length} exceeds 2000`);
+      }
+    }
   } finally { h.p.close(); }
 });
