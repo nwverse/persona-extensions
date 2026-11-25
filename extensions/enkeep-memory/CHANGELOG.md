@@ -1,5 +1,52 @@
 # enkeep-memory changelog
 
+## 0.2.0-beta.52 (pre-release)
+
+What stands in every turn is chosen by how far and how long an entry matters, not by how recent it is; the daily
+prompt asks for the principle behind a choice. Design: the hub gives the extension's standing entries 1536 bytes and
+packs them highest rank first, so the old "thousands standing, newest first" put short fragments in the turn.
+
+- **Leverage (daily/17).** Each observation is labelled with its reach (one-off, a kind of task, a project, across
+  projects, every turn), its horizon (days to lasting), the principle behind it (said, or inferred and marked so) and,
+  for ③ and ⑥, the dimension of thinking (decision, thinking, reaction, attention, communication). The prompt asks
+  not to keep a one-off detail without a principle, and to write an exception as the other pole's situation. Labels merge across
+  sightings (the wider reach and longer horizon stay; a stated principle replaces an inferred one).
+- **The standing set.** `memory.entries` marks only the set chosen by score as standing: the understanding of the user
+  60% and the assistant's rules 40% of 1400 bytes, at most 12 lines, alike lines once, the two sides interleaved
+  (docs/exits.md). Every other entry is recalled on demand and carries a line of the user's own words. Overview
+  patterns compete for the same set on the entries' scale (at most 70, so long patterns do not fill it); the
+  80-pattern standing cap is gone; the profile summary is no longer standing.
+- **Two poles, not "unless".** The counter-example check may keep a contradiction as both ends, each in its situation
+  (`两端：A时，X；B时，Y`), instead of an exception.
+- **Rooted principles are not put to sleep.** A stable entry with evidence in four ISO weeks, or a lasting
+  cross-project principle seen on two days, is not made dormant by 40 quiet days: the user is asked once instead.
+- **Deep reading works again (S4).** The hub folds a conversation's tool work only when a page is read without
+  `after_seq`, and the extension always pages with it, so every deep-reading signal was skipped as "no folded work
+  near it". The extension now folds unfolded pages itself, as the hub would. Deep reading costs a model call per
+  signal that finds work again.
+- **Template lines are not the user's.** A line the user is said to have typed in agents' sessions (S3) that recurs
+  word for word in three sessions or more is a dispatch prompt's or the platform's template, not the user's habit:
+  an entry resting only on such lines never stands, nor a pattern resting mostly on them. The platform's task-brief
+  boilerplate (the credential note, the supervisor's report tool and acceptance list, the result-file line) marks a
+  whole text as Persona's. Nothing is deleted; a rerun reads the days again.
+- **Corrections weigh, hard rules stand.** A correction of the assistant scores more for each day the user had to make
+  it again; one made on two days within a week, or with a ban or anger in the user's words, is a hard rule: it stands
+  at once, even as a candidate, and scores at least 90. Alike scores are ordered by days of evidence, then the
+  latest, no longer by id.
+- **Correction fast path.** Every `fast_minutes` (10; 0 off), when nothing else runs, today's assistant conversations
+  are looked at past the last look; one where the user corrected the assistant is read at once with the daily prompt
+  (one call, at most 24 a day) and the snapshot is published, so the correction stands in the next turns. The source
+  cursors are not moved: the night's pass reads the whole day as always.
+- **`resident_bytes`** (1400; 800–8192): the room the standing set is chosen for, so a wider standing room from the
+  hub needs a setting, not a release; one more line per 120 bytes beyond 1400.
+- **Hard and collaboration evaluations.** `enkeep-memory hardeval collab-build|collab-run` draws real collaboration
+  incidents (the assistant's feedback memories, the user's corrections in its transcripts), answers each with every
+  arm's memory as of the day before, and has another model judge blind whether the incident was avoided, with fewer
+  questions, wrong actions and repeats. `enkeep-memory hardeval build|run` draws held-out questions from a copy of the state (real
+  choices first seen after a cutoff: a trade-off, a correction of the assistant, the same judgement in another
+  project), drops what a stranger model gets right both ways, and answers them with no memory, the scattered entries,
+  the patterns, an external injection text and the new standing set, at the hub's budget and a wide one.
+
 ## 0.2.0-beta.51 (pre-release)
 
 - **The profile synthesis is no longer cut off.** Its reply bound goes from 1,600 to 4,000 tokens: with a coherent
