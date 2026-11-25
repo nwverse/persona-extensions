@@ -1,5 +1,14 @@
 # enkeep-memory changelog
 
+## 0.2.4
+
+- **Non-blocking queued `enkeep_mark_wrong`, cutoff enforcement in `patternOut`, and schema-safe report rendering.**
+  `applyMarks` now releases `marksMu` before waiting on `St.Lock()` and trims only the applied queue prefix (matching
+  `applyReruns`), while `queueMarks` reads the lock-free `Live` snapshot so concurrent or pre-snapshot calls never
+  deadlock. `heFilter.patternOut` now passes the evaluation `cutoff` to `entryOut` (with `LastEvidence` fallback when
+  evidence entries are absent), preventing post-cutoff overview patterns from leaking into evaluation arms.
+  `reportPage` now validates each chunk via `wire.CheckView` with plain-text fallback and a chunk cap.
+
 ## 0.2.3
 
 - **Queue `enkeep_rerun` requests while a pass holds the store lock.** Instead of returning `busy` after the user

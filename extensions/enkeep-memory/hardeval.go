@@ -358,7 +358,7 @@ type heFilter struct {
 }
 
 func (f heFilter) entryOut(st *store.State, e *entry.Entry, cutoff string) bool {
-	if f.leak[e.ID] || e.First >= cutoff {
+	if f.leak[e.ID] || (cutoff != "" && e.First >= cutoff) {
 		return true
 	}
 	for _, u := range heUnits(e) {
@@ -375,13 +375,20 @@ func (f heFilter) entryOut(st *store.State, e *entry.Entry, cutoff string) bool 
 }
 
 func (f heFilter) patternOut(st *store.State, p *overview.Pattern, cutoff string) bool {
+	sawEntry := false
 	for _, id := range p.EvidenceIDs {
 		if f.leak[id] {
 			return true
 		}
-		if e := st.Entries[id]; e != nil && f.entryOut(st, e, "9999") {
-			return true
+		if e := st.Entries[id]; e != nil {
+			sawEntry = true
+			if f.entryOut(st, e, cutoff) {
+				return true
+			}
 		}
+	}
+	if !sawEntry && cutoff != "" && p.LastEvidence >= cutoff {
+		return true
 	}
 	return f.project != "" && strings.Contains(p.Text, f.project)
 }
