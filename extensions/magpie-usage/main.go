@@ -92,7 +92,12 @@ func program() ext.Program {
 		Init: func(_ context.Context, in *ext.Init, h *ext.Hub) (map[string]any, error) {
 			hub = h
 			var err error
-			secret, err = accountSecret(in.Info().DataDir)
+			dir := in.Info().DataDir
+			if dir == "" {
+				// The standalone Persona conformance runner provides the directory through the environment.
+				dir = os.Getenv("PERSONA_EXTENSION_DATA")
+			}
+			secret, err = accountSecret(dir)
 			if err != nil {
 				return nil, errors.New("cannot initialize Magpie account aliases")
 			}

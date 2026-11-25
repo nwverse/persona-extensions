@@ -32,6 +32,10 @@ func TestProtocol(t *testing.T) {
 		t.Fatal(err)
 	}
 	exttest.Check(t, manifest, exttest.Serve(t, program()))
+	t.Setenv("PERSONA_EXTENSION_DATA", t.TempDir())
+	exttest.StartWith(t, manifest, exttest.Serve(t, program()), func(p *wire.InitializeParams) {
+		p.Extension, p.Plugin = nil, nil
+	})
 }
 
 func TestUsageQuery(t *testing.T) {
