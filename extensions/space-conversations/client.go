@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -46,6 +48,34 @@ type SpaceMD struct {
 	Content string `json:"content"`
 	Digest  string `json:"digest"`
 	State   string `json:"state"`
+}
+
+// HTTPError is a hub answer outside 2xx, with its status and refused scope kept so callers can tell an older hub apart.
+type HTTPError struct {
+	Status  int
+	Message string
+	// Scope is the permission a 403 names as missing; empty when the hub refused a route it does not know.
+	Scope string
+}
+
+func (e *HTTPError) Error() string {
+	return fmt.Sprintf("Hub 返回 HTTP %d：%s", e.Status, e.Message)
+}
+
+// missingRoute reports whether err is a hub that does not have the route: the hub refuses an extension's call to a
+// route it does not know with 403 and no scope, and an older assistant manager behind a newer hub answers 404 or 405.
+func missingRoute(err error) bool {
+	var he *HTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	switch he.Status {
+	case http.StatusNotFound, http.StatusMethodNotAllowed:
+		return true
+	case http.StatusForbidden:
+		return he.Scope == ""
+	}
+	return false
 }
 
 type Client struct {
@@ -90,13 +120,14 @@ func (c *Client) call(ctx context.Context, method, path string, in, out any) err
 		var e struct {
 			Error   string `json:"error"`
 			Message string `json:"message"`
+			Scope   string `json:"scope"`
 		}
 		_ = json.Unmarshal(raw, &e)
 		msg := e.Error
 		if msg == "" {
 			msg = e.Message
 		}
-		return fmt.Errorf("Hub 返回 HTTP %d：%s", resp.StatusCode, msg)
+		return &HTTPError{Status: resp.StatusCode, Message: msg, Scope: e.Scope}
 	}
 	if out != nil && len(raw) > 0 {
 		return json.Unmarshal(raw, out)
@@ -121,6 +152,52 @@ func (c *Client) Conversations(ctx context.Context, slug string) (string, []Conv
 	}
 	err := c.call(ctx, http.MethodGet, "/api/v1/assistant?space="+url.QueryEscape(slug), nil, &out)
 	return out.MachineID, out.Conversations, err
+}
+
+// SpaceConversations lists a space's open conversations, newest first, with how many it has before limit. A hub
+// without the scoped route (missingRoute) is asked through the older assistant listing, whose length is the total.
+func (c *Client) SpaceConversations(ctx context.Context, slug string, limit int) (string, int, []Conversation, error) {
+	var out struct {
+		MachineID     string         `json:"machine_id"`
+		Total         int            `json:"total"`
+		Conversations []Conversation `json:"conversations"`
+	}
+	path := "/api/v1/assistant/tracks/" + url.PathEscape(slug) + "/conversations"
+	if limit > 0 {
+		path += "?limit=" + strconv.Itoa(limit)
+	}
+	err := c.call(ctx, http.MethodGet, path, nil, &out)
+	if missingRoute(err) {
+		machine, list, err := c.Conversations(ctx, slug)
+		if err != nil {
+			return "", 0, nil, err
+		}
+		sortNewestFirst(list)
+		total := len(list)
+		if limit > 0 && len(list) > limit {
+			list = list[:limit]
+		}
+		return machine, total, list, nil
+	}
+	if err != nil {
+		return "", 0, nil, err
+	}
+	sortNewestFirst(out.Conversations)
+	return out.MachineID, max(out.Total, len(out.Conversations)), out.Conversations, nil
+}
+
+// Updated is when the conversation last changed; the zero time when the hub did not say or wrote it otherwise.
+func (c Conversation) Updated() time.Time {
+	t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(c.UpdatedAt))
+	if err != nil {
+		return time.Time{}
+	}
+	return t
+}
+
+// sortNewestFirst orders conversations by updated_at, newest first; those without a time keep their order, last.
+func sortNewestFirst(list []Conversation) {
+	sort.SliceStable(list, func(i, j int) bool { return list[i].Updated().After(list[j].Updated()) })
 }
 
 func (c *Client) SpaceMD(ctx context.Context, slug string) (SpaceMD, error) {
