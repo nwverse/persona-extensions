@@ -7,7 +7,6 @@ import (
 
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	"github.com/nwverse/persona-extensions/extensions/household/internal/model"
 	"github.com/nwverse/persona-extensions/extensions/household/internal/rules"
 )
 
@@ -15,8 +14,10 @@ import (
 const sectionLimit = 20
 
 // overviewSections is the 总览 tab: one line on what the extension is for, the stat grid with a caption on how its
-// numbers relate, the imports waiting, today's advice, then what needs buying, what to use first, the chores due and the meal ideas for today. With no
-// records at all it offers the sample set and adding an item instead.
+// numbers relate, the imports waiting, today's advice, then what needs buying, what to use first and the chores due
+// (each only when it has rows: the empty ones are folded into one line under the advice), the meal ideas for today
+// (always: its empty line says what to do), and the ways to add things. With no records at all it offers the sample
+// set and adding an item instead.
 func (c *ctx) overviewSections() []wire.Section {
 	if c.empty() {
 		return c.welcomeSections()
@@ -26,15 +27,33 @@ func (c *ctx) overviewSections() []wire.Section {
 		{Items: []wire.Component{quiet(overviewIntro), statGrid(overviewStats(sum))}, Footer: statsCaption},
 	}
 	out = append(out, c.importSections()...)
-	return append(out,
-		c.adviceSection(),
-		c.restockSection(),
-		c.expiringSection(),
-		c.choreSection(),
-		c.mealSection(),
-		bulkSection(),
-		wire.Section{Items: []wire.Component{button("添加物品", addAction(model.TItem), wire.ButtonRoleNormal)}},
-	)
+	var shown []wire.Section
+	var quietOnes []string
+	for _, b := range []struct {
+		sec  wire.Section
+		none string
+	}{
+		{c.restockSection(), "库存里没有缺的"},
+		{c.expiringSection(), "没有快过期的"},
+		{c.choreSection(), "没有到期的家务"},
+	} {
+		if b.sec.Items[0].Type == wire.ComponentText { // orQuiet: the block has nothing but its empty line
+			quietOnes = append(quietOnes, b.none)
+			continue
+		}
+		shown = append(shown, b.sec)
+	}
+	out = append(out, c.adviceSection(foldedLine(quietOnes)))
+	out = append(out, shown...)
+	return append(out, c.mealSection(), addSection())
+}
+
+// foldedLine is the one quiet line that stands in for the overview blocks with nothing to show, "" for none.
+func foldedLine(parts []string) string {
+	if len(parts) == 0 {
+		return ""
+	}
+	return strings.Join(parts, "，") + "。"
 }
 
 // empty reports whether the household has no records at all.
@@ -55,7 +74,7 @@ const statsCaption = "待买是你记下要买的；需要处理是家庭管家�
 const welcomeTitle = "家里的东西还没开始记"
 
 // welcomeSections is the overview of a household with no records: what the extension is for and the first steps, an
-// empty state with 载入示例, the imports waiting, 添加物品, and 一次记很多.
+// empty state with 载入示例, the imports waiting, and the ways to add things (添加物品 among them).
 func (c *ctx) welcomeSections() []wire.Section {
 	out := []wire.Section{
 		{Items: []wire.Component{{
@@ -66,11 +85,10 @@ func (c *ctx) welcomeSections() []wire.Section {
 				ID: "load", Confirm: "载入一组虚构的示例记录？",
 			}},
 		}}},
-		{Items: []wire.Component{button("添加物品", addAction(model.TItem), wire.ButtonRoleNormal)}},
 	}
 	// A household without records can still have a draft waiting: a pasted list or the assistant's first import.
-	out = append(out[:1], append(c.importSections(), out[1:]...)...)
-	return append(out, bulkSection())
+	out = append(out, c.importSections()...)
+	return append(out, addSection())
 }
 
 // overviewStats are the four totals of the overview: what needs handling, purchases open, chores due and items about

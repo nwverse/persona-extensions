@@ -295,9 +295,9 @@ func TestPasteMakesADraft(t *testing.T) {
 	st := newStore(t, true)
 	a, _ := newApp(st)
 	v := render(t, a, state{})
-	bulk, ok := sectionTitled(v, "一次记很多")
+	bulk, ok := sectionTitled(v, addTitle)
 	if !ok {
-		t.Fatal("no 一次记很多")
+		t.Fatal("no 记新东西")
 	}
 	if !strings.Contains(fmt.Sprint(bulk.Items), "把这张小票记到家庭管家") {
 		t.Fatalf("assistant hint %+v", bulk.Items)
@@ -339,8 +339,8 @@ func TestEmptyHouseholdOffersPasteAndShowsDrafts(t *testing.T) {
 	st := newStore(t, false)
 	a, _ := newApp(st)
 	v := render(t, a, state{})
-	if _, ok := sectionTitled(v, "一次记很多"); !ok {
-		t.Fatal("no 一次记很多 on the empty overview")
+	if _, ok := sectionTitled(v, addTitle); !ok {
+		t.Fatal("no 记新东西 on the empty overview")
 	}
 	preview(t, a, imports.Input{Source: imports.SrcText, Lines: []imports.Line{{Title: "牛奶", Qty: fp(2), Unit: "盒"}}})
 	v = render(t, a, state{})

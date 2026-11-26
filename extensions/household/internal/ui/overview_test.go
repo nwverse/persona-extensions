@@ -265,7 +265,7 @@ func TestOverviewAlwaysOffersAddItem(t *testing.T) {
 	checkView(t, "populated overview", v, false)
 }
 
-func TestSectionsSayWhenEmpty(t *testing.T) {
+func TestEmptyBlocksFoldIntoOneLine(t *testing.T) {
 	st := newStore(t, false)
 	a, _ := newApp(st)
 	// One record that needs nothing: a fine item with no quantity, no expiry and no threshold.
@@ -273,12 +273,77 @@ func TestSectionsSayWhenEmpty(t *testing.T) {
 	v := render(t, a, state{})
 	checkView(t, "quiet overview", v, false)
 	for _, title := range []string{"需要补货", "先用掉", "到期家务"} {
-		sec, ok := sectionTitled(v, title)
-		if !ok {
-			t.Fatalf("no %s section", title)
+		if sec, ok := sectionTitled(v, title); ok {
+			t.Fatalf("empty %s shown: %+v", title, sec)
 		}
-		if len(sec.Items) == 0 || sec.Items[0].Type != wire.ComponentText {
-			t.Fatalf("%s with nothing to show has items %+v, want one quiet text", title, sec.Items)
+	}
+	// Nothing at all: the advice says so once, and the meal block keeps its next step.
+	advice, _ := sectionTitled(v, "今天的建议")
+	if len(advice.Items) != 1 || advice.Items[0].Text != nothingToday || advice.Footer != "" {
+		t.Fatalf("advice %+v", advice)
+	}
+	if meals, ok := sectionTitled(v, "今天吃什么"); !ok || !strings.Contains(meals.Items[0].Text, "「餐食」") {
+		t.Fatalf("meal block %+v", meals)
+	}
+
+	// A chore due: its block shows, the two empty ones are one line under the advice.
+	act(t, a, state{F: "new:chore"}, map[string]string{"title": "倒垃圾"}, "save")
+	v = render(t, a, state{})
+	checkView(t, "overview with one chore", v, false)
+	if sec, ok := sectionTitled(v, "到期家务"); !ok || sec.Items[0].Type != wire.ComponentRow {
+		t.Fatalf("chore block %+v", sec)
+	}
+	for _, title := range []string{"需要补货", "先用掉"} {
+		if _, ok := sectionTitled(v, title); ok {
+			t.Fatalf("empty %s shown", title)
+		}
+	}
+	advice, _ = sectionTitled(v, "今天的建议")
+	if advice.Footer != "库存里没有缺的，没有快过期的。" {
+		t.Fatalf("folded line %q", advice.Footer)
+	}
+	var titles []string
+	for _, s := range v.Sections {
+		titles = append(titles, s.Title)
+	}
+	want := []string{"", "今天的建议", "到期家务", "今天吃什么", addTitle}
+	if fmt.Sprint(titles) != fmt.Sprint(want) {
+		t.Fatalf("sections %q, want %q", titles, want)
+	}
+}
+
+func TestEveryWayToAddHasItsSentenceAndButton(t *testing.T) {
+	for _, samples := range []bool{false, true} {
+		a, _ := newApp(newStore(t, samples))
+		v := render(t, a, state{})
+		sec, ok := sectionTitled(v, addTitle)
+		if !ok || v.Sections[len(v.Sections)-1].Title != addTitle {
+			t.Fatalf("samples %v: 记新东西 is not the last section", samples)
+		}
+		var got []string
+		for _, c := range sec.Items {
+			switch c.Type {
+			case wire.ComponentRow:
+				if c.Subtitle == "" || c.Action != nil {
+					t.Fatalf("way %+v: wants its sentence and no tap", c)
+				}
+				got = append(got, c.Title)
+			case wire.ComponentButton:
+				got = append(got, "["+c.Title+"]")
+			}
+		}
+		want := []string{"记一样", "[添加物品]", "自己粘贴一份清单", "[粘贴清单]", "让助手帮我记"}
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("samples %v: ways %q, want %q", samples, got, want)
+		}
+		if !strings.Contains(sec.Items[2].Subtitle, "不经过助手") || !strings.Contains(sec.Items[4].Subtitle, "发给助手") {
+			t.Fatalf("paste and assistant are not told apart: %+v", sec.Items)
+		}
+		// No section holds a lone button.
+		for _, s := range v.Sections {
+			if len(s.Items) == 1 && s.Items[0].Type == wire.ComponentButton {
+				t.Fatalf("samples %v: lone button %q", samples, s.Items[0].Title)
+			}
 		}
 	}
 }

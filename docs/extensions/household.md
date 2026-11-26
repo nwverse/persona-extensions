@@ -62,8 +62,11 @@ All rules are computed from the records when they are read; nothing derived is s
 2. **可以做**: the first three meal ideas, exactly those of 今天吃什么 and `household_meal_suggest` with `limit` 3, each saying which soon-expiring ingredients it uses and what is missing.
 3. **家务**: the chores due, most overdue first (the 家务到期 number).
 4. **该买**: the items with an `expired`, `out`, `low` or `runout` finding (the 补货 part of 需要处理), those not yet on the shopping list first. The reason gives the numbers from the records: days past the date, the estimate against the threshold, or the days left at the daily use.
+5. **待买** (kind `shopping`): last and least urgent, the open purchases on the shopping list that no 该买 tip names (whose item needs no buying, or that have no item), in the order of the list. With the 该买 tips marked `on_list` they cover every open purchase, so the advice is empty only when 待买 is 0 as well.
 
-Each tip carries its reason and the ids (`item_id`, `recipe_id`, `chore_id`, `buy_id`) the existing tools act on. The tool also returns the same `summary` as `household_status`. The records have no "opened" state, so 先吃 goes by the expiry date alone. The page block has at most one line per kind, and each line opens the tab where the user acts (库存, 餐食, 采购, 家务).
+Each tip carries its reason and the ids (`item_id`, `recipe_id`, `chore_id`, `buy_id`) the existing tools act on. The tool also returns the same `summary` as `household_status`. The records have no "opened" state, so 先吃 goes by the expiry date alone. The page block has at most one line per kind, and each line opens the tab where the user acts (库存, 餐食, 采购, 家务); the 待买 line reads 「采购清单上还有 n 样没买：…等」 (「另外还有」 when 该买 items are on the list too). It says 「今天没有要特别注意的」 only when there is no tip at all.
+
+Below the advice, 需要补货, 先用掉 and 到期家务 appear only when they have rows. The empty ones are folded into one quiet line under the advice (「库存里没有缺的，没有快过期的，没有到期的家务。」); with no advice at all they are all empty and the advice line says it. 今天吃什么 always shows: its empty line is the next step (add recipes on 餐食).
 
 ## Reminders
 
@@ -127,7 +130,9 @@ The plan is stored as a draft in `imports.json` beside the records (`imports.loc
 
 **粘贴清单.** A page-only entry that needs no model: one thing per line (「牛奶 2 盒」「鸡蛋 12 个 2026-12-05」「两瓶酱油」), where it goes and whether it adds or counts. The parser reads a name, a quantity in Latin or Chinese digits (两, 十二, 半) with a known unit, or a bare Latin number after a space or ×, a date (2026-12-05, 2026/12/5, 2026年12月5日, or 12月5日 in this year, said in the note) as the expiry date, and a price (¥18.5); bullets and numbering are dropped. A line that is only a number or a date, has no letters, reads like a sentence, is too long or has an impossible date is shown as 没读懂 with the reason, never guessed. The result is the same draft as the tool's, marked as the user's. At most 60 lines are read; the rest are one 没读懂 line saying how many.
 
-**「让助手帮我记」.** A row in 「一次记很多」 says what to do in the assistant. An extension page cannot open or prefill an assistant conversation: `wire.Action.reply` and `open` (and `Push.page`) are for views shown inside an assistant conversation only, and `ActionResult.open_url` opens https links. The hub scope `assistant.ask` (`POST /api/v1/assistant/conversations`, used by homeassistant and space-conversations) starts a conversation with a prompt the extension writes, but it cannot carry the user's photo, the page cannot open that conversation on every hub, and it would add a permission to accept on upgrade, so this version does not use it.
+**记新东西.** The last section of 总览 (and of the empty overview) has the three ways to add things, each a row with one sentence and its button under it: 记一样 with 「添加物品」 (the item form), 自己粘贴一份清单 with 「粘贴清单」 (read by the page itself, no assistant involved, the same preview and 确认写入), and 让助手帮我记, which says what to send the assistant and has no button.
+
+**「让助手帮我记」.** Its row says what to do in the assistant. An extension page cannot open or prefill an assistant conversation: `wire.Action.reply` and `open` (and `Push.page`) are for views shown inside an assistant conversation only, and `ActionResult.open_url` opens https links. The hub scope `assistant.ask` (`POST /api/v1/assistant/conversations`, used by homeassistant and space-conversations) starts a conversation with a prompt the extension writes, but it cannot carry the user's photo, the page cannot open that conversation on every hub, and it would add a permission to accept on upgrade, so this version does not use it.
 
 ## Data and location
 

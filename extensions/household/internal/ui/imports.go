@@ -11,10 +11,11 @@ import (
 	"github.com/nwverse/persona/sdk/go/wire"
 
 	"github.com/nwverse/persona-extensions/extensions/household/internal/imports"
+	"github.com/nwverse/persona-extensions/extensions/household/internal/model"
 )
 
 // The import part of the page: the drafts waiting for the user's yes (made by the assistant from a receipt, a photo or
-// a text, or by 粘贴清单 on this page), the result of the last import with 撤销这次导入, and the two ways to start one.
+// a text, or by 粘贴清单 on this page), the result of the last import with 撤销这次导入, and the ways to add things (addSection).
 //
 // A yes is always for what the user saw: the buttons carry the revision of the plan they were drawn for, and an
 // answer names its choice, so a plan the assistant changed in between is refused and drawn again. 确认写入 is only
@@ -62,14 +63,19 @@ func (c *ctx) loadImports() {
 	}
 }
 
-// assistantHint is the row that says how to have the assistant fill the household in. A page cannot write to the
-// assistant: the user sends the picture or the text in the Persona conversation.
-func assistantHint() wire.Component {
-	return wire.Component{
-		Type: wire.ComponentRow, Title: "让助手帮我记",
-		Subtitle: "在 Persona 里把小票、冰箱或柜子的照片、网购订单截图发给助手，或者直接打字，说一句「把这张小票记到家庭管家」。" +
-			"助手读完会在这里放一份「待确认的导入」，你点「确认写入」才会写进去。",
-	}
+// The three ways to add things, each a row saying what it is in one sentence, with its button right under it: one
+// item by its form, a pasted list the page reads itself (no assistant, no model), and the assistant, which a page
+// cannot open or write to: the user sends the picture or the text in the Persona conversation.
+const (
+	addOneWords    = "一样一样填：名字、数量、放在哪、什么时候过期。"
+	pasteWords     = "每行一样，例如「牛奶 2 盒」，由家庭管家自己读、不经过助手；读完先给你看一遍，你点「确认写入」才写进去。"
+	assistantWords = "在 Persona 里把小票、冰箱或柜子的照片、网购订单截图或一段文字发给助手，说一句「把这张小票记到家庭管家」；" +
+		"助手整理好会放到这页的「待确认的导入」里，你确认了才写进去。"
+)
+
+// wayRow is one way to add things: its name and the one sentence on it.
+func wayRow(title, words string) wire.Component {
+	return wire.Component{Type: wire.ComponentRow, Title: title, Subtitle: words}
 }
 
 // pasteButton opens the 粘贴清单 form.
@@ -77,10 +83,20 @@ func pasteButton() wire.Component {
 	return button("粘贴清单", ext.Open("paste", PageUI, state{F: pasteForm}, "粘贴清单"), wire.ButtonRoleNormal)
 }
 
-// bulkSection is 一次记很多: the hint about the assistant and 粘贴清单.
-func bulkSection() wire.Section {
-	return wire.Section{Title: "一次记很多", Items: []wire.Component{assistantHint(), pasteButton()}}
+// addSection is 记新东西, the ways to add things: 记一样 with 添加物品, 自己粘贴一份清单 with 粘贴清单, and 让助手帮我记,
+// which has no button.
+func addSection() wire.Section {
+	return wire.Section{Title: addTitle, Items: []wire.Component{
+		wayRow("记一样", addOneWords),
+		button("添加物品", addAction(model.TItem), wire.ButtonRoleNormal),
+		wayRow("自己粘贴一份清单", pasteWords),
+		pasteButton(),
+		wayRow("让助手帮我记", assistantWords),
+	}}
 }
+
+// addTitle heads the ways to add things.
+const addTitle = "记新东西"
 
 // importSections are the drafts waiting, newest first, then the last import when it was within a day. A store that
 // cannot be read is said in plain words instead.

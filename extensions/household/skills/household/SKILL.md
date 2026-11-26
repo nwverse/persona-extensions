@@ -25,7 +25,7 @@ description: 用户的家庭管家：家里的库存（食材、调味、日用�
 
 用户问「今天吃什么」「家里该买什么」「有什么快过期」「今天要干点啥」或类似的话时：
 
-1. **先调用 `household_advise`**，按它的先后回答：先吃什么（快过期的）、能做什么菜（和 `household_meal_suggest` 的前三道一样）、哪些家务到期、该买什么。原因照 `reason` 说，数字照 `summary`，不要自己数。
+1. **先调用 `household_advise`**，按它的先后回答：先吃什么（快过期的）、能做什么菜（和 `household_meal_suggest` 的前三道一样）、哪些家务到期、该买什么，最后是采购清单上其他还没买的（`kind` 为 `shopping`，不急，提一句就行）。原因照 `reason` 说，数字照 `summary`，不要自己数。
 2. **只说记录里有的**：不要编菜谱、不要编用量；菜谱只列食材，没写用量。没有菜谱就说没有，问用户要不要加几道。
 3. **再问下一步**：排一顿饭（`household_save`，`type` 为 `meal`，带 `date`、`slot`、`recipe`）、把要买的加到采购清单（`household_restock`）、买到了（`household_purchase`）、用掉了（`household_use`，问清用了多少）、家务做完（`household_chore_done`）。这些会改数据，用户同意后再做。
 
