@@ -35,7 +35,7 @@ type tool struct {
 func str(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
 
 var (
-	machineArg = str("目标机器 ID 或 SSH Host 别名（如 local、armbox、devvm、mini-2）；不填默认 local（本机）")
+	machineArg = str("目标机器 ID 或 SSH Host 别名（如 local、build-box、nas-box）；不填默认 local（本机）")
 )
 
 var tools = []tool{
@@ -87,6 +87,27 @@ var tools = []tool{
 		description: "查看各机器冷会话云端备份状态：每台机器的状态 state（ready 正常、no_cli 还没装配套小工具、cli_too_old 配套小工具太旧、no_backend 还没设置网盘、backend_unreachable 网盘连不上、unreachable 连不上这台电脑、unreadable 配套小工具出错了、unchecked 还没检查）与原因、备份后端是否可达、最近检查时间、已索引会话数、按位置（在网盘里 / 暂时不确定 / 网盘里找不到 / 还在电脑上）统计、缺失或未确认的归档分段。",
 	},
 	{
+		name:     "disklessly_advise",
+		readOnly: true,
+		props: map[string]any{
+			"machine": str("只给这台电脑出主意（机器 ID、SSH Host 别名，或 machine_name）；不填就看所有电脑"),
+			"goal": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"description":          "用户想要的结果；不填就列出所有能腾空间的步骤",
+				"properties": map[string]any{
+					"free_gib": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 100000, "description": "至少腾出这么多 GiB：步骤按顺序累计「现在就能做的」腾出量，够了就不再往下列"},
+					"fullest":  map[string]any{"type": "boolean", "description": "若为 true，只看硬盘最满的那一台电脑（填了 machine 时以 machine 为准）"},
+				},
+			},
+			"refresh": map[string]any{"type": "boolean", "description": "默认 false：用上次检查的结果（每台电脑的 checked 说明是多久以前检查的）。若为 true，先对这些电脑做一次和页面「检查」一样的只读检查（只读取大小，不删不搬），较慢"},
+		},
+		description: "只读：帮用户腾硬盘空间时先调用它。根据上次检查的结果、AI 对话的索引和每台电脑的状况，排出一份腾空间的步骤（最满的电脑在前；同一台里先删能重新下载的缓存，再搬一周没动的 AI 对话，再删旧日志和临时文件；「建议先看」的单独放在 look_first 里，默认不删；有 goal 时够了就停）。" +
+			"不删、不搬、不改任何东西，也不读对话内容。每一步 steps[i] 有：machine_id / machine_name（哪台电脑）、action（clean 删放心删的一类 / move_conversations 把一周没动的 AI 对话搬到网盘 / look_first 建议先看）、what（做什么）、frees（大约腾出多少）、risk（一句话的风险）、" +
+			"possible（现在能不能做；false 时 blocked 说为什么、unblock 说怎么才能做、unblock_call 是能帮上忙的工具调用、command 是要在那台电脑上运行的命令）、call（真正执行这一步的现有写入工具和参数，原样调用即可：disklessly_clean 或 disklessly_sessions_offload，执行前 Persona 会请用户确认）、preview_call（只看计划不执行的调用）、page / page_buttons（页面上做这一步的按钮）。" +
+			"另有 machines（每台电脑多满、还剩多少、多久前检查的、连不上的原因）、not_touched（哪些东西绝不碰）、summary 和 how_to_act。只执行用户选中的步骤。",
+	},
+	{
 		name:     "disklessly_clean",
 		readOnly: false,
 		props: map[string]any{
@@ -123,8 +144,8 @@ var tools = []tool{
 		required: []string{"host"},
 		props: map[string]any{
 			"id":            str("机器节点 ID（可选，不填由 host 自动生成）"),
-			"host":          str("SSH Host 别名或主机地址（如 armbox、devvm、mini-2、dev.example.com）"),
-			"name":          str("显示名称（如 armbox (ARM VM)）"),
+			"host":          str("SSH Host 别名或主机地址（如 build-box、nas-box、dev.example.com）"),
+			"name":          str("显示名称（如 build-box (ARM VM)）"),
 			"user":          str("SSH 登录用户名（可选，默认读 ~/.ssh/config）"),
 			"port":          map[string]any{"type": "integer", "minimum": 1, "maximum": 65535, "description": "SSH 端口，默认 22"},
 			"identity_file": str("SSH 私钥路径（可选，默认读 ~/.ssh/config）"),
@@ -261,7 +282,8 @@ func (m *mcpServer) handle(ctx context.Context, method string, params json.RawMe
 			"protocolVersion": cmp.Or(p.ProtocolVersion, mcpProtocol),
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "disklessly", "version": about.Version},
-			"instructions": "Disklessly 机器磁盘与冷会话管理：先用 disklessly_machines_status 查看所有纳管机器的水位和可回收空间，" +
+			"instructions": "Disklessly 硬盘空间：用户说「帮我腾点空间」「哪台电脑快满了」「硬盘不够了」时，先调用只读的 disklessly_advise，把前几步（腾出多少、风险）讲给用户、问做哪一步，再按那一步的 call 调用现有写入工具（要用户确认）。" +
+				"也可以先用 disklessly_machines_status 查看所有纳管机器的水位和可回收空间，" +
 				"再用 disklessly_scan 扫描目标机器查看 Dry-Run 清理计划与冷会话分布；需要执行清理时调用 disklessly_clean；" +
 				"找回以前的 Agent 对话用 disklessly_sessions_search（位置「暂时不确定」不代表丢失），恢复用 disklessly_sessions_restore，冷会话上云用 disklessly_sessions_offload。",
 		}, nil
@@ -543,6 +565,61 @@ func (m *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		var serr error
 		err = m.store.read(func(st *State) { serr = summarize(st, m.store.now().UTC()) })
 		return out, cmp.Or(err, serr)
+
+	case "disklessly_advise":
+		var in struct {
+			Machine string      `json:"machine"`
+			Goal    *adviceGoal `json:"goal"`
+			Refresh bool        `json:"refresh"`
+		}
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		opt := adviceOptions{Machine: strings.TrimSpace(in.Machine)}
+		if in.Goal != nil {
+			if in.Goal.FreeGiB < 0 {
+				return nil, errors.New("goal.free_gib 要大于 0")
+			}
+			opt.Goal = *in.Goal
+		}
+		if !in.Refresh {
+			var aerr error
+			err = m.store.read(func(st *State) { out, aerr = buildAdvice(st, m.store.now().UTC(), opt) })
+			return out, cmp.Or(err, aerr)
+		}
+		// refresh: the same read-only check as the page's 检查 (ScanMachine), then the advice.
+		err = m.store.update(func(st *State, now time.Time) error {
+			var targets []*Machine
+			if opt.Machine != "" {
+				mach := st.machine(opt.Machine)
+				if mach == nil {
+					return fmt.Errorf("找不到电脑 %q（用 disklessly_machines_status 看有哪些）", opt.Machine)
+				}
+				targets = []*Machine{mach}
+			} else {
+				for _, mach := range st.Machines {
+					if mach.Enabled {
+						targets = append(targets, mach)
+					}
+				}
+			}
+			var notes []string
+			for _, mach := range targets {
+				if _, serr := ScanMachine(ctx, m.run(), st, mach, now); serr != nil {
+					msg, _ := humanizeErrFor(mach, serr)
+					notes = append(notes, "「"+machineLabel(mach)+"」没检查成功："+msg)
+				}
+			}
+			adv, aerr := buildAdvice(st, now, opt)
+			if aerr != nil {
+				return aerr
+			}
+			adv.Source = "刚刚重新检查的结果（只读取大小，没有删除或搬走任何东西）"
+			adv.RefreshNotes = notes
+			out = adv
+			return nil
+		})
+		return out, err
 
 	case "disklessly_sessions_offload":
 		var in struct {
