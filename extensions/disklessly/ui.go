@@ -424,18 +424,20 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 			Text: clip("图表和各类明细只画选中的「"+machineLabel(selected)+"」，其他电脑只写用了多少、能腾出多少；"+where, 300)})
 	}
 
+	// 帮我腾空间 comes right after the summary numbers, which stay first on a phone.
+	adviceSec := d.adviceSection()
 	secs := []wire.Section{{
 		Title: "每台电脑的硬盘",
 		Items: topItems,
-	}}
+	}, adviceSec}
 
 	chartLimit := inlineChartMachines
 	if len(statuses) > 32 {
 		chartLimit = 8
 	}
 
-	// Reserve budget for lead (sandbox), top summary section, and trailing manage section (2 items).
-	fleetBudget := max(0, wire.ItemsMost-d.leadItems-len(topItems)-2)
+	// Reserve budget for lead (sandbox), top summary section, the 帮我腾空间 block and trailing manage section (2 items).
+	fleetBudget := max(0, wire.ItemsMost-d.leadItems-len(topItems)-len(adviceSec.Items)-2)
 	used := 0
 
 	for idx, ms := range statuses {

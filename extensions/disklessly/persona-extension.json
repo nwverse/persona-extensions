@@ -30,6 +30,9 @@
     "skills": [
       {"id": "disklessly", "dir": "skills/disklessly"}
     ],
+    "prompts": [
+      {"id": "free-space", "kind": "quick", "title": "帮我腾点空间", "text": "帮我腾点空间：看看哪台电脑的硬盘快满了，按先后列出能删什么、能腾出多少、有什么风险，问我做哪一步。"}
+    ],
     "mcp_servers": [
       {
         "id": "disklessly",
