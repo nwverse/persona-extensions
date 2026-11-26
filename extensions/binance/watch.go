@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -108,6 +109,7 @@ func (a *app) watchPositions(mkt string, ps []position, now time.Time) {
 	warn := a.cfg.LiqWarnPct / 100
 	a.mu.Unlock()
 	cur := map[string]float64{}
+	prefix := mkt + ":"
 	for _, p := range ps {
 		k := p.Symbol + ":" + p.Direction()
 		cur[k] = p.Amount
@@ -123,8 +125,8 @@ func (a *app) watchPositions(mkt string, ps []position, now time.Time) {
 			level = 1
 		}
 		a.w.mu.Lock()
-		prev := a.w.liqLevel[mkt+k]
-		a.w.liqLevel[mkt+k] = level
+		prev := a.w.liqLevel[prefix+k]
+		a.w.liqLevel[prefix+k] = level
 		a.w.mu.Unlock()
 		if level > prev {
 			a.raise(event{Thread: "liq:" + mkt + ":" + k, Kind: "liq_risk", Tier: "action", Push: "time-sensitive", At: now,
@@ -133,6 +135,13 @@ func (a *app) watchPositions(mkt string, ps []position, now time.Time) {
 		}
 	}
 	a.w.mu.Lock()
+	for lk := range a.w.liqLevel {
+		if strings.HasPrefix(lk, prefix) {
+			if _, ok := cur[strings.TrimPrefix(lk, prefix)]; !ok {
+				delete(a.w.liqLevel, lk)
+			}
+		}
+	}
 	prev, had := a.w.prevPos[mkt]
 	a.w.prevPos[mkt] = cur
 	a.w.mu.Unlock()
@@ -200,11 +209,20 @@ func (a *app) followOrders(ctx context.Context, now time.Time) {
 				Body:  fmt.Sprintf("订单 #%d（client id %s），状态 %s，成交 %s。", st.OrderID, o.ClientID, statusName(st.Status), st.ExecutedQty)})
 			_ = a.ledger.update(func(s *ledgerState) error {
 				for i := range s.Placed {
-					if s.Placed[i].ClientID == o.ClientID && s.Placed[i].Market == o.Market {
-						s.Placed[i].OrderID, s.Placed[i].Status, s.Placed[i].Executed = st.OrderID, st.Status, st.ExecutedQty
-						if o.Status == "NOT_FOUND" && s.Day == o.dayIn(a) && s.Placed[i].Notional > 0 {
-							s.UsedUSDT += s.Placed[i].Notional // it counts after all
-							s.Placed[i].Counts = true
+					p := &s.Placed[i]
+					if p.ClientID == o.ClientID && p.Market == o.Market {
+						wasAbsent := p.Status == "NOT_FOUND"
+						p.OrderID, p.Status, p.Executed = st.OrderID, st.Status, st.ExecutedQty
+						if wasAbsent {
+							if !p.Reducing && !p.Counts && p.Notional > 0 {
+								if s.Day == o.dayIn(a) {
+									s.UsedUSDT += p.Notional // it counts after all
+								}
+								p.Counts = true
+							}
+							if s.Day == o.dayIn(a) {
+								s.Orders++
+							}
 						}
 					}
 				}
@@ -250,20 +268,33 @@ func (a *app) watchDeposits(ctx context.Context, now time.Time) {
 	}
 	a.w.mu.Lock()
 	seeded := a.w.seededDep
-	var fresh []string
+	type transferNotice struct {
+		id    string
+		label string
+	}
+	var fresh []transferNotice
 	for _, r := range rows {
-		id := r.ID + r.TxID
+		// Binance deposit status: 0=pending, 1=success, 6=credited (cannot withdraw yet), 7=wrong deposit, 8=waiting confirm.
+		// Only announce completed/credited deposits; leave pending ones unmarked so their later completion is reported.
+		if r.Status != 1 && r.Status != 6 {
+			continue
+		}
+		label := fmt.Sprintf("%s %s（%s）", r.Amount, r.Coin, r.Network)
+		id := firstOf(r.ID, r.TxID)
+		if id == "" {
+			id = label
+		}
 		if !a.w.deposits[id] {
 			a.w.deposits[id] = true
 			if seeded {
-				fresh = append(fresh, fmt.Sprintf("%s %s（%s）", r.Amount, r.Coin, r.Network))
+				fresh = append(fresh, transferNotice{id: id, label: label})
 			}
 		}
 	}
 	a.w.seededDep = true
 	a.w.mu.Unlock()
 	for _, f := range fresh {
-		a.raise(event{Thread: "deposit:" + f, Kind: "deposit", Tier: "fyi", At: now, Title: "币安收到充值 " + f, Body: "新的充值记录：" + f + "。"})
+		a.raise(event{Thread: "deposit:" + f.id, Kind: "deposit", Tier: "fyi", At: now, Title: "币安收到充值 " + f.label, Body: "新的充值记录：" + f.label + "。"})
 	}
 }
 
@@ -281,20 +312,26 @@ func (a *app) watchWithdrawals(ctx context.Context, now time.Time) {
 	}
 	a.w.mu.Lock()
 	seeded := a.w.seededWd
-	var fresh []string
+	type transferNotice struct {
+		id    string
+		label string
+	}
+	var fresh []transferNotice
 	for _, r := range rows {
-		if !a.w.withdraws[r.ID] {
-			a.w.withdraws[r.ID] = true
+		label := fmt.Sprintf("%s %s（%s）", r.Amount, r.Coin, r.Network)
+		id := firstOf(r.ID, label)
+		if !a.w.withdraws[id] {
+			a.w.withdraws[id] = true
 			if seeded {
-				fresh = append(fresh, fmt.Sprintf("%s %s（%s）", r.Amount, r.Coin, r.Network))
+				fresh = append(fresh, transferNotice{id: id, label: label})
 			}
 		}
 	}
 	a.w.seededWd = true
 	a.w.mu.Unlock()
 	for _, f := range fresh {
-		a.raise(event{Thread: "withdraw:" + f, Kind: "withdrawal", Tier: "action", Push: "time-sensitive", At: now,
-			Title: "币安账户有一笔提现 " + f, Body: "扩展不会提现。如果不是你自己操作的，立刻检查账户安全。"})
+		a.raise(event{Thread: "withdraw:" + f.id, Kind: "withdrawal", Tier: "action", Push: "time-sensitive", At: now,
+			Title: "币安账户有一笔提现 " + f.label, Body: "扩展不会提现。如果不是你自己操作的，立刻检查账户安全。"})
 	}
 }
 
@@ -331,10 +368,12 @@ func (a *app) settleAbsent(o placedOrder, now time.Time) {
 			p := &s.Placed[i]
 			if p.ClientID == o.ClientID && p.Market == o.Market && p.Status == "UNKNOWN" {
 				p.Status = "NOT_FOUND"
-				if p.Counts && s.Day == o.dayIn(a) {
-					s.UsedUSDT -= p.Notional
-					if s.UsedUSDT < 0 {
-						s.UsedUSDT = 0
+				if s.Day == o.dayIn(a) {
+					if p.Counts {
+						s.UsedUSDT = math.Max(0, s.UsedUSDT-p.Notional)
+					}
+					if s.Orders > 0 {
+						s.Orders--
 					}
 				}
 				p.Counts = false

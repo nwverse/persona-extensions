@@ -181,7 +181,7 @@ func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json
 func plannedOrder(requestID, cid string, p *orderPlan, now time.Time) placedOrder {
 	return placedOrder{Market: p.Market, Symbol: p.Args.Symbol, ClientID: cid, Side: p.Args.Side, Type: p.Args.Type,
 		Quantity: firstOf(p.Params.Get("quantity"), p.Params.Get("quoteOrderQty")), Price: p.Params.Get("price"),
-		Notional: p.Notional, Counts: p.Counts, At: now, RequestID: requestID}
+		Notional: p.Notional, Reducing: p.Reducing, Counts: p.Counts, At: now, RequestID: requestID}
 }
 
 func savePlacedOrder(s *ledgerState, order placedOrder) {

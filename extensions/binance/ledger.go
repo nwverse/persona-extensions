@@ -45,7 +45,8 @@ type placedOrder struct {
 	Quantity  string    `json:"quantity,omitempty"`
 	Price     string    `json:"price,omitempty"`
 	Notional  float64   `json:"notional"`
-	Counts    bool      `json:"counts,omitempty"` // counted against the allowance (not reduce-only)
+	Reducing  bool      `json:"reducing,omitempty"` // reduce-only / closing order (never counts toward USDT allowance)
+	Counts    bool      `json:"counts,omitempty"`   // currently counted against the USDT allowance
 	Status    string    `json:"status"`
 	Executed  string    `json:"executed,omitempty"`
 	FillPrice string    `json:"fill_price,omitempty"` // paper fills only

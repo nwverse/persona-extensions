@@ -477,3 +477,140 @@ func TestIncomeChunksSevenDayWindowsAndTransfersSetsLimit(t *testing.T) {
 		t.Fatalf("expected explicit limit=1000 for deposits/withdrawals, got dep=%q wd=%q", depLimit, wdLimit)
 	}
 }
+
+func TestLateReconcileAndSettleAbsentAccounting(t *testing.T) {
+	f := newFakeBinance(t)
+	a := testApp(t, f, tradeCfg, t.TempDir())
+	now := time.Now()
+	day := a.cfg.dayKey(now)
+
+	// Seed a NOT_FOUND reduce-only order and a NOT_FOUND normal order, plus an UNKNOWN normal order.
+	if err := a.ledger.update(func(s *ledgerState) error {
+		a.ledger.roll(day)
+		s.UsedUSDT = 15
+		s.Orders = 1
+		s.Placed = []placedOrder{
+			{Market: marketUSDM, Symbol: "BTCUSDT", ClientID: "cid-ro", Side: "SELL", Type: "LIMIT", Notional: 50, Reducing: true, Counts: false, Status: "NOT_FOUND", At: now, RequestID: "req-ro"},
+			{Market: marketSpot, Symbol: "BTCUSDT", ClientID: "cid-norm", Side: "BUY", Type: "LIMIT", Notional: 10, Reducing: false, Counts: false, Status: "NOT_FOUND", At: now, RequestID: "req-norm"},
+			{Market: marketSpot, Symbol: "BTCUSDT", ClientID: "cid-unk", Side: "BUY", Type: "LIMIT", Notional: 15, Reducing: false, Counts: true, Status: "UNKNOWN", At: now.Add(-5 * time.Minute), RequestID: "req-unk"},
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// followOrders finds cid-ro and cid-norm on Binance, while cid-unk returns -2013 and settles absent.
+	f.on("GET fapi.binance.com /fapi/v1/order", func(q url.Values) (int, any) {
+		return 200, map[string]any{"orderId": 7001, "clientOrderId": q.Get("origClientOrderId"), "status": "FILLED", "executedQty": "0.5"}
+	})
+	f.on("GET api.binance.com /api/v3/order", func(q url.Values) (int, any) {
+		if q.Get("origClientOrderId") == "cid-unk" {
+			return 400, map[string]any{"code": -2013, "msg": "Order does not exist."}
+		}
+		return 200, map[string]any{"orderId": 7002, "clientOrderId": q.Get("origClientOrderId"), "status": "NEW", "executedQty": "0"}
+	})
+
+	a.followOrders(context.Background(), now)
+
+	// Expected: cid-unk (-15 USDT, -1 order) + cid-ro (+0 USDT, +1 order) + cid-norm (+10 USDT, +1 order) => UsedUSDT=10, Orders=2.
+	used, orders := a.ledger.usage(day)
+	if used < 9.99 || used > 10.01 || orders != 2 {
+		t.Fatalf("after reconciliation: used=%v orders=%d, want used=10 orders=2", used, orders)
+	}
+	snap := a.ledger.snapshot()
+	if snap.Placed[0].Counts {
+		t.Fatalf("reduce-only recovered order must not set Counts=true: %+v", snap.Placed[0])
+	}
+	if !snap.Placed[1].Counts {
+		t.Fatalf("normal recovered order must set Counts=true: %+v", snap.Placed[1])
+	}
+	if snap.Placed[2].Status != "NOT_FOUND" || snap.Placed[2].Counts {
+		t.Fatalf("settled absent order not cleared: %+v", snap.Placed[2])
+	}
+}
+
+func TestLiqWarningResetsWhenPositionClosed(t *testing.T) {
+	f := newFakeBinance(t)
+	a := testApp(t, f, tradeCfg, t.TempDir())
+	now := time.Now()
+	hasLiq := func() bool {
+		for _, th := range a.inbox.collect("") {
+			if th.Kind == "liq_risk" {
+				return true
+			}
+		}
+		return false
+	}
+	// Default LiqWarnPct is 15% (warn=0.15): d=0.02 -> level 3, d=0.12 -> level 1.
+	a.inbox = newInbox()
+	a.watchPositions(marketUSDM, []position{{Symbol: "BTCUSDT", Side: "BOTH", Amount: 1, Mark: 100, Liquidation: 98, Leverage: 3}}, now)
+	if !hasLiq() {
+		t.Fatalf("expected initial level-3 liq_risk alert, got %+v", a.inbox.collect(""))
+	}
+	// Close position completely so liqLevel resets.
+	a.watchPositions(marketUSDM, nil, now.Add(time.Minute))
+	// Reopen same market/symbol/direction at level 1 (d=0.12 < 0.15): must alert again.
+	a.inbox = newInbox()
+	a.watchPositions(marketUSDM, []position{{Symbol: "BTCUSDT", Side: "BOTH", Amount: 1, Mark: 100, Liquidation: 88, Leverage: 3}}, now.Add(2*time.Minute))
+	if !hasLiq() {
+		t.Fatalf("expected level-1 liq_risk alert after position closed and reopened, got %+v", a.inbox.collect(""))
+	}
+}
+
+func TestDepositsWaitForCompletionAndUseUniqueThreads(t *testing.T) {
+	f := newFakeBinance(t)
+	a := testApp(t, f, tradeCfg, t.TempDir())
+	ctx := context.Background()
+	now := time.Now()
+
+	// Seed empty history.
+	f.on("GET api.binance.com /sapi/v1/capital/deposit/hisrec", fixed([]any{}))
+	a.watchDeposits(ctx, now)
+
+	// Pending deposit (status=0) must NOT alert or be marked seen.
+	f.on("GET api.binance.com /sapi/v1/capital/deposit/hisrec", fixed([]map[string]any{
+		{"id": "dep-1", "txId": "tx-1", "coin": "USDT", "amount": "100", "status": 0, "network": "TRX"},
+	}))
+	a.watchDeposits(ctx, now.Add(time.Minute))
+	if got := a.inbox.collect(""); len(got) != 0 {
+		t.Fatalf("pending deposit triggered alert: %+v", got)
+	}
+
+	// dep-1 completes (status=1) alongside a second identical-amount deposit dep-2 (status=6 credited).
+	f.on("GET api.binance.com /sapi/v1/capital/deposit/hisrec", fixed([]map[string]any{
+		{"id": "dep-1", "txId": "tx-1", "coin": "USDT", "amount": "100", "status": 1, "network": "TRX"},
+		{"id": "dep-2", "txId": "tx-2", "coin": "USDT", "amount": "100", "status": 6, "network": "TRX"},
+	}))
+	a.watchDeposits(ctx, now.Add(2*time.Minute))
+	got := a.inbox.collect("")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 distinct deposit alerts, got %d: %+v", len(got), got)
+	}
+	if got[0].Thread == got[1].Thread || !strings.HasPrefix(got[0].Thread, "deposit:dep-") {
+		t.Fatalf("expected unique deposit:<id> threads, got %q and %q", got[0].Thread, got[1].Thread)
+	}
+}
+
+func TestWithdrawalsUseUniqueThreads(t *testing.T) {
+	f := newFakeBinance(t)
+	a := testApp(t, f, tradeCfg, t.TempDir())
+	ctx := context.Background()
+	now := time.Now()
+
+	f.on("GET api.binance.com /sapi/v1/capital/withdraw/history", fixed([]any{}))
+	a.watchWithdrawals(ctx, now)
+
+	// Two distinct withdrawals with identical amount/coin/network must produce two distinct inbox threads.
+	f.on("GET api.binance.com /sapi/v1/capital/withdraw/history", fixed([]map[string]any{
+		{"id": "wd-1", "coin": "USDT", "amount": "50", "network": "TRX"},
+		{"id": "wd-2", "coin": "USDT", "amount": "50", "network": "TRX"},
+	}))
+	a.watchWithdrawals(ctx, now.Add(time.Minute))
+	got := a.inbox.collect("")
+	if len(got) != 2 {
+		t.Fatalf("expected 2 distinct withdrawal alerts, got %d: %+v", len(got), got)
+	}
+	if got[0].Thread == got[1].Thread || !strings.HasPrefix(got[0].Thread, "withdraw:wd-") {
+		t.Fatalf("expected unique withdraw:<id> threads, got %q and %q", got[0].Thread, got[1].Thread)
+	}
+}
