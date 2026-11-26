@@ -361,8 +361,8 @@ func TestCopyInstallOffer(t *testing.T) {
 	if btn.Action.Values["m"] != "old-box" || btn.Action.Values["id"] != "build-box" {
 		t.Fatalf("install values: %v", btn.Action.Values)
 	}
-	if !strings.Contains(old[0].Detail, "0.1.0") || !strings.Contains(old[0].Detail, "太旧") {
-		t.Fatalf("old-box detail: %s", old[0].Detail)
+	if says := rowSays(old); !strings.Contains(says, "0.1.0") || !strings.Contains(says, "太旧") {
+		t.Fatalf("old-box detail: %s", says)
 	}
 
 	// Across platforms nothing is offered; the only darwin CLI is a Homebrew install, so the row says why.
@@ -370,8 +370,8 @@ func TestCopyInstallOffer(t *testing.T) {
 	if buttonIn(mini, "从 ") != nil {
 		t.Fatalf("mini-mac offered a copy: %+v", mini)
 	}
-	if !strings.Contains(mini[0].Detail, "studio-mac") || !strings.Contains(mini[0].Detail, "不能复制") {
-		t.Fatalf("mini-mac reason: %s", mini[0].Detail)
+	if says := rowSays(mini); !strings.Contains(says, "studio-mac") || !strings.Contains(says, "不能复制") {
+		t.Fatalf("mini-mac reason: %s", says)
 	}
 	hasLink := false
 	for _, c := range mini {

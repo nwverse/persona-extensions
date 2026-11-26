@@ -187,12 +187,12 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 		if len(items) == 0 {
 			t.Fatalf("%s: no row", id)
 		}
-		row := items[0]
-		if !strings.Contains(row.Detail, id) {
-			t.Fatalf("%s: detail does not name the machine: %q", id, row.Detail)
+		says := rowSays(items)
+		if !strings.Contains(says, id) {
+			t.Fatalf("%s: detail does not name the machine: %q", id, says)
 		}
-		if english.MatchString(row.Detail) || strings.Contains(row.Detail, "EX_") || strings.Contains(row.Detail, "198.51.100.9") {
-			t.Fatalf("%s: raw text in the row: %q", id, row.Detail)
+		if english.MatchString(says) || strings.Contains(says, "EX_") || strings.Contains(says, "198.51.100.9") {
+			t.Fatalf("%s: raw text in the row: %q", id, says)
 		}
 		hasFix := false
 		for _, c := range items[1:] {
@@ -222,8 +222,8 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 	if buttonIn(old, "用 Homebrew") != nil || buttonIn(old, "从 build-box 复制过来") == nil {
 		t.Fatalf("old-box: %+v", old)
 	}
-	if !strings.Contains(old[0].Detail, "0.1.0") || !strings.Contains(old[0].Detail, "没有 Homebrew") {
-		t.Fatalf("old-box detail: %q", old[0].Detail)
+	if says := rowSays(old); !strings.Contains(says, "0.1.0") || !strings.Contains(says, "没有 Homebrew") {
+		t.Fatalf("old-box detail: %q", says)
 	}
 	// Neither: the manual commands, and no install button.
 	bare := itemsOf(v, "bare-box")
@@ -240,7 +240,7 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 		t.Fatal(err)
 	}
 	v2, _ := a.renderSessions(context.Background(), &ext.UIRequest{})
-	if d := itemsOf(v2, "bare-box")[0].Detail; strings.Contains(d, "这台电脑没有 Homebrew") || !strings.Contains(d, "重新检查") {
+	if d := rowSays(itemsOf(v2, "bare-box")); strings.Contains(d, "这台电脑没有 Homebrew") || !strings.Contains(d, "重新检查") {
 		t.Fatalf("unknown Homebrew: %q", d)
 	}
 	if cmds := strings.Join(codeIn(bare), "\n"); !strings.Contains(cmds, brewInstallCmd) || !strings.Contains(cmds, "brew.sh") {

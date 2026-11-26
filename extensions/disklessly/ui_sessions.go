@@ -377,6 +377,8 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 			a.brew = true
 			a.Next = "这台电脑有 Homebrew（一个装软件的工具）：点「" + brewButtonTitle(a.upgrade) + "」就行，装好后会自动重新检查。它在后台运行的命令如下。"
 			a.Command = cmd
+			a.Lead = a.Reason + "这台电脑有 Homebrew（一个装软件的工具），不用开终端：点「" + brewButtonTitle(a.upgrade) + "」就行，装好后会自动重新检查。"
+			a.CmdIntro = "点了以后，它会在" + name + "上运行这条命令（不用自己运行）："
 		case cat == nil || !cat.BrewKnown:
 			a.copy = offer
 			a.Next = "还不知道这台电脑有没有 Homebrew（一个装软件的工具）：先点「重新检查 " + machineLabel(m) + "」，有的话会出现「" + brewButtonTitle(a.upgrade) + "」。"
@@ -390,9 +392,14 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 			a.Next = fmt.Sprintf("这台电脑没有 Homebrew：点「从 %s 复制过来」，会从同为 %s 的 %s 复制 disklessly %s 过来；也可以在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具。",
 				machineLabel(offer.src), offer.platform, machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本不清楚）"))
 			a.Command = manual
+			a.Lead = a.Reason + fmt.Sprintf("这台电脑没有 Homebrew（一个装软件的工具），不过不用开终端：点「从 %s 复制过来」，会从同为 %s 的 %s 复制 disklessly %s 过来。",
+				machineLabel(offer.src), offer.platform, machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本不清楚）"))
+			a.CmdIntro = "懂终端的话，也可以在" + name + "上运行下面的命令，先装 Homebrew（一个装软件的工具），再装配套小工具："
 		default:
 			a.Next = "这台电脑没有 Homebrew，也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。请在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具，然后点「重新检查 " + machineLabel(m) + "」。"
 			a.Command = manual
+			a.Lead = a.Reason + "这台电脑没有 Homebrew（一个装软件的工具），也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "），所以这一步要在" + name + "上开终端装一次；装好后点「重新检查 " + machineLabel(m) + "」。"
+			a.CmdIntro = "在" + name + "的终端里依次运行下面的命令：先装 Homebrew，再装配套小工具。"
 		}
 	case ColdNoBackend:
 		a.problem = noBackendProblem(m)
@@ -404,11 +411,15 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 		a.Reason = name + "用的网盘（" + id + "）现在连不上，所以对话在不在网盘里暂时显示「暂时不确定」，不会当成丢了。"
 		a.Next = "确认网盘（或家里的 NAS）在线、网络通了，再点「重新检查 " + machineLabel(m) + "」；想看具体原因，在这台电脑上运行下面的命令。"
 		a.Command = "disklessly doctor"
+		a.Lead = a.Reason + "多半是：网盘（或家里的 NAS）关机、断网了，" + name + "暂时上不了网，或者网盘的登录过期了。先确认网盘在线、网络通了，再点「重新检查 " + machineLabel(m) + "」。"
+		a.CmdIntro = "懂终端的话，可以在" + name + "上运行这条命令看具体原因："
 		if strings.Contains(b.Error, "repo.json is not in") {
 			// The backend answers, but holds no Disklessly repository.
 			a.Reason = name + "用的网盘（" + id + "）能连上，但里面还没有 Disklessly 的存放目录（找不到 repo.json），所以暂时显示「暂时不确定」。"
 			a.Next = "多半是选错了网盘目录：在这台电脑上用下面的命令看看设置了哪些网盘，换成正确的那个；如果这就是要新用的目录，就在里面新建。然后点「重新检查 " + machineLabel(m) + "」。"
 			a.Command = "disklessly backend list\ndisklessly backend use <后端 ID>   # 换到已经在用的那个网盘\ndisklessly init                    # 或者：在当前网盘里新建存放目录"
+			a.Lead = a.Reason + "多半是这台电脑设置的网盘目录不对，比如换过网盘、改过路径。换回原来的目录要在" + name + "上开终端做一次，做完点「重新检查 " + machineLabel(m) + "」。"
+			a.CmdIntro = "在" + name + "的终端里运行：先看设置了哪些网盘，换成原来那个；如果这就是要新用的目录，就在里面新建存放目录。"
 		}
 		a.Raw = strings.TrimSpace(fmt.Sprintf("%s（%s，%d ms）", b.Error, cmp.Or(b.Type, "网盘"), b.LatencyMs))
 	case ColdOffline:
@@ -427,9 +438,13 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 		if hung {
 			a.Reason = name + "上的配套小工具 3 分钟内没有答完，网盘里的情况暂时不确定。"
 			a.Next = "过一会儿点「重试 " + machineLabel(m) + "」；一直这样的话，在这台电脑上运行下面的命令看看卡在哪里。"
+			a.Lead = a.Reason + "多半是这台电脑这会儿很忙，或者网盘很慢。过一会儿点「重试 " + machineLabel(m) + "」。"
+			a.CmdIntro = "一直这样的话，懂终端可以在" + name + "上运行这条命令，看看卡在哪里："
 		} else {
 			a.Reason = name + "上的配套小工具出错了（回答看不懂），网盘里的情况暂时不确定。"
 			a.Next = "点「重试 " + machineLabel(m) + "」；还是这样的话，在这台电脑上运行下面的命令，把输出（「详情」里也有）发给维护者。"
+			a.Lead = a.Reason + "先点「重试 " + machineLabel(m) + "」，多数时候再试一次就好了。"
+			a.CmdIntro = "还是这样的话，懂终端可以在" + name + "上运行这条命令，把输出（「详情」里也有）发给维护者："
 		}
 		a.Command = "disklessly --json sessions status --check-segments"
 		if cat != nil {
@@ -451,7 +466,7 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 	if a.retry != "" {
 		r.button = a.retry + " " + machineLabel(m)
 	}
-	a.Reason, a.Next = r.rename(a.Reason), r.rename(a.Next)
+	a.problem = a.renamed(r)
 	return a
 }
 
@@ -475,12 +490,17 @@ func noBackendProblem(m *Machine) problem {
 		reason = "这台电脑还没有设置网盘，对话没地方放，这次一个都没有搬走或删除。"
 		next = "先在这台电脑上设置一个网盘（Google Drive 这类网盘、家里的 NAS 都行）：运行下面的命令，设置好后点「重试」。"
 	}
-	return problem{
+	p := problem{
 		Title:   coldStateLabel(ColdNoBackend),
 		Reason:  reason,
 		Next:    next,
 		Command: noBackendCommand,
 	}
+	if m != nil {
+		p.Lead = reason + "设置网盘（Google Drive 这类网盘、家里的 NAS 都行）要在" + "「" + machineLabel(m) + "」上开终端做一次，设置好后点「重新检查 " + machineLabel(m) + "」。"
+		p.CmdIntro = "在「" + machineLabel(m) + "」的终端里运行：先看已有的网盘，再加一个（选一种就行）。"
+	}
+	return p
 }
 
 // detailsKey names what the 详情 toggle of a part of the page opens.
@@ -507,6 +527,15 @@ func commandItem(key, command string) []wire.Component {
 		return nil
 	}
 	return []wire.Component{{Type: wire.ComponentCode, Key: boundedKey("cmd-", key), Language: "sh", Text: command}}
+}
+
+// commandItems draws a command to copy, after the line that says where to run it and why.
+func commandItems(key, intro, command string) []wire.Component {
+	items := commandItem(key, command)
+	if len(items) == 0 || intro == "" {
+		return items
+	}
+	return append([]wire.Component{{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: intro}}, items...)
 }
 
 // machineStateRow builds the header row and advice for one machine.
@@ -586,13 +615,21 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 	row, adv := d.machineStateRow(m, cat, state)
 
 	raw := adv.Raw
-	items := []wire.Component{row}
-	command := adv.Command
+	// A computer that is not ready leads with what is wrong and what to do, in a line of its
+	// own under its row; the commands come after, as a secondary step.
+	var lead []wire.Component
+	if state != ColdReady {
+		row.Detail = ""
+		lead = []wire.Component{{Type: wire.ComponentText, Text: clip(adv.lead(), 600)}}
+	}
+	items := append([]wire.Component{row}, lead...)
+	command, intro := adv.Command, adv.CmdIntro
 	var last *coldJob
 	if j, ok := d.jobs[m.ID]; ok {
 		if j.running() {
 			row.Badge = &wire.Badge{Text: "进行中", Tone: wire.ToneNeutral}
-			items[0] = row
+			// Only the running job's line: the lead names buttons that are hidden meanwhile.
+			items = []wire.Component{row}
 			items = append(items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
 				Text: fmt.Sprintf("%s…（%s开始，完成后页面会自动更新）", j.Label, d.when(j.Started))})
 			return items // no actions while it runs: a second start would be refused anyway
@@ -604,11 +641,11 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 				raw = strings.TrimSpace(raw + "\n上次操作：" + j.Raw)
 			}
 			if j.Err != "" && j.Command != "" {
-				command = j.Command
+				command, intro = j.Command, "懂终端的话，可以在「"+name+"」上运行下面的命令："
 			}
 		}
 	}
-	items = append(items, commandItem(detailsKey("cold", m.ID), command)...)
+	items = append(items, commandItems(detailsKey("cold", m.ID), intro, command)...)
 	// The upload: offered on a ready computer only; a failed upload offers a real retry.
 	switch {
 	case last != nil && last.Kind == jobOffload && last.Err != "" && state == ColdReady:

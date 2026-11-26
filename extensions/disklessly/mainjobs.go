@@ -183,14 +183,14 @@ func (d draw) machineJobItems(m *Machine, rescan, reclean retryHint) []wire.Comp
 		}
 	}
 	if m.LastError != "" {
-		p := sshProblem(m, m.LastError)
-		p.Reason, p.Next = rescan.rename(p.Reason), rescan.rename(p.Next)
+		p := sshProblem(m, m.LastError).renamed(rescan)
 		if sandboxed() && p.Cause == causeSandbox {
 			// The banner at the top already says it and gives the command.
 			items = append(items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: clip("上次检查没有成功："+p.Reason, 300)})
 		} else {
-			items = append(items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: clip("上次检查没有成功："+p.text(), 400)})
-			items = append(items, commandItem(detailsKey("scan", m.ID), p.Command)...)
+			// What is wrong and what to do first, then the command as a secondary step.
+			items = append(items, wire.Component{Type: wire.ComponentText, Text: clip("上次检查没有成功："+p.lead(), 600)})
+			items = append(items, commandItems(detailsKey("scan", m.ID), p.CmdIntro, p.Command)...)
 		}
 		raw = strings.TrimSpace(p.Raw + "\n" + raw)
 	}
