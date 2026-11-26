@@ -252,7 +252,10 @@ func (a *app) overview(r *ext.UIRequest, feeds []feed, loc *time.Location) wire.
 		state, tone = "能连上", wire.TonePositive
 	}
 	service := clip(h.Host, 60)
-	if h.Host == "rsshub.app" {
+	switch {
+	case h.Config != nil:
+		service = "设置里的地址用不了"
+	case h.Host == "rsshub.app":
 		service = "免费公共服务 rsshub.app"
 	}
 	checked := "还没检查过"
@@ -270,7 +273,7 @@ func (a *app) overview(r *ext.UIRequest, feeds []feed, loc *time.Location) wire.
 		}})
 	} else {
 		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentText,
-			Text: fmt.Sprintf("订阅了 %d 个网站 · 未读 %d 篇 · 上次检查 %s · RSSHub 服务：%s（%s）", len(feeds), unread, checked, state, service)})
+			Text: fmt.Sprintf("订阅了 %d 个网站 · 未读 %d 篇 · 上次检查：%s · RSSHub 服务：%s（%s）", len(feeds), unread, checked, state, service)})
 	}
 	if len(failing) > 0 {
 		names := failing

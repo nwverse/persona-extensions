@@ -97,7 +97,7 @@ func explain(raw string) problem {
 		p.Cause = "这个地址是本机或内网的，出于安全不能直接读"
 		p.Todo = "装在本机的 RSSHub 请填到设置里的「RSSHub 服务地址」；其他地址请换成公网能打开的"
 	case has("连不上"):
-		p.Cause = "连不上这个网站"
+		p.Cause = "连不上对方"
 		p.Todo = "检查网络是否正常、地址有没有写错；过一会儿再试"
 	case has("不是路由也不是网址", "不是网址", "只能是 http(s)", "订阅源只能是", "要写一条", "路由"):
 		p.Cause = "这不像是一个能订阅的地址"
