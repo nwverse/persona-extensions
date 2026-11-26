@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -8,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
@@ -105,6 +107,16 @@ func TestDumpPages(t *testing.T) {
 		"disk-items-studio.txt": diskView(t, a, "studio-mac", tabItems),
 		"sessions-all.txt":      sessView(t, a, ""),
 		"sessions-studio.txt":   sessView(t, a, "studio-mac"),
+		// studio-mac reachable, its drive without a repository, nothing moved from it yet.
+		"sessions-studio-reachable.txt": sessView(t, mixedFleet(t), "studio-mac"),
+	}
+	if all := findComponentByKey(views["disk-fleet.txt"], "steps-all"); all != nil && all.Action.Push != nil {
+		// The page that lists every step (0.5.3).
+		res, err := a.render(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{UIVersion: 8, State: all.Action.Push.State}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		views["disk-advice-all.txt"] = res
 	}
 	for name, v := range views {
 		if err := os.WriteFile(filepath.Join(dir, name), []byte(dumpView(v)), 0o644); err != nil {

@@ -144,9 +144,14 @@ func TestUnreadableToolIsCheckedAgain(t *testing.T) {
 // counts as 还没核对过 because of it, or that none is; never that the page shows what it does not.
 func TestDriveProblemSaysHowManyAreUnchecked(t *testing.T) {
 	a := mixedFleet(t) // studio-mac: drive without a repository, no conversation moved
-	txt := componentsText(itemsOf(sessView(t, a, "studio-mac"), "studio-mac"))
+	sv := sessView(t, a, "studio-mac")
+	txt := componentsText(itemsOf(sv, "studio-mac"))
 	if !strings.Contains(txt, "不过这台电脑还没有搬到网盘的对话，所以没有对话受影响。") || strings.Contains(txt, "暂时显示") {
 		t.Errorf("no conversations:\n%s", txt)
+	}
+	// The advice block names the state as the row's badge does, not as MCP's state_label.
+	if adv := sectionByKey(sv, "sessions-advice"); adv == nil || !strings.Contains(componentsText(adv.Items), "现在还搬不了："+noRepoText+"。") {
+		t.Errorf("advice block: %+v", adv)
 	}
 	if err := a.db().update(func(st *State, now time.Time) error {
 		c := *st.cold("studio-mac")

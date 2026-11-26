@@ -139,7 +139,7 @@ func (d draw) lookFirstRow(s adviceStep) wire.Component {
 	}
 	where := "在「" + planText + "」里自己决定删不删。"
 	if !s.Possible {
-		where = "现在还做不了：" + strings.TrimPrefix(s.short, "现在") + "。"
+		where = "现在还做不了：" + d.stepShort(s) + "。"
 	}
 	return wire.Component{
 		Type:     wire.ComponentRow,
@@ -190,7 +190,7 @@ func (d draw) sessionsAdviceSection(m *Machine) wire.Section {
 		sub := "搬到网盘最多腾出 " + FormatBytes(s.FreesBytes) + "，还在用的会留着。在下面它那一行点「" + d.moveButton(s.MachineID) + "」。"
 		if !s.Possible {
 			badge.Tone = wire.ToneNeutral
-			sub = "现在还搬不了：" + strings.TrimPrefix(s.short, "现在") + "。处理办法在下面它那一行。"
+			sub = "现在还搬不了：" + d.stepShort(s) + "。处理办法在下面它那一行。"
 		}
 		row := wire.Component{Type: wire.ComponentRow, Key: boundedKey("move-", s.MachineID), Title: clip(title, 200), Subtitle: clip(sub, 400), Badge: badge}
 		if m == nil {
@@ -203,6 +203,17 @@ func (d draw) sessionsAdviceSection(m *Machine) wire.Section {
 	}
 	sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: assistantFindHint})
 	return sec
+}
+
+// stepShort is why step s cannot be done now, in the pages' words: a conversation move blocked
+// by the computer's state names it as the AI 对话 row's badge does.
+func (d draw) stepShort(s adviceStep) string {
+	if m := d.st.machine(s.MachineID); s.Action == adviceMove && m != nil && m.Reachable {
+		if cat := d.st.cold(m.ID); cat.stateCode() != ColdReady {
+			return d.pageLabel(m, cat)
+		}
+	}
+	return strings.TrimPrefix(s.short, "现在")
 }
 
 // boolRank orders false before true.
@@ -236,7 +247,7 @@ func (d draw) adviceRow(s adviceStep) wire.Component {
 	switch {
 	case !s.Possible:
 		badge.Tone = wire.ToneNeutral
-		where = "现在还做不了：" + strings.TrimPrefix(s.short, "现在") + "。"
+		where = "现在还做不了：" + d.stepShort(s) + "。"
 		if s.pageTab == sessionsUI {
 			where += "到「" + sessionsTitle + "」页看怎么处理。"
 		} else {
