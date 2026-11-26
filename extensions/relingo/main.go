@@ -1,11 +1,11 @@
-// Command termwise is a Persona extension with one reading page and two modes.
+// Command relingo is a Persona extension with one reading page and two modes.
 //
 // Translation mode keeps the sample article and adds a translation under each block.
 // Vocabulary mode leaves that text in place and underlines vocabulary candidates; choosing
 // one shows the gloss and can remember the word. The choice and the remembered words are
 // stored in the extension data directory.
 //
-// `termwise preview` serves the same reader over HTTP so the underlines can be used in a
+// `relingo preview` serves the same reader over HTTP so the underlines can be used in a
 // browser. The hub starts the program with no arguments and speaks the extension protocol.
 package main
 
@@ -51,8 +51,9 @@ func main() {
 func program(a *app) ext.Program {
 	return ext.Program{
 		ID: about.ID, Version: about.Version, Manifest: manifest,
-		Init: a.init,
-		UI:   map[string]ext.Page{pageUI: {Render: a.render, Action: a.action}},
+		Init:       a.init,
+		UI:         map[string]ext.Page{pageUI: {Render: a.render, Action: a.action}},
+		Namespaces: map[string]ext.Handler{"text_lookup": a.lookupMethods()},
 	}
 }
 
@@ -66,7 +67,7 @@ func runPreview(args []string) error {
 	data := *dir
 	if data == "" {
 		var err error
-		data, err = os.MkdirTemp("", "termwise-preview-")
+		data, err = os.MkdirTemp("", "relingo-preview-")
 		if err != nil {
 			return err
 		}
@@ -82,7 +83,7 @@ func runPreview(args []string) error {
 		<-ctx.Done()
 		_ = srv.Close()
 	}()
-	fmt.Fprintf(os.Stderr, "termwise preview at http://%s (state %s)\n", *addr, data)
+	fmt.Fprintf(os.Stderr, "relingo preview at http://%s (state %s)\n", *addr, data)
 	err := srv.ListenAndServe()
 	if err == http.ErrServerClosed {
 		return nil

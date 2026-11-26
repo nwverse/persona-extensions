@@ -424,18 +424,20 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 			Text: clip("图表和各类明细只画选中的「"+machineLabel(selected)+"」，其他电脑只写用了多少、能腾出多少；"+where, 300)})
 	}
 
+	// 帮我腾空间 comes right after the summary numbers, which stay first on a phone.
+	adviceSec := d.adviceSection()
 	secs := []wire.Section{{
 		Title: "每台电脑的硬盘",
 		Items: topItems,
-	}}
+	}, adviceSec}
 
 	chartLimit := inlineChartMachines
 	if len(statuses) > 32 {
 		chartLimit = 8
 	}
 
-	// Reserve budget for lead (sandbox), top summary section, and trailing manage section (2 items).
-	fleetBudget := max(0, wire.ItemsMost-d.leadItems-len(topItems)-2)
+	// Reserve budget for lead (sandbox), top summary section, the 帮我腾空间 block and trailing manage section (2 items).
+	fleetBudget := max(0, wire.ItemsMost-d.leadItems-len(topItems)-len(adviceSec.Items)-2)
 	used := 0
 
 	for idx, ms := range statuses {
@@ -796,11 +798,9 @@ func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 }
 
 func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, filtered []ScanItem, bd categoryBreakdown) []wire.Section {
-	catBytes := map[string]uint64{}
-	catCounts := map[string]int{}
+	shownCat := map[string]bool{}
 	for _, it := range filtered {
-		catBytes[it.Category] += it.Bytes
-		catCounts[it.Category]++
+		shownCat[it.Category] = true
 	}
 
 	catSec := wire.Section{
@@ -816,22 +816,32 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 		})
 	}
 
-	// Per-category quick clean rows
+	// Per-category quick clean rows. Their numbers come from the very plan the tap runs (the
+	// whole kind, whatever the search shows; in-use and empty items left out), so the row and its
+	// confirmation count exactly what gets deleted.
 	for _, cid := range CategoryIDs {
-		if catBytes[cid] == 0 {
+		if !shownCat[cid] {
 			continue
+		}
+		plan := categoryCleanPlan(m, scan, cid)
+		if plan == nil || plan.ExpectedFree == 0 {
+			continue
+		}
+		sub := fmt.Sprintf("%d 项 · 大约腾出 %s", len(plan.Items), FormatBytes(plan.ExpectedFree))
+		if k := len(reviewItems(plan.Items)); k > 0 {
+			sub = fmt.Sprintf("%d 项 · 其中 %d 项建议先看 · 大约腾出 %s", len(plan.Items), k, FormatBytes(plan.ExpectedFree))
 		}
 		catSec.Items = append(catSec.Items, wire.Component{
 			Type:     wire.ComponentRow,
 			Key:      "cat-clean-" + cid,
 			Icon:     "folder",
 			Title:    "删掉：" + categoryName(cid),
-			Subtitle: fmt.Sprintf("%d 项 · 大约腾出 %s", catCounts[cid], FormatBytes(catBytes[cid])),
-			Badge:    &wire.Badge{Text: FormatBytes(catBytes[cid]), Tone: wire.TonePositive},
+			Subtitle: sub,
+			Badge:    &wire.Badge{Text: FormatBytes(plan.ExpectedFree), Tone: wire.TonePositive},
 			Action: &wire.Action{
 				ID:      "clean-category",
 				Values:  map[string]string{"m": m.ID, "cat": cid},
-				Confirm: categoryConfirm(m, cid, catCounts[cid], catBytes[cid]),
+				Confirm: categoryConfirm(m, scan, cid, plan),
 			},
 		})
 	}
@@ -1741,13 +1751,22 @@ func safeLogsNote(scan *Scan) string {
 	if scan == nil {
 		return ""
 	}
-	var n int
-	var parts []string
+	var logs []ScanItem
 	for _, it := range scan.Items {
-		if it.Category != CatTmpLogs || it.Safety != SafetySafe || it.InUse {
-			continue
+		if it.Category == CatTmpLogs && it.Safety == SafetySafe && !it.InUse {
+			logs = append(logs, it)
 		}
-		n++
+	}
+	if len(logs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("还会删掉 %d 项日志和临时文件，这些删了就找不回来：%s。", len(logs), logsNoteParts(logs))
+}
+
+// logsNoteParts says, item by item, what deleting each old log or temporary-file item removes.
+func logsNoteParts(logs []ScanItem) string {
+	var parts []string
+	for _, it := range logs {
 		size := FormatBytes(it.Bytes)
 		switch it.ID {
 		case "journalctl-vacuum":
@@ -1760,17 +1779,105 @@ func safeLogsNote(scan *Scan) string {
 			parts = append(parts, cmp.Or(strings.TrimSpace(it.Title), it.ID)+"（"+size+"）")
 		}
 	}
-	if n == 0 {
-		return ""
-	}
-	return fmt.Sprintf("还会删掉 %d 项日志和临时文件，这些删了就找不回来：%s。", n, strings.Join(parts, "；"))
+	return strings.Join(parts, "；")
 }
 
-func categoryConfirm(m *Machine, cid string, n int, bytes uint64) string {
+// categoryCleanArgs are the disklessly clean arguments the 删掉：<种类> row's clean-category
+// action runs with: the kind by name, which takes its 建议先看 items too (see BuildCleanPlan).
+func categoryCleanArgs(cid string) (categories []string, includeReview bool) {
+	return []string{cid}, true
+}
+
+// categoryCleanPlan is what tapping 删掉：<种类> deletes on m right now; nil when it would refuse.
+func categoryCleanPlan(m *Machine, scan *Scan, cid string) *CleanPlan {
+	cats, includeReview := categoryCleanArgs(cid)
+	plan, err := BuildCleanPlan(m, scan, cats, nil, includeReview)
+	if err != nil {
+		return nil
+	}
+	return plan
+}
+
+func reviewItems(items []ScanItem) []ScanItem {
+	var out []ScanItem
+	for _, it := range items {
+		if it.Safety == SafetyReview {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// maxNamedReviewItems is how many 建议先看 items a kind's confirmation names before 等 N 项.
+const maxNamedReviewItems = 3
+
+// categoryConfirm says what tapping 删掉：<种类> deletes: plan is categoryCleanPlan's, so the
+// count and size are what really goes. Caches come back by downloading or building again; old
+// logs and temporary files do not; 建议先看 items are named with their own reason, since this
+// one tap deletes them too. Old conversations are moved, not deleted, and keep their own words.
+func categoryConfirm(m *Machine, scan *Scan, cid string, plan *CleanPlan) string {
 	if cid == CatColdAgentSession {
 		return sessionOffloadConfirm(m)
 	}
-	return fmt.Sprintf("在「%s」上删掉「%s」这一类（共 %d 项，大约腾出 %s）？", machineLabel(m), categoryName(cid), n, FormatBytes(bytes))
+	var caches, logs []ScanItem
+	review := reviewItems(plan.Items)
+	for _, it := range plan.Items {
+		switch {
+		case it.Safety == SafetyReview:
+		case it.Category == CatTmpLogs:
+			logs = append(logs, it)
+		default:
+			caches = append(caches, it)
+		}
+	}
+	n := len(plan.Items)
+	var b strings.Builder
+	fmt.Fprintf(&b, "在「%s」上删掉「%s」这一类？一共 %d 项，大约腾出 %s。", machineLabel(m), categoryName(cid), n, FormatBytes(plan.ExpectedFree))
+	group := func(k int) string {
+		switch {
+		case k == 1 && n == 1:
+			return "这 1 项是"
+		case k == n:
+			return fmt.Sprintf("这 %d 项都是", k)
+		}
+		return fmt.Sprintf("其中 %d 项是", k)
+	}
+	if len(caches) > 0 {
+		b.WriteString(group(len(caches)) + "「放心删」的缓存，删了以后用到时会重新下载或重新生成。")
+	}
+	if len(logs) > 0 {
+		b.WriteString(group(len(logs)) + "日志和临时文件，删了就找不回来：" + logsNoteParts(logs) + "。")
+	}
+	if len(review) > 0 {
+		var named []string
+		for _, it := range review[:min(len(review), maxNamedReviewItems)] {
+			why := strings.TrimRight(strings.TrimSpace(it.Reason), "。；，")
+			named = append(named, fmt.Sprintf("%s（%s），%s", cmp.Or(strings.TrimSpace(it.Title), it.ID), FormatBytes(it.Bytes), clip(cmp.Or(why, "比较大，删了重新下载或重新生成很慢"), 120)))
+		}
+		more := ""
+		if len(review) > maxNamedReviewItems {
+			more = fmt.Sprintf("等 %d 项", len(review))
+		}
+		them := "它"
+		if len(review) > 1 {
+			them = "它们"
+		}
+		keep := "不想删" + them + "，就到下面的每一项里只删别的。"
+		if len(review) == n {
+			keep = "不想删" + them + "，就先别点。"
+		}
+		fmt.Fprintf(&b, "%s「建议先看」的，平时只有自己挑了才删：%s%s。点这一行，%s也会一起删掉；%s", group(len(review)), strings.Join(named, "；"), more, them, keep)
+	}
+	var inUse int
+	for _, it := range scan.Items {
+		if it.Category == cid && it.InUse && (it.Bytes > 0 || it.SessionCnt > 0) {
+			inUse++
+		}
+	}
+	if inUse > 0 {
+		fmt.Fprintf(&b, "另有 %d 项正在用，不删，也没算在里面。", inUse)
+	}
+	return b.String()
 }
 
 func itemConfirm(m *Machine, it ScanItem, verb string) string {

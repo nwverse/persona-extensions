@@ -41,7 +41,7 @@ func (m myMemory) Translate(ctx context.Context, text, target string) (string, e
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "persona-termwise/"+about.Version)
+	req.Header.Set("User-Agent", "persona-relingo/"+about.Version)
 	res, err := client.Do(req)
 	if err != nil {
 		return "", err

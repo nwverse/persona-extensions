@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/memsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
@@ -319,7 +320,7 @@ func contractHard(st *store.State, ids []string, cutoff string) (hard bool, viol
 			}
 		}
 	}
-	if !hard && cueHits > 0 && (len(days) >= 2 || cueHits >= 2 || userConfirmed) {
+	if !hard && cueHits > 0 && (len(days) >= 2 || userConfirmed) {
 		hard = true
 	}
 	_ = totalCount
@@ -416,41 +417,79 @@ func apply(p *Pattern, t tally) {
 	p.Gate = gate(p, t)
 }
 
-// tags are the categories and the source space a pattern carries: the union of its evidence's (privacy taint,
-// design 2.8), decided as memory.entries decides them for each entry (memsrc.Tags).
-// A class tagged with no category still taints its pattern with its members' categories: every entry under an id (two
-// levels, as evidenceOf walks) counts.
-func tags(st *store.State, ids []string) (cats []string, space string) {
-	var all []string
-	var walk func(id string, depth int)
-	walk = func(id string, depth int) {
-		e := st.Entries[id]
-		if e == nil || slices.Contains(all, id) {
-			return
+// tags are the categories and the source space a pattern carries (unified design §1.3):
+//   - OriginSpace (restricted space) always taints strictly across every evidence entry and its members.
+//   - Categories follow subject ownership so general collaboration contracts are not evicted by one incidental quote:
+//     a category applies when (a) the pattern's own text/situation/choice/exception triggers it, (b) it is implied by
+//     a tainted OriginSpace, or (c) at least half of the top-level evidence entries carry that category (using explicit
+//     entry categories, or summary-only text classification for legacy untagged entries rather than raw quote scans).
+func tags(st *store.State, p *Pattern, ids []string) (cats []string, space string) {
+	addCat := func(c string) {
+		if c != "" && !slices.Contains(cats, c) {
+			cats = append(cats, c)
 		}
-		all = append(all, id)
-		if depth < 2 {
-			for _, m := range e.Members {
-				if x := st.Entries[m]; x != nil && x.Live() {
-					walk(m, depth+1)
+	}
+	if p != nil {
+		selfCats, _ := curate.CategoriesOf("", p.Text, p.Situation, p.Choice, p.Exception)
+		for _, c := range selfCats {
+			addCat(c)
+		}
+	}
+	catCounts := map[string]int{}
+	totalTop := 0
+	for _, rootID := range ids {
+		if st.Entries[rootID] == nil {
+			continue
+		}
+		totalTop++
+		var all []string
+		var walk func(id string, depth int)
+		walk = func(id string, depth int) {
+			e := st.Entries[id]
+			if e == nil || slices.Contains(all, id) {
+				return
+			}
+			all = append(all, id)
+			if depth < 2 {
+				for _, m := range e.Members {
+					if x := st.Entries[m]; x != nil && x.Live() {
+						walk(m, depth+1)
+					}
 				}
 			}
 		}
-	}
-	for _, id := range ids {
-		walk(id, 0)
-	}
-	for _, id := range all {
-		e := st.Entries[id]
-		c, s, _ := memsrc.Tags(st, e)
-		for _, x := range c {
-			if !slices.Contains(cats, x) {
-				cats = append(cats, x)
+		walk(rootID, 0)
+		topCats := map[string]bool{}
+		for _, id := range all {
+			e := st.Entries[id]
+			if space == "" && e.OriginSpace != "" {
+				space = e.OriginSpace
+			}
+			for _, c := range e.Cats() {
+				topCats[c] = true
+			}
+			if !e.Tagged && e.Sensitive == "" && len(e.Categories) == 0 {
+				words, _ := curate.CategoriesOf("", e.Text, e.Object)
+				for _, c := range words {
+					if !slices.Contains(e.CatsRemoved, c) {
+						topCats[c] = true
+					}
+				}
 			}
 		}
-		if space == "" {
-			space = s
+		for c := range topCats {
+			catCounts[c]++
 		}
+	}
+	if totalTop > 0 {
+		for c, n := range catCounts {
+			if n*2 >= totalTop {
+				addCat(c)
+			}
+		}
+	}
+	for _, c := range entry.SpaceDefaults(space) {
+		addCat(c)
 	}
 	sort.Strings(cats)
 	return cats, space

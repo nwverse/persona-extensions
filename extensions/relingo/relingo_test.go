@@ -593,7 +593,7 @@ func TestManifest(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.ID != "termwise" || m.ID != about.ID || m.Version != about.Version {
+	if m.ID != "relingo" || m.ID != about.ID || m.Version != about.Version {
 		t.Fatalf("%+v", m)
 	}
 	if len(m.Contributes.UI) != 1 || m.Contributes.UI[0].ID != pageUI || m.Contributes.UI[0].Placement != "plugin_page" {
@@ -603,7 +603,7 @@ func TestManifest(t *testing.T) {
 		t.Fatalf("network %v", m.Permissions.Network)
 	}
 	for _, plat := range []string{"linux-amd64", "linux-arm64", "darwin-arm64", "darwin-amd64"} {
-		if m.Runtime.Command[plat] != "bin/termwise-"+plat {
+		if m.Runtime.Command[plat] != "bin/relingo-"+plat {
 			t.Fatalf("command %s = %s", plat, m.Runtime.Command[plat])
 		}
 	}
