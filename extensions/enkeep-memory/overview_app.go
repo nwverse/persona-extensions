@@ -398,7 +398,7 @@ func (a *app) overviewStatusRange(from, to, query string) string {
 	fmt.Fprintf(&b, "\nmemory.entries: %d overview entr(ies), %d standing.", len(ex), standing)
 	if from != "" || to != "" || query != "" {
 		cards, asks, days, _ := signals.AsksInRange(a.c.St.Dir, from, to)
-		st := a.c.Live()
+		st, _ := a.snapshotState()
 		stats := overview.ContractViolations(st, s, from, to, cards)
 		q := strings.ToLower(query)
 		fmt.Fprintf(&b, "\nContract violations (%s..%s, %d day(s) in signals, %d ask/decision card(s), %d total ask(s)):", from, to, days, cards, asks)
