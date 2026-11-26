@@ -269,7 +269,7 @@ func TestQueuePageBeforeSetupShowsOnlyWhatIsLeftToDo(t *testing.T) {
 	if row := findRow(t, view, "setup-repos"); row.Badge.Text != "还没做" {
 		t.Errorf("the folders are marked done: %+v", row.Badge)
 	}
-	if next := findRow(t, view, "setup-next").Text; !strings.Contains(next, "已经交给它的 1 件事还在") {
+	if next := findRow(t, view, "setup-next").Text; !strings.Contains(next, "之前交给它的事还有 1 件没结束（排着 1 件）") {
 		t.Errorf("the task already handed over is not mentioned: %q", next)
 	}
 
@@ -282,6 +282,141 @@ func TestQueuePageBeforeSetupShowsOnlyWhatIsLeftToDo(t *testing.T) {
 	}
 	if got := findRow(t, view, "repos").Text; got != "能动的文件夹：~/code、~/src" {
 		t.Errorf("the allowed folders: %q", got)
+	}
+}
+
+// Clearing the computers or the folders after tasks were handed over does not stop the dispatcher: the page
+// keeps every task that has not ended in sight, with its cancel action, under the checklist.
+func TestQueuePageBeforeSetupKeepsLiveWorkInSight(t *testing.T) {
+	p := newPageRig(t)
+	none := 0
+	running := p.enqueue(EnqueueInput{Title: "Running task", Repo: "/srv/code/app"})
+	p.lease(running.ID, PhaseWorking, "")
+	waiting := p.enqueue(EnqueueInput{Title: "Waiting task", Repo: "/srv/code/app"})
+	p.lease(waiting.ID, PhaseWorking, "Agent 在问你：用哪个分支？")
+	queued := p.enqueue(EnqueueInput{Title: "Queued task", Repo: "/srv/code/app"})
+	finished := p.enqueue(EnqueueInput{Title: "Finished task", Repo: "/srv/code/app", MaxRetries: &none})
+	p.complete(finished.ID, p.lease(finished.ID, PhaseWorking, ""), CompleteAttemptInput{Outcome: StateFailed, ErrorClass: "infra_error"})
+	canceled := p.enqueue(EnqueueInput{Title: "Canceled task", Repo: "/srv/code/app"})
+	if _, err := p.q.CancelTask(canceled.ID, testStart); err != nil {
+		t.Fatal(err)
+	}
+
+	for name, cfg := range map[string]ExtConfig{
+		"no computers": {Repos: []string{"/srv/code"}},
+		"no folders":   {Machines: []string{testMachine}},
+		"nothing":      {},
+	} {
+		view := buildQueueView(p.q, cfg, testStart.Add(2*time.Minute), "UTC")
+		raw := checked(t, view)
+		if got, want := strings.Join(sectionTitles(view), "|"), "这是什么|开始用之前，先做这两步|等你处理|正在做和排着的"; got != want {
+			t.Fatalf("%s: sections %s, want %s", name, got, want)
+		}
+		if got := sectionOf(view, "active-"+waiting.ID); got != "等你处理" {
+			t.Errorf("%s: the waiting task is under %q", name, got)
+		}
+		for _, task := range []*Task{running, waiting, queued} {
+			row := findRow(t, view, "active-"+task.ID)
+			if len(row.Actions) != 1 || row.Actions[0].Action.ID != "cancel:"+task.ID || row.Actions[0].Action.Confirm == "" {
+				t.Errorf("%s: %q cannot be canceled from the page: %+v", name, task.Title, row.Actions)
+			}
+		}
+		// Ended tasks are neither listed nor counted; the count says what is being done.
+		for _, gone := range []string{finished.ID, canceled.ID} {
+			if strings.Contains(raw, "term-"+gone) || strings.Contains(raw, "active-"+gone) {
+				t.Errorf("%s: an ended task is listed before setup", name)
+			}
+		}
+		if next := findRow(t, view, "setup-next").Text; !strings.Contains(next, "之前交给它的事还有 3 件没结束（正在做 1 件、等你处理 1 件、排着 1 件），就在下面，不想做了可以取消。") {
+			t.Errorf("%s: the count of live work: %q", name, next)
+		}
+		for _, bad := range []string{"100%", "数一数", "能动的文件夹"} {
+			if strings.Contains(raw, bad) {
+				t.Errorf("%s: before setup the page shows %q", name, bad)
+			}
+		}
+	}
+
+	// With only ended tasks, nothing is said about work left.
+	q := newTestQueue(t, DefaultQueueConfig())
+	old := mustEnqueue(t, q, EnqueueInput{Title: "Old task", Repo: "/srv/code/app", Labels: map[string]string{PersonaTodoLabel: "todo_1"}})
+	if _, err := q.CancelTask(old.ID, testStart); err != nil {
+		t.Fatal(err)
+	}
+	view := buildQueueView(q, ExtConfig{}, testStart, "UTC")
+	checked(t, view)
+	if got := strings.Join(sectionTitles(view), "|"); got != "这是什么|开始用之前，先做这两步" {
+		t.Errorf("only ended tasks: sections %s", got)
+	}
+	if next := findRow(t, view, "setup-next").Text; strings.Contains(next, "没结束") {
+		t.Errorf("only ended tasks: %q", next)
+	}
+}
+
+// A gateway that lists a source but no account gives the placeholder of 100% under the source's name: the page
+// shows no quota for it. Measured quota is shown.
+func TestQueuePageShowsNoQuotaWithoutAnAccount(t *testing.T) {
+	a := newTestApp(t)
+	page := func() string {
+		t.Helper()
+		return checked(t, buildQueueView(a.queue, a.config(), testStart, "UTC"))
+	}
+	for name, ga := range map[string]GenericGatewayAccounts{
+		"a source, no accounts": {Sources: []GenericGatewaySource{{ID: "gw", Name: "Gateway", Type: "gateway"}}},
+		"nothing":               {},
+	} {
+		if err := a.queue.SetQuotaStatus(ParseGatewayAccounts(ga, testStart)); err != nil {
+			t.Fatal(err)
+		}
+		if raw := page(); strings.Contains(raw, "额度还剩") || strings.Contains(raw, "100%") {
+			t.Errorf("%s: the page shows a quota: %s", name, raw)
+		}
+	}
+	used, reset := 0.4, testStart.Add(time.Hour)
+	if err := a.queue.SetQuotaStatus(ParseGatewayAccounts(GenericGatewayAccounts{
+		Sources:  []GenericGatewaySource{{ID: "gw", Name: "Gateway"}},
+		Accounts: []GenericGatewayAccount{{Source: "gw", AccountID: "a1", Status: "active", Windows: []GenericGatewayWindow{{UsedRatio: &used, ResetsAt: &reset}}}},
+	}, testStart)); err != nil {
+		t.Fatal(err)
+	}
+	if raw := page(); !strings.Contains(raw, "额度还剩") || !strings.Contains(raw, "60%") {
+		t.Errorf("a measured account: the page shows no quota: %s", raw)
+	}
+}
+
+// What the pages tell the user to change must be what the settings are called.
+func TestNextStepsNameRealSettings(t *testing.T) {
+	var m struct {
+		Configuration struct {
+			Properties map[string]struct {
+				Title string `json:"title"`
+			} `json:"properties"`
+		} `json:"configuration"`
+	}
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	titles := map[string]string{}
+	for k, p := range m.Configuration.Properties {
+		titles[k] = p.Title
+	}
+	for _, c := range []struct{ class, verdict, setting, quoted string }{
+		{"timeout", VerdictFail, "acceptance_timeout_minutes", "检查最多等多久"},
+		{"timeout", "", "task_timeout_minutes", "一件事最多做多久"},
+		{"config_error", "", "model_standard", "用哪个模型"},
+	} {
+		next := failureNextStep(c.class, c.verdict)
+		if !strings.Contains(next, "「"+c.quoted) || !strings.Contains(titles[c.setting], c.quoted) || !strings.Contains(next, settingsPath) {
+			t.Errorf("%s/%s: %q does not name the setting %q", c.class, c.verdict, next, titles[c.setting])
+		}
+	}
+	// The agent program's own sign-in on that computer, not Persona's.
+	if next := failureNextStep("auth_expired", ""); !strings.Contains(next, "那台电脑上干活用的程序") || !strings.Contains(next, "不是 Persona 的登录") {
+		t.Errorf("auth_expired: %q", next)
+	}
+	// A check that took too long is not answered by "try a faster check" next to the button that reruns it.
+	if next := failureNextStep("timeout", VerdictFail); !strings.Contains(next, "重新交给它做") {
+		t.Errorf("check timeout: %q", next)
 	}
 }
 
@@ -300,6 +435,22 @@ func TestManifestNameMatchesWhatThePagesSay(t *testing.T) {
 	}
 	if len(m.Contributes.UI) != 1 || m.Contributes.UI[0].Title != extName {
 		t.Errorf("the page's title: %+v", m.Contributes.UI)
+	}
+	// Not every task has a check: neither the intro nor the description promises one.
+	var d struct{ Description string }
+	if err := json.Unmarshal(manifest, &d); err != nil {
+		t.Fatal(err)
+	}
+	for what, text := range map[string]string{"intro": homeIntro, "description": d.Description} {
+		if !strings.Contains(text, "交给它时说了怎么检查的，它做完还会自己检查一遍") {
+			t.Errorf("the %s does not say the check is only there when one was given: %q", what, text)
+		}
+	}
+	// The state that waits for the user has one name everywhere.
+	for _, src := range []string{"panel.go", "detail.go", "words.go", "persona-extension.json"} {
+		if strings.Contains(string(mustRead(t, src)), "等你回话") {
+			t.Errorf("%s calls the waiting state by another name", src)
+		}
 	}
 }
 
@@ -421,7 +572,7 @@ func TestTaskPageShowsWhatATaskIsDoingAndItsEvidence(t *testing.T) {
 	waiting := p.enqueue(EnqueueInput{Title: "Waiting task", Repo: "/srv/code/app"})
 	p.lease(waiting.ID, PhaseWorking, "Agent 等你批准运行：go test ./...")
 	_, raw = page(waiting.ID)
-	has("needs input", raw, "等你回话", "它想运行一条命令，等你同意：go test ./...", "在里面 ATS 的对话里回答它的问题或点同意")
+	has("needs input", raw, "等你处理", "它想运行一条命令，等你同意：go test ./...", "在里面 ATS 的对话里回答它的问题或点同意")
 
 	// Failed acceptance: the exit code and the end of the output, the agent's summary, what is left, the attempts.
 	failed := p.enqueue(EnqueueInput{Title: "Failed task", Repo: "/srv/code/app", AcceptanceCommand: "go test ./...", PermissionProfile: PermissionDefault, MaxRetries: &none})

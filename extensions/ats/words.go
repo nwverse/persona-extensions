@@ -160,7 +160,7 @@ func pageFailureWords(class, verdict string) string {
 	case "config_error":
 		return "选的模型用不了"
 	case "auth_expired":
-		return "那台电脑上的账号要重新登录"
+		return "那台电脑上干活用的程序要重新登录"
 	case "rate_limited":
 		return "额度不够或被限速了"
 	case "infra_error":
@@ -189,14 +189,14 @@ func failureNextStep(class, verdict string) string {
 	case "config_error":
 		return "到「" + settingsPath + "」里看看「用哪个模型」那几项，空着就用默认的；改好后点「再试一次」。"
 	case "auth_expired":
-		return "在那台电脑上重新登录 Persona 里用来干活的账号，然后点「再试一次」。"
+		return "那台电脑上干活用的程序（交给它的事就是由它来做的）登录过期了。到那台电脑上把这个程序重新登录一下（不是 Persona 的登录），然后点「再试一次」。"
 	case "rate_limited":
 		return "等额度恢复后再点「再试一次」。"
 	case "infra_error":
 		return "看看那台电脑是不是开着、项目文件夹还在不在，然后点「再试一次」。"
 	case "timeout":
 		if verdict == VerdictFail {
-			return "检查的命令可能卡住了。让助手换一个更快的检查方法，或者在设置里把检查时间调长。"
+			return "检查用的命令跑得太久。到「" + settingsPath + "」里把「检查最多等多久」调长，再点「再试一次」；要是这条命令本身会卡住，就跟助手说换一个检查方法，重新交给它做。"
 		}
 		return "把这件事拆小一点再交给它，或者在「" + settingsPath + "」里把「一件事最多做多久」调长。"
 	case "lost":
@@ -227,7 +227,7 @@ func pageOutcomeWords(state, verdict, class string) string {
 	case StateExpired:
 		return "过期了，没做"
 	case StateNeedsInput:
-		return "等你回话"
+		return "等你处理"
 	case StateRunning, StateLeased:
 		return "在做"
 	case StateQueued:

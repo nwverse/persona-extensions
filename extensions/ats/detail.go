@@ -233,7 +233,10 @@ func taskStanding(t *Task, rep *EvidenceReport, plan SchedulePlan, online int, o
 		default:
 			stand = "正在准备项目（" + where + attemptCount(t.AttemptNo) + since + "）。"
 		}
-		return stand, "不用做什么。做完它会自己检查，再把结果写回待办。", ""
+		if t.Acceptance != nil && strings.TrimSpace(t.Acceptance.Command) != "" && e.Phase != PhaseAccepting {
+			return stand, "不用做什么。做完它会用下面的命令检查一遍，再把结果写回待办。", ""
+		}
+		return stand, "不用做什么。做完它会把结果写回待办。", ""
 	case t.State == StateQueued && t.NotBefore != nil:
 		left := "这是最后一次自动再试。"
 		if t.RetriesLeft > 0 {
@@ -329,7 +332,7 @@ func taskBadges(t *Task) []wire.Badge {
 	case StateFailed:
 		return []wire.Badge{{Text: "没做成", Tone: wire.ToneDanger}, {Text: pageFailureWords(lastErrorClass(t), t.Verdict), Tone: wire.ToneDanger}}
 	case StateNeedsInput:
-		return []wire.Badge{{Text: "等你回话", Tone: wire.ToneDanger}}
+		return []wire.Badge{{Text: "等你处理", Tone: wire.ToneDanger}}
 	case StateQueued:
 		if t.NotBefore != nil {
 			return []wire.Badge{{Text: "等着再试", Tone: wire.ToneCaution}}

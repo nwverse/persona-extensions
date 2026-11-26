@@ -356,12 +356,14 @@ func viewLocation(tz string) *time.Location {
 }
 
 // homeIntro is the fixed text at the top of the home page: what this is and how to hand it work.
-const homeIntro = "ATS 帮你把待办自动做掉：它在你选好的电脑上把事情做完，做完自己检查一遍，再把结果写回待办。\n" +
+const homeIntro = "ATS 帮你把待办自动做掉：它在你选好的电脑上把事情做完，再把结果写回待办；交给它时说了怎么检查的，它做完还会自己检查一遍。\n" +
 	"怎么交给它：在任意一个待办里跟助手说「把这个交给 ATS 做」，助手问过你、你同意后，这件事就会出现在这一页。"
 
-// buildQueueView is the home page. Before the extension is set up it shows only what is left to set up. After
-// that, what the user acts on comes first: one line on how things stand, the tasks that wait for the user, what
-// is being done and queued, what ended; the counts and the computers are below.
+// buildQueueView is the home page. Before the extension is set up it shows what is left to set up, and, when
+// tasks handed over earlier have not ended (the settings were cleared after they were queued), those tasks with
+// their cancel actions: the dispatcher keeps running them, so the page never hides them. After setup, what the
+// user acts on comes first: one line on how things stand, the tasks that wait for the user, what is being done
+// and queued, what ended; the counts and the computers are below.
 func buildQueueView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.View {
 	loc := viewLocation(tz)
 	plan := q.PlanSchedule(now)
@@ -370,12 +372,6 @@ func buildQueueView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.Vie
 	view.Sections = append(view.Sections, wire.Section{Title: "这是什么", Items: []wire.Component{
 		{Type: wire.ComponentText, Key: "intro", Text: homeIntro},
 	}})
-
-	tasks, _ := q.ListTasks(TaskFilter{Limit: 60})
-	if len(cfg.Machines) == 0 || len(cfg.Repos) == 0 {
-		view.Sections = append(view.Sections, setupSection(cfg, len(tasks)))
-		return view
-	}
 
 	names := map[string]string{}
 	online := 0
@@ -387,11 +383,7 @@ func buildQueueView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.Vie
 			online++
 		}
 	}
-	text, tone := statusLine(plan, online, now, loc)
-	view.Sections = append(view.Sections, wire.Section{Title: "现在怎么样", Items: []wire.Component{
-		{Type: wire.ComponentText, Key: "status", Text: text, Tone: tone},
-	}})
-
+	tasks, _ := q.ListTasks(TaskFilter{Limit: 60})
 	var needs, open, done []wire.Component
 	for _, t := range tasks {
 		switch {
@@ -403,9 +395,27 @@ func buildQueueView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.Vie
 			open = append(open, activeRow(t, names, loc))
 		}
 	}
+	needsSection := wire.Section{Title: "等你处理", Items: needs,
+		Footer: "怎么处理：打开这件事对应的待办，在里面 ATS 的对话里回答它的问题或点同意，它就会接着做。"}
+
+	if len(cfg.Machines) == 0 || len(cfg.Repos) == 0 {
+		running, waiting := plan.CountsByState[StateRunning], plan.CountsByState[StateNeedsInput]
+		view.Sections = append(view.Sections, setupSection(cfg, running, waiting, plan.CountsByState[StateQueued]))
+		if len(needs) > 0 {
+			view.Sections = append(view.Sections, needsSection)
+		}
+		if len(open) > 0 {
+			view.Sections = append(view.Sections, wire.Section{Title: "正在做和排着的", Items: open})
+		}
+		return view
+	}
+
+	text, tone := statusLine(plan, online, now, loc)
+	view.Sections = append(view.Sections, wire.Section{Title: "现在怎么样", Items: []wire.Component{
+		{Type: wire.ComponentText, Key: "status", Text: text, Tone: tone},
+	}})
 	if len(needs) > 0 {
-		view.Sections = append(view.Sections, wire.Section{Title: "等你处理", Items: needs,
-			Footer: "怎么处理：打开这件事对应的待办，在里面 ATS 的对话里回答它的问题或点同意，它就会接着做。"})
+		view.Sections = append(view.Sections, needsSection)
 	}
 	if len(open) == 0 && len(needs) == 0 {
 		open = []wire.Component{{Type: wire.ComponentEmpty, Title: "现在没有要做的事",
@@ -462,7 +472,7 @@ func buildQueueView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.Vie
 }
 
 // setupSection is the home page before the extension is set up: each step, whether it is done, and where.
-func setupSection(cfg ExtConfig, tasks int) wire.Section {
+func setupSection(cfg ExtConfig, running, waiting, queued int) wire.Section {
 	step := func(key, title, detail string, done bool) wire.Component {
 		badge := &wire.Badge{Text: "还没做", Tone: wire.ToneDanger}
 		if done {
@@ -475,8 +485,17 @@ func setupSection(cfg ExtConfig, tasks int) wire.Section {
 		step("setup-repos", "第 2 步：告诉它能动哪些文件夹", "写项目所在的文件夹，比如 ~/code。只有这些文件夹里的项目能交给它。", len(cfg.Repos) > 0),
 	}
 	next := "去哪儿设：打开「" + settingsPath + "」，在「设置」里把这两项填好。两步都做好后，回到这一页就能看到要做的事和电脑。"
-	if tasks > 0 {
-		next += fmt.Sprintf("\n已经交给它的 %d 件事还在，设好以后会接着做。", tasks)
+	if live := running + waiting + queued; live > 0 {
+		var parts []string
+		for _, p := range []struct {
+			n    int
+			what string
+		}{{running, "正在做"}, {waiting, "等你处理"}, {queued, "排着"}} {
+			if p.n > 0 {
+				parts = append(parts, fmt.Sprintf("%s %d 件", p.what, p.n))
+			}
+		}
+		next += fmt.Sprintf("\n之前交给它的事还有 %d 件没结束（%s），就在下面，不想做了可以取消。", live, strings.Join(parts, "、"))
 	}
 	items = append(items, wire.Component{Type: wire.ComponentText, Key: "setup-next", Text: next})
 	return wire.Section{Title: "开始用之前，先做这两步", Items: items}
@@ -509,10 +528,24 @@ func statusLine(plan SchedulePlan, online int, now time.Time, loc *time.Location
 	return "正常接活：交给它的事会按先急后缓的顺序做。", wire.TonePositive
 }
 
-// hasQuotaAccount says whether the quota comes from a real account. Without one the queue holds a placeholder
-// of 100%, which the page must not show as if it were measured.
+// hasQuotaAccount says whether the quota was measured on a real account. Without accounts the queue holds a
+// placeholder of 100% (DefaultQuotaStatus, also what a gateway source with no accounts gives, under the source's
+// name), which the page must not show as if it were measured. The placeholder is told by its values: the
+// provider's name alone does not tell it apart. An account that reports no window and no reset looks the same,
+// and has no measured quota either.
 func hasQuotaAccount(quota QuotaStatus) bool {
-	return quota.Provider != "" && quota.Provider != DefaultQuotaStatus().Provider
+	if quota.Provider == "" || quota.Provider == DefaultQuotaStatus().Provider {
+		return false
+	}
+	if quota.Exhausted || quota.RemainingPct < 100 || quota.ResetAt != nil || quota.CooldownUntil != nil || quota.TotalAccounts > 1 {
+		return true
+	}
+	for _, v := range quota.TierRemainingPct {
+		if v < 100 {
+			return true
+		}
+	}
+	return false
 }
 
 // quotaBackAt is when the quota comes back: the end of a cool-down still running at now, or the reset.
@@ -601,7 +634,7 @@ func activeRow(t *Task, machines map[string]string, loc *time.Location) wire.Com
 		meta = append(meta, "在 "+name+" 上", attemptCount(t.AttemptNo))
 		switch {
 		case t.State == StateNeedsInput:
-			badge = &wire.Badge{Text: "等你回话", Tone: wire.ToneDanger}
+			badge = &wire.Badge{Text: "等你处理", Tone: wire.ToneDanger}
 			// What it waits for is the line the user reads; the rest is on the task's page.
 			subtitle = waitingWords(e.Waiting)
 		default:
