@@ -468,16 +468,16 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 			}
 		case offer.src != nil:
 			a.copy = offer
-			a.Next = fmt.Sprintf("这台电脑没有 Homebrew：点「从 %s 复制过来」，会从同为 %s 的 %s 复制 disklessly %s 过来；也可以在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具。",
-				machineLabel(offer.src), offer.platform, machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本不清楚）"))
+			a.Next = fmt.Sprintf("这台电脑没有 Homebrew：点「从 %s 复制过来」，会从 %[3]s 复制 disklessly %[4]s 过来（两台都是 %[2]s）；也可以在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具。",
+				machineLabel(offer.src), platformLabel(offer.platform), machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本不清楚）"))
 			a.Command = manual
-			a.Lead = a.Reason + fmt.Sprintf("这台电脑没有 Homebrew（一个装软件的工具），不过不用开终端：点「从 %s 复制过来」，会从同为 %s 的 %s 复制 disklessly %s 过来。",
-				machineLabel(offer.src), offer.platform, machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本不清楚）"))
+			a.Lead = a.Reason + fmt.Sprintf("这台电脑没有 Homebrew（一个装软件的工具），不过不用开终端：点「从 %s 复制过来」，会从 %[3]s 复制 disklessly %[4]s 过来（两台都是 %[2]s）。",
+				machineLabel(offer.src), platformLabel(offer.platform), machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本不清楚）"))
 			a.CmdIntro = "懂终端的话，也可以在" + name + "上运行下面的命令，先装 Homebrew（一个装软件的工具），再装配套小工具："
 		default:
 			a.Next = "这台电脑没有 Homebrew，也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。请在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具，然后点「重新检查 " + machineLabel(m) + "」。"
 			a.Command = manual
-			a.Lead = a.Reason + "这台电脑没有 Homebrew（一个装软件的工具），也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "），所以这一步要在" + name + "上开终端装一次；装好后点「重新检查 " + machineLabel(m) + "」。"
+			a.Lead = a.Reason + "这台电脑没有 Homebrew（一个装软件的工具），也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。这一步页面上没有按钮能代劳，只能在" + name + "上开终端装一次（命令在下面，也可以看「怎么装配套小工具」）；装好后点「重新检查 " + machineLabel(m) + "」。"
 			a.CmdIntro = "在" + name + "的终端里依次运行下面的命令：先装 Homebrew，再装配套小工具。"
 		}
 	case ColdNoBackend:
@@ -497,8 +497,8 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 			a.Reason = name + "用的网盘（" + id + "）能连上，但里面还没有 Disklessly 的存放目录（找不到 repo.json），所以暂时显示「暂时不确定」。"
 			a.Next = "多半是选错了网盘目录：在这台电脑上用下面的命令看看设置了哪些网盘，换成正确的那个；如果这就是要新用的目录，就在里面新建。然后点「重新检查 " + machineLabel(m) + "」。"
 			a.Command = "disklessly backend list\ndisklessly backend use <后端 ID>   # 换到已经在用的那个网盘\ndisklessly init                    # 或者：在当前网盘里新建存放目录"
-			a.Lead = a.Reason + "多半是这台电脑设置的网盘目录不对，比如换过网盘、改过路径。换回原来的目录要在" + name + "上开终端做一次，做完点「重新检查 " + machineLabel(m) + "」。"
-			a.CmdIntro = "在" + name + "的终端里运行：先看设置了哪些网盘，换成原来那个；如果这就是要新用的目录，就在里面新建存放目录。"
+			a.Lead = a.Reason + "多半是这台电脑设置的网盘目录不对，比如换过网盘、改过路径。换回原来的目录这一步页面上没有按钮能代劳，只能在" + name + "上开终端做一次；做完点「重新检查 " + machineLabel(m) + "」。"
+			a.CmdIntro = "在" + name + "的终端里运行：第一条列出设置过的网盘，把第二条里的「<后端 ID>」换成原来那个网盘的名字再运行；如果这就是要新用的目录，改运行第三条，在里面新建存放目录。"
 		}
 		a.Raw = strings.TrimSpace(fmt.Sprintf("%s（%s，%d ms）", b.Error, cmp.Or(b.Type, "网盘"), b.LatencyMs))
 	case ColdOffline:
@@ -576,7 +576,7 @@ func noBackendProblem(m *Machine) problem {
 		Command: noBackendCommand,
 	}
 	if m != nil {
-		p.Lead = reason + "设置网盘（Google Drive 这类网盘、家里的 NAS 都行）要在" + "「" + machineLabel(m) + "」上开终端做一次，设置好后点「重新检查 " + machineLabel(m) + "」。"
+		p.Lead = reason + "设置网盘（Google Drive 这类网盘、家里的 NAS 都行）这一步页面上没有按钮能代劳，只能在「" + machineLabel(m) + "」上开终端做一次；设置好后点「重新检查 " + machineLabel(m) + "」。"
 		p.CmdIntro = "在「" + machineLabel(m) + "」的终端里运行：先看已有的网盘，再加一个（选一种就行）。"
 	}
 	return p
@@ -636,7 +636,7 @@ func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.
 		Badge: &wire.Badge{Text: coldStateLabel(state), Tone: coldStateTone(state)},
 	}
 	var sub []string
-	if p := cmp.Or(catPlatform(cat), m.Platform); p != "" {
+	if p := platformLabel(cmp.Or(catPlatform(cat), m.Platform)); p != "" {
 		sub = append(sub, p)
 	}
 	if cat != nil && cat.CLI.Version != "" {
@@ -963,7 +963,9 @@ func (d draw) coldRow(h ColdHit) wire.Component {
 	if dir := strings.TrimSpace(lastPathElem(h.Cwd)); dir != "" && dir != coldProject(h.ColdEntry) {
 		sub = append(sub, "文件夹 "+dir)
 	}
-	if t := entryTime(h.ColdEntry); !t.IsZero() {
+	title, fromPrompt := d.coldTitle(h.ColdEntry)
+	// An untitled conversation's title already has its date and time.
+	if t := entryTime(h.ColdEntry); !t.IsZero() && !strings.HasPrefix(title, untitledText) {
 		sub = append(sub, t.In(d.loc).Format("2006-01-02 15:04"))
 	}
 	if h.Bytes > 0 {
@@ -972,7 +974,6 @@ func (d draw) coldRow(h ColdHit) wire.Component {
 	if !h.Local {
 		sub = append(sub, "来自另一台电脑")
 	}
-	title, fromPrompt := d.coldTitle(h.ColdEntry)
 	// The detail: what a deep search found, or the first message unless the title already is
 	// all of it; then the id (search finds it, and restore commands need it).
 	text := strings.TrimSpace(h.Preview)

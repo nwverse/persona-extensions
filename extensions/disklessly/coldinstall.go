@@ -230,10 +230,10 @@ func installSourceFor(st *State, target *Machine) installOffer {
 	if notContained != "" {
 		return installOffer{reason: notContained, platform: plat}
 	}
-	return installOffer{reason: "没有同为 " + plat + " 的电脑装着能用的配套小工具，没法复制", platform: plat}
+	return installOffer{reason: "没有别的 " + platformLabel(plat) + " 装着能用的配套小工具，没法复制", platform: plat}
 }
 
 func installConfirm(o installOffer, target *Machine) string {
-	return fmt.Sprintf("从「%s」把配套小工具 disklessly %s（%s）复制到「%s」？会放到 %s 的 ~/.local/opt/%s，先运行一次确认能用，再把 ~/.local/bin/disklessly 指向它；原来的版本留在原处。不需要管理员权限，也不从网上下载。",
-		machineLabel(o.src), cmp.Or(shortVersion(o.cli.Version), "（版本不清楚）"), o.platform, machineLabel(target), machineLabel(target), path.Base(o.cli.Home))
+	return fmt.Sprintf("从「%s」把配套小工具 disklessly %s 复制到「%s」（两台都是 %s）？会放到 %s 的 ~/.local/opt/%s，先运行一次确认能用，再把 ~/.local/bin/disklessly 指向它；原来的版本留在原处。不需要管理员权限，也不从网上下载。",
+		machineLabel(o.src), cmp.Or(shortVersion(o.cli.Version), "（版本不清楚）"), machineLabel(target), platformLabel(o.platform), machineLabel(target), path.Base(o.cli.Home))
 }

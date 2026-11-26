@@ -116,7 +116,7 @@ func (a *app) mainJob(r *ext.UIRequest, p *page) (string, error) {
 			return "", fmt.Errorf("没有指定要删的种类")
 		}
 		cats, includeReview = []string{c}, true
-		label = "正在删「" + CategoryLabels[c] + "」"
+		label = "正在删「" + categoryName(c) + "」"
 	case "clean-item":
 		it := strings.TrimSpace(r.Values["item"])
 		if it == "" {

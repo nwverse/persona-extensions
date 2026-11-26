@@ -206,7 +206,7 @@ func TestDiskPageCompactForManyComputers(t *testing.T) {
 		checkTapNames(t, "five computers "+sel, v)
 		want := cmp.Or(sel, "local")
 		for _, id := range []string{"local", "build-box", "nas-box", "studio-mac"} {
-			charts := findComponentByKey(v, "fleet-root-"+id) != nil
+			charts := findComponentByKey(v, "fleet-cats-"+id) != nil
 			if charts != (id == want) {
 				t.Errorf("selected %q: %s drawn with charts %v", sel, id, charts)
 			}

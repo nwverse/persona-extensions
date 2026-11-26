@@ -346,10 +346,16 @@ const scanAllText = "检查所有电脑（只看不删）"
 // planText is the 硬盘空间 page's button (and tab) that lists what a cleanup would delete.
 const planText = "先看看会删什么"
 
-func fleetAlertSummary(statuses []MachineStatus) (string, string) {
+// fleetAlertSummary words how full the computers' disks are (a computer that cannot be reached
+// now counts by its last check) and how many cannot be reached now, apart: offline is that count,
+// for the stat's detail, so a computer that does not answer never reads as a full disk.
+func fleetAlertSummary(statuses []MachineStatus) (text, tone string, offline int) {
 	var warnCount, critCount, unscannedCount, offlineCount int
 	for _, ms := range statuses {
-		switch ms.Level {
+		if ms.Level == HealthOffline {
+			offline++
+		}
+		switch fullnessLevel(ms) {
 		case HealthCritical:
 			critCount++
 		case HealthWarning:
@@ -362,16 +368,25 @@ func fleetAlertSummary(statuses []MachineStatus) (string, string) {
 	}
 	switch {
 	case critCount > 0:
-		return fmt.Sprintf("%d 台快满了", critCount), wire.ToneDanger
+		return fmt.Sprintf("%d 台快满了", critCount), wire.ToneDanger, offline
 	case warnCount > 0:
-		return fmt.Sprintf("%d 台偏满", warnCount), wire.ToneCaution
+		return fmt.Sprintf("%d 台偏满", warnCount), wire.ToneCaution, offline
 	case offlineCount > 0:
-		return fmt.Sprintf("%d 台连不上", offlineCount), wire.ToneCaution
+		// Never checked and not answering: nothing is known about how full they are.
+		return fmt.Sprintf("%d 台还不知道", offlineCount), wire.ToneNeutral, offline
 	case unscannedCount > 0:
-		return fmt.Sprintf("%d 台还没检查", unscannedCount), wire.ToneNeutral
+		return fmt.Sprintf("%d 台还没检查", unscannedCount), wire.ToneNeutral, offline
 	default:
-		return "都还宽裕", wire.TonePositive
+		return "都还宽裕", wire.TonePositive, offline
 	}
+}
+
+// offlineNote is the stat detail's part about computers that cannot be reached now.
+func offlineNote(offline int) string {
+	if offline == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" · %d 台现在连不上", offline)
 }
 
 // ---- Tab 1: Fleet Disk Overview ----
@@ -385,11 +400,11 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 	for _, h := range d.st.History {
 		totalFreed += h.FreedBytes
 	}
-	alertText, alertTone := fleetAlertSummary(statuses)
+	alertText, alertTone, offline := fleetAlertSummary(statuses)
 
 	topStats := []wire.Stat{
 		{Label: "电脑", Value: fmt.Sprintf("%d 台", len(statuses)), Detail: "运行 Persona 的电脑和远程电脑"},
-		{Label: "硬盘用了多少", Value: alertText, Detail: "用到 80% 提醒 · 90% 告急", Tone: alertTone},
+		{Label: "硬盘用了多少", Value: alertText, Detail: "用到 80% 提醒 · 90% 告急" + offlineNote(offline), Tone: alertTone},
 		{Label: "可以腾出", Value: FormatBytes(totalReclaim), Detail: "其中放心删 " + FormatBytes(totalSafe), Tone: toneIf(totalReclaim > 0, wire.TonePositive)},
 		{Label: "已经腾出", Value: FormatBytes(totalFreed), Detail: fmt.Sprintf("共 %d 次清理", len(d.st.History))},
 	}
@@ -447,16 +462,24 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 		detailed := m.ID == selected.ID
 
 		var subParts []string
+		// Reachability comes first, in words, apart from how full the disk is (bar and badge).
+		if lastKnown(ms) && ms.LastScannedAt != nil {
+			subParts = append(subParts, "现在连不上 · 下面是 "+d.shortDate(*ms.LastScannedAt)+" 检查时的数")
+		} else if ms.Level == HealthOffline {
+			subParts = append(subParts, "现在连不上")
+		}
 		if !m.IsLocal {
 			subParts = append(subParts, "远程电脑 "+m.Host)
 		}
-		if m.Platform != "" {
-			subParts = append(subParts, m.Platform)
+		if p := platformLabel(m.Platform); p != "" {
+			subParts = append(subParts, p)
 		}
 		if ms.TotalBytes > 0 && !detailed {
 			subParts = append(subParts, "还剩 "+FormatBytes(ms.AvailableBytes)+" · 可以腾出 "+FormatBytes(ms.ReclaimableBytes))
 		}
-		if ms.LastScannedAt != nil {
+		if lastKnown(ms) {
+			// The check's time is said with the reachability above.
+		} else if ms.LastScannedAt != nil {
 			subParts = append(subParts, d.when(*ms.LastScannedAt))
 			if ms.Partial {
 				subParts = append(subParts, "缓存太多没算完（硬盘用量是准的）")
@@ -548,7 +571,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 						{Label: "一周没动的 AI 对话", Value: fmt.Sprintf("%d 个", ms.Sessions.ColdCount), Detail: FormatBytes(ms.Sessions.ColdBytes) + " · 最近一周用过 " + strconv.Itoa(ms.Sessions.HotCount) + " 个", Tone: toneIf(ms.Sessions.ColdBytes > 0, wire.ToneCaution)},
 					})...)
 
-					sec.Items = append(sec.Items, rootUsageChart(ms, mountPoint, "fleet"))
+					// The bar above is this computer's system disk; the table's caption has its numbers.
 					if catChart, ok := reclaimCategoryChart(m, bd, "fleet"); ok {
 						sec.Items = append(sec.Items, catChart)
 					} else {
@@ -700,7 +723,7 @@ func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 	var filtered []ScanItem
 	for _, it := range scan.Items {
 		if q != "" {
-			hay := strings.ToLower(it.Title + " " + it.Path + " " + it.Category + " " + CategoryLabels[it.Category] + " " + it.Reason)
+			hay := strings.ToLower(it.Title + " " + it.Path + " " + it.Category + " " + CategoryLabels[it.Category] + " " + categoryName(it.Category) + " " + it.Reason)
 			if !strings.Contains(hay, q) {
 				continue
 			}
@@ -716,9 +739,9 @@ func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 
 	if d.v2() && scan.Mount.TotalBytes > 0 {
 		chartSec := wire.Section{
-			Title: "硬盘用量和能删的东西",
-			Items: []wire.Component{rootUsageChart(ms, scan.Mount.MountPoint, "items")},
+			Title: "能删的东西",
 		}
+		// The bar at the top is the system disk; the chart shows the kinds only.
 		if catChart, ok := reclaimCategoryChart(m, bd, "items"); ok {
 			chartSec.Items = append(chartSec.Items, catChart)
 		} else {
@@ -792,7 +815,7 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 			Type:     wire.ComponentRow,
 			Key:      "cat-clean-" + cid,
 			Icon:     "folder",
-			Title:    "删掉：" + CategoryLabels[cid],
+			Title:    "删掉：" + categoryName(cid),
 			Subtitle: fmt.Sprintf("%d 项 · 大约腾出 %s", catCounts[cid], FormatBytes(catBytes[cid])),
 			Badge:    &wire.Badge{Text: FormatBytes(catBytes[cid]), Tone: wire.TonePositive},
 			Action: &wire.Action{
@@ -811,7 +834,9 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 	shownItems := filtered[:min(len(filtered), maxShownScanItems)]
 	if d.v3() {
 		itemRows := make([][]string, 0, len(shownItems))
+		var kinds []string
 		for _, it := range shownItems {
+			kinds = append(kinds, it.Category)
 			safetyTag := itemSafetyTag(it)
 			itemRows = append(itemRows, []string{
 				clipCellWidth(it.Title, 12.5, 82.5, 13),
@@ -822,7 +847,8 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 		}
 		detailSec.Items = append(detailSec.Items, wire.Component{
 			Type: wire.ComponentTable,
-			Key:  boundedKey("items-detail-tbl-", m.ID),
+			Key:     boundedKey("items-detail-tbl-", m.ID),
+			Caption: categoryLegend(CategoryAxisLabels, kinds),
 			Columns: []wire.TableColumn{
 				{Title: "项目"},
 				{Title: "种类"},
@@ -921,7 +947,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 		if impact, ok := cleanImpactChart(ms, scan); ok {
 			summarySec.Items = append(summarySec.Items, impact)
 		} else if scan.Mount.TotalBytes > 0 {
-			summarySec.Items = append(summarySec.Items, rootUsageChart(ms, scan.Mount.MountPoint, "plan"))
+			summarySec.Items = append(summarySec.Items, rootUsageMeter(ms, "plan"))
 		}
 	}
 
@@ -968,7 +994,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 		formSec.Items = append(formSec.Items, wire.Component{
 			Type:  wire.ComponentField,
 			Name:  "cat_" + cid,
-			Label: fmt.Sprintf("%s (%s)", CategoryLabels[cid], FormatBytes(tot)),
+			Label: fmt.Sprintf("%s (%s)", categoryName(cid), FormatBytes(tot)),
 			Kind:  wire.FieldKindToggle,
 			Value: defaultVal,
 		})
@@ -988,7 +1014,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 				ID:      "clean-selected",
 				Submit:  true,
 				Values:  map[string]string{"m": m.ID},
-				Confirm: fmt.Sprintf("确定在「%s」上删掉勾选的种类吗？勾了「%s」的话，那些对话会先放进网盘、读回核对无误才删电脑上的那份。删之前和之后会量一下剩余空间，记到清理记录里。", machineLabel(m), CategoryLabels[CatColdAgentSession]),
+				Confirm: fmt.Sprintf("确定在「%s」上删掉勾选的种类吗？勾了「%s」的话，那些对话会先放进网盘、读回核对无误才删电脑上的那份。删之前和之后会量一下剩余空间，记到清理记录里。", machineLabel(m), categoryName(CatColdAgentSession)),
 			},
 		})
 		secs = append(secs, formSec)
@@ -998,7 +1024,9 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 		shownPlan := plan.Items[:min(len(plan.Items), 100)]
 		if d.v3() {
 			rows := make([][]string, 0, len(shownPlan))
+			var kinds []string
 			for _, it := range shownPlan {
+				kinds = append(kinds, it.Category)
 				rows = append(rows, []string{
 					clipCellWidth(it.Title, 12.5, 82.5, 13),
 					CategoryAxisLabels[it.Category],
@@ -1011,7 +1039,8 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 				Items: []wire.Component{
 					{
 						Type: wire.ComponentTable,
-						Key:  boundedKey("plan-tbl-", m.ID),
+						Key:     boundedKey("plan-tbl-", m.ID),
+						Caption: categoryLegend(CategoryAxisLabels, kinds),
 						Columns: []wire.TableColumn{
 							{Title: "项目"},
 							{Title: "种类"},
@@ -1028,7 +1057,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 				planItems = append(planItems, wire.Component{
 					Type:     wire.ComponentRow,
 					Title:    clip(cmp.Or(strings.TrimSpace(it.Title), strings.TrimSpace(it.ID), "没有名字的一项"), 200),
-					Subtitle: CategoryCompactLabels[it.Category] + " · " + safetyLabel(it.Safety),
+					Subtitle: categoryName(it.Category) + " · " + safetyLabel(it.Safety),
 					Value:    FormatBytes(it.Bytes),
 				})
 			}
@@ -1114,7 +1143,7 @@ func (d draw) historyTab() []wire.Section {
 func categoryNames(ids []string) string {
 	names := make([]string, 0, len(ids))
 	for _, id := range ids {
-		names = append(names, cmp.Or(CategoryCompactLabels[id], id))
+		names = append(names, categoryName(id))
 	}
 	return strings.Join(names, "、")
 }
@@ -1238,24 +1267,20 @@ func (a *app) card(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 				}
 			}
 
-			alertText, alertTone := fleetAlertSummary(statuses)
+			alertText, alertTone, offline := fleetAlertSummary(statuses)
 			if d.v2() {
 				items = append(items, wire.Component{
 					Type: wire.ComponentStatGrid,
 					Key:  "card-stats",
 					Stats: []wire.Stat{
 						{Label: "电脑", Value: fmt.Sprintf("%d 台", len(statuses))},
-						{Label: "硬盘", Value: alertText, Tone: alertTone},
+						{Label: "硬盘", Value: alertText, Detail: strings.TrimPrefix(offlineNote(offline), " · "), Tone: alertTone},
 						{Label: "可以腾出", Value: FormatBytes(totalReclaim), Tone: toneIf(totalReclaim > 0, wire.TonePositive)},
 					},
 				})
 				if featured != nil {
-					mp := "/"
-					if sc := st.Scans[featured.Machine.ID]; sc != nil {
-						mp = cmp.Or(sc.Mount.MountPoint, "/")
-					}
-					ch := rootUsageChart(*featured, mp, "card")
-					ch.Title = fmt.Sprintf("%s · %.0f%%", machineLabel(featured.Machine), featured.UsedPercent)
+					ch := rootUsageMeter(*featured, "card")
+					ch.Label = machineLabel(featured.Machine) + " · " + ch.Label
 					items = append(items, ch)
 				}
 			} else {
@@ -1263,7 +1288,7 @@ func (a *app) card(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 					Type:   wire.ComponentMetric,
 					Label:  "硬盘用量",
 					Value:  alertText,
-					Detail: fmt.Sprintf("%d 台电脑 · 可以腾出 %s", len(statuses), FormatBytes(totalReclaim)),
+					Detail: fmt.Sprintf("%d 台电脑 · 可以腾出 %s", len(statuses), FormatBytes(totalReclaim)) + offlineNote(offline),
 					Tone:   alertTone,
 				})
 			}
@@ -1276,6 +1301,9 @@ func (a *app) card(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 					if ms.Partial {
 						sub = fmt.Sprintf("用了 %.0f%%（还剩 %s）· 缓存没算完",
 							ms.UsedPercent, FormatBytes(ms.AvailableBytes))
+					}
+					if lastKnown(ms) {
+						sub = "现在连不上 · 上次" + sub
 					}
 				} else if ms.Machine.LastError != "" {
 					sub = "连不上：" + sshProblem(ms.Machine, ms.Machine.LastError).Title
@@ -1464,8 +1492,8 @@ func (d draw) machineHeaderComponent(ms MachineStatus, scan *Scan) wire.Componen
 		{Label: "地址", Value: cmp.Or(m.Host, "localhost")},
 		{Label: "怎么来的", Value: sourceLabel(m.Source)},
 	}
-	if m.Platform != "" {
-		facts = append(facts, wire.Fact{Label: "系统", Value: m.Platform})
+	if p := platformLabel(m.Platform); p != "" {
+		facts = append(facts, wire.Fact{Label: "系统", Value: p})
 	}
 	if scan != nil && scan.Mount.TotalBytes > 0 {
 		facts = append(facts,
@@ -1480,10 +1508,16 @@ func (d draw) machineHeaderComponent(ms MachineStatus, scan *Scan) wire.Componen
 	sub := "还没检查：检查只读取大小，不会删除任何东西"
 	if scan != nil {
 		sub = fmt.Sprintf("系统盘 %s · %s检查", scan.Mount.MountPoint, d.when(scan.ScannedAt))
+		if lastKnown(ms) {
+			sub = fmt.Sprintf("现在连不上 · 系统盘 %s 的数是 %s 检查时的", scan.Mount.MountPoint, d.shortDate(scan.ScannedAt))
+		}
 	}
 	var badges []wire.Badge
 	if b != nil {
 		badges = append(badges, *b)
+	}
+	if lastKnown(ms) {
+		badges = append(badges, *offlineBadge())
 	}
 	return wire.Component{
 		Type:     wire.ComponentHeader,
@@ -1494,12 +1528,23 @@ func (d draw) machineHeaderComponent(ms MachineStatus, scan *Scan) wire.Componen
 	}
 }
 
+// offlineBadge is a computer that does not answer now: neutral, so it never reads as a disk
+// that is filling up.
+func offlineBadge() *wire.Badge { return &wire.Badge{Text: "现在连不上", Tone: wire.ToneNeutral} }
+
+// healthBadge is how full ms's disk is. A computer that cannot be reached shows its last check's
+// fullness, marked 上次, when there is one (its row says it cannot be reached), else 现在连不上.
 func healthBadge(ms MachineStatus) *wire.Badge {
+	if lastKnown(ms) {
+		b := healthBadge(MachineStatus{Level: fullnessLevel(ms), TotalBytes: ms.TotalBytes, UsedPercent: ms.UsedPercent})
+		b.Text = "上次 " + b.Text
+		return b
+	}
 	switch ms.Level {
 	case HealthUnscanned:
 		return &wire.Badge{Text: "还没检查", Tone: wire.ToneNeutral}
 	case HealthOffline:
-		return &wire.Badge{Text: "连不上", Tone: wire.ToneCaution}
+		return offlineBadge()
 	case HealthCritical:
 		return &wire.Badge{Text: fmt.Sprintf("快满了 %.0f%%", ms.UsedPercent), Tone: wire.ToneDanger}
 	case HealthWarning:
@@ -1516,18 +1561,22 @@ func progressTone(level string) string {
 	switch level {
 	case HealthCritical:
 		return wire.ToneDanger
-	case HealthWarning, HealthOffline:
+	case HealthWarning:
 		return wire.ToneCaution
-	case HealthUnscanned:
+	case HealthUnscanned, HealthOffline:
 		return wire.ToneNeutral
 	default:
 		return wire.TonePositive
 	}
 }
 
+// machineIcon is a computer row's icon: reachability (wifi) for one that cannot be reached, a
+// warning for a disk filling up.
 func machineIcon(level string) string {
 	switch level {
-	case HealthCritical, HealthWarning, HealthOffline:
+	case HealthOffline:
+		return "wifi"
+	case HealthCritical, HealthWarning:
 		return "warning"
 	default:
 		return "gauge"
@@ -1711,7 +1760,7 @@ func categoryConfirm(m *Machine, cid string, n int, bytes uint64) string {
 	if cid == CatColdAgentSession {
 		return sessionOffloadConfirm(m)
 	}
-	return fmt.Sprintf("在「%s」上删掉「%s」这一类（共 %d 项，大约腾出 %s）？", machineLabel(m), CategoryLabels[cid], n, FormatBytes(bytes))
+	return fmt.Sprintf("在「%s」上删掉「%s」这一类（共 %d 项，大约腾出 %s）？", machineLabel(m), categoryName(cid), n, FormatBytes(bytes))
 }
 
 func itemConfirm(m *Machine, it ScanItem, verb string) string {
