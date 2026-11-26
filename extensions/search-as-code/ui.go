@@ -1026,7 +1026,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		a.mu.Unlock()
 		if f.hasRemote() {
 			f.syncAll(ctx)
-			res.Toast = "已同步在线电脑的会话索引"
+			res.Toast = "已同步在线电脑的聊天副本"
 		}
 		res.View, _ = a.render(ctx, &ext.UIRequest{UIParams: wire.UIParams{State: ext.EncodeState(p), TZ: r.TZ}})
 		return res, nil
@@ -1043,7 +1043,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		case "scope":
 			sc := strings.TrimSpace(r.Values["scope"])
 			if !isValidScope(sc) {
-				return fmt.Errorf("无效的检索范围 %q", sc)
+				return fmt.Errorf("没有「%s」这个范围", sc)
 			}
 			p.Scope = sc
 			p.RecipeID = ""
@@ -1085,7 +1085,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			id := strings.TrimSpace(r.Values["id"])
 			rec := st.recipe(id)
 			if rec == nil {
-				return fmt.Errorf("找不到搜索配方 %q", id)
+				return fmt.Errorf("找不到常用搜索「%s」", id)
 			}
 			p.RecipeID = rec.ID
 			p.Scope = rec.Scope
@@ -1095,7 +1095,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 				return err
 			}
 			run(st, prog)
-			res.Toast = "已执行配方「" + rec.Name + "」"
+			res.Toast = "已按「" + rec.Name + "」搜索"
 
 		case "run-code":
 			code := strings.TrimSpace(r.Values["custom_code"])
@@ -1108,12 +1108,12 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			p.RecipeID = ""
 			p.Tab = "results"
 			run(st, prog)
-			res.Toast = "执行完成"
+			res.Toast = "搜完了"
 
 		case "rerun-history":
 			idx, err := strconv.Atoi(r.Values["i"])
 			if err != nil || idx < 0 || idx >= len(st.History) {
-				return fmt.Errorf("无效的历史记录索引")
+				return fmt.Errorf("这条搜索记录已经不在了")
 			}
 			h := st.History[idx]
 			prog, err := CompileProgram(CompileInput{Code: h.Code, Scope: h.Scope})
@@ -1125,7 +1125,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			p.RecipeID = h.RecipeID
 			p.Tab = "results"
 			run(st, prog)
-			res.Toast = "已重跑历史搜索程序"
+			res.Toast = "已重新搜一次"
 
 		case "pivot-query":
 			q := strings.TrimSpace(r.Values["q"])
@@ -1140,7 +1140,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			}
 			run(st, prog)
 			res.Pop = true
-			res.Toast = "已关联检索：" + q
+			res.Toast = "已搜索「" + q + "」"
 
 		case "save-recipe":
 			rec, err := st.upsertRecipe(RecipeInput{
@@ -1157,7 +1157,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			p.EditRecipeID = ""
 			p.Tab = "recipes"
 			res.Pop = true
-			res.Toast = "已保存配方「" + rec.Name + "」"
+			res.Toast = "已保存常用搜索「" + rec.Name + "」"
 
 		case "delete-recipe":
 			id := cmp.Or(strings.TrimSpace(r.Values["id"]), p.EditRecipeID)
@@ -1168,13 +1168,13 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			p.EditRecipeID = ""
 			p.Tab = "recipes"
 			res.Pop = true
-			res.Toast = "已删除配方"
+			res.Toast = "已删除常用搜索"
 
 		case "save-sources":
 			st.SessionDirs = splitDirs(r.Values["session_dirs"])
 			st.RepoDirs = splitDirs(r.Values["repo_dirs"])
 			st.ColdTextDirs = splitDirs(r.Values["cold_text_dirs"])
-			res.Toast = "已更新检索目录"
+			res.Toast = "已保存文件夹，下次搜索就会用上"
 
 		case "open":
 			// Handled by Push on client
@@ -1185,7 +1185,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		return nil
 	})
 	if err != nil {
-		return nil, &ext.Error{Code: "invalid", Message: err.Error()}
+		return nil, &ext.Error{Code: "invalid", Message: actionFailure(r.Action, err)}
 	}
 	if pending != nil {
 		execRes := a.execute(ctx, scan, *pending, a.now())
@@ -1194,7 +1194,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil
 		})
 		if r.Action == "run-code" {
-			res.Toast = fmt.Sprintf("执行完成：%d 步算子，命中 %d 条", len(execRes.StepTraces), execRes.TotalMatches)
+			res.Toast = fmt.Sprintf("搜完了，找到 %d 段", execRes.TotalMatches)
 		}
 	}
 	if res.Pop {
@@ -1204,28 +1204,40 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return res, err
 }
 
-// card is the Overview card: the first recipes and one line about the last run that was stored. Drawing it never runs
-// a pipeline: the hub draws the card every time Overview opens, and a scan of every session there (what
-// activeExecution does when the last run had a query) took seconds and held the store's read lock meanwhile.
+// card is the Overview card: what this is for, the first saved searches and one line about the last run that was
+// stored. Drawing it never runs a pipeline: the hub draws the card every time Overview opens, and a scan of every
+// session there (what activeExecution does when the last run had a query) took seconds and held the store's read
+// lock meanwhile.
 func (a *app) card(_ context.Context, _ *ext.UIRequest) (*wire.View, error) {
 	var items []wire.Component
 	err := a.db().read(func(st *State) {
 		res := st.LastRun
+		if res == nil || res.ScannedSessions == 0 {
+			items = append(items, wire.Component{
+				Type: wire.ComponentText,
+				Key:  "card-intro",
+				Text: "在以前和 Claude Code、Codex 的聊天记录里找东西。点开输入几个词就能搜，也可以直接问 Persona 助手。",
+			})
+		}
 		for i, rec := range st.allRecipes()[:min(len(st.allRecipes()), 3)] {
 			items = append(items, wire.Component{
 				Type:     wire.ComponentRow,
 				Key:      fmt.Sprintf("card-rec-%d", i),
-				Icon:     cmp.Or(rec.Icon, "code"),
+				Icon:     cmp.Or(rec.Icon, "search"),
 				Title:    rec.Name,
-				Subtitle: fmt.Sprintf("%s · %s", scopeLabels[rec.Scope], clipRunes(rec.Description, 44)),
+				Subtitle: clipRunes(rec.Description, 44),
 			})
 		}
 		if res != nil && res.ScannedSessions > 0 {
+			what := "上次搜索"
+			if q := strings.TrimSpace(res.Program.Query); q != "" && !looksLikePipelineCode(q) {
+				what = "上次搜「" + clipRunes(q, 20) + "」"
+			}
 			items = append(items, wire.Component{
 				Type:  wire.ComponentText,
 				Key:   "card-summary",
 				Style: wire.TextStyleCaption,
-				Text:  fmt.Sprintf("已索引 %d 个%s Agent 会话%s · 最近流水线命中 %d 条（%d ms）", res.ScannedSessions, machinesNote(res.Machines), archivedNote(res.ScannedArchived), res.TotalMatches, res.TotalDurationMs),
+				Text:  fmt.Sprintf("%s：搜了%s %d 段聊天%s，找到 %d 段", what, machinesNote(res.Machines), res.ScannedSessions, archivedNote(res.ScannedArchived), res.TotalMatches),
 			})
 		}
 	})
@@ -1262,12 +1274,12 @@ func (a *app) runRestore(ctx context.Context, r *ext.UIRequest, p page) (*wire.A
 		}
 		rec := findArchivedSession(st, entryID)
 		if rec == nil {
-			res.Toast = fmt.Sprintf("本机没有已上云会话 %s（可能已恢复，或来自其他设备）", entryID)
+			res.Toast = "这台电脑上找不到这段云端聊天：可能已经恢复过，或者它在别的电脑上。重新搜一次再看。"
 			return nil
 		}
 		st.setRestore(RestoreNotice{EntryID: entryID, Title: rec.Title, Path: rec.FilePath, Running: true, StartedAt: now.UTC()})
 		dirs, started = slices.Clone(st.ColdTextDirs), true
-		res.Toast = "正在从云端恢复到 " + rec.FilePath + "，完成后在本页显示结果"
+		res.Toast = "正在从云端恢复到 " + rec.FilePath + "，好了以后在本页显示结果"
 		return nil
 	})
 	if err != nil {
@@ -1310,12 +1322,12 @@ func (a *app) runRemoteRestore(ctx context.Context, r *ext.UIRequest, p page, ma
 	a.mu.Unlock()
 	res := &wire.ActionResult{}
 	if f == nil || !validEntryID.MatchString(entryID) {
-		res.Toast = "无法在那台电脑上恢复：它不在要检索的电脑里"
+		res.Toast = remoteRestoreRefused
 		return res, nil
 	}
 	// The action carries the computer from when the page was drawn: it must still be a picked one.
 	if _, ok := f.pickedRemote(ctx, machine); !ok {
-		res.Toast = "无法在那台电脑上恢复：它不在要检索的电脑里"
+		res.Toast = remoteRestoreRefused
 		return res, nil
 	}
 	title, path := entryID, ""
@@ -1334,7 +1346,7 @@ func (a *app) runRemoteRestore(ctx context.Context, r *ext.UIRequest, p page, ma
 		}
 		st.setRestore(RestoreNotice{EntryID: entryID, Machine: machine, Title: title, Path: path, Running: true, StartedAt: now.UTC()})
 		started = true
-		res.Toast = "正在那台电脑上从云端恢复，完成后在本页显示结果"
+		res.Toast = "正在那台电脑上从云端恢复，好了以后在本页显示结果"
 		return nil
 	})
 	if err != nil {
@@ -1367,42 +1379,45 @@ func (a *app) runRemoteRestore(ctx context.Context, r *ext.UIRequest, p page, ma
 	return res, err
 }
 
+// remoteRestoreRefused: the computer of a restore is not among the picked ones (any more).
+const remoteRestoreRefused = "没法在那台电脑上恢复：它不在要搜的电脑里了。到扩展设置的「要搜哪些电脑」里重新选上它，再试一次。"
+
 // machinesSection lists the computers a search reaches, with their sync state; a row searches that computer.
 func (d draw) machinesSection() wire.Section {
 	sec := wire.Section{
-		Title:  "要检索的电脑",
-		Footer: "在扩展设置的「要检索的电脑」里选择。在线的电脑实时检索（在那台电脑上执行流水线，只回传证据片段）；离线时检索 hub 上已同步的纯对话索引（每 15 分钟同步一次）。点按一台电脑只检索它。",
+		Title:  "要搜的电脑",
+		Footer: "在扩展设置的「要搜哪些电脑」里选。在线的电脑当场在它那里搜，只把找到的片段传回来；不在线的，搜之前同步过来的精简副本（每 15 分钟同步一次，只有你和助手说的话）。点一台电脑就只搜它；右边是在搜索框里只搜它的写法。",
 	}
 	for i, m := range d.fleet.statuses(d.ctx) {
 		row := wire.Component{
 			Type:   wire.ComponentRow,
 			Key:    fmt.Sprintf("machine-%d", i),
 			Icon:   "link",
-			Title:  m.Name,
+			Title:  machineTitle(m.Name),
 			Action: &wire.Action{ID: "pivot-query", Values: map[string]string{"q": "machine:" + m.Key}},
 		}
 		switch {
 		case m.Local:
-			row.Subtitle = "hub 所在的电脑 · 直接读取本机会话"
+			row.Subtitle = "运行 Persona 的这台电脑 · 直接读它的聊天记录"
 			row.Badge = &wire.Badge{Text: "本机", Tone: wire.TonePositive}
 		case m.Online:
-			row.Subtitle = "在线 · 实时检索"
+			row.Subtitle = "在线 · 当场搜"
 			row.Badge = &wire.Badge{Text: "在线", Tone: wire.TonePositive}
 		default:
-			row.Subtitle = "离线"
-			row.Badge = &wire.Badge{Text: "离线", Tone: wire.ToneCaution}
+			row.Subtitle = "不在线"
+			row.Badge = &wire.Badge{Text: "不在线", Tone: wire.ToneCaution}
 		}
 		if !m.Local {
 			if m.SyncedAt.IsZero() {
-				row.Subtitle += " · 尚未同步索引"
+				row.Subtitle += " · 还没同步过，不在线时搜不到它"
 			} else {
-				row.Subtitle += fmt.Sprintf(" · 已同步 %d 个会话的索引（%s）", m.CachedSessions, d.formatTime(m.SyncedAt))
+				row.Subtitle += fmt.Sprintf(" · 已同步 %d 段聊天（%s）", m.CachedSessions, d.formatTime(m.SyncedAt))
 			}
 		}
 		row.Value = "machine:" + m.Key
 		sec.Items = append(sec.Items, row)
 	}
-	sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentButton, Key: "sync-machines", Title: "立即同步在线电脑的索引", Action: &wire.Action{ID: "sync-machines"}})
+	sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentButton, Key: "sync-machines", Title: "现在同步在线的电脑", Action: &wire.Action{ID: "sync-machines"}})
 	return sec
 }
 
@@ -1420,9 +1435,9 @@ func machinesStat(runs []MachineRun) wire.Stat {
 	}
 	v := fmt.Sprintf("%d 台", len(runs))
 	if cached > 0 || missing > 0 {
-		v += fmt.Sprintf("（%d 台离线）", cached+missing)
+		v += fmt.Sprintf("（%d 台不在线）", cached+missing)
 	}
-	return wire.Stat{Label: "检索电脑", Value: v, Tone: toneIf(cached+missing > 0, wire.ToneCaution)}
+	return wire.Stat{Label: "搜了几台电脑", Value: v, Tone: toneIf(cached+missing > 0, wire.ToneCaution)}
 }
 
 func machineStatusLabel(status string) string {
@@ -1432,13 +1447,13 @@ func machineStatusLabel(status string) string {
 	case machineOnline:
 		return "在线"
 	case machineCached:
-		return "离线 · 缓存索引"
+		return "不在线 · 搜的是同步过的副本"
 	default:
-		return "离线 · 无索引"
+		return "不在线 · 没有副本，没搜到"
 	}
 }
 
-// machinesNote is "N 台电脑上的" for a search of several computers, else "本机".
+// machinesNote is " N 台电脑上的" for a search of several computers, else "本机".
 func machinesNote(runs []MachineRun) string {
 	if len(runs) == 0 {
 		return "本机"
@@ -1458,7 +1473,7 @@ func (d draw) restoreSection() []wire.Section {
 	if len(d.st.Restores) == 0 {
 		return nil
 	}
-	sec := wire.Section{Title: "会话恢复"}
+	sec := wire.Section{Title: "会话恢复", Footer: "从云端取回的聊天放回原来的位置后，就能在 Claude Code 或 Codex 里接着聊。"}
 	for i, n := range d.st.Restores {
 		row := wire.Component{
 			Type:     wire.ComponentRow,
@@ -1474,12 +1489,12 @@ func (d draw) restoreSection() []wire.Section {
 			row.Icon, row.Badge = "check", &wire.Badge{Text: "已恢复", Tone: wire.TonePositive}
 			row.Value = d.formatTime(n.At)
 			if n.Resume != "" {
-				row.Subtitle = n.Path + " · 可运行 " + n.Resume
+				row.Subtitle = n.Path + " · 接着聊：运行 " + n.Resume
 			}
 		default:
 			row.Icon, row.Badge = "warning", &wire.Badge{Text: "恢复失败", Tone: wire.ToneDanger}
 			row.Value = d.formatTime(n.At)
-			row.Subtitle = n.Message
+			row.Subtitle = restoreFailure(n.Message)
 		}
 		sec.Items = append(sec.Items, row)
 	}
@@ -1498,7 +1513,7 @@ func archivedNote(n int) string {
 	if n <= 0 {
 		return ""
 	}
-	return fmt.Sprintf("（含 %d 个%s）", n, locationArchived)
+	return fmt.Sprintf("（含 %d 段已移到云端的）", n)
 }
 
 func countBadge(n int) string {
@@ -1534,7 +1549,7 @@ func badgeIfError(isErr bool, kind string) *wire.Badge {
 	if !isErr {
 		return nil
 	}
-	return &wire.Badge{Text: cmp.Or(kind, "error"), Tone: wire.ToneDanger}
+	return &wire.Badge{Text: errorKindLabel(kind), Tone: wire.ToneDanger}
 }
 
 func shortenHome(p string) string {
