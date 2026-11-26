@@ -452,3 +452,144 @@ func TestSliceStateBeforeAndOverviewCheckpoint(t *testing.T) {
 		t.Fatalf("expected nil checkpoint before earliest snapshot, got %+v", got)
 	}
 }
+
+func TestCollabPriorEntitiesAndSessionIntersection(t *testing.T) {
+	st := &store.State{
+		Contacts: map[string]*entry.Contact{
+			"c-alice": {Person: "c-alice", Name: "Alice"},
+		},
+		Entries: map[string]*entry.Entry{
+			"w-proj": {
+				ID: "w-proj", Facet: entry.World, Object: "project-apollo",
+				Text: "Alice owns project-apollo", Status: entry.Stable, First: "2026-09-20", Last: "2026-09-20", Tagged: true,
+			},
+			"p-alice": {
+				ID: "p-alice", Facet: entry.People, Person: "c-alice",
+				Text: "Alice leads release engineering", Status: entry.Stable, First: "2026-09-10", Last: "2026-09-10", Tagged: true,
+			},
+			"w-late": {
+				ID: "w-late", Facet: entry.World, Object: "project-future",
+				Text: "project-future created later", Status: entry.Stable, First: "2026-11-15", Last: "2026-11-15", Tagged: true,
+			},
+		},
+	}
+	prior := buildCollabPriorEntities(st)
+	if !prior.hasPrior("project-apollo", "2026-11-10") || !prior.hasPrior("Alice", "2026-11-10") {
+		t.Fatalf("expected prior entities before 2026-11-10")
+	}
+	if prior.hasPrior("project-future", "2026-11-10") || prior.hasPrior("project-future", "2026-11-15") {
+		t.Fatalf("future or same-day entity must not satisfy prior gate")
+	}
+
+	dir := t.TempDir()
+	jsonl := strings.Join([]string{
+		// Turn 1-3: Non-correction technical question mentioning "依赖" (matched old collabEntityCue alone, must be rejected).
+		`{"type":"user","timestamp":"2026-11-10T01:00:00Z","message":{"content":"帮我看下构建脚本"}}`,
+		`{"type":"assistant","timestamp":"2026-11-10T01:00:05Z","message":{"content":[{"type":"text","text":"好的，正在查看"}]}}`,
+		`{"type":"user","timestamp":"2026-11-10T01:01:00Z","message":{"content":"这个模块有哪些依赖需要升级？"}}`,
+		// Turn 4-6: Real correction mentioning prior entity "project-apollo" WITHOUT literal collabEntityCue words (must be kept!).
+		`{"type":"user","timestamp":"2026-11-10T02:00:00Z","message":{"content":"推进一下 project-apollo 的发布"}}`,
+		`{"type":"assistant","timestamp":"2026-11-10T02:00:05Z","message":{"content":[{"type":"text","text":"我先发给 Bob 确认"}]}}`,
+		`{"type":"user","timestamp":"2026-11-10T02:01:00Z","message":{"content":"不是，我说的是直接找 Alice"}}`,
+	}, "\n")
+	if err := os.WriteFile(filepath.Join(dir, "s.jsonl"), []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := []collabWindow{{Start: "2026-11-01", End: "2026-11-26"}}
+	cs, err := collabSessionCandsEntity([]string{dir}, ws, prior)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 1 || !strings.Contains(cs[0].Text, "Alice") || strings.Contains(cs[0].Text, "有哪些依赖") {
+		t.Fatalf("expected only the real correction mentioning prior entity, got %+v", cs)
+	}
+}
+
+func TestCollabStateCandsAndAntiLeak(t *testing.T) {
+	st := &store.State{
+		Entries: map[string]*entry.Entry{
+			"w-alpha": {
+				ID: "w-alpha", Facet: entry.World, Object: "project-alpha",
+				Text: "project-alpha is maintained on host-a", Status: entry.Stable, First: "2026-09-15", Last: "2026-09-15", Tagged: true,
+			},
+			"w-new": {
+				ID: "w-new", Facet: entry.World, Object: "project-new",
+				Text: "project-new started today", Status: entry.Stable, First: "2026-10-12", Last: "2026-10-12", Tagged: true,
+			},
+			// Eligible S8 Feishu/KB entity-bound choice in Oct with prior World entity.
+			"s8-ok": {
+				ID: "s8-ok", Facet: entry.Judgement, Grain: entry.Action, Status: entry.Stable,
+				First: "2026-10-12", Last: "2026-10-12", Tagged: true,
+				Scopes:    []entry.Scope{{Kind: entry.ScopeProject, Name: "project-alpha"}},
+				Situation: "deploying project-alpha patch",
+				Choice:    "route deployment to host-a after check",
+				Rejected:  "push directly to host-b without check",
+				Evidence:  []entry.Evidence{{Source: entry.SrcChat, Ref: "chats/room-1", Day: "2026-10-12", Quote: "project-alpha goes to host-a"}},
+			},
+			// Same-unit sibling entry that must be blocked by Leak/Units.
+			"s8-sib": {
+				ID: "s8-sib", Facet: entry.World, Grain: entry.Action, Status: entry.Stable,
+				First: "2026-10-10", Last: "2026-10-12", Tagged: true,
+				Text:     "sibling fact on same unit",
+				Evidence: []entry.Evidence{{Source: entry.SrcChat, Ref: "chats/room-1", Day: "2026-10-12", Quote: "same room"}},
+			},
+			// Eligible S3 interaction correction in Nov with prior World entity.
+			"s3-ok": {
+				ID: "s3-ok", Facet: entry.Interaction, Grain: entry.Action, Type: "correction", Status: entry.Stable,
+				First: "2026-11-05", Last: "2026-11-05", Tagged: true,
+				Scopes:    []entry.Scope{{Kind: entry.ScopeProject, Name: "project-alpha"}},
+				Situation: "running gate for project-alpha",
+				Choice:    "run full check on remote build host",
+				Rejected:  "compile locally on laptop",
+				Evidence:  []entry.Evidence{{Source: entry.SrcAgent, Ref: "agents/sess-1", Day: "2026-11-05", Quote: "do not build project-alpha locally"}},
+			},
+			// Same-day entity (no prior World/People before 2026-10-12): must be rejected.
+			"s8-noprior": {
+				ID: "s8-noprior", Facet: entry.Judgement, Grain: entry.Action, Status: entry.Stable,
+				First: "2026-10-12", Last: "2026-10-12", Tagged: true,
+				Scopes:    []entry.Scope{{Kind: entry.ScopeProject, Name: "project-new"}},
+				Situation: "starting project-new",
+				Choice:    "use template repo layout",
+				Rejected:  "copy legacy layout",
+				Evidence:  []entry.Evidence{{Source: entry.SrcChat, Ref: "chats/room-2", Day: "2026-10-12", Quote: "use template for project-new"}},
+			},
+			// Sensitive S8 entry: must be rejected.
+			"s8-sens": {
+				ID: "s8-sens", Facet: entry.Judgement, Grain: entry.Action, Status: entry.Stable,
+				First: "2026-10-12", Last: "2026-10-12", Tagged: true,
+				Categories: []entry.Category{{Name: entry.CatFinance}},
+				Scopes:     []entry.Scope{{Kind: entry.ScopeProject, Name: "project-alpha"}},
+				Situation:  "budget review for project-alpha",
+				Choice:     "defer purchase order",
+				Rejected:   "approve immediately",
+				Evidence:   []entry.Evidence{{Source: entry.SrcChat, Ref: "chats/room-3", Day: "2026-10-12", Quote: "defer budget"}},
+			},
+		},
+	}
+	prior := buildCollabPriorEntities(st)
+	ws := []collabWindow{{Start: "2026-10-01", End: "2026-11-26"}}
+	allowed := map[string]bool{entry.SrcAssistant: true, entry.SrcAsk: true, entry.SrcAgent: true, entry.SrcMemory: true, entry.SrcChat: true}
+	cands := collabStateCands(st, prior, ws, allowed)
+	if len(cands) != 2 {
+		t.Fatalf("expected 2 eligible state candidates (s8-ok, s3-ok), got %d: %+v", len(cands), cands)
+	}
+	var s8Cand *collabCand
+	for i := range cands {
+		if cands[i].Source == "state:S8" {
+			s8Cand = &cands[i]
+		}
+	}
+	if s8Cand == nil || len(s8Cand.Leak) == 0 || len(s8Cand.Units) == 0 {
+		t.Fatalf("expected state:S8 candidate with Leak and Units, got %+v", cands)
+	}
+	dayF := collabDayFilter([]collabIncident{{ID: s8Cand.ID, Day: s8Cand.Day, Leak: s8Cand.Leak, Units: s8Cand.Units}})
+	if !dayF.entryOut(st, st.Entries["s8-ok"], "2026-10-15") {
+		t.Error("source entry s8-ok must be excluded by dayF")
+	}
+	if !dayF.entryOut(st, st.Entries["s8-sib"], "2026-10-15") {
+		t.Error("same-unit sibling s8-sib must be excluded by dayF")
+	}
+	if dayF.entryOut(st, st.Entries["w-alpha"], "2026-10-12") {
+		t.Error("prior World entry w-alpha must NOT be excluded by dayF")
+	}
+}
