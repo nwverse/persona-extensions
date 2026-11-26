@@ -1054,7 +1054,7 @@ def _line(m):
 
 def _inbox_line(m):
     names = dict.fromkeys(mention["label"] for mention in m["mentions"] if mention.get("label"))
-    return _line(m) + ("（提及：%s）" % "、".join(names) if names else "")
+    return ("提及：%s\n" % "、".join(names) if names else "") + _line(m)
 
 
 def _message_line(m):

@@ -270,6 +270,20 @@ class ConnectorTest(unittest.TestCase):
         self.c.on_message(message("u1", "g2", 1, kind="group", text="Anyone bringing lunch?"))
         self.assertEqual(self.thing("g2")["tier"], "noise")
 
+    def test_topic_mention_context_ends_with_the_preview_body(self):
+        self.sign_in()
+        text = "Please check the coverage report for tomorrow."
+        latest = message("q1", "g1", 1, kind="group", root="q1", at_me=True, text=text)
+        latest["mentions"] = [{"label": "@Owner"}]
+        self.c.on_message(latest)
+
+        thing = self.thing("g1:q1")
+        self.assertEqual(thing["kind"], "mention")
+        self.assertEqual(thing["preview"], text)
+        self.assertIn("提及：@Owner", thing["context"])
+        # The hub requires the preview at the end of the context to rule out a clipped preview.
+        self.assertTrue(thing["context"].strip().endswith(thing["preview"].strip()))
+
     def test_only_same_topic_reply_settles_even_after_interleaved_activity(self):
         self.sign_in()
         self.c.on_message(message("q1", "g1", 1, kind="group", at_me=True, root="q1"))
