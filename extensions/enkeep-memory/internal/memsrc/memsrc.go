@@ -21,6 +21,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/recall"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -87,17 +88,27 @@ type item struct {
 	text     string // a curated entry's line as answered, when not its recall line (standing, or with its quote)
 }
 
-// Extra is an entry made elsewhere in the extension (the periodic overview's patterns, internal/overview), answered
-// beside the curated ones in the same order: Last is its newest evidence day.
+// Extra is an entry made elsewhere in the extension (the periodic overview's L1 principles and contracts,
+// internal/overview), answered beside the curated ones in the same order: Last is its newest evidence day.
 type Extra struct {
 	Entry Entry
 	Last  string
-	// Score (0–100, as entry.Score) and Kind (entry.KindRules or KindUnderstanding) make it a candidate for the
-	// standing set; Kind "" never stands. Entry.Standing is decided here, not by the maker.
+	// Score and Kind (entry.KindRules or KindUnderstanding) make it a candidate for the standing set; Kind "" never
+	// stands. Entry.Standing is decided here, not by the maker.
 	Score int
 	Kind  string
 	// Evidence are the curated entries it rests on: a pattern resting mostly on template lines never stands.
 	Evidence []string
+	// L1 metadata for three-bucket standing selection (unified design §2.1).
+	L1Kind     string   // "contract" or "principle"
+	Hard       bool     // contract: hard rule
+	Polarity   string   // contract: act / check / communicate / route
+	Dimension  string   // principle: decision / thinking / reaction / attention / communication
+	Group      string   // normalized "<facet>:<rule_type>" (empty for generic types)
+	Quotes     int      // distinct normalised user quotes (tie-breaker)
+	Body       string   // core statement without prefix/suffix (clipped first when over budget)
+	Suffix     string   // "（例外：…）" or "（两端：…）" (never clipped)
+	CoveredIDs []string // L0 entries covered by this L1 contract (used to retire absorbed hot-slot entries)
 }
 
 func (it item) id() string {
@@ -579,9 +590,9 @@ func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (
 	return res, n, nil
 }
 
-// profileItems converts a profile summary into memory.entries items. General overview and six-facet summaries carry no
-// sensitive categories and are standing; sensitive category summaries carry their exact categories and origin_space and
-// are never standing so the hub's scene filter gates them.
+// profileItems converts a profile summary into memory.entries items. Profile summaries (general overview, six-facet
+// summaries, and sensitive category summaries) are never standing (unified design §2.1): they stay in the recallable
+// pool for on-demand lookup and UI views, with sensitive summaries carrying their exact categories and origin_space.
 func profileItems(sum *profile.Summary) []item {
 	if sum == nil || sum.SourceCount == 0 {
 		return nil
@@ -753,10 +764,16 @@ var standingCache struct {
 func standingSet(st *store.State, extras []Extra, room int) map[string]standing {
 	var kb strings.Builder
 	kb.WriteString(strconv.Itoa(room) + "|")
+	kb.WriteString(nowFn().Format("2006-01-02") + "|")
 	for _, x := range extras {
 		kb.WriteString(x.Entry.ID)
 		kb.WriteString(strconv.Itoa(x.Score))
+		kb.WriteString(x.L1Kind)
+		kb.WriteString(x.Polarity)
+		kb.WriteString(x.Dimension)
 		kb.WriteString(x.Entry.Text)
+		kb.WriteString(x.Body)
+		kb.WriteString(x.Suffix)
 	}
 	key := strconv.Itoa(len(st.Entries)) + "|" + kb.String()
 	standingCache.Lock()
@@ -780,23 +797,109 @@ func ResidentMostFor(room int) int {
 func workStandingSet(st *store.State, extras []Extra, room int) map[string]standing {
 	var cands []Candidate
 	tpl := entry.TemplateQuotes(st.Entries)
-	for _, e := range st.Entries {
-		if c, ok := CuratedCandidate(st, e, tpl); ok && idRe.MatchString(e.ID) {
-			cands = append(cands, c)
-		}
-	}
+	now := nowFn()
+
+	// Collect L1 candidates and track which L0 entries are already absorbed by a live L1 contract.
+	absorbed := map[string]bool{}
+	var contractTexts []string
+	hasL1Contract, hasL1Principle := false, false
 	for _, x := range extras {
 		e := x.Entry
 		if x.Kind == "" || len(e.Categories) > 0 || e.OriginSpace != "" || st.Entries[e.ID] != nil || !idRe.MatchString(e.ID) ||
 			entry.TemplateBacked(st.Entries, x.Evidence, tpl) {
 			continue
 		}
-		cands = append(cands, Candidate{ID: e.ID, Text: clipBytes(strings.TrimSpace(e.Text), residentTextMost), Kind: x.Kind, Score: x.Score,
-			Days: len(x.Evidence), Last: x.Last, Pattern: strings.HasPrefix(e.ID, "ov:pattern:")})
+		bucket := BucketPrinciple
+		maxBytes := PrincipleTextMost
+		if x.L1Kind == BucketContract || (x.L1Kind == "" && x.Kind == entry.KindRules) {
+			bucket = BucketContract
+			maxBytes = ContractTextMost
+		}
+		text := ""
+		if strings.TrimSpace(x.Body) != "" {
+			text = FormatResidentLine(x.Body, x.Suffix, maxBytes)
+		} else {
+			text = FormatResidentLine(strings.TrimSpace(e.Text), "", maxBytes)
+		}
+		if text == "" {
+			continue
+		}
+		quotes := x.Quotes
+		if quotes <= 0 {
+			quotes = len(x.Evidence)
+		}
+		cands = append(cands, Candidate{
+			ID:        e.ID,
+			Text:      text,
+			Kind:      x.Kind,
+			Bucket:    bucket,
+			L1:        true,
+			Hard:      x.Hard,
+			Score:     x.Score,
+			Days:      quotes,
+			Last:      x.Last,
+			Polarity:  x.Polarity,
+			Dimension: x.Dimension,
+			Group:     x.Group,
+		})
+		if bucket == BucketContract {
+			hasL1Contract = true
+			for _, id := range x.Evidence {
+				absorbed[id] = true
+			}
+			for _, id := range x.CoveredIDs {
+				absorbed[id] = true
+			}
+			contractTexts = append(contractTexts, text)
+		} else {
+			hasL1Principle = true
+		}
 	}
+
+	// Collect Bucket 0 (Hot Slot: Pinned + active Fast-Path temporary hard contracts) and, only when a main bucket has
+	// zero qualified L1 candidates, cold-start L0 fallback candidates for that bucket.
+	for _, e := range st.Entries {
+		if !idRe.MatchString(e.ID) {
+			continue
+		}
+		if hc, ok := HotSlotCandidate(st, e, tpl, now); ok {
+			if !hc.Pinned {
+				if absorbed[e.ID] || slices.ContainsFunc(contractTexts, func(t string) bool { return norm.Jaccard(t, hc.Text) >= sameRule }) {
+					continue // absorbed by L1 contract
+				}
+			}
+			cands = append(cands, hc)
+			continue
+		}
+		if hasL1Contract && hasL1Principle {
+			continue
+		}
+		if !entry.ColdStartEligible(e) {
+			continue
+		}
+		c, ok := CuratedCandidate(st, e, tpl)
+		if !ok {
+			continue
+		}
+		if c.Bucket == BucketContract && hasL1Contract {
+			continue
+		}
+		if c.Bucket == BucketPrinciple && hasL1Principle {
+			continue
+		}
+		cands = append(cands, c)
+	}
+
 	out := map[string]standing{}
-	for i, c := range ResidentWithin(cands, room, ResidentMostFor(room)) {
-		out[c.ID] = standing{rank: rankStand - i, text: c.Text}
+	hotIdx, standIdx := 0, 0
+	for _, c := range ResidentWithin(cands, room, ResidentMostFor(room)) {
+		if c.Bucket == BucketHot {
+			out[c.ID] = standing{rank: rankHot - hotIdx, text: c.Text}
+			hotIdx++
+		} else {
+			out[c.ID] = standing{rank: rankStand - standIdx, text: c.Text}
+			standIdx++
+		}
 	}
 	return out
 }
