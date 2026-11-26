@@ -22,14 +22,18 @@ func (c *ctx) overviewSections() []wire.Section {
 		return c.welcomeSections()
 	}
 	sum := rules.Summarize(c.home, c.today)
-	return []wire.Section{
+	out := []wire.Section{
 		{Items: []wire.Component{quiet(overviewIntro), statGrid(overviewStats(sum))}, Footer: statsCaption},
+	}
+	out = append(out, c.importSections()...)
+	return append(out,
 		c.restockSection(),
 		c.expiringSection(),
 		c.choreSection(),
 		c.mealSection(),
-		{Items: []wire.Component{button("添加物品", addAction(model.TItem), wire.ButtonRoleNormal)}},
-	}
+		bulkSection(),
+		wire.Section{Items: []wire.Component{button("添加物品", addAction(model.TItem), wire.ButtonRoleNormal)}},
+	)
 }
 
 // empty reports whether the household has no records at all.
@@ -50,9 +54,9 @@ const statsCaption = "待买是你记下要买的；需要处理是家庭管家�
 const welcomeTitle = "家里的东西还没开始记"
 
 // welcomeSections is the overview of a household with no records: what the extension is for and the first steps, an
-// empty state with 载入示例, and 添加物品.
+// empty state with 载入示例, the imports waiting, 添加物品, and 一次记很多.
 func (c *ctx) welcomeSections() []wire.Section {
-	return []wire.Section{
+	out := []wire.Section{
 		{Items: []wire.Component{{
 			Type: wire.ComponentEmpty, Title: welcomeTitle,
 			Detail: "家庭管家帮你记家里有什么、放在哪，东西快用完或快过期时提醒你买，还能管家务和每天吃什么。" +
@@ -63,6 +67,9 @@ func (c *ctx) welcomeSections() []wire.Section {
 		}}},
 		{Items: []wire.Component{button("添加物品", addAction(model.TItem), wire.ButtonRoleNormal)}},
 	}
+	// A household without records can still have a draft waiting: a pasted list or the assistant's first import.
+	out = append(out[:1], append(c.importSections(), out[1:]...)...)
+	return append(out, bulkSection())
 }
 
 // overviewStats are the four totals of the overview: what needs handling, purchases open, chores due and items about

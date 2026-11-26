@@ -23,6 +23,7 @@ import (
 	"github.com/nwverse/persona/sdk/go/wire"
 
 	"github.com/nwverse/persona-extensions/extensions/household/internal/datadir"
+	"github.com/nwverse/persona-extensions/extensions/household/internal/imports"
 	"github.com/nwverse/persona-extensions/extensions/household/internal/mcp"
 	"github.com/nwverse/persona-extensions/extensions/household/internal/model"
 	"github.com/nwverse/persona-extensions/extensions/household/internal/remind"
@@ -114,7 +115,7 @@ func runMCP(args []string, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
-	return mcp.Serve(context.Background(), in, out, store.Open(dir), datadir.Zone(dir))
+	return mcp.ServeImports(context.Background(), in, out, store.Open(dir), imports.Open(dir), datadir.Zone(dir))
 }
 
 // extension holds the app that Init creates. Requests are handled concurrently, so the pointer is atomic.
@@ -206,9 +207,23 @@ func (x *extension) start(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[
 		default:
 		}
 	}
-	x.app.Store(ui.New(st, func() *time.Location { return loc }, changed))
-	go run(ctx, st, hub, rem, loc, kick, firstRoundAfter, checkEvery, remindEvery)
+	imp := imports.Open(dir)
+	x.app.Store(ui.New(st, func() *time.Location { return loc }, changed).UseImports(imp))
+	go run(ctx, watched{Storage: st, imp: imp}, hub, rem, loc, kick, firstRoundAfter, checkEvery, remindEvery)
 	return nil, nil
+}
+
+// watched is the records' storage whose Changed also reports a change of the import drafts, which the assistant's
+// server writes beside the records: the page then shows a new draft without waiting.
+type watched struct {
+	kernel.Storage
+	imp *imports.Store
+}
+
+func (w watched) Changed() bool {
+	records := w.Storage.Changed()
+	drafts := w.imp.Changed()
+	return records || drafts
 }
 
 // hubLocation is the hub's time zone, else this machine's.

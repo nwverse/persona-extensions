@@ -14,6 +14,7 @@ import (
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
 
+	"github.com/nwverse/persona-extensions/extensions/household/internal/imports"
 	"github.com/nwverse/persona-extensions/extensions/household/internal/model"
 	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
 )
@@ -30,6 +31,7 @@ type App struct {
 	loc     func() *time.Location
 	changed func()
 	now     func() time.Time // the clock; replaced in tests
+	imp     *imports.Store   // the import drafts; in memory until UseImports
 }
 
 // New returns the app over st. loc gives the time zone the days are counted in (time.Local when nil). changed is
@@ -69,6 +71,7 @@ type ctx struct {
 	sp    *kernel.Space // the household space; nil before its first write
 	home  *model.Home   // its records, typed
 	today model.Day
+	imps  *imports.State // the import drafts and the imports applied
 }
 
 // errKeep ends a storage update without saving: nothing changed.
@@ -95,6 +98,13 @@ var actions = map[string]func(c *ctx, arg string) (*wire.ActionResult, error){
 	"plan":       actPlan,
 	"mealdone":   actMealDone,
 	"mealcancel": actMealCancel,
+	"paste":      actPasteOpen,
+	"imppaste":   actPaste,
+	"impapply":   actImportApply,
+	"impdrop":    actImportDrop,
+	"impreplan":  actImportReplan,
+	"impans":     actImportAnswer,
+	"impundo":    actImportUndo,
 }
 
 // renderPage draws the nav page for the request.
@@ -190,6 +200,9 @@ func (a *App) draw(c *ctx) (*wire.View, error) {
 
 // route is the form page when the state names one that exists, else the nav page.
 func (c *ctx) route() *wire.View {
+	if c.st.F == pasteForm {
+		return c.pastePage()
+	}
 	if c.st.F != "" {
 		if v := c.formPage(); v != nil {
 			return v
@@ -215,6 +228,7 @@ func (c *ctx) bind(b *kernel.Base) {
 	c.sp = householdSpace(b)
 	c.home = model.Load(c.sp, c.loc)
 	c.today = model.DayOf(c.now, c.loc)
+	c.loadImports()
 }
 
 // clock is the app's time.
