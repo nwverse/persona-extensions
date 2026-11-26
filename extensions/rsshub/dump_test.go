@@ -23,8 +23,8 @@ func TestDumpPages(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	for name, text := range pageStates(t) {
-		if err := os.WriteFile(filepath.Join(dir, name+".txt"), []byte(text), 0o644); err != nil {
+	for name, sh := range pageStates(t) {
+		if err := os.WriteFile(filepath.Join(dir, name+".txt"), []byte(viewText(sh.view, sh.toast)), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -32,15 +32,15 @@ func TestDumpPages(t *testing.T) {
 
 // pageStates draws the page in each state: nothing followed, several sources, one feed and one entry, failing
 // sources, previews and wrong input, a wrong or refusing or unreachable instance. Each is checked against the view
-// budgets and returned as text.
-func pageStates(t *testing.T) map[string]string {
+// budgets.
+func pageStates(t *testing.T) map[string]shown {
 	t.Helper()
 	ctx := context.Background()
-	out := map[string]string{}
+	out := map[string]shown{}
 	clock := time.Date(2026, 11, 20, 1, 30, 0, 0, time.UTC)
 	keep := func(name string, v *wire.View, toast string) *wire.View {
 		checkView(t, v)
-		out[name] = viewText(v, toast)
+		out[name] = shown{v, toast}
 		return v
 	}
 	act := func(a *app, name, action, state string, values map[string]string) *wire.View {
@@ -120,6 +120,12 @@ func pageStates(t *testing.T) map[string]string {
 	d, _, _ := testApp(t, nil, config{InstanceURL: gone.URL}, "")
 	act(d, "15-instance-unreachable-ping", "ping", "", nil)
 	return out
+}
+
+// shown is a page as drawn after an action, with the action's toast.
+type shown struct {
+	view  *wire.View
+	toast string
 }
 
 // viewText is a view as indented text: sections, then their components with what a user sees on each.
