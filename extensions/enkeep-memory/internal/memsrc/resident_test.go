@@ -108,19 +108,19 @@ func TestResidentRoom(t *testing.T) {
 // score higher; the leftover room takes no line under spillFloor.
 func TestResidentPatternShare(t *testing.T) {
 	var cs []Candidate
-	for i := 0; i < 10; i++ { // rules only, more than their quota: the rest goes to the other side's room
+	for i := 0; i < 12; i++ { // rules only, more than their 60% quota: the rest goes to the other side's room
 		cs = append(cs, cand(fmt.Sprint("r", i), entry.KindRules, 90, 120), cand(fmt.Sprint("s", i), entry.KindRules, 90, 120))
 	}
 	p := cand("ov:pattern:1", entry.KindUnderstanding, 60, 200)
 	p.Pattern = true
-	low := cand("w-low", entry.KindRules, 20, 100)
+	low := cand("w-low", entry.KindRules, 20, 125) // larger than what the rules quota leaves
 	cs = append(cs, p, low)
 	got := ResidentWithin(cs, 4096, ResidentMostFor(4096))
 	var ids []string
 	for _, c := range got {
 		ids = append(ids, c.ID)
 	}
-	if !slices.Contains(ids, "ov:pattern:1") || !slices.Contains(ids, "s9") {
+	if !slices.Contains(ids, "ov:pattern:1") || !slices.Contains(ids, "s11") {
 		t.Errorf("the pattern or the spill was kept out: %v", ids)
 	}
 	if slices.Contains(ids, "w-low") {
