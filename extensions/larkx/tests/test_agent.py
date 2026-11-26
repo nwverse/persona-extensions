@@ -515,9 +515,21 @@ class AgentPrefixTest(unittest.TestCase):
 
     def test_the_manifest_setting_matches_the_code(self):
         with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
-            setting = json.load(f)["configuration"]["properties"]["agent_prefix"]
+            manifest = json.load(f)
+        props = manifest["configuration"]["properties"]
+        setting = props["agent_prefix"]
         self.assertEqual(setting["default"], AGENT_PREFIX)
         self.assertEqual(setting["maxLength"], AGENT_PREFIX_MOST)
+        for label, text in (
+            ("extension description", manifest["description"]),
+            ("channel description", manifest["contributes"]["channel"][0]["description"]),
+            ("agent_reply_suffix", props["agent_reply_suffix"]["description"]),
+            ("agent_mention", props["agent_mention"]["description"]),
+            ("agent_group_topics", props["agent_group_topics"]["description"]),
+        ):
+            self.assertIn("触发前缀", text, label)
+            self.assertIn("默认 /agent", text, label)
+        self.assertNotIn("关闭后只认 /agent", props["agent_mention"]["description"])
 
 
 class PluginRoutingTest(unittest.TestCase):

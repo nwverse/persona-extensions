@@ -2,7 +2,7 @@
 
 [Documentation](../README.md) · [Source](../../extensions/larkx/)
 
-This extension (id `larkx`) reaches Feishu as the user, next to the hub's own `lark-cli` integration (nwverse/persona#1487). It runs [LarkAgentX](https://github.com/cv-cat/LarkAgentX), a Python library for the Feishu web client, as a connector program: the user signs in with a QR code, every message arrives over the web client's long connection, the assistant can send as the user after a confirmation on the phone, and `/agent` in any chat hands a request to the assistant. It is an ordinary connector and channel program (Persona's `docs/connector-protocol.md` and `docs/extensions/channels.md`), so the hub needs no change.
+This extension (id `larkx`) reaches Feishu as the user, next to the hub's own `lark-cli` integration (nwverse/persona#1487). It runs [LarkAgentX](https://github.com/cv-cat/LarkAgentX), a Python library for the Feishu web client, as a connector program: the user signs in with a QR code, every message arrives over the web client's long connection, the assistant can send as the user after a confirmation on the phone, and a trigger prefix (`/agent` by default, configurable via `agent_prefix`) or a self-mention in any chat hands a request to the assistant. It is an ordinary connector and channel program (Persona's `docs/connector-protocol.md` and `docs/extensions/channels.md`), so the hub needs no change.
 
 This page describes version 0.3.7. When the manifest shown in the install preview disagrees with this page, the manifest wins.
 
@@ -10,7 +10,7 @@ This page describes version 0.3.7. When the manifest shown in the install previe
 | --- | --- | --- |
 | `connectors` | `larkx` (飞书（LarkAgentX）) | Capabilities `status`, `tools`, `actions`, `events`, `inbox`, `archive`, `login`, `threads`, `fallback`. Inbox kinds `dm`, `mention`, `group`. `larkx_*` actions are `confirm_always`. |
 | `assistant` | `larkx` | Instructions in `assistant/instructions.md`: when to use `larkx_*` and when `lark-cli`. |
-| `channel` | `larkx` (飞书 /agent) | Kind `im`, on the `larkx` connector, with `threads` and `push`: the user's own `/agent` messages reach the assistant, and the answers go back under them. Each group topic has a conversation of its own; direct chats use the channel's target. Pushes go only to the user's chat with themself. Plain text, at most 4,000 characters. |
+| `channel` | `larkx` (飞书 /agent) | Kind `im`, on the `larkx` connector, with `threads` and `push`: the user's own messages starting with the configured `agent_prefix` (`/agent` by default) or mentioning themself reach the assistant, and the answers go back under them. Each group topic has a conversation of its own; direct chats use the channel's target. Pushes go only to the user's chat with themself. Plain text, at most 4,000 characters. |
 
 ## Before you use it
 

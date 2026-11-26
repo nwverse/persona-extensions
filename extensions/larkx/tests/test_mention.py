@@ -129,6 +129,19 @@ class SelfMentionTest(unittest.TestCase):
         self.live("m3", "@Example 自艾特照常触发")
         self.assertEqual(self.handed()["message"]["text"], "自艾特照常触发")
 
+    def test_disabling_mentions_keeps_custom_prefix_and_rejects_default(self):
+        self.c.prefix = "/ai"
+        self.c.mention = False
+        self.live("m1", "@Example 总结")
+        self.c._on_live(message("m2", "c1", 2, sender=ME, text="/agent 不触发"))
+        self.nothing_handed()
+        self.c._on_live(message("m3", "c1", 3, sender=ME, text="/ai 仍然可以"))
+        self.assertEqual(self.handed()["message"]["id"], "m3")
+        for mid in ("m1", "m2"):
+            with self.assertRaises(RpcError) as e:
+                self.c.channel_send({"ref": "r_" + mid, "text": "x", "kind": "answer", "reply_to": mid})
+            self.assertEqual(e.exception.code, "cannot_send")
+
     def test_a_malformed_mention_list_cannot_invoke_the_assistant(self):
         for bad in ("not a list", [{"id": ME, "start": 0, "end": 1}], None):
             m = message("m1", "c1", 1, sender=ME, text="@Example 总结")

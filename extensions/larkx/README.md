@@ -19,13 +19,13 @@ Read this before installing:
 
 ## Invoke the assistant by mentioning yourself
 
-Write `/agent <what to do>`, or mention your own signed-in Feishu account with a real rich-text @ tag in your own message. The @ tag is removed from the request. A mention without any other text uses the same context-based request as an empty `/agent`.
+Write your configured trigger prefix (default `/agent`, set via `agent_prefix`), such as `/agent <what to do>`, or mention your own signed-in Feishu account with a real rich-text @ tag in your own message. The @ tag is removed from the request. A mention without any other text uses the same context-based request as an empty trigger-prefix message.
 
-Only your own fresh live messages qualify: another person mentioning you does not invoke the assistant, and a reply ending with the configured AI-answer marker is ignored. Typing an `@name` as plain text is not a mention. Set **@自己唤起助手** (`agent_mention`, enabled by default) to `false` to allow only `/agent`. Answers to either kind of request appear under the original message with the configured AI-answer marker.
+Only your own fresh live messages qualify: another person mentioning you does not invoke the assistant, and a reply ending with the configured AI-answer marker is ignored. Typing an `@name` as plain text is not a mention. Set **@自己唤起助手** (`agent_mention`, enabled by default) to `false` to allow only the configured trigger prefix (`agent_prefix`, `/agent` by default). Answers to either kind of request appear under the original message with the configured AI-answer marker.
 
 ## Topics in groups
 
-In a group, a request outside a topic starts a new assistant conversation, and its answer opens a topic under it. A later request in that topic continues the same conversation; `/agent /new` there starts the topic over. A topic group works the same way, one conversation per topic. Requests in direct chats go to the channel's target, the main chat by default. Set **群话题各开对话** (`agent_group_topics`, enabled by default) to `false` to send group requests there too. This needs a hub with per-thread conversations for extension channels; an older hub sends every request to the target.
+In a group, a request outside a topic starts a new assistant conversation, and its answer opens a topic under it. A later request in that topic continues the same conversation; sending `/new` with the configured trigger prefix (for example `/agent /new`) there starts the topic over. A topic group works the same way, one conversation per topic. Requests in direct chats go to the channel's target, the main chat by default. Set **群话题各开对话** (`agent_group_topics`, enabled by default) to `false` to send group requests there too. This needs a hub with per-thread conversations for extension channels; an older hub sends every request to the target.
 
 ## Pushes
 
