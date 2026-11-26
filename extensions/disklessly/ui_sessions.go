@@ -886,13 +886,13 @@ func (d draw) sessionsPage(p sessPage, deep *deepResult) *wire.View {
 		if len(choices) >= maxFilterChoices {
 			break
 		}
-		choices = append(choices, wire.Choice{Value: mm.ID, Title: clip(machineLabel(mm), 28)})
+		choices = append(choices, wire.Choice{Value: mm.ID, Title: chipFit(machineLabel(mm), chipUnits)})
 		if m != nil && mm.ID == m.ID {
 			selectedIncluded = true
 		}
 	}
 	if !selectedIncluded && m != nil && len(choices) > 1 {
-		choices[len(choices)-1] = wire.Choice{Value: m.ID, Title: clip(machineLabel(m), 28)}
+		choices[len(choices)-1] = wire.Choice{Value: m.ID, Title: chipFit(machineLabel(m), chipUnits)}
 	}
 	value := allMachines
 	if m != nil {

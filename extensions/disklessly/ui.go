@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -241,22 +242,13 @@ func (d draw) home(p page) *wire.View {
 			if len(choices) >= maxMachineChoices {
 				break
 			}
-			label := clip(machineLabel(ms.Machine), 20)
-			if ms.TotalBytes > 0 {
-				label = fmt.Sprintf("%s · %.0f%%", label, ms.UsedPercent)
-			}
-			choices = append(choices, wire.Choice{Value: ms.Machine.ID, Title: clip(label, 28)})
+			choices = append(choices, wire.Choice{Value: ms.Machine.ID, Title: diskChipLabel(ms)})
 			if ms.Machine.ID == selected.ID {
 				selectedIncluded = true
 			}
 		}
 		if !selectedIncluded && len(choices) > 0 {
-			label := clip(machineLabel(selected), 20)
-			ms := d.st.machineStatus(selected)
-			if ms.TotalBytes > 0 {
-				label = fmt.Sprintf("%s · %.0f%%", label, ms.UsedPercent)
-			}
-			choices[len(choices)-1] = wire.Choice{Value: selected.ID, Title: clip(label, 28)}
+			choices[len(choices)-1] = wire.Choice{Value: selected.ID, Title: diskChipLabel(d.st.machineStatus(selected))}
 		}
 		choices = append(choices, wire.Choice{Value: "+", Title: "＋ 添加电脑"})
 		v.Filter = &wire.Filter{
@@ -1530,6 +1522,57 @@ func toneIf(cond bool, t string) string {
 		return t
 	}
 	return ""
+}
+
+// chipUnits is how wide a machine filter's label may be, in chipWidth units: the web draws the filter as a select at
+// most 200 px wide, 162 px of it for the text at 13 px (about 25 units), and cuts off whatever is longer.
+const chipUnits = 25
+
+// diskChipLabel is a machine's label in the disk page's filter: its disk use first, then its name cut to the room left,
+// so a long name loses its end and the number is never cut off ("50% · 运行 Persona 的电脑").
+func diskChipLabel(ms MachineStatus) string {
+	if ms.TotalBytes == 0 {
+		return chipFit(machineLabel(ms.Machine), chipUnits)
+	}
+	head := fmt.Sprintf("%.0f%% · ", ms.UsedPercent)
+	return head + chipFit(machineLabel(ms.Machine), chipUnits-chipWidth(head))
+}
+
+// chipWidth is s's width in units of about half a CJK character: a wide rune (CJK, kana, hangul, full-width forms)
+// counts 2, any other 1.
+func chipWidth(s string) int {
+	n := 0
+	for _, r := range s {
+		n += runeUnits(r)
+	}
+	return n
+}
+
+func runeUnits(r rune) int {
+	switch {
+	case unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul),
+		r >= 0x3000 && r <= 0x303F,                             // CJK symbols and punctuation
+		r >= 0xFF00 && r <= 0xFF60, r >= 0xFFE0 && r <= 0xFFE6: // full-width forms
+		return 2
+	}
+	return 1
+}
+
+// chipFit cuts s to at most maxUnits chipWidth units, ending in "…" when it cuts.
+func chipFit(s string, maxUnits int) string {
+	s = strings.TrimSpace(s)
+	if chipWidth(s) <= maxUnits {
+		return s
+	}
+	n, out := 0, []rune{}
+	for _, r := range s {
+		if n+runeUnits(r) > maxUnits-1 { // room for the "…"
+			break
+		}
+		n += runeUnits(r)
+		out = append(out, r)
+	}
+	return strings.TrimSpace(string(out)) + "…"
 }
 
 func clip(s string, maxRunes int) string {
