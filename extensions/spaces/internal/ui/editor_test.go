@@ -928,11 +928,11 @@ func TestEditorHelpers(t *testing.T) {
 		t.Fatalf("empty card summary = %q", got)
 	}
 	ty.Card = kernel.Card{Lead: "lead", Pills: []string{"pct"}, Progress: &kernel.Ratio{Of: "pct", Over: "lead"}}
-	if got := c2.cardSummary(ty); got != "主行 主 · 标签 百分 · 进度 百分 / 主" {
+	if got := c2.cardSummary(ty); got != "下面一行 主 · 旁边 百分 · 进度条 百分 / 主" {
 		t.Fatalf("card summary = %q", got)
 	}
 	ty.Card = kernel.Card{Progress: &kernel.Ratio{Of: "pct"}}
-	if got := c2.cardSummary(ty); got != "进度 百分" {
+	if got := c2.cardSummary(ty); got != "进度条 百分" {
 		t.Fatalf("progress only summary = %q", got)
 	}
 	if got := c2.viewSummary(ty, kernel.View{Kind: "board", Lens: kernel.Lens{Group: "lead"}}); got != "看板 · 按 主 分组" {
