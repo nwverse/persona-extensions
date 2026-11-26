@@ -215,7 +215,8 @@ func TestLongDraftsAreConfirmedOnTheirFullList(t *testing.T) {
 	a, _ := newApp(st)
 	var lines []imports.Line
 	for i := range 20 {
-		lines = append(lines, imports.Line{Title: fmt.Sprintf("东西%d", i), Qty: fp(1)})
+		// Distinct names: names that contain one another would be asked about.
+		lines = append(lines, imports.Line{Title: fmt.Sprintf("东西%c", 'A'+i), Qty: fp(1)})
 	}
 	lines = append(lines, imports.Line{Title: "牛奶", Qty: fp(1), Unit: "盒"}) // a question on line 21
 	d := preview(t, a, imports.Input{Source: imports.SrcText, Lines: lines})
@@ -413,4 +414,55 @@ func TestPastedDraftsAreTheUsersToConfirm(t *testing.T) {
 		t.Fatal("assistant discard of a pasted draft")
 	}
 	toastHas(t, act(t, a, state{}, nil, confirmOf(t, render(t, a, state{})).Action.ID), "已写入")
+}
+
+// Round 3, item 2: with the draft file unreadable, the page's writes are refused in plain words; reading works.
+func TestUnreadableDraftsHoldPageWrites(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "imports.json"), []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := newStore(t, true)
+	a, _ := newApp(st)
+	a.UseImports(imports.Open(dir))
+	snap := snapshot(t, st)
+	res := act(t, a, state{}, nil, "use:"+entityID(t, st, model.TItem, "番茄"))
+	toastHas(t, res, "导入记录读不出来，先处理好再改")
+	if snapshot(t, st) != snap {
+		t.Fatal("a write went ahead past an unreadable draft file")
+	}
+	checkView(t, "overview with an unreadable draft file", render(t, a, state{}), false)
+}
+
+// Round 3, item 3: an undo that could not be decided says so, and 知道了 hides it without touching records.
+func TestUndecidedUndoOnThePage(t *testing.T) {
+	st := newStore(t, true)
+	a, _ := newApp(st)
+	preview(t, a, receiptInput())
+	act(t, a, state{}, nil, confirmOf(t, render(t, a, state{})).Action.ID)
+	err := a.importsOf().Update(func(s *imports.State, _ time.Time) error {
+		last, _ := s.Last()
+		last.Unknown = imports.UnknownUndo
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, _ := sectionTitled(render(t, a, state{}), "刚才的导入")
+	text := fmt.Sprint(last.Items)
+	if strings.Contains(text, "已经撤销") || !strings.Contains(text, "说不清撤销了没有") {
+		t.Fatalf("undecided undo %+v", last.Items)
+	}
+	ack, ok := buttonTitledIn(last, "知道了")
+	if !ok {
+		t.Fatal("no 知道了")
+	}
+	snap := snapshot(t, st)
+	res := act(t, a, state{}, nil, ack.Action.ID)
+	if snapshot(t, st) != snap {
+		t.Fatal("acknowledging changed the records")
+	}
+	if _, ok := sectionTitled(res.View, "刚才的导入"); ok {
+		t.Fatal("still shown after 知道了")
+	}
 }

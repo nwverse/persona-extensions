@@ -182,13 +182,17 @@ func (x *extension) start(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[
 	datadir.Remember(dir)
 	st := store.Open(dir)
 	imp := imports.Open(dir)
+	var unreadable *imports.UnreadableError
 	if err := st.Update(func(b *kernel.Base, now time.Time) error {
 		if err := imp.SettleRecords(b); err != nil {
 			return err
 		}
 		_, err := model.Ensure(b, now)
 		return err
-	}); err != nil {
+	}); errors.As(err, &unreadable) {
+		// The records are not written while the import drafts cannot be read; the page still shows them and says why.
+		log.Printf("家庭管家：%v", err)
+	} else if err != nil {
 		return nil, err
 	}
 	if name := in.Hub.Timezone; name != "" {

@@ -137,7 +137,7 @@ func (c *ctx) draftSection(d imports.Draft, first bool) wire.Section {
 }
 
 func (c *ctx) draftFooter(d imports.Draft) string {
-	return join(imports.SourceLabel(d.Input.Source)+" · "+c.when(d.Created), cut(d.Input.Note, 60), "24 小时内没确认会自动作废")
+	return join(imports.DraftLabel(d)+" · "+c.when(d.Created), cut(d.Input.Note, 60), "24 小时内没确认会自动作废")
 }
 
 // draftButtons are the end of a fully listed draft: 确认写入 for the revision drawn (or why it cannot be confirmed
@@ -278,6 +278,11 @@ func (c *ctx) lastImportSection() (wire.Section, bool) {
 	items := []wire.Component{quiet(fmt.Sprintf("%s 写入了%s：%s", c.when(last.At), imports.SourceLabel(last.Source),
 		imports.TotalsText(last.Totals)))}
 	switch {
+	case last.Unknown == imports.UnknownUndo && last.Seen:
+		return wire.Section{}, false
+	case last.Unknown == imports.UnknownUndo:
+		items = append(items, quiet("上次撤销这次导入时被打断，说不清撤销了没有，所以不再提供撤销。请看看这几样的数量对不对，不对就手动改一下。"),
+			button("知道了", &wire.Action{ID: "impack:" + last.Draft}, wire.ButtonRoleNormal))
 	case !last.Undone.IsZero():
 		items = append(items, quiet("已经撤销（"+c.when(last.Undone)+"）。"))
 	default:
@@ -470,4 +475,12 @@ func actImportUndo(c *ctx, id string) (*wire.ActionResult, error) {
 	}
 	c.onSaved(func(ok bool) { _ = finish(ok) })
 	return &wire.ActionResult{Toast: "已撤销这次导入"}, nil
+}
+
+// actImportAck hides an undo whose outcome could not be decided, once the user has seen it. No record changes.
+func actImportAck(c *ctx, draft string) (*wire.ActionResult, error) {
+	if err := imports.Acknowledge(c.app.importsOf(), draft); err != nil {
+		return nil, err
+	}
+	return &wire.ActionResult{Toast: "好的，这条不再显示"}, nil
 }
