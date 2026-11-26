@@ -178,17 +178,26 @@ const collabJudgePrompt = `你在评判 AI 助手在一个真实协作情境里�
 
 const collabJudgeSchema = `{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","avoided","needless_ask","wrong_action","repeat"],"properties":{"id":{"type":"string"},"avoided":{"type":"boolean"},"needless_ask":{"type":"boolean"},"wrong_action":{"type":"boolean"},"repeat":{"type":"boolean"}}}}}}`
 
+// collabContextBlock strips Persona/Jarvis context wrappers prepended to real user messages in managed sessions
+// (e.g. supervisor and agent transcripts under ~/.claude/projects/), without touching pure system tags.
+var collabContextBlock = regexp.MustCompile(`(?s)<(?:persona-context|jarvis-context)\b[^>]*>.*?</(?:persona-context|jarvis-context)>`)
+
 // collabMemoryCands are the feedback memories dated in [cutoff, end].
 func collabMemoryCands(dir, cutoff, end string) ([]collabCand, error) {
 	return collabMemoryCandsWindows(dir, []collabWindow{{Start: cutoff, End: end}})
 }
 
 func collabMemoryCandsWindows(dir string, ws []collabWindow) ([]collabCand, error) {
+	return collabMemoryCandsInDir(dir, ws, true)
+}
+
+func collabMemoryCandsInDir(dir string, ws []collabWindow, legacyID bool) ([]collabCand, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "*.md"))
 	if err != nil {
 		return nil, err
 	}
 	year := ws[0].Start[:4]
+	parent := filepath.Base(filepath.Dir(filepath.Clean(dir)))
 	var out []collabCand
 	for _, f := range files {
 		raw, err := os.ReadFile(f)
@@ -214,16 +223,116 @@ func collabMemoryCandsWindows(dir string, ws []collabWindow) ([]collabCand, erro
 		if !ok {
 			continue
 		}
-		out = append(out, collabCand{ID: "m-" + heHash(filepath.Base(f))[:10], Source: "memory", Day: day, Window: win, Text: heClip(body, 2400)})
+		key := filepath.Base(f)
+		if !legacyID {
+			key = filepath.Join(parent, key)
+		}
+		out = append(out, collabCand{ID: "m-" + heHash(key)[:10], Source: "memory", Day: day, Window: win, Text: heClip(body, 2400)})
 	}
 	return out, nil
 }
 
+// discoverCollabDirs resolves session directories and memory directories from explicit comma-separated flags and an
+// optional sessionsRoot (e.g. ~/.claude/projects). When includeSubstrs is non-empty, only subdirectories under
+// sessionsRoot whose basename contains at least one substring (case-insensitive) are included.
+func discoverCollabDirs(memSpec, sessionsSpec, sessionsRoot, includeSpec string) (sessDirs []string, memDirs []string, explicitMem map[string]bool, err error) {
+	explicitMem = map[string]bool{}
+	seenSess := map[string]bool{}
+	seenMem := map[string]bool{}
+	addSess := func(d string) {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			return
+		}
+		c := filepath.Clean(d)
+		if !seenSess[c] {
+			seenSess[c] = true
+			sessDirs = append(sessDirs, c)
+		}
+	}
+	addMem := func(d string, explicit bool) {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			return
+		}
+		c := filepath.Clean(d)
+		if explicit {
+			explicitMem[c] = true
+		}
+		if !seenMem[c] {
+			seenMem[c] = true
+			memDirs = append(memDirs, c)
+		}
+	}
+	for _, d := range strings.Split(memSpec, ",") {
+		addMem(d, true)
+	}
+	for _, d := range strings.Split(sessionsSpec, ",") {
+		addSess(d)
+	}
+	if root := strings.TrimSpace(sessionsRoot); root != "" {
+		var filters []string
+		for _, p := range strings.Split(includeSpec, ",") {
+			if p = strings.ToLower(strings.TrimSpace(p)); p != "" {
+				filters = append(filters, p)
+			}
+		}
+		entries, rerr := os.ReadDir(root)
+		if rerr != nil {
+			return nil, nil, nil, rerr
+		}
+		for _, ent := range entries {
+			if !ent.IsDir() {
+				continue
+			}
+			name := ent.Name()
+			if len(filters) > 0 {
+				low := strings.ToLower(name)
+				matched := false
+				for _, f := range filters {
+					if strings.Contains(low, f) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
+			sub := filepath.Join(root, name)
+			addSess(sub)
+			if info, serr := os.Stat(filepath.Join(sub, "memory")); serr == nil && info.IsDir() {
+				addMem(filepath.Join(sub, "memory"), false)
+			}
+		}
+	}
+	return sessDirs, memDirs, explicitMem, nil
+}
+
 // collabLine is one line of a transcript: a user's own text, or the assistant's text and calls.
+// legacyIdx keeps the pre-context-stripping line index so existing dev-set incident IDs remain stable; ctxLine > 0
+// marks a user line recovered after stripping a <persona-context> / <jarvis-context> wrapper.
 type collabLine struct {
-	user bool
-	day  string
-	text string
+	user      bool
+	day       string
+	text      string
+	legacyIdx int
+	ctxLine   int
+}
+
+func cleanCollabUserText(raw string) (text string, fromContext bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false
+	}
+	if !strings.HasPrefix(trimmed, "<") {
+		return raw, false
+	}
+	stripped := strings.TrimSpace(collabContextBlock.ReplaceAllString(trimmed, ""))
+	if stripped == "" || strings.HasPrefix(stripped, "<") {
+		return "", false
+	}
+	return stripped, true
 }
 
 func collabRead(path string) ([]collabLine, error) {
@@ -235,7 +344,10 @@ func collabRead(path string) ([]collabLine, error) {
 	var out []collabLine
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	legacyIdx := 0
+	rawLine := 0
 	for sc.Scan() {
+		rawLine++
 		var j struct {
 			Type      string `json:"type"`
 			Timestamp string `json:"timestamp"`
@@ -253,8 +365,15 @@ func collabRead(path string) ([]collabLine, error) {
 		}
 		var text string
 		if json.Unmarshal(j.Message.Content, &text) == nil {
-			if j.Type == "user" && !strings.HasPrefix(strings.TrimSpace(text), "<") {
-				out = append(out, collabLine{user: true, day: day, text: text})
+			if j.Type == "user" {
+				if cleaned, fromCtx := cleanCollabUserText(text); cleaned != "" {
+					if fromCtx {
+						out = append(out, collabLine{user: true, day: day, text: cleaned, legacyIdx: -1, ctxLine: rawLine})
+					} else {
+						out = append(out, collabLine{user: true, day: day, text: cleaned, legacyIdx: legacyIdx})
+						legacyIdx++
+					}
+				}
 			}
 			continue
 		}
@@ -268,18 +387,38 @@ func collabRead(path string) ([]collabLine, error) {
 			continue
 		}
 		var b strings.Builder
+		var legacyB strings.Builder
+		usedCtx := false
 		for _, p := range parts {
 			switch {
-			case p.Type == "text" && j.Type == "user" && !strings.HasPrefix(strings.TrimSpace(p.Text), "<"):
-				b.WriteString(p.Text)
+			case p.Type == "text" && j.Type == "user":
+				if cleaned, fromCtx := cleanCollabUserText(p.Text); cleaned != "" {
+					if b.Len() > 0 {
+						b.WriteString("\n")
+					}
+					b.WriteString(cleaned)
+					if fromCtx {
+						usedCtx = true
+					} else {
+						legacyB.WriteString(p.Text)
+					}
+				}
 			case p.Type == "text" && j.Type == "assistant":
 				b.WriteString(p.Text + "\n")
+				legacyB.WriteString(p.Text + "\n")
 			case p.Type == "tool_use":
-				b.WriteString("[" + p.Name + " " + heClip(string(p.Input), 160) + "]\n")
+				s := "[" + p.Name + " " + heClip(string(p.Input), 160) + "]\n"
+				b.WriteString(s)
+				legacyB.WriteString(s)
 			}
 		}
 		if t := strings.TrimSpace(b.String()); t != "" {
-			out = append(out, collabLine{user: j.Type == "user", day: day, text: t})
+			if j.Type == "user" && usedCtx && strings.TrimSpace(legacyB.String()) == "" {
+				out = append(out, collabLine{user: true, day: day, text: t, legacyIdx: -1, ctxLine: rawLine})
+			} else {
+				out = append(out, collabLine{user: j.Type == "user", day: day, text: t, legacyIdx: legacyIdx})
+				legacyIdx++
+			}
 		}
 	}
 	return out, sc.Err()
@@ -295,12 +434,18 @@ func collabSessionCandsWindows(dirs []string, ws []collabWindow, cue *regexp.Reg
 		cue = collabCue
 	}
 	var out []collabCand
+	seenFiles := map[string]bool{}
 	for _, dir := range dirs {
 		files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
 		if err != nil {
 			return nil, err
 		}
 		for _, f := range files {
+			cf := filepath.Clean(f)
+			if seenFiles[cf] {
+				continue
+			}
+			seenFiles[cf] = true
 			lines, err := collabRead(f)
 			if err != nil {
 				return nil, err
@@ -330,7 +475,11 @@ func collabSessionCandsWindows(dirs []string, ws []collabWindow, cue *regexp.Reg
 				move = strings.Join(mv, "\n")
 				text := "用户的请求：" + heClip(lines[req].text, 600) + "\n助手的动作：" + heClip(move, collabCtxMost) +
 					"\n用户随后说：" + heClip(l.text, 600)
-				out = append(out, collabCand{ID: "s-" + heHash(f + fmt.Sprint(i))[:10], Source: "session", Day: l.day, Window: win, SessionID: sid, Text: text})
+				idKey := f + fmt.Sprint(l.legacyIdx)
+				if l.ctxLine > 0 {
+					idKey = fmt.Sprintf("%s:ctx:%d", f, l.ctxLine)
+				}
+				out = append(out, collabCand{ID: "s-" + heHash(idKey)[:10], Source: "session", Day: l.day, Window: win, SessionID: sid, Text: text})
 			}
 		}
 	}
@@ -526,8 +675,10 @@ func collabAnswer(ctx context.Context, answer, judge model.Model, memory string,
 
 func collabBuild(args []string) error {
 	fs := flag.NewFlagSet("hardeval collab-build", flag.ContinueOnError)
-	memDir := fs.String("memory-dir", "", "the assistant's feedback memory directory (read only)")
+	memDir := fs.String("memory-dir", "", "comma-separated feedback memory directories (read only)")
 	sessions := fs.String("sessions", "", "comma-separated directories of session transcripts (*.jsonl, read only)")
+	sessionsRoot := fs.String("sessions-root", "", "root directory whose subdirectories hold session transcripts (*.jsonl) and optional memory/ dirs (read only)")
+	sessionsInclude := fs.String("sessions-include", "", "comma-separated case-insensitive substrings filtering subdirectory names under -sessions-root (empty: all)")
 	cutoff := fs.String("cutoff", "", "first held-out day, YYYY-MM-DD (used when -windows is empty)")
 	end := fs.String("end", "", "last held-out day (used when -windows is empty)")
 	windowsSpec := fs.String("windows", "", "comma-separated date windows YYYY-MM-DD..YYYY-MM-DD (overrides -cutoff/-end)")
@@ -546,8 +697,12 @@ func collabBuild(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *out == "" || (*memDir == "" && *sessions == "") {
-		return errors.New("-out and -memory-dir or -sessions are required")
+	if *out == "" || (*memDir == "" && *sessions == "" && *sessionsRoot == "") {
+		return errors.New("-out and at least one of -memory-dir, -sessions or -sessions-root are required")
+	}
+	sessDirs, memDirs, explicitMem, err := discoverCollabDirs(*memDir, *sessions, *sessionsRoot, *sessionsInclude)
+	if err != nil {
+		return err
 	}
 	ex, err := loadCollabExclusions(*excludeSpec)
 	if err != nil {
@@ -564,9 +719,10 @@ func collabBuild(args []string) error {
 		}
 	}
 	var cands []collabCand
+	seenCandID := map[string]bool{}
 	excluded := 0
-	if *memDir != "" {
-		c, err := collabMemoryCandsWindows(*memDir, ws)
+	for _, md := range memDirs {
+		c, err := collabMemoryCandsInDir(md, ws, explicitMem[md])
 		if err != nil {
 			return err
 		}
@@ -575,15 +731,19 @@ func collabBuild(args []string) error {
 				excluded++
 				continue
 			}
+			if seenCandID[x.ID] {
+				continue
+			}
+			seenCandID[x.ID] = true
 			cands = append(cands, x)
 		}
 	}
-	if *sessions != "" {
+	if len(sessDirs) > 0 {
 		cue := collabCue
 		if *entityOnly {
 			cue = collabEntityCue
 		}
-		c, err := collabSessionCandsWindows(strings.Split(*sessions, ","), ws, cue)
+		c, err := collabSessionCandsWindows(sessDirs, ws, cue)
 		if err != nil {
 			return err
 		}
@@ -593,6 +753,10 @@ func collabBuild(args []string) error {
 				excluded++
 				continue
 			}
+			if seenCandID[x.ID] {
+				continue
+			}
+			seenCandID[x.ID] = true
 			filtered = append(filtered, x)
 		}
 		cands = append(cands, collabBalanceCands(filtered, ws, scanLimit)...)
