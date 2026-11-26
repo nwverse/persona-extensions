@@ -230,7 +230,12 @@ func installSourceFor(st *State, target *Machine) installOffer {
 	if notContained != "" {
 		return installOffer{reason: notContained, platform: plat}
 	}
-	return installOffer{reason: "别的 " + platformLabel(plat) + " 上都没有能用的配套小工具", platform: plat}
+	label := platformLabel(plat)
+	sep := " "
+	if strings.HasSuffix(label, "）") {
+		sep = ""
+	}
+	return installOffer{reason: "别的 " + label + sep + "上都没有能用的配套小工具", platform: plat}
 }
 
 // installOfferReason is why no copy is offered, as a sentence of its own: the reason says only

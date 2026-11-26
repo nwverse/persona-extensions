@@ -334,10 +334,10 @@ func healthLevelText(level string) string {
 func healthWatermarkNote(level string, usedPct float64, totalBytes, availBytes uint64) string {
 	base := healthLevelText(level)
 	if level == HealthCritical && usedPct < 90.0 && totalBytes >= 20*gib && availBytes < 10*gib {
-		return fmt.Sprintf("%s，只剩 %s（不到 10 GiB）", base, FormatBytes(availBytes))
+		return fmt.Sprintf("%s，只剩 %s，不到 10 GiB", base, FormatBytes(availBytes))
 	}
 	if level == HealthWarning && usedPct < 80.0 && totalBytes >= 50*gib && availBytes < 25*gib {
-		return fmt.Sprintf("%s，只剩 %s（不到 25 GiB）", base, FormatBytes(availBytes))
+		return fmt.Sprintf("%s，只剩 %s，不到 25 GiB", base, FormatBytes(availBytes))
 	}
 	return base
 }

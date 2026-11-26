@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -919,11 +920,84 @@ func realTitle(e ColdEntry) string {
 	return t
 }
 
+// A first message says what a conversation is about only when it has some content: "reply OK",
+// "hi", "继续", a bare /command or a single word make the same title for many conversations.
+// fillerLatin and fillerHan are the words that carry none on their own (Latin words compared in
+// lower case; a run of Chinese counts as filler when it is made of these pieces only).
+var (
+	fillerLatin = map[string]bool{
+		"ok": true, "okay": true, "k": true, "kk": true, "yes": true, "yep": true, "yeah": true, "y": true, "no": true, "nope": true,
+		"hi": true, "hello": true, "hey": true, "yo": true, "test": true, "testing": true, "ping": true, "pong": true,
+		"thanks": true, "thank": true, "you": true, "thx": true, "ty": true, "continue": true, "go": true, "on": true, "next": true,
+		"reply": true, "say": true, "with": true, "please": true, "pls": true, "plz": true, "again": true, "retry": true,
+		"done": true, "sure": true, "start": true, "hmm": true, "lol": true, "ack": true,
+	}
+	fillerHan = []string{"继续", "接着", "好的", "好", "嗯", "哦", "是的", "是", "对的", "对", "可以", "行", "你好", "您好", "在吗",
+		"测试", "谢谢", "开始", "再来", "重试", "收到", "请", "吧", "啊", "呢", "呀", "一下", "回复"}
+	slashCommandRE = regexp.MustCompile(`^/[A-Za-z][\w:.-]*$`)
+)
+
+// promptHasContent reports whether a first message (on one line) can stand for its conversation:
+// after a leading /command, its words that are not filler count one each (Latin words, numbers
+// not counted) and its Chinese, Japanese or Korean characters one each per two; it needs 2.
+func promptHasContent(p string) bool {
+	f := strings.Fields(p)
+	if len(f) > 0 && slashCommandRE.MatchString(f[0]) {
+		f = f[1:]
+	}
+	score := 0.0
+	var word, han []rune
+	flush := func() {
+		if len(word) > 0 {
+			w := strings.ToLower(string(word))
+			if !fillerLatin[w] && strings.TrimFunc(w, unicode.IsDigit) != "" {
+				score++
+			}
+		}
+		if len(han) > 0 && !fillerOnly(string(han)) {
+			score += float64(len(han)) / 2
+		}
+		word, han = word[:0], han[:0]
+	}
+	for _, r := range strings.Join(f, " ") {
+		switch {
+		case unicode.In(r, unicode.Han, unicode.Hiragana, unicode.Katakana, unicode.Hangul):
+			if len(word) > 0 {
+				flush()
+			}
+			han = append(han, r)
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '\'' || r == '_':
+			if len(han) > 0 {
+				flush()
+			}
+			word = append(word, r)
+		default:
+			flush()
+		}
+	}
+	flush()
+	return score >= 2
+}
+
+// fillerOnly reports a run of Chinese made of fillerHan pieces only.
+func fillerOnly(s string) bool {
+	if s == "" {
+		return true
+	}
+	for _, w := range fillerHan {
+		if rest, ok := strings.CutPrefix(s, w); ok && fillerOnly(rest) {
+			return true
+		}
+	}
+	return false
+}
+
 // promptTitle cuts a first message to a title: up to its first sentence end when that comes
-// early enough, and at most promptTitleRunes runes. The index keeps the message on one line.
+// early enough, and at most promptTitleRunes runes; "" when the message has no content to stand
+// for the conversation (promptHasContent). The index keeps the message on one line.
 func promptTitle(p string) string {
 	p = oneLine(p)
-	if p == "" || idLikeRE.MatchString(p) {
+	if p == "" || idLikeRE.MatchString(p) || !promptHasContent(p) {
 		return ""
 	}
 	r := []rune(p)
@@ -961,8 +1035,9 @@ func (d draw) shortDate(t time.Time) string {
 }
 
 // coldTitle is the title a conversation's row shows, never an id: its real title, else the
-// start of its first message, else 没有标题的对话 with its date, time and AI assistant. fromPrompt
-// reports a title cut from the first message.
+// start of its first message when that has content, else 没有标题的对话 with its date, time and
+// AI assistant (the index holds nothing else that names a conversation; its keywords are single
+// frequent words). fromPrompt reports a title cut from the first message.
 func (d draw) coldTitle(e ColdEntry) (title string, fromPrompt bool) {
 	if t := realTitle(e); t != "" {
 		return t, false
@@ -1003,10 +1078,14 @@ func (d draw) coldRow(h ColdHit) wire.Component {
 		sub = append(sub, "来自另一台电脑")
 	}
 	// The detail: what a deep search found, or the first message unless the title already is
-	// all of it; then the id (search finds it, and restore commands need it).
+	// all of it (named as such when the title is not taken from it, so a short one such as
+	// "reply OK" is still seen); then the id (search finds it, and restore commands need it).
 	text := strings.TrimSpace(h.Preview)
 	if prompt := oneLine(h.FirstPrompt); text == "" && prompt != "" && (!fromPrompt || prompt != title) {
 		text = prompt
+		if !fromPrompt {
+			text = "第一句话：" + prompt
+		}
 	}
 	detail := ""
 	if id := coldID(h.ColdEntry); id != "" {
