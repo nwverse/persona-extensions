@@ -188,7 +188,7 @@ func CompileProgram(in CompileInput) (SearchProgram, error) {
 			if in.Query != "" && !looksLikePipelineCode(in.Query) {
 				title = "搜索 · " + clipRunes(in.Query, 40)
 			} else {
-				title = "代码化搜索流水线"
+				title = "自己写的搜索步骤"
 			}
 		}
 		return SearchProgram{
@@ -506,11 +506,11 @@ func compileNaturalLanguage(in CompileInput, scope string) (SearchProgram, error
 	}
 	steps = append(steps, StepSpec{Op: "limit", Args: map[string]string{"n": strconv.Itoa(lim)}})
 
-	title := "全量会话检索"
+	title := "最近的聊天"
 	if cleanQuery != "" {
 		title = "搜索 · " + clipRunes(cleanQuery, 40)
 	} else if scope == "errors" {
-		title = "报错与异常会话检索"
+		title = "最近出现报错的聊天"
 	}
 
 	return SearchProgram{
@@ -621,11 +621,11 @@ func executeSessions(st *State, sessions []*SessionRecord, stats SourceStats, pr
 			working = append(working, hits...)
 			q := step.Args["query"]
 			sc := cmp.Or(step.Args["scope"], "conversation")
-			note = fmt.Sprintf("扫描 %d 个会话", len(sessions))
+			note = fmt.Sprintf("读了 %d 段聊天", len(sessions))
 			note += coldNote(stats.ArchivedSessions, stats.UnconfirmedSessions, stats.ArchivedOmitted)
-			note += "，范围 " + sc
+			note += "，搜：" + cmp.Or(scopeLabels[sc], sc)
 			if q != "" {
-				note += fmt.Sprintf("，查询 %q", clipRunes(q, 28))
+				note += fmt.Sprintf("，找「%s」", clipRunes(q, 28))
 			}
 
 		case "scan_files":
@@ -633,40 +633,40 @@ func executeSessions(st *State, sessions []*SessionRecord, stats SourceStats, pr
 			fHits, fScanned := scanRepoFiles(repoDirs, step.Args["pattern"], step.Args["glob"])
 			scannedFiles += fScanned
 			working = append(working, fHits...)
-			note = fmt.Sprintf("扫描 %d 个本地代码/文档文件", fScanned)
+			note = fmt.Sprintf("读了 %d 个代码和文档文件", fScanned)
 
 		case "where":
 			working = evalWhere(working, sessions, step.Args, now)
-			note = "按附加条件过滤命中集"
+			note = "按条件筛掉不相关的"
 
 		case "exclude_tools":
 			working = evalExcludeTools(working, sessions, prog.Query)
-			note = "剥离 tool_use / tool_result 噪音，仅保留对话与有效异常证据"
+			note = "去掉命令和工具输出，只留对话和报错"
 
 		case "match_regex":
 			pat := step.Args["pattern"]
 			working = evalMatchRegex(working, pat)
-			note = fmt.Sprintf("正则过滤 /%s/i", clipRunes(pat, 32))
+			note = fmt.Sprintf("只留符合规则 /%s/ 的（不分大小写）", clipRunes(pat, 32))
 
 		case "correlate":
 			by := cmp.Or(step.Args["by"], "file")
 			corrCount := evalCorrelate(working, sessions, by)
-			note = fmt.Sprintf("按 %s 跨会话关联，发现 %d 条上下文引用", by, corrCount)
+			note = fmt.Sprintf("按%s找相关的其他聊天，找到 %d 处", groupFieldLabel(cmp.Or(by, "file")), corrCount)
 
 		case "dedup":
 			by := cmp.Or(step.Args["by"], "session")
 			working = evalDedup(working, by)
-			note = fmt.Sprintf("按 %s 去重合并", by)
+			note = fmt.Sprintf("按%s去掉重复的", dedupLabel(by))
 
 		case "group_by":
 			field := cmp.Or(step.Args["field"], "project")
 			groups = evalGroupBy(working, field)
-			note = fmt.Sprintf("按 %s 聚合为 %d 个分组", field, len(groups))
+			note = fmt.Sprintf("按%s分成 %d 组", groupFieldLabel(field), len(groups))
 
 		case "rank":
 			by := cmp.Or(step.Args["by"], "relevance_freshness")
 			evalRank(working, by, now)
-			note = fmt.Sprintf("按 %s 综合打分排序", by)
+			note = fmt.Sprintf("按%s排序", rankLabel(by))
 
 		case "limit":
 			n, err := strconv.Atoi(step.Args["n"])
@@ -676,7 +676,7 @@ func executeSessions(st *State, sessions []*SessionRecord, stats SourceStats, pr
 			if len(working) > n {
 				working = working[:n]
 			}
-			note = fmt.Sprintf("截取 Top %d 条结果", n)
+			note = fmt.Sprintf("最多留 %d 条", n)
 		}
 
 		dur := time.Since(stepStart)

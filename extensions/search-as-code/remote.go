@@ -678,7 +678,7 @@ func mergeParts(prog SearchProgram, parts []part, now time.Time) *ExecutionResul
 	}
 	for j := range traces {
 		if traces[j].Op == "scan_sessions" {
-			traces[j].Note = fmt.Sprintf("在 %d 台电脑上扫描 %d 个会话", len(parts), out.ScannedSessions)
+			traces[j].Note = fmt.Sprintf("在 %d 台电脑上读了 %d 段聊天", len(parts), out.ScannedSessions)
 		}
 	}
 
@@ -725,7 +725,7 @@ func mergeParts(prog SearchProgram, parts []part, now time.Time) *ExecutionResul
 		InputCount:  merged,
 		OutputCount: len(hits),
 		DurationUs:  1,
-		Note:        "合并各电脑的证据，按分数重排并截取",
+		Note:        "把各台电脑找到的合在一起，重新排序",
 	}
 	out.StepTraces = append(append([]StepTrace{fan}, traces...), merge)
 	for i := range out.StepTraces {

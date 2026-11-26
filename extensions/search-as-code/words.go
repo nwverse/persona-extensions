@@ -91,6 +91,10 @@ func groupFieldLabel(field string) string {
 		return "报错类型"
 	case "machine":
 		return "电脑"
+	case "file":
+		return "文件"
+	case "branch":
+		return "分支"
 	default:
 		return field
 	}
@@ -181,5 +185,31 @@ func actionFailure(action string, err error) string {
 			return "这个操作没有完成，刷新页面后再试。（详情：" + cause + "）"
 		}
 		return cause
+	}
+}
+
+// dedupLabel names what dedup(by=…) compares.
+func dedupLabel(by string) string {
+	switch by {
+	case "session", "":
+		return "聊天"
+	case "file":
+		return "文件"
+	case "title":
+		return "标题"
+	default:
+		return by
+	}
+}
+
+// rankLabel names how rank(by=…) orders.
+func rankLabel(by string) string {
+	switch by {
+	case "freshness":
+		return "时间（新的在前）"
+	case "errors_first":
+		return "报错在前、再按相关程度"
+	default:
+		return "相关程度和新旧"
 	}
 }
