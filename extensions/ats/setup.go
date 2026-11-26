@@ -19,7 +19,7 @@ import (
 // Action ids of the setup steps.
 const (
 	actSetupMachine = "setup-machine" // setup-machine:<computer id>
-	actSetupRepo    = "setup-repo"    // values {"repo": …}
+	actSetupRepo    = "setup-repo"    // setup-repo:<folder> for a suggestion; else the field's value {"repo": …}
 	actSetupSave    = "setup-save"
 )
 
@@ -54,9 +54,17 @@ func (s setupInfo) picked() string {
 func (s setupInfo) name(id string) string { return cmpOr(s.names[id], id) }
 
 // usableMachine says whether ATS can work on a computer: one of the systems it has a program for, confirmed by its
-// owner. A computer whose system the hub does not know yet is offered; the settings form decides in the end.
+// owner (trust "pending" is not). A computer whose system the hub does not know yet is offered; the settings form
+// decides in the end.
 func usableMachine(m hubMachine) bool {
-	return m.Trust == "" && (m.OS == "" || m.OS == "darwin" || m.OS == "linux")
+	if strings.EqualFold(m.Trust, "pending") {
+		return false
+	}
+	switch strings.ToLower(m.OS) {
+	case "", "darwin", "macos", "mac", "linux":
+		return true
+	}
+	return false
 }
 
 // setupInfo reads the computers for the page before setup. A hub that does not answer leaves the list empty and
@@ -69,7 +77,7 @@ func (a *atsApp) setupInfo(ctx context.Context) setupInfo {
 	if api == nil {
 		return info
 	}
-	cctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
 	ms, err := api.Machines(cctx)
 	if err != nil {
@@ -108,10 +116,20 @@ func (a *atsApp) setupAction(kind, target string, values map[string]string) (res
 		}
 		a.mu.Lock()
 		a.draft.Machine = target
+		// The button sends the page's field too: a folder typed but not yet taken is kept, not wiped by the redraw.
+		if repo, err := cleanRepo(values["repo"]); err == nil {
+			a.draft.Repo = repo
+		}
 		a.mu.Unlock()
 		return &wire.ActionResult{}, true
 	case actSetupRepo:
-		repo, err := cleanRepo(values["repo"])
+		// A suggestion carries its folder in the action id (an app before UI version 4 sends no action values);
+		// the field's button sends the field.
+		typed := target
+		if typed == "" {
+			typed = values["repo"]
+		}
+		repo, err := cleanRepo(typed)
 		if err != nil {
 			return &wire.ActionResult{Toast: err.Error()}, true
 		}
@@ -156,10 +174,10 @@ func setupSections(cfg ExtConfig, info setupInfo) []wire.Section {
 				continue
 			}
 			step1 = append(step1, wire.Component{Type: wire.ComponentButton, Key: "setup-machine-" + m.ID, Title: "用这台：" + name,
-				Action: &wire.Action{ID: actSetupMachine + ":" + m.ID}})
+				Action: &wire.Action{ID: actSetupMachine + ":" + m.ID, Submit: true}})
 		}
 		if len(info.machines) == 1 {
-			step1 = append(step1, wire.Component{Type: wire.ComponentText, Key: "setup-machine-only", Style: wire.TextStyleSecondary,
+			step1 = append(step1, wire.Component{Type: wire.ComponentText, Key: "setup-machine-note", Style: wire.TextStyleSecondary,
 				Text: "只有这一台在线，先帮你选了它。"})
 		}
 	}
@@ -181,7 +199,7 @@ func setupSections(cfg ExtConfig, info setupInfo) []wire.Section {
 				continue
 			}
 			step2 = append(step2, wire.Component{Type: wire.ComponentButton, Key: "setup-repo-" + strings.TrimPrefix(s, "~/"), Title: "用 " + s,
-				Action: &wire.Action{ID: actSetupRepo, Values: map[string]string{"repo": s}}})
+				Action: &wire.Action{ID: actSetupRepo + ":" + s}})
 		}
 		step2 = append(step2, wire.Component{Type: wire.ComponentButton, Key: "setup-repo-use", Title: "用这个文件夹",
 			Action: &wire.Action{ID: actSetupRepo, Submit: true}})

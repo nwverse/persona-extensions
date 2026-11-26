@@ -182,11 +182,16 @@ func (a *atsApp) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[stri
 	}
 	if a.disp != nil {
 		a.disp.poke()
-		// The settings changed: draw the pages again now, so that the home page leaves its setup steps at once.
-		if hub != nil {
-			go func() { _ = hub.Invalidate(queueUI); _ = hub.Invalidate(cardUI) }()
-		}
 		return nil, nil
+	}
+	// Saving the settings restarts the program. Once it is up, ask the apps to draw the pages again, so that a
+	// home page left open on its setup steps becomes the usual one without waiting for its next refresh.
+	if hub != nil {
+		go func() {
+			time.Sleep(time.Second) // after the hub has its answer to initialize
+			_ = hub.Invalidate(queueUI)
+			_ = hub.Invalidate(cardUI)
+		}()
 	}
 	if a.api == nil {
 		a.api = newHubClient(in.Hub.URL, in.Hub.Token)

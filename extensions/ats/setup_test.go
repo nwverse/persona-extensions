@@ -68,7 +68,7 @@ func TestSetupListsOnlineComputersAndPicksOne(t *testing.T) {
 			t.Errorf("%s is offered", id)
 		}
 	}
-	if hasKey(view, "setup-machine-only") {
+	if hasKey(view, "setup-machine-note") {
 		t.Error("with two computers the page says there is only one")
 	}
 
@@ -93,7 +93,7 @@ func TestSetupPicksTheOnlyComputer(t *testing.T) {
 	if row := findRow(t, view, "setup-machine-m-studio"); row.Badge == nil || row.Badge.Text != "就用这台" {
 		t.Errorf("the only computer is not picked: %+v", row)
 	}
-	if got := findRow(t, view, "setup-machine-only").Text; !strings.Contains(got, "只有这一台在线") {
+	if got := findRow(t, view, "setup-machine-note").Text; !strings.Contains(got, "只有这一台在线") {
 		t.Errorf("the page does not say why: %q", got)
 	}
 	if next := findRow(t, view, "setup-next").Text; !strings.Contains(next, "打开「Studio」") {
@@ -124,7 +124,7 @@ func TestSetupTakesAFolder(t *testing.T) {
 	view := renderHome(t, a)
 	for _, s := range repoSuggestions {
 		b := findRow(t, view, "setup-repo-"+strings.TrimPrefix(s, "~/"))
-		if b.Action == nil || b.Action.ID != actSetupRepo || b.Action.Values["repo"] != s {
+		if b.Action == nil || b.Action.ID != actSetupRepo+":"+s {
 			t.Errorf("suggestion %s: %+v", s, b)
 		}
 	}
@@ -151,7 +151,7 @@ func TestSetupTakesAFolder(t *testing.T) {
 	if next := findRow(t, res.View, "setup-next").Text; !strings.Contains(next, "文件夹填「~/work」") {
 		t.Errorf("the save step does not name the folder: %q", next)
 	}
-	res = act(t, a, actSetupRepo, map[string]string{"repo": "~/code"})
+	res = act(t, a, actSetupRepo+":~/code", nil) // a suggestion, as an app without action values sends it
 	if findRow(t, res.View, "setup-repo").Value != "~/code" || hasKey(res.View, "setup-repo-code") {
 		t.Errorf("the suggestion: %+v", res.View)
 	}
@@ -186,5 +186,45 @@ func TestSetupDoneShowsTheHomePage(t *testing.T) {
 		if hasKey(view, k) {
 			t.Errorf("set up: the page still has %s", k)
 		}
+	}
+}
+
+// A computer is left out only when its owner has not confirmed it or ATS has no program for its system; the
+// hub's words are read without regard to case.
+func TestSetupOffersEveryUsableComputer(t *testing.T) {
+	for _, c := range []struct {
+		m    hubMachine
+		want bool
+	}{
+		{hubMachine{OS: "linux"}, true},
+		{hubMachine{OS: "Darwin"}, true},
+		{hubMachine{OS: "mac"}, true},
+		{hubMachine{}, true},
+		{hubMachine{OS: "linux", Trust: "trusted"}, true},
+		{hubMachine{OS: "linux", Trust: "Pending"}, false},
+		{hubMachine{OS: "windows"}, false},
+	} {
+		if got := usableMachine(c.m); got != c.want {
+			t.Errorf("%+v: %v, want %v", c.m, got, c.want)
+		}
+	}
+}
+
+// Picking a computer sends the page's field along: a folder typed and not yet taken stays on the page.
+func TestSetupKeepsATypedFolderWhenAComputerIsPicked(t *testing.T) {
+	a, _ := setupApp(t,
+		hubMachine{ID: "m-studio", Name: "Studio", Online: true, OS: "linux"},
+		hubMachine{ID: "m-laptop", Name: "Laptop", Online: true, OS: "darwin"},
+	)
+	if b := findRow(t, renderHome(t, a), "setup-machine-m-laptop"); b.Action == nil || !b.Action.Submit {
+		t.Fatalf("the computer's button does not send the field: %+v", b)
+	}
+	res := act(t, a, actSetupMachine+":m-laptop", map[string]string{"repo": "~/work"})
+	if got := findRow(t, res.View, "setup-repo").Value; got != "~/work" {
+		t.Errorf("the typed folder: %q", got)
+	}
+	res = act(t, a, actSetupMachine+":m-studio", map[string]string{"repo": ""})
+	if got := findRow(t, res.View, "setup-repo").Value; got != "~/work" {
+		t.Errorf("an empty field wiped the folder taken before: %q", got)
 	}
 }
