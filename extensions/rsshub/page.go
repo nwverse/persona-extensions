@@ -68,7 +68,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		n, failed := a.refreshAll(ctx)
 		toast = freshWords(n)
 		if failed > 0 {
-			toast += fmt.Sprintf("；%d 个来源没读到，点开标着「出错」的看原因", failed)
+			toast += fmt.Sprintf("；%d 个网站没读到，点开标着「出错」的看原因", failed)
 		}
 	case "ping":
 		ctx, cancel := context.WithTimeout(ctx, fetchTimeout)
