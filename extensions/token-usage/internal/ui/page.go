@@ -7,6 +7,7 @@ package ui
 import (
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -276,29 +277,91 @@ func machineName(name string) string {
 }
 
 // launcherHint says what a launcher is.
-const launcherHint = "启动方式是在电脑上开启这次对话的程序；在终端里直接开的对话算在“其他”里。"
+const launcherHint = "启动方式是在电脑上开启这次对话的程序；在终端里直接开的对话算作“终端直接打开”。"
 
-// pullNotice is what the page says about reading the usage: why it cannot when the last round failed, and when the
-// first data will come while there is none yet. Nothing when the data is there and the last round went well.
+// msgUnexpected is the cause told for an error that does not carry the user's words (not a *hub.Error).
+const msgUnexpected = "读取用量时出了意外的问题。这里每 10 分钟会自动再试；一直这样的话，请重启 Persona。"
+
+// userMessage is err in the user's words: a *hub.Error's message, else msgUnexpected, never Go's English text.
+func userMessage(err error) string {
+	var he *hub.Error
+	if errors.As(err, &he) && he.Message != "" {
+		return he.Message
+	}
+	return msgUnexpected
+}
+
+// namesMost is how many failed computers the notice names before it folds the rest into a count.
+const namesMost = 5
+
+// pullNotice is what the page says about reading the usage: why nothing can be read, or which computers the last round
+// could not read; and, while there is no data yet, when the first data will come. Nothing when the data is there and
+// the last round read every computer.
 func (a *App) pullNotice(st *store.State) []wire.Section {
-	at, err := a.hub.LastPull()
-	if err != nil {
-		detail := err.Error()
-		if !at.IsZero() {
-			detail += "最近一次尝试在 " + at.In(a.loc()).Format("1月2日 15:04") + "。"
-		}
-		if len(st.Days) > 0 {
-			detail += "下面是之前已经读到的数据。"
-		}
+	r := a.hub.LastPull()
+	when := ""
+	if !r.At.IsZero() {
+		when = "最近一次尝试在 " + r.At.In(a.loc()).Format("1月2日 15:04") + "。"
+	}
+	before := ""
+	if len(st.Days) > 0 {
+		before = "下面是之前已经读到的数据。"
+	}
+	notice := func(title, detail string) []wire.Section {
 		return []wire.Section{{Items: []wire.Component{{
-			Type: wire.ComponentEmpty, Icon: "warning", Title: "最近一次没能读到用量", Detail: detail,
+			Type: wire.ComponentEmpty, Icon: "warning", Title: title, Detail: detail,
 		}}}}
+	}
+	if r.Err != nil {
+		return notice("现在读不到用量", userMessage(r.Err)+when+before)
+	}
+	if n := len(r.Failed); n > 0 {
+		names := make([]string, 0, namesMost)
+		gone, other := 0, error(nil)
+		for i, f := range r.Failed {
+			if i < namesMost {
+				names = append(names, f.Name)
+			}
+			if hub.NotFound(f.Err) {
+				gone++
+			} else if other == nil {
+				other = f.Err
+			}
+		}
+		list := strings.Join(names, "、")
+		if n > namesMost {
+			list += fmt.Sprintf(" 等 %d 台", n)
+		}
+		var title, detail string
+		if n == r.Total {
+			title = "这次一台电脑的用量都没读到"
+			detail = "没读到：" + list + "。"
+		} else {
+			title = fmt.Sprintf("有 %d 台电脑的用量没读到", n)
+			detail = fmt.Sprintf("没读到：%s（共 %d 台电脑，其余的已照常更新）。", list, r.Total)
+		}
+		switch {
+		case gone == n:
+			if n == 1 {
+				detail += "Persona 里已经找不到这台电脑，可能它被移除了；以前读到的用量还留在这里。"
+			} else {
+				detail += "Persona 里已经找不到这些电脑，可能它们被移除了；以前读到的用量还留在这里。"
+			}
+		case n == r.Total:
+			detail += userMessage(other)
+		default:
+			detail += "没读到的电脑 10 分钟后会自动再试，不用做别的。"
+			if gone > 0 {
+				detail += "其中有的电脑在 Persona 里已经找不到，可能被移除了。"
+			}
+		}
+		return notice(title, detail+when)
 	}
 	if len(st.Days) > 0 {
 		return nil
 	}
 	detail := "这里会显示连着 Persona 的每台电脑用 AI 模型花掉的 token。扩展开着时每 10 分钟读一次，第一次会补上最近 7 天，刚装好请等一两分钟再来看。"
-	if !at.IsZero() {
+	if !r.At.IsZero() {
 		detail = "已经读过一次，但最近 7 天里这些电脑还没有用过 AI 模型。用过之后，最多 10 分钟就会出现在这里。"
 	}
 	return []wire.Section{{Items: []wire.Component{{
@@ -345,7 +408,7 @@ func trendChart(r usage.Range) wire.Component {
 func ranking(title, unit string, shares []usage.Share) wire.Section {
 	if len(shares) == 0 {
 		return wire.Section{Title: title, Items: []wire.Component{{Type: wire.ComponentText, Style: "secondary",
-			Text: "选的这段时间里没有用量。用过 AI 模型后，最多 10 分钟会出现在这里。"}}}
+			Text: "选的这段时间里没有用量。"}}}
 	}
 	var total int64
 	for _, s := range shares {

@@ -100,9 +100,29 @@ type Client struct {
 	http        *http.Client
 	call        func(ctx context.Context, method string, out any) error // the extension methods; nil when there is no hub
 
-	mu      stdsync.Mutex
-	pulled  time.Time // when the last pull round ended
-	pullErr error     // its first error, nil when every machine was read
+	mu   stdsync.Mutex
+	last PullReport // how the last pull round ended
+}
+
+// PullReport is how a pull round ended. Err is set when nothing could be read (the computer list failed); otherwise
+// Failed lists the computers whose usage could not be read or saved, out of Total.
+type PullReport struct {
+	At     time.Time
+	Err    error
+	Total  int
+	Failed []FailedMachine
+}
+
+// FailedMachine is one computer a round could not read: its display name and why.
+type FailedMachine struct {
+	Name string
+	Err  error
+}
+
+// NotFound reports whether err is the hub answering 404, which for one computer's usage means it is gone.
+func NotFound(err error) bool {
+	var e *Error
+	return errors.As(err, &e) && e.Status == http.StatusNotFound
 }
 
 // Error is a failed call told for the user: Error() says what happened and what to do, in plain words, without the
@@ -127,7 +147,10 @@ func LogText(err error) string {
 // The messages the page shows. They name "运行 Persona 的那台电脑", the computer the hub runs on, and what to do.
 const (
 	msgNoAccess    = "运行 Persona 的那台电脑没有给这个扩展读取用量的权限，所以这里读不到数据。请到 设置 › 扩展 › Token 用量，把它关掉再打开；还不行就重启 Persona。"
-	msgUnreachable = "连不上运行 Persona 的那台电脑，可能它关机、睡眠或断网了。等它恢复后，这里每 10 分钟会自动再读一次，不用做别的。"
+	msgUnreachable = "这个扩展暂时连不上 Persona，可能 Persona 正在重启或更新。这里每 10 分钟会自动再试；一直这样的话，请重启 Persona。"
+	msgBadAddress  = "这个扩展拿到的 Persona 地址用不了，所以发不出读取请求。请到 设置 › 扩展 › Token 用量，把它关掉再打开；还不行就重启 Persona。"
+	msgCutOff      = "读取用量时连接中途断了，没读完。这里每 10 分钟会自动再试，不用做别的。"
+	msgBadAnswer   = "运行 Persona 的那台电脑回来的内容这个扩展读不懂，可能 Persona 正在更新，或者它和这个扩展的版本不配套。这里每 10 分钟会自动再试；一直这样的话，请把 Persona 和这个扩展都更新到最新版。"
 	msgRefused     = "运行 Persona 的那台电脑拒绝了读取用量（权限不够或已过期）。请到 设置 › 扩展 › Token 用量，把它关掉再打开。"
 	msgTooOld      = "运行 Persona 的那台电脑不认识读取用量的请求，多半是 Persona 版本太旧。请把那台电脑上的 Persona 更新到最新版。"
 	msgBusy        = "运行 Persona 的那台电脑暂时出了问题（错误码 %d）。不用处理，这里每 10 分钟会自动再试。"
@@ -150,25 +173,25 @@ func statusError(status int, body string) *Error {
 	return e
 }
 
-// ReportPull records how a pull round ended: err is its first error, nil when every machine was read.
-func (c *Client) ReportPull(at time.Time, err error) {
+// ReportPull records how a pull round ended.
+func (c *Client) ReportPull(r PullReport) {
 	if c == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.pulled, c.pullErr = at, err
+	c.last = r
 }
 
-// LastPull is when the last pull round ended and its first error; a zero time when none has ended yet. A client that
-// cannot call the hub at all answers that error at once, so the page can say so before the first round.
-func (c *Client) LastPull() (time.Time, error) {
+// LastPull is how the last pull round ended; a zero At when none has ended yet. A client that cannot call the hub at
+// all answers that error at once, so the page can say so before any round.
+func (c *Client) LastPull() PullReport {
 	if !c.Usable() {
-		return time.Time{}, &Error{Message: msgNoAccess, Detail: "no hub address or token"}
+		return PullReport{Err: &Error{Message: msgNoAccess, Detail: "no hub address or token"}}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.pulled, c.pullErr
+	return c.last
 }
 
 // New returns a client for the hub at base, authorised by token. call runs an extension method such as
@@ -306,13 +329,13 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return &Error{Message: msgBadAnswer, Detail: "encode request: " + err.Error()}
 		}
 		r = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, c.base+path, r)
 	if err != nil {
-		return err
+		return &Error{Message: msgBadAddress, Detail: err.Error()}
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	if body != nil {
@@ -325,13 +348,16 @@ func (c *Client) do(ctx context.Context, method, path string, body, out any) err
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return err
+		return &Error{Status: resp.StatusCode, Message: msgCutOff, Detail: "read body: " + err.Error()}
 	}
 	if resp.StatusCode >= 300 {
 		return statusError(resp.StatusCode, clipBytes(strings.TrimSpace(string(raw)), 200))
 	}
 	if out != nil && len(raw) > 0 {
-		return json.Unmarshal(raw, out)
+		if err := json.Unmarshal(raw, out); err != nil {
+			return &Error{Status: resp.StatusCode, Message: msgBadAnswer,
+				Detail: "decode answer: " + err.Error() + "：" + clipBytes(strings.TrimSpace(string(raw)), 200)}
+		}
 	}
 	return nil
 }

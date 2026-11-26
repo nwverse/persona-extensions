@@ -44,16 +44,20 @@ func Loop(ctx context.Context, c *hub.Client, st *store.Store, bf *budget.File, 
 
 // pull reads every machine once and merges what it got, then sends the alerts. Each machine asks for backfillRange
 // until a pull and merge for it has succeeded in backfilled, and recentRange after that. A machine that fails is
-// logged and skipped; the next round tries it again. The round's first error, or none, is reported to c for the page.
+// logged and skipped; the next round tries it again. How the round ended (nothing read, or which computers failed) is reported to c for the page.
 func pull(ctx context.Context, c *hub.Client, st *store.Store, bf *budget.File, loc *time.Location, backfilled map[string]bool) {
 	machines, err := c.Machines(ctx)
 	if err != nil {
 		log.Printf("token-usage: 读取机器列表失败：%s", hub.LogText(err))
-		c.ReportPull(time.Now(), err)
+		c.ReportPull(hub.PullReport{At: time.Now(), Err: err})
 		return
 	}
-	var first error
+	report := hub.PullReport{Total: len(machines)}
 	for _, m := range machines {
+		name := m.Name
+		if name == "" {
+			name = m.ID
+		}
 		rng := backfillRange
 		if backfilled[m.ID] {
 			rng = recentRange
@@ -61,20 +65,20 @@ func pull(ctx context.Context, c *hub.Client, st *store.Store, bf *budget.File, 
 		buckets, err := c.Pull(ctx, m.ID, rng)
 		if err != nil {
 			log.Printf("token-usage: 读取机器 %s 的用量失败：%s", m.ID, hub.LogText(err))
-			if first == nil {
-				first = err
-			}
+			report.Failed = append(report.Failed, hub.FailedMachine{Name: name, Err: err})
 			continue
 		}
 		if _, err := st.Merge(m.ID, buckets, loc); err != nil {
 			log.Printf("token-usage: 保存机器 %s 的用量失败：%v", m.ID, err)
+			report.Failed = append(report.Failed, hub.FailedMachine{Name: name, Err: err})
 			continue
 		}
 		if backfilled != nil {
 			backfilled[m.ID] = true
 		}
 	}
-	c.ReportPull(time.Now(), first)
+	report.At = time.Now()
+	c.ReportPull(report)
 	alert(ctx, c, st, bf, loc)
 }
 

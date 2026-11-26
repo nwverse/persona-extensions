@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -95,8 +96,8 @@ func TestOverviewShowsTotalsTrendAndRankings(t *testing.T) {
 	if !strings.Contains(text, "alpha") || !strings.Contains(text, "m-a") {
 		t.Fatalf("rankings missing from:\n%s", text)
 	}
-	if !strings.Contains(text, "其他") { // beta has no launcher
-		t.Fatalf("the empty launcher is not shown as 其他:\n%s", text)
+	if !strings.Contains(text, "终端直接打开") || strings.Contains(text, "其他") { // beta has no launcher; nothing past the top 8
+		t.Fatalf("the empty launcher is not shown as 终端直接打开:\n%s", text)
 	}
 	if !strings.Contains(text, "账号一") {
 		t.Fatalf("the gateway accounts are missing:\n%s", text)
@@ -157,7 +158,7 @@ func TestExportShowsTheCSVToCopy(t *testing.T) {
 	want := "日期,电脑,模型,启动方式,输入,缓存写入,缓存读取,输出,请求次数\n" +
 		"2026-11-12,m-a,alpha,cli,300,0,0,0,1\n" +
 		"2026-11-13,m-a,alpha,cli,1000,0,0,100,2\n" +
-		"2026-11-13,m-b,alpha,其他,200,0,0,0,1"
+		"2026-11-13,m-b,alpha,终端直接打开,200,0,0,0,1"
 	if code.Text != want || code.Truncated || code.Language != "csv" || !strings.HasSuffix(code.Path, ".csv") {
 		t.Fatalf("CSV %q (truncated %v, language %q, path %q), want\n%s", code.Text, code.Truncated, code.Language, code.Path, want)
 	}
@@ -176,7 +177,7 @@ func TestExportShowsTheCSVToCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code, ok := csvOf(res.View); !ok || !strings.Contains(code.Text, "2026-11-13,m-a,beta,其他,400,0,0,0,1") || strings.Contains(code.Text, "alpha") {
+	if code, ok := csvOf(res.View); !ok || !strings.Contains(code.Text, "2026-11-13,m-a,beta,终端直接打开,400,0,0,0,1") || strings.Contains(code.Text, "alpha") {
 		t.Fatalf("the CSV does not follow the filter: %q", code.Text)
 	}
 	res, err = a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Action: "export-close", State: res.View.State}})
@@ -266,7 +267,7 @@ func TestEmptyStatesSayWhatAndWhen(t *testing.T) {
 	if text := flatten(render(t, a, "")); !strings.Contains(text, "每 10 分钟读一次") || !strings.Contains(text, "最近 7 天") {
 		t.Fatalf("before the first read:\n%s", text)
 	}
-	c.ReportPull(fixedNow(), nil)
+	c.ReportPull(hub.PullReport{At: fixedNow()})
 	if text := flatten(render(t, a, "")); !strings.Contains(text, "已经读过一次") || !strings.Contains(text, "最多 10 分钟") {
 		t.Fatalf("after a read with nothing in it:\n%s", text)
 	}
@@ -292,10 +293,10 @@ func TestAFailedReadIsShownWithWhatToDo(t *testing.T) {
 	defer srv.Close()
 	c := hub.New(srv.URL, "tok", nil)
 	_, err := c.Machines(context.Background())
-	c.ReportPull(fixedNow(), err)
+	c.ReportPull(hub.PullReport{At: fixedNow(), Err: err})
 	a := New(filledStore(), budget.Open(""), c, fixedNow, func() *time.Location { return loc })
 	text := flatten(render(t, a, ""))
-	if !strings.Contains(text, "最近一次没能读到用量") || !strings.Contains(text, "关掉再打开") || !strings.Contains(text, "之前已经读到") {
+	if !strings.Contains(text, "现在读不到用量") || !strings.Contains(text, "关掉再打开") || !strings.Contains(text, "之前已经读到") {
 		t.Fatalf("the failed read is not explained:\n%s", text)
 	}
 	if strings.Contains(text, "hub") || strings.Contains(text, "HTTP") {
@@ -457,4 +458,74 @@ func TestOverviewHandlesEmptyModelName(t *testing.T) {
 	if !strings.Contains(flatten(v), "（未命名）") {
 		t.Fatalf("empty model should render as （未命名）:\n%s", flatten(v))
 	}
+}
+
+// The notice for computers a round could not read names them and tells a removed one (404) from a passing fault, and
+// never says the hub is too old for one computer's 404; a round where every computer failed says so.
+func TestFailedComputersAreNamedWithTheRightCause(t *testing.T) {
+	gone := httpErr(t, http.StatusNotFound)
+	busy := httpErr(t, http.StatusBadGateway)
+	for _, tt := range []struct {
+		name    string
+		report  hub.PullReport
+		want    []string
+		mustNot []string
+	}{
+		{"one removed", hub.PullReport{Total: 3, Failed: []hub.FailedMachine{{Name: "旧笔记本", Err: gone}}},
+			[]string{"有 1 台电脑的用量没读到", "旧笔记本", "共 3 台电脑，其余的已照常更新", "找不到这台电脑，可能它被移除了"},
+			[]string{"版本太旧", "更新到最新版"}},
+		{"one passing fault", hub.PullReport{Total: 3, Failed: []hub.FailedMachine{{Name: "书房电脑", Err: busy}}},
+			[]string{"有 1 台电脑的用量没读到", "书房电脑", "其余的已照常更新", "10 分钟后会自动再试"},
+			[]string{"运行 Persona 的那台电脑暂时出了问题", "版本太旧"}},
+		{"all failed", hub.PullReport{Total: 2, Failed: []hub.FailedMachine{{Name: "甲", Err: busy}, {Name: "乙", Err: busy}}},
+			[]string{"这次一台电脑的用量都没读到", "甲、乙", "暂时出了问题"},
+			[]string{"其余的"}},
+		{"many", hub.PullReport{Total: 9, Failed: []hub.FailedMachine{{Name: "1", Err: busy}, {Name: "2", Err: busy}, {Name: "3", Err: busy}, {Name: "4", Err: busy}, {Name: "5", Err: busy}, {Name: "6", Err: busy}, {Name: "7", Err: gone}}},
+			[]string{"有 7 台电脑的用量没读到", "1、2、3、4、5 等 7 台", "可能被移除了"},
+			[]string{"、6"}},
+		{"not a hub error", hub.PullReport{Err: errors.New("invalid character '<' looking for beginning of value")},
+			[]string{"现在读不到用量", "出了意外的问题", "重启 Persona"},
+			[]string{"invalid", "character"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			c := hub.New("http://hub.example", "tok", nil)
+			tt.report.At = fixedNow()
+			c.ReportPull(tt.report)
+			a := New(filledStore(), budget.Open(""), c, fixedNow, func() *time.Location { return loc })
+			text := flatten(render(t, a, ""))
+			for _, w := range tt.want {
+				if !strings.Contains(text, w) {
+					t.Fatalf("missing %q:\n%s", w, text)
+				}
+			}
+			for _, w := range tt.mustNot {
+				if strings.Contains(text, w) {
+					t.Fatalf("shows %q:\n%s", w, text)
+				}
+			}
+		})
+	}
+}
+
+// The no-access notice fits a case where nothing was ever tried: it does not speak of a last attempt.
+func TestNoAccessIsNotALastAttempt(t *testing.T) {
+	a := New(store.Open(""), budget.Open(""), hub.New("", "", nil), fixedNow, func() *time.Location { return loc })
+	text := flatten(render(t, a, ""))
+	if !strings.Contains(text, "现在读不到用量") || strings.Contains(text, "最近一次") {
+		t.Fatalf("no access:\n%s", text)
+	}
+}
+
+// httpErr is the error the client gets for a hub answering status.
+func httpErr(t *testing.T, status int) error {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "x", status)
+	}))
+	defer srv.Close()
+	_, err := hub.New(srv.URL, "tok", nil).Machines(context.Background())
+	if err == nil {
+		t.Fatal("no error")
+	}
+	return err
 }

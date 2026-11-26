@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -164,7 +165,7 @@ func TestErrorsTellTheCauseAndWhatToDo(t *testing.T) {
 		{"refused", New(refused.URL, "tok", nil), "关掉再打开"},
 		{"busy", New(busy.URL, "tok", nil), "自动再试"},
 		{"too old", New(old.URL, "tok", nil), "更新到最新版"},
-		{"unreachable", New(gone.URL, "tok", nil), "自动再读"},
+		{"unreachable", New(gone.URL, "tok", nil), "暂时连不上 Persona"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := tt.c.Machines(context.Background())
@@ -172,7 +173,7 @@ func TestErrorsTellTheCauseAndWhatToDo(t *testing.T) {
 				t.Fatal("no error")
 			}
 			msg := err.Error()
-			if !strings.Contains(msg, "运行 Persona 的那台电脑") || !strings.Contains(msg, tt.want) {
+			if !strings.Contains(msg, "Persona") || !strings.Contains(msg, tt.want) || strings.Contains(msg, "关机") {
 				t.Fatalf("message %q lacks the cause or %q", msg, tt.want)
 			}
 			for _, bad := range []string{"hub", "HTTP", "token expired", "upstream", "127.0.0.1", "dial"} {
@@ -182,6 +183,47 @@ func TestErrorsTellTheCauseAndWhatToDo(t *testing.T) {
 			}
 			if LogText(err) == msg && tt.name != "no token" {
 				t.Fatalf("the log text has no detail: %q", LogText(err))
+			}
+		})
+	}
+}
+
+// An answer that is not what was asked for, a 200 with an HTML page or a body cut short, is an *Error in the user's
+// words; Go's English error stays in Detail.
+func TestABadAnswerIsToldInPlainWords(t *testing.T) {
+	html := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = io.WriteString(w, "<html><body>sign in</body></html>")
+	}))
+	defer html.Close()
+	cut := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000")
+		_, _ = io.WriteString(w, `{"machines": [`)
+	}))
+	defer cut.Close()
+	half := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, `{"machines": [{"id": "m-a"`)
+	}))
+	defer half.Close()
+	for _, tt := range []struct {
+		name, base, want, detail string
+	}{
+		{"html", html.URL, "读不懂", "invalid character"},
+		{"cut short", cut.URL, "中途断了", "unexpected EOF"},
+		{"half a JSON", half.URL, "读不懂", "unexpected end"},
+		{"bad address", "http://bad host", "地址用不了", "invalid"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := New(tt.base, "tok", nil).Machines(context.Background())
+			var he *Error
+			if !errors.As(err, &he) {
+				t.Fatalf("error %T %v, want *Error", err, err)
+			}
+			if !strings.Contains(he.Message, tt.want) || strings.ContainsAny(he.Message, "<>{}") || strings.Contains(he.Message, "invalid") {
+				t.Fatalf("message %q", he.Message)
+			}
+			if !strings.Contains(he.Detail, tt.detail) {
+				t.Fatalf("detail %q lacks %q", he.Detail, tt.detail)
 			}
 		})
 	}
