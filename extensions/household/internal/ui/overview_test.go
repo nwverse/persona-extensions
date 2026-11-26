@@ -1,13 +1,20 @@
 package ui
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/wire"
 
+	"github.com/nwverse/persona-extensions/extensions/household/internal/model"
+	"github.com/nwverse/persona-extensions/extensions/household/internal/ops"
 	"github.com/nwverse/persona-extensions/extensions/household/internal/rules"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/store"
 )
 
 func TestOverviewWithNoRecordsOffersSamplesAndAdd(t *testing.T) {
@@ -48,7 +55,7 @@ func TestOverviewWithSamplesShowsEverySection(t *testing.T) {
 			t.Fatalf("no section %q", title)
 		}
 	}
-	stats := v.Sections[0].Items[0]
+	stats := overviewGrid(t, v)
 	if stats.Type != wire.ComponentStatGrid || len(stats.Stats) != 4 {
 		t.Fatalf("first component %+v, want a stat grid of four", stats)
 	}
@@ -65,7 +72,7 @@ func TestOverviewStatsMatchTheRules(t *testing.T) {
 	a, _ := newApp(st)
 	h := home(t, st)
 	sum := rules.Summarize(h, testToday)
-	stats := render(t, a, state{}).Sections[0].Items[0].Stats
+	stats := overviewGrid(t, render(t, a, state{})).Stats
 	got := map[string]string{}
 	for _, s := range stats {
 		got[s.Label] = s.Value
@@ -294,4 +301,94 @@ func buttonByAction(v *wire.View, id string) (wire.Component, bool) {
 		}
 	}
 	return wire.Component{}, false
+}
+
+// overviewGrid is the stat grid of the overview's first section.
+func overviewGrid(t *testing.T, v *wire.View) wire.Component {
+	t.Helper()
+	for _, c := range v.Sections[0].Items {
+		if c.Type == wire.ComponentStatGrid {
+			return c
+		}
+	}
+	t.Fatalf("no stat grid in the first section: %+v", v.Sections[0].Items)
+	return wire.Component{}
+}
+
+// TestOverviewWithRecordsSaysWhatItIsForInOneLine keeps a short intro on the overview with records: one secondary
+// line, then the numbers, so the numbers stay at the top of a phone screen.
+func TestOverviewWithRecordsSaysWhatItIsForInOneLine(t *testing.T) {
+	a, _ := newApp(newStore(t, true))
+	v := render(t, a, state{})
+	items := v.Sections[0].Items
+	if len(items) != 2 || items[0].Type != wire.ComponentText || items[1].Type != wire.ComponentStatGrid {
+		t.Fatalf("first section %+v, want the intro line then the stat grid", items)
+	}
+	intro := items[0]
+	if intro.Text != overviewIntro || intro.Style != wire.TextStyleSecondary {
+		t.Fatalf("intro %+v, want %q in the secondary style", intro, overviewIntro)
+	}
+	if n := utf8.RuneCountInString(intro.Text); n > 26 || strings.Contains(intro.Text, "\n") {
+		t.Fatalf("intro %q is %d characters, want one short line", intro.Text, n)
+	}
+	for _, w := range []string{"有什么", "买", "家务", "提醒"} {
+		if !strings.Contains(intro.Text, w) {
+			t.Errorf("intro %q does not mention %q", intro.Text, w)
+		}
+	}
+}
+
+// TestOverviewNumbersSayWhatTheyCount checks 待买 and 需要处理 explain themselves: 待买 is the open shopping list,
+// 需要处理 is the items to restock plus the chores due (the two parts in its detail add up to it), and the caption
+// under the grid tells the two apart.
+func TestOverviewNumbersSayWhatTheyCount(t *testing.T) {
+	st := newStore(t, true)
+	a, _ := newApp(st)
+	v := render(t, a, state{})
+	sum := rules.Summarize(home(t, st), testToday)
+	stats := map[string]wire.Stat{}
+	for _, s := range overviewGrid(t, v).Stats {
+		stats[s.Label] = s
+	}
+	buy := sum.Expired + sum.Out + sum.Low + sum.Runout
+	if buy+sum.ChoresDue != sum.Alerts {
+		t.Fatalf("restock %d + chores %d != alerts %d", buy, sum.ChoresDue, sum.Alerts)
+	}
+	want := fmt.Sprintf("补货 %d · 家务 %d", buy, sum.ChoresDue)
+	if got := stats["需要处理"].Detail; got != want {
+		t.Fatalf("需要处理 detail %q, want %q", got, want)
+	}
+	if got := stats["待买"].Detail; !strings.Contains(got, "采购清单") {
+		t.Fatalf("待买 detail %q, want it to name the shopping list", got)
+	}
+	if f := v.Sections[0].Footer; f != statsCaption || !strings.Contains(f, "待买") || !strings.Contains(f, "需要处理") {
+		t.Fatalf("stat caption %q, want %q", f, statsCaption)
+	}
+}
+
+// TestShoppingListAloneIsNotSomethingToHandle is the case a first-time user asks about: entries on the shopping list
+// and nothing low, expiring or due. 待买 counts them, 需要处理 stays 0 and its detail says why.
+func TestShoppingListAloneIsNotSomethingToHandle(t *testing.T) {
+	st := store.Open("")
+	err := st.Update(func(b *kernel.Base, _ time.Time) error {
+		for _, n := range []string{"洗衣液", "抽纸", "鸡蛋", "酱油"} {
+			if _, err := ops.Save(b, kernel.EntityInput{Type: model.TBuy, Title: &n}, testNow, testLoc()); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := newApp(st)
+	v := render(t, a, state{})
+	checkView(t, "shopping-only overview", v, false)
+	got := map[string]wire.Stat{}
+	for _, s := range overviewGrid(t, v).Stats {
+		got[s.Label] = s
+	}
+	if got["待买"].Value != "4" || got["需要处理"].Value != "0" || got["需要处理"].Detail != "补货 0 · 家务 0" {
+		t.Fatalf("stats %+v, want 待买 4 and 需要处理 0 (补货 0 · 家务 0)", got)
+	}
 }

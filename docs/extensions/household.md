@@ -5,7 +5,7 @@ The household extension (`household`, 家庭管家) keeps a home's stock, shoppi
 | Extension point | What it adds |
 | --- | --- |
 | `contributes.ui` `nav_page` `household` | The 家庭管家 page: 总览, 库存, 采购, 家务 and 餐食 tabs, with a badge counting what needs attention |
-| `contributes.ui` `overview_card` `household-card` | A card on the overview with the counts and the most urgent entries |
+| `contributes.ui` `overview_card` `household-card` | The 家庭管家 · 概况 card on the overview, with the counts and the most urgent entries |
 | `contributes.mcp_servers` `household` | Nine tools for the assistant (`household mcp`) |
 | `contributes.skills` `household` | Tells the assistant when and how to use the tools |
 | `permissions.hub` `notify` | The daily reminder as a push notification |
@@ -45,6 +45,8 @@ All rules are computed from the records when they are read; nothing derived is s
 `lead` defaults to 7 days for 母婴 items and 3 days for everything else. `runout` is what warns about baby supplies before they are gone: give a pack of diapers its count, the daily use and the day you counted, and it is flagged a week before the estimate reaches zero.
 
 **Shopping list.** 一键补货 creates one 待买 purchase for every item with an `expired`, `out`, `low` or `runout` finding that has no 待买 purchase yet, in one transaction. Each is derived from its item (the kernel's derive: same title, `unit` and `category` copied, origin recorded; the item's note is not carried over) with `item` pointing back, `amount` = the item's `refill` (1 when unset) and the reason from the table. Running it again creates nothing new.
+
+**Overview numbers.** The 总览 tab opens with one line on what the extension is for, then four numbers. 需要处理 is what the rules find: the items with an `expired`, `out`, `low` or `runout` finding plus the chores due, and its detail shows the two parts (补货 n · 家务 n); items that are only `expiring` are not in it and have their own number, 即将过期. 待买 is the open purchases on the shopping list, however they got there (by hand, 一键补货 or the assistant). The two overlap only when an item that needs buying already has a 待买 purchase; a line under the numbers tells them apart.
 
 **Buying.** Marking a purchase 已买 through the page or the `household_purchase` tool stocks the item: `amount` is added to its estimated quantity and `counted` becomes today. When the item's `expires` date is already past, the old batch is taken as thrown away: the quantity becomes `amount` alone and the date is cleared (enter the new one when you put the batch away). An item without `qty` stays untracked; only a past date is cleared. 不买 only closes the purchase.
 

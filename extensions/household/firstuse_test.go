@@ -54,3 +54,26 @@ func TestReminderSettingsSpeakPlainly(t *testing.T) {
 		t.Errorf("remind does not name the to-do permission: %s", d)
 	}
 }
+
+// TestUITitlesDiffer keeps the page and the overview card apart in the hub's list of contribution switches, which
+// names each by its title: the card is 「家庭管家 · 概况」, the page 「家庭管家」.
+func TestUITitlesDiffer(t *testing.T) {
+	var m struct {
+		Contributes struct {
+			UI []struct{ ID, Title, Placement string }
+		}
+	}
+	if err := json.Unmarshal(authorManifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]string{}
+	for _, u := range m.Contributes.UI {
+		if other, ok := seen[u.Title]; ok {
+			t.Errorf("%s and %s are both titled %q", other, u.ID, u.Title)
+		}
+		seen[u.Title] = u.ID
+	}
+	if seen["家庭管家"] != ui.PageUI || seen["家庭管家 · 概况"] == "" {
+		t.Fatalf("titles %v, want the page 家庭管家 and the card 家庭管家 · 概况", seen)
+	}
+}
