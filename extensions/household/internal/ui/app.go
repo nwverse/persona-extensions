@@ -151,6 +151,11 @@ func (a *App) act(_ context.Context, r *ext.UIRequest) (*wire.ActionResult, erro
 	wrote := false
 	err := a.st.Update(func(b *kernel.Base, _ time.Time) error {
 		c.after = nil
+		// An import or undo left pending by an interrupted save is settled first, against the records exactly as they
+		// are before this change (records lock, then the import store's).
+		if err := a.importsOf().SettleRecords(b); err != nil {
+			return err
+		}
 		c.bind(b)
 		before, err := json.Marshal(b)
 		if err != nil {

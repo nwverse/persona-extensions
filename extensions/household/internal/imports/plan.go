@@ -413,19 +413,23 @@ func withEdits(lines []Line, edits []Edit) ([]Line, map[int]string, map[int]bool
 // group is lines of the same thing in one import, merged. dupOf is the first line of the same thing that this line
 // could not be merged into (another unit that does not convert, or a quantity on only one of them), with why.
 type group struct {
-	line  Line
-	from  []int
-	notes []string
-	dupOf int
-	why   string
+	line   Line
+	from   []int
+	notes  []string
+	dupOf  int
+	why    string
+	key    string // what the lines resolve to: a recorded item or purchase, or a name
+	answer string // the match the group is planned with
 }
 
-// merge groups the lines that name the same thing for the same target: their quantities add up when they share a
-// unit, after converting a weight or a volume into the unit of the first line (or when none has a quantity), the
-// earliest date is kept and the prices add up. A line of the same thing that cannot be added (a unit that does not
-// convert, or a quantity on only one of the lines) is kept apart and becomes a question: written as a second step, it
-// would overwrite or double the first.
-func merge(lines []Line, target func(Line) string, skip map[int]bool) ([]group, []int) {
+// merge groups the lines that are the same thing for the same target, after matching: resolve gives each line the key
+// of what it is (the recorded item or purchase it was matched to, by name or by the user's answer, or else its name)
+// and the match to plan it with. Lines with the same key are one step: their quantities add up when they share a unit,
+// after converting a weight or a volume into the unit of the first line (or when none has a quantity), the earliest
+// date is kept and the prices add up. A line of the same thing that cannot be added (a unit that does not convert, or
+// a quantity on only one of the lines) is kept apart and becomes a question: written as a second step, it would
+// overwrite or double the first.
+func merge(lines []Line, target func(Line) string, skip map[int]bool, resolve func(n int, l Line) (string, string)) ([]group, []int) {
 	var gs []group
 	var skipped []int
 	for i, l := range lines {
@@ -437,10 +441,11 @@ func merge(lines []Line, target func(Line) string, skip map[int]bool) ([]group, 
 		l.Title = cleanTitle(l.Title)
 		l.Unit = normUnit(l.Unit)
 		l.Target = target(l)
+		key, answer := resolve(n, l)
 		joined := false
 		for gi := range gs {
 			g := &gs[gi]
-			if g.line.Target != l.Target || titleKey(g.line.Title) != titleKey(l.Title) {
+			if g.line.Target != l.Target || g.key != key {
 				continue
 			}
 			if g.dupOf != 0 {
@@ -465,7 +470,7 @@ func merge(lines []Line, target func(Line) string, skip map[int]bool) ([]group, 
 				if !bothQty {
 					why = "一行写了数量、一行没写，没法合在一起"
 				}
-				gs = append(gs, group{line: l, from: []int{n}, dupOf: g.from[0], why: why})
+				gs = append(gs, group{line: l, from: []int{n}, dupOf: g.from[0], why: why, key: "dup", answer: answer})
 				joined = true
 				break
 			}
@@ -499,12 +504,12 @@ func merge(lines []Line, target func(Line) string, skip map[int]bool) ([]group, 
 			break
 		}
 		if !joined {
-			gs = append(gs, group{line: l, from: []int{n}})
+			gs = append(gs, group{line: l, from: []int{n}, key: key, answer: answer})
 		}
 	}
 	for gi := range gs {
 		if len(gs[gi].from) > 1 {
-			gs[gi].notes = append([]string{fmt.Sprintf("第 %s 行是同一样东西，合在一起记", joinInts(gs[gi].from))},
+			gs[gi].notes = append([]string{fmt.Sprintf("第 %s 行是同一样东西，合在一起记，结果按合起来的数算", joinInts(gs[gi].from))},
 				gs[gi].notes...)
 		}
 	}
@@ -522,8 +527,10 @@ func Make(h *model.Home, in Input, edits []Edit, today model.Day) (Plan, error) 
 	}
 	mode := cmp.Or(in.Mode, DefaultMode(in.Source))
 	target := func(l Line) string { return cmp.Or(l.Target, in.Target, ToStock) }
-	groups, skipped := merge(lines, target, skip)
 	p := planner{h: h, today: today, mode: mode, source: in.Source, newPlaces: map[string]bool{}}
+	groups, skipped := merge(lines, target, skip, func(n int, l Line) (string, string) {
+		return p.resolve(n, l, lines, match)
+	})
 	plan := Plan{Steps: []Step{}, Unread: slices.Clone(in.Unread)}
 	if plan.Unread == nil {
 		plan.Unread = []Unread{}
@@ -536,9 +543,9 @@ func Make(h *model.Home, in Input, edits []Edit, today model.Day) (Plan, error) 
 					Text:    fmt.Sprintf("第 %d 行也是「%s」，%s。请把两行改成同一个单位（告诉我折合多少），或者这行不记。", g.dupOf, g.line.Title, g.why),
 					Choices: []Choice{{Label: "这行不记", Skip: true}}}}
 		} else if g.line.Target == ToShopping {
-			s = p.shopping(g, match[g.from[0]])
+			s = p.shopping(g, g.answer)
 		} else {
-			s = p.stock(g, match[g.from[0]])
+			s = p.stock(g, g.answer)
 		}
 		s.Notes = append(g.notes, s.Notes...)
 		if s.Notes == nil {
@@ -558,6 +565,45 @@ func Make(h *model.Home, in Input, edits []Edit, today model.Day) (Plan, error) 
 	slices.SortStableFunc(plan.Steps, func(a, b Step) int { return cmp.Compare(a.Line, b.Line) })
 	plan.Totals = totals(plan, p.newPlaces)
 	return plan, nil
+}
+
+// resolve is what a line is, for grouping, and the match to plan it with. The answer is the user's for this line, or
+// else the one given for an earlier line of the same name and target (the same name is the same thing). A stock line
+// that matches one recorded item (by name or by the answer) is that item; a shopping line on the list is that purchase;
+// anything else (a new thing, or a question) is its name.
+func (p *planner) resolve(n int, l Line, lines []Line, match map[int]string) (string, string) {
+	answer := match[n]
+	name := titleKey(l.Title)
+	if answer == "" {
+		for m := 1; m < n; m++ {
+			o := lines[m-1]
+			if a := match[m]; a != "" && titleKey(cleanTitle(o.Title)) == name && cmp.Or(o.Target, l.Target) == l.Target {
+				answer = a
+				break
+			}
+		}
+	}
+	if l.Target == ToShopping {
+		if answer != "" && answer != MatchNew {
+			for _, b := range p.h.Buys {
+				if b.ID == answer && b.Status == model.BuyTodo {
+					return "buy:" + b.ID, answer
+				}
+			}
+		}
+		if answer == "" {
+			for _, b := range p.h.Buys {
+				if b.Status == model.BuyTodo && (titleKey(b.Title) == name || b.ItemID != "" && titleKey(p.itemTitle(b.ItemID)) == name) {
+					return "buy:" + b.ID, answer
+				}
+			}
+		}
+		return "name:" + name, answer
+	}
+	if it, found, _ := p.findItem(l.Title, answer); found {
+		return "item:" + it.ID, it.ID
+	}
+	return "name:" + name, answer
 }
 
 // planner plans the steps of one import.

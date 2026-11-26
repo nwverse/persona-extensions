@@ -14,30 +14,21 @@ import (
 	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
 )
 
-// Prepare plans a draft for writing: with the answers stored in the draft, the edits of this call and the lines to
-// skip. It refuses a draft whose plan the records have changed since it was shown (for a line this call did not edit),
-// a plan with questions left, and a plan that writes nothing; the error says what to do.
-func Prepare(h *model.Home, d Draft, skip []int, edits []Edit, today model.Day) (Plan, error) {
-	all := slices.Clone(d.Edits)
-	touched := map[int]bool{}
-	for _, e := range edits {
-		all = append(all, e)
-		touched[e.Line] = true
-	}
-	for _, n := range skip {
-		all = append(all, Edit{Line: n, Skip: true})
-		touched[n] = true
-	}
-	plan, err := Make(h, d.Input, all, today)
+// Prepare plans a draft for writing, exactly as it was last shown: with its answers and edits, against the records as
+// they are. It refuses a draft whose plan the records have changed since it was shown (any line that would now promise
+// something else), a plan with questions left, and a plan that writes nothing; the error says what to do.
+func Prepare(h *model.Home, d Draft, today model.Day) (Plan, error) {
+	plan, err := Make(h, d.Input, d.Edits, today)
 	if err != nil {
 		return Plan{}, err
 	}
 	shown := d.Plan.Sigs()
 	var stale []string
+	if len(shown) != len(plan.Steps) {
+		return Plan{}, fmt.Errorf("预览之后家里的记录变了，为了不写错，这次没写入。请重新预览（household_import_preview 带 draft_id）" +
+			"或在页面上点「重新算一遍」，再让用户确认")
+	}
 	for _, s := range plan.Steps {
-		if touched[s.Line] {
-			continue
-		}
 		if was, ok := shown[s.Line]; !ok || was != s.sig() {
 			stale = append(stale, fmt.Sprintf("第 %d 行「%s」", s.Line, s.Title))
 		}
@@ -51,8 +42,8 @@ func Prepare(h *model.Home, d Draft, skip []int, edits []Edit, today model.Day) 
 		for _, s := range asks {
 			parts = append(parts, fmt.Sprintf("第 %d 行「%s」：%s", s.Line, s.Title, s.Ask.Text))
 		}
-		return Plan{}, fmt.Errorf("还有要用户定的地方，这次没写入：%s。把用户的回答放进 edits（match 填编号或 new，"+
-			"或改 qty、unit），或者用 skip 跳过这些行", strings.Join(parts, "；"))
+		return Plan{}, fmt.Errorf("还有要用户定的地方，这次没写入：%s。把用户的回答用 household_import_preview 带 draft_id 和 edits"+
+			"（match 填编号或 new，或改 qty、unit，或 skip）交给预览，念新的预览给用户，再按新的 revision 写入", strings.Join(parts, "；"))
 	}
 	if plan.Totals.Changes == 0 {
 		return Plan{}, errors.New("这次导入没有要写入的东西：每一行都已经记着、已经在采购清单上或被跳过了")
@@ -312,6 +303,9 @@ func (e *Blocked) Error() string {
 // CheckUndo is nil when the import can be undone in b: every record it touched is still exactly as the import left
 // it, and nothing else has come to point at a record it created. Otherwise it is a *Blocked saying what is in the way.
 func CheckUndo(b *kernel.Base, a *Applied) error {
+	if a.Unknown == UnknownUndo {
+		return errors.New("上次撤销时被打断，说不清撤销了没有，所以不再提供撤销；请在页面上核对这几样的数量")
+	}
 	if !a.Undone.IsZero() {
 		return errors.New("最近一次导入已经撤销过了")
 	}

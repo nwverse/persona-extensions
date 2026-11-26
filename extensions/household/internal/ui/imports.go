@@ -146,6 +146,8 @@ func (c *ctx) draftButtons(d imports.Draft) []wire.Component {
 	var items []wire.Component
 	rev := strconv.Itoa(d.Rev)
 	switch {
+	case c.imps.Blocked(d.ID):
+		items = append(items, quiet("上次写入这份时被打断，说不清写进去没有，所以不能再写一次。请看看库存对不对，然后放弃这份，需要的话重新导入。"))
 	case c.draftStale(d):
 		items = append(items, quiet("家里的记录在这之后变了，写进去会和上面说的不一样。先重新算一遍，看过再确认。"),
 			button("重新算一遍", &wire.Action{ID: "impreplan:" + d.ID + ":" + rev}, wire.ButtonRoleNormal))
@@ -380,7 +382,7 @@ func actImportApply(c *ctx, arg string) (*wire.ActionResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	done, finish, err := imports.Apply(c.b, c.app.importsOf(), id, rev, nil, nil, c.now, c.loc)
+	done, finish, err := imports.Apply(c.b, c.app.importsOf(), id, rev, true, c.now, c.loc)
 	if err != nil {
 		return nil, err
 	}
@@ -394,7 +396,7 @@ func actImportApply(c *ctx, arg string) (*wire.ActionResult, error) {
 
 // actImportDrop drops a draft; nothing in the records changes.
 func actImportDrop(c *ctx, id string) (*wire.ActionResult, error) {
-	if _, err := imports.Discard(c.app.importsOf(), id); err != nil {
+	if _, err := imports.Discard(c.app.importsOf(), id, true); err != nil {
 		return nil, err
 	}
 	res := &wire.ActionResult{Toast: "已放弃这份导入，记录没有改动"}

@@ -59,6 +59,8 @@ type Applied struct {
 	// or as never written. UndoPending is the same for its undo.
 	Pending     bool `json:"pending,omitempty"`
 	UndoPending bool `json:"undo_pending,omitempty"`
+	// Unknown is set when a pending change could not be decided from the records (see Settle).
+	Unknown string `json:"unknown,omitempty"`
 }
 
 // State is everything the store keeps.
@@ -120,10 +122,10 @@ func (s *State) Record(a Applied) {
 }
 
 // Last is the import applied last, false when there is none. An import whose records were never confirmed saved
-// (Pending) is not it.
+// (Pending), or whose write could not be decided (Unknown apply), is not it.
 func (s *State) Last() (*Applied, bool) {
 	for i := len(s.Applied) - 1; i >= 0; i-- {
-		if !s.Applied[i].Pending {
+		if a := s.Applied[i]; !a.Pending && a.Unknown != UnknownApply {
 			return &s.Applied[i], true
 		}
 	}
