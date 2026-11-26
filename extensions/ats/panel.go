@@ -22,6 +22,10 @@ const queueUI = "queue"
 // cardUI is the card on the Overview page; a tap on it opens queueUI (persona-extension.json "opens").
 const cardUI = "queue-card"
 
+// cardTitle is the card's title (persona-extension.json) and its header on Overview. The hub's settings page
+// lists every UI contribution by its title, so the card's says 「概况」 to tell it from the home page's.
+const cardTitle = extName + " · 概况"
+
 // ExtConfig is the extension's settings (configuration in persona-extension.json). Both programs read it: the
 // hub program all of it, the program on a computer the repository allowlist.
 type ExtConfig struct {
@@ -544,7 +548,7 @@ func buildCardView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.View
 	plan := q.PlanSchedule(now)
 	counts := plan.CountsByState
 	waiting, doing, queued, failed := counts[StateNeedsInput], counts[StateRunning]+counts[StateLeased], counts[StateQueued], counts[StateFailed]
-	view := &wire.View{Title: extName, RefreshAfter: 30}
+	view := &wire.View{Title: cardTitle, RefreshAfter: 30}
 
 	if len(cfg.Machines) == 0 || len(cfg.Repos) == 0 {
 		items := []wire.Component{

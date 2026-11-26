@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "ats",
   "name": "ATS 自动做待办",
-  "version": "0.7.2",
+  "version": "0.7.3",
   "icon": "assets/icon.png",
   "description": "ATS 帮你把待办自动做掉：跟助手说「把这个待办交给 ATS 做」，助手每次都会先问你；你同意后，它在你选好的电脑上把事情做完，再把结果写回待办；交给它时说了怎么检查的，它做完还会自己检查一遍。默认只看不改，而且只会动你允许的文件夹里的项目。",
   "publisher": "nwverse",
@@ -37,7 +37,7 @@
     ],
     "ui": [
       {"id": "queue", "title": "ATS 自动做待办", "placement": "nav_page", "icon": "list"},
-      {"id": "queue-card", "title": "ATS 自动做待办", "placement": "overview_card", "opens": "queue"}
+      {"id": "queue-card", "title": "ATS 自动做待办 · 概况", "placement": "overview_card", "opens": "queue"}
     ]
   },
   "permissions": {

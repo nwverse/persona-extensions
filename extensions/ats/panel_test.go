@@ -436,10 +436,18 @@ func TestManifestNameMatchesWhatThePagesSay(t *testing.T) {
 	if len(m.Contributes.UI) != 2 {
 		t.Errorf("the ui contributions: %+v", m.Contributes.UI)
 	}
+	// The hub's settings page lists every UI contribution by its title: the home page carries the extension's
+	// name, the Overview card the name and 「 · 概况」, so the two switches never read as a duplicate.
+	want := map[string]string{queueUI: extName, cardUI: extName + " · 概况"}
+	seen := map[string]string{}
 	for _, u := range m.Contributes.UI {
-		if u.Title != extName {
-			t.Errorf("the title of %s: %q", u.ID, u.Title)
+		if u.Title != want[u.ID] {
+			t.Errorf("the title of %s: %q, want %q", u.ID, u.Title, want[u.ID])
 		}
+		if other, ok := seen[u.Title]; ok {
+			t.Errorf("%s and %s are both titled %q", other, u.ID, u.Title)
+		}
+		seen[u.Title] = u.ID
 	}
 	// Not every task has a check: neither the intro nor the description promises one.
 	var d struct{ Description string }

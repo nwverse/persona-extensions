@@ -229,7 +229,7 @@ func TestCardOpensTheHomePage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.Title != extName || len(view.Sections) != 1 || view.Sections[0].Items[0].Type != wire.ComponentStatGrid {
+	if view.Title != cardTitle || len(view.Sections) != 1 || view.Sections[0].Items[0].Type != wire.ComponentStatGrid {
 		t.Errorf("rendering %s did not draw the card: %+v", cardUI, view)
 	}
 }
