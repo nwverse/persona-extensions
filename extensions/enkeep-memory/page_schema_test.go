@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/wire"
 )
@@ -183,5 +188,113 @@ func TestEntryNodeProposalAndHealthHardeningSchema(t *testing.T) {
 	vHealth := &wire.View{Title: "记忆体检", Sections: []wire.Section{refusalSection(&curate.RunBrief{Period: "2026-11-23", Refusals: refusals, Skipped: 120})}}
 	if err := wire.CheckView(vHealth); err != nil {
 		t.Fatalf("health refusal section fails CheckView: %v", err)
+	}
+}
+
+func TestReviewTabMarksShownSynchronouslyWhenIdle(t *testing.T) {
+	a := v4App(t)
+	a.c.St.Lock()
+	for i := 0; i < 120; i++ {
+		a.c.St.S.Proposals = append(a.c.St.S.Proposals, &store.Proposal{
+			ID:     fmt.Sprintf("K-%04d", i),
+			Kind:   "pin_fact",
+			Title:  fmt.Sprintf("Synthetic proposal %d", i),
+			Risk:   "low",
+			Status: "pending",
+		})
+	}
+	a.c.St.Unlock()
+
+	render(t, a, page{Tab: tabReview}, "zh-Hans")
+
+	// When no curation run holds the store lock, shown dates must already be persisted before render returns
+	// so no background writer races with teardown or subsequent reads.
+	reopened, err := store.Open(a.c.St.Dir)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	for i := 0; i < 100; i++ {
+		id := fmt.Sprintf("K-%04d", i)
+		if p := reopened.S.Proposal(id); p == nil || p.Shown == "" {
+			t.Fatalf("displayed proposal %s was not persisted as shown before render returned: %+v", id, p)
+		}
+	}
+	if p := reopened.S.Proposal("K-0100"); p == nil || p.Shown != "" {
+		t.Fatalf("unshown proposal on page 2 should not be marked shown: %+v", p)
+	}
+}
+
+func TestPageCmdDoesNotMutateState(t *testing.T) {
+	stateDir := t.TempDir()
+	outDir := t.TempDir()
+	st, err := store.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Lock()
+	st.S.Proposals = append(st.S.Proposals, &store.Proposal{
+		ID:     "K-0001",
+		Kind:   "pin_fact",
+		Title:  "Synthetic pending proposal for project-x",
+		Risk:   "low",
+		Status: "pending",
+	})
+	if err := st.Save(); err != nil {
+		st.Unlock()
+		t.Fatal(err)
+	}
+	st.Unlock()
+
+	ov, err := overview.Open(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ov.Update(func(s *overview.State) (bool, error) {
+		s.Patterns["ov:0123456789"] = &overview.Pattern{
+			ID:           "ov:0123456789",
+			Facet:        "judgement",
+			Lifecycle:    overview.Core,
+			Text:         "Synthetic pattern for project-x",
+			EvidenceIDs:  []string{"e-missing"},
+			ScenesCount:  2,
+			SourcesCount: 3,
+			ActiveWeeks:  []string{"2026-W46", "2026-W47"},
+			Created:      "2026-11-20",
+		}
+		return true, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := filepath.Join(stateDir, "state.json")
+	ovPath := filepath.Join(stateDir, overview.File)
+	before, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ovBefore, err := os.ReadFile(ovPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := pageCmd([]string{"-state", stateDir, "-out", outDir, "-today", "2026-11-24"}); err != nil {
+		t.Fatalf("pageCmd: %v", err)
+	}
+	// Give any leaked background goroutine a chance to flush its write before checking.
+	time.Sleep(50 * time.Millisecond)
+
+	after, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("pageCmd mutated state.json on disk:\nbefore: %s\nafter:  %s", before, after)
+	}
+	ovAfter, err := os.ReadFile(ovPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(ovBefore, ovAfter) {
+		t.Fatalf("pageCmd mutated %s on disk:\nbefore: %s\nafter:  %s", overview.File, ovBefore, ovAfter)
 	}
 }

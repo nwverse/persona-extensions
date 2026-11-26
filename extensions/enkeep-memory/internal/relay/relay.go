@@ -27,6 +27,9 @@ var markers = []string{
 	"<persona-context", "<jarvis-context", "Persona task handoffs:", "<cross-session-message", "[Cross-session",
 	"（Persona：任务的结果", "<task-notification",
 	"经主对话转", "主对话转达", "主管转达", "（转自主管", "relayed by the supervisor", "relayed from the assistant",
+	// The platform's task-brief boilerplate (0.2.0-beta.52): the credential note, the supervisor's report tool and
+	// acceptance list, the result-file line. A brief carrying them is the supervisor's, not the user's habit.
+	"Keep hub credentials private", "report_to_supervisor", "handoff_receipt", "done_when", "file: <",
 }
 
 // probe: a short text that asks for a fixed answer or no tool calls, the shape of a deployment or smoke test.

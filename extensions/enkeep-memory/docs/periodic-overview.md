@@ -76,10 +76,10 @@ filtered by scene here.
 
 | Entry | Standing | Rank | Categories, space |
 | --- | --- | --- | --- |
-| `ov:pattern:<id>`: no category and no space among its evidence and counter-examples | yes, the 80 most spread | 950–985 by scenes × sources | none |
+| `ov:pattern:<id>`: no category and no space among its evidence and counter-examples | when chosen for the standing set (docs/exits.md, by score with the curated entries) | the set's rank when standing, else its score × 9 | none |
 | `ov:cat:<category>:<id>`: any categorised evidence, or said in a space | never | 900 | the union of the evidence's (taint), and the space |
 
-The text is one line: `跨事模式（<facet>）：<pattern>（例外：<exception>）`. Subjects are the evidence's names.
+The text is one line: `跨事模式（<facet>）：<pattern>（例外：<exception>）`; a pattern whose evidence goes both ways (beta.52) says both ends instead, each with when it holds: `（两端：<A>时，<X>；<B>时，<Y>）`. Subjects are the evidence's names.
 
 ## The weekly report
 

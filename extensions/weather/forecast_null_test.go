@@ -43,3 +43,49 @@ func TestZeroWeatherReadingsRemainZero(t *testing.T) {
 		}
 	}
 }
+
+func TestNullWindDirectionWithNonzeroSpeedDoesNotFabricateNorthWind(t *testing.T) {
+	for name, body := range map[string]string{
+		"null":    `{"current":{"time":"2026-11-16T12:00","temperature_2m":12,"apparent_temperature":10,"relative_humidity_2m":50,"weather_code":1,"wind_speed_10m":15,"wind_direction_10m":null},"daily":{"time":["2026-11-16"],"temperature_2m_max":[16],"temperature_2m_min":[8],"weather_code":[1],"precipitation_probability_max":[10]}}`,
+		"omitted": `{"current":{"time":"2026-11-16T12:00","temperature_2m":12,"apparent_temperature":10,"relative_humidity_2m":50,"weather_code":1,"wind_speed_10m":15},"daily":{"time":["2026-11-16"],"temperature_2m_max":[16],"temperature_2m_min":[8],"weather_code":[1],"precipitation_probability_max":[10]}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := newFakeSite(t)
+			sample(t, f)
+			f.serve("/v1/forecast", body)
+			a := testApp(t, f, "")
+
+			now, err := callTool(t, a, "weather_now", "")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(now, "北风") {
+				t.Fatalf("weather_now fabricated north wind for %s wind_direction_10m: %s", name, now)
+			}
+			if !strings.Contains(now, "风 15 km/h") {
+				t.Fatalf("weather_now missing wind speed: %s", now)
+			}
+
+			v := draw(t, a, 3, nil)
+			says(t, v, "{风=15 km/h}")
+			saysNot(t, v, "北风")
+		})
+	}
+
+	t.Run("genuine zero degrees remains north wind", func(t *testing.T) {
+		f := newFakeSite(t)
+		sample(t, f)
+		f.serve("/v1/forecast", `{"current":{"time":"2026-11-16T12:00","temperature_2m":12,"apparent_temperature":10,"relative_humidity_2m":50,"weather_code":1,"wind_speed_10m":15,"wind_direction_10m":0},"daily":{"time":["2026-11-16"],"temperature_2m_max":[16],"temperature_2m_min":[8],"weather_code":[1],"precipitation_probability_max":[10]}}`)
+		a := testApp(t, f, "")
+
+		now, err := callTool(t, a, "weather_now", "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(now, "北风 15 km/h") {
+			t.Fatalf("weather_now lost genuine 0-degree north wind: %s", now)
+		}
+		v := draw(t, a, 3, nil)
+		says(t, v, "{北风=15 km/h}")
+	})
+}

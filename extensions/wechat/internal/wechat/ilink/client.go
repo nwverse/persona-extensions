@@ -212,24 +212,37 @@ func (c *Client) call(ctx context.Context, method, path string, body any, authed
 		return nil, &Error{Code: CodeHTTP, Msg: fmt.Sprintf("iLink answered HTTP %d", resp.StatusCode), Retry: resp.StatusCode >= 500 || resp.StatusCode == 429}
 	}
 	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil || out == nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil || out == nil || dec.Decode(&struct{}{}) != io.EOF {
 		return nil, &Error{Code: CodeBadResponse, Msg: "iLink answered invalid JSON", Retry: true}
 	}
 	return out, nil
 }
 
-// ret checks the {"ret": n} most answers carry; absent counts as 0.
+// ret checks the {"ret": n} most answers carry; absent counts as 0. A non-zero n may pass when asked again.
 func ret(out map[string]any, what string) error {
+	return retStatus(out, what, true)
+}
+
+// refusal is ret for what iLink is asked to take (sendmessage, getuploadurl): a non-zero n is its answer to that
+// message or picture, which asking again does not change. openclaw-weixin does not ask again either: its sendMessage
+// throws on a non-zero ret and is not tried again (its docs/protocol.md, "Return values and errors").
+func refusal(out map[string]any, what string) error {
+	return retStatus(out, what, false)
+}
+
+func retStatus(out map[string]any, what string, retry bool) error {
 	v, ok := out["ret"]
 	if !ok {
 		return nil
 	}
-	n, isNum := v.(float64)
+	n, isNum := responseInt(v)
 	if !isNum {
 		return &Error{Code: CodeBadResponse, Msg: "iLink answered an invalid status for " + what, Retry: true}
 	}
 	if n != 0 {
-		return &Error{Code: CodeProtocol, Msg: fmt.Sprintf("iLink rejected %s (%d)", what, int(n)), Retry: true}
+		return &Error{Code: CodeProtocol, Msg: fmt.Sprintf("iLink rejected %s (%d)", what, n), Retry: retry}
 	}
 	return nil
 }
@@ -237,6 +250,30 @@ func ret(out map[string]any, what string) error {
 func str(m map[string]any, k string) string {
 	s, _ := m[k].(string)
 	return s
+}
+
+func responseInt(v any) (int64, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		value, err := n.Int64()
+		return value, err == nil
+	case float64: // retained for callers that construct responses directly
+		value := int64(n)
+		return value, float64(value) == n
+	default:
+		return 0, false
+	}
+}
+
+func responseMessageID(v any) string {
+	switch id := v.(type) {
+	case string:
+		return strings.TrimSpace(id)
+	case json.Number:
+		return id.String()
+	default:
+		return ""
+	}
 }
 
 // NotifyStart and NotifyStop tell iLink the bot went on or off line.
@@ -276,7 +313,7 @@ func (c *Client) GetUpdates(ctx context.Context, cursor string) (Poll, error) {
 		}
 		return Poll{}, err
 	}
-	if code, ok := out["errcode"].(float64); ok && code == -14 {
+	if code, ok := responseInt(out["errcode"]); ok && code == -14 {
 		return Poll{}, &Error{Code: CodeReplaced, Msg: "the iLink token is no longer active"}
 	}
 	if err := ret(out, "the poll"); err != nil {
@@ -286,7 +323,7 @@ func (c *Client) GetUpdates(ctx context.Context, cursor string) (Poll, error) {
 	if s, ok := out["get_updates_buf"].(string); ok {
 		p.Cursor = s
 	}
-	if ms, ok := out["longpolling_timeout_ms"].(float64); ok && ms > 0 {
+	if ms, ok := responseInt(out["longpolling_timeout_ms"]); ok && ms > 0 {
 		p.Timeout = time.Duration(ms) * time.Millisecond
 	}
 	raw, err := json.Marshal(out["msgs"])
@@ -316,9 +353,15 @@ func (c *Client) GetUpdates(ctx context.Context, cursor string) (Poll, error) {
 // SendText sends text (at most MaxText code points; use Chunk) to peer as the bot. contextToken comes from the
 // peer's latest message; clientID makes the send idempotent on iLink's side.
 func (c *Client) SendText(ctx context.Context, peer, contextToken, clientID, text string) error {
+	_, err := c.SendTextWithID(ctx, peer, contextToken, clientID, text)
+	return err
+}
+
+// SendTextWithID also returns the server message id, which a later ref_msg.svr_id can reference.
+func (c *Client) SendTextWithID(ctx context.Context, peer, contextToken, clientID, text string) (string, error) {
 	if strings.TrimSpace(peer) == "" || strings.TrimSpace(contextToken) == "" || strings.TrimSpace(clientID) == "" ||
 		text == "" || len([]rune(text)) > MaxText {
-		return &Error{Code: CodeProtocol, Msg: "incomplete iLink text message"}
+		return "", &Error{Code: CodeProtocol, Msg: "incomplete iLink text message"}
 	}
 	msg := map[string]any{
 		"from_user_id":  "",
@@ -331,9 +374,12 @@ func (c *Client) SendText(ctx context.Context, peer, contextToken, clientID, tex
 	}
 	out, err := c.call(ctx, http.MethodPost, "ilink/bot/sendmessage", map[string]any{"msg": msg, "base_info": c.baseInfo()}, true, apiTimeout, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return ret(out, "the message")
+	if err := refusal(out, "the message"); err != nil {
+		return "", err
+	}
+	return responseMessageID(out["message_id"]), nil
 }
 
 // TypingTicket gets the ticket SetTyping needs for peer.

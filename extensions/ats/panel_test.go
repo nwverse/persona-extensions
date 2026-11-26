@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/exttest"
@@ -64,6 +65,9 @@ func (p *pageRig) complete(id string, att *Attempt, done CompleteAttemptInput) *
 // checked marshals a view after holding it to the SDK's rules for a page.
 func checked(t *testing.T, view *wire.View) string {
 	t.Helper()
+	if err := wire.CheckView(view); err != nil {
+		t.Fatalf("wire.CheckView failed: %v", err)
+	}
 	raw, err := json.Marshal(view)
 	if err != nil {
 		t.Fatal(err)
@@ -475,7 +479,7 @@ func TestOutcomeDecisionSaysWhatHappenedInPlainWords(t *testing.T) {
 	if d.Choice != "跑完了，没有验收命令" || strings.Contains(d.Reason, "验收") {
 		t.Errorf("unverified: %+v", d)
 	}
-	if n := len([]rune(d.Reason)); n > decisionReasonMost+1 || !strings.HasSuffix(d.Reason, "任务 "+plain.ID) || !strings.Contains(d.Reason, strings.Repeat("字", 400)+"…") {
+	if n := len([]rune(d.Reason)); n > decisionReasonMost || !strings.HasSuffix(d.Reason, "任务 "+plain.ID) || !strings.Contains(d.Reason, strings.Repeat("字", 399)+"…") {
 		t.Errorf("a long summary: %d characters, ends %q", n, d.Reason[max(0, len(d.Reason)-40):])
 	}
 	canceled := p.enqueue(EnqueueInput{Title: "Never mind", Repo: "/srv/code/app"})
@@ -521,4 +525,89 @@ func mustRead(t *testing.T, name string) []byte {
 		t.Fatal(err)
 	}
 	return data
+}
+
+func TestTaskPageValidatesWithLongPromptSummaryAndFailureMessage(t *testing.T) {
+	p := newPageRig(t)
+	none := 0
+	longTitle := strings.Repeat("题", 2500)
+	task := p.enqueue(EnqueueInput{
+		Title:      longTitle,
+		Prompt:     strings.Repeat("说", 2500),
+		Repo:       "/srv/code/app",
+		MaxRetries: &none,
+	})
+	p.complete(task.ID, p.lease(task.ID, PhaseWorking, ""), CompleteAttemptInput{
+		Outcome:    StateFailed,
+		ErrorClass: "infra_error",
+		Message:    strings.Repeat("错", 2500),
+		Summary:    strings.Repeat("结", 2500),
+	})
+	if err := p.q.markDecisionWritten(task.ID, "ats:"+task.ID+":failed"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Also queue an active task with a >2000-rune title so both activeRow and terminalRow are validated.
+	active := p.enqueue(EnqueueInput{
+		Title:  longTitle,
+		Prompt: "Active task",
+		Repo:   "/srv/code/app",
+	})
+	p.lease(active.ID, PhaseWorking, "")
+
+	at := testStart.Add(2 * time.Minute)
+	view := buildTaskView(p.q, task.ID, at, "UTC")
+	checked(t, view)
+	checked(t, buildQueueView(p.q, p.a.config(), at, "UTC"))
+
+	for _, key := range []string{"result", "summary", "prompt"} {
+		comp := findRow(t, view, key)
+		if n := utf8.RuneCountInString(comp.Text); n > detailTextMost {
+			t.Errorf("%s text length = %d runes, want <= %d", key, n, detailTextMost)
+		}
+	}
+	if res := findRow(t, view, "result"); !strings.Contains(res.Text, "结论已写回待办。") {
+		t.Errorf("result text dropped writeback status line: %q", res.Text[max(0, len(res.Text)-80):])
+	}
+
+	// Verify skipped-writeback suffix is also preserved within detailTextMost.
+	skipped := p.enqueue(EnqueueInput{
+		Title:      longTitle,
+		Prompt:     "Short prompt",
+		Repo:       "/srv/code/app",
+		MaxRetries: &none,
+	})
+	p.complete(skipped.ID, p.lease(skipped.ID, PhaseWorking, ""), CompleteAttemptInput{
+		Outcome:    StateFailed,
+		ErrorClass: "infra_error",
+		Message:    strings.Repeat("错", 2500),
+	})
+	if err := p.q.markDecisionSkipped(skipped.ID, "http_404"); err != nil {
+		t.Fatal(err)
+	}
+	skippedView := buildTaskView(p.q, skipped.ID, at, "UTC")
+	checked(t, skippedView)
+	if res := findRow(t, skippedView, "result"); !strings.Contains(res.Text, "结论没有写回待办") {
+		t.Errorf("result text dropped skipped-writeback status line: %q", res.Text[max(0, len(res.Text)-80):])
+	}
+
+	// Boundary checks for truncateRunes.
+	for _, tc := range []struct {
+		in   string
+		max  int
+		want string
+	}{
+		{"abc", 0, ""},
+		{"abc", -1, ""},
+		{"abc", 1, "a"},
+		{"abc", 3, "abc"},
+		{"abcd", 3, "ab…"},
+	} {
+		if got := truncateRunes(tc.in, tc.max); got != tc.want {
+			t.Errorf("truncateRunes(%q, %d) = %q, want %q", tc.in, tc.max, got, tc.want)
+		}
+	}
+	if got := truncateRunes(strings.Repeat("a", 2500), 2000); utf8.RuneCountInString(got) > 2000 {
+		t.Errorf("truncateRunes(..., 2000) returned %d runes", utf8.RuneCountInString(got))
+	}
 }

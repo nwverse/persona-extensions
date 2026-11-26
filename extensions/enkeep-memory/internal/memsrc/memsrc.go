@@ -12,7 +12,10 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
@@ -40,6 +43,8 @@ type Params struct {
 	Contribution string `json:"contribution"`
 	Limit        int    `json:"limit"`
 	After        string `json:"after,omitempty"`
+	// ResidentBytes is the room the standing set is chosen for (the resident_bytes setting; 0: ResidentBytes).
+	ResidentBytes int `json:"-"`
 }
 
 // Result is one page (wire.MemoryEntriesResult).
@@ -79,6 +84,7 @@ type item struct {
 	standing bool
 	rank     int
 	last     string
+	text     string // a curated entry's line as answered, when not its recall line (standing, or with its quote)
 }
 
 // Extra is an entry made elsewhere in the extension (the periodic overview's patterns, internal/overview), answered
@@ -86,6 +92,12 @@ type item struct {
 type Extra struct {
 	Entry Entry
 	Last  string
+	// Score (0–100, as entry.Score) and Kind (entry.KindRules or KindUnderstanding) make it a candidate for the
+	// standing set; Kind "" never stands. Entry.Standing is decided here, not by the maker.
+	Score int
+	Kind  string
+	// Evidence are the curated entries it rests on: a pattern resting mostly on template lines never stands.
+	Evidence []string
 }
 
 func (it item) id() string {
@@ -119,21 +131,33 @@ func before(a, b key) bool {
 	return a.I < b.I
 }
 
-// weakPredicates are low-value relation triples (e.g. "A depends on B", "A works with B") that crowd memory.entries
-// without actionable guidance. They stay in state and are only filtered at the memory.entries outlet unless the user
-// explicitly pinned, edited or confirmed them.
-var weakPredicates = map[string]bool{
-	"about":             true,
-	"allocated":         true,
-	"assigned":          true,
-	"blocked_by":        true,
-	"collaborates_with": true,
-	"depends_on":        true,
-	"member_of":         true,
-	"same_circle":       true,
-	"serves":            true,
-	"waiting_on":        true,
+// Relation predicates, in three kinds (0.2.0, design l0-leverage §13; the collaboration gap analysis §4.4):
+//   - the skeleton (assigned, depends_on, member_of, collaborates_with, with owns, role and reports_to): who is
+//     responsible for what, which team, what depends on what, who works with whom. Never standing (a world entry has
+//     no standing kind), but ranked by its score in recall and fed to the overview and the evaluations like any entry;
+//   - noise (about, same_circle): "X is about Y", a shared circle; ranked last, kept out of Pool;
+//   - passing edges (waiting_on, blocked_by, allocated, serves): what holds now; weak only once stale, when last seen
+//     more than staleDays ago.
+//
+// Up to beta.52 all ten were weak alike. Nothing is deleted from state; user-pinned, user-edited or user-confirmed
+// entries are never weak.
+var noisePredicates = map[string]bool{
+	"about":       true,
+	"same_circle": true,
 }
+
+var passingPredicates = map[string]bool{
+	"allocated":  true,
+	"blocked_by": true,
+	"serves":     true,
+	"waiting_on": true,
+}
+
+// staleDays is how long a passing edge stays strong after it was last seen.
+const staleDays = 14
+
+// nowFn is the clock IsWeakRelation reads a passing edge's age by (tests set it).
+var nowFn = time.Now
 
 // substantiveWorldTypes are world-facet types that carry durable project/ownership/decision value over transient status.
 var substantiveWorldTypes = map[string]bool{
@@ -158,13 +182,22 @@ func userConfirmedRight(e *entry.Entry) bool {
 	return false
 }
 
-// IsWeakRelation says whether e is a low-value relation triple excluded from memory.entries. Nothing is deleted from
-// state; user-pinned, user-edited or user-confirmed entries are always kept.
+// IsWeakRelation says whether e is a low-value relation triple: a noise edge, or a passing edge not seen for
+// staleDays (see noisePredicates). Weak triples are answered by memory.entries ranked last and kept out of Pool. The
+// skeleton edges are never weak.
 func IsWeakRelation(e *entry.Entry) bool {
 	if e == nil || e.Facet != entry.World || e.Predicate == "" {
 		return false
 	}
-	if !weakPredicates[strings.ToLower(strings.TrimSpace(e.Predicate))] {
+	p := strings.ToLower(strings.TrimSpace(e.Predicate))
+	switch {
+	case noisePredicates[p]:
+	case passingPredicates[p]:
+		last, err := time.Parse("2006-01-02", e.Last)
+		if err == nil && nowFn().Sub(last) <= staleDays*24*time.Hour {
+			return false
+		}
+	default:
 		return false
 	}
 	if e.Pinned || (e.User != nil && strings.TrimSpace(e.User.Text) != "") || userConfirmedRight(e) {
@@ -177,7 +210,14 @@ func IsWeakRelation(e *entry.Entry) bool {
 // marked wrong), never a card's evaluation or inference about a person, never a low-value weak relation triple, and
 // not life content when the user chose "work only". The same gate as enkeep_recall's, without its category look-up:
 // grading by category is the hub's.
-func Pool(st *store.State, e *entry.Entry) bool {
+func Pool(st *store.State, e *entry.Entry) bool { return pool(st, e) && !IsWeakRelation(e) }
+
+// Pageable is what memory.entries answers: the pool, and the weak relation triples too, ranked last (0.2.0-beta.52:
+// the hub reads every page now, nwverse/persona#15170, so they no longer crowd the first thousand; the record is kept
+// whole and recalled on demand).
+func Pageable(st *store.State, e *entry.Entry) bool { return pool(st, e) }
+
+func pool(st *store.State, e *entry.Entry) bool {
 	if !e.Live() {
 		return false
 	}
@@ -189,9 +229,6 @@ func Pool(st *store.State, e *entry.Entry) bool {
 		}
 	}
 	if e.Facet == entry.People && (e.Part == entry.PartUserEval || e.Part == entry.PartInferred || e.Inferred) {
-		return false
-	}
-	if IsWeakRelation(e) {
 		return false
 	}
 	if e.Domain == entry.Life && st.Onboarding != nil && st.Onboarding.Use == entry.Work {
@@ -214,10 +251,23 @@ func Status(e *entry.Entry) string {
 	return "candidate"
 }
 
-// Rank orders entries by usefulness (0 to 1000, pinned 1000) so the hub's bounded memory.entries fetch (at most 1000
-// entries, re-sorted by standing then rank) keeps the highest-value rules, judgements, workflows, tools, persona and
-// substantive people/world entries first.
+// Rank orders entries by how much they matter (0.2.0-beta.52: entry.Score, 0 to 891; pinned 1000), not by how new they
+// are: recall and hand-offs take the highest first. A weak relation triple ranks last. The standing set has its own
+// ranks above every other (Resident).
 func Rank(e *entry.Entry) int {
+	if e.Pinned {
+		return 1000
+	}
+	r := entry.Score(e) * 9
+	if IsWeakRelation(e) {
+		r = min(r, 9)
+	}
+	return max(0, min(891, r))
+}
+
+// LegacyRank is Rank before 0.2.0-beta.52 (facet, grain and count, ties broken by the newest), kept for the hard
+// evaluation's baseline arm (hardeval): the order memory.entries answered in up to beta.49.
+func LegacyRank(e *entry.Entry) int {
 	if e.Pinned {
 		return 1000
 	}
@@ -227,7 +277,7 @@ func Rank(e *entry.Entry) int {
 		score = 400
 	case entry.People:
 		score = 200
-	default: // World and any other facet
+	default:
 		typ := strings.ToLower(strings.TrimSpace(e.Type))
 		pred := strings.ToLower(strings.TrimSpace(e.Predicate))
 		switch {
@@ -347,7 +397,8 @@ func backfill(st *store.State, e *entry.Entry, depth int) ([]string, string) {
 	return cats, space
 }
 
-// Subjects are the names whose mention brings the entry in: the person of a card, its object, its scopes' names.
+// Subjects are the names whose mention brings the entry in: the person of a card, its object, the person or project
+// its impact is for, its scopes' names.
 func Subjects(st *store.State, e *entry.Entry) []string {
 	var out []string
 	add := func(s string) {
@@ -361,6 +412,11 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 		add(k.Name)
 	}
 	add(e.Object)
+	// The person or project a rule is for (impact.object, design l0-leverage §13: rules hang on entities): mentioning
+	// them brings the rule in. A kind of task named there is a short phrase too and does no harm.
+	if o := strings.TrimSpace(e.Impact.Object); utf8.RuneCountInString(o) <= 24 {
+		add(o)
+	}
 	for _, sc := range e.Scopes {
 		if sc.Kind != entry.ScopeGlobal {
 			add(sc.Name)
@@ -398,11 +454,17 @@ func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (
 	limit := min(max(p.Limit, 1), MaxLimit)
 	var all []item
 	var n Counts
+	stand := standingSet(st, extras, p.ResidentBytes)
 	for _, e := range st.Entries {
-		if !Pool(st, e) || !idRe.MatchString(e.ID) || strings.TrimSpace(recall.Line(e)) == "" {
+		if !Pageable(st, e) || !idRe.MatchString(e.ID) || strings.TrimSpace(recall.Line(e)) == "" {
 			continue
 		}
-		it := item{e: e, standing: export.Usable(st, e), rank: Rank(e), last: e.Last}
+		it := item{e: e, rank: Rank(e), last: e.Last}
+		if c, ok := stand[e.ID]; ok {
+			it.standing, it.rank, it.text = true, c.rank, c.text
+		} else if q := Quote(e); q != "" {
+			it.text = clip(strings.TrimSpace(recall.Line(e)), MaxText-utf8.RuneCountInString(q)-1) + " " + q
+		}
 		all = append(all, it)
 		n.Entries++
 		if Status(e) == "active" {
@@ -446,6 +508,10 @@ func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (
 		}
 		e.Subjects = subj
 		e.Rank = min(max(e.Rank, 0), 1000)
+		e.Standing = false
+		if c, ok := stand[e.ID]; ok {
+			e.Standing, e.Rank, e.Text = true, c.rank, c.text
+		}
 		if e.Status == "" {
 			e.Status = "active"
 		}
@@ -512,7 +578,7 @@ func profileItems(sum *profile.Summary) []item {
 			Text:     clip(text, MaxText),
 			Facet:    string(entry.Persona),
 			Status:   "active",
-			Standing: true,
+			Standing: false, // longer than the hub's standing room (1536 bytes): recalled, never standing (beta.52)
 			Rank:     995,
 			Subjects: []string{"用户侧写", "我是怎样的人", "关于我", "profile", "summary"},
 		}
@@ -619,7 +685,11 @@ func entryOf(st *store.State, it item) Entry {
 		return *it.x
 	}
 	e := it.e
-	x := Entry{ID: e.ID, Text: clip(strings.TrimSpace(recall.Line(e)), MaxText), Status: Status(e), Standing: it.standing,
+	text := it.text
+	if text == "" {
+		text = strings.TrimSpace(recall.Line(e))
+	}
+	x := Entry{ID: e.ID, Text: clip(text, MaxText), Status: Status(e), Standing: it.standing,
 		Rank: it.rank, Subjects: Subjects(st, e)}
 	if f := string(e.Facet); facetRe.MatchString(f) {
 		x.Facet = f
@@ -638,4 +708,72 @@ func clip(s string, n int) string {
 	}
 	r := []rune(s)
 	return string(r[:n])
+}
+
+// standing is one entry of the standing set: its rank and its line.
+type standing struct {
+	rank int
+	text string
+}
+
+// standingCache keeps the last standing set: the hub reads memory.entries a page at a time (a hundred pages and
+// more), all of one snapshot; the set is worked out once per snapshot and its extras. A new snapshot (after a run, a
+// mark, a delete: the light refresh) is a new state and works it out again.
+var standingCache struct {
+	sync.Mutex
+	st  *store.State
+	key string
+	set map[string]standing
+}
+
+// standingSet is the standing set of st and the overview's extras (Resident), by id.
+func standingSet(st *store.State, extras []Extra, room int) map[string]standing {
+	var kb strings.Builder
+	kb.WriteString(strconv.Itoa(room) + "|")
+	for _, x := range extras {
+		kb.WriteString(x.Entry.ID)
+		kb.WriteString(strconv.Itoa(x.Score))
+		kb.WriteString(x.Entry.Text)
+	}
+	key := strconv.Itoa(len(st.Entries)) + "|" + kb.String()
+	standingCache.Lock()
+	defer standingCache.Unlock()
+	if standingCache.st == st && standingCache.key == key {
+		return standingCache.set
+	}
+	set := workStandingSet(st, extras, room)
+	standingCache.st, standingCache.key, standingCache.set = st, key, set
+	return set
+}
+
+// ResidentMostFor is how many lines a room holds: ResidentMost for the default, one more per 120 bytes beyond it.
+func ResidentMostFor(room int) int {
+	if room <= ResidentBytes {
+		return ResidentMost
+	}
+	return ResidentMost + (room-ResidentBytes)/120
+}
+
+func workStandingSet(st *store.State, extras []Extra, room int) map[string]standing {
+	var cands []Candidate
+	tpl := entry.TemplateQuotes(st.Entries)
+	for _, e := range st.Entries {
+		if c, ok := CuratedCandidate(st, e, tpl); ok && idRe.MatchString(e.ID) {
+			cands = append(cands, c)
+		}
+	}
+	for _, x := range extras {
+		e := x.Entry
+		if x.Kind == "" || len(e.Categories) > 0 || e.OriginSpace != "" || st.Entries[e.ID] != nil || !idRe.MatchString(e.ID) ||
+			entry.TemplateBacked(st.Entries, x.Evidence, tpl) {
+			continue
+		}
+		cands = append(cands, Candidate{ID: e.ID, Text: clipBytes(strings.TrimSpace(e.Text), residentTextMost), Kind: x.Kind, Score: x.Score,
+			Days: len(x.Evidence), Last: x.Last, Pattern: strings.HasPrefix(e.ID, "ov:pattern:")})
+	}
+	out := map[string]standing{}
+	for i, c := range ResidentWithin(cands, room, ResidentMostFor(room)) {
+		out[c.ID] = standing{rank: rankStand - i, text: c.Text}
+	}
+	return out
 }

@@ -47,7 +47,7 @@ func pageCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	a := &app{c: &curate.Curator{St: st, Cfg: curate.Defaults(), Loc: loc, Live: &curate.Live{}}, exitDir: *dataDir, hubLoc: loc}
+	a := &app{c: &curate.Curator{St: st, Cfg: curate.Defaults(), Loc: loc, Live: &curate.Live{}}, exitDir: *dataDir, hubLoc: loc, readOnly: true}
 	a.openOverview(*stateDir) // the overview's patterns, the profile summary they feed, the saved reports
 	st.Lock()
 	a.c.Publish()

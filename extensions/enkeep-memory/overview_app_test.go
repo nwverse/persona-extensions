@@ -11,7 +11,9 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/memsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
+	"github.com/nwverse/persona/sdk/go/wire"
 )
 
 // overviewApp is v4App with the overview's state open and one used pattern resting on a seeded entry.
@@ -258,4 +260,74 @@ func mustJSON(v any) []byte {
 
 func weeklyRun(week string) *store.Run {
 	return &store.Run{ID: "w-" + week, Kind: "weekly", Period: week, Finished: "x"}
+}
+
+// The profile page on a phone: a facet's sources are short one-line titles, at most four; a pattern is marked and opens
+// the periodic overview, not an entry page that does not exist.
+func TestProfilePagePatternPoints(t *testing.T) {
+	a := v4App(t)
+	long := strings.Repeat("在改动现有系统之前先备好变更、验证和回滚办法", 4)
+	sum := &profile.Summary{Version: profile.CurrentVersion, CoveredCount: 1, SourceCount: 6, Sections: []profile.Section{{
+		Facet: entry.Workflow, Summary: "改动前先备好回滚。", SourceCount: 6,
+		Points: []profile.Point{{ID: "ov:0123456789", Text: long, Last: "2026-11-23", Pattern: true},
+			{ID: "w-1", Text: "b"}, {ID: "w-2", Text: "c"}, {ID: "w-3", Text: "d"}, {ID: "w-4", Text: "e"}},
+	}}}
+	st, done := a.read()
+	v := a.profilePage(trOf("zh-Hans"), st, sum)
+	done()
+	if err := wire.CheckView(v); err != nil {
+		t.Fatal(err)
+	}
+	var rows []wire.Component
+	for _, sec := range v.Sections {
+		for _, it := range sec.Items {
+			if it.Type == wire.ComponentRow && it.Action != nil && strings.HasPrefix(it.Action.ID, "open:") && !strings.HasPrefix(it.Action.ID, "open:facet:") {
+				rows = append(rows, it)
+			}
+		}
+	}
+	if len(rows) != 4 {
+		t.Fatalf("%d source rows", len(rows))
+	}
+	p := rows[0]
+	if len([]rune(p.Title)) > 26 || !strings.HasSuffix(p.Title, "…") || !strings.Contains(p.Subtitle, "跨事模式") ||
+		!strings.Contains(string(mustJSON(p.Action)), "overview") {
+		t.Fatalf("%+v %+v", p, p.Action)
+	}
+}
+
+func TestReportPageCheckViewFallbackAndCap(t *testing.T) {
+	a, _, _ := overviewApp(t)
+	// Report with disallowed Markdown (http:// link and image) must fall back cleanly and pass CheckView.
+	disallowed := "# Weekly Report\n\nSee [local server](http://localhost:8080/status) and ![chart](https://example.com/chart.png).\n"
+	if err := overview.SaveReportIn(a.c.St.Dir, "weekly", "2026-W12", disallowed); err != nil {
+		t.Fatal(err)
+	}
+	v := a.reportPage(trOf("en"), "ovr:weekly:2026-W12")
+	if err := wire.CheckView(v); err != nil {
+		t.Fatalf("reportPage with disallowed markdown failed CheckView: %v", err)
+	}
+	if len(v.Sections) == 0 || len(v.Sections[0].Items) == 0 || !strings.Contains(v.Sections[0].Items[0].Text, "http://localhost:8080/status") {
+		t.Fatalf("reportPage lost content during fallback: %+v", v)
+	}
+
+	// Report whose raw chunk count exceeds CheckView's 300-component limit must be capped and pass CheckView.
+	huge := strings.Repeat(strings.Repeat("a", 1790)+"\n", 320)
+	if err := overview.SaveReportIn(a.c.St.Dir, "monthly", "2026-12", huge); err != nil {
+		t.Fatal(err)
+	}
+	vh := a.reportPage(trOf("en"), "ovr:monthly:2026-12")
+	if err := wire.CheckView(vh); err != nil {
+		t.Fatalf("huge reportPage failed CheckView: %v", err)
+	}
+	last := vh.Sections[0].Items[len(vh.Sections[0].Items)-1]
+	if !strings.Contains(last.Text, "omitted") {
+		t.Fatalf("huge reportPage missing truncation note: %+v", last)
+	}
+
+	// Overlong period parameter in open state must be truncated so v.Title stays within CheckView's 2000-char limit.
+	vLongTitle := a.reportPage(trOf("en"), "ovr:weekly:"+strings.Repeat("x", 2005))
+	if err := wire.CheckView(vLongTitle); err != nil {
+		t.Fatalf("reportPage with overlong period failed CheckView: %v", err)
+	}
 }

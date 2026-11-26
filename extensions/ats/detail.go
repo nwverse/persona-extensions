@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -64,7 +65,7 @@ func buildTaskView(q *Queue, id string, now time.Time, tz string) *wire.View {
 		{Label: "权限", Value: permissionWords(t.PermissionProfile)},
 	}
 	if t.Workspace.Repo != "" {
-		facts = append(facts, wire.Fact{Label: "仓库", Value: t.Workspace.Repo + " @ " + cmpOr(t.Workspace.BaseSHA, "HEAD")})
+		facts = append(facts, wire.Fact{Label: "仓库", Value: truncateRunes(t.Workspace.Repo+" @ "+cmpOr(t.Workspace.BaseSHA, "HEAD"), detailTextMost)})
 	}
 	machine := t.Machine
 	if t.Exec != nil && t.Exec.MachineID != "" {
@@ -73,7 +74,7 @@ func buildTaskView(q *Queue, id string, now time.Time, tz string) *wire.View {
 		machine = t.Attempts[n-1].Machine
 	}
 	if machine != "" {
-		facts = append(facts, wire.Fact{Label: "电脑", Value: machineName(machine)})
+		facts = append(facts, wire.Fact{Label: "电脑", Value: truncateRunes(machineName(machine), detailTextMost)})
 	}
 	// A header holds eight facts at most, so the two times share one.
 	switch {
@@ -88,7 +89,7 @@ func buildTaskView(q *Queue, id string, now time.Time, tz string) *wire.View {
 		facts = append(facts, wire.Fact{Label: "待办", Value: todo})
 	}
 	facts = append(facts, wire.Fact{Label: "任务", Value: t.ID})
-	head := []wire.Component{{Type: wire.ComponentHeader, Key: "task", Title: t.Title, Badges: taskBadges(t), Facts: facts}}
+	head := []wire.Component{{Type: wire.ComponentHeader, Key: "task", Title: cmpOr(truncateRunes(t.Title, detailTextMost), t.ID), Badges: taskBadges(t), Facts: facts}}
 	switch {
 	case !t.IsTerminal():
 		a := cancelAction(t)
@@ -138,20 +139,27 @@ func buildTaskView(q *Queue, id string, now time.Time, tz string) *wire.View {
 		if !t.IsTerminal() {
 			title = "上一次尝试"
 		}
-		text := attemptCount(rep.AttemptNo) + "：" + outcomeWords(rep.Outcome, rep.Verdict, rep.ErrorClass)
-		if rep.ExitCode == nil && rep.Outcome != StateSucceeded {
-			if msg := strings.TrimSpace(rep.Message); msg != "" {
-				text += "\n" + truncateRunes(msg, detailTextMost)
-			}
-		}
+		head := attemptCount(rep.AttemptNo) + "：" + outcomeWords(rep.Outcome, rep.Verdict, rep.ErrorClass)
+		suffix := ""
 		if t.IsTerminal() {
 			switch {
 			case t.DecisionWrittenRef != "":
-				text += "\n结论已写回待办。"
+				suffix = "\n结论已写回待办。"
 			case t.DecisionSkipReason != "":
-				text += "\n结论没有写回待办（待办已不在，或没有权限）。"
+				suffix = "\n结论没有写回待办（待办已不在，或没有权限）。"
 			}
 		}
+		text := head
+		if rep.ExitCode == nil && rep.Outcome != StateSucceeded {
+			if msg := strings.TrimSpace(rep.Message); msg != "" {
+				budget := detailTextMost - utf8.RuneCountInString(head) - utf8.RuneCountInString(suffix) - 1
+				if budget > 0 {
+					text += "\n" + truncateRunes(msg, budget)
+				}
+			}
+		}
+		text += suffix
+		text = truncateRunes(text, detailTextMost)
 		view.Sections = append(view.Sections, wire.Section{Title: title, Items: []wire.Component{
 			{Type: wire.ComponentText, Key: "result", Text: text},
 		}})
@@ -205,8 +213,12 @@ func buildTaskView(q *Queue, id string, now time.Time, tz string) *wire.View {
 	}
 
 	if len(t.Attempts) > 0 {
-		rows := make([][]string, 0, len(t.Attempts))
-		for _, a := range t.Attempts {
+		attempts := t.Attempts
+		if len(attempts) > 100 {
+			attempts = attempts[len(attempts)-100:]
+		}
+		rows := make([][]string, 0, len(attempts))
+		for _, a := range attempts {
 			at := ""
 			switch {
 			case a.FinishedAt != nil:

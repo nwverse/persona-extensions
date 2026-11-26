@@ -344,6 +344,17 @@ func (h *HTTP) Items(ctx context.Context, machine, session string, q ItemsQuery)
 		v.Set("limit", strconv.Itoa(q.Limit))
 	}
 	path := "/api/v1/sessions/" + url.PathEscape(machine) + "/" + url.PathEscape(session) + "/items"
+	out, err := h.items(ctx, path, v, q)
+	if q.Fold && q.Through == 0 {
+		// A hub that answers from its conversation history folds only a page asked for without after_seq: what comes
+		// back for every later page (and the first, which names after_seq=0) is the work unfolded. Fold it here as
+		// the hub would, so the daily pages stay folded and a dig finds the stretch it reads (S4, 0.2.0-beta.52).
+		out = FoldWork(out, true)
+	}
+	return out, err
+}
+
+func (h *HTTP) items(ctx context.Context, path string, v url.Values, q ItemsQuery) ([]Item, error) {
 	var out []Item
 	for page := 0; page < 200; page++ {
 		var r struct {

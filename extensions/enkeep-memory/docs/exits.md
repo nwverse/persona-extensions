@@ -46,6 +46,49 @@ judgement goes in when it states its fork, the choice and what was not chosen or
   [Who said it](#who-said-it).
 - **K6** now names only the agent project context (it also named the ways-of-working skills).
 
+## memory.entries: the standing set and recall (0.2.0-beta.52)
+
+The hub reads the entries with `memory.entries`. It puts the entries marked standing in every main-space turn, but
+gives the extension's personal entries at most 1536 bytes, after its own decisions ledger, taking the highest rank
+first and skipping what does not fit. Until beta.49 thousands of entries were marked standing and ranked by a coarse
+score with ties broken by the newest sighting, so what landed in the turn was the shortest recent fragments.
+
+Since beta.52 the extension picks the standing set itself, by leverage, to fit:
+
+- **Leverage score** (`entry.Score`, 0–100): how far an entry reaches (one task, a kind of task, a project, across
+  projects, every turn) and how long it holds (days to lasting), as the daily prompt (daily/17) labels them, plus
+  how often and in how many kinds of source and scopes it was seen, and what the user said of it (asked for it to
+  last, corrected the assistant, edited or confirmed it). Entries read before daily/17 are estimated from their scope,
+  grain and durability. Candidates count 0.8, dormant ones 0.5; pinned entries 100.
+- **Two sides, two shares.** The understanding of the user (③ ④ ⑥, and ⑤'s decisions, evaluations and commitments)
+  takes 60% of 1400 bytes, the assistant's rules (① ②) 40%, so rules never crowd out the understanding; what one side
+  leaves goes to the other. At most 12 lines. Two lines alike in words (character-bigram Jaccard ≥ 0.45) are one: the
+  higher score stays. Ranks interleave the sides from 989 down, so a smaller room shrinks both.
+- **The line.** An understanding with a principle stands as `原则：<principle>（如 <situation>：<choice>）`; a rule as
+  what the assistant does. At most 240 bytes.
+- **Everything else is recalled on demand,** never standing, ranked by score (×9, at most 891; a weak relation last),
+  and carries one line of the user's own words behind it (`原话：「…」（day）`, at most 80 characters) so a recall
+  brings the source, not only the summary. Entries tagged with a category or said in a space never stand.
+- **Entities (beta.53).** The relation skeleton (assigned, depends_on, member_of, collaborates_with, owns, role,
+  reports_to) is recalled by its score like any entry and feeds the overview, but never stands; only `about`,
+  `same_circle` and passing edges (waiting_on, blocked_by, allocated, serves) unseen for 14 days are weak and ranked
+  last. A rule hangs on the person or project it is for: its scopes, object and impact object are its subjects, so
+  naming them brings it in.
+- **Patterns and the profile.** Overview patterns compete for the same set with their own score (lifecycle, scenes,
+  sources, weeks; at most 70, on the entries' scale), and are offered a quarter of the room first (beta.53), each
+  side within its quota; the room one side leaves takes no line scoring under 50; `ov:cat:` patterns and the profile summaries (`profile:*`) are recalled, not standing.
+
+- **Not templates, corrections first.** An entry resting only on template lines (a sentence the user is said to have
+  typed into three or more agent sessions word for word) never stands, nor a pattern resting mostly on such entries.
+  A correction scores more each day the user had to repeat it; a hard rule (two days within a week, or a ban or anger
+  in the user's words) stands at once and scores at least 90. Alike scores go by days of evidence, then the latest.
+- **The room** is the `resident_bytes` setting (1400 by default), one more line per 120 bytes beyond it.
+- **Fast path.** Every `fast_minutes`, today's assistant conversations with a new correction are read at once and
+  the set is chosen again, without waiting for the night.
+
+The curated entries are an index that can be rebuilt from the kept sources: nothing above changes `state.json`'s
+existing fields, and a rerun reads the days again.
+
 ## Contract with the hub: project blocks (exit D)
 
 - **Manifest:** `contributes.prompts` item `{"id": "projects", "kind": "project_context", "dir": "agent/projects"}`.

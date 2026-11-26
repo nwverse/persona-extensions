@@ -14,15 +14,17 @@ import (
 )
 
 type fakeModel struct {
-	calls int
-	resp  string
-	err   error
-	seen  string
+	calls  int
+	resp   string
+	err    error
+	seen   string
+	maxTok int
 }
 
 func (f *fakeModel) Complete(_ context.Context, r model.Request) (model.Response, error) {
 	f.calls++
 	f.seen = r.User
+	f.maxTok = r.MaxTokens
 	if f.err != nil {
 		return model.Response{}, f.err
 	}
@@ -279,5 +281,17 @@ func TestRecentOnlyOwn(t *testing.T) {
 	out, err := Refresh(context.Background(), st, t.TempDir(), Options{Model: fm, Lang: "zh-Hans", Now: func() time.Time { return now }})
 	if err != nil || len(out.Recent) != 1 || out.Recent[0] != "在写 project-y 的迁移方案" {
 		t.Fatalf("%v %+v", err, out.Recent)
+	}
+}
+
+// The synthesis has room for six coherent facets, the overview and the recent highlights in Chinese: a live reply ran
+// to 3,200 tokens and was cut off at the old bound of 1,600.
+func TestSynthReplyBound(t *testing.T) {
+	fm := &fakeModel{resp: `{"overview":"o","sections":{},"recent":[]}`}
+	if _, err := Refresh(context.Background(), sampleState(), t.TempDir(), Options{Model: fm, Lang: "zh-Hans"}); err != nil {
+		t.Fatal(err)
+	}
+	if fm.maxTok < 3500 {
+		t.Fatalf("max tokens %d", fm.maxTok)
 	}
 }

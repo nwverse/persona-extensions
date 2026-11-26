@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { barcode, parseProduct, parseSearch, productPath, queryText, ReadError, searchPath } from "../src/model.ts";
+import { barcode, clip, parseProduct, parseSearch, productPath, queryText, ReadError, searchPath } from "../src/model.ts";
 import { productResponse, searchResponse } from "./fixtures.ts";
 import { encodeState, readState, transition } from "../src/page.tsx";
 
@@ -19,11 +19,12 @@ test("untrusted product URLs, wrong barcodes and malformed metadata are rejected
   const original = searchResponse.products[0];
   for (const raw of [
     { ...original, url: "https://attacker.invalid/product/3017620422003" },
+    { ...original, url: "https://world.openfoodfacts.org/product/3017620422003999" },
     { ...original, code: "123" }, { ...original, nutriscore_grade: "z" }, { ...original, nova_group: 5 },
     { ...original, product_name: 42 },
-  ]) assert.throws(() => parseSearch({ count: 1, products: [raw] }, 0), ReadError);
-  assert.throws(() => parseProduct(productResponse, "8052575090230", 0), ReadError);
-  assert.throws(() => parseProduct({ status: 0, status_verbose: "product not found" }, "3017620422003", 0), ReadError);
+  ]) assert.throws(() => parseSearch({ count: 1, products: [raw] }, 0), (error: unknown) => error instanceof ReadError && error.code === "bad_answer");
+  assert.throws(() => parseProduct(productResponse, "8052575090230", 0), (error: unknown) => error instanceof ReadError && error.code === "bad_answer");
+  assert.throws(() => parseProduct({ status: 0, status_verbose: "product not found" }, "3017620422003", 0), (error: unknown) => error instanceof ReadError && error.code === "not_found");
   const duplicate = parseSearch({ count: 2, products: [original, original] }, 0);
   assert.equal(duplicate.products.length, 1);
 });
@@ -63,4 +64,15 @@ test("state and legacy callback values preserve validated product searches", () 
   assert.equal(readState(encodeState(found)).q, "chocolate");
   for (const values of ["chocolate", "not-json", "null", "[]", 1, { query: ["chocolate"] }, { query: "bad\n" }]) assert.equal(transition(initial, "search", values).found, false);
   assert.equal(transition(found, "home").found, false);
+});
+
+test("clip stays within the code-point bound and preserves surrogate pairs", () => {
+  assert.equal(clip("abcdef", 5), "abcd…");
+  assert.equal(Array.from(clip("a".repeat(2500), 2000)).length, 2000);
+  const clippedEmoji = clip("🍫".repeat(10), 5);
+  assert.equal(Array.from(clippedEmoji).length, 5);
+  assert.equal(clippedEmoji, "🍫🍫🍫🍫…");
+  assert.equal(clip("🍫", 1), "🍫");
+  assert.equal(clip("hello", 0), "");
+  assert.equal(clip("hello", Number.NaN), "");
 });

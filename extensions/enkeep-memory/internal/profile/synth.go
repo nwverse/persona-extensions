@@ -10,6 +10,10 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
 )
 
+// synthMaxTokens bounds the reply: six facets of two or three sentences, the overview and the recent highlights in
+// Chinese came to 2,500–3,200 tokens on a live history, and a reply cut off falls back to the strung-together summary.
+const synthMaxTokens = 4000
+
 //go:embed synth.md
 var synthPrompt string
 
@@ -67,7 +71,7 @@ func synthesize(ctx context.Context, m model.Model, tier model.Tier, base *Summa
 		Tier:      tier,
 		System:    synthPrompt,
 		User:      string(rawIn),
-		MaxTokens: 1600,
+		MaxTokens: synthMaxTokens,
 		Schema:    synthSchema,
 	})
 	if err != nil {

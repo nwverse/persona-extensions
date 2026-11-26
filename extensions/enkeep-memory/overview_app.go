@@ -63,7 +63,7 @@ func (a *app) openOverview(dir string) {
 
 // overviewRefresh is L3 on a published snapshot.
 func (a *app) overviewRefresh(st *store.State) {
-	if a.ov == nil || st == nil {
+	if a.readOnly || a.ov == nil || st == nil {
 		return
 	}
 	err := a.ov.Update(func(s *overview.State) (bool, error) { return overview.Refresh(st, s, time.Now()), nil })

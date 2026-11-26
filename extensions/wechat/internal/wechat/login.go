@@ -164,16 +164,22 @@ func (b *Bot) forgetQR(p *pendingQR) {
 // starts fresh.
 func (b *Bot) bound(ctx context.Context, creds ilink.Credentials) wire.ConnectorPrompt {
 	b.mu.Lock()
+	accountChanged := false
 	if old := b.st.Creds; old != nil {
 		b.st.Old = rememberToken(b.st.Old, old.Token)
 		if old.BotID != creds.BotID || old.UserID != creds.UserID {
 			b.st.Cursor, b.st.Context = "", ""
+			b.forgetSendsLocked()
+			accountChanged = true
 		}
 	}
 	b.st.Creds = &creds
 	b.saveLocked(ctx)
 	b.status = wire.ConnectorStatus{State: wire.ConnectorStateOk, Account: account(b.lang(), &creds), Via: t(b.lang(), "wechat.via"), LastEvent: b.status.LastEvent}
 	b.mu.Unlock()
+	if accountChanged && b.quotes != nil {
+		b.quotes.reset()
+	}
 	b.kick()
 	return wire.ConnectorPrompt{Done: true, Account: account(b.lang(), &creds)}
 }
