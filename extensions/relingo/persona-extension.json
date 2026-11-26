@@ -5,7 +5,7 @@
   "version": "0.2.0",
   "replaces": "termwise",
   "icon": "assets/icon.png",
-  "description": "阅读页的两种模式：翻译模式保留原文并附上译文；生词模式像划词记忆一样给词加下划线，点开可看释义并记下。记下的词写在扩展自己的数据目录里。",
+  "description": "帮你读英文：扩展里多一页「英文阅读」，有两种看法。「翻译模式」在每段原文下面附上中文；「生词模式」把较难的词挑出来，点一下看意思，有用就记下来。Persona 版本支持的话，在 App 里点英文单词也能直接查意思、记下或删掉。记下的词保存在你的 Persona 里，不用装别的程序，也不用打开终端。以前装过 termwise 的，升级后记下的词和设置都还在。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/docs/extensions/relingo.md",
   "tags": ["阅读", "翻译", "生词", "英语"],
@@ -20,7 +20,7 @@
   },
   "contributes": {
     "ui": [
-      {"id": "read", "title": "阅读", "placement": "plugin_page"}
+      {"id": "read", "title": "英文阅读", "placement": "plugin_page"}
     ],
     "text_lookup": [
       {"id": "relingo", "name": "Relingo", "languages": ["en"]}
@@ -33,7 +33,7 @@
         "type": "boolean",
         "default": false,
         "title": "在 App 里给记下的词加下划线",
-        "description": "打开后，App 里显示的英文中，你记下的词会带一条下划线。默认关闭。"
+        "description": "一般不用改，默认关着。打开后，在 App 里看到的英文中，凡是你记下的词都会带一条下划线，方便复习；点一下就能看意思。"
       }
     }
   },

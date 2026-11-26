@@ -161,8 +161,9 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) *wire.Vi
 }
 
 func modeSection(r *ext.UIRequest, t *texts, mode string) wire.Section {
+	intro := wire.Component{Type: wire.ComponentText, Text: t.intro, Style: wire.TextStyleSecondary}
 	if r.UIVersion >= 2 {
-		return wire.Section{Items: []wire.Component{{
+		return wire.Section{Items: []wire.Component{intro, {
 			Type: wire.ComponentSegmented, Name: "mode", Value: mode,
 			Action: &wire.Action{ID: "mode"},
 			Choices: []wire.Choice{
@@ -171,7 +172,7 @@ func modeSection(r *ext.UIRequest, t *texts, mode string) wire.Section {
 			},
 		}}}
 	}
-	sec := wire.Section{}
+	sec := wire.Section{Items: []wire.Component{intro}}
 	for _, choice := range []struct{ id, title string }{
 		{modeTranslation, t.modeTranslation},
 		{modeVocabulary, t.modeVocabulary},

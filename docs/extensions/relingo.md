@@ -16,7 +16,7 @@ Relingo is a self-contained program: the dictionary, the candidate rules and the
 
 The command-line tool [s546126/termwise](https://github.com/s546126/termwise) (`tw`) is a separate project that Relingo borrowed its rules from; Relingo does not call it or need it. Recommendation: leave that repository named `termwise`; renaming it would move no Persona data.
 
-The page is the `read` contribution (`plugin_page`). The selected mode, the optional extra paragraph, remembered words and successful translations are stored in the extension data directory as `reading.json`.
+The page is the `read` contribution (`plugin_page`), titled 英文阅读 (English reading, 英文リーディング). It opens with one line that says what the page is for and what each mode does; a paragraph whose translation fails says to open the page again later, with the reason in brackets. Labels and the manifest text follow the repository's plain-Chinese wording; config keys, stored data and the `text_lookup` answers are unchanged by that wording. The selected mode, the optional extra paragraph, remembered words and successful translations are stored in the extension data directory as `reading.json`.
 
 ## Modes
 

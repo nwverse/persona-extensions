@@ -12,6 +12,8 @@ Publishing packages, changing package visibility and dispatching publication wor
 
 `text_lookup` (`relingo`, English) answers `state`, `lookup`, `save` and `remove` on the same saved-word list as the reading page. `underline_saved` defaults to false.
 
+The page is titled 英文阅读 and opens with a one-line explanation of the two modes; the description and the `underline_saved` text use plain wording, and a failed translation says to try again later.
+
 The name Relingo is also the name of an existing commercial English-vocabulary product. This extension is not that product. Maintainers should weigh the name before publication.
 
 Relingo needs no command line: the dictionary and rules are built into the program and it starts no other program. The separate CLI `s546126/termwise` is neither called nor required; it should stay named `termwise`, and this release does not rename any repository.
