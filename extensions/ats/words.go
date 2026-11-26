@@ -308,3 +308,16 @@ func actionErrorWords(err error) (words, detail string) {
 	}
 	return "出了点问题，没办成。刷新一下再试。", err.Error()
 }
+
+// setupMissingWords says which of the two setup steps is still left, for the Overview card.
+func setupMissingWords(haveMachines, haveRepos bool) string {
+	switch {
+	case !haveMachines && !haveRepos:
+		return "还没选干活的电脑，也还没告诉它能动哪些文件夹。"
+	case !haveMachines:
+		return "还没选干活的电脑。"
+	case !haveRepos:
+		return "还没告诉它能动哪些文件夹。"
+	}
+	return ""
+}

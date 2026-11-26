@@ -433,8 +433,13 @@ func TestManifestNameMatchesWhatThePagesSay(t *testing.T) {
 	if m.Name != extName {
 		t.Errorf("the pages send users to 设置 › 扩展 › %s, but the extension is called %q", extName, m.Name)
 	}
-	if len(m.Contributes.UI) != 1 || m.Contributes.UI[0].Title != extName {
-		t.Errorf("the page's title: %+v", m.Contributes.UI)
+	if len(m.Contributes.UI) != 2 {
+		t.Errorf("the ui contributions: %+v", m.Contributes.UI)
+	}
+	for _, u := range m.Contributes.UI {
+		if u.Title != extName {
+			t.Errorf("the title of %s: %q", u.ID, u.Title)
+		}
 	}
 	// Not every task has a check: neither the intro nor the description promises one.
 	var d struct{ Description string }

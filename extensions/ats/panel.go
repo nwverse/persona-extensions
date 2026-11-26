@@ -19,6 +19,9 @@ import (
 
 const queueUI = "queue"
 
+// cardUI is the card on the Overview page; a tap on it opens queueUI (persona-extension.json "opens").
+const cardUI = "queue-card"
+
 // ExtConfig is the extension's settings (configuration in persona-extension.json). Both programs read it: the
 // hub program all of it, the program on a computer the repository allowlist.
 type ExtConfig struct {
@@ -132,7 +135,7 @@ func (a *atsApp) program(id, version string) ext.Program {
 		Manifest: manifest,
 		Init:     a.init,
 		HTTP:     a.handler(),
-		UI:       map[string]ext.Page{queueUI: {Render: a.render, Action: a.action}},
+		UI:       map[string]ext.Page{queueUI: {Render: a.render, Action: a.action}, cardUI: {Render: a.render}},
 		Namespaces: map[string]ext.Handler{
 			"assistant": a.assistant,
 			"node":      a.nodeEvent,
@@ -195,6 +198,7 @@ func (a *atsApp) newDispatcher() *dispatcher {
 		a.mu.Unlock()
 		if hub != nil {
 			_ = hub.Invalidate(queueUI)
+			_ = hub.Invalidate(cardUI)
 		}
 	}
 	return d
@@ -256,12 +260,17 @@ func (a *atsApp) nodeEvent(ctx context.Context, method string, params json.RawMe
 }
 
 func (a *atsApp) render(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
-	if r.Contribution != "" && r.Contribution != queueUI {
+	switch r.Contribution {
+	case "", queueUI, cardUI:
+	default:
 		return nil, ext.NoContribution(r.Contribution)
 	}
 	q := a.q()
 	if q == nil {
 		return nil, errors.New(notReadyWords)
+	}
+	if r.Contribution == cardUI {
+		return buildCardView(q, a.config(), a.now(), r.TZ), nil
 	}
 	if id := pageTask(r); id != "" {
 		return buildTaskView(q, id, a.now(), r.TZ), nil
@@ -526,6 +535,73 @@ func statusLine(plan SchedulePlan, online int, now time.Time, loc *time.Location
 		return line + "。", wire.ToneCaution
 	}
 	return "正常接活：交给它的事会按先急后缓的顺序做。", wire.TonePositive
+}
+
+// buildCardView is the card on the Overview page: whether ATS is ready, a few counts, and the one thing to do
+// next. It says the same as the home page in fewer words, and a tap opens the home page.
+func buildCardView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.View {
+	loc := viewLocation(tz)
+	plan := q.PlanSchedule(now)
+	counts := plan.CountsByState
+	waiting, doing, queued, failed := counts[StateNeedsInput], counts[StateRunning]+counts[StateLeased], counts[StateQueued], counts[StateFailed]
+	view := &wire.View{Title: extName, RefreshAfter: 30}
+
+	if len(cfg.Machines) == 0 || len(cfg.Repos) == 0 {
+		items := []wire.Component{
+			{Type: wire.ComponentText, Key: "card-setup", Text: "ATS 还没准备好：" + setupMissingWords(len(cfg.Machines) > 0, len(cfg.Repos) > 0), Tone: wire.ToneCaution},
+			{Type: wire.ComponentText, Key: "card-next", Text: "下一步：到「" + settingsPath + "」里填好。"},
+		}
+		if live := waiting + doing + queued; live > 0 {
+			items = append(items, wire.Component{Type: wire.ComponentText, Key: "card-live", Style: wire.TextStyleSecondary,
+				Text: fmt.Sprintf("之前交给它的事还有 %d 件没结束，点开可以看，也可以取消。", live)})
+		}
+		view.Sections = []wire.Section{{Items: items}}
+		return view
+	}
+
+	count := func(label string, n int, tone string) wire.Stat {
+		if n == 0 {
+			tone = ""
+		}
+		return wire.Stat{Label: label, Value: fmt.Sprintf("%d 件", n), Tone: tone}
+	}
+	stats := []wire.Stat{count("等你处理", waiting, wire.ToneDanger), count("正在做", doing, ""), count("排着", queued, "")}
+	if failed > 0 {
+		stats = append(stats, count("没做成", failed, wire.ToneDanger))
+	}
+
+	online := 0
+	for _, m := range plan.Machines {
+		if m.Online {
+			online++
+		}
+	}
+	var next, tone string
+	switch {
+	case waiting > 0:
+		title := "一件事"
+		what := "它在等你回答问题或点同意"
+		if ts, _ := q.ListTasks(TaskFilter{States: []string{StateNeedsInput}, Limit: 1}); len(ts) > 0 {
+			title = "「" + cmpOr(firstLinePreview(ts[0].Title, 30), "没有标题的事") + "」"
+			if ts[0].Exec != nil {
+				what = waitingWords(ts[0].Exec.Waiting)
+			}
+		}
+		next = truncateRunes(title+"等你处理："+what, 120) + "\n打开这件事对应的待办，在里面 ATS 的对话里回答它的问题或点同意。"
+		tone = wire.ToneDanger
+	case online == 0, hasQuotaAccount(plan.Quota) && (plan.AdmissionMode == AdmissionPausedQuota || plan.AdmissionMode == AdmissionPriorityOnly):
+		// The home page's own line, with the time the quota comes back; no quota is spoken of that was not measured.
+		next, tone = statusLine(plan, online, now, loc)
+	case doing+queued > 0:
+		next, tone = "没有要你处理的事，它在接着做。", wire.TonePositive
+	default:
+		next, tone = "没有要你处理的事。想交给它做事：在任意一个待办里跟助手说「把这个交给 ATS 做」。", wire.TonePositive
+	}
+	view.Sections = []wire.Section{{Items: []wire.Component{
+		{Type: wire.ComponentStatGrid, Key: "card-counts", Stats: stats},
+		{Type: wire.ComponentText, Key: "card-next", Text: next, Tone: tone},
+	}}}
+	return view
 }
 
 // hasQuotaAccount says whether the quota was measured on a real account. Without accounts the queue holds a
