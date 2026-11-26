@@ -22,6 +22,9 @@ const (
 	weeksShown   = 12
 	weightDays   = 90
 	renderBudget = 8 * time.Second
+	// cardTitle is the card's header on the overview and its name among the contribution switches; it differs from
+	// the page's 健身 so the two do not read as one listed twice (TestManifestMatchesTheCode).
+	cardTitle = "健身 · 概况"
 )
 
 type pageState struct {
@@ -390,12 +393,12 @@ func (a *app) renderCard(ctx context.Context, r *ext.UIRequest) (*wire.View, err
 	ctx, cancel := context.WithTimeout(ctx, renderBudget)
 	defer cancel()
 	err := a.sync(ctx, false)
-	v := &wire.View{Title: "健身", State: ext.EncodeState(pageState{}), RefreshAfter: 600}
+	v := &wire.View{Title: cardTitle, State: ext.EncodeState(pageState{}), RefreshAfter: 600}
 	h := a.health()
 	s := a.snapshot()
 	switch {
 	case h.Config != nil:
-		v.Sections = []wire.Section{{Items: []wire.Component{text("还没连上 openGym。到" + settingsPath + "填好服务器地址和访问密钥。")}}}
+		v.Sections = []wire.Section{{Items: []wire.Component{text(setupNeeded(h))}}}
 		return v, nil
 	case s == nil:
 		msg := "还没有读到数据"

@@ -43,11 +43,11 @@ func TestSetupPageSaysWhatToFillInAndWhere(t *testing.T) {
 	for _, c := range []struct {
 		name, server, token string
 		badges              []string
-		extra               string
+		extra, card         string
 	}{
-		{"nothing", "", "", []string{"还没填", "还没填"}, ""},
-		{"no key", "https://gym.example.com", "", []string{"已填", "还没填"}, ""},
-		{"public http", "http://gym.example.com", fakeToken, []string{"用不了", "已填"}, "填的服务器地址用不了"},
+		{"nothing", "", "", []string{"还没填", "还没填"}, "", "填好「openGym 服务器地址」和「访问密钥（API 令牌）」"},
+		{"no key", "https://gym.example.com", "", []string{"已填", "还没填"}, "", "填好「访问密钥（API 令牌）」"},
+		{"public http", "http://gym.example.com", fakeToken, []string{"用不了", "已填"}, "填的服务器地址用不了", "改好「openGym 服务器地址」"},
 	} {
 		a := newApp(t.Logf)
 		a.configure(config{ServerURL: c.server}, c.token)
@@ -74,7 +74,7 @@ func TestSetupPageSaysWhatToFillInAndWhere(t *testing.T) {
 			t.Errorf("%s: jargon on the page: %s", c.name, raw)
 		}
 		card, _ := a.renderCard(ctx, uiRequest(cardUI, 6, "", "", nil))
-		if raw := checkView(t, card, true); !strings.Contains(raw, settingsPath) || !strings.Contains(raw, "访问密钥") {
+		if raw := checkView(t, card, true); !strings.Contains(raw, settingsPath) || !strings.Contains(raw, c.card) {
 			t.Errorf("%s: card %s", c.name, raw)
 		}
 	}
