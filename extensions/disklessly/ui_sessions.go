@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -180,10 +181,13 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	status.Items = append(status.Items, d.statComponents("", []wire.Stat{
 		{Label: "记下的对话", Value: fmt.Sprintf("%d 个", indexed), Detail: indexDetail},
 		{Label: LocCloud, Value: fmt.Sprintf("%d 个", counts[LocCloud]), Tone: toneIf(counts[LocCloud] > 0, wire.TonePositive)},
-		{Label: "不确定 / 找不到", Value: fmt.Sprintf("%d / %d", counts[LocUnknown], counts[LocMissing]),
-			Tone: cmp.Or(toneIf(counts[LocMissing] > 0, wire.ToneDanger), toneIf(counts[LocUnknown] > 0, wire.ToneCaution))},
+		uncheckedStat(counts[LocUnknown]),
+		missingStat(counts[LocMissing]),
 		machineStat,
 	})...)
+	if note := d.whereaboutsNote(m, counts[LocUnknown], counts[LocMissing]); note != "" {
+		status.Items = append(status.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: clip(note, 600)})
+	}
 	if len(running) > 0 {
 		status.Items = append(status.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
 			Text: clip("正在进行："+strings.Join(running, "、")+"。完成后页面会自动更新，可以先离开这页。", 300)})
@@ -289,6 +293,63 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 		return []wire.Section{status, results}
 	}
 	return []wire.Section{status, machineSec, results}
+}
+
+// recheckButton is the title of the button on this page that checks again where conversations
+// are: 重新检查所有电脑 under 全部电脑, else the shown computer's own button, or "" while its row
+// draws none (a job runs there, or trying again cannot help).
+func (d draw) recheckButton(m *Machine) string {
+	if m == nil {
+		return coldRefreshText
+	}
+	if j, ok := d.jobs[m.ID]; ok && j.running() {
+		return ""
+	}
+	cat := d.st.cold(m.ID)
+	if adv := coldProblem(d.st, m, cat, cat.stateCode()); adv.retry != "" {
+		return adv.retry + " " + machineLabel(m)
+	}
+	return ""
+}
+
+// uncheckedStat counts the conversations whose place is LocUnknown (see ColdCatalog.location):
+// not confirmed in the network drive by a check of the last 24 hours that reached both the
+// computer and its network drive and got to their data package. Not a loss.
+func uncheckedStat(n int) wire.Stat {
+	s := wire.Stat{Label: "还没核对过", Value: fmt.Sprintf("%d 个", n), Detail: "搬走的都核对过了"}
+	if n > 0 {
+		s.Detail = "不是丢了，说明在下面"
+	}
+	return s
+}
+
+// missingStat counts the conversations whose place is LocMissing: recorded as moved, but the
+// check found the data package holding them missing from the network drive.
+func missingStat(n int) wire.Stat {
+	s := wire.Stat{Label: LocMissing, Value: fmt.Sprintf("%d 个", n), Detail: "没有发现少了的"}
+	if n > 0 {
+		s.Tone, s.Detail = wire.ToneDanger, "现在拿不回来，说明在下面"
+	}
+	return s
+}
+
+// whereaboutsNote explains the 还没核对过 and 网盘里找不到 counts when either is not zero: what
+// each means, whether to worry, and what lowers it (naming only a button the page draws).
+func (d draw) whereaboutsNote(m *Machine, unknown, missing int) string {
+	var parts []string
+	if unknown > 0 {
+		t := fmt.Sprintf("「还没核对过」的 %d 个（列表里标着「%s」）不是丢了：只是最近 24 小时里没能核对它们在不在网盘里，比如电脑或网盘没连上、还没检查，或者上次检查没来得及核对完。", unknown, LocUnknown)
+		if b := d.recheckButton(m); b != "" {
+			t += "电脑和网盘都连得上时点「" + b + "」，核对过的就不算在这里了。"
+		} else {
+			t += "电脑和网盘都连得上时再检查一次，核对过的就不算在这里了。"
+		}
+		parts = append(parts, t)
+	}
+	if missing > 0 {
+		parts = append(parts, fmt.Sprintf("「%s」的 %d 个要留意：记着已经搬到网盘，但检查时网盘里没找到存它们的数据包，现在拿不回来。先别再删网盘里的东西；看看这台电脑是不是换了网盘或网盘目录（每台电脑那一行写着用的哪个网盘），换回原来的再检查一次。", LocMissing, missing))
+	}
+	return strings.Join(parts, "")
 }
 
 // offloadHint says where the upload button is (under each ready computer's row), or why no
@@ -746,29 +807,129 @@ func catPlatform(c *ColdCatalog) string {
 	return c.Platform
 }
 
-func (d draw) coldRow(h ColdHit) wire.Component {
-	sub := []string{h.MachineName, cmp.Or(toolLabel(h.Tool), "Agent")}
-	if p := cmp.Or(h.Project, lastPathElem(h.Cwd)); p != "" {
-		sub = append(sub, p)
+// noProjectText is what a conversation's row says when the index knows no project for it.
+const noProjectText = "没归到项目"
+
+// untitledText starts the title of a conversation that has neither a title nor a first message.
+const untitledText = "没有标题的对话"
+
+// promptTitleRunes is how much of the first message a title made from it keeps.
+const promptTitleRunes = 50
+
+var idLikeRE = regexp.MustCompile(`^(?i:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{12,})$`)
+
+// realTitle is e's title when it is one a person wrote or the agent made up: not empty, and
+// not an id (the CLI's entry id, the session id or a UUID like one) standing in for a title.
+func realTitle(e ColdEntry) string {
+	t := strings.TrimSpace(e.Title)
+	if t == "" || t == e.ID || t == e.SessionID || idLikeRE.MatchString(t) || strings.HasPrefix(t, "_") {
+		return ""
 	}
+	return t
+}
+
+// promptTitle cuts a first message to a title: up to its first sentence end when that comes
+// early enough, and at most promptTitleRunes runes. The index keeps the message on one line.
+func promptTitle(p string) string {
+	p = oneLine(p)
+	if p == "" || idLikeRE.MatchString(p) {
+		return ""
+	}
+	r := []rune(p)
+	for i, c := range r {
+		if i >= promptTitleRunes {
+			break
+		}
+		if i >= 8 && strings.ContainsRune("。！？!?", c) {
+			return string(r[:i+1])
+		}
+	}
+	return clipRunes(p, promptTitleRunes)
+}
+
+// coldProject is the project a conversation belongs to as the index knows it (its project, or
+// the last folder of its working folder), or "" when it does not know: the CLI writes
+// "_unknown" (and the like) for a conversation it could not place.
+func coldProject(e ColdEntry) string {
+	if p := strings.TrimSpace(e.Project); p != "" && !strings.HasPrefix(p, "_") {
+		return p
+	}
+	return strings.TrimSpace(lastPathElem(e.Cwd))
+}
+
+// coldTool is the AI assistant a conversation was held with, by its tool or its file's place.
+func coldTool(e ColdEntry) string { return toolLabel(cmp.Or(e.Tool, toolFromPath(e.Path))) }
+
+// shortDate words t as 11月8日 (with the year when it is not now's year).
+func (d draw) shortDate(t time.Time) string {
+	t = t.In(d.loc)
+	if t.Year() != d.now.In(d.loc).Year() {
+		return fmt.Sprintf("%d年%d月%d日", t.Year(), int(t.Month()), t.Day())
+	}
+	return fmt.Sprintf("%d月%d日", int(t.Month()), t.Day())
+}
+
+// coldTitle is the title a conversation's row shows, never an id: its real title, else the
+// start of its first message, else 没有标题的对话 with its date and AI assistant. fromPrompt
+// reports a title cut from the first message.
+func (d draw) coldTitle(e ColdEntry) (title string, fromPrompt bool) {
+	if t := realTitle(e); t != "" {
+		return t, false
+	}
+	if t := promptTitle(e.FirstPrompt); t != "" {
+		return t, true
+	}
+	parts := []string{untitledText}
+	if t := entryTime(e); !t.IsZero() {
+		parts = append(parts, d.shortDate(t))
+	}
+	if tool := coldTool(e); tool != "" {
+		parts = append(parts, tool)
+	}
+	return strings.Join(parts, " · "), false
+}
+
+// coldID is the id a conversation is restored and resumed by, shown as a secondary detail.
+func coldID(e ColdEntry) string { return strings.TrimSpace(cmp.Or(e.SessionID, e.ID)) }
+
+func (d draw) coldRow(h ColdHit) wire.Component {
+	sub := []string{h.MachineName, cmp.Or(coldTool(h.ColdEntry), "AI 助手"), cmp.Or(coldProject(h.ColdEntry), noProjectText)}
 	if t := entryTime(h.ColdEntry); !t.IsZero() {
 		sub = append(sub, t.In(d.loc).Format(time.DateOnly))
 	}
 	if !h.Local {
 		sub = append(sub, "来自另一台电脑")
 	}
+	title, fromPrompt := d.coldTitle(h.ColdEntry)
+	// The detail: what a deep search found, or the first message unless the title already is
+	// all of it; then the id (search finds it, and restore commands need it).
+	text := strings.TrimSpace(h.Preview)
+	if prompt := oneLine(h.FirstPrompt); text == "" && prompt != "" && (!fromPrompt || prompt != title) {
+		text = prompt
+	}
+	detail := ""
+	if id := coldID(h.ColdEntry); id != "" {
+		detail = "对话编号 " + id
+	}
+	if text != "" {
+		if detail == "" {
+			detail = clip(text, 240)
+		} else {
+			detail = clip(text, 240-utf8.RuneCountInString(detail)-3) + " · " + detail
+		}
+	}
 	row := wire.Component{
 		Type:     wire.ComponentRow,
 		Key:      boundedKey("cold-", h.MachineID+"-"+h.ID),
 		Icon:     "chat",
-		Title:    clip(cmp.Or(strings.TrimSpace(h.Title), strings.TrimSpace(h.FirstPrompt), strings.TrimSpace(h.SessionID), strings.TrimSpace(h.ID), "没有标题的对话"), 120),
+		Title:    clip(title, 120),
 		Subtitle: clip(strings.Join(sub, " · "), 400),
-		Detail:   clip(cmp.Or(h.Preview, h.FirstPrompt), 240),
+		Detail:   clip(detail, 240),
 		Badge:    &wire.Badge{Text: h.Location, Tone: locationTone(h.Location)},
 	}
 	// Another device's row is not restored here: its original path belongs to that device.
 	if h.Location != LocLocal && h.Local {
-		confirm := fmt.Sprintf("把这个对话从网盘拿回来，放回原来的位置 %s？", cmp.Or(h.Path, "（原来的位置）"))
+		confirm := fmt.Sprintf("把「%s」从网盘拿回来，放回原来的位置 %s？", clip(title, 60), cmp.Or(h.Path, "（原来的位置）"))
 		if hint := resumeHint(h.ColdEntry); hint != "" {
 			confirm += "拿回来后可以运行 " + hint + " 接着聊。"
 		}
