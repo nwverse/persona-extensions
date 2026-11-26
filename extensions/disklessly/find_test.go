@@ -151,6 +151,11 @@ func TestFindEmptyResultGuidance(t *testing.T) {
 	if len(ans.TooNarrow) != 0 || !strings.Contains(ans.Suggest, "每个条件单独去掉也找不到") {
 		t.Fatalf("nothing anywhere: %+v", ans)
 	}
+	// Two hints that only together leave nothing.
+	ans = mustFind(t, st, findInput{Keywords: []string{"checkout"}, Tool: "codex", Before: "2026-10-01"})
+	if len(ans.TooNarrow) == 0 || !strings.Contains(ans.TooNarrow[0], "合起来太窄：都去掉能找到 1 个") || ans.Candidates == nil {
+		t.Fatalf("together too narrow: %+v", ans)
+	}
 	empty := &State{}
 	empty.ensureDefaults(t0)
 	if ans, err := findSessions(empty, findInput{Keywords: []string{"x"}}, t0, time.UTC); err != nil || !strings.Contains(ans.Suggest, "disklessly_sessions_status") {

@@ -281,7 +281,9 @@ func findSessions(st *State, in findInput, now time.Time, loc *time.Location) (*
 		return cmp.Or(-cmp.Compare(a.Score, b.Score), b.t.Compare(a.t), cmp.Compare(a.MachineID, b.MachineID), cmp.Compare(a.ID, b.ID))
 	})
 	ans.Count = len(found)
-	ans.Candidates = found[:min(len(found), q.limit)]
+	if len(found) > 0 {
+		ans.Candidates = found[:min(len(found), q.limit)]
+	}
 	if len(found) > 0 {
 		if len(found) > q.limit {
 			ans.Suggest = fmt.Sprintf("一共 %d 个符合，只列出最像的 %d 个；可以再加一个关键词或缩小时间。", len(found), q.limit)
@@ -303,6 +305,22 @@ func findSessions(st *State, in findInput, now time.Time, loc *time.Location) (*
 		}
 		if n > 0 {
 			ans.TooNarrow = append(ans.TooNarrow, fmt.Sprintf("「%s」：去掉这一条能找到 %d 个", f.name, n))
+		}
+	}
+	if len(ans.TooNarrow) == 0 && len(filters) > 1 {
+		// No single hint is to blame: say what the keywords alone would find.
+		n := 0
+		for _, h := range hits {
+			if keywordsOK(h.ColdEntry) {
+				n++
+			}
+		}
+		if n > 0 {
+			names := make([]string, len(filters))
+			for i, f := range filters {
+				names[i] = f.name
+			}
+			ans.TooNarrow = append(ans.TooNarrow, fmt.Sprintf("「%s」这几条合起来太窄：都去掉能找到 %d 个", strings.Join(names, "」「"), n))
 		}
 	}
 	if len(q.words) > 0 {
