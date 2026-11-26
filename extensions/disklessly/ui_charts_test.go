@@ -230,7 +230,7 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 	if fleetView.Fallback == "" || utf8.RuneCountInString(fleetView.Fallback) > 2000 {
 		t.Fatalf("unexpected fallback length %d: %q", utf8.RuneCountInString(fleetView.Fallback), fleetView.Fallback)
 	}
-	for _, word := range []string{"橙色预警", "红色告警", "正常", "local", "armbox", "mac-mini"} {
+	for _, word := range []string{"偏满", "快满了", "宽裕", localMachineName, "armbox", "mac-mini"} {
 		if !strings.Contains(fleetView.Fallback, word) {
 			t.Fatalf("fallback missing %q:\n%s", word, fleetView.Fallback)
 		}
@@ -246,14 +246,14 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 		coldName   string
 	}{
 		// local: 85% used -> warning (caution orange), has safe + review + cold-session CLI offload (3 series)
-		{id: "local", tone: wire.ToneCaution, levelWord: "橙色预警", wantDetail: "85.0% · 橙色预警", wantLabel: "已用 170.0 / 200.0 GiB", wantSer: 3, coldName: "冷会话上云"},
+		{id: "local", tone: wire.ToneCaution, levelWord: "偏满", wantDetail: "85.0% · 偏满", wantLabel: "已用 170.0 / 200.0 GiB", wantSer: 3, coldName: "搬到网盘"},
 		// armbox: 92% used -> critical (danger red), has safe + pending cold sessions without CLI (2 series)
-		{id: "armbox", tone: wire.ToneDanger, levelWord: "红色告警", wantDetail: "92.0% · 红色告警", wantLabel: "已用 92.0 / 100.0 GiB", wantSer: 2, coldName: "冷会话(需CLI)"},
+		{id: "armbox", tone: wire.ToneDanger, levelWord: "快满了", wantDetail: "92.0% · 快满了", wantLabel: "已用 92.0 / 100.0 GiB", wantSer: 2, coldName: "搬到网盘（缺小工具）"},
 		// mac-mini: 48% used -> ok (positive green), has safe + review + cold-session CLI offload (3 series)
-		{id: "mac-mini", tone: wire.TonePositive, levelWord: "正常", wantDetail: "48.0% · 正常", wantLabel: "已用 240.0 / 500.0 GiB", wantSer: 3, coldName: "冷会话上云"},
+		{id: "mac-mini", tone: wire.TonePositive, levelWord: "宽裕", wantDetail: "48.0% · 宽裕", wantLabel: "已用 240.0 / 500.0 GiB", wantSer: 3, coldName: "搬到网盘"},
 	}
 
-	wantAxis := []string{"Go", "Node/Py", "容器", "Rust/XC", "日志", "冷会话"}
+	wantAxis := []string{"Go", "Node/Py", "容器", "Rust/XC", "日志", "旧对话"}
 
 	for _, wm := range wantMachines {
 		if findComponentByKey(fleetView, "fleet-stats-"+wm.id) == nil {
@@ -378,12 +378,12 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 		t.Fatalf("armbox plan impact series tones = [%s, %s, %s], want [danger, caution, neutral]",
 			impact.Series[0].Tone, impact.Series[1].Tone, impact.Series[2].Tone)
 	}
-	if !strings.Contains(impact.Series[0].Points[0].Display, "红色告警") || !strings.Contains(impact.Series[1].Points[1].Display, "橙色预警") {
+	if !strings.Contains(impact.Series[0].Points[0].Display, "快满了") || !strings.Contains(impact.Series[1].Points[1].Display, "偏满") {
 		t.Fatalf("armbox plan impact Point.Display must carry status words: before=%q after=%q",
 			impact.Series[0].Points[0].Display, impact.Series[1].Points[1].Display)
 	}
-	if !strings.Contains(impact.Detail, "红色告警") || !strings.Contains(impact.Detail, "橙色预警") || !strings.Contains(impact.Detail, "< 25 GiB") {
-		t.Fatalf("armbox plan impact Detail should explain why 79.7%% (<80%%) stays 橙色预警 (< 25 GiB free): %q", impact.Detail)
+	if !strings.Contains(impact.Detail, "快满了") || !strings.Contains(impact.Detail, "偏满") || !strings.Contains(impact.Detail, "不到 25 GiB") {
+		t.Fatalf("armbox plan impact Detail should explain why 79.7%% (<80%%) stays 偏满 (< 25 GiB free): %q", impact.Detail)
 	}
 	if tbl := findComponentByKey(planView, "plan-tbl-armbox"); tbl == nil || len(tbl.Columns) != 4 {
 		t.Fatalf("plan tab missing 4-column table: %+v", tbl)
@@ -415,7 +415,7 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 	if findComponentByKey(cardBefore, "card-stats") == nil || cardBeforeRoot == nil || findComponentByKey(cardBefore, "card-mach-armbox") == nil {
 		t.Fatalf("overview card before clean-safe should feature highest-severity machine armbox chart and card-mach-* rows: %+v", cardBefore)
 	}
-	if cardBeforeRoot.Series[0].Tone != wire.ToneDanger || !strings.Contains(cardBeforeRoot.Series[0].Name, "红色告警") {
+	if cardBeforeRoot.Series[0].Tone != wire.ToneDanger || !strings.Contains(cardBeforeRoot.Series[0].Name, "快满了") {
 		t.Fatalf("card-root-armbox should reflect critical danger state: %+v", cardBeforeRoot)
 	}
 
@@ -455,10 +455,10 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 	if findComponentByKey(cardAfter, "card-stats") == nil || cardAfterRoot == nil || findComponentByKey(cardAfter, "card-root-armbox") != nil {
 		t.Fatalf("overview card after armbox clean-safe should switch featured chart to warning machine local: %+v", cardAfter)
 	}
-	if cardAfterRoot.Series[0].Tone != wire.ToneCaution || !strings.Contains(cardAfterRoot.Series[0].Name, "橙色预警") {
+	if cardAfterRoot.Series[0].Tone != wire.ToneCaution || !strings.Contains(cardAfterRoot.Series[0].Name, "偏满") {
 		t.Fatalf("card-root-local should reflect warning caution state: %+v", cardAfterRoot)
 	}
-	if !strings.Contains(texts(cardAfter), "最近清理 armbox") {
+	if !strings.Contains(texts(cardAfter), "最近一次清理 armbox") {
 		t.Fatalf("overview card after clean-safe should include latest df cleanup ledger summary:\n%s", texts(cardAfter))
 	}
 
@@ -592,10 +592,10 @@ func TestMobileAxisLabelsFit360pxPhoneAndPrivacy(t *testing.T) {
 		wantTone  string
 		wantText  string
 	}{
-		{name: "below_80_ok", totalGiB: 200, usedPct: 79.5, wantLevel: HealthOK, wantTone: wire.TonePositive, wantText: "正常"},
-		{name: "exact_80_warning", totalGiB: 200, usedPct: 80.0, wantLevel: HealthWarning, wantTone: wire.ToneCaution, wantText: "橙色预警"},
-		{name: "89_5_warning", totalGiB: 200, usedPct: 89.5, wantLevel: HealthWarning, wantTone: wire.ToneCaution, wantText: "橙色预警"},
-		{name: "exact_90_critical", totalGiB: 200, usedPct: 90.0, wantLevel: HealthCritical, wantTone: wire.ToneDanger, wantText: "红色告警"},
+		{name: "below_80_ok", totalGiB: 200, usedPct: 79.5, wantLevel: HealthOK, wantTone: wire.TonePositive, wantText: "宽裕"},
+		{name: "exact_80_warning", totalGiB: 200, usedPct: 80.0, wantLevel: HealthWarning, wantTone: wire.ToneCaution, wantText: "偏满"},
+		{name: "89_5_warning", totalGiB: 200, usedPct: 89.5, wantLevel: HealthWarning, wantTone: wire.ToneCaution, wantText: "偏满"},
+		{name: "exact_90_critical", totalGiB: 200, usedPct: 90.0, wantLevel: HealthCritical, wantTone: wire.ToneDanger, wantText: "快满了"},
 	}
 	for _, tc := range cases {
 		tot := tc.totalGiB * gib
@@ -818,7 +818,7 @@ func TestUIVersion1PlainTextDegradation(t *testing.T) {
 		}
 		if tab == tabFleet {
 			all := texts(v)
-			for _, want := range []string{"橙色预警", "红色告警", "Go", "容器"} {
+			for _, want := range []string{"偏满", "快满了", "Go", "容器"} {
 				if !strings.Contains(all, want) {
 					t.Fatalf("UIVersion 1 fleet text missing %q:\n%s", want, all)
 				}

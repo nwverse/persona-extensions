@@ -36,12 +36,12 @@ var CategoryIDs = []string{
 }
 
 var CategoryLabels = map[string]string{
-	CatGoCache:          "Go 构建与模块缓存",
-	CatNodePythonCache:  "Node / Python 包缓存",
-	CatDockerUnused:     "Docker 悬空镜像与 Buildx",
-	CatRustXcodeBuild:   "Rust / Xcode / 编译器缓存",
-	CatTmpLogs:          "系统日志与陈旧临时产物",
-	CatColdAgentSession: "Agent 冷会话日志 (>7d)",
+	CatGoCache:          "Go 编译和下载缓存",
+	CatNodePythonCache:  "Node / Python 下载的包",
+	CatDockerUnused:     "Docker 没在用的镜像和构建缓存",
+	CatRustXcodeBuild:   "Rust / Xcode 等编译缓存",
+	CatTmpLogs:          "系统日志和过期的临时文件",
+	CatColdAgentSession: "一周没动的 AI 对话",
 }
 
 // Health levels for disk watermark.
@@ -255,6 +255,8 @@ type CleanRecord struct {
 	// Referenced counts the sessions a cold-session run kept because they are still referenced
 	// (running agents, open transcripts, herdr / Persona panes, exclusion lists).
 	Referenced int `json:"referenced,omitempty"`
+	// Moved counts the sessions a cold-session run moved to the backend.
+	Moved int `json:"moved,omitempty"`
 	// RefsFound counts the session ids and transcript paths the reference probe found on the machine.
 	RefsFound int       `json:"refs_found,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
@@ -497,13 +499,13 @@ func (st *State) upsertMachine(in MachineInput, now time.Time) (*Machine, error)
 		}
 	}
 	if !IsConcreteHost(host) {
-		return nil, fmt.Errorf("无效的机器地址或 SSH Host 别名：%q", host)
+		return nil, fmt.Errorf("「%s」不是能远程登录的地址：请填 ~/.ssh/config 里的名字或电脑地址", host)
 	}
 	if id == "" {
 		id = sanitizeID(host)
 	}
 	if !IsConcreteHost(id) {
-		return nil, fmt.Errorf("无效的机器 ID：%q", id)
+		return nil, fmt.Errorf("电脑编号 %q 不对", id)
 	}
 	if in.Source == "" || in.Source == "manual" {
 		if st.resolveConnection != nil {
@@ -555,7 +557,7 @@ func (st *State) upsertMachine(in MachineInput, now time.Time) (*Machine, error)
 	}
 
 	if len(st.Machines) >= maxMachines {
-		return nil, fmt.Errorf("最多纳管 %d 台机器", maxMachines)
+		return nil, fmt.Errorf("最多只能管 %d 台电脑", maxMachines)
 	}
 	enabled := true
 	if in.Enabled != nil {
@@ -582,10 +584,10 @@ func (st *State) upsertMachine(in MachineInput, now time.Time) (*Machine, error)
 func (st *State) deleteMachine(idOrHost string) error {
 	m := st.machine(idOrHost)
 	if m == nil {
-		return fmt.Errorf("找不到机器 %q", idOrHost)
+		return fmt.Errorf("找不到电脑 %q", idOrHost)
 	}
 	if m.IsLocal || m.ID == "local" {
-		return errors.New("本机节点（local）不可移除")
+		return errors.New("运行 Persona 的这台电脑不能去掉")
 	}
 	st.rememberDeleted(m)
 	delete(st.Scans, m.ID)

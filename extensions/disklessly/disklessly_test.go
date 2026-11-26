@@ -385,11 +385,11 @@ func TestUIViewsAndActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	check(rArch.View)
-	if !strings.Contains(rArch.Toast, "已开始上传") {
+	if !strings.Contains(rArch.Toast, "搬到网盘") {
 		t.Fatalf("unexpected toast: %s", rArch.Toast)
 	}
 	a.waitJobs()
-	if j := a.jobSnapshot()["local"]; !strings.Contains(j.Note, "冷会话已上云") || !strings.Contains(j.Note, "保护 1 个被引用会话") {
+	if j := a.jobSnapshot()["local"]; !strings.Contains(j.Note, "搬完了：1 个") || !strings.Contains(j.Note, "1 个还在用的对话留在电脑上没动") {
 		t.Fatalf("offload outcome: %+v", j)
 	}
 

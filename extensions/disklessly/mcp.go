@@ -84,7 +84,7 @@ var tools = []tool{
 			"machine": str("只看这台机器；不填返回全部机器"),
 			"refresh": map[string]any{"type": "boolean", "description": "若为 true，先在机器上重新读取 disklessly 会话索引并检查备份后端与归档分段"},
 		},
-		description: "查看各机器冷会话云端备份状态：每台机器的状态 state（ready 正常、no_cli 未安装 CLI、cli_too_old CLI 版本过旧、no_backend 未设置备份后端、backend_unreachable 备份后端连不上、unreachable 连不上这台电脑、unreadable 回答无法识别、unchecked 尚未检查）与原因、备份后端是否可达、最近检查时间、已索引会话数、按位置（在云端 / 未知 / 云端缺失 / 本地）统计、缺失或未确认的归档分段。",
+		description: "查看各机器冷会话云端备份状态：每台机器的状态 state（ready 正常、no_cli 还没装配套小工具、cli_too_old 配套小工具太旧、no_backend 还没设置网盘、backend_unreachable 网盘连不上、unreachable 连不上这台电脑、unreadable 配套小工具出错了、unchecked 还没检查）与原因、备份后端是否可达、最近检查时间、已索引会话数、按位置（在网盘里 / 暂时不确定 / 网盘里找不到 / 还在电脑上）统计、缺失或未确认的归档分段。",
 	},
 	{
 		name:     "disklessly_clean",
@@ -263,7 +263,7 @@ func (m *mcpServer) handle(ctx context.Context, method string, params json.RawMe
 			"serverInfo":      map[string]any{"name": "disklessly", "version": about.Version},
 			"instructions": "Disklessly 机器磁盘与冷会话管理：先用 disklessly_machines_status 查看所有纳管机器的水位和可回收空间，" +
 				"再用 disklessly_scan 扫描目标机器查看 Dry-Run 清理计划与冷会话分布；需要执行清理时调用 disklessly_clean；" +
-				"找回以前的 Agent 对话用 disklessly_sessions_search（位置「未知」不代表丢失），恢复用 disklessly_sessions_restore，冷会话上云用 disklessly_sessions_offload。",
+				"找回以前的 Agent 对话用 disklessly_sessions_search（位置「暂时不确定」不代表丢失），恢复用 disklessly_sessions_restore，冷会话上云用 disklessly_sessions_offload。",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -757,7 +757,7 @@ func coldStatusOf(st *State, mach *Machine, now time.Time) map[string]any {
 	res["archived_bytes"] = cat.ArchivedBytes
 	adv := coldProblem(st, mach, cat, state)
 	if state != ColdReady && adv.Reason != "" {
-		// The same words as the Agent 对话 page: what is wrong, what to do, a command to copy;
+		// The same words as the AI 对话 page: what is wrong, what to do, a command to copy;
 		// detail is the raw text (an SSH line, the CLI's answer) for 详情.
 		res["message"] = adv.Reason
 		res["next"] = adv.Next

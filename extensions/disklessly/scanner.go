@@ -327,12 +327,12 @@ func ParseProbeOutput(m *Machine, output string, now time.Time) *Scan {
 			items = append(items, ScanItem{
 				ID:       "journalctl-vacuum",
 				Category: CatTmpLogs,
-				Title:    "Systemd Journal 系统日志 (>7天)",
+				Title:    "系统日志（7 天以前的）",
 				Path:     "/var/log/journal",
 				Bytes:    b,
 				Safety:   SafetySafe,
 				Action:   "clean",
-				Reason:   "使用 journalctl --vacuum-time=7d 清理 7 天前的系统日志，保留近期日志",
+				Reason:   "用 journalctl --vacuum-time=7d 删掉 7 天以前的系统日志，最近的留着",
 			})
 		}
 	}
@@ -358,12 +358,12 @@ func ParseProbeOutput(m *Machine, output string, now time.Time) *Scan {
 				items = append(items, ScanItem{
 					ID:       "docker-buildx",
 					Category: CatDockerUnused,
-					Title:    "Docker Buildx 构建缓存 (unused)",
+					Title:    "Docker 构建缓存（没在用的）",
 					Path:     "docker://build-cache",
 					Bytes:    b,
 					Safety:   SafetySafe,
 					Action:   "clean",
-					Reason:   "未被运行中构建引用的 BuildKit 缓存层，绝不触碰运行中的服务容器",
+					Reason:   "正在进行的构建没用到的缓存，正在运行的服务和容器绝不碰",
 				})
 			}
 		}
@@ -655,10 +655,10 @@ func applySessionCLI(sess *SessionSummary, sections map[string][]string) []ScanI
 	sess.CLIReady = planOK && sess.Cloud != nil
 	switch {
 	case !sess.CLIReady:
-		sess.Note = "这台电脑上没有能上传冷会话的 disklessly CLI，冷会话保持原样；到「Agent 对话」页用 Homebrew 安装或升级 disklessly 后重新扫描。"
+		sess.Note = "这台电脑上没有能搬对话的配套小工具（disklessly），旧对话原样留着；到「AI 对话」页装好或升级它，再检查一次。"
 		return nil
 	case !sess.Cloud.Backend.Reachable:
-		sess.Note = "备份后端连不上，冷会话暂不上传；确认后端在线后重新扫描。"
+		sess.Note = "网盘连不上，旧对话先不搬；确认网盘在线后再检查一次。"
 	}
 
 	kb := map[string]uint64{}
@@ -690,12 +690,12 @@ func applySessionCLI(sess *SessionSummary, sections map[string][]string) []ScanI
 		items = append(items, ScanItem{
 			ID:         "sessions-cold-" + ts.Tool,
 			Category:   CatColdAgentSession,
-			Title:      fmt.Sprintf("%s 冷会话日志 (%d 个 >7天会话)", ts.Label, ts.ColdCount),
+			Title:      fmt.Sprintf("%s 一周没动的对话（%d 个）", ts.Label, ts.ColdCount),
 			Path:       ts.Directory,
 			Bytes:      ts.ColdBytes,
 			Safety:     SafetySafe,
 			Action:     "archive",
-			Reason:     "由 disklessly 上传到备份后端并写入索引后才移除本地副本；7 天内活跃、正在打开或仍被引用的会话保留",
+			Reason:     "先放进网盘、读回核对无误才删电脑上的那份；最近 7 天用过、正打开着或还有程序在用的对话留着",
 			SessionCnt: ts.ColdCount,
 			RealPath:   ts.RealDirectory,
 		})

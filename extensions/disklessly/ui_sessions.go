@@ -14,18 +14,21 @@ import (
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
-// The cold-session backup page: machine filter, cloud status, search over the local cold index
-// (deep full-text search on demand), results with their location and restore. It is drawn in the
-// main page's 会话与台账 tab and as its own nav page, Agent 对话.
+// The cold-session backup page (nav page AI 对话): computer filter, network-drive status, each
+// computer's state with what to do next and its upload action, search over the local cold index
+// (deep full-text search on demand), results with their location and restore. Session status is
+// drawn on this page only; the main page links here.
 
 const (
 	sessionsUI      = "disklessly-sessions"
 	allMachines     = "all"
 	coldShown       = 50
-	coldSearchHint  = "搜索会话：标题、首条消息、项目、关键词"
-	coldOffloadText = "冷会话上云（读回校验后删本地）"
-	coldRefreshText = "刷新云端索引与状态"
-	coldDeepText    = "全文搜索"
+	coldSearchHint  = "搜对话：标题、第一句话、项目或关键词"
+	coldOffloadText = "把一周没动的 AI 对话搬到网盘"
+	coldRetryText   = "重试：搬到网盘"
+	coldRefreshText = "重新检查所有电脑"
+	coldDeepText    = "搜全文"
+	sessionsTitle   = "AI 对话"
 	// coldQueryRunes keeps a query well under the 2000-character Search.value limit.
 	coldQueryRunes = 200
 )
@@ -39,7 +42,7 @@ func clipQuery(q string) string {
 	return q
 }
 
-// sessPage is the Agent 对话 page state: the machine filter and the query only (16 KB limit).
+// sessPage is the AI 对话 page state: the machine filter and the query only (16 KB limit).
 type sessPage struct {
 	Machine string `json:"m,omitempty"`
 	Query   string `json:"q,omitempty"`
@@ -88,7 +91,8 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	var capped bool
 	var lastCheck time.Time
 	byState := map[string]int{}
-	var reading []string
+	var running []string
+	ready := 0
 	type machineRow struct {
 		m     *Machine
 		cat   *ColdCatalog
@@ -99,9 +103,12 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 		cat := d.st.cold(mm.ID)
 		state := cat.stateCode()
 		byState[state]++
+		if state == ColdReady {
+			ready++
+		}
 		rows = append(rows, machineRow{mm, cat, state})
 		if j, ok := d.jobs[mm.ID]; ok && j.running() {
-			reading = append(reading, machineLabel(mm))
+			running = append(running, "「"+machineLabel(mm)+"」"+strings.TrimPrefix(j.Label, "正在"))
 		}
 		if cat == nil {
 			continue
@@ -132,44 +139,45 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 			worst = t
 		}
 	}
-	machineStat := wire.Stat{Label: "机器", Value: fmt.Sprintf("%d 台", len(machines)), Detail: strings.Join(parts, " · "), Tone: worst}
-	if len(reading) > 0 {
-		machineStat.Detail = fmt.Sprintf("正在读取 %d 台 · %s", len(reading), machineStat.Detail)
+	machineStat := wire.Stat{Label: "电脑", Value: fmt.Sprintf("%d 台", len(machines)), Detail: strings.Join(parts, " · "), Tone: worst}
+	if len(running) > 0 {
+		machineStat.Detail = fmt.Sprintf("%d 台正在处理 · %s", len(running), machineStat.Detail)
 	}
-	checked := "从未"
+	checked := "还没检查过"
 	if !lastCheck.IsZero() {
-		checked = d.when(lastCheck)
+		checked = d.when(lastCheck) + "检查"
 	}
-	indexDetail := "最近检查 " + checked
+	indexDetail := checked
 	if capped {
-		indexDetail = fmt.Sprintf("仅保留最新 %d 个（共 %d 个）· %s", indexed, total, indexDetail)
+		indexDetail = fmt.Sprintf("只列出最新的 %d 个（共 %d 个）· %s", indexed, total, indexDetail)
 	}
 	status := wire.Section{
-		Title:  "云端会话备份",
-		Footer: "位置只按最近 24 小时内的检查判断：后端不可达、未检查或机器离线时显示「未知」，从不当作已丢失。",
-		Items: d.statComponents("", []wire.Stat{
-			{Label: "已索引会话", Value: fmt.Sprintf("%d 个", indexed), Detail: indexDetail},
-			{Label: LocCloud, Value: fmt.Sprintf("%d 个", counts[LocCloud]), Tone: toneIf(counts[LocCloud] > 0, wire.TonePositive)},
-			{Label: "未知 / 云端缺失", Value: fmt.Sprintf("%d / %d", counts[LocUnknown], counts[LocMissing]),
-				Tone: cmp.Or(toneIf(counts[LocMissing] > 0, wire.ToneDanger), toneIf(counts[LocUnknown] > 0, wire.ToneCaution))},
-			machineStat,
-		}),
+		Title:  "AI 对话：旧对话搬到网盘，要用时再拿回来",
+		Footer: "「在网盘里」只看最近 24 小时内的检查结果；网盘连不上、还没检查或电脑关机时显示「暂时不确定」，不会当成丢了。",
+		Items: []wire.Component{{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
+			Text: "Claude Code、Codex 这些 AI 助手的聊天记录会一直占着硬盘。一周没动的对话可以搬到你自己的网盘：先上传、再从网盘读回来核对无误，才删掉电脑上的那份；还在用的对话不会动。要用时在下面搜到它，点「拿回来」。"}},
 	}
-	if len(reading) > 0 {
+	status.Items = append(status.Items, d.statComponents("", []wire.Stat{
+		{Label: "记下的对话", Value: fmt.Sprintf("%d 个", indexed), Detail: indexDetail},
+		{Label: LocCloud, Value: fmt.Sprintf("%d 个", counts[LocCloud]), Tone: toneIf(counts[LocCloud] > 0, wire.TonePositive)},
+		{Label: "不确定 / 找不到", Value: fmt.Sprintf("%d / %d", counts[LocUnknown], counts[LocMissing]),
+			Tone: cmp.Or(toneIf(counts[LocMissing] > 0, wire.ToneDanger), toneIf(counts[LocUnknown] > 0, wire.ToneCaution))},
+		machineStat,
+	})...)
+	if len(running) > 0 {
 		status.Items = append(status.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
-			Text: clip("正在后台读取："+strings.Join(reading, "、")+"。完成后页面自动更新。", 200)})
+			Text: clip("正在进行："+strings.Join(running, "、")+"。完成后页面会自动更新，可以先离开这页。", 300)})
 	}
-	if m != nil {
+	// Where the upload is: under each ready computer's row below; say so, or why there is none.
+	status.Items = append(status.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
+		Text: clip(offloadHint(m, ready, len(machines), byState), 300)})
+	if m == nil {
+		// One computer's own row below has its 重新检查 button.
 		status.Items = append(status.Items, wire.Component{
-			Type:   wire.ComponentButton,
-			Title:  coldOffloadText,
-			Action: &wire.Action{ID: "cold-offload", Values: map[string]string{"m": m.ID}, Confirm: sessionOffloadConfirm(m)},
+			Type: wire.ComponentButton, Title: coldRefreshText,
+			Action: &wire.Action{ID: "cold-refresh", Values: map[string]string{"m": machineArg}},
 		})
 	}
-	status.Items = append(status.Items, wire.Component{
-		Type: wire.ComponentButton, Title: coldRefreshText,
-		Action: &wire.Action{ID: "cold-refresh", Values: map[string]string{"m": machineArg}},
-	})
 	if strings.TrimSpace(query) != "" {
 		status.Items = append(status.Items, wire.Component{
 			Type: wire.ComponentButton, Title: coldDeepText,
@@ -178,10 +186,10 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	}
 
 	var hits []ColdHit
-	title := "最近归档的会话"
+	title := "已经搬到网盘的对话"
 	if deep != nil {
 		hits = deep.hits
-		title = fmt.Sprintf("全文搜索「%s」（%d 个）", clip(query, 24), len(hits))
+		title = fmt.Sprintf("搜全文「%s」（%d 个）", clip(query, 24), len(hits))
 	} else {
 		hits = SearchCold(d.st, query, machineArg, 0, d.now)
 		if strings.TrimSpace(query) != "" {
@@ -192,7 +200,7 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	if deep != nil {
 		for _, e := range deep.errs[:min(len(deep.errs), 4)] {
 			msg, _ := humanize(e)
-			results.Items = append(results.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: clip("全文搜索未完成："+msg, 300)})
+			results.Items = append(results.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: clip("搜全文没有搜完："+msg, 300)})
 		}
 	}
 	shown := hits[:min(len(hits), coldShown)]
@@ -207,24 +215,24 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	}
 	var notes []string
 	if len(hits) > len(shown) {
-		notes = append(notes, fmt.Sprintf("显示最新 %d 个，共 %d 个；输入更多关键词缩小范围。", len(shown), len(hits)))
+		notes = append(notes, fmt.Sprintf("显示最新的 %d 个，共 %d 个；多输几个词可以缩小范围。", len(shown), len(hits)))
 	}
 	if capped {
-		notes = append(notes, fmt.Sprintf("本地索引每台机器只保留最新 %d 个会话，更早的请用「全文搜索」。", maxColdEntries))
+		notes = append(notes, fmt.Sprintf("这里每台电脑只列出最新的 %d 个对话，更早的请用「%s」。", maxColdEntries, coldDeepText))
 	}
 	results.Footer = strings.Join(notes, " ")
 	if len(shown) == 0 {
-		detail := "扫描机器或点击「" + coldRefreshText + "」读取 disklessly 的会话索引。"
+		detail := "还没有搬到网盘的对话。点「重新检查」看看电脑的情况；检查只读取信息，不会搬走或删除任何东西。"
 		if strings.TrimSpace(query) != "" {
-			detail = "本地索引没有匹配的会话；可试试「" + coldDeepText + "」在机器上搜索完整摘要。"
+			detail = "这里没有找到；可以试试「" + coldDeepText + "」，在电脑上搜对话的完整内容。"
 		}
-		results.Items = append(results.Items, d.emptyComponents("chat", "没有会话", detail, nil)...)
+		results.Items = append(results.Items, d.emptyComponents("chat", "没有对话", detail, nil)...)
 	}
 
 	if allowResults := max(0, maxItems-len(status.Items)); len(results.Items) > allowResults {
 		results.Items = results.Items[:allowResults]
 	}
-	machineSec := wire.Section{Key: "cold-machines", Title: "各机器状态"}
+	machineSec := wire.Section{Key: "cold-machines", Title: "每台电脑的情况"}
 	machineBudget := max(0, maxItems-len(status.Items)-len(results.Items))
 	compactCount := 0
 	for i, r := range rows {
@@ -236,7 +244,7 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 			machineSec.Items = append(machineSec.Items, wire.Component{
 				Type:  wire.ComponentText,
 				Style: wire.TextStyleSecondary,
-				Text:  fmt.Sprintf("还有 %d 台机器未展开，请使用顶部「机器」筛选查看。", len(rows)-i),
+				Text:  fmt.Sprintf("还有 %d 台电脑没列出来，在顶部「电脑」里选它查看。", len(rows)-i),
 			})
 			break
 		}
@@ -251,12 +259,36 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 		compactCount++
 	}
 	if compactCount > 0 {
-		machineSec.Footer = fmt.Sprintf("后 %d 台机器已折叠为摘要行；点任意机器或在顶部筛选该机器可查看完整命令与操作。", compactCount)
+		machineSec.Footer = fmt.Sprintf("后面 %d 台电脑只显示一行；点它（或在顶部「电脑」里选它）可以看到全部操作。", compactCount)
 	}
 	if len(machineSec.Items) == 0 {
 		return []wire.Section{status, results}
 	}
 	return []wire.Section{status, machineSec, results}
+}
+
+// offloadHint says where the upload button is (under each ready computer's row), or why no
+// computer shown can upload now.
+func offloadHint(m *Machine, ready, total int, byState map[string]int) string {
+	if m != nil {
+		state := ""
+		for s := range byState {
+			state = s
+		}
+		if state == ColdReady {
+			return "要腾地方：点下面这台电脑的「" + coldOffloadText + "」。"
+		}
+		return "「" + machineLabel(m) + "」现在还不能把对话搬到网盘（" + coldStateLabel(state) + "）：按下面的提示处理好，再点「重新检查」。"
+	}
+	switch {
+	case total == 0:
+		return "还没有电脑。先到「硬盘空间」页添加电脑。"
+	case ready == total:
+		return "要腾地方：在下面某台电脑那一行点「" + coldOffloadText + "」，每次搬一台。"
+	case ready > 0:
+		return fmt.Sprintf("%d 台电脑可以搬：在它那一行点「%s」。其余 %d 台还不能搬，原因和处理办法写在各自那一行。", ready, coldOffloadText, total-ready)
+	}
+	return "现在没有哪台电脑能把对话搬到网盘：先按下面每台电脑的提示装好配套小工具、设置好网盘，再点「重新检查」。"
 }
 
 // refreshAfter asks the app to draw the page again while a background job runs (hubs that do
@@ -276,7 +308,7 @@ const coldPollSeconds = 30
 // coldAdvice is what a machine row says and offers: the problem, and which fixes apply.
 type coldAdvice struct {
 	problem
-	brew    bool         // offer 用 Homebrew 安装 / 升级
+	brew    bool         // offer 用 Homebrew 装 / 升级
 	upgrade bool         // Homebrew already manages the CLI: upgrade it
 	copy    installOffer // src set: offer copy-install
 	docs    bool         // link to the install documentation
@@ -291,14 +323,14 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 	a.Title = coldStateLabel(state)
 	switch state {
 	case ColdReady:
-		a.retry = "刷新"
+		a.retry = "重新检查"
 	case ColdNoCLI, ColdCLIOld:
 		a.docs = true
 		if state == ColdNoCLI {
-			a.Reason = name + "上没有安装 disklessly CLI，这台电脑的冷会话备份还没有开启。"
+			a.Reason = name + "上还没装 Disklessly 的配套小工具（disklessly），所以这台电脑的旧对话还不能搬到网盘。"
 		} else {
-			a.Reason = name + "上的 disklessly " + cmp.Or(shortVersion(cmp.Or(cat.CLI.Version, m.BinaryVersion)), "（版本未知）") +
-				" 太旧，不支持会话备份（需要带 sessions list 和 sessions status 的版本）。"
+			a.Reason = name + "上的配套小工具 disklessly " + cmp.Or(shortVersion(cmp.Or(cat.CLI.Version, m.BinaryVersion)), "（版本不清楚）") +
+				" 太旧，还不会搬对话，需要升级。"
 			a.Raw = cat.Detail
 		}
 		a.upgrade = state == ColdCLIOld && brewManaged(cat.CLI)
@@ -319,43 +351,42 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 			if a.upgrade {
 				verb = "升级"
 			}
-			a.Next = "这台电脑有 Homebrew：点「用 Homebrew " + verb + " disklessly」，确认后会在后台运行下面的命令，装好后检查 disklessly version 并重新读取。"
+			a.Next = "这台电脑有 Homebrew（一个装软件的工具）：点「用 Homebrew " + verb + "配套小工具」就行，装好后会自动重新检查。它在后台运行的命令如下。"
 			a.Command = cmd
 		case cat == nil || !cat.BrewKnown:
 			a.copy = offer
-			a.Next = "还不知道这台电脑有没有 Homebrew：先点「重新检查 " + machineLabel(m) + "」，有 Homebrew 时会出现「用 Homebrew 安装」。"
+			a.Next = "还不知道这台电脑有没有 Homebrew（一个装软件的工具）：先点「重新检查 " + machineLabel(m) + "」，有的话会出现「用 Homebrew 装配套小工具」。"
 			if offer.src != nil {
-				a.Next += "也可以直接点「从 " + machineLabel(offer.src) + " 复制安装」。"
+				a.Next += "也可以直接点「从 " + machineLabel(offer.src) + " 复制过来」。"
 			} else {
 				a.Next += "现在也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。"
 			}
 		case offer.src != nil:
 			a.copy = offer
-			a.Next = fmt.Sprintf("这台电脑没有 Homebrew：可以点「从 %s 复制安装」，从同为 %s 的 %s 复制 disklessly %s 过来；也可以在这台电脑上运行下面的命令，先装 Homebrew 再装 disklessly。",
-				machineLabel(offer.src), offer.platform, machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本未知）"))
+			a.Next = fmt.Sprintf("这台电脑没有 Homebrew：点「从 %s 复制过来」，会从同为 %s 的 %s 复制 disklessly %s 过来；也可以在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具。",
+				machineLabel(offer.src), offer.platform, machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本不清楚）"))
 			a.Command = manual
 		default:
-			a.Next = "这台电脑没有 Homebrew，也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。在这台电脑上运行下面的命令，先装 Homebrew 再装 disklessly，然后点「重新检查」。"
+			a.Next = "这台电脑没有 Homebrew，也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。请在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具，然后点「重新检查」。"
 			a.Command = manual
 		}
 	case ColdNoBackend:
-		a.Reason = name + "上的 disklessly 还没有设置备份后端，冷会话不会上传。"
-		a.Next = "在这台电脑上用下面的命令设置一个备份后端（网盘、NAS 或 rclone 远端），再点「重新检查」。"
-		a.Command = "disklessly backend list\ndisklessly backend add rclone <远端:路径>   # 也可以是 smb、nfs、webdav、openlist\ndisklessly cloud connect gdrive --use      # 或者直接连一个网盘"
+		a.problem = noBackendProblem(m)
 		a.Raw = cat.Detail
+		a.retry = "重新检查"
 	case ColdBackendDown:
 		b := cat.Backend
 		id := cmp.Or(b.ID, b.Type, "（未命名）")
-		a.Reason = name + "的备份后端 " + id + " 连不上，云端位置暂时显示为「未知」，不会当作丢失。"
-		a.Next = "确认网盘、NAS 或 rclone 远端在线后点「重新检查」；在这台电脑上运行下面的命令可以看到具体原因。"
+		a.Reason = name + "用的网盘（" + id + "）现在连不上，所以对话在不在网盘里暂时显示「暂时不确定」，不会当成丢了。"
+		a.Next = "确认网盘（或家里的 NAS）在线、网络通了，再点「重新检查」；想看具体原因，在这台电脑上运行下面的命令。"
 		a.Command = "disklessly doctor"
 		if strings.Contains(b.Error, "repo.json is not in") {
 			// The backend answers, but holds no Disklessly repository.
-			a.Reason = name + "当前用的备份后端 " + id + " 能连上，但里面还没有 Disklessly 仓库（找不到 repo.json），云端位置暂时显示为「未知」。"
-			a.Next = "在这台电脑上用下面的命令看看配置了哪些后端：选错了就切换到正确的那个；这个目录确实是要新建的仓库，就在那里初始化。然后点「重新检查」。"
-			a.Command = "disklessly backend list\ndisklessly backend use <后端 ID>   # 切换到已有仓库的后端\ndisklessly init                    # 或者：在当前后端里新建仓库"
+			a.Reason = name + "用的网盘（" + id + "）能连上，但里面还没有 Disklessly 的存放目录（找不到 repo.json），所以暂时显示「暂时不确定」。"
+			a.Next = "多半是选错了网盘目录：在这台电脑上用下面的命令看看设置了哪些网盘，换成正确的那个；如果这就是要新用的目录，就在里面新建。然后点「重新检查」。"
+			a.Command = "disklessly backend list\ndisklessly backend use <后端 ID>   # 换到已经在用的那个网盘\ndisklessly init                    # 或者：在当前网盘里新建存放目录"
 		}
-		a.Raw = strings.TrimSpace(fmt.Sprintf("%s（%s，%d ms）", b.Error, cmp.Or(b.Type, "backend"), b.LatencyMs))
+		a.Raw = strings.TrimSpace(fmt.Sprintf("%s（%s，%d ms）", b.Error, cmp.Or(b.Type, "网盘"), b.LatencyMs))
 	case ColdOffline:
 		errText := m.LastError
 		if cat != nil {
@@ -370,27 +401,47 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 		a.retry = "重试"
 		hung := cat != nil && strings.HasPrefix(cat.Error, "disklessly 没有正常结束")
 		if hung {
-			a.Reason = name + "上的 disklessly 没有在 3 分钟内答完，云端状态暂时未知。"
-			a.Next = "稍后点「重试」；一直这样时，在这台电脑上运行下面的命令看它卡在哪里。"
+			a.Reason = name + "上的配套小工具 3 分钟内没有答完，网盘里的情况暂时不确定。"
+			a.Next = "过一会儿点「重试」；一直这样的话，在这台电脑上运行下面的命令看看卡在哪里。"
 		} else {
-			a.Reason = name + "上的 disklessly 给出了看不懂的回答，云端状态暂时未知。"
-			a.Next = "点「重试」；还是这样时，在这台电脑上运行下面的命令，把输出（「详情」里也有）发给维护者。"
+			a.Reason = name + "上的配套小工具出错了（回答看不懂），网盘里的情况暂时不确定。"
+			a.Next = "点「重试」；还是这样的话，在这台电脑上运行下面的命令，把输出（「详情」里也有）发给维护者。"
 		}
 		a.Command = "disklessly --json sessions status --check-segments"
 		if cat != nil {
 			_, raw := humanize(cat.Error)
 			lines := []string{cmp.Or(raw, cat.Error)}
 			if cat.Detail != "" {
-				lines = append(lines, "disklessly 输出的第一行："+cat.Detail)
+				lines = append(lines, "配套小工具输出的第一行："+cat.Detail)
 			}
 			a.Raw = strings.TrimSpace(strings.Join(lines, "\n"))
 		}
 	default:
-		a.retry = "读取"
-		a.Reason = "还没有读取过" + name + "的会话索引。"
-		a.Next = "点「读取 " + machineLabel(m) + "」。"
+		a.retry = "检查"
+		a.Reason = "还没检查过" + name + "。"
+		a.Next = "点「检查 " + machineLabel(m) + "」：只读取信息，不会搬走或删除任何东西。"
 	}
 	return a
+}
+
+// noBackendCommand sets up a network drive for the CLI; the commands stay exact.
+const noBackendCommand = "disklessly backend list\ndisklessly backend add rclone <远端:路径>   # 也可以是 smb、nfs、webdav、openlist\ndisklessly cloud connect gdrive --use      # 或者直接连一个网盘"
+
+// noBackendProblem is what a computer whose CLI has no network drive set up says, on its row and
+// (m nil: the row's own computer) after an upload the CLI refused for that reason.
+func noBackendProblem(m *Machine) problem {
+	reason := "「" + machineLabel(m) + "」还没有设置网盘，旧对话没地方放，所以还不能搬。"
+	next := "先在这台电脑上设置一个网盘（Google Drive 这类网盘、家里的 NAS 都行）：运行下面的命令，然后点「重新检查」。"
+	if m == nil {
+		reason = "这台电脑还没有设置网盘，对话没地方放，这次一个都没有搬走或删除。"
+		next = "先在这台电脑上设置一个网盘（Google Drive 这类网盘、家里的 NAS 都行）：运行下面的命令，设置好后点「重试」。"
+	}
+	return problem{
+		Title:   coldStateLabel(ColdNoBackend),
+		Reason:  reason,
+		Next:    next,
+		Command: noBackendCommand,
+	}
 }
 
 // detailsKey names what the 详情 toggle of a part of the page opens.
@@ -426,7 +477,7 @@ func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.
 		Type:  wire.ComponentRow,
 		Key:   boundedKey("mach-", m.ID),
 		Icon:  "gauge",
-		Title: clip(cmp.Or(strings.TrimSpace(name), strings.TrimSpace(m.ID), "未命名机器"), 200),
+		Title: clip(cmp.Or(strings.TrimSpace(name), strings.TrimSpace(m.ID), "没起名的电脑"), 200),
 		Badge: &wire.Badge{Text: coldStateLabel(state), Tone: coldStateTone(state)},
 	}
 	var sub []string
@@ -434,7 +485,7 @@ func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.
 		sub = append(sub, p)
 	}
 	if cat != nil && cat.CLI.Version != "" {
-		sub = append(sub, "disklessly "+shortVersion(cat.CLI.Version))
+		sub = append(sub, "配套小工具 "+shortVersion(cat.CLI.Version))
 	}
 	if cat != nil && !cat.CheckedAt.IsZero() {
 		sub = append(sub, d.when(cat.CheckedAt)+"检查")
@@ -456,13 +507,13 @@ func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.
 			}
 		}
 		b := cat.Backend
-		row.Detail = fmt.Sprintf("已索引 %d 个 · 在云端 %d 个 · 云端缺失 %d 个 · 备份后端 %s 可达（%d ms）",
-			n, cloud, missing, cmp.Or(b.ID, b.Type, "backend"), b.LatencyMs)
+		row.Detail = fmt.Sprintf("一切正常，可以搬。记下 %d 个对话：%d 个在网盘里，%d 个网盘里找不到 · 网盘 %s 连得上（%d 毫秒）",
+			n, cloud, missing, cmp.Or(b.ID, b.Type, "（没起名）"), b.LatencyMs)
 		if len(cat.Missing) > 0 {
-			row.Detail += fmt.Sprintf("；备份后端缺少 %d 个归档分段，相关会话无法恢复", len(cat.Missing))
+			row.Detail += fmt.Sprintf("；网盘里少了 %d 个数据包，里面的对话拿不回来", len(cat.Missing))
 		}
 		if len(cat.Unchecked) > 0 || cat.TimedOut {
-			row.Detail += fmt.Sprintf("；%d 个归档分段未能确认", len(cat.Unchecked))
+			row.Detail += fmt.Sprintf("；还有 %d 个数据包没来得及核对", len(cat.Unchecked))
 		}
 	} else {
 		row.Detail = adv.text()
@@ -497,39 +548,59 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 
 	raw := adv.Raw
 	items := []wire.Component{row}
+	command := adv.Command
+	var last *coldJob
 	if j, ok := d.jobs[m.ID]; ok {
 		if j.running() {
 			row.Badge = &wire.Badge{Text: "进行中", Tone: wire.ToneNeutral}
 			items[0] = row
 			items = append(items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
-				Text: fmt.Sprintf("%s…（%s开始）", j.Label, d.when(j.Started))})
+				Text: fmt.Sprintf("%s…（%s开始，完成后页面会自动更新）", j.Label, d.when(j.Started))})
 			return items // no actions while it runs: a second start would be refused anyway
 		}
 		if j.Kind != jobRefresh {
-			items = append(items, d.jobOutcome(j)...)
+			last = &j
+			retry := coldRetryText // the button this row offers to try again
+			if state != ColdReady {
+				retry = ""
+				if adv.retry != "" {
+					retry = adv.retry + " " + name
+				}
+			}
+			items = append(items, d.jobOutcome(j, retry)...)
 			if j.Raw != "" {
 				raw = strings.TrimSpace(raw + "\n上次操作：" + j.Raw)
 			}
+			if j.Err != "" && j.Command != "" {
+				command = j.Command
+			}
 		}
 	}
-	items = append(items, commandItem(detailsKey("cold", m.ID), adv.Command)...)
+	items = append(items, commandItem(detailsKey("cold", m.ID), command)...)
+	// The upload: offered on a ready computer only; a failed upload offers a real retry.
+	switch {
+	case last != nil && last.Kind == jobOffload && last.Err != "" && state == ColdReady:
+		items = append(items, offloadButton(m, coldRetryText))
+	case state == ColdReady:
+		items = append(items, offloadButton(m, coldOffloadText))
+	}
 	if adv.brew {
 		verb, cmd := "安装", brewInstallCmd
 		if adv.upgrade {
 			verb, cmd = "升级", brewUpgradeCmd
 		}
-		confirm := fmt.Sprintf("在「%s」上用 Homebrew %s disklessly？会在这台电脑上运行：%s。完成后运行 disklessly version 确认能用，再重新读取这台电脑。", name, verb, cmd)
+		confirm := fmt.Sprintf("在「%s」上用 Homebrew %s配套小工具 disklessly？会在这台电脑上运行：%s。装好后先运行 disklessly version 确认能用，再重新检查这台电脑。", name, verb, cmd)
 		if strings.HasPrefix(cmp.Or(catPlatform(cat), m.Platform), "darwin") {
-			confirm += "macOS 上还会清掉 Homebrew 给这个未签名程序加的隔离标记，否则它在 SSH 里运行不了。"
+			confirm += "在 Mac 上还会去掉 Homebrew 给这个没签名的程序加的隔离标记，不然远程登录时它运行不了。"
 		}
 		if cat != nil && cat.CLI.Path != "" && !brewManaged(cat.CLI) {
-			confirm += "原来的 " + cat.CLI.Path + " 不会删除；如果它在 PATH 里排在前面，完成后会提示。"
+			confirm += "原来的 " + cat.CLI.Path + " 不会删；如果系统先找到的还是它，装完会提醒你。"
 		}
-		items = append(items, wire.Component{Type: wire.ComponentButton, Title: "用 Homebrew " + verb + " disklessly",
+		items = append(items, wire.Component{Type: wire.ComponentButton, Title: "用 Homebrew " + verb + "配套小工具",
 			Action: &wire.Action{ID: "cold-brew", Values: map[string]string{"m": m.ID}, Confirm: confirm}})
 	}
 	if adv.copy.src != nil {
-		items = append(items, wire.Component{Type: wire.ComponentButton, Title: "从 " + machineLabel(adv.copy.src) + " 复制安装",
+		items = append(items, wire.Component{Type: wire.ComponentButton, Title: "从 " + machineLabel(adv.copy.src) + " 复制过来",
 			Action: &wire.Action{ID: "cold-install", Values: map[string]string{"m": m.ID, "id": adv.copy.src.ID}, Confirm: installConfirm(adv.copy, m)}})
 	}
 	if adv.retry != "" {
@@ -537,16 +608,36 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 			Action: &wire.Action{ID: "cold-refresh", Values: map[string]string{"m": m.ID}}})
 	}
 	if adv.docs {
-		items = append(items, wire.Component{Type: wire.ComponentLink, Title: "如何安装 disklessly CLI", URL: coldInstallDocsURL})
+		items = append(items, wire.Component{Type: wire.ComponentLink, Title: "怎么装配套小工具", URL: coldInstallDocsURL})
 	}
 	return append(items, d.detailsItems(detailsKey("cold", m.ID), raw)...)
 }
 
+// offloadButton starts machine m's cold-session upload, behind the confirm that says what moves,
+// what is checked and what is deleted.
+func offloadButton(m *Machine, title string) wire.Component {
+	return wire.Component{Type: wire.ComponentButton, Key: boundedKey("offload-", m.ID), Title: title,
+		Action: &wire.Action{ID: "cold-offload", Values: map[string]string{"m": m.ID}, Confirm: sessionOffloadConfirm(m)}}
+}
+
 // jobOutcome is the line under a machine saying how its last job ended.
-func (d draw) jobOutcome(j coldJob) []wire.Component {
+// retry, when set, is the title of the button the row offers to try again: a failure's 「重试」
+// names that button, so the text never points at a button that is not there.
+func (d draw) jobOutcome(j coldJob, retry ...string) []wire.Component {
 	text := j.Note
 	if j.Err != "" {
 		text = "没有成功：" + j.Err
+		if len(retry) > 0 {
+			if retry[0] == "" {
+				text = strings.ReplaceAll(text, "修好后点「重试」", "修好后再试")
+				text = strings.ReplaceAll(text, "点「重试」", "再试一次")
+			} else {
+				text = strings.ReplaceAll(text, "「重试」", "「"+retry[0]+"」")
+				if !strings.Contains(text, retry[0]) {
+					text = strings.TrimRight(text, "。；") + "。处理好后点「" + retry[0] + "」。"
+				}
+			}
+		}
 	}
 	if text == "" {
 		return nil
@@ -561,7 +652,7 @@ func sandboxSection() []wire.Section {
 		return nil
 	}
 	p := sandboxProblem()
-	return []wire.Section{{Key: "sandbox", Title: "Disklessly 在沙箱里运行，连不上其他电脑", Items: append(
+	return []wire.Section{{Key: "sandbox", Title: "Disklessly 被关在隔离环境（沙箱）里，连不上其他电脑", Items: append(
 		[]wire.Component{{Type: wire.ComponentText, Text: p.text()}}, commandItem("sandbox", p.Command)...)}}
 }
 
@@ -581,24 +672,24 @@ func (d draw) coldRow(h ColdHit) wire.Component {
 		sub = append(sub, t.In(d.loc).Format(time.DateOnly))
 	}
 	if !h.Local {
-		sub = append(sub, "来自其他设备")
+		sub = append(sub, "来自另一台电脑")
 	}
 	row := wire.Component{
 		Type:     wire.ComponentRow,
 		Key:      boundedKey("cold-", h.MachineID+"-"+h.ID),
 		Icon:     "chat",
-		Title:    clip(cmp.Or(strings.TrimSpace(h.Title), strings.TrimSpace(h.FirstPrompt), strings.TrimSpace(h.SessionID), strings.TrimSpace(h.ID), "未命名会话"), 120),
+		Title:    clip(cmp.Or(strings.TrimSpace(h.Title), strings.TrimSpace(h.FirstPrompt), strings.TrimSpace(h.SessionID), strings.TrimSpace(h.ID), "没有标题的对话"), 120),
 		Subtitle: clip(strings.Join(sub, " · "), 400),
 		Detail:   clip(cmp.Or(h.Preview, h.FirstPrompt), 240),
 		Badge:    &wire.Badge{Text: h.Location, Tone: locationTone(h.Location)},
 	}
 	// Another device's row is not restored here: its original path belongs to that device.
 	if h.Location != LocLocal && h.Local {
-		confirm := fmt.Sprintf("从云端恢复到原路径 %s？", cmp.Or(h.Path, "（原路径）"))
+		confirm := fmt.Sprintf("把这个对话从网盘拿回来，放回原来的位置 %s？", cmp.Or(h.Path, "（原来的位置）"))
 		if hint := resumeHint(h.ColdEntry); hint != "" {
-			confirm += "恢复后可运行 " + hint
+			confirm += "拿回来后可以运行 " + hint + " 接着聊。"
 		}
-		row.Actions = []wire.RowAction{{Title: "恢复", Swipe: true, Action: wire.Action{
+		row.Actions = []wire.RowAction{{Title: "拿回来", Swipe: true, Action: wire.Action{
 			ID:      "cold-restore",
 			Values:  map[string]string{"m": h.MachineID, "id": h.ID},
 			Confirm: confirm,
@@ -630,7 +721,7 @@ const coldUIBudget = 8 * time.Second
 // holding the store lock while they answer.
 func (a *app) coldDeep(ctx context.Context, machine, query string) (*deepResult, error) {
 	if strings.TrimSpace(query) == "" {
-		return nil, errors.New("请输入要全文搜索的内容")
+		return nil, errors.New("请先输入要搜的内容")
 	}
 	if machine == allMachines {
 		machine = ""
@@ -656,12 +747,12 @@ func (a *app) coldDeep(ctx context.Context, machine, query string) (*deepResult,
 	return &res, err
 }
 
-// ---- Agent 对话 nav page ----
+// ---- AI 对话 nav page ----
 
 func (a *app) renderSessions(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 	var p sessPage
 	if err := r.DecodeState(&p); err != nil {
-		return nil, &ext.Error{Code: "invalid", Message: "invalid page state"}
+		return nil, &ext.Error{Code: "invalid", Message: pageStateLost}
 	}
 	return a.sessionsView(r, p, nil)
 }
@@ -677,7 +768,7 @@ func (a *app) sessionsView(r *ext.UIRequest, p sessPage, deep *deepResult) (*wir
 }
 
 func (d draw) sessionsFallbackSummary(m *Machine, query string) string {
-	scope := "全部机器"
+	scope := "全部电脑"
 	machineArg := ""
 	if m != nil {
 		scope = machineLabel(m)
@@ -685,7 +776,7 @@ func (d draw) sessionsFallbackSummary(m *Machine, query string) string {
 	}
 	hits := SearchCold(d.st, clipQuery(query), machineArg, 5, d.now)
 	var lines []string
-	lines = append(lines, fmt.Sprintf("Disklessly Agent 对话备份（范围：%s，匹配会话 %d 个）", scope, len(hits)))
+	lines = append(lines, fmt.Sprintf("Disklessly AI 对话（%s，找到 %d 个对话）", scope, len(hits)))
 	for _, mm := range d.st.Machines {
 		if (m == nil && mm.Enabled) || (m != nil && mm.ID == m.ID) {
 			cat := d.st.cold(mm.ID)
@@ -703,7 +794,7 @@ func (d draw) sessionsPage(p sessPage, deep *deepResult) *wire.View {
 		}
 	}
 	const maxFilterChoices = 100
-	choices := []wire.Choice{{Value: allMachines, Title: "全部机器"}}
+	choices := []wire.Choice{{Value: allMachines, Title: "全部电脑"}}
 	selectedIncluded := m == nil
 	for _, mm := range d.st.Machines {
 		if !mm.Enabled {
@@ -726,7 +817,7 @@ func (d draw) sessionsPage(p sessPage, deep *deepResult) *wire.View {
 	}
 	var filter *wire.Filter
 	if len(choices) >= 2 {
-		filter = &wire.Filter{Name: "machine", Title: "机器", Choices: choices, Value: value, Action: wire.Action{ID: "machine"}}
+		filter = &wire.Filter{Name: "machine", Title: "电脑", Choices: choices, Value: value, Action: wire.Action{ID: "machine"}}
 	}
 	var lead []wire.Section
 	if d.v4() {
@@ -736,7 +827,7 @@ func (d draw) sessionsPage(p sessPage, deep *deepResult) *wire.View {
 		lead = []wire.Section{{Title: sp.Title, Items: []wire.Component{{Type: wire.ComponentText, Text: sp.message()}}}}
 	}
 	return d.fitVersion(&wire.View{
-		Title:        "Agent 对话",
+		Title:        sessionsTitle,
 		Fallback:     d.sessionsFallbackSummary(m, p.Query),
 		State:        ext.EncodeState(p),
 		RefreshAfter: d.refreshAfter(),
@@ -749,7 +840,7 @@ func (d draw) sessionsPage(p sessPage, deep *deepResult) *wire.View {
 func (a *app) actionSessions(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, error) {
 	var p sessPage
 	if err := r.DecodeState(&p); err != nil {
-		return nil, &ext.Error{Code: "invalid", Message: "invalid page state"}
+		return nil, &ext.Error{Code: "invalid", Message: pageStateLost}
 	}
 	res := &wire.ActionResult{}
 	var deep *deepResult

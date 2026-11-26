@@ -342,7 +342,7 @@ func TestOffloadInventoryCap(t *testing.T) {
 func TestOffloadUnknownMachineAndLocale(t *testing.T) {
 	a := offloadApp(t, newFakeBox())
 	ghost := personaMachine{ID: "ghost-7", Name: "Ghost"}
-	for loc, want := range map[string]string{"en": "is not one of the computers", "zh-Hans": "不在 Disklessly 管理的电脑里", "zh-CN": "不在", "ja-JP": "管理するコンピュータではありません", "fr": "is not one of the computers", "": "is not one of the computers"} {
+	for loc, want := range map[string]string{"en": "is not one of the computers", "zh-Hans": "不在 Disklessly 管的电脑里", "zh-CN": "不在", "ja-JP": "管理するコンピュータではありません", "fr": "is not one of the computers", "": "is not one of the computers"} {
 		inv := call(t, a, "inventory", map[string]any{"locale": loc, "machine": ghost})
 		if inv["state"] != invUnavailable || !strings.Contains(inv["detail"].(string), want) || !strings.Contains(inv["detail"].(string), "Ghost") {
 			t.Errorf("%q: %v %v", loc, inv["state"], inv["detail"])
