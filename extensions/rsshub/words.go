@@ -20,7 +20,7 @@ const (
 		"· 网站自己的 RSS 地址。RSS 是很多博客、新闻网站都提供的「更新列表」，网站上常有一个 RSS 或「订阅」图标，" +
 		"复制它的链接就行，常以 /feed、/rss 或 .xml 结尾。\n" +
 		"· RSSHub 短地址，以 / 开头。RSSHub 是一个免费服务，能把 B 站、微博、GitHub 这类本身没有 RSS 的网站变成可以订阅的。" +
-		"比如 " + exampleUPRoute + " 是一位 B 站 UP 主的新视频，" + exampleRoute + " 是" + exampleRouteTitle + "。"
+		"比如 " + exampleUPRoute + " 是一位 B 站 UP 主的新视频，" + exampleRoute + " 是 " + exampleRouteTitle + "。"
 	detailPrefix = "详细信息："
 )
 
