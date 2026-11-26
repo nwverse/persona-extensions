@@ -193,6 +193,8 @@ func unitCode(u *Unit) string {
 		return entry.SrcMemory
 	case strings.HasPrefix(ref, "recordings/"):
 		return entry.SrcRecording
+	case strings.HasPrefix(ref, "ledger/"):
+		return entry.SrcLedger
 	}
 	return entry.SrcChat
 }
@@ -201,7 +203,7 @@ func unitCode(u *Unit) string {
 // and memory for the AI, a bot chat, or an assistant line in it.
 func aiUnit(u *Unit) bool {
 	switch unitCode(u) {
-	case entry.SrcAssistant, entry.SrcAgent, entry.SrcAsk, entry.SrcAbout, entry.SrcMemory, entry.SrcTools:
+	case entry.SrcAssistant, entry.SrcAgent, entry.SrcAsk, entry.SrcAbout, entry.SrcMemory, entry.SrcTools, entry.SrcLedger:
 		return true
 	}
 	if u.Meta.Kind == "bot" || u.Meta.Kind == "assistant" || u.Meta.Kind == "agent" {

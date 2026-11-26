@@ -52,11 +52,11 @@ func sourceGroup(code string) string {
 	switch code {
 	case entry.SrcAssistant:
 		return "chat"
-	case entry.SrcAsk, entry.SrcTodo:
+	case entry.SrcAsk, entry.SrcTodo, entry.SrcLedger:
 		return "card"
 	case entry.SrcAgent, entry.SrcTools:
 		return "agent"
-	case entry.SrcChat:
+	case entry.SrcChat, entry.SrcSent:
 		return "messages"
 	case entry.SrcMemory, entry.SrcAbout:
 		return "self"

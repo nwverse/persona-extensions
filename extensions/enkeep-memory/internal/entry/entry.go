@@ -136,6 +136,8 @@ const (
 	SrcChat      = "S8"  // connected message sources: chats, mail, code, docs, meetings, events (kb.read)
 	SrcKB        = "S9"  // the knowledge base's people, projects, relations and kb.owner
 	SrcRecording = "S11" // recordings, minutes and day reviews (kb.read recordings)
+	SrcLedger    = "S12" // assistant structured ledger entries (assistant.entries.read)
+	SrcSent      = "S13" // sent-as-user provenance on archived chats (sent.read)
 )
 
 // Who a line is by, after speaker resolution (3.2).
