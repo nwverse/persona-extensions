@@ -118,11 +118,11 @@ func TestReadFailuresSayTheCauseAndWhatToDo(t *testing.T) {
 		v, _ := a.renderPage(ctx, uiRequest(pageUI, 6, "", "", nil))
 		raw := checkView(t, v, false)
 		e, footer := emptyOf(t, v)
-		if e.Title != c.title || !strings.Contains(e.Text, c.do) {
-			t.Errorf("%s: empty %q / %q", c.name, e.Title, e.Text)
+		if e.Title != c.title || !strings.Contains(e.Detail, c.do) {
+			t.Errorf("%s: empty %q / %q", c.name, e.Title, e.Detail)
 		}
-		if strings.Contains(e.Title+e.Text, c.raw) || !strings.HasPrefix(footer, "详细信息：") || !strings.Contains(footer, c.raw) {
-			t.Errorf("%s: the raw error belongs in the footer only: %q / %q / %q", c.name, e.Title, e.Text, footer)
+		if strings.Contains(e.Title+e.Detail, c.raw) || !strings.HasPrefix(footer, "详细信息：") || !strings.Contains(footer, c.raw) {
+			t.Errorf("%s: the raw error belongs in the footer only: %q / %q / %q", c.name, e.Title, e.Detail, footer)
 		}
 		if !strings.Contains(raw, `"refresh"`) || strings.Contains(raw, fakeToken) {
 			t.Errorf("%s: page %s", c.name, raw)

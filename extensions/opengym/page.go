@@ -90,7 +90,7 @@ func caution(s string) wire.Component {
 // empty is an empty state (UI version 3) or, for an older app, a text.
 func empty(version int, title, detail string) wire.Component {
 	if version >= 3 {
-		return wire.Component{Type: wire.ComponentEmpty, Title: title, Text: detail, Icon: wire.NavIconHeart}
+		return wire.Component{Type: wire.ComponentEmpty, Title: title, Detail: detail, Icon: wire.NavIconHeart}
 	}
 	return text(strings.TrimSpace(title + "\n" + detail))
 }
