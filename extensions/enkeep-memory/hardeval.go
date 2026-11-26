@@ -108,6 +108,8 @@ func hardevalCmd(args []string) error {
 		return collabWhy(args[1:])
 	case "standing":
 		return hardevalStanding(args[1:])
+	case "l1-rebuild":
+		return hardevalL1Rebuild(args[1:])
 	}
 	return fmt.Errorf("unknown hardeval step %q", args[0])
 }

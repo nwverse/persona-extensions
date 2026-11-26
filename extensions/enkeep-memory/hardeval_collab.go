@@ -1054,6 +1054,7 @@ func collabRun(args []string) error {
 	fs := flag.NewFlagSet("hardeval collab-run", flag.ContinueOnError)
 	statePath := fs.String("state", "", "a copy of state.json (read only)")
 	ovPath := fs.String("overview", "", "patterns built before the cutoff (overview-backtest.json)")
+	ovDir := fs.String("overview-dir", "", "directory of time-clean L1 checkpoints <YYYY-MM-DD>.json (each incident uses the latest <= its day)")
 	cogDir := fs.String("cogpipe-dir", "", "the old pipeline's injected texts, one <YYYY-MM-DD>.md a build: each incident gets the last one before its day")
 	out := fs.String("out", "", "the directory collab-build wrote")
 	cmd := fs.String("model-cmd", "claude", "the model command line")
@@ -1080,6 +1081,10 @@ func collabRun(args []string) error {
 		return err
 	}
 	ov, _, err := heInputs(*ovPath, "")
+	if err != nil {
+		return err
+	}
+	ovs, err := collabOverviews(*ovDir)
 	if err != nil {
 		return err
 	}
@@ -1143,7 +1148,13 @@ func collabRun(args []string) error {
 			per, wrong, ask := map[string]float64{}, map[string]float64{}, map[string]float64{}
 			bytes := 0
 			for _, d := range days {
-				mems := heMemories(st, ov, collabCogFor(cogs, d), f, d, budget)
+				daySt := st
+				dayOv := ov
+				if len(ovs) > 0 {
+					daySt = sliceStateBefore(st, d)
+					dayOv = collabOverviewFor(ovs, d)
+				}
+				mems := heMemories(daySt, dayOv, collabCogFor(cogs, d), f, d, budget)
 				mem, incs := mems[arm], byDay[d]
 				var hubPage []memsrc.Entry
 				switch arm {
@@ -1151,13 +1162,13 @@ func collabRun(args []string) error {
 					mem = mems["resident"]
 					incs = slices.Clone(incs)
 					for i := range incs {
-						incs[i].Recall = names.recall(st, f, d, incs[i].Situation, mem, *recallBytes, arm == "recall")
+						incs[i].Recall = names.recall(daySt, f, d, incs[i].Situation, mem, *recallBytes, arm == "recall")
 						bytes += len(incs[i].Recall)
 						samples[bk+"/"+arm+"/"+incs[i].ID] = incs[i].Recall
 					}
 				case armDecisionsQuerySim:
 					mem = mems["resident"]
-					hubPage = collabHubPage1(st, ov, f, d, budget)
+					hubPage = collabHubPage1(daySt, dayOv, f, d, budget)
 				}
 				bytes += len(mem) * len(incs)
 				samples[bk+"/"+arm+"/"+d] = mem

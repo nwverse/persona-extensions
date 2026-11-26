@@ -50,7 +50,7 @@ For each principle give:
   - `communication`: how the user prefers to align, report, argue, or exchange information with people or the AI;
   else empty;
 - `default_contrast`, `holds_for_anyone`;
-- `members`: ids of the items whose quotes directly support this single principle (at least three);
+- `members`: ids of the items whose quotes directly support this single principle (usually at least three; one or two high-spread items are allowed when those items themselves already carry >=3 independent cross-scene sources across >=2 weeks);
 - `reason`: one line on why these items' quotes show the same choice.
 
 Do not invent or overstate: narrow and strictly quote-backed beats broad and speculative.
