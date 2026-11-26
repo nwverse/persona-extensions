@@ -297,11 +297,11 @@ func TestUnreachableComputerIsNotAFullnessWarning(t *testing.T) {
 	if row.Badge == nil || row.Badge.Tone != wire.TonePositive || !strings.HasPrefix(row.Badge.Text, "上次 宽裕") || strings.Contains(row.Badge.Text, "连不上") {
 		t.Errorf("badge next to the bar: %+v", row.Badge)
 	}
-	if row.Icon != "wifi" || !strings.HasPrefix(row.Subtitle, "现在连不上 · 下面是 11月6日 检查时的数") {
+	if row.Icon != "wifi" || !strings.HasPrefix(row.Subtitle, "刚刚检查时连不上这台电脑 · 下面是 11月6日 检查时的数") {
 		t.Errorf("row: icon %q subtitle %q", row.Icon, row.Subtitle)
 	}
 	for _, st := range v.Sections[1].Items[0].Stats {
-		if st.Label == "硬盘用了多少" && (st.Value != "1 台快满了" || !strings.Contains(st.Detail, "1 台现在连不上")) {
+		if st.Label == "硬盘用了多少" && (st.Value != "1 台快满了" || !strings.Contains(st.Detail, "1 台连不上")) {
 			t.Errorf("fullness stat: %+v", st)
 		}
 	}
@@ -323,7 +323,7 @@ func TestUnreachableComputerIsNotAFullnessWarning(t *testing.T) {
 	}
 	// Never checked and unreachable: a neutral badge, and the stat does not call it full.
 	ms := MachineStatus{Machine: &Machine{ID: "x"}, Level: HealthOffline}
-	if b := healthBadge(ms); b.Tone != wire.ToneNeutral || b.Text != "现在连不上" {
+	if b := healthBadge(ms); b.Tone != wire.ToneNeutral || b.Text != "连不上这台电脑" {
 		t.Errorf("never-checked offline badge: %+v", b)
 	}
 	if text, tone, n := fleetAlertSummary([]MachineStatus{ms}); tone != wire.ToneNeutral || n != 1 || strings.Contains(text, "满") {

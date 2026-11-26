@@ -386,7 +386,7 @@ func offlineNote(offline int) string {
 	if offline == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" · %d 台现在连不上", offline)
+	return fmt.Sprintf(" · %d 台连不上", offline)
 }
 
 // ---- Tab 1: Fleet Disk Overview ----
@@ -464,9 +464,9 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 		var subParts []string
 		// Reachability comes first, in words, apart from how full the disk is (bar and badge).
 		if lastKnown(ms) && ms.LastScannedAt != nil {
-			subParts = append(subParts, "现在连不上 · 下面是 "+d.shortDate(*ms.LastScannedAt)+" 检查时的数")
+			subParts = append(subParts, d.offlineWords(m)+" · 下面是 "+d.shortDate(*ms.LastScannedAt)+" 检查时的数")
 		} else if ms.Level == HealthOffline {
-			subParts = append(subParts, "现在连不上")
+			subParts = append(subParts, d.offlineWords(m))
 		}
 		if !m.IsLocal {
 			subParts = append(subParts, "远程电脑 "+m.Host)
@@ -518,7 +518,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 			sec.Footer = clip(footer, 1800)
 			if d.busy(m) {
 				// Only the running job's line: no buttons while it runs.
-				sec.Items = append(sec.Items, d.machineJobItems(m, retryHint{}, retryHint{})...)
+				sec.Items = append(sec.Items, d.machineJobItems(m, retryHint{}, retryHint{}, nil)...)
 				return sec
 			}
 			if ms.SafeBytes > 0 {
@@ -536,7 +536,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 				sec.Items = append(sec.Items, wire.Component{
 					Type:   wire.ComponentButton,
 					Key:    boundedKey("btn-scan-", m.ID),
-					Title:  "检查 " + machineLabel(m),
+					Title:  d.checkButton(m),
 					Action: &wire.Action{ID: "scan", Values: map[string]string{"m": m.ID}},
 				})
 			}
@@ -619,14 +619,15 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 					FormatBytes(ms.LastFreedBytes), ms.CleanCount, FormatBytes(ms.TotalFreedBytes))
 			}
 
-			// The buttons drawn below (only while nothing runs, as are the outcome lines).
-			sec.Items = append(sec.Items, d.machineJobItems(m, retryHint{button: "检查 " + machineLabel(m)}, retryHint{button: planText})...)
+			// The outcome lines, then the buttons they name (only while nothing runs), then a
+			// failed check's command.
+			var buttons []wire.Component
 			if !d.busy(m) {
-				sec.Items = append(sec.Items,
+				buttons = append(buttons,
 					wire.Component{
 						Type:   wire.ComponentButton,
 						Key:    boundedKey("btn-scan-", m.ID),
-						Title:  "检查 " + machineLabel(m),
+						Title:  d.checkButton(m),
 						Action: &wire.Action{ID: "scan", Values: map[string]string{"m": m.ID}},
 					},
 					wire.Component{
@@ -637,7 +638,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 					},
 				)
 				if ms.SafeBytes > 0 {
-					sec.Items = append(sec.Items, wire.Component{
+					buttons = append(buttons, wire.Component{
 						Type:  wire.ComponentButton,
 						Key:   boundedKey("btn-clean-", m.ID),
 						Title: fmt.Sprintf("删掉放心删的缓存（%s）", FormatBytes(ms.SafeBytes)),
@@ -649,6 +650,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 					})
 				}
 			}
+			sec.Items = append(sec.Items, d.machineJobItems(m, retryHint{button: d.checkButton(m)}, retryHint{button: planText}, buttons)...)
 			// Fall back to the compact card when expanding this machine would starve remaining machines past wire.ItemsMost.
 			if used+len(sec.Items)+rem*3 > fleetBudget {
 				sec = makeCompact()
@@ -690,18 +692,22 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 	ms := d.st.machineStatus(m)
 	head := d.machineHeaderOrText(ms, scan)
-	rescan := retryHint{button: "重新检查 " + machineLabel(m)}
-	top := wire.Section{Items: append([]wire.Component{head}, d.machineJobItems(m, rescan, rescan)...)}
+	rescan := retryHint{button: d.checkButton(m)}
+	top := wire.Section{Items: []wire.Component{head}}
 	if scan != nil && scan.Mount.TotalBytes > 0 {
 		top.Items = append(top.Items, machineProgressComponent(ms))
 	}
-	if !d.busy(m) {
-		top.Items = append(top.Items, wire.Component{
+	// The check button right after the line that names it; a computer never checked has it in
+	// the empty state below instead.
+	var buttons []wire.Component
+	if !d.busy(m) && (scan != nil || m.LastError != "") {
+		buttons = []wire.Component{{
 			Type:   wire.ComponentButton,
 			Title:  rescan.button,
 			Action: &wire.Action{ID: "scan", Values: map[string]string{"m": m.ID}},
-		})
+		}}
 	}
+	top.Items = append(top.Items, d.machineJobItems(m, rescan, rescan, buttons)...)
 	if scan == nil {
 		return []wire.Section{
 			top,
@@ -711,7 +717,7 @@ func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 					machineLabel(m)+" 还没检查",
 					"检查只读取大小，不会删除任何东西：看看系统盘用了多少，Go、Node/Python、Docker、Rust/Xcode 这些编译和下载缓存、系统日志，还有一周没动的 AI 对话各占多少。",
 					&wire.EmptyButton{
-						Title:  "检查 " + machineLabel(m),
+						Title:  d.checkButton(m),
 						Action: wire.Action{ID: "scan", Values: map[string]string{"m": m.ID}},
 					},
 				),
@@ -934,7 +940,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 	summarySec := wire.Section{
 		Title:  "先看看会删什么（不会真删）",
 		Footer: "「放心删」是能重新生成或重新下载的编译和下载缓存，以及系统日志里 7 天以前的部分、系统换下来的旧日志、临时文件夹里编译和安装剩下的文件（最近的也删）和临时文件夹里放了 7 天以上的文件（日志和临时文件删了就没有了，最近 7 天的系统日志会留着）；不包括 AI 对话。「建议先看」是比较大的东西（比如自动化测试用的浏览器），删了以后下次用到时会重新下载。",
-		Items:  append([]wire.Component{head}, d.machineJobItems(m, rescan, reclean)...),
+		Items:  append([]wire.Component{head}, d.machineJobItems(m, rescan, reclean, nil)...),
 	}
 	summarySec.Items = append(summarySec.Items, d.statComponents(boundedKey("plan-stats-", m.ID), []wire.Stat{
 		{Label: "还剩", Value: FormatBytes(scan.Mount.AvailableBytes), Detail: "系统盘 " + scan.Mount.MountPoint},
@@ -1303,10 +1309,10 @@ func (a *app) card(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 							ms.UsedPercent, FormatBytes(ms.AvailableBytes))
 					}
 					if lastKnown(ms) {
-						sub = "现在连不上 · 上次" + sub
+						sub = offlineText + " · 上次" + sub
 					}
 				} else if ms.Machine.LastError != "" {
-					sub = "连不上：" + sshProblem(ms.Machine, ms.Machine.LastError).Title
+					sub = offlineText + "：" + sshProblem(ms.Machine, ms.Machine.LastError).Title
 				}
 				items = append(items, wire.Component{
 					Type:     wire.ComponentRow,
@@ -1509,7 +1515,7 @@ func (d draw) machineHeaderComponent(ms MachineStatus, scan *Scan) wire.Componen
 	if scan != nil {
 		sub = fmt.Sprintf("系统盘 %s · %s检查", scan.Mount.MountPoint, d.when(scan.ScannedAt))
 		if lastKnown(ms) {
-			sub = fmt.Sprintf("现在连不上 · 系统盘 %s 的数是 %s 检查时的", scan.Mount.MountPoint, d.shortDate(scan.ScannedAt))
+			sub = fmt.Sprintf("%s · 系统盘 %s 的数是 %s 检查时的", d.offlineWords(m), scan.Mount.MountPoint, d.shortDate(scan.ScannedAt))
 		}
 	}
 	var badges []wire.Badge
@@ -1530,10 +1536,10 @@ func (d draw) machineHeaderComponent(ms MachineStatus, scan *Scan) wire.Componen
 
 // offlineBadge is a computer that does not answer now: neutral, so it never reads as a disk
 // that is filling up.
-func offlineBadge() *wire.Badge { return &wire.Badge{Text: "现在连不上", Tone: wire.ToneNeutral} }
+func offlineBadge() *wire.Badge { return &wire.Badge{Text: offlineText, Tone: wire.ToneNeutral} }
 
 // healthBadge is how full ms's disk is. A computer that cannot be reached shows its last check's
-// fullness, marked 上次, when there is one (its row says it cannot be reached), else 现在连不上.
+// fullness, marked 上次, when there is one (its row says it cannot be reached), else 连不上这台电脑.
 func healthBadge(ms MachineStatus) *wire.Badge {
 	if lastKnown(ms) {
 		b := healthBadge(MachineStatus{Level: fullnessLevel(ms), TotalBytes: ms.TotalBytes, UsedPercent: ms.UsedPercent})

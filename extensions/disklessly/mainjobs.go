@@ -158,11 +158,50 @@ func (d draw) busy(m *Machine) bool {
 	return ok && j.running()
 }
 
+// checkButton is the title of the 硬盘空间 page's button that checks m: 检查 the first time,
+// 重新检查 after a check that finished, 重试 after one that could not reach m. The AI 对话 page
+// names its button for a computer in the same situation the same way (coldProblem).
+func (d draw) checkButton(m *Machine) string {
+	switch {
+	case m.LastError != "":
+		return "重试 " + machineLabel(m)
+	case d.st.Scans[m.ID] != nil:
+		return "重新检查 " + machineLabel(m)
+	}
+	return "检查 " + machineLabel(m)
+}
+
+// failedWhen is when a check last found that m could not be reached, as the pages word a time,
+// or "" when that is not known: a failed check of this run of the extension, or the AI 对话
+// page's last check when that is the one that failed.
+func (d draw) failedWhen(m *Machine) string {
+	var t time.Time
+	if j, ok := d.jobs[m.ID]; ok && !j.running() && j.Err != "" && (j.Kind == jobScan || j.Kind == jobRefresh) {
+		t = j.Finished
+	}
+	if c := d.st.cold(m.ID); c != nil && c.stateCode() == ColdOffline && c.CheckedAt.After(t) {
+		t = c.CheckedAt
+	}
+	if t.IsZero() {
+		return ""
+	}
+	return d.when(t)
+}
+
+// offlineWords says that m cannot be reached, with when that was found when it is known.
+func (d draw) offlineWords(m *Machine) string {
+	if w := d.failedWhen(m); w != "" {
+		return w + "检查时" + offlineText
+	}
+	return offlineText
+}
+
 // machineJobItems draws, under a machine on the 硬盘空间 page, its running job, how its last
-// scan or cleanup ended and, after a failed probe, the problem with its command and 详情.
-// rescan and reclean name the buttons the caller draws next to it that check again and clean
-// again, so a failure's 「重试」 points at a button that is really there.
-func (d draw) machineJobItems(m *Machine, rescan, reclean retryHint) []wire.Component {
+// scan or cleanup ended and, after a failed probe, the problem; then buttons (the caller's,
+// drawn only while nothing runs), then the problem's command and 详情. rescan and reclean name
+// the buttons among them that check again and clean again, so a failure's 「重试」 points at a
+// button that is really there.
+func (d draw) machineJobItems(m *Machine, rescan, reclean retryHint, buttons []wire.Component) []wire.Component {
 	var items []wire.Component
 	j, hasJob := d.jobs[m.ID]
 	if hasJob && j.running() {
@@ -182,17 +221,29 @@ func (d draw) machineJobItems(m *Machine, rescan, reclean retryHint) []wire.Comp
 			raw = j.Raw
 		}
 	}
+	var command []wire.Component
 	if m.LastError != "" {
 		p := sshProblem(m, m.LastError).renamed(rescan)
+		failed := "上次检查没有成功："
+		if w := d.failedWhen(m); w != "" {
+			failed = w + "检查没有成功："
+		}
 		if sandboxed() && p.Cause == causeSandbox {
 			// The banner at the top already says it and gives the command.
-			items = append(items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: clip("上次检查没有成功："+p.Reason, 300)})
+			items = append(items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: clip(failed+p.Reason, 300)})
 		} else {
-			// What is wrong and what to do first, then the command as a secondary step.
-			items = append(items, wire.Component{Type: wire.ComponentText, Text: clip("上次检查没有成功："+p.lead(), 600)})
-			items = append(items, commandItems(detailsKey("scan", m.ID), p.CmdIntro, p.Command)...)
+			// What is wrong and what to do first; the command comes after the buttons.
+			text := failed + p.lead()
+			if c := d.st.cold(m.ID); m.Reachable && c != nil && reachedState(c.stateCode()) && !c.CheckedAt.IsZero() {
+				// A later check of the AI 对话 page reached it: this line is older.
+				text += "不过「" + sessionsTitle + "」页" + d.when(c.CheckedAt) + "检查时连上了它。"
+			}
+			items = append(items, wire.Component{Type: wire.ComponentText, Text: clip(text, 600)})
+			command = commandItems(detailsKey("scan", m.ID), p.CmdIntro, p.Command)
 		}
 		raw = strings.TrimSpace(p.Raw + "\n" + raw)
 	}
+	items = append(items, buttons...)
+	items = append(items, command...)
 	return append(items, d.detailsItems(detailsKey("scan", m.ID), raw)...)
 }

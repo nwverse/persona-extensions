@@ -628,7 +628,7 @@ func machinePlainTextSummary(ms MachineStatus, scan *Scan) string {
 		catLine = "能删的：" + strings.Join(catParts, "、")
 	}
 	if lastKnown(ms) {
-		name += "（现在连不上，下面是上次检查的数）"
+		name += "（" + offlineText + "，下面是上次检查的数）"
 	}
 	return fmt.Sprintf("%s [%s %.1f%%] 系统盘 %s 用了 %s / %s，还剩 %s，可以腾出 %s（其中放心删 %s）；%s",
 		name, healthLevelText(fullnessLevel(ms)), ms.UsedPercent, mp,

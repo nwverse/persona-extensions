@@ -110,6 +110,8 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	var capped bool
 	var lastCheck time.Time
 	byState := map[string]int{}
+	// The summary counts by the rows' badges: a state, or how a drive is down.
+	byLabel, labelRank, labelTone := map[string]int{}, map[string]int{}, map[string]string{}
 	var running []string
 	ready := 0
 	type machineRow struct {
@@ -122,6 +124,9 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 		cat := d.st.cold(mm.ID)
 		state := cat.stateCode()
 		byState[state]++
+		label := cat.pageLabel()
+		byLabel[label]++
+		labelRank[label], labelTone[label] = coldStateRank(state), coldStateTone(state)
 		if state == ColdReady {
 			ready++
 		}
@@ -165,16 +170,16 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	}
 
 	// The summary counts machines by state ("2 正常 · 2 未安装 CLI · 1 CLI 版本过旧"), worst first.
-	var states []string
-	for s := range byState {
-		states = append(states, s)
+	var labels []string
+	for l := range byLabel {
+		labels = append(labels, l)
 	}
-	slices.SortFunc(states, func(a, b string) int { return cmp.Compare(coldStateRank(a), coldStateRank(b)) })
+	slices.SortFunc(labels, func(a, b string) int { return cmp.Or(cmp.Compare(labelRank[a], labelRank[b]), cmp.Compare(a, b)) })
 	var parts []string
 	worst := wire.TonePositive
-	for _, s := range states {
-		parts = append(parts, fmt.Sprintf("%d %s", byState[s], coldStateLabel(s)))
-		if t := coldStateTone(s); t == wire.ToneDanger || (t == wire.ToneCaution && worst == wire.TonePositive) {
+	for _, l := range labels {
+		parts = append(parts, fmt.Sprintf("%d %s", byLabel[l], l))
+		if t := labelTone[l]; t == wire.ToneDanger || (t == wire.ToneCaution && worst == wire.TonePositive) {
 			worst = t
 		}
 	}
@@ -211,8 +216,12 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 			Text: clip("正在进行："+strings.Join(running, "、")+"。完成后页面会自动更新，可以先离开这页。", 300)})
 	}
 	// Where the upload is: under each ready computer's row below; say so, or why there is none.
+	shownLabel := ""
+	if m != nil {
+		shownLabel = d.st.cold(m.ID).pageLabel()
+	}
 	status.Items = append(status.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
-		Text: clip(offloadHint(m, ready, len(machines), byState, uploadTitle), 300)})
+		Text: clip(offloadHint(m, ready, len(machines), byState, uploadTitle, shownLabel), 300)})
 	if m == nil {
 		// One computer's own row below has its 重新检查 button.
 		status.Items = append(status.Items, wire.Component{
@@ -373,7 +382,7 @@ func (d draw) whereaboutsNote(m *Machine, unknown, missing int) string {
 // offloadHint says where the upload button is (under each ready computer's row), or why no
 // computer shown can upload now. upload is the button's title as drawn; "" while every ready
 // computer is busy.
-func offloadHint(m *Machine, ready, total int, byState map[string]int, upload string) string {
+func offloadHint(m *Machine, ready, total int, byState map[string]int, upload, label string) string {
 	if ready > 0 && upload == "" {
 		return "正在进行的事完成后，可以在电脑那一行把一周没动的 AI 对话搬到网盘。"
 	}
@@ -385,7 +394,7 @@ func offloadHint(m *Machine, ready, total int, byState map[string]int, upload st
 		if state == ColdReady {
 			return "要腾地方：点下面这台电脑的「" + upload + "」。"
 		}
-		return "「" + machineLabel(m) + "」现在还不能把对话搬到网盘（" + coldStateLabel(state) + "）：按下面这台电脑那一行的提示处理。"
+		return "「" + machineLabel(m) + "」现在还不能把对话搬到网盘（" + label + "）：按下面这台电脑那一行的提示处理。"
 	}
 	switch {
 	case total == 0:
@@ -434,7 +443,7 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 	case ColdNoCLI, ColdCLIOld:
 		a.docs = true
 		if state == ColdNoCLI {
-			a.Reason = name + "上还没装 Disklessly 的配套小工具（disklessly），所以这台电脑的旧对话还不能搬到网盘。"
+			a.Reason = name + "上还没装 Disklessly 的配套小工具 disklessly，所以它的旧对话还不能搬到网盘。"
 		} else {
 			a.Reason = name + "上的配套小工具 disklessly " + cmp.Or(shortVersion(cmp.Or(cat.CLI.Version, m.BinaryVersion)), "（版本不清楚）") +
 				" 太旧，还不会搬对话，需要升级。"
@@ -451,6 +460,9 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 		}
 		manual += brewInstallCmd
 		offer := installSourceFor(st, m)
+		recheck := "「重新检查 " + machineLabel(m) + "」"
+		// Each fact in a sentence of its own: whether it has Homebrew, whether another computer
+		// can lend its copy (and why not), what to tap.
 		switch {
 		case cat != nil && cat.Brew != "":
 			a.brew = true
@@ -460,24 +472,25 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 			a.CmdIntro = "点了以后，它会在" + name + "上运行这条命令（不用自己运行）："
 		case cat == nil || !cat.BrewKnown:
 			a.copy = offer
-			a.Next = "还不知道这台电脑有没有 Homebrew（一个装软件的工具）：先点「重新检查 " + machineLabel(m) + "」，有的话会出现「" + brewButtonTitle(a.upgrade) + "」。"
+			a.Next = "还不知道这台电脑有没有 Homebrew（一个装软件的工具）。先点" + recheck + "，有的话会出现「" + brewButtonTitle(a.upgrade) + "」。"
 			if offer.src != nil {
 				a.Next += "也可以直接点「从 " + machineLabel(offer.src) + " 复制过来」。"
 			} else {
-				a.Next += "现在也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。"
+				a.Next += installOfferReason(offer)
 			}
 		case offer.src != nil:
 			a.copy = offer
-			a.Next = fmt.Sprintf("这台电脑没有 Homebrew：点「从 %s 复制过来」，会从 %[3]s 复制 disklessly %[4]s 过来（两台都是 %[2]s）；也可以在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具。",
-				machineLabel(offer.src), platformLabel(offer.platform), machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本不清楚）"))
+			src := machineLabel(offer.src)
+			copyText := "点「从 " + src + " 复制过来」，会把「" + src + "」上的 " + offeredCLI(offer) + " 复制过来。两台都是 " + platformLabel(offer.platform) + "。"
+			a.Next = "这台电脑没有 Homebrew。" + copyText + "也可以在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具。"
 			a.Command = manual
-			a.Lead = a.Reason + fmt.Sprintf("这台电脑没有 Homebrew（一个装软件的工具），不过不用开终端：点「从 %s 复制过来」，会从 %[3]s 复制 disklessly %[4]s 过来（两台都是 %[2]s）。",
-				machineLabel(offer.src), platformLabel(offer.platform), machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本不清楚）"))
-			a.CmdIntro = "懂终端的话，也可以在" + name + "上运行下面的命令，先装 Homebrew（一个装软件的工具），再装配套小工具："
+			a.Lead = a.Reason + "这台电脑没有 Homebrew（一个装软件的工具），不过不用开终端。" + copyText
+			a.CmdIntro = "懂终端的话，也可以在" + name + "上运行下面的命令，先装 Homebrew，再装配套小工具："
 		default:
-			a.Next = "这台电脑没有 Homebrew，也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。请在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具，然后点「重新检查 " + machineLabel(m) + "」。"
+			a.Next = "这台电脑没有 Homebrew。" + installOfferReason(offer) + "请在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具，然后点" + recheck + "。"
 			a.Command = manual
-			a.Lead = a.Reason + "这台电脑没有 Homebrew（一个装软件的工具），也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。这一步页面上没有按钮能代劳，只能在" + name + "上开终端装一次（命令在下面，也可以看「怎么装配套小工具」）；装好后点「重新检查 " + machineLabel(m) + "」。"
+			a.Lead = a.Reason + "这台电脑没有 Homebrew（一个装软件的工具）。" + installOfferReason(offer) +
+				"这一步页面上没有按钮能代劳，只能在" + name + "上开终端装一次，命令在最下面。装好后点" + recheck + "。"
 			a.CmdIntro = "在" + name + "的终端里依次运行下面的命令：先装 Homebrew，再装配套小工具。"
 		}
 	case ColdNoBackend:
@@ -487,14 +500,15 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 	case ColdBackendDown:
 		b := cat.Backend
 		id := cmp.Or(b.ID, b.Type, "（未命名）")
-		a.Reason = name + "用的网盘（" + id + "）现在连不上，所以对话在不在网盘里暂时显示「暂时不确定」，不会当成丢了。"
+		// The computer answered; its network drive did not. Said apart from 连不上这台电脑.
+		a.Reason = "能连上" + name + "，但它连不上自己用的网盘（" + id + "），所以对话在不在网盘里暂时显示「暂时不确定」，不会当成丢了。"
 		a.Next = "确认网盘（或家里的 NAS）在线、网络通了，再点「重新检查 " + machineLabel(m) + "」；想看具体原因，在这台电脑上运行下面的命令。"
 		a.Command = "disklessly doctor"
 		a.Lead = a.Reason + "多半是：网盘（或家里的 NAS）关机、断网了，" + name + "暂时上不了网，或者网盘的登录过期了。先确认网盘在线、网络通了，再点「重新检查 " + machineLabel(m) + "」。"
 		a.CmdIntro = "懂终端的话，可以在" + name + "上运行这条命令看具体原因："
-		if strings.Contains(b.Error, "repo.json is not in") {
+		if noRepo(b) {
 			// The backend answers, but holds no Disklessly repository.
-			a.Reason = name + "用的网盘（" + id + "）能连上，但里面还没有 Disklessly 的存放目录（找不到 repo.json），所以暂时显示「暂时不确定」。"
+			a.Reason = name + "能连上自己用的网盘（" + id + "），但里面还没有 Disklessly 的存放目录，找不到 repo.json，所以暂时显示「暂时不确定」。"
 			a.Next = "多半是选错了网盘目录：在这台电脑上用下面的命令看看设置了哪些网盘，换成正确的那个；如果这就是要新用的目录，就在里面新建。然后点「重新检查 " + machineLabel(m) + "」。"
 			a.Command = "disklessly backend list\ndisklessly backend use <后端 ID>   # 换到已经在用的那个网盘\ndisklessly init                    # 或者：在当前网盘里新建存放目录"
 			a.Lead = a.Reason + "多半是这台电脑设置的网盘目录不对，比如换过网盘、改过路径。换回原来的目录这一步页面上没有按钮能代劳，只能在" + name + "上开终端做一次；做完点「重新检查 " + machineLabel(m) + "」。"
@@ -633,7 +647,7 @@ func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.
 		Key:   boundedKey("mach-", m.ID),
 		Icon:  "gauge",
 		Title: clip(cmp.Or(strings.TrimSpace(name), strings.TrimSpace(m.ID), "没起名的电脑"), 200),
-		Badge: &wire.Badge{Text: coldStateLabel(state), Tone: coldStateTone(state)},
+		Badge: &wire.Badge{Text: cat.pageLabel(), Tone: coldStateTone(state)},
 	}
 	var sub []string
 	if p := platformLabel(cmp.Or(catPlatform(cat), m.Platform)); p != "" {
@@ -646,6 +660,18 @@ func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.
 		sub = append(sub, d.when(cat.CheckedAt)+"检查")
 	} else if cat != nil && !cat.RefreshedAt.IsZero() {
 		sub = append(sub, d.when(cat.RefreshedAt)+"检查")
+	}
+	if !m.Reachable && m.LastError != "" && state != ColdOffline {
+		// The 硬盘空间 page found it unreachable after this page's check (which reached it, or
+		// never ran): say so, so the two pages do not seem to disagree.
+		when := "后来"
+		if state == ColdUnchecked {
+			when = ""
+		}
+		if j, ok := d.jobs[m.ID]; ok && j.Kind == jobScan && j.Err != "" && !j.running() {
+			when = d.when(j.Finished)
+		}
+		sub = append(sub, when+"「"+homeTitle+"」页检查时"+offlineText)
 	}
 	row.Subtitle = clip(strings.Join(sub, " · "), 400)
 
@@ -703,7 +729,7 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 
 	raw := adv.Raw
 	// A computer that is not ready leads with what is wrong and what to do, in a line of its
-	// own under its row; the commands come after, as a secondary step.
+	// own under its row; its buttons follow, and the commands come last, as a secondary step.
 	var lead []wire.Component
 	if state != ColdReady {
 		row.Detail = ""
@@ -732,7 +758,8 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 			}
 		}
 	}
-	items = append(items, commandItems(detailsKey("cold", m.ID), intro, command)...)
+	// The buttons come right after the plain line (and the last job's outcome) that names them;
+	// the command block, a step for people who use a terminal, comes after them.
 	// The upload: offered on a ready computer only; a failed upload offers a real retry.
 	switch {
 	case last != nil && last.Kind == jobOffload && last.Err != "" && state == ColdReady:
@@ -766,6 +793,7 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 	if adv.docs {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: "怎么装配套小工具", URL: coldInstallDocsURL})
 	}
+	items = append(items, commandItems(detailsKey("cold", m.ID), intro, command)...)
 	return append(items, d.detailsItems(detailsKey("cold", m.ID), raw)...)
 }
 
@@ -1097,7 +1125,7 @@ func (d draw) sessionsFallbackSummary(m *Machine, query string) string {
 	for _, mm := range d.st.Machines {
 		if (m == nil && mm.Enabled) || (m != nil && mm.ID == m.ID) {
 			cat := d.st.cold(mm.ID)
-			lines = append(lines, fmt.Sprintf("- %s：%s", machineLabel(mm), coldStateLabel(cat.stateCode())))
+			lines = append(lines, fmt.Sprintf("- %s：%s", machineLabel(mm), cat.pageLabel()))
 		}
 	}
 	return clip(strings.Join(lines, "\n"), 1950)

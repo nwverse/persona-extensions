@@ -51,12 +51,53 @@ func coldStateLabel(s string) string {
 	case ColdBackendDown:
 		return "网盘连不上"
 	case ColdOffline:
-		return "连不上这台电脑"
+		return offlineText
 	case ColdUnreadable:
 		return "配套小工具出错了"
 	}
 	return "还没检查"
 }
+
+// The two pages word the two facts apart the same way: the computer does not answer at all
+// (SSH failed), or it answers but its network drive does not.
+const (
+	offlineText     = "连不上这台电脑"
+	backendDownText = "这台电脑连不上网盘"
+)
+
+// coldStatePageLabel is a state's name on the pages. It is coldStateLabel (kept as it is for the
+// MCP answers' state_label) except for a computer that answers but whose network drive does not.
+func coldStatePageLabel(s string) string {
+	if s == ColdBackendDown {
+		return backendDownText
+	}
+	return coldStateLabel(s)
+}
+
+// reachedState reports a state of a refresh that reached the computer.
+func reachedState(s string) bool {
+	switch s {
+	case ColdReady, ColdNoCLI, ColdCLIOld, ColdNoBackend, ColdBackendDown:
+		return true
+	}
+	return false
+}
+
+// pageLabel is the page's name for the catalog's state; a network drive that answers but holds
+// no Disklessly repository is not called unreachable.
+func (c *ColdCatalog) pageLabel() string {
+	state := c.stateCode()
+	if state == ColdBackendDown && noRepo(c.Backend) {
+		return noRepoText
+	}
+	return coldStatePageLabel(state)
+}
+
+// noRepoText is the page's name for a network drive reached that holds no Disklessly repository.
+const noRepoText = "网盘里没有存放目录"
+
+// noRepo reports a backend that answers but holds no Disklessly repository.
+func noRepo(b ColdBackend) bool { return strings.Contains(b.Error, "repo.json is not in") }
 
 func coldStateTone(s string) string {
 	switch s {
@@ -191,9 +232,9 @@ func (c ColdCLI) selfContained() (bool, string) {
 	case c.Home == "" || c.Real == "":
 		return false, "不知道它装在哪里"
 	case !strings.HasPrefix(c.Home, "/") || !installDirName.MatchString(path.Base(c.Home)):
-		return false, "它装在 " + cmp.Or(c.Real, c.Path) + "，不是可以整体复制的独立目录（例如 Homebrew 或系统目录）"
+		return false, "它装在 " + cmp.Or(c.Real, c.Path) + "，不在一个能整体复制的单独文件夹里，比如是 Homebrew 或系统装的"
 	case c.KB == 0 || c.KB > maxInstallKB:
-		return false, "它的安装目录大小未知或过大"
+		return false, "它的安装文件夹大小不清楚或太大"
 	}
 	return true, ""
 }

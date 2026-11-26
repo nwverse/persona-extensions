@@ -137,7 +137,7 @@ func TestColdStateClassifier(t *testing.T) {
 			if err := wire.CheckView(v); err != nil {
 				t.Fatal(err)
 			}
-			if items[0].Badge == nil || items[0].Badge.Text != coldStateLabel(c.state) {
+			if items[0].Badge == nil || items[0].Badge.Text != coldStatePageLabel(c.state) {
 				t.Fatalf("badge %+v", items[0].Badge)
 			}
 			if strings.Contains(items[0].Badge.Text+items[0].Title, "EX_") {
@@ -370,7 +370,7 @@ func TestCopyInstallOffer(t *testing.T) {
 	if buttonIn(mini, "从 ") != nil {
 		t.Fatalf("mini-mac offered a copy: %+v", mini)
 	}
-	if says := rowSays(mini); !strings.Contains(says, "studio-mac") || !strings.Contains(says, "不能复制") {
+	if says := rowSays(mini); !strings.Contains(says, "studio-mac") || !strings.Contains(says, "也不能从别的电脑复制过来：") {
 		t.Fatalf("mini-mac reason: %s", says)
 	}
 	hasLink := false
