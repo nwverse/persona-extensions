@@ -697,8 +697,8 @@ func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 	if scan != nil && scan.Mount.TotalBytes > 0 {
 		top.Items = append(top.Items, machineProgressComponent(ms))
 	}
-	// The check button right after the line that names it; a computer never checked has it in
-	// the empty state below instead.
+	// The check button right after the line that names it; a computer never checked (and not
+	// found unreachable) has it in the empty state below instead.
 	var buttons []wire.Component
 	if !d.busy(m) && (scan != nil || m.LastError != "") {
 		buttons = []wire.Component{{
@@ -709,6 +709,13 @@ func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 	}
 	top.Items = append(top.Items, d.machineJobItems(m, rescan, rescan, buttons)...)
 	if scan == nil {
+		var empty *wire.EmptyButton
+		if len(buttons) == 0 {
+			empty = &wire.EmptyButton{
+				Title:  d.checkButton(m),
+				Action: wire.Action{ID: "scan", Values: map[string]string{"m": m.ID}},
+			}
+		}
 		return []wire.Section{
 			top,
 			{
@@ -716,10 +723,7 @@ func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 					"gauge",
 					machineLabel(m)+" 还没检查",
 					"检查只读取大小，不会删除任何东西：看看系统盘用了多少，Go、Node/Python、Docker、Rust/Xcode 这些编译和下载缓存、系统日志，还有一周没动的 AI 对话各占多少。",
-					&wire.EmptyButton{
-						Title:  d.checkButton(m),
-						Action: wire.Action{ID: "scan", Values: map[string]string{"m": m.ID}},
-					},
+					empty,
 				),
 			},
 		}
