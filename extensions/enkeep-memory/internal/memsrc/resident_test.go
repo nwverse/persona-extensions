@@ -127,3 +127,42 @@ func TestResidentPatternShare(t *testing.T) {
 		t.Errorf("a fragment under the floor filled the room: %v", ids)
 	}
 }
+
+// One class of lines takes at most GroupShare of the room (0.2.6), whatever their scores.
+func TestResidentGroupShare(t *testing.T) {
+	var cs []Candidate
+	for i := 0; i < 10; i++ {
+		c := cand(fmt.Sprint("a", i), entry.KindRules, 95, 150)
+		c.Group = "interaction:autonomy"
+		cs = append(cs, c)
+	}
+	other := cand("o0", entry.KindRules, 60, 150)
+	other.Group = "interaction:verification"
+	cs = append(cs, other)
+	got := ResidentWithin(cs, 4096, ResidentMostFor(4096))
+	n, in := 0, false
+	for _, c := range got {
+		switch c.Group {
+		case "interaction:autonomy":
+			n++
+		case "interaction:verification":
+			in = true
+		}
+	}
+	if most := int(float64(4096)*GroupShare) / 153; n != most || !in {
+		t.Errorf("autonomy lines %d (want %d), the other class in: %v", n, most, in)
+	}
+}
+
+// A rule's exception stands with it, whole, also when the line is cut (0.2.6).
+func TestResidentTextKeepsException(t *testing.T) {
+	e := &entry.Entry{Facet: entry.Interaction, Text: strings.Repeat("做完一轮不要停下等批准，", 12), Exception: "只有涉及线上、对外可见、删数据时才停"}
+	line := ResidentText(e)
+	if !strings.HasSuffix(line, "（例外：只有涉及线上、对外可见、删数据时才停）") || len(line) > residentTextMost+3 {
+		t.Errorf("line %q (%d bytes)", line, len(line))
+	}
+	e.Text = "做完一轮不要停下等批准，只有涉及线上、对外可见、删数据时才停。"
+	if strings.Contains(ResidentText(e), "例外") {
+		t.Error("an exception already in the text is not said twice")
+	}
+}

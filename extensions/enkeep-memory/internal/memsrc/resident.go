@@ -23,7 +23,11 @@ import (
 const (
 	ResidentBytes      = 1400
 	UnderstandingShare = 0.4
-	ResidentMost       = 12
+	// GroupShare is the most of the room one class of lines takes (a facet and its type, so "autonomy" rules or
+	// "dispatch" rules, whatever the type is called; 0.2.6): a run of rules saying one thing in other words, or one
+	// kind of occasion, does not crowd out the others.
+	GroupShare   = 0.2
+	ResidentMost = 12
 	// residentTextMost is the longest line of the set, in bytes.
 	residentTextMost = 240
 	// sameRule is how alike two lines' words are to be one.
@@ -52,6 +56,8 @@ type Candidate struct {
 	Last string
 	// Pattern marks an overview pattern (ov:pattern:…): offered PatternShare of the room first.
 	Pattern bool
+	// Group is the class GroupShare caps ("<facet>:<type>"); "" is capped by nothing.
+	Group string
 }
 
 // Resident picks the standing set from cands: the ids in rank order (highest first) with the text each stands with.
@@ -94,6 +100,7 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 	}
 	used := 0
 	patterns := int(float64(total) * PatternShare)
+	groups, groupMost := map[string]int{}, int(float64(total)*GroupShare)
 	pass := func(spill, onlyPatterns bool) {
 		for _, c := range cands {
 			if len(chosen) >= most {
@@ -106,6 +113,9 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 			if used+size > total || (onlyPatterns && size > patterns) {
 				continue
 			}
+			if c.Group != "" && groups[c.Group]+size > groupMost {
+				continue
+			}
 			if onlyPatterns {
 				patterns -= size
 			}
@@ -116,6 +126,7 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 				quota[c.Kind] -= size
 			}
 			used += size
+			groups[c.Group] += size
 			taken[c.ID] = true
 			chosen = append(chosen, c)
 		}
@@ -147,7 +158,7 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 // ResidentText is the line an entry stands with: for the understanding, its principle first, then the choice it
 // shows; for a rule, what the assistant does. At most residentTextMost bytes.
 func ResidentText(e *entry.Entry) string {
-	line := strings.TrimSpace(recall.Line(e))
+	line := strings.TrimSpace(recall.Head(e))
 	if p := e.Principle(); p != "" && entry.KindOf(e) == entry.KindUnderstanding && e.User == nil {
 		ex := strings.TrimSpace(e.Choice)
 		if s := strings.TrimSpace(e.Situation); s != "" && ex != "" {
@@ -158,7 +169,12 @@ func ResidentText(e *entry.Entry) string {
 		}
 		line = "原则：" + strings.TrimRight(p, "。.") + "（如 " + strings.TrimRight(ex, "。.") + "）"
 	}
-	return clipBytes(line, residentTextMost)
+	// The exception stays whole: what is cut is the rest of the line (0.2.6).
+	x := recall.Exception(e)
+	if len(x) >= residentTextMost/2 {
+		x = ""
+	}
+	return clipBytes(line, residentTextMost-len(x)) + x
 }
 
 // clipBytes cuts s to at most n bytes at a rune boundary.
@@ -184,7 +200,8 @@ func CuratedCandidate(st *store.State, e *entry.Entry, tpl map[string]bool) (Can
 			k = entry.KindUnderstanding
 		}
 	}
-	if k == "" || !export.Usable(st, e) || !Pool(st, e) || (!e.Pinned && entry.TemplateOnly(e, tpl)) {
+	if k == "" || !export.Usable(st, e) || !Pool(st, e) || (!e.Pinned && entry.TemplateOnly(e, tpl)) ||
+		(!e.Pinned && entry.CoveredBy(e) != "" && coverLive(st, e)) {
 		return Candidate{}, false
 	}
 	if cats, space, _ := Tags(st, e); len(cats) > 0 || space != "" {
@@ -194,7 +211,31 @@ func CuratedCandidate(st *store.State, e *entry.Entry, tpl map[string]bool) (Can
 	for _, ev := range e.Evidence {
 		days[ev.Day] = true
 	}
-	return Candidate{ID: e.ID, Text: ResidentText(e), Kind: k, Score: entry.Score(e), Days: len(days), Last: e.Last}, true
+	return Candidate{ID: e.ID, Text: ResidentText(e), Kind: k, Score: entry.Score(e), Days: len(days), Last: e.Last,
+		Group: GroupOf(st, e)}, true
+}
+
+// coverLive: the rule that covers e is still there to stand in its place (when it went, e stands again).
+func coverLive(st *store.State, e *entry.Entry) bool {
+	x := st.Entries[entry.CoveredBy(e)]
+	return x != nil && x.Live()
+}
+
+// GroupOf is the class an entry's line counts towards in the standing set: its facet and its type as the type table
+// names it now (a renamed type under its new name); "" without a type.
+func GroupOf(st *store.State, e *entry.Entry) string {
+	name := strings.TrimSpace(e.Type)
+	if name == "" {
+		return ""
+	}
+	for i := 0; i < 8 && st != nil; i++ {
+		j := slices.IndexFunc(st.Types[e.Facet], func(t entry.TypeDef) bool { return norm.Q(t.Name) == norm.Q(name) })
+		if j < 0 || st.Types[e.Facet][j].Renamed == "" {
+			break
+		}
+		name = st.Types[e.Facet][j].Renamed
+	}
+	return string(e.Facet) + ":" + norm.Q(name)
 }
 
 // Quote is a line of the user's own words behind e, for recall on demand ("原话：「…」(day)"); "" when it rests on

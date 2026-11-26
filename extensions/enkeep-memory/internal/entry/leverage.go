@@ -338,3 +338,18 @@ func Hard(e *Entry) bool {
 	}
 	return false
 }
+
+// FlagCoveredBy marks a rule the weekly or daily rule merge found to say what another one says, when it could not be
+// merged away (the assistant's hand-written memory, or the user's own): it stays and is recalled, but does not stand
+// beside the one that covers it (0.2.6). The covering entry's id follows the colon.
+const FlagCoveredBy = "covered_by:"
+
+// CoveredBy is the id of the rule that covers e, "" when none does.
+func CoveredBy(e *Entry) string {
+	for _, f := range e.Flags {
+		if strings.HasPrefix(f, FlagCoveredBy) {
+			return strings.TrimPrefix(f, FlagCoveredBy)
+		}
+	}
+	return ""
+}

@@ -1,5 +1,24 @@
 # enkeep-memory changelog
 
+## 0.2.6
+
+- **Rules keep when they do not hold.** An entry's exception (read into its own field) was dropped at every exit, so
+  a standing "do not stop to ask" went without "only when it is live, public or deletes data". Rules, ways of working
+  and choices now carry it, `（例外：…）`, in the standing set, memory.entries and the exits; the standing line cuts its
+  other words first, never the exception.
+- **Rules saying one thing in other words are made one.** A rule merge puts the assistant's rules that compete for the
+  standing set (settled or hard, across types and grains) to the model together, after each daily pass whose rules
+  changed and in the weekly pass. Rules telling the assistant to do the same thing on the same kind of occasion become
+  one: the strongest stays, with one sentence for the default and every condition under which it does not hold that
+  any of them or the user's lines state. A rule the assistant's own memory or the user wrote is marked covered by it
+  instead of merged away, and stands again if the covering rule goes. Every merge is an event and undoable.
+- **One class takes at most a fifth of the standing room.** A facet and its type (as the type table names it) is a
+  class; no class fills more than 20% of the room, whatever its scores.
+- **Rules are found by their occasion.** A rule's subjects carry the words of its moment (派活 / dispatch, 汇报 /
+  report, 提问 / ask, 开工 / task…) and its type, so a decisions_query tag of one occasion word brings them in; exit
+  A's recall line says to query by occasion before dispatching, reporting or asking.
+- **Evaluation.** `hardeval merge-rules` runs the rule merge on a copy of the state (`-before` an evaluation's cutoff).
+
 ## 0.2.5
 
 - **The standing set ranks rules by leverage, and gives rules the larger share.** Hard rules scored exactly 90, and

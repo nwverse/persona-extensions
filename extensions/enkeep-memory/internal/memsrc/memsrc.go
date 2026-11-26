@@ -422,8 +422,31 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 			add(sc.Name)
 		}
 	}
+	// The occasion a rule is for (0.2.6): decisions_query matches its tag's words as substrings of the text, the
+	// subjects, the facet and the categories, so "派活" or "汇报" in a tag brings the rules for that moment in.
+	if entry.KindOf(e) == entry.KindRules || e.Facet == entry.Workflow {
+		for _, w := range momentWords[e.Impact.Moment] {
+			add(w)
+		}
+		if g := GroupOf(st, e); g != "" && !genericTypes[e.Type] {
+			add(strings.TrimPrefix(g, string(e.Facet)+":"))
+		}
+	}
 	return out
 }
+
+// momentWords are the words a query for an occasion would use, in both languages.
+var momentWords = map[string][]string{
+	"ask_user":     {"提问", "问用户", "ask"},
+	"report":       {"汇报", "report"},
+	"dispatch":     {"派活", "dispatch"},
+	"task_start":   {"开工", "task"},
+	"reply_person": {"回复", "reply"},
+	"use_object":   {"工具", "tool"},
+}
+
+// genericTypes name no occasion: a correction can be of anything.
+var genericTypes = map[string]bool{"": true, "correction": true, "preference": true, "纠正": true}
 
 // Counts summarises a source's pool: entries, active, standing, and Backfilled: read before the 0.2.0-beta.40 tagging
 // rules and tagged by them now (Tags).
