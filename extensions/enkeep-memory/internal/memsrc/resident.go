@@ -40,20 +40,23 @@ const (
 	HotSlotMax      = 3
 	HotSlotTTLDays  = 7
 
-	// ContractShare is Bucket 1's nominal share of the room left after Bucket 0 (50%; Bucket 2 gets the rest).
-	ContractShare = 0.50
-	// PolarityShare caps any single contract polarity (act/check/communicate/route) within Bucket 1's effective room.
+	// ContractShare is Bucket 1's nominal share of the room left after Bucket 0 (70%; Bucket 2 gets 30%).
+	ContractShare = 0.70
+	// ToolsFloorShare reserves a minimum share of Bucket 1 for ② tools global rules so interaction rules never starve them.
+	ToolsFloorShare = 0.15
+	// PolarityShare is the default cap for an unspecified contract polarity; specific polarities use polarityShareOf
+	// (check <= 45%, communicate <= 30%, act <= 25%, route <= 25%) to eliminate act-bias wrong actions.
 	PolarityShare = 0.35
 	// DimensionShare caps any single cognitive dimension within Bucket 2's first pass.
 	DimensionShare = 0.35
 	// GroupShare caps any single non-generic occasion/type class ("<facet>:<type>") within a bucket's effective room.
 	GroupShare = 0.20
 
-	// Per-line maximum lengths in bytes by bucket (unified design §2.1).
-	HotTextMost       = 220
-	ContractTextMost  = 200
-	PrincipleTextMost = 220
-	residentTextMost  = 220
+	// Per-line maximum lengths in bytes by bucket (unified design §2.1): wide enough to keep concrete bans + exceptions intact.
+	HotTextMost       = 280
+	ContractTextMost  = 300
+	PrincipleTextMost = 280
+	residentTextMost  = 280
 
 	// sameRule is the bigram Jaccard threshold above which two standing lines are treated as duplicates.
 	sameRule = 0.45
@@ -91,10 +94,46 @@ type Candidate struct {
 	Hard bool
 	// Polarity is a contract's action direction (act/check/communicate/route).
 	Polarity string
+	// Facet is the source facet ("interaction", "tools", "judgement", ...), used for the ② tools floor in Bucket 1.
+	Facet string
 	// Dimension is a principle's cognitive dimension (decision/thinking/reaction/attention/communication).
 	Dimension string
 	// Group is the non-generic class GroupShare caps ("<facet>:<type>"); "" is uncapped.
 	Group string
+}
+
+// polarityShareOf returns the directional budget cap within Bucket 1 (unified design §2.1):
+// verification/boundary rules get the widest headroom (45%) while autonomous-push rules are tightened to 25%.
+func polarityShareOf(pol string) float64 {
+	switch pol {
+	case "check":
+		return 0.45
+	case "communicate":
+		return 0.30
+	case "act":
+		return 0.25
+	case "route":
+		return 0.25
+	default:
+		return PolarityShare
+	}
+}
+
+// StandingPrefix returns the lightweight semantic tier tag prepended to L1 standing lines so the answering model
+// distinguishes non-negotiable verification/action rules from trade-off principles (unified design §2.1).
+func StandingPrefix(bucket string, hard bool, polarity string) string {
+	switch bucket {
+	case BucketContract:
+		if hard && polarity == "check" {
+			return "【硬·核验】"
+		}
+		if hard {
+			return "【硬】"
+		}
+	case BucketPrinciple:
+		return "【原则】"
+	}
+	return ""
 }
 
 func (c Candidate) bucket() string {
@@ -236,64 +275,86 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 		}
 	}
 
-	fillContracts := func(budget int) {
-		polCap := int(float64(budget) * PolarityShare)
+	tryAddContract := func(c Candidate, budget int) bool {
+		if taken[c.ID] || alike(c) {
+			return false
+		}
+		size := len(c.Text) + residentOverhead
+		if cUsed+size > budget || hotUsed+pUsed+cUsed+size > total {
+			return false
+		}
+		if c.Polarity != "" {
+			polCap := int(float64(budget) * polarityShareOf(c.Polarity))
+			if polCap > 0 && cPols[c.Polarity]+size > polCap {
+				return false
+			}
+		}
 		grpCap := int(float64(budget) * GroupShare)
+		if c.Group != "" && grpCap > 0 && cGroups[c.Group]+size > grpCap {
+			return false
+		}
+		cUsed += size
+		if c.Polarity != "" {
+			cPols[c.Polarity] += size
+		}
+		if c.Group != "" {
+			cGroups[c.Group] += size
+		}
+		taken[c.ID] = true
+		cChosen = append(cChosen, c)
+		allChosen = append(allChosen, c)
+		return true
+	}
+
+	fillContracts := func(budget int) {
+		// Reserve a floor for ② tools global rules first so interaction rules never crowd them out.
+		toolsCap := int(float64(budget) * ToolsFloorShare)
+		toolsUsed := 0
+		for _, c := range contractPool {
+			if atMost() || toolsUsed >= toolsCap {
+				break
+			}
+			if c.Facet != string(entry.Tools) {
+				continue
+			}
+			if tryAddContract(c, budget) {
+				toolsUsed += len(c.Text) + residentOverhead
+			}
+		}
 		for _, c := range contractPool {
 			if atMost() {
 				return
 			}
-			if taken[c.ID] || alike(c) {
-				continue
-			}
-			size := len(c.Text) + residentOverhead
-			if cUsed+size > budget || hotUsed+pUsed+cUsed+size > total {
-				continue
-			}
-			if c.Polarity != "" && polCap > 0 && cPols[c.Polarity]+size > polCap {
-				continue
-			}
-			if c.Group != "" && grpCap > 0 && cGroups[c.Group]+size > grpCap {
-				continue
-			}
-			cUsed += size
-			if c.Polarity != "" {
-				cPols[c.Polarity] += size
-			}
-			if c.Group != "" {
-				cGroups[c.Group] += size
-			}
-			taken[c.ID] = true
-			cChosen = append(cChosen, c)
-			allChosen = append(allChosen, c)
+			tryAddContract(c, budget)
 		}
 	}
 
-	// Step 2: Fill each main bucket within its nominal 50% budget.
-	// Bucket 2 (Principles): pass 1 with 35% dimension cap, pass 2 (qualified L1 only) fills leftover within pBase.
+	// Step 2: Fill Bucket 2 (Principles, 30%) pass 1 with 35% dimension cap (no second-pass padding yet so leftover
+	// room goes to collaboration contracts first), then fill Bucket 1 (Contracts, 70% + unused principle room).
 	fillPrinciples(pBase, false)
-	if pIsL1 && pUsed < pBase {
-		fillPrinciples(pBase, true)
-	}
-	// Bucket 1 (Contracts): single polarity <= 35%, non-generic group <= 20%.
-	fillContracts(cBase)
-
-	// Step 3: Bidirectional L1 spillover (unified design §2.1).
-	// When one bucket leaves room unused, transfer it to the other bucket ONLY if the receiving bucket is an L1 bucket.
-	// Never spill leftover L1 room into L0 fragments.
+	cEff := cBase
 	if pLeft := pBase - pUsed; pLeft > 0 && cIsL1 {
-		fillContracts(cBase + pLeft)
+		cEff += pLeft
 	}
-	if cLeft := cBase - cUsed; cLeft > 0 && pIsL1 {
-		pEff := pBase + cLeft
+	fillContracts(cEff)
+
+	// Step 3: If contracts still leave room unused and principles are L1, spill back into principles (pass 1 + pass 2).
+	// Never spill leftover L1 room into L0 fragments.
+	if remLeft := rem - pUsed - cUsed; remLeft > 0 && pIsL1 {
+		pEff := pUsed + remLeft
 		fillPrinciples(pEff, false)
 		if pUsed < pEff {
 			fillPrinciples(pEff, true)
 		}
 	}
 
-	// Step 4: Output order — Hot Slot first (ranks 995..990), then Bucket 1 (Contracts) and Bucket 2 (Principles)
-	// strictly interleaved from rank 989 downward so any upstream budget trim scales both buckets together.
+	// Step 4: Output order — Hot Slot first (ranks 995..990), then Bucket 1 (Contracts, with Hard+check verification
+	// redlines placed first) and Bucket 2 (Principles) interleaved from rank 989 downward.
+	sort.SliceStable(cChosen, func(i, j int) bool {
+		ai := cChosen[i].Hard && cChosen[i].Polarity == "check"
+		aj := cChosen[j].Hard && cChosen[j].Polarity == "check"
+		return ai && !aj
+	})
 	out := make([]Candidate, 0, len(hotChosen)+len(cChosen)+len(pChosen))
 	out = append(out, hotChosen...)
 	for i := 0; i < len(cChosen) || i < len(pChosen); i++ {
@@ -326,11 +387,15 @@ func sortHot(cs []Candidate) {
 func sortContracts(cs []Candidate) {
 	sort.SliceStable(cs, func(i, j int) bool {
 		a, b := cs[i], cs[j]
+		if a.Score != b.Score {
+			return a.Score > b.Score
+		}
 		if a.Hard != b.Hard {
 			return a.Hard
 		}
-		if a.Score != b.Score {
-			return a.Score > b.Score
+		aCheck, bCheck := a.Polarity == "check", b.Polarity == "check"
+		if aCheck != bCheck {
+			return aCheck
 		}
 		if a.Last != b.Last {
 			return a.Last > b.Last

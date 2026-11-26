@@ -234,14 +234,46 @@ func TestResidentContractPolarityAndGroupCaps(t *testing.T) {
 		}
 	}
 	cEff := room - pBytes
-	if polBytes["act"] > int(float64(cEff)*PolarityShare) {
-		t.Errorf("act polarity bytes %d exceeded 35%% of effective contract budget %d", polBytes["act"], cEff)
+	if polBytes["act"] > int(float64(cEff)*0.25) {
+		t.Errorf("act polarity bytes %d exceeded 25%% of effective contract budget %d", polBytes["act"], cEff)
 	}
 	if grpBytes["interaction:autonomy"] > int(float64(cEff)*GroupShare) {
 		t.Errorf("group autonomy bytes %d exceeded 20%% of effective contract budget %d", grpBytes["interaction:autonomy"], cEff)
 	}
 	if polBytes["check"] == 0 || polBytes["communicate"] == 0 || polBytes["route"] == 0 {
 		t.Errorf("expected all four polarities represented, got %v", polBytes)
+	}
+}
+
+// ② tools contracts get a 15% floor in Bucket 1 even when interaction hard rules score higher, and Hard+check redlines
+// appear at the front of the contract output.
+func TestResidentToolsFloorAndCheckRedline(t *testing.T) {
+	var cs []Candidate
+	for i := 0; i < 15; i++ {
+		c := cand(fmt.Sprintf("i%d", i), entry.KindRules, 140-i, 200)
+		c.Facet = string(entry.Interaction)
+		c.Hard = true
+		c.Polarity = "act"
+		if i == 5 {
+			c.Polarity = "check"
+		}
+		cs = append(cs, c)
+	}
+	tool := cand("t1", entry.KindRules, 75, 180)
+	tool.Facet = string(entry.Tools)
+	tool.Polarity = "route"
+	cs = append(cs, tool)
+
+	got := ResidentWithin(cs, 4096, ResidentMostFor(4096))
+	var ids []string
+	for _, c := range got {
+		ids = append(ids, c.ID)
+	}
+	if !slices.Contains(ids, "t1") {
+		t.Fatalf("tools contract was starved despite ToolsFloorShare: %v", ids)
+	}
+	if len(got) == 0 || got[0].ID != "i5" {
+		t.Fatalf("expected Hard+check redline i5 first, got %v", ids)
 	}
 }
 

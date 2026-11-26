@@ -389,6 +389,9 @@ func gate(p *Pattern, t tally) string {
 		}
 		return ""
 	}
+	if t.hasUserOwned && len(t.sources) >= 2 && !p.HoldsForAnyone {
+		return ""
+	}
 	switch {
 	case len(t.sources) == 0:
 		return GateEmpty

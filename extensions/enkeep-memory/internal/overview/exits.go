@@ -36,25 +36,43 @@ func independentQuotes(p *Pattern) int {
 	return p.SourcesCount
 }
 
-// Score ranks a used L1 pattern within its standing bucket (unified design §2.1):
-//   - Hard contract:     100 + min(30, violation_count*6) + min(20, scenes*4)
-//   - Regular contract:  lifecycle(core:30 / scoped:24) + min(25, scenes*4) + min(25, quotes*3) + min(20, weeks*4)
-//   - Principle:         lifecycle(core:30 / scoped:26) + min(25, scenes*5) + min(20, weeks*4) + min(15, quotes*2) + hasPolesOrException(10)
+// Score ranks a used L1 pattern within its standing bucket by multi-dimensional leverage (unified design §2.1):
+//   - Hard contract:     80 + min(20, viol*4) + min(24, scenes*6) + min(16, quotes*2) + owned(15) + check(6);
+//                        capped at 99 when confined to a single scene and not user-owned (prevents narrow incidents
+//                        from crowding out cross-scene general rules).
+//   - Regular contract:  lifecycle(core:30 / scoped:24) + min(24, scenes*6) + min(20, quotes*2) + min(16, weeks*4) + owned(20)
+//   - Principle:         lifecycle(core:30 / scoped:26) + min(25, scenes*5) + min(20, weeks*4) + min(15, quotes*2)
+//                        + hasPolesOrException(10) + owned(18) + thinkingOrAttention(8)
 func Score(p *Pattern) int {
 	if p == nil || !p.Used() {
 		return 0
 	}
 	quotes := independentQuotes(p)
 	weeks := len(p.ActiveWeeks)
+	owned := len(p.CoveredIDs) > 0
 	if p.IsContract() {
 		if p.Hard {
-			return 100 + min(30, p.ViolationCount*6) + min(20, p.ScenesCount*4)
+			s := 80 + min(20, p.ViolationCount*4) + min(24, p.ScenesCount*6) + min(16, quotes*2)
+			if owned {
+				s += 15
+			}
+			if p.Polarity == PolarityCheck {
+				s += 6
+			}
+			if p.ScenesCount <= 1 && !owned {
+				s = min(s, 99)
+			}
+			return s
 		}
 		base := 24
 		if p.Lifecycle == Core {
 			base = 30
 		}
-		return base + min(25, p.ScenesCount*4) + min(25, quotes*3) + min(20, weeks*4)
+		s := base + min(24, p.ScenesCount*6) + min(20, quotes*2) + min(16, weeks*4)
+		if owned {
+			s += 20
+		}
+		return s
 	}
 	base := 26
 	if p.Lifecycle == Core {
@@ -62,7 +80,13 @@ func Score(p *Pattern) int {
 	}
 	bonus := 0
 	if poleText(p.Poles) != "" || strings.TrimSpace(p.Exception) != "" {
-		bonus = 10
+		bonus += 10
+	}
+	if owned {
+		bonus += 18
+	}
+	if p.Dimension == "thinking" || p.Dimension == "attention" {
+		bonus += 8
 	}
 	return base + min(25, p.ScenesCount*5) + min(20, weeks*4) + min(15, quotes*2) + bonus
 }

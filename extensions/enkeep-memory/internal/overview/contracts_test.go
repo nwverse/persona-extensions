@@ -509,3 +509,25 @@ func TestClusterCandidatesRoundRobin(t *testing.T) {
 		t.Fatalf("general bucket was starved out of batches by large decision bucket")
 	}
 }
+
+// Abstract tools rules and user-owned rules must enter contractCandidates, and user-owned judgement entries must enter
+// the core_owned priority cluster in clusterCandidates.
+func TestAbstractAndOwnedCandidatesIncluded(t *testing.T) {
+	tAbs := &entry.Entry{
+		ID: "t-abs", Facet: entry.Tools, Grain: entry.Abstract, Text: "offload heavy builds to dedicated gate host",
+		Status: entry.Stable, Origin: entry.Behavior, First: "2026-08-01", Last: "2026-11-20", Count: 50, Tagged: true,
+		Evidence: []entry.Evidence{{Source: entry.SrcAgent, Ref: "a/1", Day: "2026-11-10", Who: entry.WhoSelf, Quote: "重活上专用门禁机"}},
+	}
+	jOwned := action("j-owned", entry.Judgement, "alpha", entry.SrcMemory, "2026-10-01", "design from first principles")
+	jOwned.Origin = entry.Handwritten
+	st := state(tAbs, jOwned)
+
+	picked := contractCandidates(st, "")
+	if len(picked) != 1 || picked[0].ID != "t-abs" {
+		t.Fatalf("expected abstract tools rule in contractCandidates, got %+v", picked)
+	}
+	batches := clusterCandidates([]candidate{{e: jOwned, t: tally{sources: []string{"a", "b"}}}})
+	if len(batches) == 0 || batches[0][0].label != "core_owned" {
+		t.Fatalf("expected user-owned principle in core_owned cluster, got %+v", batches)
+	}
+}

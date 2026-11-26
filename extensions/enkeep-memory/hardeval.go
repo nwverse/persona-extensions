@@ -473,11 +473,13 @@ func heMemories(st *store.State, ov *overview.State, cog []string, f heFilter, c
 				if quotes <= 0 {
 					quotes = p.SourcesCount
 				}
+				prefix := memsrc.StandingPrefix(bucket, p.Hard, p.Polarity)
 				ovCands = append(ovCands, memsrc.Candidate{
 					ID:        p.ID,
-					Text:      memsrc.FormatResidentLine(p.Text, suffix, maxBytes),
+					Text:      memsrc.FormatResidentLine(prefix+strings.TrimSpace(p.Text), suffix, maxBytes),
 					Kind:      k,
 					Bucket:    bucket,
+					Facet:     p.Facet,
 					L1:        true,
 					Hard:      p.Hard,
 					Score:     overview.Score(p),

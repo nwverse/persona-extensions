@@ -881,11 +881,12 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 			bucket = BucketContract
 			maxBytes = ContractTextMost
 		}
+		prefix := StandingPrefix(bucket, x.Hard, x.Polarity)
 		text := ""
 		if strings.TrimSpace(x.Body) != "" {
-			text = FormatResidentLine(x.Body, x.Suffix, maxBytes)
+			text = FormatResidentLine(prefix+strings.TrimSpace(x.Body), x.Suffix, maxBytes)
 		} else {
-			text = FormatResidentLine(strings.TrimSpace(e.Text), "", maxBytes)
+			text = FormatResidentLine(prefix+strings.TrimSpace(e.Text), "", maxBytes)
 		}
 		if text == "" {
 			continue
@@ -899,6 +900,7 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 			Text:      text,
 			Kind:      x.Kind,
 			Bucket:    bucket,
+			Facet:     e.Facet,
 			L1:        true,
 			Hard:      x.Hard,
 			Score:     x.Score,

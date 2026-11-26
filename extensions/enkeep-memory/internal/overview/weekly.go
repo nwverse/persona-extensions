@@ -193,7 +193,7 @@ func candidates(st *store.State, f entry.Facet, from, cutoff string, keep func(*
 			}
 		}
 		t := count(st, []string{e.ID}, cutoff)
-		if len(t.sources) == 0 || t.last < from {
+		if len(t.sources) == 0 || (t.last < from && !isUserOwned(e)) {
 			continue
 		}
 		out = append(out, candidate{e, t})
@@ -225,9 +225,11 @@ type candCluster struct {
 // facet), so no single dimension starves other dimensions or long-lived high-spread entries.
 func clusterCandidates(cands []candidate) [][]candCluster {
 	byDim := map[string][]candidate{}
-	var princCross, rest []candidate
+	var coreOwned, princCross, rest []candidate
 	for _, c := range cands {
-		if c.e.Leverage != nil && c.e.Leverage.Dimension != "" {
+		if isUserOwned(c.e) || c.e.Grain == entry.Abstract {
+			coreOwned = append(coreOwned, c)
+		} else if c.e.Leverage != nil && c.e.Leverage.Dimension != "" {
 			byDim[c.e.Leverage.Dimension] = append(byDim[c.e.Leverage.Dimension], c)
 		} else if c.e.Principle() != "" && len(c.t.projects) >= MinScenes {
 			princCross = append(princCross, c)
@@ -248,6 +250,9 @@ func clusterCandidates(cands []candidate) [][]candCluster {
 		return out
 	}
 	var queues [][]candCluster
+	if len(coreOwned) > 0 {
+		queues = append(queues, toChunks("core_owned", coreOwned))
+	}
 	for _, dim := range entry.Dimensions {
 		if len(byDim[dim]) >= synthClusterMin {
 			queues = append(queues, toChunks("dim:"+dim, byDim[dim]))
@@ -465,6 +470,12 @@ func (r *Runner) synthesize(ctx context.Context, st *store.State, s *State, run 
 				p.Exception = x
 			}
 			p.EvidenceIDs = union(p.EvidenceIDs, members...)
+			for _, mid := range members {
+				if e := st.Entries[mid]; isUserOwned(e) {
+					p.CoveredIDs = union(p.CoveredIDs, mid)
+				}
+			}
+			sort.Strings(p.CoveredIDs)
 			p.Reason = strings.TrimSpace(prop.Reason)
 			p.UpdatedAt = now
 			recount(st, p, cutoff)
