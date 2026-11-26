@@ -22,16 +22,87 @@ func (a *app) do(ctx context.Context, requestID, name string, raw json.RawMessag
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
 	env := a.env()
+	// Live actions always check idempotency against the live ledger a.ledger,
+	// never paper-ledger.json, regardless of the current PaperTrading mode.
+	if !isPaperAction(name) {
+		if r, ok := a.ledger.result(requestID); ok {
+			return answer(r), nil
+		}
+		if prev, ok := a.ledger.placedByRequest(requestID); ok {
+			return a.recoverInFlightOrder(ctx, env, requestID, prev)
+		}
+	} else if a.paper != nil {
+		if r, ok := a.paper.result(requestID); ok {
+			return answer(r), nil
+		}
+	}
 	if err := checkActionMode(env.cfg, name); err != nil {
 		return nil, err
-	}
-	if r, ok := env.ledger.result(requestID); ok {
-		return answer(r), nil
 	}
 	if cancel {
 		return a.doCancel(ctx, requestID, mkt, raw)
 	}
 	return a.doOrder(ctx, requestID, name, mkt, raw)
+}
+
+func (a *app) recoverInFlightOrder(ctx context.Context, env *guardEnv, requestID string, prev placedOrder) (map[string]any, error) {
+	if env.cfg.PaperTrading {
+		return nil, fmt.Errorf("该实盘请求已预留额度但尚未确认终态（client id %s），当前已切换到纸面模式，不会重发；请在币安核对订单状态", prev.ClientID)
+	}
+	if prev.Status != "PENDING_SUBMIT" {
+		return nil, fmt.Errorf("该实盘请求已记录在台账中（状态 %s，client id %s），不会重发", statusName(prev.Status), prev.ClientID)
+	}
+	if a.client().signer == nil || env.locked != "" {
+		return nil, fmt.Errorf("该实盘请求已预留额度但尚未确认终态（client id %s），当前无法向币安核对，不会重发", prev.ClientID)
+	}
+	found, verdict := a.resolveUnknown(ctx, prev.Market, prev.Symbol, prev.ClientID)
+	switch verdict {
+	case verdictFound:
+		r := writeResult{Text: fmt.Sprintf("已下单 %s %s %s %s #%d，状态 %s（client id %s）", marketName(prev.Market), prev.Symbol,
+			sideName(prev.Side), prev.Type, found.OrderID, statusName(found.Status), prev.ClientID),
+			MessageRef: strconv.FormatInt(found.OrderID, 10), At: a.now()}
+		_ = a.ledger.update(func(s *ledgerState) error {
+			s.Results[requestID] = r
+			prev.OrderID, prev.Status, prev.Executed, prev.At = found.OrderID, found.Status, found.ExecutedQty, r.At
+			savePlacedOrder(s, prev)
+			return nil
+		})
+		return answer(r), nil
+	case verdictAbsent:
+		msg := fmt.Sprintf("没下成：币安确认没有这笔单（client id %s）。额度已退回；扩展还会盯 10 分钟，万一出现会提醒你", prev.ClientID)
+		now := a.now()
+		prevDay := prev.dayIn(a)
+		_ = a.ledger.update(func(s *ledgerState) error {
+			for i := range s.Placed {
+				if s.Placed[i].RequestID == requestID && s.Placed[i].Status == "PENDING_SUBMIT" {
+					if s.Day == prevDay {
+						if s.Placed[i].Counts {
+							s.UsedUSDT = math.Max(0, s.UsedUSDT-s.Placed[i].Notional)
+						}
+						if s.Orders > 0 {
+							s.Orders--
+						}
+					}
+					s.Placed[i].Status, s.Placed[i].Counts, s.Placed[i].At = "NOT_FOUND", false, now
+				}
+			}
+			s.Results[requestID] = writeResult{Text: msg, At: now}
+			return nil
+		})
+		return nil, fmt.Errorf("没下成：币安确认没有这笔单（client id %s），额度已退回；不会自动重发", prev.ClientID)
+	default:
+		msg := fmt.Sprintf("下单结果不明（上次提交未确认），扩展没有重发。请在币安里核对 client id %s；在核对清楚之前，额度按已下单占用", prev.ClientID)
+		now := a.now()
+		_ = a.ledger.update(func(s *ledgerState) error {
+			s.Results[requestID] = writeResult{Text: msg, At: now}
+			prev.Status, prev.Counts, prev.At = "UNKNOWN", !prev.Reducing, now
+			savePlacedOrder(s, prev)
+			return nil
+		})
+		a.raise(event{Thread: "order:unknown:" + prev.ClientID, Kind: "order_rejected", Tier: "action", Push: "time-sensitive", At: now,
+			Title: fmt.Sprintf("币安 %s %s %s 下单结果不明", marketName(prev.Market), prev.Symbol, sideName(prev.Side)), Body: msg})
+		return answer(writeResult{Text: msg}), nil
+	}
 }
 
 func answer(r writeResult) map[string]any {
@@ -104,12 +175,13 @@ func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json
 				fmtNum(p.RefPrice), fmtNum(card.Price), dev, env.cfg.MarketSlippagePct)
 		}
 	}
-	if env.cfg.PaperTrading {
+	if isPaperAction(name) || env.cfg.PaperTrading {
 		return recordPaperOrder(env, requestID, p)
 	}
 	day := env.cfg.dayKey(env.now)
 	cid := clientOrderID(requestID)
 	order := plannedOrder(requestID, cid, p, env.now)
+	order.Status = "PENDING_SUBMIT"
 	if err := a.ledger.update(func(s *ledgerState) error {
 		a.ledger.roll(day)
 		env.usedUSDT, env.ordersDone = s.UsedUSDT, s.Orders
@@ -120,6 +192,7 @@ func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json
 			s.UsedUSDT += p.Notional
 		}
 		s.Orders++
+		savePlacedOrder(s, order)
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("没有下单：无法预留额度：%w", err)
@@ -134,6 +207,7 @@ func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json
 					s.Orders--
 				}
 			}
+			removePlacedOrder(s, requestID)
 			return nil
 		})
 	}
@@ -192,6 +266,15 @@ func savePlacedOrder(s *ledgerState, order placedOrder) {
 		}
 	}
 	s.Placed = append(s.Placed, order)
+}
+
+func removePlacedOrder(s *ledgerState, requestID string) {
+	for i := range s.Placed {
+		if s.Placed[i].RequestID == requestID {
+			s.Placed = append(s.Placed[:i], s.Placed[i+1:]...)
+			return
+		}
+	}
 }
 
 func recordPaperOrder(env *guardEnv, requestID string, p *orderPlan) (map[string]any, error) {

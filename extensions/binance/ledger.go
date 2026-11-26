@@ -66,7 +66,7 @@ func (o placedOrder) key() string { return o.Market + ":" + o.Symbol + ":" + ito
 // open says whether the order may still change.
 func (o placedOrder) open() bool {
 	switch o.Status {
-	case "NEW", "PARTIALLY_FILLED", "PENDING_NEW", "UNKNOWN", "":
+	case "NEW", "PARTIALLY_FILLED", "PENDING_NEW", "PENDING_SUBMIT", "UNKNOWN", "":
 		return true
 	}
 	return false
@@ -144,6 +144,18 @@ func (l *ledger) result(requestID string) (writeResult, bool) {
 	defer l.mu.Unlock()
 	r, ok := l.st.Results[requestID]
 	return r, ok
+}
+
+// placedByRequest finds a recorded order by the hub's request id.
+func (l *ledger) placedByRequest(requestID string) (placedOrder, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, o := range l.st.Placed {
+		if o.RequestID == requestID {
+			return o, true
+		}
+	}
+	return placedOrder{}, false
 }
 
 // update changes the state under the lock and saves it; fn returning an error saves nothing.

@@ -191,3 +191,107 @@ func TestPaperConfigValidation(t *testing.T) {
 		t.Fatalf("unexpected default config: %+v", cfg)
 	}
 }
+
+func TestLiveOrderIdempotencyAcrossModeSwitch(t *testing.T) {
+	f := newFakeBinance(t)
+	dir := t.TempDir()
+	live := testApp(t, f, tradeCfg, dir)
+
+	// 1. Place a real spot order and cancel it in live mode so both results live in ledger.json.
+	liveRes, err := executeActionRPC(t, live, "binance_spot_order", paperSpotLimit10, "live-done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelRes, err := executeActionRPC(t, live, "binance_spot_cancel", `{"symbol":"BTCUSDT","order_id":4242}`, "live-cancel-done")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 2. Record a reserved/in-flight live order that has not yet stored a terminal writeResult.
+	inFlightCID := clientOrderID("live-inflight")
+	if err := live.ledger.update(func(s *ledgerState) error {
+		live.ledger.roll(live.cfg.dayKey(time.Now()))
+		s.UsedUSDT += 10
+		s.Orders++
+		savePlacedOrder(s, placedOrder{
+			Market: marketSpot, Symbol: "BTCUSDT", ClientID: inFlightCID, Side: "BUY", Type: "LIMIT",
+			Quantity: "0.1", Price: "100", Notional: 10, Counts: true, Status: "PENDING_SUBMIT",
+			At: time.Now(), RequestID: "live-inflight",
+		})
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 3. Switch to paper_trading: true on the same data directory (keeping credentials loaded).
+	paperApp := testApp(t, f, string(mergeJSON(t, tradeCfg, `{"paper_trading":true}`)), dir)
+
+	// Retrying the completed live order must replay from a.ledger without hitting Binance or paper-ledger.json.
+	replayed, err := executeActionRPC(t, paperApp, "binance_spot_order", paperSpotLimit10, "live-done")
+	if err != nil || replayed["text"] != liveRes["text"] || replayed["message_ref"] != liveRes["message_ref"] {
+		t.Fatalf("live order retry in paper mode: got (%v, %v), want %v", replayed, err, liveRes)
+	}
+	// Retrying the completed live cancel must also replay from a.ledger.
+	replayedCancel, err := executeActionRPC(t, paperApp, "binance_spot_cancel", `{"symbol":"BTCUSDT","order_id":4242}`, "live-cancel-done")
+	if err != nil || replayedCancel["text"] != cancelRes["text"] {
+		t.Fatalf("live cancel retry in paper mode: got (%v, %v), want %v", replayedCancel, err, cancelRes)
+	}
+	// Retrying the reserved/in-flight live order in paper mode must be caught by a.ledger and never resent.
+	if _, err := executeActionRPC(t, paperApp, "binance_spot_order", paperSpotLimit10, "live-inflight"); err == nil ||
+		!strings.Contains(err.Error(), inFlightCID) || !strings.Contains(err.Error(), "不会重发") {
+		t.Fatalf("in-flight live retry in paper mode: got %v, want refusal citing %s", err, inFlightCID)
+	}
+	// A brand-new unseen live order in paper mode is still rejected by checkActionMode.
+	if _, err := executeActionRPC(t, paperApp, "binance_spot_order", paperSpotLimit10, "live-unseen"); err == nil ||
+		!strings.Contains(err.Error(), "下单模式已切换") {
+		t.Fatalf("unseen live order in paper mode: got %v", err)
+	}
+	if f.seen("POST api.binance.com /api/v3/order") != 1 || f.seen("DELETE api.binance.com /api/v3/order") != 1 {
+		t.Fatalf("cross-mode retries triggered extra exchange writes: %v", f.requests)
+	}
+	if len(paperApp.paper.snapshot().Placed) != 0 || len(paperApp.paper.snapshot().Results) != 0 {
+		t.Fatalf("live retries leaked into paper ledger: %+v", paperApp.paper.snapshot())
+	}
+
+	// 4. Returning to live mode and retrying the in-flight live order reconciles via GET without resending POST.
+	liveAgain := testApp(t, f, tradeCfg, dir)
+	recovered, err := executeActionRPC(t, liveAgain, "binance_spot_order", paperSpotLimit10, "live-inflight")
+	if err != nil {
+		t.Fatalf("in-flight live recovery failed: %v", err)
+	}
+	if text := recovered["text"].(string); !strings.Contains(text, "已下单") || !strings.Contains(text, "client id "+inFlightCID) {
+		t.Fatalf("unexpected recovered text: %q", text)
+	}
+	if f.seen("POST api.binance.com /api/v3/order") != 1 {
+		t.Fatalf("in-flight recovery resent POST: %v", f.requests)
+	}
+	if saved, ok := liveAgain.ledger.result("live-inflight"); !ok || saved.Text != recovered["text"] {
+		t.Fatalf("recovered result not stored in live ledger: ok=%v saved=%+v", ok, saved)
+	}
+}
+
+func TestPaperCoinMOrderUsesCoinMHostAndNeverWritesExchange(t *testing.T) {
+	const paperCoinM = "binance_paper_coinm_order"
+	const coinmArgs = `{"symbol":"BTCUSD_PERP","side":"BUY","type":"LIMIT","quantity":"1","price":"100","position_side":"LONG"}`
+	f := newFakeBinance(t)
+	cfg := `{"trading_enabled":true,"paper_trading":true,"markets":["spot","usdm","coinm"],"symbol_whitelist":["BTCUSD_PERP"],"max_order_usdt":200,"timezone":"UTC"}`
+	a := testApp(t, f, cfg, t.TempDir())
+
+	d, err := describeActionRPC(t, a, paperCoinM, coinmArgs)
+	if err != nil || !strings.Contains(d["summary"].(string), "币本位合约") || !strings.Contains(d["summary"].(string), "纸面模拟") {
+		t.Fatalf("paper coinm describe: %v %v", d, err)
+	}
+	before := f.seen("GET dapi.binance.com /dapi/v1/premiumIndex")
+	r, err := executeActionRPC(t, a, paperCoinM, coinmArgs, "paper-coinm-1")
+	if err != nil || !strings.Contains(r["text"].(string), "币本位合约") || !strings.Contains(r["text"].(string), "模拟成交 1 @ 100") {
+		t.Fatalf("paper coinm execute: %v %v", r, err)
+	}
+	if f.seen("GET dapi.binance.com /dapi/v1/premiumIndex") != before+1 {
+		t.Fatalf("paper coinm did not read mark price from dapi.binance.com: %v", f.requests)
+	}
+	if f.seen("GET data-api.binance.vision /dapi/v1/premiumIndex") != 0 {
+		t.Fatalf("unexpected /dapi/v1/premiumIndex hit on hostPublic")
+	}
+	if f.seen("POST dapi.binance.com /dapi/v1/order") != 0 {
+		t.Fatalf("paper coinm sent a live exchange order")
+	}
+}

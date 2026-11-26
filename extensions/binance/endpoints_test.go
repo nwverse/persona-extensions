@@ -131,6 +131,16 @@ func TestClientRefusesUnlistedEndpoints(t *testing.T) {
 	if err := c.public(ctx, hostSpot, "/api/v3/order", nil, nil); !errors.Is(err, errNotListed) {
 		t.Errorf("public order call: %v", err)
 	}
+	// Coin-M premiumIndex is only allowed on hostCoinM (dapi.binance.com), never hostPublic.
+	if ep, ok := endpointFor(hostCoinM, "GET", "/dapi/v1/premiumIndex"); !ok || ep.Access != accessPublic {
+		t.Errorf("endpointFor(hostCoinM, GET, /dapi/v1/premiumIndex) = (%+v, %v), want public", ep, ok)
+	}
+	if _, ok := endpointFor(hostPublic, "GET", "/dapi/v1/premiumIndex"); ok {
+		t.Errorf("hostPublic unexpectedly lists /dapi/v1/premiumIndex")
+	}
+	if err := c.public(ctx, hostPublic, "/dapi/v1/premiumIndex", nil, nil); !errors.Is(err, errNotListed) {
+		t.Errorf("hostPublic /dapi/v1/premiumIndex: got %v, want errNotListed", err)
+	}
 	if n := len(f.requests); n != 0 {
 		t.Fatalf("refused calls reached the server %d times", n)
 	}

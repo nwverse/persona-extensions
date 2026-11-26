@@ -187,6 +187,9 @@ func (a *app) ownOrderRecently(mkt, symbol string, now time.Time) bool {
 // followOrders reads the status of the extension's open orders and tells fills and rejections.
 func (a *app) followOrders(ctx context.Context, now time.Time) {
 	for _, o := range a.ledger.snapshot().Placed {
+		if o.Status == "PENDING_SUBMIT" && now.Sub(o.At) < time.Minute {
+			continue
+		}
 		watching := o.Status == "NOT_FOUND" && now.Sub(o.At) < 10*time.Minute
 		if (!o.open() && !watching) || now.Sub(o.At) > 30*24*time.Hour {
 			continue
@@ -194,7 +197,7 @@ func (a *app) followOrders(ctx context.Context, now time.Time) {
 		st, err := a.queryOrder(ctx, o.Market, o.Symbol, o.OrderID, o.ClientID)
 		var ae *apiError
 		if o.OrderID == 0 && errors.As(err, &ae) && ae.Code == -2013 {
-			if o.Status == "UNKNOWN" && now.Sub(o.At) > 2*time.Minute {
+			if (o.Status == "UNKNOWN" || o.Status == "PENDING_SUBMIT") && now.Sub(o.At) > 2*time.Minute {
 				a.settleAbsent(o, now)
 			}
 			continue
@@ -356,6 +359,8 @@ func statusName(s string) string {
 		return "已过期"
 	case "NEW":
 		return "挂单中"
+	case "PENDING_SUBMIT":
+		return "提交中"
 	}
 	return s
 }
@@ -366,7 +371,7 @@ func (a *app) settleAbsent(o placedOrder, now time.Time) {
 	_ = a.ledger.update(func(s *ledgerState) error {
 		for i := range s.Placed {
 			p := &s.Placed[i]
-			if p.ClientID == o.ClientID && p.Market == o.Market && p.Status == "UNKNOWN" {
+			if p.ClientID == o.ClientID && p.Market == o.Market && (p.Status == "UNKNOWN" || p.Status == "PENDING_SUBMIT") {
 				p.Status = "NOT_FOUND"
 				if s.Day == o.dayIn(a) {
 					if p.Counts {

@@ -295,8 +295,19 @@ func TestFailedOrderIsNeverSentTwice(t *testing.T) {
 		a := testApp(t, f, tradeCfg, t.TempDir())
 		f.on("POST api.binance.com /api/v3/order", bad)
 		r, err := a.do(context.Background(), "r1", "binance_spot_order", args)
-		if err != nil || !strings.Contains(r["text"].(string), "已下单") {
+		if err != nil {
 			t.Fatalf("%v %v", r, err)
+		}
+		text := r["text"].(string)
+		cid := clientOrderID("r1")
+		if !strings.Contains(text, "已下单") || !strings.Contains(text, "client id "+cid) || r["message_ref"] != "4242" {
+			t.Fatalf("recovered result missing derived cid or order ref: %v (want cid %s)", r, cid)
+		}
+		if strings.Contains(text, "502") || strings.Contains(text, "Bad Gateway") || strings.Contains(text, "Binance HTTP") {
+			t.Fatalf("recovered result leaked stale write error: %s", text)
+		}
+		if saved, ok := a.ledger.result("r1"); !ok || saved.Text != text {
+			t.Fatalf("ledger result mismatch: ok=%v saved=%+v want=%q", ok, saved, text)
 		}
 		if f.seen("POST api.binance.com /api/v3/order") != 1 {
 			t.Fatal("resent")
@@ -612,5 +623,42 @@ func TestWithdrawalsUseUniqueThreads(t *testing.T) {
 	}
 	if got[0].Thread == got[1].Thread || !strings.HasPrefix(got[0].Thread, "withdraw:wd-") {
 		t.Fatalf("expected unique withdraw:<id> threads, got %q and %q", got[0].Thread, got[1].Thread)
+	}
+}
+
+func TestCoinMReadOrderPriceUsesCoinMHost(t *testing.T) {
+	f := newFakeBinance(t)
+	coinmCfg := `{"trading_enabled": true, "markets": ["spot","usdm","coinm"], "symbol_whitelist": ["BTCUSD_PERP"], "max_order_usdt": 200, "timezone": "UTC"}`
+	a := testApp(t, f, coinmCfg, t.TempDir())
+	f.on("POST dapi.binance.com /dapi/v1/order", func(q url.Values) (int, any) {
+		return 200, map[string]any{"orderId": 8801, "clientOrderId": q.Get("newClientOrderId"), "status": "NEW", "executedQty": "0"}
+	})
+
+	ctx := context.Background()
+	beforeCoinM := f.seen("GET dapi.binance.com /dapi/v1/premiumIndex")
+	price, err := a.readOrderPrice(ctx, marketCoinM, "BTCUSD_PERP")
+	if err != nil {
+		t.Fatalf("readOrderPrice(coinm) failed: %v", err)
+	}
+	if price != 100 {
+		t.Fatalf("readOrderPrice(coinm) = %v, want 100", price)
+	}
+	if f.seen("GET dapi.binance.com /dapi/v1/premiumIndex") != beforeCoinM+1 {
+		t.Fatalf("expected exact host dapi.binance.com /dapi/v1/premiumIndex hit, requests: %v", f.requests)
+	}
+	if f.seen("GET data-api.binance.vision /dapi/v1/premiumIndex") != 0 {
+		t.Fatalf("unexpected /dapi/v1/premiumIndex call on hostPublic")
+	}
+
+	args := json.RawMessage(`{"symbol":"BTCUSD_PERP","side":"BUY","type":"LIMIT","quantity":"1","price":"100","position_side":"LONG"}`)
+	r, err := a.do(ctx, "coinm-live-1", "binance_coinm_order", args)
+	if err != nil {
+		t.Fatalf("live coinm order failed: %v", err)
+	}
+	if !strings.Contains(r["text"].(string), "币本位合约") || !strings.Contains(r["text"].(string), clientOrderID("coinm-live-1")) {
+		t.Fatalf("unexpected live coinm result: %v", r)
+	}
+	if f.seen("GET dapi.binance.com /dapi/v1/premiumIndex") != beforeCoinM+2 || f.seen("POST dapi.binance.com /dapi/v1/order") != 1 {
+		t.Fatalf("coinm live order did not hit dapi.binance.com cleanly: %v", f.requests)
 	}
 }

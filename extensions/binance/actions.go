@@ -35,8 +35,12 @@ func marketOfAction(name string) (mkt string, cancel bool, ok bool) {
 
 const paperActionPrefix = "binance_paper_"
 
+func isPaperAction(name string) bool {
+	return strings.HasPrefix(name, paperActionPrefix)
+}
+
 func checkActionMode(cfg *config, name string) error {
-	if cfg.PaperTrading != strings.HasPrefix(name, paperActionPrefix) {
+	if cfg.PaperTrading != isPaperAction(name) {
 		return errors.New("下单模式已切换，请重新发起订单或撤单")
 	}
 	return nil
