@@ -637,16 +637,28 @@ func TestPolesText(t *testing.T) {
 	}
 }
 
-// A pattern scores on the entries' scale: at most 70 however wide, core above scoped, nothing unless used.
+// A pattern scores by its L1 kind (unified design §2.1): hard contracts score above 100 by violations and scenes,
+// regular contracts and principles score uncapped by 70, core above scoped, poles/exception adds +10 for principles,
+// and unused patterns score 0.
 func TestPatternScoreScale(t *testing.T) {
-	wide := &Pattern{Lifecycle: Core, ScenesCount: 50, SourcesCount: 50, ActiveWeeks: []string{"a", "b", "c", "d", "e", "f"}}
-	if s := Score(wide); s != 70 {
-		t.Errorf("wide %d", s)
+	hard := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, Hard: true, ViolationCount: 5, ScenesCount: 3}
+	if s := Score(hard); s != 100+30+12 {
+		t.Errorf("hard contract score = %d, want %d", s, 142)
 	}
-	if Score(&Pattern{Lifecycle: Core, ScenesCount: 2}) <= Score(&Pattern{Lifecycle: Scoped, ScenesCount: 2}) {
+	reg := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, ScenesCount: 3, UniqueQuotes: 4, ActiveWeeks: []string{"w1", "w2"}}
+	if s := Score(reg); s != 30+12+12+8 {
+		t.Errorf("regular contract score = %d, want %d", s, 62)
+	}
+	prin := &Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, ScenesCount: 5, UniqueQuotes: 10,
+		ActiveWeeks: []string{"w1", "w2", "w3", "w4", "w5"}, Exception: "only for hotfixes"}
+	if s := Score(prin); s != 30+25+20+15+10 {
+		t.Errorf("principle score = %d, want %d", s, 100)
+	}
+	if Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, ScenesCount: 2}) <=
+		Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Scoped, ScenesCount: 2}) {
 		t.Error("core not above scoped")
 	}
-	if Score(&Pattern{Lifecycle: Candidate, ScenesCount: 9}) != 0 {
+	if Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Candidate, ScenesCount: 9}) != 0 {
 		t.Error("an unused pattern scored")
 	}
 }

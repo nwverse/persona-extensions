@@ -104,7 +104,8 @@ func contractCandidates(st *store.State, cutoff string) []*entry.Entry {
 		if entry.CoveredBy(e) != "" || slices.Contains(e.Flags, flagNoAutoMerge) {
 			continue
 		}
-		if !usable(st, e) && !isUserOwned(e) {
+		fastHot := entry.FastHotDay(e) != ""
+		if !usable(st, e) && !isUserOwned(e) && !fastHot {
 			continue
 		}
 		if cutoff != "" && e.First >= cutoff {
@@ -114,7 +115,7 @@ func contractCandidates(st *store.State, cutoff string) []*entry.Entry {
 		if e.Facet == entry.Tools && e.Status == entry.Stable {
 			minScore = contractToolsScore
 		}
-		if entry.Score(e) < minScore && !entry.Hard(e) && !isUserOwned(e) {
+		if entry.Score(e) < minScore && !entry.Hard(e) && !isUserOwned(e) && !fastHot {
 			continue
 		}
 		if e.Facet == entry.Tools {

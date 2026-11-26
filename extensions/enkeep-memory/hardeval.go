@@ -452,8 +452,38 @@ func heMemories(st *store.State, ov *overview.State, cog []string, f heFilter, c
 		}) {
 			lines = append(lines, "- "+overview.Text(p))
 			if k := entry.KindOfFacet(p.Facet); k != "" && !entry.TemplateBacked(st.Entries, p.EvidenceIDs, tpl) {
-				ovCands = append(ovCands, memsrc.Candidate{ID: p.ID, Text: overview.Text(p), Kind: k, Score: overview.Score(p),
-					Days: len(p.EvidenceIDs), Last: p.LastEvidence, Pattern: true})
+				bucket := memsrc.BucketPrinciple
+				maxBytes := memsrc.PrincipleTextMost
+				if p.IsContract() {
+					bucket = memsrc.BucketContract
+					maxBytes = memsrc.ContractTextMost
+				}
+				suffix := ""
+				if len(p.Poles) >= 2 {
+					w0 := strings.TrimSuffix(strings.TrimSpace(p.Poles[0].When), "时")
+					w1 := strings.TrimSuffix(strings.TrimSpace(p.Poles[1].When), "时")
+					suffix = "（两端：" + w0 + "时，" + strings.TrimSpace(p.Poles[0].Choice) + "；" +
+						w1 + "时，" + strings.TrimSpace(p.Poles[1].Choice) + "）"
+				} else if x := strings.TrimSpace(p.Exception); x != "" && !strings.Contains(p.Text, x) {
+					suffix = "（例外：" + x + "）"
+				}
+				quotes := p.UniqueQuotes
+				if quotes <= 0 {
+					quotes = p.SourcesCount
+				}
+				ovCands = append(ovCands, memsrc.Candidate{
+					ID:        p.ID,
+					Text:      memsrc.FormatResidentLine(p.Text, suffix, maxBytes),
+					Kind:      k,
+					Bucket:    bucket,
+					L1:        true,
+					Hard:      p.Hard,
+					Score:     overview.Score(p),
+					Days:      quotes,
+					Last:      p.LastEvidence,
+					Polarity:  p.Polarity,
+					Dimension: p.Dimension,
+				})
 			}
 		}
 	}
