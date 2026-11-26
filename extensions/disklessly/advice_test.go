@@ -417,7 +417,7 @@ func TestAdviseToolReadOnlyAndAllowed(t *testing.T) {
 		t.Fatal(err)
 	}
 	allow := m.Contributes.MCPServers[0].Allow
-	want := []string{"disklessly_machines_status", "disklessly_scan", "disklessly_history", "disklessly_sessions_search", "disklessly_sessions_status", "disklessly_advise"}
+	want := []string{"disklessly_machines_status", "disklessly_scan", "disklessly_history", "disklessly_sessions_search", "disklessly_sessions_status", "disklessly_sessions_find", "disklessly_advise"}
 	if !slices.Equal(allow, want) {
 		t.Fatalf("allow %v", allow)
 	}

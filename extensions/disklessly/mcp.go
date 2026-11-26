@@ -87,6 +87,25 @@ var tools = []tool{
 		description: "查看各机器冷会话云端备份状态：每台机器的状态 state（ready 正常、no_cli 还没装配套小工具、cli_too_old 配套小工具太旧、no_backend 还没设置网盘、backend_unreachable 网盘连不上、unreachable 连不上这台电脑、unreadable 配套小工具出错了、unchecked 还没检查）与原因、备份后端是否可达、最近检查时间、已索引会话数、按位置（在网盘里 / 暂时不确定 / 网盘里找不到 / 还在电脑上）统计、缺失或未确认的归档分段。",
 	},
 	{
+		name:     "disklessly_sessions_find",
+		readOnly: true,
+		props: map[string]any{
+			"keywords": map[string]any{"type": "array", "maxItems": 12, "items": map[string]any{"type": "string"},
+				"description": "从用户的描述里提取的关键词（几个都行，中英文都可以；同一个意思可以多给一个说法，比如「购物车」和「cart」）。在每个对话的标题、第一句话、关键词、项目和工作文件夹里找（不区分大小写），标题里有的分数最高"},
+			"match":    map[string]any{"type": "string", "enum": []string{"any", "all"}, "description": "any（默认）：有一个关键词对上就算，对上越多越靠前；all：关键词都要对上"},
+			"after":    str("只找这一天（含）以后的对话，格式 2026-11-02；按对话最后改动的时间算。用户说「上周」「十一月初」时换算成日期，宁可放宽几天"),
+			"before":   str("只找这一天（含）以前的对话，格式 2026-11-09"),
+			"tool":     str("用的 AI 助手，比如 Claude Code、Codex；不填不限"),
+			"project":  str("项目名或工作文件夹里的词（空格分隔，都要对上），比如 shop、checkout-service；不填不限"),
+			"machine":  str("只找这台电脑（机器 ID、SSH Host 别名，或 machine_name）；不填找所有电脑"),
+			"location": map[string]any{"type": "string", "enum": []string{"any", findOnComputer, findOnDrive}, "description": "on_computer：还在电脑上的；on_drive：已经搬到网盘的；any（默认）不限"},
+			"limit":    map[string]any{"type": "integer", "minimum": 1, "maximum": findMaxLimit, "description": "最多返回几个候选，默认 10"},
+		},
+		description: "只读：用户想找回以前的某段 AI 对话、只说得出大概内容和时间时（「帮我找回上次聊 X 的那段对话」「上周那个修 Y 的会话还在吗」），把描述拆成关键词、时间范围、AI 助手、项目、电脑和位置后调用它。只查本地记下的索引（标题、第一句话、关键词、项目、工作文件夹、日期、AI 助手），不读对话内容，也不拿回任何东西。" +
+			"返回 candidates（最像的在前：对上的关键词越多、在标题里越靠前，同分时越新越前）：title（和页面一样的标题，不是编号）、when（日期和时间）、tool、project / folder、machine_name、location（还在电脑上 / 在网盘里 / 暂时不确定 / 网盘里找不到）、size、why（为什么算对上）、id、can_restore、restore_call（拿回来的现有工具调用 disklessly_sessions_restore {machine, id}，是写入操作，要用户确认后才调用）和 resume_after_restore（拿回来后接着聊的命令）。" +
+			"一个都没找到时，too_narrow 说哪个条件太窄（去掉它能找到几个），suggest 说怎么放宽；不要自己猜。原来的 disklessly_sessions_search 照旧可用。",
+	},
+	{
 		name:     "disklessly_advise",
 		readOnly: true,
 		props: map[string]any{
@@ -285,7 +304,7 @@ func (m *mcpServer) handle(ctx context.Context, method string, params json.RawMe
 			"instructions": "Disklessly 硬盘空间：用户说「帮我腾点空间」「哪台电脑快满了」「硬盘不够了」时，先调用只读的 disklessly_advise，把前几步（腾出多少、风险）讲给用户、问做哪一步，再按那一步的 call 调用现有写入工具（要用户确认）。" +
 				"也可以先用 disklessly_machines_status 查看所有纳管机器的水位和可回收空间，" +
 				"再用 disklessly_scan 扫描目标机器查看 Dry-Run 清理计划与冷会话分布；需要执行清理时调用 disklessly_clean；" +
-				"找回以前的 Agent 对话用 disklessly_sessions_search（位置「暂时不确定」不代表丢失），恢复用 disklessly_sessions_restore，冷会话上云用 disklessly_sessions_offload。",
+				"用户描述一段想找回的对话时用只读的 disklessly_sessions_find（关键词、时间、AI 助手、项目），按关键词找也可以用 disklessly_sessions_search（位置「暂时不确定」不代表丢失），恢复用 disklessly_sessions_restore，冷会话上云用 disklessly_sessions_offload。",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -620,6 +639,15 @@ func (m *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return nil
 		})
 		return out, err
+
+	case "disklessly_sessions_find":
+		var in findInput
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		var ferr error
+		err = m.store.read(func(st *State) { out, ferr = findSessions(st, in, m.store.now(), time.Local) })
+		return out, cmp.Or(err, ferr)
 
 	case "disklessly_sessions_offload":
 		var in struct {
