@@ -150,3 +150,27 @@ func toastOf(err error) string {
 	}
 	return plainError(err)
 }
+
+// iconTitles name the icons the apps draw, for the icon choice of a type. An icon missing here is offered by its
+// own name.
+var iconTitles = map[string]string{
+	"plugin": "插件", "chart": "图表", "gauge": "仪表", "list": "清单", "bell": "铃铛", "doc": "文档", "calendar": "日历",
+	"money": "钱", "extension": "拼图", "person": "人", "chat": "聊天", "mail": "邮件", "link": "链接", "folder": "文件夹",
+	"star": "星星", "check": "打勾", "warning": "提醒", "clock": "时钟", "tag": "标签", "search": "放大镜",
+	"settings": "齿轮", "branch": "分叉", "commit": "节点", "code": "代码", "pull_request": "合并请求", "merge": "合并",
+	"file": "文件", "home": "家", "sofa": "沙发", "light": "灯", "power": "电源", "fan": "风扇", "thermometer": "温度计",
+	"droplet": "水滴", "lock": "锁", "unlock": "开锁", "door": "门", "window": "窗户", "camera": "相机", "video": "视频",
+	"play": "播放", "pause": "暂停", "stop": "停止", "speaker": "音箱", "music": "音乐", "tv": "电视", "plug": "插头",
+	"battery": "电池", "bolt": "闪电", "sun": "太阳", "moon": "月亮", "cloud": "云", "rain": "雨", "snow": "雪",
+	"wind": "风", "leaf": "叶子", "car": "车", "location": "定位", "robot": "机器人", "wifi": "无线网", "shield": "盾牌",
+	"trend_up": "上升", "trend_down": "下降", "wallet": "钱包", "bank": "银行", "heart": "爱心", "plus": "加号",
+	"minus": "减号", "trash": "垃圾桶", "edit": "笔", "refresh": "刷新", "share": "分享", "info": "说明",
+}
+
+// iconTitle is the name of an icon on the pages.
+func iconTitle(name string) string {
+	if s, ok := iconTitles[name]; ok {
+		return s
+	}
+	return name
+}

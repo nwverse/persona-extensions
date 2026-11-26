@@ -541,7 +541,7 @@ func viewKindChoices() []wire.Choice {
 func iconChoices(current string) []wire.Choice {
 	out := make([]wire.Choice, 0, len(wire.NavIcons)+1)
 	for _, name := range wire.NavIcons {
-		out = append(out, wire.Choice{Value: name, Title: name})
+		out = append(out, wire.Choice{Value: name, Title: iconTitle(name)})
 	}
 	if current != "" && !slices.Contains(wire.NavIcons, current) {
 		out = append(out, wire.Choice{Value: current, Title: current})
