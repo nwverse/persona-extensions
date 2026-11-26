@@ -8,6 +8,7 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from .hooks import delivery_id
 from .real import mention_parts
 from .wire import RpcError
 
@@ -139,6 +140,8 @@ class Connector:
         # A group request carries its topic as the channel message's thread: the hub keeps one conversation per topic
         # (setting agent_group_topics).
         self.topics = True
+        # The user's own /commands that go to their own address instead of the assistant (hooks.Hooks), or None.
+        self.hooks = None
         self.store = store
         self.hub = hub
         self._ready = threading.Event()
@@ -285,9 +288,10 @@ class Connector:
         self.store.close()
 
     def _on_live(self, m):
-        """A message pushed on the long connection: kept like any other, and the user's own /agent goes to the assistant.
-        Fetched history never does (catch_up calls on_message), so a restart answers nothing twice."""
-        if self.on_message(m):
+        """A message pushed on the long connection: kept like any other, the user's own hook command goes to their
+        hook, and their own /agent to the assistant. Fetched history never does either (catch_up calls on_message), so
+        a restart handles nothing twice."""
+        if self.on_message(m) and not self._maybe_hook(m):
             self._maybe_agent(m)
 
     def _on_link(self, state):
@@ -358,23 +362,27 @@ class Connector:
         text = m.get("text") or ""
         if text.rstrip().endswith(self.suffix):
             return None
-        request = agent_request(text)
-        if request is None and m.get("type") == "POST":
-            first, newline, body = text.lstrip().partition("\n")
-            if newline and (first == "[富文本]" or first.startswith("[富文本] ")):
-                request = agent_request(body)
-        if request is not None:
-            return request
+        for source in _command_texts(m):
+            request = agent_request(source)
+            if request is not None:
+                return request
         return mention_request(text, m.get("mentions"), me) if self.mention else None
+
+    def _own_fresh(self, m):
+        """The signed-in account when m is its own fresh text or rich text, else "": what a request has to be."""
+        with self._lock:
+            me = self._account_id
+        if not me or m.get("sender") != me or m.get("type") not in AGENT_TYPES:
+            return ""
+        if time.time() - (m.get("at") or 0) > AGENT_FRESH_SECONDS:
+            return ""
+        return me
 
     def _maybe_agent(self, m):
         """Hands the user's own fresh "/agent …" or self-mention to the hub, which puts it in the assistant's chat and
         answers through channel.send. Someone else's request, an old one, and our own answers never count."""
-        with self._lock:
-            me = self._account_id
-        if not me or m.get("sender") != me or m.get("type") not in AGENT_TYPES:
-            return
-        if time.time() - (m.get("at") or 0) > AGENT_FRESH_SECONDS:
+        me = self._own_fresh(m)
+        if not me:
             return
         request = self._agent_request(m, me)
         if request is None:
@@ -409,6 +417,47 @@ class Connector:
                     self._log("handing /agent to the hub failed: %s" % type(e).__name__)
                     return
                 time.sleep(wait)
+
+    # command hooks (hooks.py): the user's own /commands, signed, to the user's own address
+
+    def _maybe_hook(self, m):
+        """Hands the user's own fresh message starting with a hook command to the hook, once per message id. True when
+        it was one, delivered now or before: then it is not an /agent request too, even with a self-mention in it. The
+        same guards as /agent: someone else's message, an old one, fetched history and our own answers never count."""
+        hooks = self.hooks
+        if hooks is None or not hooks.enabled or not self._own_fresh(m):
+            return False
+        if (m.get("text") or "").rstrip().endswith(self.suffix):
+            return False
+        found = None
+        for source in _command_texts(m):
+            found = hooks.match(source)
+            if found is not None:
+                break
+        if found is None:
+            return False
+        claimed, _ = self.store.claim_send("hook:" + m["id"])
+        if claimed:
+            hooks.dispatch(self._hook_payload(m, hooks, *found))
+        return True
+
+    def _hook_payload(self, m, hooks, command, request, raw_text):
+        chat = self.store.chat(m["chat"]) or {}
+        payload = {
+            "delivery_id": delivery_id(m["id"]), "command": command, "text": request, "raw_text": raw_text,
+            "message": {"id": m["id"], "chat": m["chat"], "chat_kind": m.get("chat_kind") or chat.get("kind") or "group",
+                        "chat_name": chat.get("name") or "", "root": m.get("root") or "", "parent": m.get("parent") or "",
+                        "at": rfc3339(m.get("at") or time.time())},
+        }
+        parent = self.store.message(m["parent"]) if hooks.quote and m.get("parent") else None
+        if parent:
+            payload["quote"] = _hook_message(parent)
+        if hooks.context:
+            before = [x for x in self.store.messages(m["chat"], m.get("position") or 0, hooks.context + 1) if x["id"] != m["id"]]
+            before = [x for x in before if x["type"] != "SYSTEM"][-hooks.context:]
+            if before:
+                payload["context"] = [_hook_message(x) for x in before]
+        return payload
 
     def _thread(self, m):
         """The topic a group request belongs to, "" for a direct chat: the topic it was written in, or the one its answer
@@ -571,6 +620,8 @@ class Connector:
             out = {"state": "ok", "account": self._account, "via": "LarkAgentX 长连接"}
             if not self._link_up:
                 out["guide"] = ["长连接断了，正在重连。"]
+            if self.hooks is not None and self.hooks.problem:
+                out.setdefault("guide", []).append(self.hooks.problem)
             if self._last_sync:
                 out["last_sync"] = rfc3339(self._last_sync)
             if self._last_event:
@@ -994,6 +1045,23 @@ def agent_request(text):
     if rest and not (rest[0].isspace() or rest[0] in ":："):
         return None
     return rest.lstrip(" \t\r\n:：").strip()
+
+
+def _command_texts(m):
+    """Where a command may start in m: its text, and for rich text also the body under its title line."""
+    text = m.get("text") or ""
+    out = [text]
+    if m.get("type") == "POST":
+        first, newline, body = text.lstrip().partition("\n")
+        if newline and (first == "[富文本]" or first.startswith("[富文本] ")):
+            out.append(body)
+    return out
+
+
+def _hook_message(m):
+    """A kept message as a hook payload carries it: the quoted one, or one of the context before the command."""
+    return {"id": m["id"], "sender_name": m["sender_name"] or "", "mine": bool(m["mine"]), "text": m["text"],
+            "at": rfc3339(m["at"] or 0)}
 
 
 def mention_request(text, mentions, me):
