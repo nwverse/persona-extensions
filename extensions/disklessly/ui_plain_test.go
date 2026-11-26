@@ -893,6 +893,33 @@ func TestInstructionsNameButtonsOnTheirPage(t *testing.T) {
 	g.a.jobs.jobs["build-box"].Finished = t0
 	g.a.jobs.mu.Unlock()
 
+	// Every way a computer cannot be reached, on both pages: the plain line under its row names
+	// only buttons drawn there.
+	for _, cause := range unreachableErrors {
+		h := newUploadFleet(t)
+		if err := h.a.db().update(func(st *State, now time.Time) error {
+			m := st.machine("build-box")
+			m.LastError, m.Reachable = cause.err, false
+			c := *st.cold("build-box")
+			c.State, c.Error = ColdOffline, cause.err
+			st.setCold("build-box", &c)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		setJob(h.a, "build-box", jobScan, cause.err)
+		for _, tab := range []string{tabFleet, tabItems, tabPlan} {
+			res, err := h.a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{State: ext.EncodeState(page{Machine: "build-box"}), Action: "tab", Values: map[string]string{"tab": tab}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkTapNames(t, "硬盘空间 "+cause.name+"/"+tab, res.View)
+		}
+		for _, m := range []string{"", "build-box"} {
+			checkTapNames(t, fmt.Sprintf("AI 对话 %s/%q", cause.name, m), h.view(t, m))
+		}
+	}
+
 	// 还不知道有没有 Homebrew: the button it says will appear is the one drawn once it is known.
 	if adv := coldProblem(&State{}, &Machine{ID: "x", Name: "x"}, nil, ColdNoCLI); !strings.Contains(adv.Next, "「"+brewButtonTitle(false)+"」") {
 		t.Errorf("Homebrew button named as %q", adv.Next)

@@ -170,7 +170,7 @@ func sshProblem(m *Machine, raw string) problem {
 		p.Next = "在运行 Persona 的电脑上运行下面的命令，把密钥装到这台电脑上；或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的用户名和密钥文件，然后点「重试」。"
 		p.Command = "ssh-copy-id " + sshTarget(m)
 		p.Lead = name + "回应了，但不让登录：多半是它的登录用户名或密钥变了，或者还没把运行 Persona 的电脑的密钥装到它上面。改过用户名或密钥文件的话，在「" + homeTitle + "」页的「添加或修改电脑」里改好，再点「重试」。"
-		p.CmdIntro = "还没装过密钥的话，懂终端的话可以在运行 Persona 的电脑上用这条命令装过去（会问一次那台电脑的密码）："
+		p.CmdIntro = "还没把密钥装过去的话，懂终端可以在运行 Persona 的电脑上用这条命令装（会问一次那台电脑的密码）："
 	case causeHostKey:
 		p.Title = "还没确认这台电脑的身份"
 		p.Reason = "运行 Persona 的电脑还没认过" + name + "的身份标识（指纹），或者指纹变了，所以自动登录被拦下了。"
