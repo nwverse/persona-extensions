@@ -6,7 +6,7 @@ The household extension (`household`, 家庭管家) keeps a home's stock, shoppi
 | --- | --- |
 | `contributes.ui` `nav_page` `household` | The 家庭管家 page: 总览, 库存, 采购, 家务 and 餐食 tabs, with a badge counting what needs attention |
 | `contributes.ui` `overview_card` `household-card` | The 家庭管家 · 概况 card on the overview, with the counts and the most urgent entries |
-| `contributes.mcp_servers` `household` | Nine tools for the assistant (`household mcp`) |
+| `contributes.mcp_servers` `household` | Fourteen tools for the assistant (`household mcp`), five of them read-only and allowed |
 | `contributes.skills` `household` | Tells the assistant when and how to use the tools |
 | `permissions.hub` `notify` | The daily reminder as a push notification |
 | `permissions.hub` `todos.write` | Reminders as to-dos (optional, chosen in the settings) |
@@ -88,12 +88,38 @@ Settings (`configuration`):
 | `household_purchase` | no | Marks purchases 已买 (stocking the items) or 不买 |
 | `household_chore_done` | no | Completes a chore and schedules the next round |
 | `household_remove` | no | Deletes a record; relations pointing to it are removed |
+| `household_import_preview` | yes (writes a draft, never a record) | Plans the lines the assistant read off a receipt, a photo, an order screenshot or a text against the records and stores the plan as a draft; answers per line what will happen, what was inferred and what needs the user's answer, the totals and a summary to read back. With `draft_id` (and `edits`) it plans a stored draft again |
+| `household_import_list` | yes | The drafts waiting (including pasted lists from the page) and the last import, with whether it can be undone |
+| `household_import_apply` | no | Writes a draft in one transaction, with optional `skip` and `edits`; refuses open questions and drafts the records have overtaken |
+| `household_import_undo` | no | Undoes the last import while nothing it touched has changed since |
+| `household_import_discard` | no | Drops a draft; no record changes |
 
 Meals are planned with `household_save` (type `meal`, with `date`, `slot` and `recipe`).
 
+The tools that change records (`household_save` and the others marked "no", including `household_import_apply`, `household_import_undo` and `household_import_discard`) are left out of `allow`, so the hub asks the user before each call. `readOnlyHint` is true exactly for the allowed ones; `destructiveHint` marks the tools that overwrite or delete records (save, use, purchase, chore done, remove, import apply, import undo).
+
+## Import
+
+The user sends the Persona assistant a photo of a receipt, the fridge or a shelf, an order screenshot or a text and says, for example, 「把这张小票记到家庭管家」. The assistant's own model reads it; the extension adds no model and no key. It gets lines (`title`, and when readable `qty`, `unit`, `category`, `place`, `expires`, `bought_on`, `price`, `target` `stock` or `shopping`) and plans them in `internal/imports`:
+
+- **Names.** Titles are trimmed, full-width letters and digits made half-width, and spaces closed up. A line matches a recorded item when the names are then equal (exact). Names that only come near (one contains the other, or they agree once sizes such as 250ml×12, brackets and words such as 纯 or 进口 are left out; 「纯牛奶」 and 「牛奶」) are never merged on their own: the line becomes a question with the candidates and 当新的记.
+- **Units.** Aliases are resolved (kg → 千克, ml → 毫升). Weights and volumes convert (斤 → 千克, the preview says so). A unit that does not convert (盒 against 个) is a question; a missing unit takes the item's, marked inferred. An item counted by quantity without a quantity on the line is a question too; the extension never assumes one.
+- **Duplicates.** Lines of the same name, target and unit in one import are added up (earliest date kept); the same name in another unit stays apart with a note.
+- **Stock lines.** A new item, or more of a recorded item (`a → b` on the estimate, the same rules as buying: a past date means the old batch is gone). When the item, or an entry of the same name without an item, is on the shopping list, it is marked 已买. Photos of the fridge or a shelf count instead of adding (`mode` `count`): the quantity becomes what was seen. Values a recorded item lacks (unit, category, place, a later date) are added; nothing it has is overwritten, except that a later expiry date is not taken while the older batch's date is still ahead.
+- **Shopping lines.** Already on the list (an open purchase of that name, or for an item of that name), a question when only a near name is there, else a new 待买 purchase linked to the one item of that name.
+- **Inferred values.** A small built-in table of common groceries and household goods suggests a category, a recorded place whose name has a fitting word (冰箱, 厨房柜, 卫生间 …) and, for things bought now, a usual shelf life (鲜牛奶 7 days, 鸡蛋 30, 酸奶 14 …). Things whose shelf life depends on the product (milk in general, rice, sauces, cleaning goods) get no date. Every such value is listed in `inferred` and marked （推测） in the words; a counted photo infers no dates. A place the line names but the household lacks is created.
+
+The plan is stored as a draft in `imports.json` beside the records (`imports.lock` guards it; a broken file is refused, never overwritten). A draft lives 24 hours; at most five are kept, a sixth pushes the oldest out. Applying re-plans the draft against the records as they are, refuses when a line the user did not edit in that call now does something else (the user previews again), when a question is left, or when nothing would be written, and then runs every step through `internal/ops` (`Save`, `Purchase`, the new `AddStock`) on a copy of the base: one failure writes nothing. It records each record it touched as it was before and right after. Undo restores the last import (removes what it created, puts back what it changed, purchases back to 待买) only while every touched record is still exactly as the import left it and no other record points at one it created; otherwise it names what is in the way and changes nothing. The last ten imports are remembered; only the newest can be undone.
+
+**On the page.** When drafts exist, the 总览 tab shows 「待确认的导入」 right under the numbers (the newest three, at most 15 lines each): source, time and note, each line with what will happen, 有推测 or 要你定, the answers to a question as buttons, lines that could not be read, the totals, 「确认写入」 (its confirm says how many records change) and 「放弃」. A draft the records have overtaken offers 「重新算一遍」 instead. After an import, 「刚才的导入」 shows for a day with 「撤销这次导入」, or why it can no longer be undone. The overview card has a line 「有 n 份导入等你确认」.
+
+**粘贴清单.** A page-only entry that needs no model: one thing per line (「牛奶 2 盒」「鸡蛋 12 个 2026-12-05」「两瓶酱油」), where it goes and whether it adds or counts. The parser reads a name, a quantity in Latin or Chinese digits (两, 十二, 半) with a known unit, or a bare Latin number after a space or ×, a date (2026-12-05, 2026/12/5, 2026年12月5日, or 12月5日 in this year, said in the note) as the expiry date, and a price (¥18.5); bullets and numbering are dropped. A line that is only a number or a date, has no letters, reads like a sentence, is too long or has an impossible date is shown as 没读懂 with the reason, never guessed. The result is the same draft as the tool's.
+
+**「让助手帮我记」.** A row in 「一次记很多」 says what to do in the assistant. An extension page cannot open or prefill an assistant conversation: `wire.Action.reply` and `open` (and `Push.page`) are for views shown inside an assistant conversation only, and `ActionResult.open_url` opens https links. The hub scope `assistant.ask` (`POST /api/v1/assistant/conversations`, used by homeassistant and space-conversations) starts a conversation with a prompt the extension writes, but it cannot carry the user's photo, the page cannot open that conversation on every hub, and it would add a permission to accept on upgrade, so this version does not use it.
+
 ## Data and location
 
-Records are kept in the extension's own data directory, in `spaces.json`, the kernel's file format, written by the same store as spaces (lock file, temporary file and rename). `remind.json` sits beside it.
+Records are kept in the extension's own data directory, in `spaces.json`, the kernel's file format, written by the same store as spaces (lock file, temporary file and rename). `remind.json` and `imports.json` (import drafts and the last imports, for undo) sit beside it.
 
 `household mcp`, started by the assistant, finds the directory in this order: `--data`; the `PERSONA_HOUSEHOLD_DATA` environment variable; the directory the running extension recorded in `persona-household/data-dir` under the user's configuration directory, when that directory exists; `persona-household/data` under the user's configuration directory.
 
@@ -122,10 +148,11 @@ Both extensions reach them through their existing kind of `replace` directive fo
 | --- | --- |
 | `internal/model` | The schema (space id, type and property keys, stage and option names), `Ensure`, fictional sample records, and `Load`, which reads a space into typed records |
 | `internal/rules` | Pure functions over the typed records: estimate, findings, restock suggestions, chores due, meal ideas, summary |
-| `internal/ops` | The transactions: save, use, restock, purchase, chore done, remove, load samples. Each works on a `*kernel.Base` inside one `Update` |
+| `internal/ops` | The transactions: save, use, restock, purchase, add stock, restore, chore done, remove, load samples. Each works on a `*kernel.Base` inside one `Update` |
 | `internal/remind` | The hub client (`notify`, to-dos), the daily plan and its `remind.json` state |
 | `internal/ui` | The page and the overview card |
-| `internal/mcp` | The stdio MCP server and the nine tools |
+| `internal/imports` | The import: matching and merging, the built-in table, the paste parser, drafts in `imports.json`, apply and undo |
+| `internal/mcp` | The stdio MCP server and the fourteen tools |
 | `internal/datadir` | Where the data directory is, and recording it for `household mcp` |
 
 ## Limits
