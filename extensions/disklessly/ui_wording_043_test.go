@@ -197,7 +197,7 @@ func TestUntitledConversationsReadApart(t *testing.T) {
 		}
 		titles[r.Title+"|"+r.Subtitle] = true
 		if !strings.HasPrefix(r.Title, untitledText) {
-			if !strings.Contains(r.Subtitle, " · 2026-") {
+			if !clockRE.MatchString(r.Subtitle) {
 				t.Errorf("titled row lost its date and time: %q", r.Subtitle)
 			}
 			continue
@@ -252,8 +252,10 @@ func TestOneWordForUncheckedConversations(t *testing.T) {
 	if unchecked == 0 {
 		t.Fatal("no row badged 还没核对过")
 	}
-	if !strings.Contains(visibleText(sessView(t, a, "studio-mac")), "暂时显示「"+uncheckedText+"」") {
-		t.Error("studio-mac's line does not use the page's word")
+	// studio-mac has no conversation in its network drive: its line does not claim any is
+	// shown as 还没核对过 (see TestDriveProblemSaysHowManyAreUnchecked).
+	if !strings.Contains(visibleText(sessView(t, a, "studio-mac")), "没有对话受影响") {
+		t.Error("studio-mac's line does not say none is affected")
 	}
 	// MCP: values and descriptions unchanged.
 	srv := &mcpServer{store: a.db(), runner: a.runner}
@@ -297,7 +299,7 @@ func TestUnreachableComputerIsNotAFullnessWarning(t *testing.T) {
 	if row.Badge == nil || row.Badge.Tone != wire.TonePositive || !strings.HasPrefix(row.Badge.Text, "上次 宽裕") || strings.Contains(row.Badge.Text, "连不上") {
 		t.Errorf("badge next to the bar: %+v", row.Badge)
 	}
-	if row.Icon != "wifi" || !strings.HasPrefix(row.Subtitle, "刚刚检查时连不上这台电脑 · 下面是 11月6日 检查时的数") {
+	if row.Icon != "wifi" || !strings.HasPrefix(row.Subtitle, "刚刚检查时连不上这台电脑 · 下面是 3 天前检查时的数") {
 		t.Errorf("row: icon %q subtitle %q", row.Icon, row.Subtitle)
 	}
 	for _, st := range v.Sections[1].Items[0].Stats {
@@ -347,15 +349,20 @@ func TestKindsAndPlatformsInPlainWords(t *testing.T) {
 			t.Errorf("items tab lacks %q", w)
 		}
 	}
+	// One set of short names, spelled out once: in the chart, the first to use them.
 	for _, key := range []string{"items-cats-local", "items-tbl-local", "items-detail-tbl-local"} {
 		c := findComponentByKey(items, key)
 		if c == nil {
 			t.Fatalf("%s missing", key)
 		}
 		legend := c.Detail + c.Caption
-		if !strings.Contains(legend, "「Node/Py」是 Node 和 Python 下载的包") || !strings.Contains(legend, "「Rust/XC」是 Rust 和 Xcode 的编译缓存") {
-			t.Errorf("%s has no legend: %q", key, legend)
+		has := strings.Contains(legend, "「Node/Py」是 Node 和 Python 下载的包") && strings.Contains(legend, "「Rust/XC」是 Rust 和 Xcode 的编译缓存")
+		if has != (key == "items-cats-local") {
+			t.Errorf("%s legend %v: %q", key, has, legend)
 		}
+	}
+	if n := strings.Count(txt, "简称："); n != 1 {
+		t.Errorf("items tab spells the short names out %d times", n)
 	}
 	for _, s := range items.Sections {
 		for _, c := range s.Items {

@@ -9,9 +9,15 @@ import (
 // (今天, 上周, 上个月…) keeps the conversations of that time only. disklessly_sessions_search is
 // not changed: it still takes the query as words.
 
-// findHint tells, under the results, that the Persona assistant can find a conversation from a
-// description, and what the search box takes.
-const findHint = "可以输几个词一起搜，也可以加「昨天」「上周」「上个月」这样的时间。记不清词的话，直接跟 Persona 助手说是聊什么的、大概什么时候，比如「帮我找回上周聊购物车结算的那段对话」，它会找出最像的几个让你选。"
+// searchHint tells, under the results, what the search box takes.
+const searchHint = "可以输几个词一起搜，也可以加「昨天」「上周」「上个月」这样的时间。"
+
+// findAskText is a sentence to say to the Persona assistant, which finds a conversation from a
+// description (disklessly_sessions_find); assistantFindHint says it in the page's advice block.
+const (
+	findAskText       = "帮我找回上周聊购物车结算的那段对话"
+	assistantFindHint = "记不清词也能找：跟 Persona 助手说是聊什么的、大概什么时候，比如「" + findAskText + "」，它会找出最像的几个让你选。"
+)
 
 // dateWindow is the time a word of the search box names, in loc: [from, to).
 func dateWindow(word string, now time.Time, loc *time.Location) (from, to time.Time, ok bool) {

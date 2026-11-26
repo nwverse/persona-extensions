@@ -159,11 +159,11 @@ func (d draw) busy(m *Machine) bool {
 }
 
 // checkButton is the title of the 硬盘空间 page's button that checks m: 检查 the first time,
-// 重新检查 after a check that finished, 重试 after one that could not reach m. The AI 对话 page
-// names its button for a computer in the same situation the same way (coldProblem).
+// 重试 when the newest check of either page could not reach m, 重新检查 otherwise. The AI 对话
+// page names its button for a computer in the same situation the same way (pageProblem).
 func (d draw) checkButton(m *Machine) string {
 	switch {
-	case m.LastError != "":
+	case !m.Reachable && m.LastError != "":
 		return "重试 " + machineLabel(m)
 	case d.st.Scans[m.ID] != nil:
 		return "重新检查 " + machineLabel(m)
@@ -236,14 +236,16 @@ func (d draw) machineJobItems(m *Machine, rescan, reclean retryHint, buttons []w
 			text := failed + p.lead()
 			if c := d.st.cold(m.ID); m.Reachable && c != nil && reachedState(c.stateCode()) && !c.CheckedAt.IsZero() {
 				// A later check of the AI 对话 page reached it: this line is older.
-				text += "不过「" + sessionsTitle + "」页" + d.when(c.CheckedAt) + "检查时连上了它。"
+				text += "不过「" + sessionsTitle + "」页" + spaced(d.when(c.CheckedAt)) + "检查时连上了它。"
 			}
 			items = append(items, wire.Component{Type: wire.ComponentText, Text: clip(text, 600)})
 			command = commandItems(detailsKey("scan", m.ID), p.CmdIntro, p.Command)
 		}
 		raw = strings.TrimSpace(p.Raw + "\n" + raw)
 	}
+	// 详情 goes with the explanation and its buttons; the command block, for people who use a
+	// terminal, comes last.
 	items = append(items, buttons...)
-	items = append(items, command...)
-	return append(items, d.detailsItems(detailsKey("scan", m.ID), raw)...)
+	items = append(items, d.detailsItems(detailsKey("scan", m.ID), raw)...)
+	return append(items, command...)
 }

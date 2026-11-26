@@ -21,16 +21,8 @@ var CategoryAxisLabels = map[string]string{
 	CatColdAgentSession: "旧对话",
 }
 
-// Compact category names for 4-column detail tables on narrow phone viewports (360-390px): the
-// table's caption spells the abbreviations out (categoryLegend).
-var CategoryCompactLabels = map[string]string{
-	CatGoCache:          "Go 缓存",
-	CatNodePythonCache:  "Node/Py",
-	CatDockerUnused:     "容器与镜像",
-	CatRustXcodeBuild:   "Rust/XC",
-	CatTmpLogs:          "系统与日志",
-	CatColdAgentSession: "旧 AI 对话",
-}
+// The breakdown table names the kinds by these same short labels, so the chart and the table
+// above and below each other say one set of names, spelled out once (categoryLegend).
 
 // CategoryPlainNames are the kinds as the pages name them wherever a whole line has room (rows,
 // check boxes, confirms, the clean-up record, the plain summaries). CategoryLabels stays as it
@@ -564,7 +556,8 @@ func cleanImpactChart(ms MachineStatus, scan *Scan) (wire.Component, bool) {
 }
 
 // machineBreakdownTable renders a compact 4-column table so neither root usage nor category shares rely on color alone.
-func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreakdown, keyPrefix string) wire.Component {
+// legend spells the short names out in its caption: when no category chart above it does.
+func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreakdown, keyPrefix string, legend bool) wire.Component {
 	rows := make([][]string, 0, len(CategoryIDs))
 	for _, cid := range CategoryIDs {
 		tot := bd.catTotal(cid)
@@ -573,7 +566,7 @@ func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreak
 			share = fmt.Sprintf("%.1f%%", float64(tot)*100.0/float64(bd.totalShown))
 		}
 		rows = append(rows, []string{
-			CategoryCompactLabels[cid],
+			CategoryAxisLabels[cid],
 			bd.catModeText(cid),
 			FormatBytes(tot),
 			share,
@@ -587,7 +580,10 @@ func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreak
 	if lastKnown(ms) {
 		caption = "上次检查时，" + caption
 	}
-	caption += "。" + categoryLegend(CategoryCompactLabels, CategoryIDs)
+	caption += "。"
+	if legend {
+		caption += categoryLegend(CategoryAxisLabels, CategoryIDs)
+	}
 	return wire.Component{
 		Type:    wire.ComponentTable,
 		Key:     boundedKey(keyPrefix+"-tbl-", ms.Machine.ID),

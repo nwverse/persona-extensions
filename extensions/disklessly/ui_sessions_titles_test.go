@@ -77,7 +77,7 @@ func TestConversationTitleIsNeverAnID(t *testing.T) {
 	}{
 		{"real title", ColdEntry{ID: "a1", SessionID: untitledUUID, Title: "Fix the checkout flow", FirstPrompt: "Please fix it"}, "Fix the checkout flow"},
 		{"session id as title, first message", ColdEntry{ID: "a1", SessionID: untitledUUID, Title: untitledUUID, FirstPrompt: "Please fix the checkout flow"}, "Please fix the checkout flow"},
-		{"entry id as title", ColdEntry{ID: "c1b2c3d4e5f6", Title: "c1b2c3d4e5f6", Tool: "claude", Mtime: "2026-11-08T09:30:00Z"}, "没有标题的对话 · 11月8日 09:30 · Claude Code"},
+		{"entry id as title", ColdEntry{ID: "c1b2c3d4e5f6", Title: "c1b2c3d4e5f6", Tool: "claude", Mtime: "2026-11-08T09:30:00Z"}, "没有标题的对话 · 1 天前 09:30 · Claude Code"},
 		{"first sentence", ColdEntry{FirstPrompt: "帮我看看为什么 nightly 构建总是失败。日志里一直报磁盘空间不够"}, "帮我看看为什么 nightly 构建总是失败。"},
 		{"long first message", ColdEntry{FirstPrompt: strings.Repeat("长", 80)}, strings.Repeat("长", promptTitleRunes-1) + "…"},
 		{"nothing, tool from path, other year", ColdEntry{SessionID: idTitleUUID, Path: "/home/dev/.codex/sessions/x.jsonl", Mtime: "2025-10-28T09:30:00Z"}, "没有标题的对话 · 2025年10月28日 09:30 · Codex"},
@@ -119,7 +119,7 @@ func TestConversationListReadable(t *testing.T) {
 			t.Errorf("%q: project not worded:\n%s", m, txt)
 		}
 		want := map[string]string{
-			untitledUUID: "没有标题的对话 · 11月8日 09:30 · Claude Code",
+			untitledUUID: "没有标题的对话 · 1 天前 09:30 · Claude Code",
 			idTitleUUID:  "没有标题的对话 · 2025年10月28日 09:30 · Claude Code",
 			promptUUID:   "帮我看看为什么 nightly 构建总是失败。",
 			uuidClaude:   "Fix the checkout flow",

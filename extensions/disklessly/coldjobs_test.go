@@ -194,7 +194,7 @@ func TestOldColdCatalogLoads(t *testing.T) {
 	if err := wire.CheckView(v); err != nil {
 		t.Fatal(err)
 	}
-	if got := texts(v); !strings.Contains(got, "电脑 3 台 1 配套小工具出错了 · 1 还没装配套小工具 · 1 正常") {
+	if got := texts(v); !strings.Contains(got, "电脑 3 台 1 台正常 · 2 台要处理") || !strings.Contains(got, "（1 台配套小工具出错了、1 台还没装配套小工具）") {
 		t.Fatalf("summary:\n%s", got)
 	}
 }
@@ -304,7 +304,7 @@ func TestBackgroundRefreshDoesNotBlock(t *testing.T) {
 	if len(rows) == 0 || rows[0].Badge.Text != coldStateLabel(ColdReady) || !strings.Contains(rows[0].Detail, "记下 4 个对话") {
 		t.Fatalf("build-box after refresh: %+v", rows)
 	}
-	if !strings.Contains(texts(v), "2 正常") {
+	if !strings.Contains(texts(v), "电脑 2 台 都正常") {
 		t.Fatalf("summary:\n%s", texts(v))
 	}
 }

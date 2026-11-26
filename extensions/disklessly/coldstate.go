@@ -101,6 +101,8 @@ func noRepo(b ColdBackend) bool { return strings.Contains(b.Error, "repo.json is
 
 func coldStateTone(s string) string {
 	switch s {
+	case pageRecheck:
+		return wire.ToneCaution
 	case ColdReady:
 		return wire.TonePositive
 	case ColdOffline, ColdBackendDown, ColdUnreadable:
@@ -124,7 +126,7 @@ func coldStateRank(s string) int {
 		return 4
 	case ColdNoBackend:
 		return 5
-	case ColdUnchecked:
+	case ColdUnchecked, pageRecheck:
 		return 6
 	}
 	return 7

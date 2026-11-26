@@ -52,6 +52,8 @@ const (
 	modeHome       = ""
 	modeNewMachine = "new-machine"
 	modeEditMach   = "edit-machine"
+	// modeAdvice is the pushed page of every 帮我腾空间 step (read-only).
+	modeAdvice = "advice"
 )
 
 type draw struct {
@@ -205,6 +207,8 @@ func (d draw) view(p page) *wire.View {
 			return d.home(page{})
 		}
 		return d.machineForm(p, m)
+	case modeAdvice:
+		return d.adviceAllView(p)
 	}
 	return d.home(p)
 }
@@ -466,7 +470,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 		var subParts []string
 		// Reachability comes first, in words, apart from how full the disk is (bar and badge).
 		if lastKnown(ms) && ms.LastScannedAt != nil {
-			subParts = append(subParts, d.offlineWords(m)+" · 下面是 "+d.shortDate(*ms.LastScannedAt)+" 检查时的数")
+			subParts = append(subParts, d.offlineWords(m)+" · 下面是 "+d.when(*ms.LastScannedAt)+"检查时的数")
 		} else if ms.Level == HealthOffline {
 			subParts = append(subParts, d.offlineWords(m))
 		}
@@ -584,7 +588,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 						})
 					}
 					if d.v3() {
-						sec.Items = append(sec.Items, machineBreakdownTable(ms, mountPoint, bd, "fleet"))
+						sec.Items = append(sec.Items, machineBreakdownTable(ms, mountPoint, bd, "fleet", bd.totalShown == 0))
 					} else {
 						sec.Items = append(sec.Items, wire.Component{
 							Type:  wire.ComponentText,
@@ -766,7 +770,7 @@ func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 		if len(filtered) == 0 {
 			catSummarySec := wire.Section{Title: "能删的东西，按种类"}
 			if d.v3() {
-				catSummarySec.Items = append(catSummarySec.Items, machineBreakdownTable(ms, scan.Mount.MountPoint, bd, "items"))
+				catSummarySec.Items = append(catSummarySec.Items, machineBreakdownTable(ms, scan.Mount.MountPoint, bd, "items", bd.totalShown == 0))
 			} else {
 				catSummarySec.Items = append(catSummarySec.Items, wire.Component{
 					Type:  wire.ComponentText,
@@ -806,8 +810,11 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 	catSec := wire.Section{
 		Title: "能删的东西，按种类（点一行就删这一类）",
 	}
+	// The category chart above (drawn under these conditions) spells the short names out; the
+	// tables below use the same names and say them again only without it.
+	legend := !(d.v2() && scan.Mount.TotalBytes > 0 && bd.totalShown > 0)
 	if d.v3() {
-		catSec.Items = append(catSec.Items, machineBreakdownTable(ms, scan.Mount.MountPoint, bd, "items"))
+		catSec.Items = append(catSec.Items, machineBreakdownTable(ms, scan.Mount.MountPoint, bd, "items", legend))
 	} else {
 		catSec.Items = append(catSec.Items, wire.Component{
 			Type:  wire.ComponentText,
@@ -868,7 +875,7 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 		detailSec.Items = append(detailSec.Items, wire.Component{
 			Type:    wire.ComponentTable,
 			Key:     boundedKey("items-detail-tbl-", m.ID),
-			Caption: categoryLegend(CategoryAxisLabels, kinds),
+			Caption: legendIf(legend, kinds),
 			Columns: []wire.TableColumn{
 				{Title: "项目"},
 				{Title: "种类"},
@@ -1121,7 +1128,7 @@ func (d draw) historyTab() []wire.Section {
 			var hRows [][]string
 			for _, h := range d.st.History[:min(len(d.st.History), 50)] {
 				hRows = append(hRows, []string{
-					h.CreatedAt.In(d.loc).Format("01-02 15:04"),
+					d.stamp(h.CreatedAt),
 					histMachineCell(d.st, h),
 					compactAvailChange(h),
 					compactFreedCell(h.FreedBytes),
@@ -1423,6 +1430,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		p.Machine = cmp.Or(r.Values["m"], p.Machine)
 		p.Tab = tabPlan
 		p.Mode = modeHome
+	case "advice-all":
+		// An app that does not push pages: draw every step in place.
+		p.Mode = modeAdvice
 	case "new-machine":
 		p.Mode = modeNewMachine
 	case "edit-machine":
@@ -1529,7 +1539,7 @@ func (d draw) machineHeaderComponent(ms MachineStatus, scan *Scan) wire.Componen
 	if scan != nil {
 		sub = fmt.Sprintf("系统盘 %s · %s检查", scan.Mount.MountPoint, d.when(scan.ScannedAt))
 		if lastKnown(ms) {
-			sub = fmt.Sprintf("%s · 系统盘 %s 的数是 %s 检查时的", d.offlineWords(m), scan.Mount.MountPoint, d.shortDate(scan.ScannedAt))
+			sub = fmt.Sprintf("%s · 系统盘 %s 的数是%s检查时的", d.offlineWords(m), scan.Mount.MountPoint, spaced(d.when(scan.ScannedAt)))
 		}
 	}
 	var badges []wire.Badge
@@ -1726,7 +1736,33 @@ func (d draw) when(t time.Time) string {
 	case ago < 7*24*time.Hour:
 		return fmt.Sprintf("%d 天前", int(ago.Hours()/24))
 	}
-	return t.In(d.loc).Format(time.DateOnly)
+	return d.shortDate(t)
+}
+
+// legendIf is categoryLegend of kinds when legend is set, else "".
+func legendIf(legend bool, kinds []string) string {
+	if !legend {
+		return ""
+	}
+	return categoryLegend(CategoryAxisLabels, kinds)
+}
+
+// spaced puts a space before a time that starts with a number ("3 天前"), as after a Chinese
+// character the pages write it: 「页 3 天前检查」 but 「页刚刚检查」.
+func spaced(when string) string {
+	if when != "" && when[0] >= '0' && when[0] <= '9' {
+		return " " + when
+	}
+	return when
+}
+
+// stamp is when a conversation or a clean-up was, as when words it, with the time of day once it
+// is a day old or more (several of one day stay apart): 「5 小时前」「3 天前 16:17」「10月24日 16:17」.
+func (d draw) stamp(t time.Time) string {
+	if d.now.Sub(t) < 24*time.Hour {
+		return d.when(t)
+	}
+	return d.when(t) + " " + t.In(d.loc).Format("15:04")
 }
 
 // sessionOffloadConfirm describes what a cold-session run does: it covers every agent at once,

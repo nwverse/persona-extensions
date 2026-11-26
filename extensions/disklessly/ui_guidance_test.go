@@ -216,7 +216,8 @@ func TestDiskPageCompactForManyComputers(t *testing.T) {
 				}
 			}
 		}
-		if n := sectionItemCount(v.Sections); n > 40 {
+		// 41: the 帮我腾空间 block's 看全部步骤 row came in 0.5.3.
+		if n := sectionItemCount(v.Sections); n > 41 {
 			t.Errorf("selected %q: %d components for five computers", sel, n)
 		}
 	}

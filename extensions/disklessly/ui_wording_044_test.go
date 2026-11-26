@@ -163,7 +163,7 @@ func TestBothPagesAgreeOnStatesAndButtons(t *testing.T) {
 	// The badge and the summary count are the same words; MCP keeps its state_label.
 	a := mixedFleet(t)
 	v := sessView(t, a, "")
-	if !strings.Contains(visibleText(v), "1 "+noRepoText) || strings.Contains(visibleText(v), "网盘连不上 ·") {
+	if !strings.Contains(visibleText(v), "1 台"+noRepoText) || strings.Contains(visibleText(v), "网盘连不上 ·") {
 		t.Errorf("summary:\n%s", visibleText(v))
 	}
 	if coldStateLabel(ColdBackendDown) != "网盘连不上" {
@@ -206,7 +206,8 @@ func TestPagesSayWhenTheOtherFoundItUnreachable(t *testing.T) {
 		t.Fatal(err)
 	}
 	txt := componentsText(diskItemsOf(diskView(t, b, "build-box", tabFleet), "build-box", false))
-	if !strings.Contains(txt, "不过「AI 对话」页刚刚检查时连上了它。") || !strings.Contains(txt, "点「重试 build-box」") {
+	// The newest check reached it: 重新检查, as on AI 对话.
+	if !strings.Contains(txt, "不过「AI 对话」页刚刚检查时连上了它。") || !strings.Contains(txt, "点「重新检查 build-box」") {
 		t.Errorf("硬盘空间 after a later AI 对话 check:\n%s", txt)
 	}
 }
@@ -318,14 +319,16 @@ func TestInstallGuidanceSaysEachFactOnce(t *testing.T) {
 	}
 }
 
-// A computer that is not ready: the plain line, then the buttons it names, then the command
-// block (after its one-line introduction) and 详情, on both pages.
+// A computer that is not ready: the plain line, then the buttons it names and 详情, then the
+// command block (after its one-line introduction) last, on both pages.
 func TestNotReadyButtonsComeBeforeCommands(t *testing.T) {
 	check := func(what string, items []wire.Component) {
 		t.Helper()
-		lead, firstButton, lastButton, intro, code := -1, -1, -1, -1, -1
+		lead, firstButton, lastButton, intro, code, details := -1, -1, -1, -1, -1, -1
 		for i, c := range items {
 			switch {
+			case c.Type == wire.ComponentButton && c.Title == "详情":
+				details = i
 			case c.Type == wire.ComponentText && lead < 0 && c.Style == "":
 				lead = i
 			case (c.Type == wire.ComponentButton || c.Type == wire.ComponentLink) && c.Title != "详情" && c.Title != "收起详情":
@@ -343,8 +346,8 @@ func TestNotReadyButtonsComeBeforeCommands(t *testing.T) {
 		if lead < 0 || firstButton < 0 || code < 0 {
 			t.Fatalf("%s: lead %d, buttons %d, code %d:\n%s", what, lead, firstButton, code, componentsText(items))
 		}
-		if !(lead < firstButton && lastButton < intro && intro < code) {
-			t.Errorf("%s: order lead %d, buttons %d-%d, intro %d, code %d:\n%s", what, lead, firstButton, lastButton, intro, code, componentsText(items))
+		if !(lead < firstButton && lastButton < intro && intro < code) || (details >= 0 && !(lastButton < details && details < intro)) {
+			t.Errorf("%s: order lead %d, buttons %d-%d, 详情 %d, intro %d, code %d of %d:\n%s", what, lead, firstButton, lastButton, details, intro, code, len(items), componentsText(items))
 		}
 	}
 	a := mixedFleet(t)
@@ -415,7 +418,7 @@ func TestFirstMessageWithoutContentMakesNoTitle(t *testing.T) {
 				t.Errorf("untitled row hides its first message: %+v", r)
 			}
 		case r.Title == "帮我看看为什么构建总是失败":
-			if !strings.Contains(r.Subtitle, "2026-11-") {
+			if !clockRE.MatchString(r.Subtitle) {
 				t.Errorf("a title from the first message has no date and time: %q", r.Subtitle)
 			}
 		default:

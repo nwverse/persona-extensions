@@ -571,7 +571,8 @@ func TestAdviceBlockOnDiskPage(t *testing.T) {
 		t.Fatalf("block at %d", idx)
 	}
 	sec := v.Sections[idx]
-	if len(sec.Items) != adviceShown+1 || sec.Items[len(sec.Items)-1].Title != assistantRowTitle ||
+	// The steps, the row that opens every step, the assistant row.
+	if len(sec.Items) != adviceShown+2 || sec.Items[adviceShown].Title != adviceAllRow || sec.Items[len(sec.Items)-1].Title != assistantRowTitle ||
 		!strings.Contains(sec.Items[len(sec.Items)-1].Subtitle, "「"+assistantPrompt+"」") {
 		t.Fatalf("block items: %+v", sec.Items)
 	}

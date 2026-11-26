@@ -287,9 +287,13 @@ func TestSessionsPageFindHintAndDateWords(t *testing.T) {
 				}
 			}
 			if strings.HasPrefix(s.Title, "搜索") || strings.HasPrefix(s.Title, "已经搬到网盘") {
-				if !strings.Contains(s.Footer, "Persona 助手") || !strings.Contains(s.Footer, "「上周」") {
+				if !strings.Contains(s.Footer, "「上周」") {
 					t.Errorf("hint missing: %q", s.Footer)
 				}
+			}
+			// The assistant's way to find one is said once, in the page's advice block.
+			if s.Key == "sessions-advice" && !strings.Contains(componentsText(s.Items), "跟 Persona 助手说") {
+				t.Errorf("assistant hint missing: %+v", s.Items)
 			}
 		}
 		return keys

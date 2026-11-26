@@ -123,9 +123,9 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	var rows []machineRow
 	for _, mm := range machines {
 		cat := d.st.cold(mm.ID)
-		state := cat.stateCode()
+		state := d.pageState(mm, cat)
 		byState[state]++
-		label := cat.pageLabel()
+		label := d.pageLabel(mm, cat)
 		byLabel[label]++
 		labelRank[label], labelTone[label] = coldStateRank(state), coldStateTone(state)
 		if state == ColdReady {
@@ -176,15 +176,19 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 		labels = append(labels, l)
 	}
 	slices.SortFunc(labels, func(a, b string) int { return cmp.Or(cmp.Compare(labelRank[a], labelRank[b]), cmp.Compare(a, b)) })
+	// The stat's detail is two short counts (a narrow card cuts a longer one off); which states
+	// the others are in goes in the full-width line below it.
 	var parts []string
 	worst := wire.TonePositive
 	for _, l := range labels {
-		parts = append(parts, fmt.Sprintf("%d %s", byLabel[l], l))
+		if l != coldStateLabel(ColdReady) {
+			parts = append(parts, fmt.Sprintf("%d 台%s", byLabel[l], l))
+		}
 		if t := labelTone[l]; t == wire.ToneDanger || (t == wire.ToneCaution && worst == wire.TonePositive) {
 			worst = t
 		}
 	}
-	machineStat := wire.Stat{Label: "电脑", Value: fmt.Sprintf("%d 台", len(machines)), Detail: strings.Join(parts, " · "), Tone: worst}
+	machineStat := wire.Stat{Label: "电脑", Value: fmt.Sprintf("%d 台", len(machines)), Detail: machineCounts(ready, len(machines)), Tone: worst}
 	if len(running) > 0 {
 		machineStat.Detail = fmt.Sprintf("%d 台正在处理 · %s", len(running), machineStat.Detail)
 	}
@@ -219,10 +223,10 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	// Where the upload is: under each ready computer's row below; say so, or why there is none.
 	shownLabel := ""
 	if m != nil {
-		shownLabel = d.st.cold(m.ID).pageLabel()
+		shownLabel = d.pageLabel(m, d.st.cold(m.ID))
 	}
 	status.Items = append(status.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
-		Text: clip(offloadHint(m, ready, len(machines), byState, uploadTitle, shownLabel), 300)})
+		Text: clip(offloadHint(m, ready, len(machines), byState, uploadTitle, shownLabel, parts), 400)})
 	if m == nil {
 		// One computer's own row below has its 重新检查 button.
 		status.Items = append(status.Items, wire.Component{
@@ -272,7 +276,7 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	if capped {
 		notes = append(notes, fmt.Sprintf("这里每台电脑只列出最新的 %d 个对话，更早的请用「%s」。", maxColdEntries, coldDeepText))
 	}
-	notes = append(notes, findHint)
+	notes = append(notes, searchHint)
 	results.Footer = strings.Join(notes, " ")
 	if len(shown) == 0 {
 		detail := "还没有搬到网盘的对话。点「" + coldRefreshText + "」看看电脑的情况；检查只读取信息，不会搬走或删除任何东西。"
@@ -286,11 +290,13 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 		results.Items = append(results.Items, d.emptyComponents("chat", "没有对话", detail, nil)...)
 	}
 
-	if allowResults := max(0, maxItems-len(status.Items)); len(results.Items) > allowResults {
+	adviceSec := d.sessionsAdviceSection(m)
+	head := len(status.Items) + len(adviceSec.Items)
+	if allowResults := max(0, maxItems-head); len(results.Items) > allowResults {
 		results.Items = results.Items[:allowResults]
 	}
 	machineSec := wire.Section{Key: "cold-machines", Title: "每台电脑的情况"}
-	machineBudget := max(0, maxItems-len(status.Items)-len(results.Items))
+	machineBudget := max(0, maxItems-head-len(results.Items))
 	compactCount := 0
 	for i, r := range rows {
 		rem := len(rows) - i - 1
@@ -318,10 +324,14 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	if compactCount > 0 {
 		machineSec.Footer = fmt.Sprintf("后面 %d 台电脑只显示一行；点它（或在顶部「电脑」里选它）可以看到全部操作。", compactCount)
 	}
-	if len(machineSec.Items) == 0 {
-		return []wire.Section{status, results}
+	secs := []wire.Section{status}
+	if len(adviceSec.Items) > 0 {
+		secs = append(secs, adviceSec)
 	}
-	return []wire.Section{status, machineSec, results}
+	if len(machineSec.Items) > 0 {
+		secs = append(secs, machineSec)
+	}
+	return append(secs, results)
 }
 
 // recheckButton is the title of the button on this page that checks again where conversations
@@ -335,7 +345,7 @@ func (d draw) recheckButton(m *Machine) string {
 		return ""
 	}
 	cat := d.st.cold(m.ID)
-	if adv := coldProblem(d.st, m, cat, cat.stateCode()); adv.retry != "" {
+	if adv := d.pageProblem(m, cat, d.pageState(m, cat)); adv.retry != "" {
 		return adv.retry + " " + machineLabel(m)
 	}
 	return ""
@@ -384,7 +394,9 @@ func (d draw) whereaboutsNote(m *Machine, unknown, missing int) string {
 // offloadHint says where the upload button is (under each ready computer's row), or why no
 // computer shown can upload now. upload is the button's title as drawn; "" while every ready
 // computer is busy.
-func offloadHint(m *Machine, ready, total int, byState map[string]int, upload, label string) string {
+//
+// others names the states of the computers that are not ready ("1 台连不上这台电脑"), worst first.
+func offloadHint(m *Machine, ready, total int, byState map[string]int, upload, label string, others []string) string {
 	if ready > 0 && upload == "" {
 		return "正在进行的事完成后，可以在电脑那一行把一周没动的 AI 对话搬到网盘。"
 	}
@@ -404,9 +416,9 @@ func offloadHint(m *Machine, ready, total int, byState map[string]int, upload, l
 	case ready == total:
 		return "要腾地方：在下面某台电脑那一行点「" + upload + "」，每次搬一台。"
 	case ready > 0:
-		return fmt.Sprintf("%d 台电脑可以搬：在它那一行点「%s」。其余 %d 台还不能搬，原因和处理办法写在各自那一行。", ready, upload, total-ready)
+		return fmt.Sprintf("%d 台电脑可以搬：在它那一行点「%s」。其余 %d 台还不能搬（%s），原因和处理办法写在各自那一行。", ready, upload, total-ready, strings.Join(others, "、"))
 	}
-	return "现在没有哪台电脑能把对话搬到网盘：先按下面每台电脑的提示装好配套小工具、设置好网盘，再点「" + coldRefreshText + "」。"
+	return "现在没有哪台电脑能把对话搬到网盘（" + strings.Join(others, "、") + "）：先按下面每台电脑的提示处理，再点「" + coldRefreshText + "」。"
 }
 
 // refreshAfter asks the app to draw the page again while a background job runs (hubs that do
@@ -503,14 +515,14 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 		b := cat.Backend
 		id := cmp.Or(b.ID, b.Type, "（未命名）")
 		// The computer answered; its network drive did not. Said apart from 连不上这台电脑.
-		a.Reason = "能连上" + name + "，但它连不上自己用的网盘（" + id + "），所以对话在不在网盘里暂时显示「暂时不确定」，不会当成丢了。"
+		a.Reason = "能连上" + name + "，但它连不上自己用的网盘（" + id + "），" + backendUnknownClause
 		a.Next = "确认网盘（或家里的 NAS）在线、网络通了，再点「重新检查 " + machineLabel(m) + "」；想看具体原因，在这台电脑上运行下面的命令。"
 		a.Command = "disklessly doctor"
 		a.Lead = a.Reason + "多半是：网盘（或家里的 NAS）关机、断网了，" + name + "暂时上不了网，或者网盘的登录过期了。先确认网盘在线、网络通了，再点「重新检查 " + machineLabel(m) + "」。"
 		a.CmdIntro = "懂终端的话，可以在" + name + "上运行这条命令看具体原因："
 		if noRepo(b) {
 			// The backend answers, but holds no Disklessly repository.
-			a.Reason = name + "能连上自己用的网盘（" + id + "），但里面还没有 Disklessly 的存放目录，找不到 repo.json，所以暂时显示「暂时不确定」。"
+			a.Reason = name + "能连上自己用的网盘（" + id + "），但里面还没有 Disklessly 的存放目录，找不到 repo.json，" + noRepoUnknownClause
 			a.Next = "多半是选错了网盘目录：在这台电脑上用下面的命令看看设置了哪些网盘，换成正确的那个；如果这就是要新用的目录，就在里面新建。然后点「重新检查 " + machineLabel(m) + "」。"
 			a.Command = "disklessly backend list\ndisklessly backend use <后端 ID>   # 换到已经在用的那个网盘\ndisklessly init                    # 或者：在当前网盘里新建存放目录"
 			a.Lead = a.Reason + "多半是这台电脑设置的网盘目录不对，比如换过网盘、改过路径。换回原来的目录这一步页面上没有按钮能代劳，只能在" + name + "上开终端做一次；做完点「重新检查 " + machineLabel(m) + "」。"
@@ -528,17 +540,18 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 			a.retry = ""
 		}
 	case ColdUnreadable:
-		a.retry = "重试"
+		// It answered: the button is 重新检查, as on 硬盘空间 for a computer that answers.
+		a.retry = "重新检查"
 		hung := cat != nil && strings.HasPrefix(cat.Error, "disklessly 没有正常结束")
 		if hung {
 			a.Reason = name + "上的配套小工具 3 分钟内没有答完，网盘里的情况暂时不确定。"
-			a.Next = "过一会儿点「重试 " + machineLabel(m) + "」；一直这样的话，在这台电脑上运行下面的命令看看卡在哪里。"
-			a.Lead = a.Reason + "多半是这台电脑这会儿很忙，或者网盘很慢。过一会儿点「重试 " + machineLabel(m) + "」。"
+			a.Next = "过一会儿点「重新检查 " + machineLabel(m) + "」；一直这样的话，在这台电脑上运行下面的命令看看卡在哪里。"
+			a.Lead = a.Reason + "多半是这台电脑这会儿很忙，或者网盘很慢。过一会儿点「重新检查 " + machineLabel(m) + "」。"
 			a.CmdIntro = "一直这样的话，懂终端可以在" + name + "上运行这条命令，看看卡在哪里："
 		} else {
 			a.Reason = name + "上的配套小工具出错了（回答看不懂），网盘里的情况暂时不确定。"
-			a.Next = "点「重试 " + machineLabel(m) + "」；还是这样的话，在这台电脑上运行下面的命令，把输出（「详情」里也有）发给维护者。"
-			a.Lead = a.Reason + "先点「重试 " + machineLabel(m) + "」，多数时候再试一次就好了。"
+			a.Next = "点「重新检查 " + machineLabel(m) + "」；还是这样的话，在这台电脑上运行下面的命令，把输出（「详情」里也有）发给维护者。"
+			a.Lead = a.Reason + "先点「重新检查 " + machineLabel(m) + "」，多数时候再试一次就好了。"
 			a.CmdIntro = "还是这样的话，懂终端可以在" + name + "上运行这条命令，把输出（「详情」里也有）发给维护者："
 		}
 		a.Command = "disklessly --json sessions status --check-segments"
@@ -563,6 +576,135 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 	}
 	a.problem = a.renamed(r)
 	return a
+}
+
+// What coldProblem says about the conversations whose place a drive problem leaves unknown; the
+// page says instead how many of this computer's conversations that really is (unknownClause).
+const (
+	backendUnknownClause = "所以对话在不在网盘里暂时显示「暂时不确定」，不会当成丢了。"
+	noRepoUnknownClause  = "所以暂时显示「暂时不确定」。"
+)
+
+// pageRecheck is the AI 对话 page's own state (never an MCP state) of a computer this page could
+// not reach while a later 硬盘空间 check did: it needs checking again here.
+const pageRecheck = "recheck"
+
+// recheckText is pageRecheck's badge.
+const recheckText = "要重新检查"
+
+// The two pages share one rule: the newest check of a computer, whichever page ran it, says
+// whether it can be reached. Both set m.Reachable (and m.LastError when they could not).
+
+// laterUnreachable reports a computer the newest check could not reach while this page's own
+// last check reached it (or never ran): this page calls it 连不上这台电脑 too.
+func laterUnreachable(m *Machine, cat *ColdCatalog) bool {
+	return !m.Reachable && m.LastError != "" && cat.stateCode() != ColdOffline
+}
+
+// laterReached reports a computer this page's last check could not reach while a later
+// 硬盘空间 check did.
+func (d draw) laterReached(m *Machine, cat *ColdCatalog) bool {
+	scan := d.st.Scans[m.ID]
+	return cat.stateCode() == ColdOffline && m.Reachable && m.LastError == "" && scan != nil && scan.ScannedAt.After(cat.CheckedAt)
+}
+
+// pageState is the state this page draws for m: its catalog's, except as the newest check says.
+func (d draw) pageState(m *Machine, cat *ColdCatalog) string {
+	switch {
+	case laterUnreachable(m, cat):
+		return ColdOffline
+	case d.laterReached(m, cat):
+		return pageRecheck
+	}
+	return cat.stateCode()
+}
+
+// pageLabel is m's badge and summary word on this page, after pageState.
+func (d draw) pageLabel(m *Machine, cat *ColdCatalog) string {
+	switch d.pageState(m, cat) {
+	case ColdOffline:
+		return offlineText
+	case pageRecheck:
+		return recheckText
+	}
+	return cat.pageLabel()
+}
+
+// pageProblem is coldProblem as this page words it for m in page state state: a computer the
+// newest check could not reach says so (and what this page found when it last reached it), and
+// a drive problem says how many conversations it really leaves unchecked.
+func (d draw) pageProblem(m *Machine, cat *ColdCatalog, state string) coldAdvice {
+	name := machineLabel(m)
+	switch {
+	case state == ColdOffline && laterUnreachable(m, cat):
+		// The catalog's error is not an SSH one: word the newest check's.
+		a := coldProblem(d.st, m, nil, ColdOffline)
+		if older := d.olderFinding(cat); older != "" {
+			a.Lead = a.lead() + older
+			a.Reason += older
+		}
+		return a
+	case state == pageRecheck:
+		a := coldAdvice{retry: "重新检查"}
+		a.Title = recheckText
+		a.Reason = "这一页上次检查（" + d.when(cat.CheckedAt) + "）时连不上「" + name + "」，后来「" + homeTitle + "」页检查（" +
+			d.when(d.st.Scans[m.ID].ScannedAt) + "）时连上了它。"
+		a.Next = "点「重新检查 " + name + "」，看看它的对话现在能不能搬。"
+		return a
+	}
+	a := coldProblem(d.st, m, cat, state)
+	if clause := d.unknownClause(m, cat); clause != "" {
+		for _, c := range []string{backendUnknownClause, noRepoUnknownClause} {
+			a.Reason = strings.ReplaceAll(a.Reason, c, clause)
+			a.Lead = strings.ReplaceAll(a.Lead, c, clause)
+		}
+	}
+	return a
+}
+
+// olderFinding is what this page's own last check found when it reached the computer, as a
+// sentence added after the newest check's 连不上; "" when it never reached it.
+func (d draw) olderFinding(cat *ColdCatalog) string {
+	state := cat.stateCode()
+	if !reachedState(state) && state != ColdUnreadable {
+		return ""
+	}
+	when := d.when(cat.CheckedAt)
+	if state == ColdReady {
+		return "上次连得上时（" + when + "检查）一切正常。"
+	}
+	return "上次连得上时（" + when + "检查）发现：" + cat.pageLabel() + "，连上以后还要处理。"
+}
+
+// unknownClause says how many of m's conversations a drive problem leaves 还没核对过, the count
+// the top of the page includes them in, or that there are none.
+func (d draw) unknownClause(m *Machine, cat *ColdCatalog) string {
+	if cat == nil {
+		return ""
+	}
+	n := 0
+	for _, e := range cat.Entries {
+		if cat.location(e, m, d.now) == LocUnknown {
+			n++
+		}
+	}
+	if n == 0 {
+		return "不过这台电脑还没有搬到网盘的对话，所以没有对话受影响。"
+	}
+	return fmt.Sprintf("所以它搬到网盘的 %d 个对话暂时算在「%s」里，不会当成丢了。", n, uncheckedText)
+}
+
+// machineCounts is the 电脑 stat's detail: how many are ready, how many need something.
+func machineCounts(ready, total int) string {
+	switch {
+	case total == 0:
+		return "还没有电脑"
+	case ready == total:
+		return "都正常"
+	case ready == 0:
+		return fmt.Sprintf("%d 台要处理", total)
+	}
+	return fmt.Sprintf("%d 台正常 · %d 台要处理", ready, total-ready)
 }
 
 // brewButtonTitle is the AI 对话 page's Homebrew button: install, or upgrade a Homebrew install.
@@ -649,7 +791,7 @@ func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.
 		Key:   boundedKey("mach-", m.ID),
 		Icon:  "gauge",
 		Title: clip(cmp.Or(strings.TrimSpace(name), strings.TrimSpace(m.ID), "没起名的电脑"), 200),
-		Badge: &wire.Badge{Text: cat.pageLabel(), Tone: coldStateTone(state)},
+		Badge: &wire.Badge{Text: d.pageLabel(m, cat), Tone: coldStateTone(state)},
 	}
 	var sub []string
 	if p := platformLabel(cmp.Or(catPlatform(cat), m.Platform)); p != "" {
@@ -663,11 +805,11 @@ func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.
 	} else if cat != nil && !cat.RefreshedAt.IsZero() {
 		sub = append(sub, d.when(cat.RefreshedAt)+"检查")
 	}
-	if !m.Reachable && m.LastError != "" && state != ColdOffline {
+	if laterUnreachable(m, cat) {
 		// The 硬盘空间 page found it unreachable after this page's check (which reached it, or
-		// never ran): say so, so the two pages do not seem to disagree.
+		// never ran): the row is 连不上这台电脑, as there; say which check found it.
 		when := "后来"
-		if state == ColdUnchecked {
+		if cat.stateCode() == ColdUnchecked {
 			when = ""
 		}
 		if j, ok := d.jobs[m.ID]; ok && j.Kind == jobScan && j.Err != "" && !j.running() {
@@ -677,7 +819,7 @@ func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.
 	}
 	row.Subtitle = clip(strings.Join(sub, " · "), 400)
 
-	adv := coldProblem(d.st, m, cat, state)
+	adv := d.pageProblem(m, cat, state)
 	if state == ColdReady {
 		n, cloud, missing := 0, 0, 0
 		for _, e := range cat.Entries {
@@ -749,7 +891,9 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 				Text: fmt.Sprintf("%s…（%s开始，完成后页面会自动更新）", j.Label, d.when(j.Started))})
 			return items // no actions while it runs: a second start would be refused anyway
 		}
-		if j.Kind != jobRefresh {
+		if j.Kind == jobScan && j.Err != "" && laterUnreachable(m, cat) {
+			// The failed 硬盘空间 check is the problem the lead words; say it once.
+		} else if j.Kind != jobRefresh {
 			last = &j
 			items = append(items, d.jobOutcome(j, retryFor(j, m, state, adv))...)
 			if j.Raw != "" {
@@ -795,8 +939,10 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 	if adv.docs {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: "怎么装配套小工具", URL: coldInstallDocsURL})
 	}
-	items = append(items, commandItems(detailsKey("cold", m.ID), intro, command)...)
-	return append(items, d.detailsItems(detailsKey("cold", m.ID), raw)...)
+	// 详情 goes with the explanation and its buttons; the command block, for people who use a
+	// terminal, comes last.
+	items = append(items, d.detailsItems(detailsKey("cold", m.ID), raw)...)
+	return append(items, commandItems(detailsKey("cold", m.ID), intro, command)...)
 }
 
 // offloadButton starts machine m's cold-session upload, behind the confirm that says what moves,
@@ -1026,7 +1172,8 @@ func coldProject(e ColdEntry) string {
 // coldTool is the AI assistant a conversation was held with, by its tool or its file's place.
 func coldTool(e ColdEntry) string { return toolLabel(cmp.Or(e.Tool, toolFromPath(e.Path))) }
 
-// shortDate words t as 11月8日 (with the year when it is not now's year).
+// shortDate words t as 11月8日 (with the year when it is not now's year): what when says of a
+// time a week ago or more.
 func (d draw) shortDate(t time.Time) string {
 	t = t.In(d.loc)
 	if t.Year() != d.now.In(d.loc).Year() {
@@ -1049,7 +1196,7 @@ func (d draw) coldTitle(e ColdEntry) (title string, fromPrompt bool) {
 	parts := []string{untitledText}
 	if t := entryTime(e); !t.IsZero() {
 		// With the time of day: several untitled conversations of one day stay apart.
-		parts = append(parts, d.shortDate(t)+" "+t.In(d.loc).Format("15:04"))
+		parts = append(parts, d.stamp(t))
 	}
 	if tool := coldTool(e); tool != "" {
 		parts = append(parts, tool)
@@ -1070,7 +1217,7 @@ func (d draw) coldRow(h ColdHit) wire.Component {
 	title, fromPrompt := d.coldTitle(h.ColdEntry)
 	// An untitled conversation's title already has its date and time.
 	if t := entryTime(h.ColdEntry); !t.IsZero() && !strings.HasPrefix(title, untitledText) {
-		sub = append(sub, t.In(d.loc).Format("2006-01-02 15:04"))
+		sub = append(sub, d.stamp(t))
 	}
 	if h.Bytes > 0 {
 		sub = append(sub, FormatBytes(h.Bytes))
@@ -1205,7 +1352,7 @@ func (d draw) sessionsFallbackSummary(m *Machine, query string) string {
 	for _, mm := range d.st.Machines {
 		if (m == nil && mm.Enabled) || (m != nil && mm.ID == m.ID) {
 			cat := d.st.cold(mm.ID)
-			lines = append(lines, fmt.Sprintf("- %s：%s", machineLabel(mm), cat.pageLabel()))
+			lines = append(lines, fmt.Sprintf("- %s：%s", machineLabel(mm), d.pageLabel(mm, cat)))
 		}
 	}
 	return clip(strings.Join(lines, "\n"), 1950)

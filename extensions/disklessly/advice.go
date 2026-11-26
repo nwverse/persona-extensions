@@ -64,6 +64,7 @@ type adviceStep struct {
 	tier    int    // 0 caches, 1 conversations, 2 old logs and temporary files, 3 建议先看
 	pageTab string // where the page row leads: tabItems or sessionsUI
 	short   string // the reason it cannot be done now, in a few words, for the page
+	count   int    // move_conversations: how many conversations, for the page
 }
 
 // adviceMachine is what the plan knows about one computer.
@@ -500,6 +501,7 @@ func moveStep(st *State, am *adviceMachine, scan *Scan, now time.Time) (adviceSt
 		PageButtons: []string{coldOffloadText},
 		tier:        1,
 		pageTab:     sessionsUI,
+		count:       count,
 	}
 	cat := st.cold(m.ID)
 	state := cat.stateCode()
