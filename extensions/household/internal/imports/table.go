@@ -22,13 +22,12 @@ var (
 	meds   = []string{"药箱", "药", "杂物"}
 )
 
-// table is the built-in list of common groceries and household goods. The first entry with a word in the name wins,
-// so the more specific entries come first (鲜牛奶 before 牛奶). Shelf lives are the usual ones for a fresh, unopened
+// table is the built-in list of common groceries and household goods (see lookup for how a name finds its entry). Shelf lives are the usual ones for a fresh, unopened
 // product kept in the suggested place; things whose shelf life depends too much on the product (牛奶 in general, rice,
 // sauces, cleaning products) have none.
 var table = []guess{
 	{words: []string{"鲜牛奶", "鲜奶", "巴氏奶"}, category: "食材", places: cold, days: 7},
-	{words: []string{"酸奶"}, category: "食材", places: cold, days: 14},
+	{words: []string{"酸奶", "酸牛奶"}, category: "食材", places: cold, days: 14},
 	{words: []string{"牛奶", "豆奶", "奶粉"}, category: "食材", places: dry},
 	{words: []string{"鸡蛋", "鸭蛋", "鹌鹑蛋"}, category: "食材", places: cold, days: 30},
 	{words: []string{"豆腐", "豆芽"}, category: "食材", places: cold, days: 3},
@@ -39,7 +38,7 @@ var table = []guess{
 	{words: []string{"胡萝卜", "萝卜"}, category: "食材", places: cold, days: 14},
 	{words: []string{"香蕉", "草莓", "葡萄"}, category: "食材", places: dry, days: 5},
 	{words: []string{"苹果", "梨", "橙", "橘", "柚"}, category: "食材", places: dry, days: 21},
-	{words: []string{"冻", "速冻", "水饺", "汤圆"}, category: "食材", places: frozen},
+	{words: []string{"水饺", "汤圆", "馄饨", "冻肉"}, category: "食材", places: frozen},
 	{words: []string{"猪肉", "牛肉", "羊肉", "鸡肉", "鸡腿", "鸡翅", "鸡胸", "排骨", "肉末", "五花肉"}, category: "食材", places: cold, days: 2},
 	{words: []string{"鱼", "虾", "蟹", "贝"}, category: "食材", places: cold, days: 1},
 	{words: []string{"酱油", "醋", "盐", "糖", "料酒", "蚝油", "味精", "鸡精", "花椒", "八角", "辣酱", "豆瓣酱", "调料", "香油"}, category: "调味", places: dry},
@@ -52,15 +51,32 @@ var table = []guess{
 	{words: []string{"感冒", "退烧", "布洛芬", "创可贴", "维生素", "药", "碘伏", "口罩"}, category: "药品", places: meds},
 }
 
-// lookup is the table entry for a name, false when none fits.
+// notProducts are names that end in a word of the table but are another product: a suggestion for them would be
+// wrong, and no suggestion is better than a wrong one.
+var notProducts = []string{"棉花糖", "奶糖", "软糖", "口香糖", "水果糖", "宝贝", "果冻", "酒心", "米酒", "米粉", "米线", "葱油"}
+
+// lookup is the table entry for a name, false when none fits. A word must be the whole name or its end (the head of a
+// Chinese product name: 土鸡蛋, 进口香蕉), after sizes and brackets are left out, so that 鱼罐头,
+// 贝果, 葱油饼, 糖果, 盐焗鸡 and 果冻 match nothing. The longest word wins (洋葱 over 葱); names on notProducts match
+// nothing.
 func lookup(title string) (guess, bool) {
-	k := titleKey(title)
+	k := strings.ToLower(halfWidth(title))
+	k = titleKey(sizePattern.ReplaceAllString(bracketPattern.ReplaceAllString(k, ""), ""))
+	if k == "" {
+		return guess{}, false
+	}
+	for _, x := range notProducts {
+		if strings.Contains(k, x) {
+			return guess{}, false
+		}
+	}
+	best, bestLen := guess{}, 0
 	for _, g := range table {
 		for _, w := range g.words {
-			if strings.Contains(k, w) {
-				return g, true
+			if n := len([]rune(w)); strings.HasSuffix(k, w) && n > bestLen {
+				best, bestLen = g, n
 			}
 		}
 	}
-	return guess{}, false
+	return best, bestLen > 0
 }

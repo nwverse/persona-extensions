@@ -45,14 +45,14 @@ func ParsePaste(text string, today model.Day) ([]Line, []Unread, []string) {
 	var lines []Line
 	var unread []Unread
 	var notes []string
-	n := 0
+	n, over := 0, 0
 	for _, raw := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
 		if strings.TrimSpace(raw) == "" {
 			continue
 		}
 		n++
 		if n > PasteMost {
-			unread = append(unread, Unread{Line: n, Text: cut(strings.TrimSpace(raw), 60), Why: fmt.Sprintf("一次最多 %d 行", PasteMost)})
+			over++
 			continue
 		}
 		l, note, why := parseLine(raw, today)
@@ -64,6 +64,10 @@ func ParsePaste(text string, today model.Day) ([]Line, []Unread, []string) {
 			notes = append(notes, fmt.Sprintf("第 %d 行：%s", n, note))
 		}
 		lines = append(lines, l)
+	}
+	if over > 0 {
+		unread = append(unread, Unread{Line: PasteMost + 1, Text: fmt.Sprintf("第 %d 行以后的 %d 行", PasteMost+1, over),
+			Why: fmt.Sprintf("一次最多 %d 行，后面的没有读，请分几次粘贴", PasteMost)})
 	}
 	return lines, unread, notes
 }

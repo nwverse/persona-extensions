@@ -103,3 +103,11 @@ func TestPasteBecomesTheSameDraftAsTheTool(t *testing.T) {
 		t.Fatalf("summary %q", Summary(SrcPaste, p))
 	}
 }
+
+func TestPasteBeyondTheLimitIsOneUnreadLine(t *testing.T) {
+	text := strings.Repeat("牛奶 1 盒\n", PasteMost+500)
+	lines, unread, _ := ParsePaste(text, "2026-11-26")
+	if len(lines) != PasteMost || len(unread) != 1 || !strings.Contains(unread[0].Text, "500 行") {
+		t.Fatalf("%d lines, unread %+v", len(lines), unread)
+	}
+}

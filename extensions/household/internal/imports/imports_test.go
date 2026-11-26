@@ -176,8 +176,9 @@ func TestDuplicateLinesMerge(t *testing.T) {
 	if s.Action != ActNewItem || *s.Qty != 5 || len(s.From) != 2 || s.From[1] != 3 {
 		t.Fatalf("merged %+v", s)
 	}
-	if !strings.Contains(strings.Join(s.Notes, " "), "单位不同") {
-		t.Fatalf("notes %v, want the 斤 line kept apart", s.Notes)
+	// The 斤 line does not convert into 个: it is a question, not a second new 番茄.
+	if d := step(t, p, 4); d.Action != ActAsk || d.Ask.Kind != AskDuplicate || !strings.Contains(d.Ask.Text, "第 1 行") {
+		t.Fatalf("line 4 %+v", d)
 	}
 	if len(p.Steps) != 3 || *p.Totals.PriceTotal != 7.5 {
 		t.Fatalf("steps %d totals %+v", len(p.Steps), p.Totals)
@@ -192,10 +193,12 @@ func TestInferredFieldsAreMarked(t *testing.T) {
 		{Title: "洗衣液", Qty: f(1), Unit: "瓶", Category: "清洁", Place: "阳台"},
 	}})
 	y := step(t, p, 1)
-	if y.Category != "食材" || y.Place == nil || y.Place.ID != fx.fridge || y.Expires != testToday.Add(14) {
+	// The usual shelf life is said, never stored as a date.
+	if y.Category != "食材" || y.Place == nil || y.Place.ID != fx.fridge || y.Expires != "" || y.Keeps != 14 ||
+		!strings.Contains(strings.Join(y.Notes, " "), "不会记成过期日") {
 		t.Fatalf("yogurt %+v", y)
 	}
-	for _, field := range []string{"category", "place", "expires"} {
+	for _, field := range []string{"category", "place"} {
 		if !contains(y.Inferred, field) {
 			t.Fatalf("yogurt inferred %v, want %s", y.Inferred, field)
 		}
@@ -275,7 +278,7 @@ func TestDraftsExpireAndAreCapped(t *testing.T) {
 	imp.SetClock(func() time.Time { return clock })
 	h := &model.Home{}
 	in := Input{Source: SrcText, Lines: []Line{{Title: "牛奶", Qty: f(1)}}}
-	first, err := Preview(imp, h, in, time.UTC)
+	first, err := Preview(imp, h, in, time.UTC, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +286,7 @@ func TestDraftsExpireAndAreCapped(t *testing.T) {
 		t.Fatalf("expires %v", first.Expires)
 	}
 	for range DraftsMost {
-		if _, err := Preview(imp, h, in, time.UTC); err != nil {
+		if _, err := Preview(imp, h, in, time.UTC, false); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -311,7 +314,7 @@ func TestDraftsExpireAndAreCapped(t *testing.T) {
 func TestStoreOnDiskIsSharedAndRefusesABrokenFile(t *testing.T) {
 	dir := t.TempDir()
 	a, b := Open(dir), Open(dir)
-	d, err := Preview(a, &model.Home{}, Input{Source: SrcText, Lines: []Line{{Title: "牛奶"}}}, time.UTC)
+	d, err := Preview(a, &model.Home{}, Input{Source: SrcText, Lines: []Line{{Title: "牛奶"}}}, time.UTC, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,12 +342,15 @@ func TestStoreOnDiskIsSharedAndRefusesABrokenFile(t *testing.T) {
 // applied previews the lines, applies the draft and returns the store and the import.
 func apply(t *testing.T, fx *fixture, imp *Store, in Input, edits ...Edit) Applied {
 	t.Helper()
-	d, err := Preview(imp, fx.home(), in, time.UTC)
+	d, err := Preview(imp, fx.home(), in, time.UTC, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := Apply(fx.b, imp, d.ID, nil, edits, testNow, time.UTC)
+	a, finish, err := Apply(fx.b, imp, d.ID, d.Rev, nil, edits, testNow, time.UTC)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := finish(true); err != nil {
 		t.Fatal(err)
 	}
 	return a
@@ -385,7 +391,7 @@ func TestApplyWritesEveryStepAndRecordsIt(t *testing.T) {
 	}
 	var yogurt, soap, balcony bool
 	for _, it := range h.Items {
-		yogurt = yogurt || it.Title == "酸奶" && it.Qty == 4 && it.PlaceID == fx.fridge && it.Expires == testToday.Add(14)
+		yogurt = yogurt || it.Title == "酸奶" && it.Qty == 4 && it.PlaceID == fx.fridge && it.Expires == ""
 		soap = soap || it.Title == "洗洁精" && it.Qty == 1
 	}
 	for _, p := range h.Places {
@@ -411,13 +417,13 @@ func TestApplyIsAllOrNothing(t *testing.T) {
 	imp := Open("")
 	d, err := Preview(imp, fx.home(), Input{Source: SrcReceipt, Lines: []Line{
 		{Title: "牛奶", Qty: f(2), Unit: "盒"}, {Title: "纯牛奶", Qty: f(1), Unit: "盒"},
-	}}, time.UTC)
+	}}, time.UTC, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	before := snapshot(t, fx.b)
 	// A question left: nothing is written.
-	if _, err := Apply(fx.b, imp, d.ID, nil, nil, testNow, time.UTC); err == nil || !strings.Contains(err.Error(), "要用户定") {
+	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, nil, nil, testNow, time.UTC); err == nil || !strings.Contains(err.Error(), "要用户定") {
 		t.Fatalf("apply with a question: %v", err)
 	}
 	if snapshot(t, fx.b) != before {
@@ -428,7 +434,7 @@ func TestApplyIsAllOrNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	before = snapshot(t, fx.b)
-	if _, err := Apply(fx.b, imp, d.ID, nil, []Edit{{Line: 2, Match: MatchNew}}, testNow, time.UTC); err == nil || !strings.Contains(err.Error(), "变了") {
+	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, nil, []Edit{{Line: 2, Match: MatchNew}}, testNow, time.UTC); err == nil || !strings.Contains(err.Error(), "变了") {
 		t.Fatalf("apply after the records changed: %v", err)
 	}
 	if snapshot(t, fx.b) != before {
@@ -456,7 +462,11 @@ func TestUndoPutsEverythingBack(t *testing.T) {
 		{Title: "牛奶", Qty: f(2), Unit: "盒"}, {Title: "酸奶", Qty: f(4), Unit: "杯", Place: "阳台"}, {Title: "洗洁精"},
 	}})
 	later := testNow.Add(time.Hour)
-	if _, err := UndoLast(fx.b, imp, "", later); err != nil {
+	_, finish, err := UndoLast(fx.b, imp, "", later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := finish(true); err != nil {
 		t.Fatal(err)
 	}
 	after := fx.home()
@@ -472,7 +482,7 @@ func TestUndoPutsEverythingBack(t *testing.T) {
 			t.Fatalf("purchase %s is %s after undo", b.Title, b.Status)
 		}
 	}
-	if _, err := UndoLast(fx.b, imp, "", later); err == nil || !strings.Contains(err.Error(), "撤销过") {
+	if _, _, err := UndoLast(fx.b, imp, "", later); err == nil || !strings.Contains(err.Error(), "撤销过") {
 		t.Fatalf("second undo: %v", err)
 	}
 }
@@ -485,7 +495,7 @@ func TestUndoRefusesWhenSomethingChangedSince(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := snapshot(t, fx.b)
-	_, err := UndoLast(fx.b, imp, "", testNow.Add(time.Hour))
+	_, _, err := UndoLast(fx.b, imp, "", testNow.Add(time.Hour))
 	var blocked *Blocked
 	if !errors.As(err, &blocked) || !strings.Contains(err.Error(), "「牛奶」在导入之后又改过") {
 		t.Fatalf("undo after a change: %v", err)
@@ -507,11 +517,11 @@ func TestUndoRefusesWhenSomethingChangedSince(t *testing.T) {
 	if _, err := ops.Save(fx2.b, kernel.EntityInput{Type: model.TBuy, Title: &title, Values: map[string]any{"item": []string{yogurt}}}, testNow, time.UTC); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := UndoLast(fx2.b, imp2, "", testNow); err == nil || !strings.Contains(err.Error(), "用到了") {
+	if _, _, err := UndoLast(fx2.b, imp2, "", testNow); err == nil || !strings.Contains(err.Error(), "用到了") {
 		t.Fatalf("undo with a reference: %v", err)
 	}
 	_ = a
-	if _, err := UndoLast(fx2.b, imp2, "imp-9", testNow); err == nil || !strings.Contains(err.Error(), "只能撤销最近一次") {
+	if _, _, err := UndoLast(fx2.b, imp2, "imp-9", testNow); err == nil || !strings.Contains(err.Error(), "只能撤销最近一次") {
 		t.Fatalf("undo of another draft: %v", err)
 	}
 }
