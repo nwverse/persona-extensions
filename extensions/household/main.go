@@ -181,7 +181,11 @@ func (x *extension) start(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[
 	dir := in.Info().DataDir
 	datadir.Remember(dir)
 	st := store.Open(dir)
+	imp := imports.Open(dir)
 	if err := st.Update(func(b *kernel.Base, now time.Time) error {
+		if err := imp.SettleRecords(b); err != nil {
+			return err
+		}
 		_, err := model.Ensure(b, now)
 		return err
 	}); err != nil {
@@ -207,7 +211,6 @@ func (x *extension) start(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[
 		default:
 		}
 	}
-	imp := imports.Open(dir)
 	x.app.Store(ui.New(st, func() *time.Location { return loc }, changed).UseImports(imp))
 	go run(ctx, watched{Storage: st, imp: imp}, hub, rem, loc, kick, firstRoundAfter, checkEvery, remindEvery)
 	return nil, nil

@@ -255,6 +255,11 @@ func (s *server) run(t Tool, raw json.RawMessage) ([]byte, error) {
 	} else {
 		err = s.st.Update(func(b *kernel.Base, now time.Time) error {
 			after = nil // a retried update starts over
+			// An import or undo left pending by an interrupted save is settled first, against the records exactly as
+			// they are before this change (records lock, then the import store's).
+			if err := s.imp.SettleRecords(b); err != nil {
+				return err
+			}
 			return do(env{b: b, now: now, loc: s.loc, imp: s.imp, after: &after})
 		})
 	}

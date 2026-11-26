@@ -186,3 +186,25 @@ func TestPreviewDescriptionSaysItStoresADraftAndCountsCanLower(t *testing.T) {
 		t.Fatal(aboutPreview)
 	}
 }
+
+// N4 (i): apply writes exactly a previewed revision: corrections go through the preview.
+func TestImportApplyTakesOnlyDraftAndRevision(t *testing.T) {
+	s := start(t, seeded(t, true))
+	defer s.finish()
+	pre := s.done("household_import_preview", `{"source":"shelf_photo","lines":[{"title":"大米","qty":2,"unit":"千克"}]}`)
+	id := asStr(t, get(t, pre, "draft_id"))
+	if msg := s.failed("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":1,"edits":[{"line":1,"qty":0.1}]}`, id)); !strings.Contains(msg, "参数不对") {
+		t.Fatalf("apply with edits: %s", msg)
+	}
+	if msg := s.failed("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":1,"skip":[1]}`, id)); !strings.Contains(msg, "参数不对") {
+		t.Fatalf("apply with skip: %s", msg)
+	}
+	again := s.done("household_import_preview", fmt.Sprintf(`{"draft_id":%q,"edits":[{"line":1,"qty":0.5}]}`, id))
+	s.done("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":%v}`, id, get(t, again, "revision")))
+	if got := get(t, rec(t, s, model.TItem, "大米"), "qty"); got != 0.5 {
+		t.Fatalf("rice %v, want the previewed 0.5", got)
+	}
+	if strings.Contains(aboutApply, "skip 是") || !strings.Contains(aboutApply, "household_import_preview 带 draft_id 和 edits") {
+		t.Fatal(aboutApply)
+	}
+}

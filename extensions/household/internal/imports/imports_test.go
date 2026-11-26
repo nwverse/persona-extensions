@@ -306,7 +306,7 @@ func TestDraftsExpireAndAreCapped(t *testing.T) {
 		}
 		return nil
 	})
-	if _, err := Discard(imp, first.ID); err == nil || !strings.Contains(err.Error(), "24 小时") {
+	if _, err := Discard(imp, first.ID, false); err == nil || !strings.Contains(err.Error(), "24 小时") {
 		t.Fatalf("discard of an expired draft: %v", err)
 	}
 }
@@ -346,7 +346,12 @@ func apply(t *testing.T, fx *fixture, imp *Store, in Input, edits ...Edit) Appli
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, finish, err := Apply(fx.b, imp, d.ID, d.Rev, nil, edits, testNow, time.UTC)
+	if len(edits) > 0 {
+		if d, err = Replan(imp, fx.home(), d.ID, d.Rev, edits, time.UTC, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, finish, err := Apply(fx.b, imp, d.ID, d.Rev, false, testNow, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -423,7 +428,7 @@ func TestApplyIsAllOrNothing(t *testing.T) {
 	}
 	before := snapshot(t, fx.b)
 	// A question left: nothing is written.
-	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, nil, nil, testNow, time.UTC); err == nil || !strings.Contains(err.Error(), "要用户定") {
+	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, false, testNow, time.UTC); err == nil || !strings.Contains(err.Error(), "要用户定") {
 		t.Fatalf("apply with a question: %v", err)
 	}
 	if snapshot(t, fx.b) != before {
@@ -434,7 +439,15 @@ func TestApplyIsAllOrNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	before = snapshot(t, fx.b)
-	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, nil, []Edit{{Line: 2, Match: MatchNew}}, testNow, time.UTC); err == nil || !strings.Contains(err.Error(), "变了") {
+	d, err = Replan(imp, model.Load(household(fx.b), time.UTC), d.ID, d.Rev, []Edit{{Line: 2, Match: MatchNew}}, time.UTC, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ops.Use(fx.b, fx.milk, 1, testNow, time.UTC); err != nil {
+		t.Fatal(err)
+	}
+	before = snapshot(t, fx.b)
+	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, false, testNow, time.UTC); err == nil || !strings.Contains(err.Error(), "变了") {
 		t.Fatalf("apply after the records changed: %v", err)
 	}
 	if snapshot(t, fx.b) != before {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -50,7 +51,7 @@ func Replan(imp *Store, h *model.Home, id string, rev int, edits []Edit, loc *ti
 			return missing(id)
 		}
 		if d.ByUser && !byUser {
-			return errors.New("这份是用户在家庭管家页面上粘贴的清单，请让用户在页面上回答、修改或确认")
+			return errOnPage
 		}
 		if rev > 0 && d.Rev != rev {
 			return ErrChanged
@@ -67,19 +68,35 @@ func Replan(imp *Store, h *model.Home, id string, rev int, edits []Edit, loc *ti
 	return out, err
 }
 
-// Discard drops a draft. Nothing in the records changes.
-func Discard(imp *Store, id string) (Draft, error) {
+// Discard drops a draft, and the entry of an earlier write of it that could not be decided. Nothing in the records
+// changes. Only the user (byUser) discards a draft made on the page.
+func Discard(imp *Store, id string, byUser bool) (Draft, error) {
 	var out Draft
 	err := imp.Update(func(st *State, _ time.Time) error {
 		d, ok := st.Draft(id)
 		if !ok {
 			return missing(id)
 		}
+		if d.ByUser && !byUser {
+			return errOnPage
+		}
 		st.Drop(id)
+		st.Applied = slices.DeleteFunc(st.Applied, func(a Applied) bool { return a.Draft == id && a.Unknown == UnknownApply })
 		out = d
 		return nil
 	})
 	return out, err
+}
+
+// errOnPage refuses the assistant a draft the user made on the page.
+var errOnPage = errors.New("这份是用户在家庭管家页面上粘贴的清单，只能由用户在页面上回答、修改、确认或放弃；请让用户去页面上处理")
+
+// errUnknown refuses a draft whose earlier write was interrupted and could not be decided.
+var errUnknown = errors.New("这份导入上次写入时被打断，说不清写进去没有，不能再写一次；请在家庭管家页面上核对库存后放弃这份，需要的话重新导入")
+
+// Blocked reports whether the draft's earlier write could not be decided.
+func (s *State) Blocked(id string) bool {
+	return slices.ContainsFunc(s.Applied, func(a Applied) bool { return a.Draft == id && a.Unknown == UnknownApply })
 }
 
 func missing(id string) error {
@@ -87,8 +104,9 @@ func missing(id string) error {
 }
 
 // Apply writes revision rev of a draft into b (see Prepare and Write) and records the import as pending; the draft
-// stays until Finish(true). Nothing is changed when it fails.
-func Apply(b *kernel.Base, imp *Store, id string, rev int, skip []int, edits []Edit, now time.Time, loc *time.Location) (Applied, Finish, error) {
+// stays until Finish(true). Nothing is changed when it fails. Only the user (byUser) applies a draft made on the page,
+// and a draft whose earlier write could not be decided (Unknown) is not applied again.
+func Apply(b *kernel.Base, imp *Store, id string, rev int, byUser bool, now time.Time, loc *time.Location) (Applied, Finish, error) {
 	var out Applied
 	err := imp.Update(func(st *State, _ time.Time) error {
 		st.Settle(b)
@@ -96,11 +114,17 @@ func Apply(b *kernel.Base, imp *Store, id string, rev int, skip []int, edits []E
 		if !ok {
 			return missing(id)
 		}
+		if d.ByUser && !byUser {
+			return errOnPage
+		}
+		if st.Blocked(id) {
+			return errUnknown
+		}
 		if rev != d.Rev {
 			return ErrChanged
 		}
 		h := model.Load(household(b), loc)
-		plan, err := Prepare(h, d, skip, edits, model.DayOf(now, loc))
+		plan, err := Prepare(h, d, model.DayOf(now, loc))
 		if err != nil {
 			return err
 		}
@@ -190,24 +214,36 @@ func UndoLast(b *kernel.Base, imp *Store, want string, now time.Time) (Applied, 
 	return out, finish, nil
 }
 
-// Settle decides every pending change from the records of b: an import is written when a record it created exists or
-// a record it changed is as the import left it (it then loses its draft), else it was never written (its entry goes,
-// its draft stays); an undo is written when every record the import created is gone and every record it changed is
-// back as it was, else the import is not undone.
+// Settle decides every pending change from the records of b, exactly: the records an import touched are compared with
+// the states it stored. An import is written when every one of them is as the import left it (it then loses its
+// draft), and never written when every one is as it was before (a created one absent): its entry goes and its draft
+// stays. An undo is written when every created record is gone and every changed one is back as it was before, and not
+// written when every one is still as the import left it. Settle runs at the start of every write of the records,
+// under their lock and before anything else changes (see SettleRecords), when the records are exactly the state
+// before or after the interrupted save; anything else (a program of another version wrote in between) is not guessed:
+// the entry is marked Unknown, which blocks its draft and offers no undo, and is said on the page.
 func (s *State) Settle(b *kernel.Base) {
 	keep := s.Applied[:0]
 	for _, a := range s.Applied {
 		if a.Pending {
-			if !written(b, a) {
-				continue
-			}
 			a.Pending = false
-			s.Drop(a.Draft)
+			switch {
+			case allAfter(b, a):
+				s.Drop(a.Draft)
+			case allBefore(b, a):
+				continue
+			default:
+				a.Unknown = UnknownApply
+			}
 		}
 		if a.UndoPending {
 			a.UndoPending = false
-			if !undone(b, a) {
+			switch {
+			case undone(b, a):
+			case allAfter(b, a):
 				a.Undone = time.Time{}
+			default:
+				a.Unknown = UnknownUndo
 			}
 		}
 		keep = append(keep, a)
@@ -215,22 +251,75 @@ func (s *State) Settle(b *kernel.Base) {
 	s.Applied = keep
 }
 
-func written(b *kernel.Base, a Applied) bool {
-	for _, t := range a.Touched {
-		e, ok := entity(b, t.ID)
-		if !ok {
-			continue
-		}
-		if t.Before == nil {
-			return true
-		}
-		if cur, err := json.Marshal(e); err == nil && sameJSON(cur, t.After) {
+// Unknown states of an entry whose interrupted save could not be decided.
+const (
+	UnknownApply = "apply" // not known whether the import was written: its draft cannot be applied
+	UnknownUndo  = "undo"  // not known whether the undo was written: no undo is offered
+)
+
+// pending reports whether an entry waits to be settled.
+func (s *State) pending() bool {
+	for _, a := range s.Applied {
+		if a.Pending || a.UndoPending {
 			return true
 		}
 	}
 	return false
 }
 
+// SettleRecords settles the pending changes against b and saves the store when there were any. Every write of the
+// records calls it first, inside the records' update (records lock, then the store's: the one lock order). A store
+// that cannot be read has nothing to settle and does not hold up the records.
+func (s *Store) SettleRecords(b *kernel.Base) error {
+	any := false
+	if err := s.View(func(st *State) error { any = st.pending(); return nil }); err != nil || !any {
+		return nil
+	}
+	return s.Update(func(st *State, _ time.Time) error {
+		st.Settle(b)
+		return nil
+	})
+}
+
+// allAfter reports whether every record the import touched is exactly as the import left it.
+func allAfter(b *kernel.Base, a Applied) bool {
+	for _, t := range a.Touched {
+		e, ok := entity(b, t.ID)
+		if !ok {
+			return false
+		}
+		cur, err := json.Marshal(e)
+		if err != nil || !sameJSON(cur, t.After) {
+			return false
+		}
+	}
+	return len(a.Touched) > 0
+}
+
+// allBefore reports whether every record the import touched is exactly as it was before: a created one absent, a
+// changed one unchanged.
+func allBefore(b *kernel.Base, a Applied) bool {
+	for _, t := range a.Touched {
+		e, ok := entity(b, t.ID)
+		if t.Before == nil {
+			if ok {
+				return false
+			}
+			continue
+		}
+		if !ok {
+			return false
+		}
+		cur, err := json.Marshal(e)
+		if err != nil || !sameJSON(cur, t.Before) {
+			return false
+		}
+	}
+	return true
+}
+
+// undone reports whether the import's undo is in the records: every record it created gone, every one it changed back
+// to what it was (its stamp is the undo's).
 func undone(b *kernel.Base, a Applied) bool {
 	for _, t := range a.Touched {
 		e, ok := entity(b, t.ID)

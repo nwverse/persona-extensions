@@ -32,17 +32,18 @@ const aboutPreview = "把从小票、冰箱或柜子的照片、订单截图或�
 const aboutList = "列出等用户确认的导入草稿（包括用户在家庭管家页面上粘贴的清单），以及最近一次写入的导入和它现在能不能撤销。只读。"
 
 const aboutApply = "把一份导入草稿写进记录：新建物品、给已有物品加数量或记数量、把采购标成已买、加到采购清单，一次全部写入，有一步失败就什么都不写。" +
-	"会改数据：必须先把预览念给用户，用户明确同意后才调用。draft_id 是预览给的编号，revision 是用户同意的那一版预览的编号" +
-	"（草稿后来又被改过就会拒绝，要重新念新的预览）；skip 是用户不要的行号；" +
-	"edits 是用户对某行的更正或对问题的回答（line 为行号；match 填物品编号（记到库存的行）或采购编号（加到采购清单的行）表示就是它，填 new 表示当新的记；" +
-	"也可以改 title、qty、unit、category、place、expires、target）。还有没回答的问题、或预览之后记录变了、结果会和预览不一样时会拒绝，并说明原因。" +
-	"写入后可以用 household_import_undo 撤销。"
+	"会改数据：必须先把预览念给用户，用户明确同意后才调用。只带 draft_id 和 revision（用户同意的那一版预览的编号），写入的正是那一版预览。" +
+	"用户要改某行、回答问题或不要某行时，不要在这里改：用 household_import_preview 带 draft_id 和 edits（line 为行号；match 填物品或采购的编号表示就是它，" +
+	"new 表示当新的记；skip 为真表示这行不记；也可以改 title、qty、unit、category、place、expires、target），把新的预览念给用户，再按新的 revision 写入。" +
+	"草稿后来又被改过、还有没回答的问题、或预览之后记录变了、结果会和预览不一样时会拒绝，并说明原因。" +
+	"用户在家庭管家页面上粘贴的草稿（made_on_page）不能由你写入或放弃，请让用户在页面上确认。写入后可以用 household_import_undo 撤销。"
 
 const aboutUndo = "撤销最近一次写入的导入：这次新建的记录删掉，改过的物品和采购恢复成导入前的样子。会改数据，先问用户。" +
 	"导入之后这些记录又被改过（例如又记了用量），或者新建的物品已经被别的记录用到时，不撤销，并说明是哪一条挡住了。" +
 	"draft_id 可选：填了就只在最近一次导入正是这份草稿时撤销。"
 
-const aboutDiscard = "放弃一份导入草稿：草稿删掉，记录没有任何改动。用户说不要这份导入时调用；用户没有确认的草稿 24 小时后也会自己作废。"
+const aboutDiscard = "放弃一份导入草稿：草稿删掉，记录没有任何改动。用户说不要这份导入时调用；用户没有确认的草稿 24 小时后也会自己作废。" +
+	"用户在页面上粘贴的草稿只能由用户在页面上放弃。"
 
 // ---- schemas ----
 
@@ -102,7 +103,7 @@ func importPreviewInput() map[string]any {
 		"mode":           map[string]any{"type": "string", "enum": []string{imports.ModeAdd, imports.ModeCount}, "description": "add 加到现有数量上，count 按看到的记数量；不填按来源定"},
 		"lines":          map[string]any{"type": "array", "maxItems": imports.MaxLines, "items": lineSchema(), "description": "读到的每一样东西，一样一行"},
 		"draft_id":       str("重新预览已有的草稿时填；这时不用 source 和 lines"),
-		"edits":          map[string]any{"type": "array", "items": editSchema(), "description": "重新预览时带上用户的修改"},
+		"edits":          map[string]any{"type": "array", "items": editSchema(), "description": "重新预览时带上用户的修改、回答和不要的行（skip）"},
 	})
 }
 
@@ -110,8 +111,6 @@ func importApplyInput() map[string]any {
 	return object(map[string]any{
 		"draft_id": str("预览给的草稿编号"),
 		"revision": map[string]any{"type": "integer", "minimum": 1, "description": "用户同意的那一版预览的 revision"},
-		"skip":     map[string]any{"type": "array", "items": map[string]any{"type": "integer", "minimum": 1}, "description": "不要的行号"},
-		"edits":    map[string]any{"type": "array", "items": editSchema(), "description": "用户的更正和回答"},
 	}, "draft_id", "revision")
 }
 
@@ -291,10 +290,8 @@ func runImportList(e env, raw json.RawMessage) (any, error) {
 
 func runImportApply(e env, raw json.RawMessage) (any, error) {
 	var a struct {
-		DraftID  string         `json:"draft_id"`
-		Revision int            `json:"revision"`
-		Skip     []int          `json:"skip"`
-		Edits    []imports.Edit `json:"edits"`
+		DraftID  string `json:"draft_id"`
+		Revision int    `json:"revision"`
 	}
 	if err := decode(raw, &a); err != nil {
 		return nil, err
@@ -305,7 +302,7 @@ func runImportApply(e env, raw json.RawMessage) (any, error) {
 	if a.Revision == 0 {
 		return nil, errors.New("需要 revision：用户同意的那一版预览的编号（预览结果里有）")
 	}
-	done, finish, err := imports.Apply(e.b, e.imp, a.DraftID, a.Revision, a.Skip, a.Edits, e.now, e.loc)
+	done, finish, err := imports.Apply(e.b, e.imp, a.DraftID, a.Revision, false, e.now, e.loc)
 	if err != nil {
 		return nil, err
 	}
@@ -349,7 +346,7 @@ func runImportDiscard(e env, raw json.RawMessage) (any, error) {
 	if a.DraftID == "" {
 		return nil, errors.New("需要草稿编号 draft_id")
 	}
-	d, err := imports.Discard(e.imp, a.DraftID)
+	d, err := imports.Discard(e.imp, a.DraftID, false)
 	if err != nil {
 		return nil, err
 	}

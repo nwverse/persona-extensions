@@ -6,11 +6,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nwverse/persona/sdk/go/wire"
 
 	"github.com/nwverse/persona-extensions/extensions/household/internal/imports"
 	"github.com/nwverse/persona-extensions/extensions/household/internal/model"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
 )
 
 func fp(v float64) *float64 { return &v }
@@ -390,4 +392,25 @@ func TestOverviewWithManyDraftsStaysInBudget(t *testing.T) {
 		t.Fatalf("%d drafts shown", n)
 	}
 	checkView(t, "full list of the largest draft", render(t, a, state{F: draftForm + last.ID}), false)
+}
+
+// N4 (ii): the assistant cannot apply or discard a pasted draft; the page can.
+func TestPastedDraftsAreTheUsersToConfirm(t *testing.T) {
+	st := newStore(t, true)
+	a, _ := newApp(st)
+	form := state{F: pasteForm}
+	act(t, a, form, map[string]string{"paste_text": "番茄 2 个", "paste_target": "=stock", "paste_mode": "=add"}, "imppaste")
+	var d imports.Draft
+	_ = a.importsOf().View(func(s *imports.State) error { d = s.Drafts[0]; return nil })
+	err := st.Update(func(b *kernel.Base, now time.Time) error {
+		_, _, err := imports.Apply(b, a.importsOf(), d.ID, d.Rev, false, now, testLoc())
+		return err
+	})
+	if err == nil || !strings.Contains(err.Error(), "页面") {
+		t.Fatalf("assistant apply of a pasted draft: %v", err)
+	}
+	if _, err := imports.Discard(a.importsOf(), d.ID, false); err == nil {
+		t.Fatal("assistant discard of a pasted draft")
+	}
+	toastHas(t, act(t, a, state{}, nil, confirmOf(t, render(t, a, state{})).Action.ID), "已写入")
 }

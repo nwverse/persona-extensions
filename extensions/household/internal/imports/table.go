@@ -53,7 +53,8 @@ var table = []guess{
 
 // notProducts are names that end in a word of the table but are another product: a suggestion for them would be
 // wrong, and no suggestion is better than a wrong one.
-var notProducts = []string{"棉花糖", "奶糖", "软糖", "口香糖", "水果糖", "宝贝", "果冻", "酒心", "米酒", "米粉", "米线", "葱油"}
+var notProducts = []string{"棉花糖", "奶糖", "软糖", "口香糖", "水果糖", "宝贝", "果冻", "酒心", "米酒", "米粉", "米线", "葱油",
+	"凤梨", "姜糖", "农药", "老鼠药", "鼠药", "杀虫", "灭蚊", "兽药"}
 
 // lookup is the table entry for a name, false when none fits. A word must be the whole name or its end (the head of a
 // Chinese product name: 土鸡蛋, 进口香蕉), after sizes and brackets are left out, so that 鱼罐头,

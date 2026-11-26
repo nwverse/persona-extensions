@@ -53,7 +53,7 @@ func TestApplyNeedsTheRevisionThatWasShown(t *testing.T) {
 		t.Fatalf("revision %d after a re-plan of %d", d2.Rev, shown)
 	}
 	before := snapshot(t, fx.b)
-	if _, _, err := Apply(fx.b, imp, d.ID, shown, nil, nil, testNow, time.UTC); !errors.Is(err, ErrChanged) {
+	if _, _, err := Apply(fx.b, imp, d.ID, shown, false, testNow, time.UTC); !errors.Is(err, ErrChanged) {
 		t.Fatalf("apply of the old revision: %v", err)
 	}
 	if snapshot(t, fx.b) != before {
@@ -63,7 +63,7 @@ func TestApplyNeedsTheRevisionThatWasShown(t *testing.T) {
 	if _, err := Replan(imp, fx.home(), d.ID, shown, []Edit{{Line: 1, Match: MatchNew}}, time.UTC, true); !errors.Is(err, ErrChanged) {
 		t.Fatalf("answer for the old revision: %v", err)
 	}
-	a, finish, err := Apply(fx.b, imp, d.ID, d2.Rev, nil, nil, testNow, time.UTC)
+	a, finish, err := Apply(fx.b, imp, d.ID, d2.Rev, false, testNow, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestStaleWhenTheOldBatchExpiresOvernight(t *testing.T) {
 	}
 	tomorrow := testNow.Add(24 * time.Hour)
 	before := snapshot(t, fx.b)
-	_, _, err = Apply(fx.b, imp, d.ID, d.Rev, nil, nil, tomorrow, time.UTC)
+	_, _, err = Apply(fx.b, imp, d.ID, d.Rev, false, tomorrow, time.UTC)
 	if err == nil || !strings.Contains(err.Error(), "变了") {
 		t.Fatalf("apply the next day: %v", err)
 	}
@@ -120,11 +120,15 @@ func TestCountModeDuplicatesConvertOrAsk(t *testing.T) {
 	}
 	imp := Open("")
 	d, _ := Preview(imp, fx.home(), Input{Source: SrcFridge, Lines: []Line{{Title: "牛奶", Qty: f(2)}, {Title: "牛奶", Qty: f(3), Unit: "盒"}}}, time.UTC, false)
-	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, nil, nil, testNow, time.UTC); err == nil {
+	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, false, testNow, time.UTC); err == nil {
 		t.Fatal("two counts of one item written")
 	}
 	// The user says the first line is boxes too: one count of 5.
-	a, finish, err := Apply(fx.b, imp, d.ID, d.Rev, nil, []Edit{{Line: 1, Unit: strp("盒")}}, testNow, time.UTC)
+	d, err := Replan(imp, fx.home(), d.ID, d.Rev, []Edit{{Line: 1, Unit: strp("盒")}}, time.UTC, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, finish, err := Apply(fx.b, imp, d.ID, d.Rev, false, testNow, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -162,7 +166,7 @@ func TestALostRecordsSaveLeavesTheDraft(t *testing.T) {
 	// The save fails: the caller says so.
 	work := *fx.b
 	work.Spaces = append([]*kernel.Space{}, fx.b.Spaces...)
-	_, finish, err := Apply(&work, imp, d.ID, d.Rev, nil, nil, testNow, time.UTC)
+	_, finish, err := Apply(&work, imp, d.ID, d.Rev, false, testNow, time.UTC)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +183,7 @@ func TestALostRecordsSaveLeavesTheDraft(t *testing.T) {
 	// The program stops between the two saves: settling from the records that were kept says not written.
 	work = *fx.b
 	work.Spaces = append([]*kernel.Space{}, fx.b.Spaces...)
-	if _, _, err := Apply(&work, imp, d.ID, d.Rev, nil, nil, testNow, time.UTC); err != nil {
+	if _, _, err := Apply(&work, imp, d.ID, d.Rev, false, testNow, time.UTC); err != nil {
 		t.Fatal(err)
 	}
 	if last := lastApplied(t, imp); last.Draft != first.Draft {
@@ -199,7 +203,7 @@ func TestALostRecordsSaveLeavesTheDraft(t *testing.T) {
 	})
 
 	// It stops after the records were saved: settling says written.
-	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, nil, nil, testNow, time.UTC); err != nil {
+	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, false, testNow, time.UTC); err != nil {
 		t.Fatal(err)
 	}
 	if err := imp.Update(func(st *State, _ time.Time) error { st.Settle(fx.b); return nil }); err != nil {
