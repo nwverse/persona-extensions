@@ -593,3 +593,37 @@ func TestCollabStateCandsAndAntiLeak(t *testing.T) {
 		t.Error("prior World entry w-alpha must NOT be excluded by dayF")
 	}
 }
+
+func TestHasPriorRuleMemoryAndTableSplit(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"i-prior": {
+			ID: "i-prior", Facet: entry.Interaction, Text: "已放行的任务直接执行，严禁再弹等待确认的卡片",
+			Status: entry.Stable, First: "2026-10-10", Last: "2026-11-10", Count: 5, Tagged: true, Origin: entry.Handwritten,
+		},
+		"i-late": {
+			ID: "i-late", Facet: entry.Interaction, Text: "多余待办用 cancelled 关掉不弹卡",
+			Status: entry.Stable, First: "2026-11-22", Last: "2026-11-22", Count: 1, Tagged: true, Origin: entry.Behavior,
+		},
+	}}
+	recur := collabIncident{ID: "a", Day: "2026-11-16", Want: "已放行的任务直接执行，不要再生成等待确认的卡片"}
+	novel := collabIncident{ID: "b", Day: "2026-11-22", Want: "多余待办用 cancelled 关掉不弹卡"}
+	if !hasPriorRuleMemory(st, recur) {
+		t.Fatalf("expected prior rule memory match for recurrence incident")
+	}
+	if hasPriorRuleMemory(st, novel) {
+		t.Fatalf("same-day entry must not satisfy prior rule memory gate")
+	}
+	r := collabResult{
+		Model: "m", Judge: "j", N: 2, Repeats: 1,
+		PriorMemory: []string{"a"},
+		Score:       map[string]map[string]map[string]float64{"4096": {"resident": {"avoided": 0.5, "wrong_action": 0.5}}},
+		Bytes:       map[string]map[string]int{"4096": {"resident": 4000}},
+		PerInc:      map[string]map[string]map[string]float64{"4096": {"resident": {"a": 1, "b": 0}}},
+		PerWrong:    map[string]map[string]map[string]float64{"4096": {"resident": {"a": 0, "b": 1}}},
+		PerAsk:      map[string]map[string]map[string]float64{"4096": {"resident": {"a": 0, "b": 0}}},
+	}
+	md := collabTable(r, []string{"resident"})
+	if !strings.Contains(md, "#### prior-memory recurrences (1/2 incidents)") {
+		t.Fatalf("expected prior-memory recurrences split table, got:\n%s", md)
+	}
+}

@@ -60,7 +60,7 @@ func Score(p *Pattern) int {
 				s += 6
 			}
 			if p.ScenesCount <= 1 && !owned {
-				s = min(s, 99)
+				s = min(s, 70)
 			}
 			return s
 		}
@@ -71,6 +71,9 @@ func Score(p *Pattern) int {
 		s := base + min(24, p.ScenesCount*6) + min(20, quotes*2) + min(16, weeks*4)
 		if owned {
 			s += 20
+		}
+		if p.ScenesCount <= 1 && !owned {
+			s = min(s, 70)
 		}
 		return s
 	}
@@ -87,6 +90,9 @@ func Score(p *Pattern) int {
 	}
 	if p.Dimension == "thinking" || p.Dimension == "attention" {
 		bonus += 8
+	}
+	if p.Facet == string(entry.Judgement) {
+		bonus += 6
 	}
 	return base + min(25, p.ScenesCount*5) + min(20, weeks*4) + min(15, quotes*2) + bonus
 }

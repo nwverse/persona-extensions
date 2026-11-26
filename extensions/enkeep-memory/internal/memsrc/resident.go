@@ -103,7 +103,7 @@ type Candidate struct {
 }
 
 // polarityShareOf returns the directional budget cap within Bucket 1 (unified design §2.1):
-// verification/boundary rules get the widest headroom (45%) while autonomous-push rules are tightened to 25%.
+// verification/boundary rules get the widest headroom (45%) while autonomous-push rules are tightened to 20%.
 func polarityShareOf(pol string) float64 {
 	switch pol {
 	case "check":
@@ -111,7 +111,7 @@ func polarityShareOf(pol string) float64 {
 	case "communicate":
 		return 0.30
 	case "act":
-		return 0.25
+		return 0.20
 	case "route":
 		return 0.25
 	default:
@@ -119,15 +119,13 @@ func polarityShareOf(pol string) float64 {
 	}
 }
 
-// StandingPrefix returns the lightweight semantic tier tag prepended to L1 standing lines so the answering model
-// distinguishes non-negotiable verification/action rules from trade-off principles (unified design §2.1).
+// StandingPrefix returns the lightweight semantic tier tag prepended to L1 standing lines (unified design §2.1).
+// To avoid hard-tag inflation and over-application of push/format rules, 【硬】 is reserved strictly for hard
+// verification/boundary redlines (Hard && check); other contracts carry no pressure tag; principles carry 【原则】.
 func StandingPrefix(bucket string, hard bool, polarity string) string {
 	switch bucket {
 	case BucketContract:
 		if hard && polarity == "check" {
-			return "【硬·核验】"
-		}
-		if hard {
 			return "【硬】"
 		}
 	case BucketPrinciple:

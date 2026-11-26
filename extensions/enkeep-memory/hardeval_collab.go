@@ -137,6 +137,9 @@ type collabIncident struct {
 	// Entity: avoiding it needed concrete World/People entity facts or relations (who someone is/owns/contacts,
 	// or project/repo/service/machine/channel ownership, topology, dependencies, location or entity-bound rules).
 	Entity bool `json:"entity,omitempty"`
+	// PriorMemory marks incidents for which state.json already held a matching pre-incident rule/principle
+	// (First < Day, outside Leak/Units), separating solvable recurrences from first-time novel mistakes.
+	PriorMemory bool `json:"prior_memory,omitempty"`
 	// Leak and Units carry source entry/class IDs and ref@day units (for state.json-sourced incidents) so collab-run
 	// excludes them from every arm's memory in addition to the day cutoff.
 	Leak  []string `json:"leak,omitempty"`
@@ -147,28 +150,29 @@ type collabIncident struct {
 }
 
 type collabSet struct {
-	Cutoff     string           `json:"cutoff"`
-	End        string           `json:"end"`
-	Windows    []string         `json:"windows,omitempty"`
-	EntityOnly bool             `json:"entity_only,omitempty"`
-	Candidates int              `json:"candidates"`
-	Excluded   int              `json:"excluded,omitempty"`
-	NoIncident int              `json:"no_incident"`
-	Duplicates int              `json:"duplicates"`
-	Avoided    int              `json:"avoided_without_memory"`
-	Incidents  []collabIncident `json:"incidents"`
+	Cutoff        string           `json:"cutoff"`
+	End           string           `json:"end"`
+	Windows       []string         `json:"windows,omitempty"`
+	EntityOnly    bool             `json:"entity_only,omitempty"`
+	Candidates    int              `json:"candidates"`
+	Excluded      int              `json:"excluded,omitempty"`
+	NoIncident    int              `json:"no_incident"`
+	Duplicates    int              `json:"duplicates"`
+	NoPriorMemory int              `json:"no_prior_memory,omitempty"`
+	Avoided       int              `json:"avoided_without_memory"`
+	Incidents     []collabIncident `json:"incidents"`
 }
 
 const collabExtractPrompt = `你在从用户和 AI 助手的真实记录里整理「协作事故」：用户纠正过助手、骂过助手、不得不把一件事重复交代，或者在跨渠道（飞书、微信、知识库、Agent 会话等）记录中对涉及具体人与项目的错误默认做法作出明确纠偏。每条材料是一份助手事后写的反馈记忆、一段会话（用户的请求、助手的动作、用户随后的话），或一条带用户原话的结构化渠道记录（情境、用户实际决定/要求、被否决做法、用户原话）。
 
 对每条材料判断它是不是一次协作事故（incident）。是的话写出：
 - kind：corrected（纠正）、scolded（骂了）、repeated（重复交代）之一；
-- situation：事故发生前的情境，以助手的视角写：用户要什么、事情进行到哪一步、助手手上有什么。只写事实，不能透露正确做法，也不能写出助手后来做错了什么或用户的反应。80–200 字。人名、项目名、系统名照材料原样写（评测只在本机，不进仓库），不写邮箱、账号、密钥。
+- situation：事故发生前的情境，以助手的视角写：用户要什么、事情进行到哪一步、助手手上有什么。只写事实，不能透露正确做法，也不能写出助手后来做错了什么或用户的反应。必须严格落在 mistake 发生之前的决策岔口，且主题与 mistake 直接对应。80–200 字。人名、项目名、系统名照材料原样写（评测只在本机，不进仓库），不写邮箱、账号、密钥。
 - mistake：助手当时怎么做错了（或若按被否决做法会怎么错），一句话。
 - want：用户真正要的是什么样的做法，一句话，写成能推广到同类情境的做法。
 - entity：要避开这次事故，是否必须知道具体实体（人、项目、仓库、服务、机器或频道）的事实或关系（对应 World/People 记忆：某人是谁/职权分工/联络对象，或某个项目/仓库/机器/服务的归属、拓扑、依赖、位置与实体绑定约定）。是为 true；只靠与具体实体无关的通用做事习惯就能避开的为 false。
 
-不是协作事故的（只是普通追问、闲聊、用户改主意、技术报错、或没有明确错误默认做法的普通纪要）incident 为 false，其余字段留空。输出 JSON。`
+不是协作事故的（只是普通追问、闲聊、用户改主意、技术报错、没有明确错误默认做法的普通纪要，或者材料只包含事后追问/答完卡片后的后续轮次、前后轮次主题错位而无法还原 mistake 发生前的决策岔口）incident 为 false，其余字段留空。输出 JSON。`
 
 const collabExtractSchema = `{"type":"object","additionalProperties":false,"required":["items"],"properties":{"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","incident","kind","situation","mistake","want","entity"],"properties":{"id":{"type":"string"},"incident":{"type":"boolean"},"entity":{"type":"boolean"},"kind":{"type":"string","enum":["","corrected","scolded","repeated"]},"situation":{"type":"string"},"mistake":{"type":"string"},"want":{"type":"string"}}}}}}`
 
@@ -986,6 +990,7 @@ func collabBuild(args []string) error {
 	windowsSpec := fs.String("windows", "", "comma-separated date windows YYYY-MM-DD..YYYY-MM-DD (overrides -cutoff/-end)")
 	excludeSpec := fs.String("exclude", "", "comma-separated collab.json files whose incident IDs and same-day wants must be excluded")
 	entityOnly := fs.Bool("entity-only", false, "target entity-related incidents (collabCue intersected with entity relevance) and keep only entity=true")
+	requirePrior := fs.Bool("require-prior-memory", false, "keep only incidents that match a pre-incident rule/principle in -state (First < day, outside leak/units)")
 	most := fs.Int("most", collabMost, "incidents kept at most")
 	candMost := fs.Int("cand-most", 0, "session/state candidates scanned at most (0: 160, or 320 with -entity-only)")
 	out := fs.String("out", "", "directory for collab.json and the caches (keep it local)")
@@ -1188,6 +1193,13 @@ func collabBuild(args []string) error {
 			set.Duplicates++
 			continue
 		}
+		if st != nil {
+			x.PriorMemory = hasPriorRuleMemory(st, x)
+			if *requirePrior && !x.PriorMemory {
+				set.NoPriorMemory++
+				continue
+			}
+		}
 		kept = append(kept, x)
 	}
 	// Drop what the answering model gets right without memory (its answers kept apart from the run's).
@@ -1226,8 +1238,8 @@ func collabBuild(args []string) error {
 			entN++
 		}
 	}
-	fmt.Printf("hardeval collab-build: %d candidates, %d excluded, %d not an incident, %d duplicates, %d avoided without memory, %d incidents (memory %d, session %d, state %d, entity %d, windows %v)\n",
-		set.Candidates, set.Excluded, set.NoIncident, set.Duplicates, set.Avoided, len(set.Incidents), n["memory"], n["session"], n["state"], entN, byWin)
+	fmt.Printf("hardeval collab-build: %d candidates, %d excluded, %d not an incident, %d duplicates, %d no prior memory, %d avoided without memory, %d incidents (memory %d, session %d, state %d, entity %d, windows %v)\n",
+		set.Candidates, set.Excluded, set.NoIncident, set.Duplicates, set.NoPriorMemory, set.Avoided, len(set.Incidents), n["memory"], n["session"], n["state"], entN, byWin)
 	return nil
 }
 
@@ -1246,6 +1258,8 @@ type collabResult struct {
 	PerAsk   map[string]map[string]map[string]float64 `json:"per_incident_ask,omitempty"`
 	// Entity are the incidents that need entity relations (collabIncident.Entity), reported apart.
 	Entity []string `json:"entity,omitempty"`
+	// PriorMemory are the incidents backed by a matching pre-incident rule/principle in state.json (solvable recurrences).
+	PriorMemory []string `json:"prior_memory,omitempty"`
 	// Segments reports per-window metrics when incidents carry Window labels (window → budget → arm → metric).
 	Segments map[string]map[string]map[string]map[string]float64 `json:"segments,omitempty"`
 	SegmentN map[string]int                                      `json:"segment_n,omitempty"`
@@ -1456,6 +1470,9 @@ func collabRun(args []string) error {
 	for _, inc := range set.Incidents {
 		if inc.Entity {
 			res.Entity = append(res.Entity, inc.ID)
+		}
+		if inc.PriorMemory || hasPriorRuleMemory(st, inc) {
+			res.PriorMemory = append(res.PriorMemory, inc.ID)
 		}
 		if inc.Window != "" {
 			winByID[inc.ID] = inc.Window
@@ -1680,6 +1697,31 @@ func collabTable(r collabResult, arms []string) string {
 			fmt.Fprintf(&b, "| %s | %d | %.0f%% | %.0f%% | %.0f%% | %.0f%% | %d/%d/%d | %s |\n", arm, r.Bytes[bk][arm], 100*s["avoided"],
 				100*s["needless_ask"], 100*s["wrong_action"], 100*s["repeat"], w, t, l, ent)
 		}
+		if len(r.PriorMemory) > 0 && len(r.PriorMemory) < r.N {
+			fmt.Fprintf(&b, "\n#### prior-memory recurrences (%d/%d incidents)\n\n| arm | avoided | needless asks | wrong actions | vs resident (win/tie/loss for resident) |\n|---|---|---|---|---|\n", len(r.PriorMemory), r.N)
+			for _, arm := range arms {
+				avSum, askSum, wrongSum := 0.0, 0.0, 0.0
+				w, t, l := 0, 0, 0
+				for _, id := range r.PriorMemory {
+					v := r.PerInc[bk][arm][id]
+					avSum += v
+					askSum += r.PerAsk[bk][arm][id]
+					wrongSum += r.PerWrong[bk][arm][id]
+					rv := r.PerInc[bk]["resident"][id]
+					switch {
+					case rv == v:
+						t++
+					case rv > v:
+						w++
+					default:
+						l++
+					}
+				}
+				pn := float64(len(r.PriorMemory))
+				fmt.Fprintf(&b, "| %s | %.0f%% | %.0f%% | %.0f%% | %d/%d/%d |\n", arm,
+					100*avSum/pn, 100*askSum/pn, 100*wrongSum/pn, w, t, l)
+			}
+		}
 		if len(r.Segments) > 0 {
 			var wins []string
 			for w := range r.Segments {
@@ -1697,6 +1739,32 @@ func collabTable(r collabResult, arms []string) string {
 		}
 	}
 	return b.String()
+}
+
+// hasPriorRuleMemory reports whether st already contained a non-sensitive, pool-eligible rule or principle entry
+// strictly before inc.Day (excluding inc.Leak and inc.Units) whose wording or principle overlaps inc.Want.
+// This is computed purely from pre-incident memory (never from arm scores) to separate solvable recurrences from
+// first-time novel mistakes (unified design §3.2).
+func hasPriorRuleMemory(st *store.State, inc collabIncident) bool {
+	if st == nil || strings.TrimSpace(inc.Want) == "" || inc.Day == "" {
+		return false
+	}
+	f := collabDayFilter([]collabIncident{inc})
+	for _, e := range st.Entries {
+		if e == nil || !memsrc.Pool(st, e) || e.Inferred || len(e.Cats()) > 0 || e.OriginSpace != "" {
+			continue
+		}
+		if entry.KindOf(e) == "" || f.entryOut(st, e, inc.Day) {
+			continue
+		}
+		if norm.Jaccard(e.Shown(), inc.Want) >= 0.14 {
+			return true
+		}
+		if p := e.Principle(); p != "" && norm.Jaccard(p, inc.Want) >= 0.16 {
+			return true
+		}
+	}
+	return false
 }
 
 // heInputs reads the overview's backtest patterns and the external injected text, either optional.

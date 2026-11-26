@@ -234,8 +234,14 @@ func TestResidentContractPolarityAndGroupCaps(t *testing.T) {
 		}
 	}
 	cEff := room - pBytes
-	if polBytes["act"] > int(float64(cEff)*0.25) {
-		t.Errorf("act polarity bytes %d exceeded 25%% of effective contract budget %d", polBytes["act"], cEff)
+	if polBytes["act"] > int(float64(cEff)*0.20) {
+		t.Errorf("act polarity bytes %d exceeded 20%% of effective contract budget %d", polBytes["act"], cEff)
+	}
+	if StandingPrefix(BucketContract, true, "check") != "【硬】" ||
+		StandingPrefix(BucketContract, true, "act") != "" ||
+		StandingPrefix(BucketContract, true, "communicate") != "" ||
+		StandingPrefix(BucketPrinciple, false, "") != "【原则】" {
+		t.Errorf("StandingPrefix violated anti-hard-inflation rule")
 	}
 	if grpBytes["interaction:autonomy"] > int(float64(cEff)*GroupShare) {
 		t.Errorf("group autonomy bytes %d exceeded 20%% of effective contract budget %d", grpBytes["interaction:autonomy"], cEff)

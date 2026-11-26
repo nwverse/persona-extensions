@@ -647,8 +647,8 @@ func TestPatternScoreScale(t *testing.T) {
 		t.Errorf("hard contract score = %d, want %d", s, 151)
 	}
 	narrowHard := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, Hard: true, ViolationCount: 10, ScenesCount: 1, UniqueQuotes: 10}
-	if s := Score(narrowHard); s != 99 {
-		t.Errorf("single-scene non-owned hard contract score = %d, want 99 cap", s)
+	if s := Score(narrowHard); s != 70 {
+		t.Errorf("single-scene non-owned hard contract score = %d, want 70 cap", s)
 	}
 	reg := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, ScenesCount: 3, UniqueQuotes: 4, ActiveWeeks: []string{"w1", "w2"}}
 	if s := Score(reg); s != 30+18+8+8 {
@@ -656,8 +656,8 @@ func TestPatternScoreScale(t *testing.T) {
 	}
 	prin := &Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, Dimension: "thinking", ScenesCount: 5, UniqueQuotes: 10,
 		ActiveWeeks: []string{"w1", "w2", "w3", "w4", "w5"}, Exception: "only for hotfixes", CoveredIDs: []string{"j-hand"}}
-	if s := Score(prin); s != 30+25+20+15+10+18+8 {
-		t.Errorf("principle score = %d, want %d", s, 126)
+	if s := Score(prin); s != 30+25+20+15+10+18+8+6 {
+		t.Errorf("principle score = %d, want %d", s, 132)
 	}
 	if Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, ScenesCount: 2}) <=
 		Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Scoped, ScenesCount: 2}) {
