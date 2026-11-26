@@ -221,7 +221,7 @@ func installSourceFor(st *State, target *Machine) installOffer {
 		}
 		if ok, why := cat.CLI.selfContained(); !ok {
 			if notContained == "" {
-				notContained = machineLabel(m) + " 上的配套小工具能用，但" + why + "，不能复制"
+				notContained = "「" + machineLabel(m) + "」上的配套小工具能用，但" + why + "，不能复制"
 			}
 			continue
 		}

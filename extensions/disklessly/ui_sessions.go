@@ -124,6 +124,26 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 		}
 	}
 	slices.SortStableFunc(rows, func(a, b machineRow) int { return cmp.Compare(coldStateRank(a.state), coldStateRank(b.state)) })
+	// The upload button's title as machineStateItems draws it on ready rows: none while a job
+	// runs there, 重试 after a failed upload; the plain one wins when any row shows it.
+	uploadTitle := ""
+	for _, r := range rows {
+		if r.state != ColdReady {
+			continue
+		}
+		t := coldOffloadText
+		if j, ok := d.jobs[r.m.ID]; ok {
+			if j.running() {
+				continue
+			}
+			if j.Kind == jobOffload && j.Err != "" {
+				t = coldRetryText
+			}
+		}
+		if uploadTitle == "" || t == coldOffloadText {
+			uploadTitle = t
+		}
+	}
 
 	// The summary counts machines by state ("2 正常 · 2 未安装 CLI · 1 CLI 版本过旧"), worst first.
 	var states []string
@@ -170,7 +190,7 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	}
 	// Where the upload is: under each ready computer's row below; say so, or why there is none.
 	status.Items = append(status.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
-		Text: clip(offloadHint(m, ready, len(machines), byState), 300)})
+		Text: clip(offloadHint(m, ready, len(machines), byState, uploadTitle), 300)})
 	if m == nil {
 		// One computer's own row below has its 重新检查 button.
 		status.Items = append(status.Items, wire.Component{
@@ -222,7 +242,11 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	}
 	results.Footer = strings.Join(notes, " ")
 	if len(shown) == 0 {
-		detail := "还没有搬到网盘的对话。点「重新检查」看看电脑的情况；检查只读取信息，不会搬走或删除任何东西。"
+		detail := "还没有搬到网盘的对话。点「" + coldRefreshText + "」看看电脑的情况；检查只读取信息，不会搬走或删除任何东西。"
+		if m != nil {
+			// This computer's own row above carries its check button (or says why there is none).
+			detail = "还没有搬到网盘的对话。这台电脑的情况和该点的按钮在上面它那一行；检查只读取信息，不会搬走或删除任何东西。"
+		}
 		if strings.TrimSpace(query) != "" {
 			detail = "这里没有找到；可以试试「" + coldDeepText + "」，在电脑上搜对话的完整内容。"
 		}
@@ -268,27 +292,31 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 }
 
 // offloadHint says where the upload button is (under each ready computer's row), or why no
-// computer shown can upload now.
-func offloadHint(m *Machine, ready, total int, byState map[string]int) string {
+// computer shown can upload now. upload is the button's title as drawn; "" while every ready
+// computer is busy.
+func offloadHint(m *Machine, ready, total int, byState map[string]int, upload string) string {
+	if ready > 0 && upload == "" {
+		return "正在进行的事完成后，可以在电脑那一行把一周没动的 AI 对话搬到网盘。"
+	}
 	if m != nil {
 		state := ""
 		for s := range byState {
 			state = s
 		}
 		if state == ColdReady {
-			return "要腾地方：点下面这台电脑的「" + coldOffloadText + "」。"
+			return "要腾地方：点下面这台电脑的「" + upload + "」。"
 		}
-		return "「" + machineLabel(m) + "」现在还不能把对话搬到网盘（" + coldStateLabel(state) + "）：按下面的提示处理好，再点「重新检查」。"
+		return "「" + machineLabel(m) + "」现在还不能把对话搬到网盘（" + coldStateLabel(state) + "）：按下面这台电脑那一行的提示处理。"
 	}
 	switch {
 	case total == 0:
 		return "还没有电脑。先到「硬盘空间」页添加电脑。"
 	case ready == total:
-		return "要腾地方：在下面某台电脑那一行点「" + coldOffloadText + "」，每次搬一台。"
+		return "要腾地方：在下面某台电脑那一行点「" + upload + "」，每次搬一台。"
 	case ready > 0:
-		return fmt.Sprintf("%d 台电脑可以搬：在它那一行点「%s」。其余 %d 台还不能搬，原因和处理办法写在各自那一行。", ready, coldOffloadText, total-ready)
+		return fmt.Sprintf("%d 台电脑可以搬：在它那一行点「%s」。其余 %d 台还不能搬，原因和处理办法写在各自那一行。", ready, upload, total-ready)
 	}
-	return "现在没有哪台电脑能把对话搬到网盘：先按下面每台电脑的提示装好配套小工具、设置好网盘，再点「重新检查」。"
+	return "现在没有哪台电脑能把对话搬到网盘：先按下面每台电脑的提示装好配套小工具、设置好网盘，再点「" + coldRefreshText + "」。"
 }
 
 // refreshAfter asks the app to draw the page again while a background job runs (hubs that do
@@ -347,15 +375,11 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 		switch {
 		case cat != nil && cat.Brew != "":
 			a.brew = true
-			verb := "安装"
-			if a.upgrade {
-				verb = "升级"
-			}
-			a.Next = "这台电脑有 Homebrew（一个装软件的工具）：点「用 Homebrew " + verb + "配套小工具」就行，装好后会自动重新检查。它在后台运行的命令如下。"
+			a.Next = "这台电脑有 Homebrew（一个装软件的工具）：点「" + brewButtonTitle(a.upgrade) + "」就行，装好后会自动重新检查。它在后台运行的命令如下。"
 			a.Command = cmd
 		case cat == nil || !cat.BrewKnown:
 			a.copy = offer
-			a.Next = "还不知道这台电脑有没有 Homebrew（一个装软件的工具）：先点「重新检查 " + machineLabel(m) + "」，有的话会出现「用 Homebrew 装配套小工具」。"
+			a.Next = "还不知道这台电脑有没有 Homebrew（一个装软件的工具）：先点「重新检查 " + machineLabel(m) + "」，有的话会出现「" + brewButtonTitle(a.upgrade) + "」。"
 			if offer.src != nil {
 				a.Next += "也可以直接点「从 " + machineLabel(offer.src) + " 复制过来」。"
 			} else {
@@ -367,7 +391,7 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 				machineLabel(offer.src), offer.platform, machineLabel(offer.src), cmp.Or(shortVersion(offer.cli.Version), "（版本不清楚）"))
 			a.Command = manual
 		default:
-			a.Next = "这台电脑没有 Homebrew，也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。请在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具，然后点「重新检查」。"
+			a.Next = "这台电脑没有 Homebrew，也没法从别的电脑复制（" + strings.TrimSuffix(offer.reason, "。") + "）。请在这台电脑上运行下面的命令，先装 Homebrew 再装配套小工具，然后点「重新检查 " + machineLabel(m) + "」。"
 			a.Command = manual
 		}
 	case ColdNoBackend:
@@ -378,12 +402,12 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 		b := cat.Backend
 		id := cmp.Or(b.ID, b.Type, "（未命名）")
 		a.Reason = name + "用的网盘（" + id + "）现在连不上，所以对话在不在网盘里暂时显示「暂时不确定」，不会当成丢了。"
-		a.Next = "确认网盘（或家里的 NAS）在线、网络通了，再点「重新检查」；想看具体原因，在这台电脑上运行下面的命令。"
+		a.Next = "确认网盘（或家里的 NAS）在线、网络通了，再点「重新检查 " + machineLabel(m) + "」；想看具体原因，在这台电脑上运行下面的命令。"
 		a.Command = "disklessly doctor"
 		if strings.Contains(b.Error, "repo.json is not in") {
 			// The backend answers, but holds no Disklessly repository.
 			a.Reason = name + "用的网盘（" + id + "）能连上，但里面还没有 Disklessly 的存放目录（找不到 repo.json），所以暂时显示「暂时不确定」。"
-			a.Next = "多半是选错了网盘目录：在这台电脑上用下面的命令看看设置了哪些网盘，换成正确的那个；如果这就是要新用的目录，就在里面新建。然后点「重新检查」。"
+			a.Next = "多半是选错了网盘目录：在这台电脑上用下面的命令看看设置了哪些网盘，换成正确的那个；如果这就是要新用的目录，就在里面新建。然后点「重新检查 " + machineLabel(m) + "」。"
 			a.Command = "disklessly backend list\ndisklessly backend use <后端 ID>   # 换到已经在用的那个网盘\ndisklessly init                    # 或者：在当前网盘里新建存放目录"
 		}
 		a.Raw = strings.TrimSpace(fmt.Sprintf("%s（%s，%d ms）", b.Error, cmp.Or(b.Type, "网盘"), b.LatencyMs))
@@ -402,10 +426,10 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 		hung := cat != nil && strings.HasPrefix(cat.Error, "disklessly 没有正常结束")
 		if hung {
 			a.Reason = name + "上的配套小工具 3 分钟内没有答完，网盘里的情况暂时不确定。"
-			a.Next = "过一会儿点「重试」；一直这样的话，在这台电脑上运行下面的命令看看卡在哪里。"
+			a.Next = "过一会儿点「重试 " + machineLabel(m) + "」；一直这样的话，在这台电脑上运行下面的命令看看卡在哪里。"
 		} else {
 			a.Reason = name + "上的配套小工具出错了（回答看不懂），网盘里的情况暂时不确定。"
-			a.Next = "点「重试」；还是这样的话，在这台电脑上运行下面的命令，把输出（「详情」里也有）发给维护者。"
+			a.Next = "点「重试 " + machineLabel(m) + "」；还是这样的话，在这台电脑上运行下面的命令，把输出（「详情」里也有）发给维护者。"
 		}
 		a.Command = "disklessly --json sessions status --check-segments"
 		if cat != nil {
@@ -421,7 +445,22 @@ func coldProblem(st *State, m *Machine, cat *ColdCatalog, state string) coldAdvi
 		a.Reason = "还没检查过" + name + "。"
 		a.Next = "点「检查 " + machineLabel(m) + "」：只读取信息，不会搬走或删除任何东西。"
 	}
+	// sshProblem (offline) words its next step with a generic 「重试」: name the row's button
+	// 「<retry> <name>」 instead, or drop it when the row draws none.
+	r := retryHint{}
+	if a.retry != "" {
+		r.button = a.retry + " " + machineLabel(m)
+	}
+	a.Reason, a.Next = r.rename(a.Reason), r.rename(a.Next)
 	return a
+}
+
+// brewButtonTitle is the AI 对话 page's Homebrew button: install, or upgrade a Homebrew install.
+func brewButtonTitle(upgrade bool) string {
+	if upgrade {
+		return "用 Homebrew 升级配套小工具"
+	}
+	return "用 Homebrew 安装配套小工具"
 }
 
 // noBackendCommand sets up a network drive for the CLI; the commands stay exact.
@@ -431,7 +470,7 @@ const noBackendCommand = "disklessly backend list\ndisklessly backend add rclone
 // (m nil: the row's own computer) after an upload the CLI refused for that reason.
 func noBackendProblem(m *Machine) problem {
 	reason := "「" + machineLabel(m) + "」还没有设置网盘，旧对话没地方放，所以还不能搬。"
-	next := "先在这台电脑上设置一个网盘（Google Drive 这类网盘、家里的 NAS 都行）：运行下面的命令，然后点「重新检查」。"
+	next := "先在这台电脑上设置一个网盘（Google Drive 这类网盘、家里的 NAS 都行）：运行下面的命令，然后点「重新检查 " + machineLabel(m) + "」。"
 	if m == nil {
 		reason = "这台电脑还没有设置网盘，对话没地方放，这次一个都没有搬走或删除。"
 		next = "先在这台电脑上设置一个网盘（Google Drive 这类网盘、家里的 NAS 都行）：运行下面的命令，设置好后点「重试」。"
@@ -589,7 +628,7 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 		if cat != nil && cat.CLI.Path != "" && !brewManaged(cat.CLI) {
 			confirm += "原来的 " + cat.CLI.Path + " 不会删；如果系统先找到的还是它，装完会提醒你。"
 		}
-		items = append(items, wire.Component{Type: wire.ComponentButton, Title: "用 Homebrew " + verb + "配套小工具",
+		items = append(items, wire.Component{Type: wire.ComponentButton, Title: brewButtonTitle(adv.upgrade),
 			Action: &wire.Action{ID: "cold-brew", Values: map[string]string{"m": m.ID}, Confirm: confirm}})
 	}
 	if adv.copy.src != nil {
@@ -638,11 +677,7 @@ func retryFor(j coldJob, m *Machine, state string, adv coldAdvice) retryHint {
 		}
 	case jobBrew:
 		if adv.brew {
-			verb := "安装"
-			if adv.upgrade {
-				verb = "升级"
-			}
-			return retryHint{button: "用 Homebrew " + verb + "配套小工具"}
+			return retryHint{button: brewButtonTitle(adv.upgrade)}
 		}
 	case jobFileOffload, jobFileRestore:
 		return retryHint{how: "想再试一次：回到 Persona 的磁盘占用图，重新选中它们。"}
@@ -658,20 +693,7 @@ func (d draw) jobOutcome(j coldJob, retry ...retryHint) []wire.Component {
 	if j.Err != "" {
 		text = "没有成功：" + j.Err
 		if len(retry) > 0 {
-			r := retry[0]
-			if r.button == "" {
-				text = strings.ReplaceAll(text, "修好后点「重试」", "修好后再试")
-				text = strings.ReplaceAll(text, "然后点「重试」", "然后再试")
-				text = strings.ReplaceAll(text, "点「重试」", "再试一次")
-				if r.how != "" {
-					text = strings.TrimRight(text, "。；") + "。" + r.how
-				}
-			} else {
-				text = strings.ReplaceAll(text, "「重试」", "「"+r.button+"」")
-				if !strings.Contains(text, r.button) {
-					text = strings.TrimRight(text, "。；") + "。处理好后点「" + r.button + "」。"
-				}
-			}
+			text = retry[0].apply(text)
 		}
 	}
 	if text == "" {
@@ -679,6 +701,32 @@ func (d draw) jobOutcome(j coldJob, retry ...retryHint) []wire.Component {
 	}
 	return []wire.Component{{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
 		Text: clip(fmt.Sprintf("%s · %s", d.when(j.Finished), text), 400)}}
+}
+
+// apply rewrites the generic 「重试」 in text to the button r names, or, with no such button,
+// drops the button and adds r.how.
+func (r retryHint) apply(text string) string {
+	text = r.rename(text)
+	if r.button == "" {
+		if r.how != "" {
+			text = strings.TrimRight(text, "。；") + "。" + r.how
+		}
+		return text
+	}
+	if !strings.Contains(text, r.button) {
+		text = strings.TrimRight(text, "。；") + "。处理好后点「" + r.button + "」。"
+	}
+	return text
+}
+
+// rename only rewrites the generic 「重试」 in text to the button r names, or drops it.
+func (r retryHint) rename(text string) string {
+	if r.button == "" {
+		text = strings.ReplaceAll(text, "修好后点「重试」", "修好后再试")
+		text = strings.ReplaceAll(text, "然后点「重试」", "然后再试")
+		return strings.ReplaceAll(text, "点「重试」", "再试一次")
+	}
+	return strings.ReplaceAll(text, "「重试」", "「"+r.button+"」")
 }
 
 // sandboxSection is the page's first section while the extension runs in the hub's sandbox.

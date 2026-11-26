@@ -351,6 +351,9 @@ func homeIntro(statuses []MachineStatus) wire.Section {
 // scanAllText is the button that checks every computer.
 const scanAllText = "检查所有电脑（只看不删）"
 
+// planText is the 硬盘空间 page's button (and tab) that lists what a cleanup would delete.
+const planText = "先看看会删什么"
+
 func fleetAlertSummary(statuses []MachineStatus) (string, string) {
 	var warnCount, critCount, unscannedCount, offlineCount int
 	for _, ms := range statuses {
@@ -484,7 +487,8 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 			}
 			sec.Footer = clip(footer, 1800)
 			if d.busy(m) {
-				sec.Items = append(sec.Items, d.machineJobItems(m)...)
+				// Only the running job's line: no buttons while it runs.
+				sec.Items = append(sec.Items, d.machineJobItems(m, retryHint{}, retryHint{})...)
 				return sec
 			}
 			if ms.SafeBytes > 0 {
@@ -563,6 +567,13 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 				}
 			} else if m.LastError != "" {
 				// The problem is drawn with the job lines below.
+			} else if j, ok := d.jobs[m.ID]; ok && j.running() {
+				// The 检查 button is hidden while a job runs.
+				text := "还没检查过；正在做的事完成后，可以检查这台电脑硬盘用了多少、哪些缓存能删。"
+				if j.Kind == jobScan {
+					text = "正在检查这台电脑硬盘用了多少、哪些缓存能删：只读取大小，不会删除任何东西。"
+				}
+				sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: text})
 			} else {
 				sec.Items = append(sec.Items, wire.Component{
 					Type:  wire.ComponentText,
@@ -576,7 +587,8 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 					FormatBytes(ms.LastFreedBytes), ms.CleanCount, FormatBytes(ms.TotalFreedBytes))
 			}
 
-			sec.Items = append(sec.Items, d.machineJobItems(m)...)
+			// The buttons drawn below (only while nothing runs, as are the outcome lines).
+			sec.Items = append(sec.Items, d.machineJobItems(m, retryHint{button: "检查 " + machineLabel(m)}, retryHint{button: planText})...)
 			if !d.busy(m) {
 				sec.Items = append(sec.Items,
 					wire.Component{
@@ -588,7 +600,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 					wire.Component{
 						Type:   wire.ComponentButton,
 						Key:    boundedKey("btn-plan-", m.ID),
-						Title:  "先看看会删什么",
+						Title:  planText,
 						Action: &wire.Action{ID: "open-plan", Values: map[string]string{"m": m.ID}},
 					},
 				)
@@ -646,14 +658,15 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 	ms := d.st.machineStatus(m)
 	head := d.machineHeaderOrText(ms, scan)
-	top := wire.Section{Items: append([]wire.Component{head}, d.machineJobItems(m)...)}
+	rescan := retryHint{button: "重新检查 " + machineLabel(m)}
+	top := wire.Section{Items: append([]wire.Component{head}, d.machineJobItems(m, rescan, rescan)...)}
 	if scan != nil && scan.Mount.TotalBytes > 0 {
 		top.Items = append(top.Items, machineProgressComponent(ms))
 	}
 	if !d.busy(m) {
 		top.Items = append(top.Items, wire.Component{
 			Type:   wire.ComponentButton,
-			Title:  "重新检查 " + machineLabel(m),
+			Title:  rescan.button,
 			Action: &wire.Action{ID: "scan", Values: map[string]string{"m": m.ID}},
 		})
 	}
@@ -876,10 +889,17 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 	}
 	var secs []wire.Section
 
+	// This tab draws no check button; its clean button is the one below the summary.
+	cleanAllTitle := fmt.Sprintf("删掉下面所有放心删的（+%s）", FormatBytes(scan.SafeBytes))
+	rescan := retryHint{how: "想再检查一次：回到所有电脑那一栏，点这台电脑的检查按钮。"}
+	reclean := retryHint{how: "想再删一次：用下面的删除按钮。"}
+	if scan.SafeBytes > 0 {
+		reclean = retryHint{button: cleanAllTitle}
+	}
 	summarySec := wire.Section{
 		Title:  "先看看会删什么（不会真删）",
-		Footer: "「放心删」是能重新生成或重新下载的编译和下载缓存，以及 7 天以前的系统日志、压缩归档的旧日志和过期的临时文件（日志和临时文件删了就没有了，最近的日志会留着）；不包括 AI 对话。「建议先看」是比较大的东西（比如自动化测试用的浏览器），删了以后下次用到时会重新下载。",
-		Items:  append([]wire.Component{head}, d.machineJobItems(m)...),
+		Footer: "「放心删」是能重新生成或重新下载的编译和下载缓存，以及系统日志里 7 天以前的部分、系统换下来的旧日志、临时文件夹里编译和安装剩下的文件（最近的也删）和临时文件夹里放了 7 天以上的文件（日志和临时文件删了就没有了，最近 7 天的系统日志会留着）；不包括 AI 对话。「建议先看」是比较大的东西（比如自动化测试用的浏览器），删了以后下次用到时会重新下载。",
+		Items:  append([]wire.Component{head}, d.machineJobItems(m, rescan, reclean)...),
 	}
 	summarySec.Items = append(summarySec.Items, d.statComponents(boundedKey("plan-stats-", m.ID), []wire.Stat{
 		{Label: "还剩", Value: FormatBytes(scan.Mount.AvailableBytes), Detail: "系统盘 " + scan.Mount.MountPoint},
@@ -899,7 +919,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 	if scan.SafeBytes > 0 {
 		summarySec.Items = append(summarySec.Items, wire.Component{
 			Type:  wire.ComponentButton,
-			Title: fmt.Sprintf("删掉下面所有放心删的（+%s）", FormatBytes(scan.SafeBytes)),
+			Title: cleanAllTitle,
 			Action: &wire.Action{
 				ID:      "clean-safe",
 				Values:  map[string]string{"m": m.ID},
@@ -1044,7 +1064,7 @@ func (d draw) historyTab() []wire.Section {
 			for _, h := range d.st.History[:min(len(d.st.History), 50)] {
 				hRows = append(hRows, []string{
 					h.CreatedAt.In(d.loc).Format("01-02 15:04"),
-					clipCellWidth(histMachineLabel(d.st, h), 12.5, 48.0, 10),
+					histMachineCell(d.st, h),
 					compactAvailChange(h),
 					compactFreedCell(h.FreedBytes),
 				})
@@ -1594,23 +1614,37 @@ func safeCleanConfirm(m *Machine, bytes uint64, scan *Scan) string {
 }
 
 // safeLogsNote names the old logs and temporary files among scan's 放心删 items: unlike the
-// caches they are gone once deleted. "" when there are none.
+// caches they are gone once deleted. Each claim follows what BuildItemCleanScript runs for that
+// item: build and install leftovers in /tmp go whatever their age, every rotated log file goes,
+// and the journal size shown is the whole journal although only its part older than 7 days goes.
+// "" when there are none.
 func safeLogsNote(scan *Scan) string {
 	if scan == nil {
 		return ""
 	}
 	var n int
-	var bytes uint64
+	var parts []string
 	for _, it := range scan.Items {
-		if it.Category == CatTmpLogs && it.Safety == SafetySafe && !it.InUse {
-			n++
-			bytes += it.Bytes
+		if it.Category != CatTmpLogs || it.Safety != SafetySafe || it.InUse {
+			continue
+		}
+		n++
+		size := FormatBytes(it.Bytes)
+		switch it.ID {
+		case "journalctl-vacuum":
+			parts = append(parts, "系统日志里 7 天以前的部分（这里显示的 "+size+" 是全部系统日志的大小，只删其中 7 天以前的，最近 7 天的留着，所以实际腾出的会少一些）")
+		case "logs-rotated":
+			parts = append(parts, "系统换下来的旧日志（"+size+"：/var/log 里 .gz 压缩的和 .1、.old 结尾的旧日志文件，正在写的日志不碰）")
+		case "tmp-stale":
+			parts = append(parts, "临时文件夹 /tmp 里的文件（"+size+"：编译和安装剩下的，比如 go-build、npm、pnpm、playwright、cargo-install 开头的，最近的也会删；还有其他放了 7 天以上的）")
+		default:
+			parts = append(parts, cmp.Or(strings.TrimSpace(it.Title), it.ID)+"（"+size+"）")
 		}
 	}
 	if n == 0 {
 		return ""
 	}
-	return fmt.Sprintf("还会删掉 %d 项旧日志和临时文件（%s：7 天以前的系统日志、压缩归档的旧日志、放了 7 天以上的临时文件），这些删了就找不回来，最近的日志会留着。", n, FormatBytes(bytes))
+	return fmt.Sprintf("还会删掉 %d 项日志和临时文件，这些删了就找不回来：%s。", n, strings.Join(parts, "；"))
 }
 
 func categoryConfirm(m *Machine, cid string, n int, bytes uint64) string {

@@ -142,7 +142,7 @@ func sshProblem(m *Machine, raw string) problem {
 	case causeAuth:
 		p.Title, p.Edit = "远程登录被拒绝", true
 		p.Reason = name + "不让登录：它不认运行 Persona 的电脑的密钥，或者用户名不对。"
-		p.Next = "在运行 Persona 的电脑上运行下面的命令，把密钥装到这台电脑上；或者在「" + homeTitle + "」页「修改这台电脑的设置」里改用户名和密钥文件，然后点「重试」。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令，把密钥装到这台电脑上；或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的用户名和密钥文件，然后点「重试」。"
 		p.Command = "ssh-copy-id " + sshTarget(m)
 	case causeHostKey:
 		p.Title = "还没确认这台电脑的身份"
@@ -162,16 +162,16 @@ func sshProblem(m *Machine, raw string) problem {
 		p.Reason = name + "拒绝了连接：它没打开远程登录（SSH），或者端口不对。"
 		switch plat := m.Platform; {
 		case strings.HasPrefix(plat, "darwin"):
-			p.Next = "在这台 Mac 上打开远程登录（系统设置 › 通用 › 共享 › 远程登录），或者在「修改这台电脑的设置」里改端口，然后点「重试」。"
+			p.Next = "在这台 Mac 上打开远程登录（系统设置 › 通用 › 共享 › 远程登录），或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的端口，然后点「重试」。"
 		case strings.HasPrefix(plat, "linux"):
-			p.Next = "在这台电脑上打开远程登录服务（sudo systemctl enable --now sshd，Debian / Ubuntu 上服务名是 ssh），或者在「修改这台电脑的设置」里改端口，然后点「重试」。"
+			p.Next = "在这台电脑上打开远程登录服务（sudo systemctl enable --now sshd，Debian / Ubuntu 上服务名是 ssh），或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的端口，然后点「重试」。"
 		default:
-			p.Next = "在这台电脑上打开远程登录（Mac：系统设置 › 通用 › 共享 › 远程登录；Linux：启动 sshd 服务），或者在「修改这台电脑的设置」里改端口，然后点「重试」。"
+			p.Next = "在这台电脑上打开远程登录（Mac：系统设置 › 通用 › 共享 › 远程登录；Linux：启动 sshd 服务），或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的端口，然后点「重试」。"
 		}
 	case causeDNS:
 		p.Title, p.Edit = "找不到这个电脑名", true
 		p.Reason = "运行 Persona 的电脑找不到" + name + "的地址 " + cmp.Or(m.Host, m.ID) + "。"
-		p.Next = "看看那台电脑上 ~/.ssh/config 里它的 HostName 对不对，或者在「修改这台电脑的设置」里改成能找到的地址，然后点「重试」；下面的命令会显示 ssh 实际用的地址。"
+		p.Next = "看看那台电脑上 ~/.ssh/config 里它的 HostName 对不对，或者在「" + homeTitle + "」页的「添加或修改电脑」里把这台电脑的地址改成能找到的，然后点「重试」；下面的命令会显示 ssh 实际用的地址。"
 		p.Command = "ssh -G " + cmp.Or(m.Host, m.ID) + " | grep -i '^hostname'"
 	case causeNetwork:
 		p.Title = "网络不通"
@@ -190,7 +190,7 @@ func sshProblem(m *Machine, raw string) problem {
 	case causeBadHost:
 		p.Title, p.Edit, p.Retry = "电脑地址写错了", true, false
 		p.Reason = name + "的地址不是能远程登录的地址。"
-		p.Next = "在「" + homeTitle + "」页「修改这台电脑的设置」里改成 ~/.ssh/config 里的名字或电脑地址。"
+		p.Next = "在「" + homeTitle + "」页的「添加或修改电脑」里把这台电脑的地址改成 ~/.ssh/config 里的名字或电脑地址。"
 	default:
 		p.Title = "远程登录失败"
 		p.Reason = "远程登录" + name + "没有成功。"

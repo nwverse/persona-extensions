@@ -449,19 +449,53 @@ func (st *State) machine(idOrHost string) *Machine {
 		}
 		return nil
 	}
+	// The pages and the MCP tools call the hub's own computer 运行 Persona 的电脑 (machineLabel):
+	// an agent sending that label back as machine means this computer, even when a remote
+	// computer carries the same name (older state, or a name set before such names were refused).
+	if isLocalLabel(idOrHost) {
+		if m := st.localMachine(); m != nil {
+			return m
+		}
+	}
 	for _, m := range st.Machines {
 		if m.ID == idOrHost || strings.EqualFold(m.Host, idOrHost) || strings.EqualFold(m.Name, idOrHost) {
 			return m
 		}
 	}
-	// The pages and the MCP tools call the hub's own computer 运行 Persona 的电脑 (machineLabel):
-	// an agent sending that label back as machine means this computer.
-	if isSelfHostAlias(idOrHost) || idOrHost == localMachineName {
-		for _, m := range st.Machines {
-			if m.IsLocal {
-				return m
-			}
+	if isSelfHostAlias(idOrHost) {
+		return st.localMachine()
+	}
+	return nil
+}
+
+func (st *State) localMachine() *Machine {
+	for _, m := range st.Machines {
+		if m.IsLocal {
+			return m
 		}
+	}
+	return nil
+}
+
+// isLocalLabel reports whether s is the label the pages show for the hub's own computer
+// (localMachineName), ignoring spaces and letter case.
+func isLocalLabel(s string) bool {
+	squash := func(v string) string {
+		return strings.ToLower(strings.Join(strings.Fields(v), ""))
+	}
+	return s != "" && squash(s) == squash(localMachineName)
+}
+
+// checkRemoteName refuses a remote computer name that the pages would show, or the tools would
+// resolve, as the hub's own computer.
+func checkRemoteName(name, host, id string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	label := machineLabel(&Machine{Name: name, Host: host, ID: id})
+	if isLocalLabel(name) || isLocalLabel(label) {
+		return fmt.Errorf("「%s」是运行 Persona 的电脑在页面上的名字，别的电脑不能用这个名字，不然会分不清是哪台。请换一个名字", name)
 	}
 	return nil
 }
@@ -508,6 +542,9 @@ func (st *State) upsertMachine(in MachineInput, now time.Time) (*Machine, error)
 	}
 	if !IsConcreteHost(id) {
 		return nil, fmt.Errorf("电脑编号 %q 不对", id)
+	}
+	if err := checkRemoteName(cmp.Or(strings.TrimSpace(in.Name), host), host, id); err != nil {
+		return nil, err
 	}
 	if in.Source == "" || in.Source == "manual" {
 		if st.resolveConnection != nil {

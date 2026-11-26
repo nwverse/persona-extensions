@@ -126,7 +126,7 @@ func lastNonEmptyLine(s string) string {
 //  2. node-python-cache (npm, pnpm, yarn, pip, uv)
 //  3. docker-unused (Docker buildx cache, dangling images; never running containers)
 //  4. rust-xcode-build (Cargo registry/git, Xcode DerivedData, SwiftPM, Clang, Gradle)
-//  5. tmp-logs (systemd journal, rotated /var/log, /tmp stale build/test artifacts >7d)
+//  5. tmp-logs (systemd journal, rotated /var/log, build/install leftovers in /tmp of any age and anything there older than 7d)
 //  6. cold-agent-sessions (Claude Code & Codex transcripts tiered into hot <=7d vs cold >7d)
 const ProbeScript = `export LC_ALL=C
 export LANG=C
@@ -161,23 +161,23 @@ GOCACHE_DIR=$(go env GOCACHE 2>/dev/null || printf '%s' "$HOME/.cache/go-build")
 GOMOD_DIR=$(go env GOMODCACHE 2>/dev/null || printf '%s' "$HOME/go/pkg/mod")
 [ -z "$GOCACHE_DIR" ] && GOCACHE_DIR="$HOME/.cache/go-build"
 [ -z "$GOMOD_DIR" ] && GOMOD_DIR="$HOME/go/pkg/mod"
-probe_dir "cache-gobuild" "go-cache" "Go 编译构建缓存 (go-build)" "$GOCACHE_DIR" "safe" "可随时重建的 Go 编译器构建缓存"
-probe_dir "cache-gomod" "go-cache" "Go 模块下载缓存 (pkg/mod)" "$GOMOD_DIR" "safe" "可重新下载的 Go 依赖模块缓存"
+probe_dir "cache-gobuild" "go-cache" "Go 编译缓存" "$GOCACHE_DIR" "safe" "Go 编译时留下的缓存，删了下次编译会自动再生成"
+probe_dir "cache-gomod" "go-cache" "Go 下载的依赖包" "$GOMOD_DIR" "safe" "Go 项目下载过的依赖包，删了下次用到时会重新下载"
 
-probe_dir "cache-npm" "node-python-cache" "npm 包缓存 (~/.npm)" "$HOME/.npm" "safe" "可重新下载的 npm 缓存包"
-probe_dir "cache-pnpm" "node-python-cache" "pnpm 内容寻址缓存 (pnpm/store)" "$HOME/.local/share/pnpm/store" "safe" "可重新拉取的 pnpm 全局存储"
-probe_dir "cache-pnpm-cache" "node-python-cache" "pnpm 下载缓存 (~/.cache/pnpm)" "$HOME/.cache/pnpm" "safe" "可重新生成的 pnpm 元数据与 dlx 缓存"
-probe_dir "cache-yarn" "node-python-cache" "Yarn 包缓存 (~/.cache/yarn)" "$HOME/.cache/yarn" "safe" "可重新下载的 Yarn 缓存"
-probe_dir "cache-pip" "node-python-cache" "pip 轮子与 HTTP 缓存 (~/.cache/pip)" "$HOME/.cache/pip" "safe" "可重新下载的 Python pip 缓存"
-probe_dir "cache-uv" "node-python-cache" "uv Python 极速缓存 (~/.cache/uv)" "$HOME/.cache/uv" "safe" "可重新下载的 uv 包缓存"
+probe_dir "cache-npm" "node-python-cache" "npm 下载的包" "$HOME/.npm" "safe" "npm 下载过的包，删了下次安装时会重新下载"
+probe_dir "cache-pnpm" "node-python-cache" "pnpm 存的包" "$HOME/.local/share/pnpm/store" "safe" "pnpm 给所有项目共用的一份包，删了下次安装时会重新下载"
+probe_dir "cache-pnpm-cache" "node-python-cache" "pnpm 的下载缓存" "$HOME/.cache/pnpm" "safe" "pnpm 临时存的包信息和一次性运行的工具，删了会自动重新下载"
+probe_dir "cache-yarn" "node-python-cache" "Yarn 下载的包" "$HOME/.cache/yarn" "safe" "Yarn 下载过的包，删了下次安装时会重新下载"
+probe_dir "cache-pip" "node-python-cache" "pip 下载的 Python 包" "$HOME/.cache/pip" "safe" "pip 下载过的 Python 安装包，删了下次安装时会重新下载"
+probe_dir "cache-uv" "node-python-cache" "uv 下载的 Python 包" "$HOME/.cache/uv" "safe" "uv 下载过的 Python 包，删了下次用到时会重新下载"
 
-probe_dir "cache-cargo-registry" "rust-xcode-build" "Cargo 索引与源码包 (~/.cargo/registry)" "$HOME/.cargo/registry" "safe" "可重新同步的 Rust Crates 缓存"
-probe_dir "cache-cargo-git" "rust-xcode-build" "Cargo Git 检出缓存 (~/.cargo/git)" "$HOME/.cargo/git" "safe" "可重新拉取的 Cargo Git 依赖"
-probe_dir "cache-xcode-derived" "rust-xcode-build" "Xcode DerivedData 构建产物" "$HOME/Library/Developer/Xcode/DerivedData" "safe" "可重新编译的 Xcode DerivedData 缓存"
-probe_dir "cache-swiftpm" "rust-xcode-build" "SwiftPM 包缓存 (org.swift.swiftpm)" "$HOME/.cache/org.swift.swiftpm" "safe" "可重新拉取的 Swift Package Manager 缓存"
-probe_dir "cache-clang" "rust-xcode-build" "Clang 模块缓存 (~/.cache/clang)" "$HOME/.cache/clang" "safe" "可重新生成的 Clang 预编译模块缓存"
-probe_dir "cache-gradle" "rust-xcode-build" "Gradle 构建缓存 (~/.gradle/caches)" "$HOME/.gradle/caches" "safe" "可重新构建的 Gradle 缓存"
-probe_dir "cache-playwright" "rust-xcode-build" "Playwright 浏览器缓存 (ms-playwright)" "$HOME/.cache/ms-playwright" "review" "无头浏览器镜像，清理后首次运行需重新下载"
+probe_dir "cache-cargo-registry" "rust-xcode-build" "Rust 下载的依赖包（Cargo）" "$HOME/.cargo/registry" "safe" "Rust 项目下载过的依赖包，删了下次编译时会重新下载"
+probe_dir "cache-cargo-git" "rust-xcode-build" "Rust 从代码仓库拉的依赖（Cargo）" "$HOME/.cargo/git" "safe" "Rust 项目直接从代码仓库拉下来的依赖，删了下次编译时会重新拉"
+probe_dir "cache-xcode-derived" "rust-xcode-build" "Xcode 编译缓存" "$HOME/Library/Developer/Xcode/DerivedData" "safe" "Xcode 编译时留下的文件，删了下次编译会重新生成，第一次会慢一些"
+probe_dir "cache-swiftpm" "rust-xcode-build" "Swift 下载的依赖包" "$HOME/.cache/org.swift.swiftpm" "safe" "Swift 项目下载过的依赖包，删了下次编译时会重新下载"
+probe_dir "cache-clang" "rust-xcode-build" "Clang 编译缓存" "$HOME/.cache/clang" "safe" "C 和 C++ 编译时留下的缓存，删了下次编译会自动再生成"
+probe_dir "cache-gradle" "rust-xcode-build" "Gradle 编译和下载缓存" "$HOME/.gradle/caches" "safe" "安卓和 Java 项目编译时留下的缓存和下载的包，删了下次编译时会重新生成"
+probe_dir "cache-playwright" "rust-xcode-build" "Playwright 自动测试用的浏览器" "$HOME/.cache/ms-playwright" "review" "自动测试用的几个浏览器，删了下次跑测试前要重新下载，比较大、比较慢"
 
 echo "@@SECTION:TMP_LOGS"
 if command -v journalctl >/dev/null 2>&1; then
@@ -186,13 +186,13 @@ fi
 if [ -d /var/log ]; then
   rot_kb=$(find /var/log -maxdepth 2 -type f \( -name '*.gz' -o -name '*.1' -o -name '*.old' \) -exec du -k {} + 2>/dev/null | awk '{s+=$1} END {print s+0}')
   if [ -n "$rot_kb" ] && [ "$rot_kb" -gt 0 ] 2>/dev/null; then
-    printf 'logs-rotated\ttmp-logs\t系统轮转归档日志 (/var/log/*.gz)\t/var/log\t%s\tsafe\t已轮转压缩的历史系统日志，不影响当前服务写入\n' "$rot_kb"
+    printf 'logs-rotated\ttmp-logs\t系统换下来的旧日志\t/var/log\t%s\tsafe\t/var/log 里换下来的旧日志文件（.gz 压缩的和 .1、.old 结尾的），正在写的日志不碰\n' "$rot_kb"
   fi
 fi
 if [ -d /tmp ]; then
   tmp_kb=$(find /tmp -mindepth 1 -maxdepth 1 \( -name 'go-build*' -o -name 'playwright*' -o -name 'npm-*' -o -name 'pnpm-*' -o -name 'cargo-install*' -o -name 'disklessly-*' -o -mtime +7 \) -exec du -xsk {} + 2>/dev/null | awk '{s+=$1} END {print s+0}')
   if [ -n "$tmp_kb" ] && [ "$tmp_kb" -gt 0 ] 2>/dev/null; then
-    printf 'tmp-stale\ttmp-logs\t/tmp 陈旧构建与临时产物 (>7天)\t/tmp\t%s\tsafe\t超过 7 天或已退出的 go-build/playwright/npm 临时目录\n' "$tmp_kb"
+    printf 'tmp-stale\ttmp-logs\t临时文件夹里的旧文件和编译剩下的文件\t/tmp\t%s\tsafe\t临时文件夹 /tmp 里编译和安装剩下的文件（go-build、playwright、npm、pnpm、cargo-install 等开头的，最近的也删）和放了 7 天以上的文件\n' "$tmp_kb"
   fi
 fi
 
@@ -210,7 +210,7 @@ if command -v docker >/dev/null 2>&1; then
     END { print sum + 0 }
   ')
   if [ -n "$dangling_kb" ] && [ "$dangling_kb" -gt 0 ] 2>/dev/null; then
-    printf 'docker-dangling\tdocker-unused\tDocker 悬空镜像 (dangling images)\tdocker://dangling-images\t%s\tsafe\t未被任何运行或停止容器引用的悬空镜像层\n' "$dangling_kb"
+    printf 'docker-dangling\tdocker-unused\tDocker 没名字的旧镜像\tdocker://dangling-images\t%s\tsafe\t重新构建后被换下来、已经没有名字的旧镜像，没有任何容器（不管在不在运行）用到它们\n' "$dangling_kb"
   fi
   bcache_line=$(docker system df --format '{{.Type}}|{{.Reclaimable}}' 2>/dev/null | awk -F'|' '$1=="Build Cache"{print $2}' | head -n 1)
   if [ -n "$bcache_line" ]; then
@@ -327,12 +327,12 @@ func ParseProbeOutput(m *Machine, output string, now time.Time) *Scan {
 			items = append(items, ScanItem{
 				ID:       "journalctl-vacuum",
 				Category: CatTmpLogs,
-				Title:    "系统日志（7 天以前的）",
+				Title:    "系统日志（只删 7 天以前的）",
 				Path:     "/var/log/journal",
 				Bytes:    b,
 				Safety:   SafetySafe,
 				Action:   "clean",
-				Reason:   "用 journalctl --vacuum-time=7d 删掉 7 天以前的系统日志，最近的留着",
+				Reason:   "这里显示的是全部系统日志的大小，只删其中 7 天以前的部分，最近 7 天的留着",
 			})
 		}
 	}

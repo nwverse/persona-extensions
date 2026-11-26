@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"maps"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -268,6 +270,40 @@ func TestMainPageDoesNotRepeatSessionState(t *testing.T) {
 // jargonRE is wording the pages no longer use: English levels and terms, and internal Chinese.
 var jargonRE = regexp.MustCompile(`(?i)\bsafe\b|\breview\b|dry-run|水位|纳管|台账|根分区|挂载点|扫描模式|\bhub\b|冷会话|节点|备份后端|\bCLI\b|\bbackend\b|invalid page state`)
 
+// scanJargonRE is the developer wording the probe script's item titles and reasons used to carry
+// (item paths such as docker://dangling-images stay exact, so "dangling" is checked on titles and
+// reasons only).
+var scanJargonRE = regexp.MustCompile(`悬空|内容寻址|轮子|极速|无头|轮转|陈旧|产物|镜像层|引用|DerivedData|Crates|元数据|dlx|>7天|HTTP 缓存|检出|预编译|同步的|全局存储`)
+
+// probeScriptSample is probe output carrying every item line ProbeScript can print, with the
+// script's own ids, titles and reasons (sizes and paths made up), plus the journal and the
+// Docker build cache lines that ParseProbeOutput words itself.
+func probeScriptSample(t *testing.T) string {
+	t.Helper()
+	var caches, tmp, docker []string
+	dirRE := regexp.MustCompile(`^probe_dir "([^"]*)" "([^"]*)" "([^"]*)" "[^"]*" "([^"]*)" "([^"]*)"$`)
+	fmtRE := regexp.MustCompile(`^\s*printf '((?:logs-rotated|tmp-stale|docker-dangling)\\t[^']*)\\n'`)
+	for _, line := range strings.Split(ProbeScript, "\n") {
+		if m := dirRE.FindStringSubmatch(line); m != nil {
+			caches = append(caches, strings.Join([]string{m[1], m[2], m[3], "/home/dev/" + m[1], "2048", m[4], m[5]}, "\t"))
+		} else if m := fmtRE.FindStringSubmatch(line); m != nil {
+			l := strings.ReplaceAll(strings.Replace(m[1], "%s", "2048", 1), `\t`, "\t")
+			if strings.HasPrefix(l, "docker-") {
+				docker = append(docker, l)
+			} else {
+				tmp = append(tmp, l)
+			}
+		}
+	}
+	if len(caches) < 15 || len(tmp) != 2 || len(docker) != 1 {
+		t.Fatalf("probe script lines not found: %d caches, %d tmp, %d docker", len(caches), len(tmp), len(docker))
+	}
+	return "@@SECTION:DF\nFilesystem 1B-blocks Used Available Use% Mounted on\n/dev/sda1 100000000000 60000000000 40000000000 60% /\n" +
+		"@@SECTION:CACHES\n" + strings.Join(caches, "\n") + "\n" +
+		"@@SECTION:TMP_LOGS\nArchived and active journals take up 1.5G in the file system.\n" + strings.Join(tmp, "\n") + "\n" +
+		"@@SECTION:DOCKER\n" + strings.Join(docker, "\n") + "\ndocker-buildx\t1.2GB\n@@SECTION:END\n"
+}
+
 // visibleText is what a view shows people: titles, texts, stats, tables, fields, confirms;
 // commands to copy and links are left out (they stay exact).
 func visibleText(v *wire.View) string {
@@ -371,8 +407,35 @@ func TestPagesUsePlainWords(t *testing.T) {
 	f.act(t, ext.EncodeState(sessPage{Machine: "local"}), "cold-offload", map[string]string{"m": "local"})
 	a.waitJobs()
 	views = append(views, f.view(t, "local"))
+	// Every item the probe script can report, by its own titles and reasons, on 能删什么 and
+	// 先看看会删什么.
+	scan := ParseProbeOutput(&Machine{ID: "local", IsLocal: true}, probeScriptSample(t), t0)
+	if len(scan.Items) < 20 {
+		t.Fatalf("probe sample gave %d items", len(scan.Items))
+	}
+	for _, it := range scan.Items {
+		words := it.Title + "\n" + it.Reason
+		if m := scanJargonRE.FindAllString(words, -1); len(m) > 0 || jargonRE.MatchString(words) || strings.Contains(strings.ToLower(words), "dangling") {
+			t.Errorf("item %s uses %q: %s / %s", it.ID, m, it.Title, it.Reason)
+		}
+	}
+	if err := a.db().update(func(st *State, now time.Time) error {
+		st.Scans["local"] = scan
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, tab := range []string{tabItems, tabPlan} {
+		main(ext.EncodeState(page{Machine: "local"}), "tab", map[string]string{"tab": tab})
+		if txt := visibleText(views[len(views)-1]); !strings.Contains(txt, "Docker 没名字的旧镜像") && tab == tabItems {
+			t.Errorf("%s does not list the probe's items:\n%s", tab, txt)
+		}
+	}
 	for i, v := range views {
 		if m := jargonRE.FindAllString(visibleText(v), -1); len(m) > 0 {
+			t.Errorf("view %d (%s) uses %q:\n%s", i, v.Title, m, visibleText(v))
+		}
+		if m := scanJargonRE.FindAllString(visibleText(v), -1); len(m) > 0 {
 			t.Errorf("view %d (%s) uses %q:\n%s", i, v.Title, m, visibleText(v))
 		}
 	}
@@ -491,11 +554,25 @@ func TestSafeCleanConfirmNamesLogs(t *testing.T) {
 	if len(confirms) != 2 {
 		t.Fatalf("clean-safe buttons: %d", len(confirms))
 	}
+	// What BuildItemCleanScript really runs: the journal size is the whole journal of which only the
+	// part older than 7 days goes; every rotated file (.gz, .1, .old) goes; build and install
+	// leftovers in /tmp go however recent they are.
 	for _, c := range confirms {
-		for _, w := range []string{"7 天以前的系统日志", "压缩归档的旧日志", "临时文件", "找不回来", "AI 对话都不"} {
+		for _, w := range []string{"系统日志里 7 天以前的部分", "全部系统日志的大小", "实际腾出的会少一些", "系统换下来的旧日志", ".gz", ".1、.old",
+			"临时文件夹 /tmp", "go-build", "最近的也会删", "放了 7 天以上", "找不回来", "AI 对话都不"} {
 			if !strings.Contains(c, w) {
 				t.Fatalf("confirm lacks %q: %s", w, c)
 			}
+		}
+		for _, old := range []string{"压缩归档的旧日志", "放了 7 天以上的临时文件"} {
+			if strings.Contains(c, old) {
+				t.Fatalf("confirm still says %q: %s", old, c)
+			}
+		}
+	}
+	for id, want := range map[string]string{"tmp-stale": "-name 'go-build*'", "logs-rotated": "-name '*.old'", "journalctl-vacuum": "--vacuum-time=7d"} {
+		if !strings.Contains(BuildItemCleanScript(ScanItem{ID: id}, nil), want) {
+			t.Fatalf("clean script for %s no longer has %q: update the confirm wording", id, want)
 		}
 	}
 	if got := safeLogsNote(&Scan{Items: []ScanItem{{Category: CatGoCache, Safety: SafetySafe, Bytes: 1}}}); got != "" {
@@ -553,6 +630,64 @@ func TestMCPAcceptsLocalLabelAndHostName(t *testing.T) {
 	}
 }
 
+// A remote computer that carries the local label (older state) must not capture the label: the
+// tools resolve 运行 Persona 的电脑 to the hub's own computer before matching names.
+func TestLocalLabelResolvesBeforeRemoteNames(t *testing.T) {
+	st, m := coldState(t)
+	m.Name = "local (devbox-7)"
+	remote := &Machine{ID: "rbox", Host: "rbox", Name: localMachineName, Enabled: true, Reachable: true, Source: "manual"}
+	st.Machines = append(st.Machines, remote)
+	cat := *st.cold(m.ID)
+	st.setCold(remote.ID, &cat)
+	for _, label := range []string{localMachineName, "运行Persona的电脑", " 运行 persona 的电脑 "} {
+		if got := st.machine(label); got == nil || got.ID != m.ID {
+			t.Fatalf("machine(%q) = %+v, want the local computer", label, got)
+		}
+	}
+	if got := st.machine("rbox"); got != remote {
+		t.Fatalf("machine(rbox) = %+v", got)
+	}
+	hits := SearchCold(st, "checkout", localMachineName, 0, t0)
+	if len(hits) == 0 {
+		t.Fatal("search by label: no hits")
+	}
+	for _, h := range hits {
+		if h.MachineID != m.ID {
+			t.Fatalf("search by label hit %q, want the local computer", h.MachineID)
+		}
+	}
+}
+
+// Adding or renaming a remote computer to the local label is refused with a plain reason.
+func TestRemoteComputerCannotTakeLocalLabel(t *testing.T) {
+	st := &State{}
+	st.ensureDefaults(t0)
+	if _, err := st.upsertMachine(MachineInput{Host: "rbox", Name: "build box", Source: "manual"}, t0); err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []MachineInput{
+		{Host: "newbox", Name: localMachineName, Source: "manual"},
+		{Host: "newbox", Name: "运行persona的电脑", Source: "manual"},
+		{Host: "newbox", Name: localMachineName + " (192.0.2.5)", Source: "manual"},
+		{ID: "rbox", Host: "rbox", Name: localMachineName, Source: "manual"},
+	} {
+		_, err := st.upsertMachine(in, t0)
+		if err == nil || !strings.Contains(err.Error(), "换一个名字") || strings.Contains(err.Error(), "local") {
+			t.Fatalf("upsert %+v: err = %v", in, err)
+		}
+	}
+	if got := st.machine("rbox"); got == nil || got.Name != "build box" {
+		t.Fatalf("rename went through: %+v", got)
+	}
+	if st.machine("newbox") != nil {
+		t.Fatal("refused computer was added")
+	}
+	// The hub's own computer may still be called by its label.
+	if m, err := st.upsertMachine(MachineInput{ID: "local", Name: localMachineName}, t0); err != nil || !m.IsLocal {
+		t.Fatalf("local rename: %+v %v", m, err)
+	}
+}
+
 // One spelling for the hub's own computer across the code's texts.
 func TestOneNameForThisComputer(t *testing.T) {
 	re := regexp.MustCompile(`运行 Persona 的(那台|这台)电脑|运行 Persona 的这台|本机节点`)
@@ -571,5 +706,195 @@ func TestOneNameForThisComputer(t *testing.T) {
 				t.Errorf("%s %s mixes cloud with network drive: %q", loc, k, v)
 			}
 		}
+	}
+}
+
+// clickables are the names a person can tap on v: buttons, rows with an action, row actions,
+// empty-state buttons, tabs, the computer filter and links.
+func clickables(v *wire.View) map[string]bool {
+	out := map[string]bool{}
+	if v.Tabs != nil {
+		for _, t := range v.Tabs.Items {
+			out[t.Title] = true
+		}
+	}
+	if v.Filter != nil {
+		out[v.Filter.Title] = true
+		for _, c := range v.Filter.Choices {
+			out[c.Title] = true
+		}
+	}
+	for _, s := range v.Sections {
+		for _, c := range s.Items {
+			switch {
+			case c.Type == wire.ComponentButton, c.Type == wire.ComponentLink, c.Type == wire.ComponentRow && c.Action != nil:
+				out[c.Title] = true
+			}
+			if c.Button != nil {
+				out[c.Button.Title] = true
+			}
+			for _, ra := range c.Actions {
+				out[ra.Title] = true
+			}
+		}
+	}
+	return out
+}
+
+// tapRE finds the 「…」 name an instruction asks to tap: 点「X」, 点下面这台电脑的「X」, 再点「X」.
+var tapRE = regexp.MustCompile(`点([^「」。；，]{0,10})「([^「」]+)」`)
+
+// tapNames are the names v's texts ask to tap (confirms and commands are not instructions).
+func tapNames(v *wire.View) []string {
+	var texts []string
+	for _, s := range v.Sections {
+		texts = append(texts, s.Title, s.Footer)
+		for _, c := range s.Items {
+			if c.Type == wire.ComponentCode {
+				continue
+			}
+			texts = append(texts, c.Subtitle, c.Detail, c.Text, c.Caption)
+		}
+	}
+	var out []string
+	for _, t := range texts {
+		for _, m := range tapRE.FindAllStringSubmatch(t, -1) {
+			// 「拿回来」 is on a conversation's row: the text says to find that row first.
+			if m[2] == "拿回来" && regexp.MustCompile(`(搜到它|找到这个对话)，$`).MatchString(t[:strings.Index(t, m[0])]) {
+				continue
+			}
+			out = append(out, m[2])
+		}
+	}
+	return out
+}
+
+// checkTapNames fails when a text on v asks to tap a name that v does not draw.
+func checkTapNames(t *testing.T, what string, v *wire.View) {
+	t.Helper()
+	can := clickables(v)
+	for _, n := range tapNames(v) {
+		if !can[n] {
+			names := slices.Sorted(maps.Keys(can))
+			t.Errorf("%s: asks to tap 「%s」, which the page does not draw (it draws %q):\n%s", what, n, names, visibleText(v))
+		}
+	}
+}
+
+// Every button an outcome or instruction names is drawn on that same page state: the 硬盘空间
+// page's tabs (with failed, finished and running checks and cleanups) and the AI 对话 page in
+// each state a computer can be in.
+func TestInstructionsNameButtonsOnTheirPage(t *testing.T) {
+	ctx := context.Background()
+	const sshDown = "SSH 连接 build-box 失败：ssh: connect to host build-box port 22: Connection timed out"
+	f := newUploadFleet(t)
+	a := f.a
+	mainTabs := func(label string) {
+		t.Helper()
+		for _, m := range []string{"local", "build-box"} {
+			for _, tab := range []string{tabFleet, tabItems, tabPlan, tabHistory} {
+				res, err := a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{State: ext.EncodeState(page{Machine: m}), Action: "tab", Values: map[string]string{"tab": tab}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				checkTapNames(t, label+" "+m+"/"+tab, res.View)
+			}
+		}
+	}
+	mainTabs("not checked")
+	if _, err := a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{Action: "scan-all"}}); err != nil {
+		t.Fatal(err)
+	}
+	a.waitJobs()
+	mainTabs("checked")
+	for _, kind := range []string{jobScan, jobClean} {
+		setJob(a, "local", kind, "网盘连不上，修好后点「重试」。")
+		mainTabs("failed " + kind)
+	}
+	if err := a.db().update(func(st *State, now time.Time) error {
+		st.machine("build-box").LastError = sshDown
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setJob(a, "build-box", jobScan, sshDown)
+	mainTabs("unreachable")
+
+	// A check running on a computer never checked: its 检查 button is hidden meanwhile.
+	g := newUploadFleet(t)
+	g.a.jobs.mu.Lock()
+	g.a.jobs.jobs["build-box"] = &coldJob{Kind: jobScan, Label: "正在检查硬盘（只看不删）", Started: t0}
+	g.a.jobs.mu.Unlock()
+	res, err := g.a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{State: ext.EncodeState(page{Machine: "build-box"}), Action: "tab", Values: map[string]string{"tab": tabFleet}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkTapNames(t, "running check", res.View)
+	if txt := visibleText(res.View); !strings.Contains(txt, "正在检查这台电脑") {
+		t.Errorf("a running check is not said:\n%s", txt)
+	}
+	g.a.jobs.mu.Lock()
+	g.a.jobs.jobs["build-box"].Finished = t0
+	g.a.jobs.mu.Unlock()
+
+	// The AI 对话 page, build-box in every state.
+	reach, down := true, false
+	states := []struct {
+		name string
+		set  func(c *ColdCatalog)
+	}{
+		{"ready", func(c *ColdCatalog) { c.State, c.Backend.Reachable = ColdReady, &reach }},
+		{"no tool, Homebrew", func(c *ColdCatalog) { c.State, c.Brew, c.BrewKnown = ColdNoCLI, "/opt/homebrew/bin/brew", true }},
+		{"no tool, Homebrew unknown", func(c *ColdCatalog) { c.State, c.Brew, c.BrewKnown = ColdNoCLI, "", false }},
+		{"no tool, no Homebrew", func(c *ColdCatalog) { c.State, c.Brew, c.BrewKnown = ColdNoCLI, "", true }},
+		{"old tool", func(c *ColdCatalog) { c.State, c.Brew, c.BrewKnown = ColdCLIOld, "/opt/homebrew/bin/brew", true }},
+		{"no drive", func(c *ColdCatalog) { c.State = ColdNoBackend }},
+		{"drive down", func(c *ColdCatalog) { c.State, c.Backend.Reachable = ColdBackendDown, &down }},
+		{"drive without repo", func(c *ColdCatalog) {
+			c.State, c.Backend.Reachable, c.Backend.Error = ColdBackendDown, &down, "repo.json is not in the folder"
+		}},
+		{"offline", func(c *ColdCatalog) { c.State, c.Error = ColdOffline, sshDown }},
+		{"unreadable", func(c *ColdCatalog) { c.State, c.Error = ColdUnreadable, "disklessly 没有正常结束" }},
+		{"unchecked", func(c *ColdCatalog) { c.State = ColdUnchecked }},
+	}
+	for _, s := range states {
+		for _, kind := range []string{"", jobRefresh, jobOffload, jobRestore, jobInstall, jobBrew} {
+			if err := g.a.db().update(func(st *State, now time.Time) error {
+				c := *st.cold("build-box")
+				c.Error, c.Backend.Error = "", ""
+				s.set(&c)
+				st.setCold("build-box", &c)
+				return nil
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if kind != "" {
+				setJob(g.a, "build-box", kind, "网盘连不上，修好后点「重试」。")
+			}
+			for _, m := range []string{"", "build-box"} {
+				checkTapNames(t, fmt.Sprintf("AI 对话 %s/%s/%q", s.name, kind, m), g.view(t, m))
+			}
+		}
+	}
+	// An upload running on a ready computer hides its button: the hint does not name it.
+	if err := g.a.db().update(func(st *State, now time.Time) error {
+		c := *st.cold("build-box")
+		c.State, c.Error, c.Backend.Reachable = ColdReady, "", &reach
+		st.setCold("build-box", &c)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	g.a.jobs.mu.Lock()
+	g.a.jobs.jobs["build-box"] = &coldJob{Kind: jobOffload, Label: "正在搬到网盘", Started: t0}
+	g.a.jobs.mu.Unlock()
+	checkTapNames(t, "AI 对话 upload running", g.view(t, "build-box"))
+	g.a.jobs.mu.Lock()
+	g.a.jobs.jobs["build-box"].Finished = t0
+	g.a.jobs.mu.Unlock()
+
+	// 还不知道有没有 Homebrew: the button it says will appear is the one drawn once it is known.
+	if adv := coldProblem(&State{}, &Machine{ID: "x", Name: "x"}, nil, ColdNoCLI); !strings.Contains(adv.Next, "「"+brewButtonTitle(false)+"」") {
+		t.Errorf("Homebrew button named as %q", adv.Next)
 	}
 }

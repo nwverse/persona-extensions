@@ -31,11 +31,11 @@ disklessly 0.3.0
 Filesystem     1024-blocks      Used Available Capacity Mounted on
 /dev/disk3s5     524288000 251658240 272629760      48% /System/Volumes/Data
 @@SECTION:CACHES
-cache-gobuild	go-cache	Go 编译构建缓存 (go-build)	/Users/dev/Library/Caches/go-build	1048576	safe	可随时重建的 Go 编译器构建缓存
-cache-xcode-derived	rust-xcode-build	Xcode DerivedData 构建产物	/Users/dev/Library/Developer/Xcode/DerivedData	6291456	safe	可重新编译的 Xcode DerivedData 缓存
-cache-playwright	rust-xcode-build	Playwright 浏览器缓存 (ms-playwright)	/Users/dev/.cache/ms-playwright	1572864	review	无头浏览器镜像，清理后首次运行需重新下载
+cache-gobuild	go-cache	Go 编译缓存	/Users/dev/Library/Caches/go-build	1048576	safe	Go 编译时留下的缓存，删了下次编译会自动再生成
+cache-xcode-derived	rust-xcode-build	Xcode 编译缓存	/Users/dev/Library/Developer/Xcode/DerivedData	6291456	safe	Xcode 编译时留下的文件，删了下次编译会重新生成，第一次会慢一些
+cache-playwright	rust-xcode-build	Playwright 自动测试用的浏览器	/Users/dev/.cache/ms-playwright	1572864	review	自动测试用的几个浏览器，删了下次跑测试前要重新下载，比较大、比较慢
 @@SECTION:TMP_LOGS
-tmp-stale	tmp-logs	/tmp 陈旧构建与临时产物 (>7天)	/tmp	262144	safe	超过 7 天或已退出的临时目录
+tmp-stale	tmp-logs	临时文件夹里的旧文件和编译剩下的文件	/tmp	262144	safe	临时文件夹 /tmp 里编译和安装剩下的文件（go-build、playwright、npm、pnpm、cargo-install 等开头的，最近的也删）和放了 7 天以上的文件
 @@SECTION:DOCKER
 @@SECTION:SESSIONS
 tool	claude	Claude Code	/Users/dev/.claude/projects	12	163840	8	524288	/Users/dev/.claude/projects
@@ -491,6 +491,45 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
+	}
+}
+
+// The hub's own computer in the 清理记录 table's narrow 电脑 cell.
+func TestHistoryTableNamesThisComputerReadably(t *testing.T) {
+	a := seedScannedThreeMachineFleet(t)
+	ctx := context.Background()
+	for _, id := range []string{"armbox", "local"} {
+		if _, err := a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{UIVersion: 8, State: ext.EncodeState(page{Machine: id, Tab: tabPlan}),
+			Action: "clean-safe", Values: map[string]string{"m": id}}}); err != nil {
+			t.Fatal(err)
+		}
+		a.waitJobs()
+	}
+	// The hub's own computer in the narrow 电脑 cell reads 本机, not a clipped 「运行 P…」, and the
+	// record rows below still spell out its name.
+	histView, err := a.render(ctx, &ext.UIRequest{UIParams: wire.UIParams{UIVersion: 8, State: ext.EncodeState(page{Machine: "local", Tab: tabHistory})}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tbl := findComponentByKey(histView, "hist-tbl")
+	if tbl == nil {
+		t.Fatal("history tab should include hist-tbl")
+	}
+	cells := map[string]bool{}
+	for _, r := range tbl.Rows {
+		cells[r[1]] = true
+		if strings.HasPrefix(r[1], "运行") {
+			t.Fatalf("local computer clipped in the history table: %q", r[1])
+		}
+	}
+	if !cells[localMachineCell] || !cells["armbox"] {
+		t.Fatalf("history 电脑 cells: %v", cells)
+	}
+	if w := personaLabelWidth(localMachineCell, 12.5); w > 48 {
+		t.Fatalf("%q is %.1fpx, wider than the 48px cell", localMachineCell, w)
+	}
+	if !strings.Contains(visibleText(histView), localMachineName) {
+		t.Fatalf("history page no longer names %s:\n%s", localMachineName, visibleText(histView))
 	}
 }
 

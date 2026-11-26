@@ -160,7 +160,9 @@ func (d draw) busy(m *Machine) bool {
 
 // machineJobItems draws, under a machine on the 硬盘空间 page, its running job, how its last
 // scan or cleanup ended and, after a failed probe, the problem with its command and 详情.
-func (d draw) machineJobItems(m *Machine) []wire.Component {
+// rescan and reclean name the buttons the caller draws next to it that check again and clean
+// again, so a failure's 「重试」 points at a button that is really there.
+func (d draw) machineJobItems(m *Machine, rescan, reclean retryHint) []wire.Component {
 	var items []wire.Component
 	j, hasJob := d.jobs[m.ID]
 	if hasJob && j.running() {
@@ -172,15 +174,17 @@ func (d draw) machineJobItems(m *Machine) []wire.Component {
 		if j.Err != "" && m.LastError != "" && j.Kind == jobScan {
 			// The failed scan is the problem drawn below; say it once.
 		} else {
-			items = append(items, d.jobOutcome(j)...)
+			retry := rescan
+			if j.Kind == jobClean {
+				retry = reclean
+			}
+			items = append(items, d.jobOutcome(j, retry)...)
 			raw = j.Raw
 		}
 	}
 	if m.LastError != "" {
 		p := sshProblem(m, m.LastError)
-		// Here the button that tries again is 检查.
-		retry := "「检查 " + machineLabel(m) + "」"
-		p.Reason, p.Next = strings.ReplaceAll(p.Reason, "「重试」", retry), strings.ReplaceAll(p.Next, "「重试」", retry)
+		p.Reason, p.Next = rescan.rename(p.Reason), rescan.rename(p.Next)
 		if sandboxed() && p.Cause == causeSandbox {
 			// The banner at the top already says it and gives the command.
 			items = append(items, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleSecondary, Text: clip("上次检查没有成功："+p.Reason, 300)})

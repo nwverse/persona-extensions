@@ -359,6 +359,14 @@ func TestOffloadUnknownMachineAndLocale(t *testing.T) {
 	if _, err := a.offload(context.Background(), "nope", nil); !isCode(err, "unknown_method") {
 		t.Fatalf("unknown method: %v", err)
 	}
+	// A wrong action tells a protocol caller the two values it accepts, in every language.
+	for _, loc := range []string{"en", "zh-Hans", "ja-JP"} {
+		_, err := a.offload(context.Background(), "run", mustJSON(map[string]any{"action": "move", "locale": loc, "paths": []string{"/x"}, "machine": ghost}))
+		var e *ext.Error
+		if !errors.As(err, &e) || e.Code != "invalid_params" || !strings.Contains(e.Message, "offload") || !strings.Contains(e.Message, "restore") {
+			t.Errorf("%s: bad action: %v", loc, err)
+		}
+	}
 	// Every key has all three languages.
 	for k := range offloadText[locEN] {
 		for _, l := range []string{locZH, locJA} {

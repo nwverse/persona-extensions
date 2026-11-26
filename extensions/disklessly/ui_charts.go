@@ -114,6 +114,19 @@ func compactFreedCell(freed uint64) string {
 	return "+" + compactBytes(freed)
 }
 
+// localMachineCell is 运行 Persona 的电脑 in the 清理记录 table's 电脑 cell (48px on a 360px
+// phone), where clipping would leave 「运行 P…」; the record rows below the table spell it out.
+const localMachineCell = "本机"
+
+// histMachineCell is the computer in the 清理记录 table's narrow 电脑 column.
+func histMachineCell(st *State, h *CleanRecord) string {
+	label := histMachineLabel(st, h)
+	if label == localMachineName {
+		return localMachineCell
+	}
+	return clipCellWidth(label, 12.5, 48.0, 10)
+}
+
 func histMachineLabel(st *State, h *CleanRecord) string {
 	if st != nil {
 		if m := st.machine(h.MachineID); m != nil {

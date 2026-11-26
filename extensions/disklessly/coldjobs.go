@@ -481,9 +481,9 @@ func brewInstall(ctx context.Context, runner Runner, sc *scratch, now time.Time)
 	switch o.shadow {
 	case "":
 	case "?":
-		note += "；但在 PATH 和常见位置都找不到它，把 Homebrew 的 bin 目录加进这台电脑的 PATH 后点「重新检查」"
+		note += "；但在 PATH 和常见位置都找不到它，把 Homebrew 的 bin 目录加进这台电脑的 PATH 后点「重新检查 " + name + "」"
 	default:
-		note += "；但这台电脑还是先找到 " + o.shadow + "（另一份 disklessly），删掉它或把 Homebrew 的目录排到 PATH 前面后点「重新检查」"
+		note += "；但这台电脑还是先找到 " + o.shadow + "（另一份 disklessly），删掉它或把 Homebrew 的目录排到 PATH 前面后点「重新检查 " + name + "」"
 	}
 	_, _ = RefreshColdIndex(ctx, runner, sc.st, sc.m, now)
 	return note, nil
