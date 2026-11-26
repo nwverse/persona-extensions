@@ -13,6 +13,7 @@ import (
 	"cmp"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/nwverse/persona-extensions/extensions/household/internal/model"
@@ -50,6 +51,18 @@ func SourceLabel(src string) string {
 		return "粘贴的清单"
 	}
 	return "其他"
+}
+
+// DraftLabel is where a draft came from in the user's words. A draft made on the page is 粘贴的清单; the source string
+// alone does not make one.
+func DraftLabel(d Draft) string {
+	switch {
+	case d.ByUser:
+		return SourceLabel(SrcPaste)
+	case d.Input.Source == SrcPaste:
+		return SourceLabel(SrcOther)
+	}
+	return SourceLabel(d.Input.Source)
 }
 
 // Targets: a line goes into the stock or onto the shopping list.
@@ -413,13 +426,14 @@ func withEdits(lines []Line, edits []Edit) ([]Line, map[int]string, map[int]bool
 // group is lines of the same thing in one import, merged. dupOf is the first line of the same thing that this line
 // could not be merged into (another unit that does not convert, or a quantity on only one of them), with why.
 type group struct {
-	line   Line
-	from   []int
-	notes  []string
-	dupOf  int
-	why    string
-	key    string // what the lines resolve to: a recorded item or purchase, or a name
-	answer string // the match the group is planned with
+	line     Line
+	from     []int
+	notes    []string
+	dupOf    int
+	why      string
+	dupTitle string // the title of the line it could not be merged into
+	key      string // what the lines resolve to: a recorded item or purchase, or a name
+	answer   string // the match the group is planned with
 }
 
 // merge groups the lines that are the same thing for the same target, after matching: resolve gives each line the key
@@ -470,7 +484,7 @@ func merge(lines []Line, target func(Line) string, skip map[int]bool, resolve fu
 				if !bothQty {
 					why = "一行写了数量、一行没写，没法合在一起"
 				}
-				gs = append(gs, group{line: l, from: []int{n}, dupOf: g.from[0], why: why, key: "dup", answer: answer})
+				gs = append(gs, group{line: l, from: []int{n}, dupOf: g.from[0], dupTitle: g.line.Title, why: why, key: "dup", answer: answer})
 				joined = true
 				break
 			}
@@ -527,7 +541,7 @@ func Make(h *model.Home, in Input, edits []Edit, today model.Day) (Plan, error) 
 	}
 	mode := cmp.Or(in.Mode, DefaultMode(in.Source))
 	target := func(l Line) string { return cmp.Or(l.Target, in.Target, ToStock) }
-	p := planner{h: h, today: today, mode: mode, source: in.Source, newPlaces: map[string]bool{}}
+	p := planner{h: h, today: today, mode: mode, source: in.Source, newPlaces: map[string]bool{}, target: target}
 	groups, skipped := merge(lines, target, skip, func(n int, l Line) (string, string) {
 		return p.resolve(n, l, lines, match)
 	})
@@ -535,12 +549,37 @@ func Make(h *model.Home, in Input, edits []Edit, today model.Day) (Plan, error) 
 	if plan.Unread == nil {
 		plan.Unread = []Unread{}
 	}
+	type newThing struct {
+		line  int
+		title string
+	}
+	var news []newThing // new items of this import so far, to ask about one whose name comes near
 	for _, g := range groups {
 		var s Step
-		if g.dupOf != 0 {
+		near := newThing{}
+		if g.dupOf == 0 && g.line.Target == ToStock && g.answer == "" {
+			if _, found, ask := p.findItem(g.line.Title, ""); !found && ask == nil {
+				for _, o := range news {
+					if closeness(o.title, g.line.Title) > 0 {
+						near = o
+						break
+					}
+				}
+				news = append(news, newThing{g.from[0], g.line.Title})
+			}
+		}
+		if near.line != 0 {
+			s = Step{Line: g.from[0], From: g.from, Title: g.line.Title, Target: g.line.Target, Qty: g.line.Qty,
+				Unit: g.line.Unit, Price: g.line.Price, Action: ActAsk, Ask: &Question{Kind: AskSameItem,
+					Text: fmt.Sprintf("这次第 %d 行有「%s」，和这一行的「%s」是同一样吗？", near.line, near.title, g.line.Title),
+					Choices: []Choice{
+						{Label: fmt.Sprintf("和第 %d 行是同一样", near.line), Match: fmt.Sprintf("%s%d", matchLine, near.line)},
+						{Label: "当新的记", Match: MatchNew}}}}
+		} else if g.dupOf != 0 {
 			s = Step{Line: g.from[0], From: g.from, Title: g.line.Title, Target: g.line.Target, Qty: g.line.Qty,
 				Unit: g.line.Unit, Price: g.line.Price, Action: ActAsk, Ask: &Question{Kind: AskDuplicate,
-					Text:    fmt.Sprintf("第 %d 行也是「%s」，%s。请把两行改成同一个单位（告诉我折合多少），或者这行不记。", g.dupOf, g.line.Title, g.why),
+					Text: fmt.Sprintf("这一行「%s」和第 %d 行「%s」是同一样东西，%s。请把两行改成同一个单位（告诉我折合多少），或者这行不记。",
+						g.line.Title, g.dupOf, g.dupTitle, g.why),
 					Choices: []Choice{{Label: "这行不记", Skip: true}}}}
 		} else if g.line.Target == ToShopping {
 			s = p.shopping(g, g.answer)
@@ -557,6 +596,7 @@ func Make(h *model.Home, in Input, edits []Edit, today model.Day) (Plan, error) 
 		s.Says = says(s)
 		plan.Steps = append(plan.Steps, s)
 	}
+	keepListed(plan.Steps)
 	for _, n := range skipped {
 		l := lines[n-1]
 		plan.Steps = append(plan.Steps, Step{Line: n, From: []int{n}, Title: cleanTitle(l.Title), Target: target(l),
@@ -573,6 +613,16 @@ func Make(h *model.Home, in Input, edits []Edit, today model.Day) (Plan, error) 
 // anything else (a new thing, or a question) is its name.
 func (p *planner) resolve(n int, l Line, lines []Line, match map[int]string) (string, string) {
 	answer := match[n]
+	if m, ok := strings.CutPrefix(answer, matchLine); ok {
+		// The user said this line is the same thing as an earlier line of the import.
+		if k, err := strconv.Atoi(m); err == nil && k >= 1 && k < n {
+			o := lines[k-1]
+			o.Title, o.Unit = cleanTitle(o.Title), normUnit(o.Unit)
+			o.Target = p.target(o)
+			return p.resolve(k, o, lines, match)
+		}
+		answer = ""
+	}
 	name := titleKey(l.Title)
 	if answer == "" {
 		for m := 1; m < n; m++ {
@@ -606,8 +656,35 @@ func (p *planner) resolve(n int, l Line, lines []Line, match map[int]string) (st
 	return "name:" + name, answer
 }
 
+// matchLine answers "the same as line n of this import": match "line:<n>".
+const matchLine = "line:"
+
+// keepListed leaves an entry of the shopping list open when the same import also says it is still to be bought: a
+// stock line ("bought 2") then does not mark it bought, and the shopping line ("need more") keeps it, as it says.
+func keepListed(steps []Step) {
+	wanted := map[string]bool{}
+	for _, s := range steps {
+		if s.Target == ToShopping && s.Action == ActOnList && s.Buy != nil {
+			wanted[s.Buy.ID] = true
+		}
+	}
+	for i := range steps {
+		s := &steps[i]
+		if s.Target != ToStock || s.Buy == nil || !wanted[s.Buy.ID] {
+			continue
+		}
+		s.Notes = append(s.Notes, "采购清单上的「"+s.Buy.Title+"」留着，不标已买：这次也说了还要买")
+		s.Buy = nil
+		if s.Action == ActUpdateItem && s.SetUnit == "" && s.SetCategory == "" && s.SetPlace == nil && s.SetExpires == "" {
+			s.Action = ActNothing
+		}
+		s.Says = says(*s)
+	}
+}
+
 // planner plans the steps of one import.
 type planner struct {
+	target    func(Line) string
 	h         *model.Home
 	today     model.Day
 	mode      string

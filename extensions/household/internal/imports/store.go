@@ -61,6 +61,8 @@ type Applied struct {
 	UndoPending bool `json:"undo_pending,omitempty"`
 	// Unknown is set when a pending change could not be decided from the records (see Settle).
 	Unknown string `json:"unknown,omitempty"`
+	// Seen marks an undecided undo the user has looked at (Acknowledge).
+	Seen bool `json:"seen,omitempty"`
 }
 
 // State is everything the store keeps.

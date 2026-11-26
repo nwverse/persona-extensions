@@ -110,6 +110,7 @@ var actions = map[string]func(c *ctx, arg string) (*wire.ActionResult, error){
 	"impreplan":  actImportReplan,
 	"impans":     actImportAnswer,
 	"impopen":    actOpenDraft,
+	"impack":     actImportAck,
 	"impundo":    actImportUndo,
 }
 

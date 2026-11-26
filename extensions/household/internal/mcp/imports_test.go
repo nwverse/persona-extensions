@@ -1,11 +1,18 @@
 package mcp
 
 import (
+	"bufio"
+	"context"
 	"fmt"
+	"io"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/nwverse/persona-extensions/extensions/household/internal/imports"
 	"github.com/nwverse/persona-extensions/extensions/household/internal/model"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
 )
 
 // receipt is what an assistant would send after reading a made-up supermarket receipt.
@@ -207,4 +214,74 @@ func TestImportApplyTakesOnlyDraftAndRevision(t *testing.T) {
 	if strings.Contains(aboutApply, "skip 是") || !strings.Contains(aboutApply, "household_import_preview 带 draft_id 和 edits") {
 		t.Fatal(aboutApply)
 	}
+}
+
+// Round 3, item 1: the guidance never sends corrections to household_import_apply.
+func TestGuidancePointsCorrectionsAtThePreview(t *testing.T) {
+	s := start(t, seeded(t, true))
+	defer s.finish()
+	for _, args := range []string{
+		`{"source":"text","lines":[{"title":"牛奶","qty":1,"unit":"盒"}]}`,
+		`{"source":"text","lines":[{"title":"番茄","qty":1,"unit":"个"}]}`,
+	} {
+		next := asStr(t, get(t, s.done("household_import_preview", args), "next"))
+		if !strings.Contains(next, "household_import_preview") || !strings.Contains(next, "household_import_apply") ||
+			strings.Contains(next, "edits）调用 household_import_apply") || strings.Contains(next, "不要的行放进 skip") {
+			t.Fatalf("next %q", next)
+		}
+	}
+	skill, err := os.ReadFile("../../skills/household/SKILL.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, line := range strings.Split(string(skill), "\n") {
+		if strings.Contains(line, "`household_import_apply`：") && (strings.Contains(line, `"skip"`) || strings.Contains(line, `"edits"`)) {
+			t.Fatalf("skill line %q", line)
+		}
+	}
+	for _, tl := range Tools() {
+		if strings.Contains(tl.About, "household_import_apply（带") {
+			t.Fatalf("%s: %s", tl.Name, tl.About)
+		}
+	}
+	// A pasted list is the page's: the tool does not take that source.
+	if msg := s.failed("household_import_preview", `{"source":"paste","lines":[{"title":"牛奶"}]}`); !strings.Contains(msg, "source") {
+		t.Fatalf("paste from the tool: %s", msg)
+	}
+}
+
+// Round 3, item 3: the list says an undecided undo truthfully.
+func TestListSaysAnUndecidedUndo(t *testing.T) {
+	st := seeded(t, true)
+	imp := imports.Open("")
+	pre := func() map[string]any {
+		s := startWith(t, st, imp)
+		defer s.finish()
+		p := s.done("household_import_preview", `{"source":"text","lines":[{"title":"番茄","qty":1,"unit":"个"}]}`)
+		s.done("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":1}`, asStr(t, get(t, p, "draft_id"))))
+		_ = imp.Update(func(s *imports.State, _ time.Time) error {
+			last, _ := s.Last()
+			last.Unknown = imports.UnknownUndo
+			return nil
+		})
+		return asMap(t, s.done("household_import_list", `{}`))
+	}()
+	if get(t, pre, "last_import", "undone") != false || get(t, pre, "last_import", "undo_unknown") != true ||
+		get(t, pre, "last_import", "can_undo") != false {
+		t.Fatalf("list %v", pre)
+	}
+}
+
+// startWith is start with a given draft store.
+func startWith(t *testing.T, st kernel.Storage, imp *imports.Store) *session {
+	t.Helper()
+	inR, inW := io.Pipe()
+	outR, outW := io.Pipe()
+	s := &session{t: t, in: inW, out: bufio.NewReader(outR), finished: make(chan error, 1)}
+	go func() {
+		err := ServeImports(context.Background(), inR, outW, st, imp, shanghai)
+		outW.Close()
+		s.finished <- err
+	}()
+	return s
 }

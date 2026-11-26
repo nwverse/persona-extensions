@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -148,7 +149,7 @@ func newPreview(d imports.Draft) previewOut {
 		mode = imports.DefaultMode(d.Input.Source)
 	}
 	out := previewOut{
-		DraftID: d.ID, Revision: d.Rev, ByUser: d.ByUser, Source: d.Input.Source, SourceLabel: imports.SourceLabel(d.Input.Source), Mode: mode,
+		DraftID: d.ID, Revision: d.Rev, ByUser: d.ByUser, Source: d.Input.Source, SourceLabel: imports.DraftLabel(d), Mode: mode,
 		Note: d.Input.Note, Created: d.Created, ExpiresAt: d.Expires,
 		Lines: d.Plan.Steps, Unread: d.Plan.Unread, Totals: d.Plan.Totals,
 		Summary:  imports.Summary(d.Input.Source, d.Plan),
@@ -157,12 +158,14 @@ func newPreview(d imports.Draft) previewOut {
 	switch {
 	case d.Plan.Totals.Questions > 0:
 		out.Next = fmt.Sprintf("有 %d 行要用户定：先把 summary 念给用户，逐个问清楚（question 里有问题和可选的回答），"+
-			"再带着回答（edits）调用 household_import_apply；也可以先带 edits 重新预览。", d.Plan.Totals.Questions)
+			"再调用 household_import_preview 带 draft_id 和用户的回答（edits），把新的预览念给用户；用户同意后，"+
+			"用新预览给的 draft_id 和 revision 调用 household_import_apply（它只收这两个参数）。", d.Plan.Totals.Questions)
 	case d.Plan.Totals.Changes == 0:
 		out.Next = "这份草稿没有要写入的东西，告诉用户即可；可以用 household_import_discard 放弃它。"
 	default:
-		out.Next = fmt.Sprintf("把 summary 简短念给用户，推测的部分要说出来；用户同意后调用 household_import_apply（带 draft_id 和 revision %d，"+
-			"用户改了的行放进 edits，不要的行放进 skip）。没同意就不要写入。写入后可以撤销。", d.Rev)
+		out.Next = fmt.Sprintf("把 summary 简短念给用户，推测的部分要说出来。用户要改某行或不要某行时，先调用 household_import_preview "+
+			"带 draft_id 和 edits（不要的行写 {\"line\": n, \"skip\": true}），把新的预览念给用户。用户同意后调用 household_import_apply，"+
+			"只带 draft_id 和用户同意的那一版的 revision（现在是 %d）。没同意就不要写入。写入后可以撤销。", d.Rev)
 		if d.Plan.Totals.Lowered > 0 {
 			out.Next += fmt.Sprintf("有 %d 件按看到的数会比现在记的少，要特别说出来，照片没拍全的话先问用户。", d.Plan.Totals.Lowered)
 		}
@@ -206,8 +209,10 @@ type lastOut struct {
 	Done    []string       `json:"done"`
 	Totals  imports.Totals `json:"totals"`
 	Undone  bool           `json:"undone"`
-	CanUndo bool           `json:"can_undo"`
-	WhyNot  string         `json:"why_not,omitempty"`
+	// UndoUnknown: an undo of it was interrupted and it is not known whether it was written.
+	UndoUnknown bool   `json:"undo_unknown,omitempty"`
+	CanUndo     bool   `json:"can_undo"`
+	WhyNot      string `json:"why_not,omitempty"`
 }
 
 type importListOut struct {
@@ -242,10 +247,10 @@ func runImportPreview(e env, raw json.RawMessage) (any, error) {
 		return newPreview(d), nil
 	}
 	if len(a.Edits) > 0 {
-		return nil, errors.New("edits 只用于重新预览已有的草稿（带 draft_id）或写入时（household_import_apply）")
+		return nil, errors.New("edits 只用于重新预览已有的草稿：带 draft_id 和 edits 调用 household_import_preview")
 	}
-	if a.Source == "" {
-		return nil, fmt.Errorf("需要 source：%s 之一", strings.Join(imports.Sources, "、"))
+	if a.Source == "" || !slices.Contains(imports.Sources, a.Source) {
+		return nil, fmt.Errorf("source 需要是 %s 之一", strings.Join(imports.Sources, "、"))
 	}
 	d, err := imports.Preview(e.imp, h, imports.Input{
 		Source: a.Source, Note: strings.TrimSpace(a.Note), Target: a.Target, Mode: a.Mode, Lines: a.Lines,
@@ -266,13 +271,13 @@ func runImportList(e env, raw json.RawMessage) (any, error) {
 		for i := len(st.Drafts) - 1; i >= 0; i-- {
 			d := st.Drafts[i]
 			out.Drafts = append(out.Drafts, draftOut{
-				DraftID: d.ID, Revision: d.Rev, ByUser: d.ByUser, Source: d.Input.Source, SourceLabel: imports.SourceLabel(d.Input.Source), Note: d.Input.Note,
+				DraftID: d.ID, Revision: d.Rev, ByUser: d.ByUser, Source: d.Input.Source, SourceLabel: imports.DraftLabel(d), Note: d.Input.Note,
 				Created: d.Created, ExpiresAt: d.Expires, Totals: d.Plan.Totals, Summary: imports.Summary(d.Input.Source, d.Plan),
 			})
 		}
 		if last, ok := st.Last(); ok {
 			l := &lastOut{DraftID: last.Draft, Source: last.Source, At: last.At, Done: last.Says, Totals: last.Totals,
-				Undone: !last.Undone.IsZero()}
+				Undone: !last.Undone.IsZero(), UndoUnknown: last.Unknown == imports.UnknownUndo}
 			if err := imports.CheckUndo(e.b, last); err != nil {
 				l.WhyNot = err.Error()
 			} else {
@@ -350,5 +355,5 @@ func runImportDiscard(e env, raw json.RawMessage) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"discarded": d.ID, "summary": "已放弃这份" + imports.SourceLabel(d.Input.Source) + "的导入，记录没有改动。"}, nil
+	return map[string]any{"discarded": d.ID, "summary": "已放弃这份" + imports.DraftLabel(d) + "的导入，记录没有改动。"}, nil
 }

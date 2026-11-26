@@ -243,6 +243,8 @@ func (s *State) Settle(b *kernel.Base) {
 			case allAfter(b, a):
 				a.Undone = time.Time{}
 			default:
+				// Not known whether it was undone: it is not said to be.
+				a.Undone = time.Time{}
 				a.Unknown = UnknownUndo
 			}
 		}
@@ -269,10 +271,14 @@ func (s *State) pending() bool {
 
 // SettleRecords settles the pending changes against b and saves the store when there were any. Every write of the
 // records calls it first, inside the records' update (records lock, then the store's: the one lock order). A store
-// that cannot be read has nothing to settle and does not hold up the records.
+// that cannot be read may hold an entry that is still pending, which this write could make undecidable, so the write
+// is refused (ErrUnreadable) until the file is dealt with; reading the records goes on working.
 func (s *Store) SettleRecords(b *kernel.Base) error {
 	any := false
-	if err := s.View(func(st *State) error { any = st.pending(); return nil }); err != nil || !any {
+	if err := s.View(func(st *State) error { any = st.pending(); return nil }); err != nil {
+		return &UnreadableError{Err: err}
+	}
+	if !any {
 		return nil
 	}
 	return s.Update(func(st *State, _ time.Time) error {
@@ -409,4 +415,27 @@ func TotalsText(t Totals) string {
 // ConfirmText is the sentence the page asks before writing a plan.
 func ConfirmText(t Totals) string {
 	return fmt.Sprintf("确认写入？会改动 %d 样：%s写入后可以撤销。", t.Changes, TotalsText(t))
+}
+
+// UnreadableError refuses a write of the records while the import store cannot be read.
+type UnreadableError struct{ Err error }
+
+func (e *UnreadableError) Error() string {
+	return "导入记录读不出来，先处理好再改：" + e.Err.Error() + "。为了不把一次导入写两遍，这次没有改动任何记录。" +
+		"请把这个文件修好；或者确认没有写到一半的导入后，把它改个名字挪开（家庭管家会重新开始记导入），再试一次。看记录照常可以。"
+}
+
+func (e *UnreadableError) Unwrap() error { return e.Err }
+
+// Acknowledge marks the last import's undecided undo as seen by the user: the page stops showing it. Nothing in the
+// records changes, and the import is still not offered for undo.
+func Acknowledge(imp *Store, draft string) error {
+	return imp.Update(func(st *State, _ time.Time) error {
+		last, ok := st.Last()
+		if !ok || last.Draft != draft || last.Unknown != UnknownUndo {
+			return errors.New("这一条已经不用处理了")
+		}
+		last.Seen = true
+		return nil
+	})
 }
