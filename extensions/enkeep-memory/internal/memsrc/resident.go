@@ -20,11 +20,12 @@ import (
 //   - Bucket 0 (Hot Slot): dynamic 0%–15% (at most HotSlotMaxBytes and HotSlotMax entries) for user-pinned entries
 //     and Fast-Path temporary hard contracts (TTL 7 days, retired from the hot slot once L1 absorbs them). Unused
 //     hot-slot bytes return to Buckets 1 and 2.
-//   - Bucket 1 (Contracts): 50% of the remaining room for L1 collaboration contracts (①②). Single polarity capped at
-//     PolarityShare (35%) of the bucket's effective room; single non-generic rule type capped at GroupShare (20%).
-//   - Bucket 2 (Principles): 50% of the remaining room for L1 cognitive principles (③④⑥⑤). First pass caps each
-//     cognitive dimension at DimensionShare (35%) and each non-empty group at GroupShare (20%); if other dimensions are
-//     exhausted and room remains, a second pass fills the bucket with remaining qualified L1 principles.
+//   - Bucket 1 (Contracts): 80% of the remaining room for L1 collaboration contracts (①②). Pass 1 applies gentle
+//     anti-monopoly polarity caps (check <= 45%, act <= 35%, communicate <= 30%, route <= 30%) and non-generic group
+//     cap (GroupShare 20%); pass 2 refills leftover bucket room by unified Score so high-leverage cross-scene contracts
+//     are never displaced by low-scoring narrow rules.
+//   - Bucket 2 (Principles): 20% of the remaining room for L1 cognitive principles (③④⑥⑤), chosen strictly by unified
+//     leverage Score with non-generic group cap (GroupShare 20%) rather than forcing low-action dimensions into standing.
 //
 // Bidirectional L1 spillover: when one L1 main bucket exhausts its qualified L1 candidates with bytes left over (for
 // example, few L1 principles), the leftover budget flows to the other L1 main bucket, whose polarity/dimension/group
@@ -40,15 +41,12 @@ const (
 	HotSlotMax      = 3
 	HotSlotTTLDays  = 7
 
-	// ContractShare is Bucket 1's nominal share of the room left after Bucket 0 (70%; Bucket 2 gets 30%).
-	ContractShare = 0.70
-	// ToolsFloorShare reserves a minimum share of Bucket 1 for ② tools global rules so interaction rules never starve them.
-	ToolsFloorShare = 0.15
+	// ContractShare is Bucket 1's nominal share of the room left after Bucket 0 (80%; Bucket 2 gets 20%).
+	ContractShare = 0.80
 	// PolarityShare is the default cap for an unspecified contract polarity; specific polarities use polarityShareOf
-	// (check <= 45%, communicate <= 30%, act <= 25%, route <= 25%) to eliminate act-bias wrong actions.
+	// (check <= 45%, act <= 35%, communicate <= 30%, route <= 30%) in pass 1, with pass 2 refilling leftover room
+	// by unified Score so high-leverage cross-scene rules are never displaced by low-scoring narrow rules.
 	PolarityShare = 0.35
-	// DimensionShare caps any single cognitive dimension within Bucket 2's first pass.
-	DimensionShare = 0.35
 	// GroupShare caps any single non-generic occasion/type class ("<facet>:<type>") within a bucket's effective room.
 	GroupShare = 0.20
 
@@ -102,33 +100,27 @@ type Candidate struct {
 	Group string
 }
 
-// polarityShareOf returns the directional budget cap within Bucket 1 (unified design §2.1):
-// verification/boundary rules get the widest headroom (45%) while autonomous-push rules are tightened to 20%.
+// polarityShareOf returns the pass-1 anti-monopoly polarity cap within Bucket 1 (unified design §2.1):
+// verification/boundary rules get the widest headroom (45%), autonomous-push rules 35%, communicate/route 30%.
 func polarityShareOf(pol string) float64 {
 	switch pol {
 	case "check":
 		return 0.45
+	case "act":
+		return 0.35
 	case "communicate":
 		return 0.30
-	case "act":
-		return 0.20
 	case "route":
-		return 0.25
+		return 0.30
 	default:
 		return PolarityShare
 	}
 }
 
 // StandingPrefix returns the lightweight semantic tier tag prepended to L1 standing lines (unified design §2.1).
-// To avoid hard-tag inflation and over-application of push/format rules, 【硬】 is reserved strictly for hard
-// verification/boundary redlines (Hard && check); other contracts carry no pressure tag; principles carry 【原则】.
+// Contracts carry no pressure tag (avoiding 【硬】-wall over-braking of autonomous rules); principles carry 【原则】.
 func StandingPrefix(bucket string, hard bool, polarity string) string {
-	switch bucket {
-	case BucketContract:
-		if hard && polarity == "check" {
-			return "【硬】"
-		}
-	case BucketPrinciple:
+	if bucket == BucketPrinciple {
 		return "【原则】"
 	}
 	return ""
@@ -237,11 +229,10 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 
 	var pChosen, cChosen []Candidate
 	pUsed, cUsed := 0, 0
-	pDims, pGroups := map[string]int{}, map[string]int{}
+	pGroups := map[string]int{}
 	cPols, cGroups := map[string]int{}, map[string]int{}
 
-	fillPrinciples := func(budget int, relaxDim bool) {
-		dimCap := int(float64(budget) * DimensionShare)
+	fillPrinciples := func(budget int, relaxGroup bool) {
 		grpCap := int(float64(budget) * GroupShare)
 		for _, c := range principlePool {
 			if atMost() {
@@ -254,16 +245,10 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 			if pUsed+size > budget || hotUsed+pUsed+cUsed+size > total {
 				continue
 			}
-			if !relaxDim && c.Dimension != "" && dimCap > 0 && pDims[c.Dimension]+size > dimCap {
-				continue
-			}
-			if !relaxDim && c.Group != "" && grpCap > 0 && pGroups[c.Group]+size > grpCap {
+			if !relaxGroup && c.Group != "" && grpCap > 0 && pGroups[c.Group]+size > grpCap {
 				continue
 			}
 			pUsed += size
-			if c.Dimension != "" {
-				pDims[c.Dimension] += size
-			}
 			if c.Group != "" {
 				pGroups[c.Group] += size
 			}
@@ -273,7 +258,7 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 		}
 	}
 
-	tryAddContract := func(c Candidate, budget int) bool {
+	tryAddContract := func(c Candidate, budget int, relaxPol bool) bool {
 		if taken[c.ID] || alike(c) {
 			return false
 		}
@@ -281,14 +266,14 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 		if cUsed+size > budget || hotUsed+pUsed+cUsed+size > total {
 			return false
 		}
-		if c.Polarity != "" {
+		if !relaxPol && c.Polarity != "" {
 			polCap := int(float64(budget) * polarityShareOf(c.Polarity))
 			if polCap > 0 && cPols[c.Polarity]+size > polCap {
 				return false
 			}
 		}
 		grpCap := int(float64(budget) * GroupShare)
-		if c.Group != "" && grpCap > 0 && cGroups[c.Group]+size > grpCap {
+		if !relaxPol && c.Group != "" && grpCap > 0 && cGroups[c.Group]+size > grpCap {
 			return false
 		}
 		cUsed += size
@@ -305,30 +290,25 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 	}
 
 	fillContracts := func(budget int) {
-		// Reserve a floor for ② tools global rules first so interaction rules never crowd them out.
-		toolsCap := int(float64(budget) * ToolsFloorShare)
-		toolsUsed := 0
-		for _, c := range contractPool {
-			if atMost() || toolsUsed >= toolsCap {
-				break
-			}
-			if c.Facet != string(entry.Tools) {
-				continue
-			}
-			if tryAddContract(c, budget) {
-				toolsUsed += len(c.Text) + residentOverhead
-			}
-		}
+		// Pass 1: enforce anti-monopoly polarity and non-generic group caps.
 		for _, c := range contractPool {
 			if atMost() {
 				return
 			}
-			tryAddContract(c, budget)
+			tryAddContract(c, budget, false)
+		}
+		// Pass 2: refill remaining contract budget strictly by unified Score so high-leverage cross-scene rules are
+		// never left out while lower-scoring narrow rules sit unused or crowd the budget.
+		for _, c := range contractPool {
+			if atMost() {
+				return
+			}
+			tryAddContract(c, budget, true)
 		}
 	}
 
-	// Step 2: Fill Bucket 2 (Principles, 30%) pass 1 with 35% dimension cap (no second-pass padding yet so leftover
-	// room goes to collaboration contracts first), then fill Bucket 1 (Contracts, 70% + unused principle room).
+	// Step 2: Fill Bucket 2 (Principles, 20%) strictly by unified leverage Score, then fill Bucket 1 (Contracts, 80% +
+	// any unused principle room).
 	fillPrinciples(pBase, false)
 	cEff := cBase
 	if pLeft := pBase - pUsed; pLeft > 0 && cIsL1 {
@@ -336,7 +316,7 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 	}
 	fillContracts(cEff)
 
-	// Step 3: If contracts still leave room unused and principles are L1, spill back into principles (pass 1 + pass 2).
+	// Step 3: If contracts still leave room unused and principles are L1, spill back into principles.
 	// Never spill leftover L1 room into L0 fragments.
 	if remLeft := rem - pUsed - cUsed; remLeft > 0 && pIsL1 {
 		pEff := pUsed + remLeft
@@ -346,13 +326,9 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 		}
 	}
 
-	// Step 4: Output order — Hot Slot first (ranks 995..990), then Bucket 1 (Contracts, with Hard+check verification
-	// redlines placed first) and Bucket 2 (Principles) interleaved from rank 989 downward.
-	sort.SliceStable(cChosen, func(i, j int) bool {
-		ai := cChosen[i].Hard && cChosen[i].Polarity == "check"
-		aj := cChosen[j].Hard && cChosen[j].Polarity == "check"
-		return ai && !aj
-	})
+	// Step 4: Output order — Hot Slot first (ranks 995..990), then Bucket 1 (Contracts, ordered naturally by unified
+	// leverage Score without artificially walling all check rules ahead of high-score act rules) and Bucket 2
+	// (Principles) interleaved from rank 989 downward.
 	out := make([]Candidate, 0, len(hotChosen)+len(cChosen)+len(pChosen))
 	out = append(out, hotChosen...)
 	for i := 0; i < len(cChosen) || i < len(pChosen); i++ {
@@ -564,6 +540,48 @@ func HotSlotCandidate(st *store.State, e *entry.Entry, tpl map[string]bool, now 
 		Hard:   true,
 		Score:  entry.Score(e),
 		Last:   entry.FastHotDay(e),
+	}, true
+}
+
+// UnabsorbedRuleHotCandidate promotes a high-certainty rule (UserOwned, Hard, or cross-month Abstract with Count >= 3)
+// first seen strictly after the latest L1 build day (l1LatestDay, YYYY-MM-DD) into Bucket 0 (Hot Slot) within
+// HotSlotTTLDays of now, closing the 1–6 day gap between new rules and weekly L1 aggregation.
+func UnabsorbedRuleHotCandidate(st *store.State, e *entry.Entry, tpl map[string]bool, l1LatestDay string, now time.Time) (Candidate, bool) {
+	if e == nil || l1LatestDay == "" || !e.Live() || !Pool(st, e) {
+		return Candidate{}, false
+	}
+	if e.First == "" || e.First <= l1LatestDay {
+		return Candidate{}, false
+	}
+	if firstTime, err := time.Parse("2006-01-02", e.First); err != nil || now.Sub(firstTime) > time.Duration(HotSlotTTLDays)*24*time.Hour {
+		return Candidate{}, false
+	}
+	if !export.Usable(st, e) || entry.TemplateOnly(e, tpl) || (entry.CoveredBy(e) != "" && coverLive(st, e)) {
+		return Candidate{}, false
+	}
+	if cats, space, _ := Tags(st, e); len(cats) > 0 || space != "" {
+		return Candidate{}, false
+	}
+	isUserOwned := e.Origin == entry.Handwritten || e.Origin == entry.SelfReport || e.Pinned || e.User != nil
+	highAbstract := e.Grain == entry.Abstract && e.Count >= 3 && (e.Facet == entry.Interaction || e.Facet == entry.Tools)
+	if !isUserOwned && !entry.Hard(e) && !highAbstract {
+		return Candidate{}, false
+	}
+	k := entry.KindOf(e)
+	if k == "" {
+		k = entry.KindOfFacet(string(e.Facet))
+	}
+	if k != entry.KindRules {
+		return Candidate{}, false
+	}
+	return Candidate{
+		ID:     e.ID,
+		Text:   ResidentText(e),
+		Kind:   k,
+		Bucket: BucketHot,
+		Hard:   entry.Hard(e),
+		Score:  entry.Score(e),
+		Last:   e.Last,
 	}, true
 }
 

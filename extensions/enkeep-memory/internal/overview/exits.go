@@ -37,24 +37,25 @@ func independentQuotes(p *Pattern) int {
 }
 
 // Score ranks a used L1 pattern within its standing bucket by multi-dimensional leverage (unified design §2.1):
-//   - Hard contract:     80 + min(20, viol*4) + min(24, scenes*6) + min(16, quotes*2) + owned(15) + check(6);
-//     capped at 99 when confined to a single scene and not user-owned (prevents narrow incidents
-//     from crowding out cross-scene general rules).
-//   - Regular contract:  lifecycle(core:30 / scoped:24) + min(24, scenes*6) + min(20, quotes*2) + min(16, weeks*4) + owned(20)
+//   - Hard contract:     80 + min(20, viol*4) + min(24, scenes*6) + min(16, quotes*2) + owned(12+min(18,cov*3)) + check(6);
+//     capped at 70 when confined to a single scene and not user-owned (keeps narrow incidents in entity recall).
+//   - Regular contract:  lifecycle(core:30 / scoped:24) + min(24, scenes*6) + min(20, quotes*2) + min(16, weeks*4)
+//   - owned(15+min(15,cov*3)); single-scene non-owned capped at 70.
 //   - Principle:         lifecycle(core:30 / scoped:26) + min(25, scenes*5) + min(20, weeks*4) + min(15, quotes*2)
-//   - hasPolesOrException(10) + owned(18) + thinkingOrAttention(8)
+//   - hasPolesOrException(10) + owned(18) + decisionOrAttention(8) + judgementOrWorkflow(6)
 func Score(p *Pattern) int {
 	if p == nil || !p.Used() {
 		return 0
 	}
 	quotes := independentQuotes(p)
 	weeks := len(p.ActiveWeeks)
-	owned := len(p.CoveredIDs) > 0
+	cov := len(p.CoveredIDs)
+	owned := cov > 0
 	if p.IsContract() {
 		if p.Hard {
 			s := 80 + min(20, p.ViolationCount*4) + min(24, p.ScenesCount*6) + min(16, quotes*2)
 			if owned {
-				s += 15
+				s += 12 + min(18, cov*3)
 			}
 			if p.Polarity == PolarityCheck {
 				s += 6
@@ -70,7 +71,7 @@ func Score(p *Pattern) int {
 		}
 		s := base + min(24, p.ScenesCount*6) + min(20, quotes*2) + min(16, weeks*4)
 		if owned {
-			s += 20
+			s += 15 + min(15, cov*3)
 		}
 		if p.ScenesCount <= 1 && !owned {
 			s = min(s, 70)
@@ -88,10 +89,10 @@ func Score(p *Pattern) int {
 	if owned {
 		bonus += 18
 	}
-	if p.Dimension == "thinking" || p.Dimension == "attention" {
+	if p.Dimension == "decision" || p.Dimension == "attention" {
 		bonus += 8
 	}
-	if p.Facet == string(entry.Judgement) {
+	if p.Facet == string(entry.Judgement) || p.Facet == string(entry.Workflow) {
 		bonus += 6
 	}
 	return base + min(25, p.ScenesCount*5) + min(20, weeks*4) + min(15, quotes*2) + bonus

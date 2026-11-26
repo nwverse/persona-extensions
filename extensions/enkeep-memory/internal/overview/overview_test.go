@@ -638,13 +638,18 @@ func TestPolesText(t *testing.T) {
 }
 
 // A pattern scores by multi-dimensional leverage (unified design §2.1): cross-scene/user-owned/check hard contracts
-// score highest, single-scene non-owned hard contracts are capped at 99, regular contracts and principles reward
-// spread/owned/thinking/poles, and unused patterns score 0.
+// score highest with progressive CoveredIDs weight, single-scene non-owned contracts are capped at 70, regular
+// contracts and principles reward spread/owned/decision-attention/judgement-workflow/poles, and unused patterns score 0.
 func TestPatternScoreScale(t *testing.T) {
 	hard := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, Hard: true, Polarity: PolarityCheck,
 		ViolationCount: 5, ScenesCount: 3, UniqueQuotes: 6, CoveredIDs: []string{"i-hand"}}
 	if s := Score(hard); s != 80+20+18+12+15+6 {
 		t.Errorf("hard contract score = %d, want %d", s, 151)
+	}
+	multiOwned := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, Hard: true, Polarity: PolarityRoute,
+		ViolationCount: 1, ScenesCount: 1, UniqueQuotes: 6, CoveredIDs: []string{"h1", "h2", "h3", "h4", "h5", "h6"}}
+	if s := Score(multiOwned); s != 80+4+6+12+30 {
+		t.Errorf("multi-owned hard contract score = %d, want %d", s, 132)
 	}
 	narrowHard := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, Hard: true, ViolationCount: 10, ScenesCount: 1, UniqueQuotes: 10}
 	if s := Score(narrowHard); s != 70 {
@@ -654,10 +659,14 @@ func TestPatternScoreScale(t *testing.T) {
 	if s := Score(reg); s != 30+18+8+8 {
 		t.Errorf("regular contract score = %d, want %d", s, 64)
 	}
-	prin := &Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, Dimension: "thinking", ScenesCount: 5, UniqueQuotes: 10,
+	prin := &Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, Dimension: "decision", ScenesCount: 5, UniqueQuotes: 10,
 		ActiveWeeks: []string{"w1", "w2", "w3", "w4", "w5"}, Exception: "only for hotfixes", CoveredIDs: []string{"j-hand"}}
 	if s := Score(prin); s != 30+25+20+15+10+18+8+6 {
 		t.Errorf("principle score = %d, want %d", s, 132)
+	}
+	if Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, Dimension: "decision", ScenesCount: 2}) <=
+		Score(&Pattern{Facet: "persona", Kind: KindPrinciple, Lifecycle: Core, Dimension: "thinking", ScenesCount: 2}) {
+		t.Error("actionable decision/judgement principle not above static persona/thinking observation")
 	}
 	if Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, ScenesCount: 2}) <=
 		Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Scoped, ScenesCount: 2}) {
