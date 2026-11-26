@@ -15,22 +15,27 @@ import (
 // them against the records as a draft (read-only, allowed), and writes, undoes or drops a draft only when the user said
 // yes (the hub asks for every call of those).
 
-const aboutPreview = "把从小票、冰箱或柜子的照片、订单截图或一段文字里读到的东西做成一份导入草稿，只预览，不改任何记录。" +
+const aboutPreview = "把从小票、冰箱或柜子的照片、订单截图或一段文字里读到的东西做成一份导入草稿：只存一份草稿、给出预览，不改任何物品、采购等记录。" +
 	"图片和文字由你自己读：每样东西一行，title 写名称；qty（数量）、unit（单位）、expires（过期日）、bought_on（购买日）、" +
 	"price（这一行的金额）、category、place 只写看得清、用户说过的，看不清的不要猜，先问用户。" +
 	"target 为 stock（记到库存，默认）或 shopping（加到采购清单），可用 default_target 给所有行设。" +
 	"mode 为 add（买回来的，加到现有数量上；小票、订单、文字默认）或 count（看到多少就记成多少；冰箱、柜子照片默认）。" +
+	"注意 count 会把数量改成看到的数，可能比现在记的少（这些行 lowers 为真）；照片可能没拍全时，要把这一点告诉用户并问清楚。" +
 	"工具会和已有记录比对：同名的加到原来的物品上，采购清单上有这一项的顺便标成已买；名字相近、单位对不上、缺数量的列成问题（question），" +
 	"不会自己合并；分类、位置和常见保质期只是推测，列在 inferred 里，可以改。" +
-	"返回 draft_id、每一行会怎么处理（says）、问题、合计和一段可以念给用户的 summary。草稿保存 24 小时，用户在家庭管家页面上也能看到、确认或放弃。" +
-	"带 draft_id（可再带 edits）调用则按用户的修改重新预览那份草稿，不用再传 lines。"
+	"常见保质期只作为提示（usual_days），不会记成过期日。" +
+	"返回 draft_id、revision（这一版预览的编号，写入时要带上）、每一行会怎么处理（says）、问题、合计和一段可以念给用户的 summary。" +
+	"草稿保存 24 小时，用户在家庭管家页面上也能看到、确认或放弃。" +
+	"带 draft_id（可再带 edits）调用则按用户的修改重新预览那份草稿，不用再传 lines；会得到新的 revision，要把新的预览念给用户。" +
+	"用户在页面上粘贴的草稿只能由用户在页面上修改。"
 
 const aboutList = "列出等用户确认的导入草稿（包括用户在家庭管家页面上粘贴的清单），以及最近一次写入的导入和它现在能不能撤销。只读。"
 
 const aboutApply = "把一份导入草稿写进记录：新建物品、给已有物品加数量或记数量、把采购标成已买、加到采购清单，一次全部写入，有一步失败就什么都不写。" +
-	"会改数据：必须先把预览念给用户，用户明确同意后才调用。draft_id 是预览给的编号；skip 是用户不要的行号；" +
+	"会改数据：必须先把预览念给用户，用户明确同意后才调用。draft_id 是预览给的编号，revision 是用户同意的那一版预览的编号" +
+	"（草稿后来又被改过就会拒绝，要重新念新的预览）；skip 是用户不要的行号；" +
 	"edits 是用户对某行的更正或对问题的回答（line 为行号；match 填物品编号（记到库存的行）或采购编号（加到采购清单的行）表示就是它，填 new 表示当新的记；" +
-	"也可以改 title、qty、unit、category、place、expires、target）。还有没回答的问题、或预览之后记录变了时会拒绝，并说明原因。" +
+	"也可以改 title、qty、unit、category、place、expires、target）。还有没回答的问题、或预览之后记录变了、结果会和预览不一样时会拒绝，并说明原因。" +
 	"写入后可以用 household_import_undo 撤销。"
 
 const aboutUndo = "撤销最近一次写入的导入：这次新建的记录删掉，改过的物品和采购恢复成导入前的样子。会改数据，先问用户。" +
@@ -104,9 +109,10 @@ func importPreviewInput() map[string]any {
 func importApplyInput() map[string]any {
 	return object(map[string]any{
 		"draft_id": str("预览给的草稿编号"),
+		"revision": map[string]any{"type": "integer", "minimum": 1, "description": "用户同意的那一版预览的 revision"},
 		"skip":     map[string]any{"type": "array", "items": map[string]any{"type": "integer", "minimum": 1}, "description": "不要的行号"},
 		"edits":    map[string]any{"type": "array", "items": editSchema(), "description": "用户的更正和回答"},
-	}, "draft_id")
+	}, "draft_id", "revision")
 }
 
 func importUndoInput() map[string]any {
@@ -121,6 +127,8 @@ func importDiscardInput() map[string]any {
 
 type previewOut struct {
 	DraftID     string            `json:"draft_id"`
+	Revision    int               `json:"revision"`
+	ByUser      bool              `json:"made_on_page,omitempty"`
 	Source      string            `json:"source"`
 	SourceLabel string            `json:"source_label"`
 	Mode        string            `json:"mode"`
@@ -141,7 +149,7 @@ func newPreview(d imports.Draft) previewOut {
 		mode = imports.DefaultMode(d.Input.Source)
 	}
 	out := previewOut{
-		DraftID: d.ID, Source: d.Input.Source, SourceLabel: imports.SourceLabel(d.Input.Source), Mode: mode,
+		DraftID: d.ID, Revision: d.Rev, ByUser: d.ByUser, Source: d.Input.Source, SourceLabel: imports.SourceLabel(d.Input.Source), Mode: mode,
 		Note: d.Input.Note, Created: d.Created, ExpiresAt: d.Expires,
 		Lines: d.Plan.Steps, Unread: d.Plan.Unread, Totals: d.Plan.Totals,
 		Summary:  imports.Summary(d.Input.Source, d.Plan),
@@ -154,8 +162,11 @@ func newPreview(d imports.Draft) previewOut {
 	case d.Plan.Totals.Changes == 0:
 		out.Next = "这份草稿没有要写入的东西，告诉用户即可；可以用 household_import_discard 放弃它。"
 	default:
-		out.Next = "把 summary 简短念给用户，推测的部分要说出来；用户同意后调用 household_import_apply（带 draft_id，" +
-			"用户改了的行放进 edits，不要的行放进 skip）。没同意就不要写入。写入后可以撤销。"
+		out.Next = fmt.Sprintf("把 summary 简短念给用户，推测的部分要说出来；用户同意后调用 household_import_apply（带 draft_id 和 revision %d，"+
+			"用户改了的行放进 edits，不要的行放进 skip）。没同意就不要写入。写入后可以撤销。", d.Rev)
+		if d.Plan.Totals.Lowered > 0 {
+			out.Next += fmt.Sprintf("有 %d 件按看到的数会比现在记的少，要特别说出来，照片没拍全的话先问用户。", d.Plan.Totals.Lowered)
+		}
 	}
 	return out
 }
@@ -178,6 +189,8 @@ type undoneOut struct {
 
 type draftOut struct {
 	DraftID     string         `json:"draft_id"`
+	Revision    int            `json:"revision"`
+	ByUser      bool           `json:"made_on_page,omitempty"`
 	Source      string         `json:"source"`
 	SourceLabel string         `json:"source_label"`
 	Note        string         `json:"note,omitempty"`
@@ -223,7 +236,7 @@ func runImportPreview(e env, raw json.RawMessage) (any, error) {
 		if a.Source != "" || len(a.Lines) > 0 || a.Target != "" || a.Mode != "" || a.Note != "" {
 			return nil, errors.New("重新预览草稿时只带 draft_id 和 edits；要记新的东西，不带 draft_id 另做一份")
 		}
-		d, err := imports.Replan(e.imp, h, a.DraftID, a.Edits, e.loc)
+		d, err := imports.Replan(e.imp, h, a.DraftID, 0, a.Edits, e.loc, false)
 		if err != nil {
 			return nil, err
 		}
@@ -237,7 +250,7 @@ func runImportPreview(e env, raw json.RawMessage) (any, error) {
 	}
 	d, err := imports.Preview(e.imp, h, imports.Input{
 		Source: a.Source, Note: strings.TrimSpace(a.Note), Target: a.Target, Mode: a.Mode, Lines: a.Lines,
-	}, e.loc)
+	}, e.loc, false)
 	if err != nil {
 		return nil, err
 	}
@@ -250,10 +263,11 @@ func runImportList(e env, raw json.RawMessage) (any, error) {
 	}
 	out := importListOut{Drafts: []draftOut{}}
 	err := e.imp.View(func(st *imports.State) error {
+		st.Settle(e.b) // what an interrupted save left, read from the records
 		for i := len(st.Drafts) - 1; i >= 0; i-- {
 			d := st.Drafts[i]
 			out.Drafts = append(out.Drafts, draftOut{
-				DraftID: d.ID, Source: d.Input.Source, SourceLabel: imports.SourceLabel(d.Input.Source), Note: d.Input.Note,
+				DraftID: d.ID, Revision: d.Rev, ByUser: d.ByUser, Source: d.Input.Source, SourceLabel: imports.SourceLabel(d.Input.Source), Note: d.Input.Note,
 				Created: d.Created, ExpiresAt: d.Expires, Totals: d.Plan.Totals, Summary: imports.Summary(d.Input.Source, d.Plan),
 			})
 		}
@@ -277,9 +291,10 @@ func runImportList(e env, raw json.RawMessage) (any, error) {
 
 func runImportApply(e env, raw json.RawMessage) (any, error) {
 	var a struct {
-		DraftID string         `json:"draft_id"`
-		Skip    []int          `json:"skip"`
-		Edits   []imports.Edit `json:"edits"`
+		DraftID  string         `json:"draft_id"`
+		Revision int            `json:"revision"`
+		Skip     []int          `json:"skip"`
+		Edits    []imports.Edit `json:"edits"`
 	}
 	if err := decode(raw, &a); err != nil {
 		return nil, err
@@ -287,10 +302,14 @@ func runImportApply(e env, raw json.RawMessage) (any, error) {
 	if a.DraftID == "" {
 		return nil, errors.New("需要草稿编号 draft_id")
 	}
-	done, err := imports.Apply(e.b, e.imp, a.DraftID, a.Skip, a.Edits, e.now, e.loc)
+	if a.Revision == 0 {
+		return nil, errors.New("需要 revision：用户同意的那一版预览的编号（预览结果里有）")
+	}
+	done, finish, err := imports.Apply(e.b, e.imp, a.DraftID, a.Revision, a.Skip, a.Edits, e.now, e.loc)
 	if err != nil {
 		return nil, err
 	}
+	e.onSaved(func(ok bool) { _ = finish(ok) })
 	return importedOut{DraftID: done.Draft, Done: done.Says, Totals: done.Totals,
 		Summary: "已写入：" + imports.TotalsText(done.Totals),
 		Next:    "告诉用户写好了，并说一声：要是不对，可以说「撤销刚才的导入」，或在家庭管家页面上点「撤销这次导入」。"}, nil
@@ -303,10 +322,11 @@ func runImportUndo(e env, raw json.RawMessage) (any, error) {
 	if err := decode(raw, &a); err != nil {
 		return nil, err
 	}
-	done, err := imports.UndoLast(e.b, e.imp, a.DraftID, e.now)
+	done, finish, err := imports.UndoLast(e.b, e.imp, a.DraftID, e.now)
 	if err != nil {
 		return nil, err
 	}
+	e.onSaved(func(ok bool) { _ = finish(ok) })
 	out := undoneOut{DraftID: done.Draft, Undone: done.Says}
 	for _, t := range done.Touched {
 		if t.Before == nil {

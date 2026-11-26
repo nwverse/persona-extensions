@@ -62,17 +62,22 @@ type state struct {
 // ctx is one request: its state, the time and time zone, and the base read or changed, with the household space and
 // its records as they are in that base.
 type ctx struct {
-	app   *App
-	r     *ext.UIRequest
-	st    state
-	now   time.Time
-	loc   *time.Location
-	b     *kernel.Base
-	sp    *kernel.Space // the household space; nil before its first write
-	home  *model.Home   // its records, typed
-	today model.Day
-	imps  *imports.State // the import drafts and the imports applied
+	app    *App
+	r      *ext.UIRequest
+	st     state
+	now    time.Time
+	loc    *time.Location
+	b      *kernel.Base
+	sp     *kernel.Space // the household space; nil before its first write
+	home   *model.Home   // its records, typed
+	today  model.Day
+	imps   *imports.State  // the import drafts and the imports applied
+	impErr error           // why the import store could not be read
+	after  []func(ok bool) // run once the update of an action was saved (true) or not
 }
+
+// onSaved registers f to run after the action's update, with whether the records were saved.
+func (c *ctx) onSaved(f func(ok bool)) { c.after = append(c.after, f) }
 
 // errKeep ends a storage update without saving: nothing changed.
 var errKeep = errors.New("keep")
@@ -104,6 +109,7 @@ var actions = map[string]func(c *ctx, arg string) (*wire.ActionResult, error){
 	"impdrop":    actImportDrop,
 	"impreplan":  actImportReplan,
 	"impans":     actImportAnswer,
+	"impopen":    actOpenDraft,
 	"impundo":    actImportUndo,
 }
 
@@ -144,6 +150,7 @@ func (a *App) act(_ context.Context, r *ext.UIRequest) (*wire.ActionResult, erro
 	var res *wire.ActionResult
 	wrote := false
 	err := a.st.Update(func(b *kernel.Base, _ time.Time) error {
+		c.after = nil
 		c.bind(b)
 		before, err := json.Marshal(b)
 		if err != nil {
@@ -163,6 +170,9 @@ func (a *App) act(_ context.Context, r *ext.UIRequest) (*wire.ActionResult, erro
 		wrote = true
 		return nil
 	})
+	for _, f := range c.after {
+		f(err == nil)
+	}
 	if err != nil && !errors.Is(err, errKeep) {
 		c.st = st0
 		res = &wire.ActionResult{Toast: err.Error()}
@@ -202,6 +212,18 @@ func (a *App) draw(c *ctx) (*wire.View, error) {
 func (c *ctx) route() *wire.View {
 	if c.st.F == pasteForm {
 		return c.pastePage()
+	}
+	if id, ok := strings.CutPrefix(c.st.F, draftForm); ok {
+		if v := c.draftPage(id); v != nil {
+			return v
+		}
+		c.st.F = ""
+	}
+	if arg, ok := strings.CutPrefix(c.st.F, answerForm); ok {
+		if v := c.answerPage(arg); v != nil {
+			return v
+		}
+		c.st.F = ""
 	}
 	if c.st.F != "" {
 		if v := c.formPage(); v != nil {

@@ -60,7 +60,7 @@ var wantRequired = map[string][]string{
 	"household_remove":         {"id"},
 	"household_import_preview": nil,
 	"household_import_list":    nil,
-	"household_import_apply":   {"draft_id"},
+	"household_import_apply":   {"draft_id", "revision"},
 	"household_import_undo":    nil,
 	"household_import_discard": {"draft_id"},
 }
