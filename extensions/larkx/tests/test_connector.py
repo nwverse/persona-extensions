@@ -35,6 +35,8 @@ class Backend:
         self.send_result = "m_new"
         self.send_error = None
         self.chats = {}
+        self.members = {}
+        self.chat_members_calls = []
         self.chat_info_calls = []
         self.older = {}
         self.restored = []
@@ -101,6 +103,10 @@ class Backend:
 
     def user_name(self, user, chat):
         return {"u_a": "小明", "7001": "小明"}.get(user)
+
+    def chat_members(self, chat, limit=100):
+        self.chat_members_calls.append((chat, limit))
+        return list(self.members.get(chat, []))[:limit]
 
     def download(self, msg_id, chat, key, most):
         return "image/png", b"png"
@@ -351,6 +357,44 @@ class ConnectorTest(unittest.TestCase):
         with mock.patch.object(self.c, "_agent_request", return_value="提醒小明"):
             self.c.channel_send({"ref": "r1", "reply_to": "m1", "text": "@小明 请确认"})
         self.assertEqual(self.backend.sent[0][3], [{"id": "7001", "name": "小明"}])
+
+    def test_larkx_members_lists_group_bots_and_humans_and_caches_names(self):
+        self.sign_in()
+        self.backend.members["g1"] = [
+            {"id": "7001", "name": "小明", "real_name": "小明", "kind": "user"},
+            {"id": "7002", "name": "Example Bot", "real_name": "Example Bot", "kind": "bot"},
+        ]
+        out = self.c.tools_call({"name": "larkx_members", "args": {"chat": "g1"}})
+        self.assertIn("7001  小明〔成员〕", out["text"])
+        self.assertIn("7002  Example Bot〔BOT〕", out["text"])
+        self.assertEqual(self.c.store.name("7002"), "Example Bot")
+        # Cached within ttl: second call does not hit backend again.
+        self.c.tools_call({"name": "larkx_members", "args": {"chat": "g1"}})
+        self.assertEqual(len(self.backend.chat_members_calls), 1)
+
+    def test_an_agent_reply_mentions_silent_group_bots_and_skips_ambiguous_names(self):
+        self.sign_in()
+        self.backend.members["g1"] = [
+            {"id": "7002", "name": "Bot Alpha", "real_name": "Bot Alpha", "kind": "bot"},
+            {"id": "7003", "name": "Bot Nick", "real_name": "Bot Beta", "kind": "bot"},
+            {"id": "7004", "name": "DupName", "real_name": "DupName", "kind": "user"},
+            {"id": "7005", "name": "DupName", "real_name": "DupName", "kind": "user"},
+        ]
+        m = message("m1", "g1", 1, sender=ME, text="/agent 打招呼", kind="group")
+        self.c.on_message(m)
+        self.c.channel_send({"ref": "r1", "reply_to": "m1", "text": "@Bot Alpha @Bot Beta @DupName 你好"})
+        got = {x["id"]: x["name"] for x in self.backend.sent[0][3]}
+        self.assertEqual(got, {"7002": "Bot Alpha", "7003": "Bot Beta"})
+
+    def test_an_agent_reply_resolves_bot_ids_from_historical_mentions(self):
+        self.sign_in()
+        prev = message("m0", "g1", 1, sender="7001", text="@HistoryBot 查一下", kind="group")
+        prev["mentions"] = [{"id": "7099", "start": 0, "end": 11, "label": "@HistoryBot"}]
+        self.c.on_message(prev)
+        req = message("m1", "g1", 2, sender=ME, text="/agent 问一下机器人", kind="group")
+        self.c.on_message(req)
+        self.c.channel_send({"ref": "r1", "reply_to": "m1", "text": "@HistoryBot 你好"})
+        self.assertEqual(self.backend.sent[0][3], [{"id": "7099", "name": "HistoryBot"}])
 
     def test_a_send_that_may_have_gone_out_is_never_repeated(self):
         self.sign_in()

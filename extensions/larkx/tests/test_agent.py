@@ -79,6 +79,17 @@ class AgentTest(unittest.TestCase):
         self.assertIn("周五发布", got["message"]["forward"])
         self.assertNotIn("帮我总结下这个群", got["message"]["forward"])
 
+    def test_group_agent_context_includes_bots_and_members_when_available(self):
+        self.backend.chats["g1"] = {"name": "项目群", "last_position": 0}
+        self.backend.members["g1"] = [
+            {"id": "7002", "name": "Example Bot", "real_name": "Example Bot", "kind": "bot"},
+            {"id": "7001", "name": "小明", "real_name": "小明", "kind": "user"},
+        ]
+        self.c._on_live(message("m1", "g1", 1, kind="group", sender=ME, text="/agent 艾特机器人"))
+        got = self.handed()
+        self.assertIn("Example Bot[BOT](id=7002)", got["message"]["forward"])
+        self.assertIn("小明[成员](id=7001)", got["message"]["forward"])
+
     def test_a_dm_with_myself_works_too(self):
         self.c._on_live(message("m1", "c_me", 1, sender=ME, text="/agent 你看得到这个消息吗"))
         got = self.handed()

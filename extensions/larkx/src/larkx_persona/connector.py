@@ -55,6 +55,8 @@ CHANNEL_IMAGE_MOST = 3 << 20
 CHANNEL_IMAGES_MOST = 4
 AGENT_FRESH_SECONDS = 600
 AGENT_CONTEXT_MESSAGES = 20
+MENTION_CONTEXT_MESSAGES = 50
+MEMBERS_CACHE_SECONDS = 300
 AGENT_RETRY_SECONDS = [2, 5, 15]
 SIGNED_OUT_ERROR = "还没登录飞书"
 SIGN_IN_GUIDE = ["在连接器设置里打开「飞书（LarkAgentX）」，用飞书 App 扫码登录。"]
@@ -63,10 +65,10 @@ SEND_SCHEMA = {
     "properties": {
         "chat": {"type": "string", "description": "The chat's id, from larkx_chats or an inbox item."},
         "text": {"type": "string", "description": "The message, plain text. Write @name exactly as in mentions."},
-        "mentions": {"type": "array", "maxItems": 100, "description": "People to really @; a plain @name without an entry here is ordinary text.",
+        "mentions": {"type": "array", "maxItems": 100, "description": "People or bots to really @; a plain @name without an entry here is ordinary text.",
                      "items": {"type": "object", "additionalProperties": False, "required": ["id", "name"],
-                               "properties": {"id": {"type": "string", "description": "The person's id from larkx_search."},
-                                              "name": {"type": "string", "description": "The person's exact display name from larkx_search."}}}},
+                               "properties": {"id": {"type": "string", "description": "The person or bot numeric id from larkx_members or larkx_search."},
+                                              "name": {"type": "string", "description": "The exact display name from larkx_members or larkx_search."}}}},
         "reply_to": {"type": "string", "description": "A message's id (from larkx_messages), to answer in its topic."},
     },
     "required": ["chat", "text"],
@@ -81,7 +83,7 @@ SEND_DM_SCHEMA = {
 }
 ACTIONS = [
     {"name": "larkx_send", "input_schema": SEND_SCHEMA,
-     "description": "Send a Feishu message to a chat as the user themself, not a bot. To really @ somebody, pass their id and exact name from larkx_search in mentions and write @name in text; @name alone is ordinary text. The user confirms the full text on the phone first."},
+     "description": "Send a Feishu message to a chat as the user themself, not a bot. To really @ a person or bot, pass their id and exact name from larkx_members or larkx_search in mentions and write @name in text; @name alone is ordinary text. The user confirms the full text on the phone first."},
     {"name": "larkx_send_dm", "input_schema": SEND_DM_SCHEMA,
      "description": "Send a Feishu direct message to a person as the user themself, not a bot. The user confirms the full text on the phone first."},
 ]
@@ -96,6 +98,10 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "chat": {"type": "string"},
          "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["chat"]}},
+    {"name": "larkx_members", "description": "List members and bots of a Feishu group chat with their numeric ids and exact display names for real @ mentions.",
+     "input_schema": {"type": "object", "properties": {
+         "chat": {"type": "string"},
+         "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "required": ["chat"]}},
     {"name": "larkx_search", "description": "Find Feishu people and groups by name; gives the ids larkx_send_dm and larkx_messages take.",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
 ]
@@ -156,6 +162,8 @@ class Connector:
         # The user's chat with themself, by account: where pushes go. Emptied at every sign-in and sign-out, so the first
         # push of each sign-in checks the chat again (_own_chat).
         self._own_chats = {}
+        # Group member/bot roster cache, keyed by chat id: (fetched_at, list[member]). Cleared on sign-in and sign-out.
+        self._members_cache = {}
         self._unreachable = False
         self._last_event = 0.0
         self._last_sync = 0.0
@@ -244,6 +252,7 @@ class Connector:
             self._signed_in = True
             self._expired = False
             self._own_chats = {}
+            self._members_cache = {}
         self._stop.set()
         self._stop = threading.Event()
         self._linked.clear()
@@ -417,14 +426,47 @@ class Connector:
             return ""
         return "%s:%s" % (m["chat"], m.get("root") or m["id"])
 
+    def _chat_members_cached(self, chat_id, limit=100, ttl=MEMBERS_CACHE_SECONDS):
+        """Fetches and caches members (humans and bots) of a group chat."""
+        now = time.time()
+        with self._lock:
+            cached = self._members_cache.get(chat_id)
+            if cached and now - cached[0] < ttl and len(cached[1]) <= limit:
+                return list(cached[1])
+        if not self._signed_in or not hasattr(self.backend, "chat_members"):
+            return []
+        try:
+            members = self.backend.chat_members(chat_id, limit=limit) or []
+        except Exception as e:
+            self._log("fetching chat members failed: %s" % type(e).__name__)
+            return []
+        for item in members:
+            uid = str(item.get("id") or "")
+            name = (item.get("name") or "").strip()
+            if uid.isdigit() and name:
+                self.store.set_name(uid, name)
+        with self._lock:
+            self._members_cache[chat_id] = (now, list(members))
+        return members
+
     def _agent_context(self, m):
         """Where the request was written and what was said there just before it, for the assistant."""
         chat = self.store.chat(m["chat"]) or {}
         before = [x for x in self.store.messages(m["chat"], m.get("position") or 0, AGENT_CONTEXT_MESSAGES) if x["id"] != m["id"]]
-        where = "飞书%s「%s」" % (_kind_label(chat.get("kind") or "group"), chat.get("name") or "未命名")
+        chat_kind = chat.get("kind") or m.get("chat_kind") or "group"
+        where = "飞书%s「%s」" % (_kind_label(chat_kind), chat.get("name") or "未命名")
+        members_line = ""
+        if chat_kind == "group" and self._signed_in:
+            members = self._chat_members_cached(m["chat"], limit=60)
+            if members:
+                bots = [x for x in members if x.get("kind") == "bot"]
+                users = [x for x in members if x.get("kind") != "bot"]
+                shown = bots[:20] + users[:20]
+                tags = ["%s[%s](id=%s)" % (x["name"], "BOT" if x.get("kind") == "bot" else "成员", x["id"]) for x in shown]
+                members_line = "本群成员与机器人（回复中写 @显示名 可直接触发真艾特）：" + "、".join(tags) + "\n"
         if not before:
-            return "这条 /agent 写在%s里。" % where
-        return "这条 /agent 写在%s里，之前的 %d 条消息：\n%s" % (where, len(before), "\n".join(_line(x) for x in before))
+            return members_line + "这条 /agent 写在%s里。" % where
+        return members_line + "这条 /agent 写在%s里，之前的 %d 条消息：\n%s" % (where, len(before), "\n".join(_line(x) for x in before))
 
     def channel_send(self, p):
         """An answer for one /agent: in the chat it was written in, under it, as the user, marked as written by AI. A
@@ -483,23 +525,58 @@ class Connector:
         return {}
 
     def _context_mentions(self, request, text):
-        """Known participants' real ids, for a name the assistant wrote. Unrecognized @words stay plain text."""
-        people = {}
-        for m in self.store.messages(request["chat"], 0, CONTEXT_LINES):
-            if "@" + (m.get("sender_name") or "") not in text:
+        """Known participants' real ids (chat members/bots plus recent senders and mentions), for names the assistant
+        wrote. Unrecognized or ambiguous @words stay plain text without dropping valid mentions."""
+        if "@" not in text:
+            return []
+        recent = self.store.messages(request["chat"], 0, MENTION_CONTEXT_MESSAGES)
+        candidates = {}  # name -> set of numeric user ids
+
+        def add_candidate(uid, raw_name):
+            uid = str(uid or "")
+            name = (raw_name or "").lstrip("@").strip()
+            if uid.isdigit() and int(uid) > 0 and name and "@" not in name and "\n" not in name:
+                candidates.setdefault(name, set()).add(uid)
+
+        chat_row = self.store.chat(request["chat"]) or {}
+        if (chat_row.get("kind") or "group") == "group":
+            for item in self._chat_members_cached(request["chat"], limit=200):
+                add_candidate(item.get("id"), item.get("name"))
+                if item.get("real_name") and item.get("real_name") != item.get("name"):
+                    add_candidate(item.get("id"), item.get("real_name"))
+
+        for m in recent:
+            sender = str(m.get("sender") or "")
+            sname = (m.get("sender_name") or "").strip()
+            if sender.isdigit() and int(sender) > 0:
+                if sname and sname not in ("我", UNKNOWN_SENDER) and "@" + sname in text and not self.store.name(sender):
+                    try:
+                        found = self.backend.user_name(sender, request["chat"])
+                    except Exception:
+                        found = None
+                    if found:
+                        self.store.set_name(sender, found)
+                known = (self.store.name(sender) or (sname if sname not in ("我", UNKNOWN_SENDER) else "")).strip()
+                add_candidate(sender, known)
+            for item in m.get("mentions") or []:
+                if not isinstance(item, dict):
+                    continue
+                uid = str(item.get("id") or "")
+                label = (item.get("label") or "").lstrip("@").strip()
+                add_candidate(uid, label)
+                if uid.isdigit() and label and not self.store.name(uid):
+                    self.store.set_name(uid, label)
+
+        by_uid = {}
+        for name, uids in sorted(candidates.items(), key=lambda kv: len(kv[0]), reverse=True):
+            if len(uids) != 1 or "@" + name not in text:
                 continue
-            sender = m.get("sender")
-            if sender and str(sender).isdigit() and not self.store.name(sender):
-                try:
-                    found = self.backend.user_name(sender, request["chat"])
-                except Exception:
-                    found = None
-                if found:
-                    self.store.set_name(sender, found)
-        for m in self.store.messages(request["chat"], 0, CONTEXT_LINES):
-            people[m.get("sender")] = self.store.name(m.get("sender"))
-        targets = [{"id": user_id, "name": name} for user_id, name in people.items()
-                   if user_id and str(user_id).isdigit() and name and "@" + name in text]
+            uid = next(iter(uids))
+            if uid not in by_uid:
+                by_uid[uid] = name
+        targets = [{"id": uid, "name": name} for uid, name in by_uid.items()]
+        if not targets:
+            return []
         try:
             mention_parts(text, targets)
         except ValueError:
@@ -595,6 +672,16 @@ class Connector:
             chat = _required(args, "chat")
             rows = self.store.messages(chat, 0, _limit(args, 20))
             return {"text": "\n".join(_message_line(m) for m in rows) or "这个会话还没有消息。"}
+        if name == "larkx_members":
+            self._need_signed_in()
+            chat = _required(args, "chat")
+            try:
+                limit = max(1, min(int(args.get("limit") or 100), 200))
+            except (TypeError, ValueError):
+                limit = 100
+            members = self._chat_members_cached(chat, limit=limit, ttl=60)
+            lines = ["%s  %s〔%s〕" % (m["id"], m["name"], "BOT" if m.get("kind") == "bot" else "成员") for m in members]
+            return {"text": "\n".join(lines) or "没有拉到群成员。"}
         if name == "larkx_search":
             self._need_signed_in()
             found = self.backend.search(_required(args, "query"))
@@ -954,6 +1041,7 @@ class Connector:
                 self._account = ""
                 self._account_id = ""
                 self._own_chats = {}
+                self._members_cache = {}
         return {}
 
 
