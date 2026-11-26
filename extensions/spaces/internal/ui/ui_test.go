@@ -649,8 +649,9 @@ func TestSpaceOverviewShowsEveryPart(t *testing.T) {
 	if head.Type != wire.ComponentHeader || head.Title != "项目与目标" {
 		t.Fatalf("header = %+v", head)
 	}
+	// The four type rows, then the button that adds a type.
 	types := v.Sections[1]
-	if types.Title != "分类" || len(types.Items) != 4 {
+	if types.Title != "分类" || len(types.Items) != 5 || types.Items[4].Title != "新建分类" {
 		t.Fatalf("type rows = %+v", types)
 	}
 	if types.Items[0].Action == nil || types.Items[0].Action.ID != "tab:idea" {
@@ -659,9 +660,10 @@ func TestSpaceOverviewShowsEveryPart(t *testing.T) {
 	if !strings.Contains(types.Items[0].Subtitle, "看板") {
 		t.Fatalf("idea subtitle = %q", types.Items[0].Subtitle)
 	}
-	last := v.Sections[len(v.Sections)-1]
-	if len(last.Items) != 3 || last.Items[1].Action.ID != "fold:space" || last.Items[2].Title != "新建空间" || last.Items[2].Action.ID != "new" {
-		t.Fatalf("button row = %+v", last.Items)
+	// The header's card ends with the settings and new-space buttons.
+	hs := v.Sections[0].Items
+	if n := len(hs); n < 2 || hs[n-2].Action.ID != "fold:space" || hs[n-1].Title != "新建空间" || hs[n-1].Action.ID != "new" {
+		t.Fatalf("header card = %+v", hs)
 	}
 }
 

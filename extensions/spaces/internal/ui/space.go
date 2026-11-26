@@ -141,8 +141,10 @@ func freeName(base string, taken map[string]bool) string {
 	return name
 }
 
-// overview is the space page with no type tab: the space's header and its totals, a row per type, the latest changes,
-// the settings fold when it is open, and the buttons that add a type, open the settings or start a new space.
+// overview is the space page with no type tab: the space's header and its totals with the buttons that open the
+// settings or start a new space, the settings fold right under them when it is open, a row per type ending with the
+// button that adds one, and the latest changes. Each button sits in the card it acts on: a section of buttons alone
+// is drawn as a card of its own, an empty frame around them.
 func (c *ctx) overview() (*wire.View, error) {
 	sp := c.sp
 	filter, tabs := c.chrome()
@@ -150,31 +152,30 @@ func (c *ctx) overview() (*wire.View, error) {
 	head := wire.Section{Items: []wire.Component{
 		c.spaceHeader(),
 		statGrid(spaceStats(tallyOf(c.w, sp.Entities))),
+		button("空间设置", &wire.Action{ID: "fold:space"}, wire.ButtonRoleNormal),
+		button("新建空间", &wire.Action{ID: "new"}, wire.ButtonRoleNormal),
 	}}
 	v.Sections = append(v.Sections, head)
-	if len(sp.Types) == 0 {
-		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{c.noTypes()}})
-	} else {
-		v.Sections = append(v.Sections, wire.Section{
-			Title: "分类", Items: c.typeRows(),
-			Footer: cut("点一个分类，查看和添加条目；也可以直接跟助手说「在「"+sp.Name+"」里记一条……」。", maxText),
-		})
-		recent, err := c.recent()
-		if err != nil {
-			return nil, err
-		}
-		if len(recent) > 0 {
-			v.Sections = append(v.Sections, wire.Section{Title: "最近更新", Items: c.rows(recent, true)})
-		}
-	}
 	if c.st.F == "space" {
 		v.Sections = append(v.Sections, c.spaceFold())
 	}
-	v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{
-		button("新建分类", ext.Open("schema:+", "", state{S: sp.ID, D: "+"}, "新建分类"), wire.ButtonRoleNormal),
-		button("空间设置", &wire.Action{ID: "fold:space"}, wire.ButtonRoleNormal),
-		button("新建空间", &wire.Action{ID: "new"}, wire.ButtonRoleNormal),
-	}})
+	if len(sp.Types) == 0 {
+		// the empty state's own button adds the first category
+		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{c.noTypes()}})
+		return v, nil
+	}
+	types := append(c.typeRows(), button("新建分类", ext.Open("schema:+", "", state{S: sp.ID, D: "+"}, "新建分类"), wire.ButtonRoleNormal))
+	v.Sections = append(v.Sections, wire.Section{
+		Title: "分类", Items: types,
+		Footer: cut("点一个分类，查看和添加条目；也可以直接跟助手说「在「"+sp.Name+"」里记一条……」。", maxText),
+	})
+	recent, err := c.recent()
+	if err != nil {
+		return nil, err
+	}
+	if len(recent) > 0 {
+		v.Sections = append(v.Sections, wire.Section{Title: "最近更新", Items: c.rows(recent, true)})
+	}
 	return v, nil
 }
 

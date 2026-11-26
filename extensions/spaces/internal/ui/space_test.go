@@ -468,3 +468,69 @@ func TestDefaultNameFitsTheLimit(t *testing.T) {
 		t.Fatalf("the default name beside a name at the limit is refused: %v", err)
 	}
 }
+
+// The overview keeps each button in the card it acts on: a section of buttons alone is drawn as a card of its own, an
+// empty frame around them. The settings and new-space buttons sit in the header's card, the settings fold opens right
+// under it, and the type list ends with the button that adds a type; a space with no types adds one from its empty
+// state only.
+func TestOverviewButtonsSitInTheirCards(t *testing.T) {
+	for _, tc := range []struct {
+		template string
+		types    bool
+	}{{"blank", false}, {"project", true}} {
+		for _, fold := range []string{"", "space"} {
+			t.Run(tc.template+"/"+fold, func(t *testing.T) {
+				st := storeWith(t, true, tc.template)
+				v := drawPage(t, newApp(st), state{S: firstSpace(t, st), F: fold}, 5)
+				for i, s := range v.Sections {
+					only := len(s.Items) > 0
+					for _, it := range s.Items {
+						only = only && it.Type == wire.ComponentButton
+					}
+					if only {
+						t.Fatalf("section %d holds only buttons: %+v", i, s.Items)
+					}
+				}
+				head := v.Sections[0].Items
+				titles := []string{}
+				for _, it := range head {
+					if it.Type == wire.ComponentButton {
+						titles = append(titles, it.Title)
+					}
+				}
+				if fmt.Sprint(titles) != "[空间设置 新建空间]" {
+					t.Fatalf("header card buttons = %v", titles)
+				}
+				if fold == "space" && !fieldNamedOK(&wire.View{Sections: v.Sections[1:2]}, "about") {
+					t.Fatalf("the settings fold is not right under the header card: %+v", v.Sections[1])
+				}
+				adds := 0
+				for _, s := range v.Sections {
+					for _, it := range s.Items {
+						if (it.Type == wire.ComponentButton && it.Title == "新建分类") || (it.Button != nil && it.Button.Title == "新建分类") {
+							adds++
+						}
+					}
+				}
+				if adds != 1 {
+					t.Fatalf("%d 新建分类 buttons", adds)
+				}
+				if tc.types {
+					var types *wire.Section
+					for i := range v.Sections {
+						if v.Sections[i].Title == "分类" {
+							types = &v.Sections[i]
+						}
+					}
+					if types == nil {
+						t.Fatal("no 分类 section")
+					}
+					last := types.Items[len(types.Items)-1]
+					if last.Type != wire.ComponentButton || last.Title != "新建分类" {
+						t.Fatalf("the type list ends with %+v", last)
+					}
+				}
+			})
+		}
+	}
+}
