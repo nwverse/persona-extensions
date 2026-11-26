@@ -237,21 +237,21 @@ func parsePipelineCode(code string) ([]StepSpec, error) {
 		}
 	}
 	if len(rawSteps) == 0 {
-		return nil, fmt.Errorf("未包含任何算子步骤")
+		return nil, fmt.Errorf("一个搜索步骤都没有")
 	}
 	if len(rawSteps) > maxSteps {
-		return nil, fmt.Errorf("算子步骤不能超过 %d 步（当前 %d 步）", maxSteps, len(rawSteps))
+		return nil, fmt.Errorf("最多 %d 步，现在写了 %d 步", maxSteps, len(rawSteps))
 	}
 
 	var steps []StepSpec
 	for i, raw := range rawSteps {
 		m := callStepRe.FindStringSubmatch(raw)
 		if m == nil {
-			return nil, fmt.Errorf("第 %d 步 %q 语法无效，应为 op(key=\"value\") 格式", i+1, raw)
+			return nil, fmt.Errorf("第 %d 步 %q 写法不对，应该像 limit(n=\"20\") 这样", i+1, raw)
 		}
 		op := m[1]
 		if !slices.Contains(knownOps, op) {
-			return nil, fmt.Errorf("第 %d 步包含未知算子 %q（可用算子：%s）", i+1, op, strings.Join(knownOps, ", "))
+			return nil, fmt.Errorf("第 %d 步 %q 不认识（能用的步骤：%s）", i+1, op, strings.Join(knownOps, ", "))
 		}
 		argsBody := strings.TrimSpace(m[2])
 		args := map[string]string{}
@@ -272,7 +272,7 @@ func parsePipelineCode(code string) ([]StepSpec, error) {
 				case "scan_sessions":
 					args["query"] = val
 				default:
-					return nil, fmt.Errorf("第 %d 步 %q 参数格式错误，请使用 key=\"value\"", i+1, raw)
+					return nil, fmt.Errorf("第 %d 步 %q 括号里的写法不对，应该像 n=\"20\" 这样", i+1, raw)
 				}
 			} else {
 				for _, am := range matches {
@@ -290,7 +290,7 @@ func parsePipelineCode(code string) ([]StepSpec, error) {
 
 func validateSteps(steps []StepSpec) error {
 	if len(steps) == 0 {
-		return fmt.Errorf("搜索流水线不能为空")
+		return fmt.Errorf("搜索步骤不能是空的")
 	}
 	hasSource := false
 	for i, s := range steps {
@@ -299,28 +299,28 @@ func validateSteps(steps []StepSpec) error {
 			hasSource = true
 			if s.Op == "scan_sessions" {
 				if sc := s.Args["scope"]; sc != "" && !isValidScope(sc) {
-					return fmt.Errorf("第 %d 步 scan_sessions 的 scope=%q 无效", i+1, sc)
+					return fmt.Errorf("第 %d 步 scan_sessions 的范围 scope=%q 不存在（可选：%s）", i+1, sc, strings.Join(scopes, ", "))
 				}
 			}
 		case "match_regex":
 			pat := s.Args["pattern"]
 			if pat == "" {
-				return fmt.Errorf("第 %d 步 match_regex 缺少 pattern 参数", i+1)
+				return fmt.Errorf("第 %d 步 match_regex 没写要匹配的规则 pattern", i+1)
 			}
 			if _, err := regexp.Compile("(?i)" + pat); err != nil {
-				return fmt.Errorf("第 %d 步 match_regex 正则无效：%v", i+1, err)
+				return fmt.Errorf("第 %d 步 match_regex 的规则写得不对：%v", i+1, err)
 			}
 		case "limit":
 			if nStr := s.Args["n"]; nStr != "" {
 				n, err := strconv.Atoi(nStr)
 				if err != nil || n < 1 || n > maxLimitCap {
-					return fmt.Errorf("第 %d 步 limit(n=%s) 必须是 1 到 %d 之间的整数", i+1, nStr, maxLimitCap)
+					return fmt.Errorf("第 %d 步 limit(n=%s) 要写 1 到 %d 之间的整数", i+1, nStr, maxLimitCap)
 				}
 			}
 		}
 	}
 	if !hasSource {
-		return fmt.Errorf("搜索流水线必须包含至少一个数据源算子（scan_sessions 或 scan_files）")
+		return fmt.Errorf("至少要有一步说明搜哪里：scan_sessions（搜聊天）或 scan_files（搜代码文件夹）")
 	}
 	return nil
 }
@@ -489,7 +489,7 @@ func compileNaturalLanguage(in CompileInput, scope string) (SearchProgram, error
 
 	if regexPat != "" {
 		if _, err := regexp.Compile("(?i)" + regexPat); err != nil {
-			return SearchProgram{}, fmt.Errorf("regex:%s 正则表达式无效：%v", regexPat, err)
+			return SearchProgram{}, fmt.Errorf("regex:%s 的规则写得不对：%v", regexPat, err)
 		}
 		steps = append(steps, StepSpec{Op: "match_regex", Args: map[string]string{"pattern": regexPat}})
 	}

@@ -164,8 +164,10 @@ var tmpPath = regexp.MustCompile(`(/private)?` + regexp.QuoteMeta(filepath.Clean
 
 // pageState is one page in one state, rendered for review and for the copy tests.
 type pageState struct {
-	name string
-	text string
+	name       string
+	text       string
+	view       *wire.View // nil when the action failed
+	err, toast string
 }
 
 // pageStates renders every page state the fixtures reach: nothing set up, set up and idle, results, no results,
@@ -176,9 +178,10 @@ func pageStates(t *testing.T) []pageState {
 	var out []pageState
 	add := func(name string, v *wire.View, err error, toast string) {
 		t.Helper()
-		var text string
+		var text, errText string
 		if err != nil {
-			text = "(错误) " + err.Error() + "\n"
+			errText = err.Error()
+			text = "(错误) " + errText + "\n"
 		} else {
 			if cerr := wire.CheckView(v); cerr != nil {
 				t.Fatalf("%s: CheckView: %v", name, cerr)
@@ -188,7 +191,7 @@ func pageStates(t *testing.T) []pageState {
 		if toast != "" {
 			text = "(提示条) " + toast + "\n" + text
 		}
-		out = append(out, pageState{name: name, text: tmpPath.ReplaceAllString(text, "<tmp>")})
+		out = append(out, pageState{name: name, text: tmpPath.ReplaceAllString(text, "<tmp>"), view: v, err: errText, toast: toast})
 	}
 	render := func(a *app, p page) (*wire.View, error) {
 		return a.render(ctx, &ext.UIRequest{UIParams: wire.UIParams{State: ext.EncodeState(p)}})
