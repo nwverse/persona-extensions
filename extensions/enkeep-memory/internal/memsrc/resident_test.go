@@ -149,8 +149,8 @@ func TestResidentGroupShare(t *testing.T) {
 			in = true
 		}
 	}
-	if most := int(float64(4096)*GroupShare) / 153; n != most || !in {
-		t.Errorf("autonomy lines %d (want %d), the other class in: %v", n, most, in)
+	if room := 4096; n != int(float64(room)*GroupShare)/153 || !in {
+		t.Errorf("autonomy lines %d, the other class in: %v", n, in)
 	}
 }
 

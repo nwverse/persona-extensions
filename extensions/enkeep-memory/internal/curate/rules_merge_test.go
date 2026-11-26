@@ -15,7 +15,7 @@ func TestMergeRules(t *testing.T) {
 	ev := func(day, q string) []entry.Evidence {
 		return []entry.Evidence{{Who: entry.WhoSelf, Day: day, Quote: q}}
 	}
-	rule := func(text, origin string, count int, q string) *entry.Entry {
+	rule := func(text string, origin entry.Origin, count int, q string) *entry.Entry {
 		e := c.create(&entry.Entry{Facet: entry.Interaction, Grain: entry.Action, Type: "correction", Text: text, Status: entry.Stable,
 			Origin: origin, Count: count, Evidence: ev("2026-11-20", q)}, "t")
 		return e
