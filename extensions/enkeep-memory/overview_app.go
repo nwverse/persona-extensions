@@ -22,8 +22,8 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/memsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
-	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/signals"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/signals"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
