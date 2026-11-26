@@ -353,6 +353,28 @@ class ConnectorHookTest(unittest.TestCase):
             self.c.channel_send({"ref": "r1", "text": "答复", "reply_to": "m1"})
         self.assertEqual(self.backend.sent, [])
 
+    def test_a_command_with_a_self_mention_is_not_answered_as_agent(self):
+        # channel.send reloads the kept message: its valid self-mention must not make the hook command an /agent.
+        text = "/todo @我的账号 回电话"
+        m = message("m1", "d1", 1, sender=ME, text=text)
+        m["mentions"] = [{"id": ME, "start": text.index("@"), "end": text.index("@") + 5, "label": "@我的账号"}]
+        self.c._on_live(m)
+        self.delivered()
+        with self.assertRaises(RpcError):
+            self.c.channel_send({"ref": "r1", "text": "答复", "reply_to": "m1"})
+        self.assertEqual(self.backend.sent, [])
+        self.assertEqual(self.hub.received, [])
+
+    def test_a_command_received_with_hooks_off_can_still_be_answered(self):
+        # Nothing was handed to a hook, so the self-mention went to the assistant and its answer goes out.
+        self.c.hooks = None
+        text = "/todo @我的账号 回电话"
+        m = message("m1", "d1", 1, sender=ME, text=text)
+        m["mentions"] = [{"id": ME, "start": text.index("@"), "end": text.index("@") + 5, "label": "@我的账号"}]
+        self.c._on_live(m)
+        self.assertTrue(self.hub.got.wait(2))
+        self.assertTrue(self.c.channel_send({"ref": "r1", "text": "答复", "reply_to": "m1"})["message_id"])
+
 
 class PluginHookSettingsTest(unittest.TestCase):
     def test_initialize_hands_the_settings_and_the_secret_over(self):

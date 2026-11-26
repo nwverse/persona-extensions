@@ -141,6 +141,10 @@ class Store:
             row = self._db.execute("SELECT result FROM sends WHERE key = ?", (key,)).fetchone()
         return False, row["result"] or ""
 
+    def claimed(self, key):
+        """True when key was taken for a send, whatever that send ended with."""
+        return self._one("SELECT 1 AS one FROM sends WHERE key = ?", key) is not None
+
     def finish_send(self, key, result):
         self._do("UPDATE sends SET result = ? WHERE key = ?", result, key)
 

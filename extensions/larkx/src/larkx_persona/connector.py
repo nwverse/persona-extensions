@@ -57,6 +57,8 @@ CHANNEL_IMAGES_MOST = 4
 AGENT_FRESH_SECONDS = 600
 AGENT_CONTEXT_MESSAGES = 20
 AGENT_RETRY_SECONDS = [2, 5, 15]
+# The send key a hook delivery claims, once per message id: a message with one is a hook command, not an /agent.
+HOOK_KEY = "hook:"
 SIGNED_OUT_ERROR = "还没登录飞书"
 SIGN_IN_GUIDE = ["在连接器设置里打开「飞书（LarkAgentX）」，用飞书 App 扫码登录。"]
 SEND_SCHEMA = {
@@ -358,9 +360,12 @@ class Connector:
 
     def _agent_request(self, m, me):
         """The request in a user's own message, or None. A real self-mention and /agent share the answer-marker guard,
-        and channel.send uses this same rule as live receipt, so a request can always be answered."""
+        and channel.send uses this same rule as live receipt, so a request can always be answered. A command that went
+        to its hook is never one, even with a self-mention in it."""
         text = m.get("text") or ""
         if text.rstrip().endswith(self.suffix):
+            return None
+        if self.store.claimed(HOOK_KEY + m["id"]):
             return None
         for source in _command_texts(m):
             request = agent_request(source)
@@ -436,7 +441,7 @@ class Connector:
                 break
         if found is None:
             return False
-        claimed, _ = self.store.claim_send("hook:" + m["id"])
+        claimed, _ = self.store.claim_send(HOOK_KEY + m["id"])
         if claimed:
             hooks.dispatch(self._hook_payload(m, hooks, *found))
         return True
