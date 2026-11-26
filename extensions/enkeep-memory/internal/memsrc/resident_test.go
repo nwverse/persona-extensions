@@ -108,12 +108,12 @@ func TestResidentRoom(t *testing.T) {
 // score higher; the leftover room takes no line under spillFloor.
 func TestResidentPatternShare(t *testing.T) {
 	var cs []Candidate
-	for i := 0; i < 10; i++ { // rules only, more than their quota: the rest goes to the other side's room
-		cs = append(cs, cand(fmt.Sprint("r", i), entry.KindRules, 90, 120), cand(fmt.Sprint("s", i), entry.KindRules, 90, 120))
+	for i := 0; i < 10; i++ { // rules only, more than their 60% quota (16 of these fit): the rest goes to the other side's room
+		cs = append(cs, cand(fmt.Sprint("r", i), entry.KindRules, 90, 150), cand(fmt.Sprint("s", i), entry.KindRules, 90, 150))
 	}
 	p := cand("ov:pattern:1", entry.KindUnderstanding, 60, 200)
 	p.Pattern = true
-	low := cand("w-low", entry.KindRules, 20, 100)
+	low := cand("w-low", entry.KindRules, 20, 125) // larger than what the rules quota leaves
 	cs = append(cs, p, low)
 	got := ResidentWithin(cs, 4096, ResidentMostFor(4096))
 	var ids []string
@@ -125,5 +125,44 @@ func TestResidentPatternShare(t *testing.T) {
 	}
 	if slices.Contains(ids, "w-low") {
 		t.Errorf("a fragment under the floor filled the room: %v", ids)
+	}
+}
+
+// One class of lines takes at most GroupShare of the room (0.2.6), whatever their scores.
+func TestResidentGroupShare(t *testing.T) {
+	var cs []Candidate
+	for i := 0; i < 10; i++ {
+		c := cand(fmt.Sprint("a", i), entry.KindRules, 95, 150)
+		c.Group = "interaction:autonomy"
+		cs = append(cs, c)
+	}
+	other := cand("b0", entry.KindRules, 60, 150) // "b": its own run of characters, unlike "a"
+	other.Group = "interaction:verification"
+	cs = append(cs, other)
+	got := ResidentWithin(cs, 4096, ResidentMostFor(4096))
+	n, in := 0, false
+	for _, c := range got {
+		switch c.Group {
+		case "interaction:autonomy":
+			n++
+		case "interaction:verification":
+			in = true
+		}
+	}
+	if room := 4096; n != int(float64(room)*GroupShare)/153 || !in {
+		t.Errorf("autonomy lines %d, the other class in: %v", n, in)
+	}
+}
+
+// A rule's exception stands with it, whole, also when the line is cut (0.2.6).
+func TestResidentTextKeepsException(t *testing.T) {
+	e := &entry.Entry{Facet: entry.Interaction, Text: strings.Repeat("做完一轮不要停下等批准，", 12), Exception: "只有涉及线上、对外可见、删数据时才停"}
+	line := ResidentText(e)
+	if !strings.HasSuffix(line, "（例外：只有涉及线上、对外可见、删数据时才停）") || len(line) > residentTextMost+3 {
+		t.Errorf("line %q (%d bytes)", line, len(line))
+	}
+	e.Text = "做完一轮不要停下等批准，只有涉及线上、对外可见、删数据时才停。"
+	if strings.Contains(ResidentText(e), "例外") {
+		t.Error("an exception already in the text is not said twice")
 	}
 }

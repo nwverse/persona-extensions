@@ -321,3 +321,43 @@ func initWith(e env, config string) *ext.Init {
 	in.InitializeParams.Config = json.RawMessage(config)
 	return in
 }
+
+func TestTargetsOfTargetDirectoryAndCombinedFlags(t *testing.T) {
+	b := newBox(t)
+	if err := os.Symlink(b.home, filepath.Join(b.tmp, "home-link")); err != nil {
+		t.Fatal(err)
+	}
+	// Destinations outside scratch via --target-directory, abbreviated --target, combined short flags,
+	// or a symlink target directory must stay with a person.
+	for _, command := range []string{
+		`cp -f --target-directory {keep} {tmp}/a`,
+		`cp -f --target {keep} {tmp}/a`,
+		`ln -sf --target-directory {keep} {tmp}/a`,
+		`ln -sf --target {keep} {tmp}/a`,
+		`cp -f -t {tmp}/home-link {tmp}/a`,
+		`mv -f -t {tmp}/home-link {tmp}/a`,
+		`ln -sf -t {tmp}/home-link {tmp}/a`,
+		`cp -ft {keep} {tmp}/a`,
+		`ln -sft {keep} {tmp}/a`,
+		`cp -ft{keep} {tmp}/a`,
+		`ln -sft{keep} {tmp}/a`,
+		`mv -ft {keep} {tmp}/a {tmp}/b`,
+		`mv -ft{keep} {tmp}/a {tmp}/b`,
+	} {
+		if why := newGuard(b.project, false).personOnly(b.cmd(command)); why == "" {
+			t.Errorf("%q should stay with a person (target outside scratch)", command)
+		}
+	}
+	// Destinations inside scratch via those same flags remain allowed.
+	for _, command := range []string{
+		`cp -f --target-directory {tmp}/dst {tmp}/a`,
+		`cp -ft {tmp}/dst {tmp}/a`,
+		`cp -ft{tmp}/dst {tmp}/a`,
+		`mv -ft {tmp}/dst {tmp}/a`,
+		`mv -fS.txt {tmp}/a {tmp}/b`,
+	} {
+		if why := newGuard(b.project, false).personOnly(b.cmd(command)); why != "" {
+			t.Errorf("%q should be allowed as scratch, got %q", command, why)
+		}
+	}
+}

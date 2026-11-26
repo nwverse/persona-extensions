@@ -29,14 +29,17 @@ var counterPrompt string
 //go:embed counter.schema.json
 var counterSchema []byte
 
-// Bounds of the weekly pass (design 2.6): per facet at most two synthesis calls of synthItems items, and one
-// counter-search call for at most counterPatterns patterns with counterCands candidates each. Six facets: at most 12
-// synthesis and 6 counter-search calls a week.
+// Bounds of the weekly pass (unified design §1.3, §5.2): principle facets are clustered into compact 3–15 item groups
+// packed into at most synthBatches calls of synthBatchItems items each (avoiding 90-item grab-bags); interaction and
+// tools rules go through SyncContracts; every passing pattern is checked by counterSearch.
 const (
 	windowDays      = 28 // the weekly pass looks at entries with evidence in the four weeks before its end
 	bootstrapDays   = 84 // ... twelve weeks on a first run (no week yet): the history the user already has
-	synthItems      = 90
-	synthBatches    = 2
+	synthClusterMin = 3
+	synthClusterMax = 15
+	synthBatchItems = 30
+	synthItems      = 90 // upper cap for monthly rescue synthesis
+	synthBatches    = 3
 	synthExisting   = 40
 	synthMaxTokens  = 8000
 	counterPatterns = 12
@@ -120,10 +123,15 @@ var facetMeaning = map[entry.Facet]string{
 type (
 	synthItem struct {
 		ID        string   `json:"id"`
+		Cluster   string   `json:"cluster,omitempty"`
 		Text      string   `json:"text"`
 		Situation string   `json:"situation,omitempty"`
 		Choice    string   `json:"choice,omitempty"`
 		Rejected  string   `json:"rejected,omitempty"`
+		Dimension string   `json:"dimension,omitempty"`
+		Hint      string   `json:"hint,omitempty"`
+		Principle string   `json:"principle,omitempty"`
+		Quotes    []string `json:"quotes,omitempty"`
 		Projects  []string `json:"projects,omitempty"`
 		Sources   []string `json:"source_kinds,omitempty"`
 		Weeks     int      `json:"weeks"`
@@ -151,6 +159,7 @@ type (
 		Choice          string   `json:"choice"`
 		Rejected        string   `json:"rejected"`
 		Exception       string   `json:"exception"`
+		Dimension       string   `json:"dimension"`
 		DefaultContrast string   `json:"default_contrast"`
 		HoldsForAnyone  bool     `json:"holds_for_anyone"`
 		Members         []string `json:"members"`
@@ -191,8 +200,8 @@ func candidates(st *store.State, f entry.Facet, from, cutoff string, keep func(*
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		if len(a.t.scenes) != len(b.t.scenes) {
-			return len(a.t.scenes) > len(b.t.scenes)
+		if sa, sb := a.t.sceneCount(), b.t.sceneCount(); sa != sb {
+			return sa > sb
 		}
 		if len(a.t.sources) != len(b.t.sources) {
 			return len(a.t.sources) > len(b.t.sources)
@@ -205,9 +214,77 @@ func candidates(st *store.State, f entry.Facet, from, cutoff string, keep func(*
 	return out
 }
 
+type candCluster struct {
+	label string
+	items []candidate
+}
+
+// clusterCandidates projects a facet's candidates into compact 3–15 item clusters by cognitive clues
+// (Leverage.Dimension first, then cross-project Principle clues, then remaining spread-ordered items) and packs them
+// into synthesis batches of at most synthBatchItems items (at most synthBatches calls per facet).
+func clusterCandidates(cands []candidate) [][]candCluster {
+	byDim := map[string][]candidate{}
+	var princCross, rest []candidate
+	for _, c := range cands {
+		if c.e.Leverage != nil && c.e.Leverage.Dimension != "" {
+			byDim[c.e.Leverage.Dimension] = append(byDim[c.e.Leverage.Dimension], c)
+		} else if c.e.Principle() != "" && len(c.t.projects) >= MinScenes {
+			princCross = append(princCross, c)
+		} else {
+			rest = append(rest, c)
+		}
+	}
+	var clusters []candCluster
+	appendChunks := func(label string, items []candidate) {
+		for len(items) > 0 {
+			n := min(len(items), synthClusterMax)
+			if len(items)-n > 0 && len(items)-n < synthClusterMin {
+				n = len(items)
+			}
+			clusters = append(clusters, candCluster{label: label, items: items[:n]})
+			items = items[n:]
+		}
+	}
+	for _, dim := range entry.Dimensions {
+		if len(byDim[dim]) >= synthClusterMin {
+			appendChunks("dim:"+dim, byDim[dim])
+		} else {
+			rest = append(rest, byDim[dim]...)
+		}
+	}
+	if len(princCross) >= synthClusterMin {
+		appendChunks("principle", princCross)
+	} else {
+		rest = append(rest, princCross...)
+	}
+	if len(rest) > 0 {
+		appendChunks("general", rest)
+	}
+	// Pack clusters into calls of at most synthBatchItems items, capped at synthBatches calls.
+	var batches [][]candCluster
+	var cur []candCluster
+	curN := 0
+	for _, cl := range clusters {
+		if curN > 0 && curN+len(cl.items) > synthBatchItems {
+			batches = append(batches, cur)
+			if len(batches) >= synthBatches {
+				return batches
+			}
+			cur, curN = nil, 0
+		}
+		cur = append(cur, cl)
+		curN += len(cl.items)
+	}
+	if len(cur) > 0 && len(batches) < synthBatches {
+		batches = append(batches, cur)
+	}
+	return batches
+}
+
 // Weekly is L1 for the week (ISO, "2026-W47") on st, a snapshot of the curated state. cutoff, when set, is a
 // backtest's: only evidence before that day is used, and the patterns go into a scratch state (s), not the holder's.
-// It returns the run; its patterns are written into s.
+// Principle facets (③④⑥⑤) run clustered quote-grounded synthesis; contract facets (①②) run SyncContracts; all
+// passing patterns then go through counterSearch.
 func (r *Runner) Weekly(ctx context.Context, st *store.State, s *State, week, cutoff string) (*Run, error) {
 	days, err := weekDays(week)
 	if err != nil {
@@ -225,7 +302,8 @@ func (r *Runner) Weekly(ctx context.Context, st *store.State, s *State, week, cu
 	run := &Run{Period: week, At: stamp(r.now()), Cutoff: cutoff, Counts: map[string]int{"window_days": window}}
 	now := stamp(r.now())
 	var touched []string
-	for _, f := range Facets {
+	// 1. L1 Principles (③ Judgement, ④ Workflow, ⑤ World, ⑥ Persona).
+	for _, f := range PrincipleFacets {
 		cands := candidates(st, f, from, cutoff, nil)
 		run.Counts["items_"+string(f)] = len(cands)
 		if len(cands) < 3 {
@@ -237,6 +315,13 @@ func (r *Runner) Weekly(ctx context.Context, st *store.State, s *State, week, cu
 		}
 		touched = union(touched, ids...)
 	}
+	// 2. L1 Collaboration Contracts (① Interaction, ② Tools): folded rules_merge channel.
+	cIDs, err := r.SyncContracts(ctx, st, s, run, cutoff, now)
+	if err != nil {
+		return run, err
+	}
+	touched = union(touched, cIDs...)
+	// 3. Counter-example search for all passing principles and contracts.
 	if err := r.counterSearch(ctx, st, s, run, touched, end, cutoff, now); err != nil {
 		return run, err
 	}
@@ -251,23 +336,40 @@ func (r *Runner) Weekly(ctx context.Context, st *store.State, s *State, week, cu
 	return run, nil
 }
 
-// synthesize asks for the patterns behind one facet's candidates, in at most synthBatches calls, and writes them
-// into s: a proposal extending an existing pattern adds its members there. It returns the ids made or touched.
+// synthesize asks for the principles behind one facet's candidates, grouped into compact cognitive clusters and
+// grounded in user quotes, and writes them into s: a proposal extending an existing principle adds its members there.
 func (r *Runner) synthesize(ctx context.Context, st *store.State, s *State, run *Run, f entry.Facet, cands []candidate, cutoff, now string) ([]string, error) {
 	var touched []string
-	for b := 0; b < synthBatches && b*synthItems < len(cands); b++ {
-		batch := cands[b*synthItems : min(len(cands), (b+1)*synthItems)]
-		if len(batch) < 3 {
-			break
+	batches := clusterCandidates(cands)
+	for _, batch := range batches {
+		total := 0
+		for _, cl := range batch {
+			total += len(cl.items)
+		}
+		if total < synthClusterMin {
+			continue
 		}
 		in := synthInput{Facet: string(f), Meaning: facetMeaning[f], Lang: r.lang()}
 		local := map[string]string{}
-		for i, c := range batch {
-			id := fmt.Sprintf("i%d", i+1)
-			local[id] = c.e.ID
-			in.Items = append(in.Items, synthItem{ID: id, Text: clip(c.e.Shown(), 160), Situation: clip(c.e.Situation, 80),
-				Choice: clip(c.e.Choice, 80), Rejected: clip(c.e.Rejected, 60), Projects: c.t.projects, Sources: c.t.groups,
-				Weeks: len(c.t.weeks), Evidence: len(c.t.sources), People: len(c.t.people)})
+		idx := 0
+		for _, cl := range batch {
+			for _, c := range cl.items {
+				idx++
+				id := fmt.Sprintf("i%d", idx)
+				local[id] = c.e.ID
+				var dim, hint, princ string
+				if c.e.Leverage != nil {
+					dim, hint, princ = c.e.Leverage.Dimension, c.e.Leverage.Hint, clip(c.e.Leverage.Principle, 100)
+				}
+				in.Items = append(in.Items, synthItem{
+					ID: id, Cluster: cl.label, Text: clip(c.e.Shown(), 160), Situation: clip(c.e.Situation, 80),
+					Choice: clip(c.e.Choice, 80), Rejected: clip(c.e.Rejected, 60),
+					Dimension: dim, Hint: hint, Principle: princ,
+					Quotes:   itemQuotes(st, c.e, cutoff, 2),
+					Projects: c.t.projects, Sources: c.t.groups,
+					Weeks: len(c.t.weeks), Evidence: len(c.t.sources), People: len(c.t.people),
+				})
+			}
 		}
 		existing := s.Sorted(func(p *Pattern) bool { return p.Facet == string(f) && p.Lifecycle != Retired })
 		for i, p := range existing {
@@ -310,7 +412,7 @@ func (r *Runner) synthesize(ctx context.Context, st *store.State, s *State, run 
 				id := patternID(string(f), prop.Situation, prop.Choice, text)
 				p = s.Patterns[id]
 				if p == nil {
-					p = &Pattern{ID: id, Facet: string(f), Lifecycle: Candidate, Created: now}
+					p = &Pattern{ID: id, Facet: string(f), Kind: KindPrinciple, Lifecycle: Candidate, Created: now}
 					s.Patterns[id] = p
 					run.Counts["new"]++
 				}
@@ -318,9 +420,15 @@ func (r *Runner) synthesize(ctx context.Context, st *store.State, s *State, run 
 			if p.Lifecycle == Retired || p.Lifecycle == EraClosed {
 				p.Lifecycle = Candidate // seen again: back for the gate
 			}
+			if p.Kind == "" {
+				p.Kind = KindPrinciple
+			}
 			p.Text, p.Situation, p.Choice = text, strings.TrimSpace(prop.Situation), strings.TrimSpace(prop.Choice)
 			p.Rejected, p.DefaultContrast = strings.TrimSpace(prop.Rejected), strings.TrimSpace(prop.DefaultContrast)
 			p.HoldsForAnyone = prop.HoldsForAnyone
+			if d := strings.TrimSpace(prop.Dimension); slices.Contains(entry.Dimensions, d) {
+				p.Dimension = d
+			}
 			if x := strings.TrimSpace(prop.Exception); x != "" {
 				p.Exception = x
 			}
@@ -334,14 +442,26 @@ func (r *Runner) synthesize(ctx context.Context, st *store.State, s *State, run 
 	return touched, nil
 }
 
-// recount tallies a pattern's evidence again and sets its counts, gate, tags and subjects. Evidence the user withdrew
-// (marked wrong, deleted, a forgotten source) is not counted but kept in EvidenceIDs, so marking it right again brings
-// it back.
+// recount tallies a pattern's evidence again and sets its counts, gate, tags, subjects and contract/principle metadata.
+// Evidence the user withdrew (marked wrong, deleted, a forgotten source) is not counted but kept in EvidenceIDs, so
+// marking it right again brings it back.
 func recount(st *store.State, p *Pattern, cutoff string) {
 	p.EvidenceIDs = followMerges(st, p.EvidenceIDs)
 	p.CounterIDs = followMerges(st, p.CounterIDs)
 	sort.Strings(p.EvidenceIDs)
 	live := liveIDs(st, p.EvidenceIDs)
+	if p.IsContract() {
+		// Also include live user-owned entries that may not pass memsrc.Pool filters (e.g. handwritten).
+		for _, id := range p.EvidenceIDs {
+			if e := st.Entries[id]; e != nil && e.Live() && isUserOwned(e) && !slices.Contains(live, id) {
+				live = append(live, id)
+			}
+		}
+		p.Hard, p.ViolationCount = contractHard(st, live, cutoff)
+	} else if evDim := inferDimension(st, live); evDim != "" {
+		// Evidence majority dimension takes precedence over a model guess (prevents defaulting everything to decision).
+		p.Dimension = evDim
+	}
 	apply(p, count(st, live, cutoff))
 	p.Categories, p.OriginSpace = tags(st, append(live, liveIDs(st, p.CounterIDs)...))
 	p.Subjects = subjects(st, live)
@@ -407,8 +527,40 @@ type (
 	}
 )
 
+// itemQuotes returns up to n distinct representative user quotes under e (before cutoff), preferring explicit WhoSelf
+// lines, so synthesis and contract aggregation stay grounded in the user's actual words.
+func itemQuotes(st *store.State, e *entry.Entry, cutoff string, n int) []string {
+	evs := evidenceOf(st, e, cutoff)
+	// Prefer explicit WhoSelf quotes before unresolved-Who legacy quotes.
+	sort.SliceStable(evs, func(i, j int) bool { return evs[i].self && !evs[j].self })
+	var out []string
+	seenUnit := map[string]bool{}
+	seenText := map[string]bool{}
+	for _, ev := range evs {
+		if !ev.quoted || seenUnit[ev.key] || seenText[ev.quoteKey] {
+			continue
+		}
+		x := st.Entries[ev.entry]
+		if x == nil {
+			continue
+		}
+		for _, line := range x.Evidence {
+			if line.Ref+"@"+line.Day == ev.key && isUserQuote(line) {
+				out = append(out, clip(line.Quote, 100))
+				seenUnit[ev.key] = true
+				seenText[ev.quoteKey] = true
+				break
+			}
+		}
+		if len(out) >= n {
+			break
+		}
+	}
+	return out
+}
+
 // counterCandidates are the entries that might contradict p: its classes' recorded counters first, then the entries of
-// its facet over the counterDays before end that are most alike in words and not among its evidence.
+// its facet over the counterDays before end that share a similar situation while differing in choice.
 func counterCandidates(st *store.State, p *Pattern, end, cutoff string) []*entry.Entry {
 	from := addDays(end, -counterDays)
 	in := map[string]bool{}
@@ -432,7 +584,11 @@ func counterCandidates(st *store.State, p *Pattern, end, cutoff string) []*entry
 			}
 		}
 	}
-	probe := p.Situation + " " + p.Choice + " " + p.Text
+	sitProbe := strings.TrimSpace(p.Situation)
+	if sitProbe == "" {
+		sitProbe = p.Text
+	}
+	choiceProbe := strings.TrimSpace(p.Choice)
 	type scored struct {
 		e *entry.Entry
 		s float64
@@ -445,10 +601,17 @@ func counterCandidates(st *store.State, p *Pattern, end, cutoff string) []*entry
 		if e.Last < from || cutoff != "" && e.First >= cutoff {
 			continue
 		}
-		s := norm.Jaccard(probe, e.Situation+" "+e.Choice+" "+e.Shown())
-		if s >= 0.08 {
-			pool = append(pool, scored{e, s})
+		sitSim := norm.Jaccard(sitProbe, e.Situation+" "+e.Shown())
+		if sitSim < 0.06 {
+			continue
 		}
+		// Down-rank entries that appear to make the same choice, so genuine counter-examples rise first.
+		score := sitSim
+		if choiceProbe != "" {
+			choiceSim := norm.Jaccard(choiceProbe, e.Choice+" "+e.Shown())
+			score = sitSim * (1 - 0.5*choiceSim)
+		}
+		pool = append(pool, scored{e, score})
 	}
 	sort.Slice(pool, func(i, j int) bool {
 		if pool[i].s != pool[j].s {

@@ -34,7 +34,9 @@ func newFake(t *testing.T, h func(w http.ResponseWriter, r *http.Request, body m
 			return
 		}
 		var body map[string]any
-		if b, _ := io.ReadAll(r.Body); len(b) > 0 {
+		b, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(b)) // a CDN upload's handler reads the picture
+		if len(b) > 0 && r.Header.Get("Content-Type") == "application/json" {
 			if err := json.Unmarshal(b, &body); err != nil {
 				t.Errorf("request body is not JSON: %s", b)
 			}
@@ -445,6 +447,48 @@ func TestSendTextAndTyping(t *testing.T) {
 	}
 	if got[2]["path"] != "/ilink/bot/sendtyping" || got[2]["status"] != float64(typingOn) || got[2]["typing_ticket"] != "TT" {
 		t.Errorf("typing %v", got[2])
+	}
+}
+
+// A photo sent as the original (12 MiB here) is downloaded; a picture past MaxPicture is refused once decrypted (its
+// ciphertext still fits under the read limit). Only received pictures get the larger limit: the same 12 MiB, or 8 MiB
+// and one byte, is refused as a voice message, and the 12 MiB photo is not uploaded as an answer's picture.
+func TestDownloadTakesAnOriginalPhoto(t *testing.T) {
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	original := bytes.Repeat([]byte{0xab}, 12<<20)
+	plains := map[string][]byte{
+		"photo":      original,
+		"big":        bytes.Repeat([]byte{0xab}, MaxPicture+1),
+		"voice-over": bytes.Repeat([]byte{0xab}, 8<<20+1),
+	}
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		plain, ok := plains[r.URL.Query().Get("encrypted_query_param")]
+		if r.URL.Path != "/c2c/download" || !ok {
+			t.Errorf("unexpected request %s", r.URL)
+			return
+		}
+		enc, err := EncryptECB(plain, key)
+		if err != nil {
+			t.Error(err)
+		}
+		_, _ = w.Write(enc)
+	})
+	c := f.client("BT", "")
+	ctx, keyHex := context.Background(), hex.EncodeToString(key)
+	got, err := c.Download(ctx, Media{Kind: MediaImage, Query: "photo", KeyHex: keyHex})
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("a 12 MiB original: %d bytes, %v", len(got), err)
+	}
+	if _, err := c.Download(ctx, Media{Kind: MediaImage, Query: "big", KeyHex: keyHex}); !errors.Is(err, ErrMediaTooLarge) {
+		t.Fatalf("a picture past MaxPicture: %v", err)
+	}
+	for _, q := range []string{"photo", "voice-over"} {
+		if _, err := c.Download(ctx, Media{Kind: MediaVoice, Query: q, KeyHex: keyHex}); !errors.Is(err, ErrMediaTooLarge) {
+			t.Fatalf("voice %s past 8 MiB: %v", q, err)
+		}
+	}
+	if _, err := c.UploadImage(ctx, "peer@im.wechat", original); CodeOf(err) != CodeProtocol {
+		t.Fatalf("uploading the 12 MiB photo: %v", err)
 	}
 }
 

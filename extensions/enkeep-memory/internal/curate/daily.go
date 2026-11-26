@@ -232,6 +232,11 @@ func (c *Curator) RunDaily(ctx context.Context, day string, dry bool) (*store.Ru
 		if err := c.Consolidate(ctx, cm, day, run); err != nil {
 			return nil, err
 		}
+		if err := c.mergeRules(ctx, cm, run); err != nil && !errors.Is(err, model.ErrPaused) && !errors.Is(err, model.ErrUnavailable) {
+			run.Notes = append(run.Notes, "规矩合并没做完："+err.Error())
+		} else if err == nil && run.Counts["rule_groups"] > 0 {
+			c.settleAll(day, run)
+		}
 	}
 	tCons := time.Now()
 	// 4. Proposals that a day can already make, and the queue's upkeep; commitments past due are flagged (5.4).

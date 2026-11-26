@@ -17,8 +17,11 @@ import (
 const cdnOrigin = "https://novac2c.cdn.weixin.qq.com"
 
 const (
-	// MaxMedia is the largest picture or voice Download accepts (decrypted).
+	// MaxMedia is the largest voice Download accepts (decrypted) and the largest picture UploadImage sends.
 	MaxMedia = 8 << 20
+	// MaxPicture is the largest picture Download accepts (decrypted): room for a photo sent as the original (often
+	// 3–10 MB), which the hub scales down for the model.
+	MaxPicture = 16 << 20
 	// MaxFile is the largest file or video Download accepts, and the hub's raw budget for one message's attachments.
 	MaxFile = 40 << 20
 )
@@ -54,7 +57,10 @@ func (c *Client) Download(ctx context.Context, m Media) ([]byte, error) {
 		return nil, &Error{Code: CodeHTTP, Msg: "media download answered HTTP " + resp.Status, Retry: resp.StatusCode >= 500}
 	}
 	limit := MaxMedia
-	if m.Kind == MediaFile || m.Kind == MediaVideo {
+	switch m.Kind {
+	case MediaImage:
+		limit = MaxPicture
+	case MediaFile, MediaVideo:
 		limit = MaxFile
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit+aes.BlockSize+1)))

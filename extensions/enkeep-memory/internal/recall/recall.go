@@ -77,8 +77,12 @@ func usable(st *store.State, e *entry.Entry, cats []string) bool {
 	return true
 }
 
-// Line is what an entry says in an answer: the user's own wording, else its exit wording, else its text.
-func Line(e *entry.Entry) string {
+// Line is what an entry says in an answer: the user's own wording, else its exit wording, else its text; with when
+// its rule does not hold (Exception) when that is not in it already.
+func Line(e *entry.Entry) string { return Head(e) + Exception(e) }
+
+// Head is Line without the exception.
+func Head(e *entry.Entry) string {
 	if e.Export != nil {
 		if e.Export.User != "" {
 			return e.Export.User
@@ -88,6 +92,33 @@ func Line(e *entry.Entry) string {
 		}
 	}
 	return e.Shown()
+}
+
+// exceptionMost is the longest exception a line carries, in characters.
+const exceptionMost = 60
+
+// Exception is "（例外：<when the rule does not hold>）" for a rule, a way of working or a choice that has one and whose
+// line does not say it already; "" otherwise, and for what the user worded themselves. 0.2.6: the exception was read
+// into its own field and dropped at every exit, so "do not stop to ask" stood without "only when it is live, public
+// or deletes data".
+func Exception(e *entry.Entry) string {
+	x := strings.TrimSpace(e.Exception)
+	if x == "" || e.User != nil || (e.Export != nil && e.Export.User != "") {
+		return ""
+	}
+	switch e.Facet {
+	case entry.Interaction, entry.Tools, entry.Workflow, entry.Judgement:
+	default:
+		return ""
+	}
+	x = strings.TrimRight(x, "。.；;")
+	if strings.Contains(Head(e), x) {
+		return ""
+	}
+	if r := []rune(x); len(r) > exceptionMost {
+		x = string(r[:exceptionMost]) + "…"
+	}
+	return "（例外：" + x + "）"
 }
 
 // names are the names an entry is about: its object, subject, target, scopes and card's person.

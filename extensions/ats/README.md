@@ -19,13 +19,13 @@ In the extension's settings:
 
 ## How a task runs
 
-One binary has two roles. `ats hub` is the hub program: the queue (one JSON file in the extension's data directory, written by this program only), its dispatcher, the queue page and the HTTP API. `ats node` is the program on each selected computer: it makes and removes worktrees and runs acceptance commands.
+One binary has two roles. `ats hub` is the hub program: the queue (one JSON file in the extension's data directory, written by this program only), its dispatcher, the home page and the HTTP API. `ats node` is the program on each selected computer: it makes and removes worktrees and runs acceptance commands.
 
 | Step | What happens |
 | --- | --- |
 | queued | The scheduler admits tasks by priority (`p0`–`p3`), difficulty (model tier `fast`, `standard`, `strong`), waiting time, free slots on the online computers and quota. Below the reserve line only `p0` and `p1` go; with the quota used up nothing goes until it resets. |
 | preparing | The computer's program resolves the ref to a commit and checks it out into a new worktree in its data directory (a detached checkout for a read-only task, a branch `ats/<task>-<attempt>` for one that may write). |
-| working | The dispatcher starts a Persona agent session in the worktree, attached to the to-do, and watches it. A session that waits for you (a question, an approval) or ends its turn saying it is blocked shows as **needs you** at the top of the queue page, with what it asks for (the command it wants to run, its question, or what it said it is blocked on); answer in the session and the task goes on. |
+| working | The dispatcher starts a Persona agent session in the worktree, attached to the to-do, and watches it. A session that waits for you (a question, an approval) or ends its turn saying it is blocked shows as **needs you** at the top of the home page, with what it asks for (the command it wants to run, its question, or what it said it is blocked on); answer in the session and the task goes on. |
 | accepting | The computer's program runs the acceptance command in the worktree. Exit code 0 is a pass. A task with no acceptance command ends as "ran, not verified". |
 | finished | Changes the agent of a writing task left uncommitted are committed by ATS on the task's branch `ats/<task>-<attempt>`, without running hooks or signing (nobody is there to answer them), and the worktree is removed (kept when that commit cannot be made); the branch, the commit and the session stay as evidence. The outcome is written to the to-do as a decision, once (`ref: ats:<task>:<state>[:<verdict>]`). |
 
@@ -35,11 +35,20 @@ A retry does not start blind. Its prompt carries how the previous attempt ended 
 
 Each attempt carries a fence token, so a late report of an old attempt never overwrites a newer one. The dispatcher keeps all of its state in the queue file, so a restart picks every attempt up where it was.
 
-## The queue page
+## The home page
 
-**ATS queue** in the main navigation. Tasks come first, in the order you act on them: **needs you** (each row says what the task waits for), **queued and running**, **recently finished**; the scheduler's numbers (admission mode, remaining quota, counts; the per-tier table only while a tier is held back) and the computers are below.
+**ATS 自动做待办** in the main navigation. All of its text is plain Chinese; scheduler terms (priorities `p0`–`p3`, tiers, admission modes, error classes, ids) appear only in a task page's technical details.
 
-A row says the priority, whether the task may write, the repository and where it stands in plain words (which computer and attempt, when a failed attempt is retried, why a task failed). Tapping a row opens the task's page and never changes the task: its facts, what it is doing or waiting for, the acceptance command with its exit code and the end of its output, the agent's own summary, the branch and commit it left, every attempt, and the buttons **cancel** (asks first) and **retry**. Cancel and retry are also in a row's menu and under its swipe.
+- At the top, a fixed line on what ATS does and how to hand it work (ask the assistant in a to-do).
+- Until a computer and an allowed folder are set, the page shows only a checklist of those two steps, each marked done or not, and where to set them (Settings › Extensions › ATS 自动做待办); a page cannot link to the settings page.
+- Once set up: one line on how things stand (taking work, low on quota so only urgent and important tasks run, out of quota until a time, or no computer online), then **needs you** (what each task waits for and where to answer), **being done and queued**, **recently finished**, the counts in words, and the chosen computers (online or not, how busy) with the allowed folders. The remaining quota is shown only when the hub has a gateway account to read it from.
+- Button errors are told in Chinese with what to do next; an error it does not know keeps its original text after the sentence.
+
+A card on the Overview page shows the same in a glance and opens the home page when tapped. Before setup it says which of the two steps is missing and where to set it, and how many earlier tasks have not ended. Once set up it shows the counts (**needs you**, **being done**, **queued**, and **not done** when any failed) and one next step: the first task that waits for you and what it asks, else no computer online, else low or used-up quota with the time it comes back (only when quota was measured), else that nothing needs you.
+
+Tapping a row opens the task's page and never changes the task. The page leads with where the task stands and what to do next, then what the agent said it did, how the result was checked (the command, passed or not, the end of its output), where the changes are (branch and commit, never pushed), what was asked, the facts, every attempt, and last the technical details (ids, model tier, start commit, exit code, the raw error). **Cancel** (asks first) and **retry** are on the page and in a row's menu and under its swipe.
+
+The words in the to-do decision and in the API are unchanged.
 
 ## What is written to the to-do
 
@@ -90,4 +99,4 @@ go -C extensions/ats test ./...
 scripts/package.sh ats
 ```
 
-Version 0.4.0 replaces the stdio MCP server and the external worker interface of 0.3.0, which could queue tasks but had nothing to run them. Version 0.5.0 stops retrying failures that would repeat, lets a retry go on from the previous attempt, adds the task page and rewords the queue page, the to-do decision and the confirmation. Version 0.6.0 lets a new task choose an agent engine such as `codex`, keeps `claude` as the default for omitted values and older queue records, and carries the choice through attempts and retries.
+Version 0.4.0 replaces the stdio MCP server and the external worker interface of 0.3.0, which could queue tasks but had nothing to run them. Version 0.5.0 stops retrying failures that would repeat, lets a retry go on from the previous attempt, adds the task page and rewords the queue page, the to-do decision and the confirmation. Version 0.6.0 lets a new task choose an agent engine such as `codex`, keeps `claude` as the default for omitted values and older queue records, and carries the choice through attempts and retries. Version 0.7.0 rewrites the home page, the task page and the settings in plain Chinese: a setup checklist before anything else, one status line, priorities and outcomes in words, technical details last. Version 0.7.1 adds the Overview card.

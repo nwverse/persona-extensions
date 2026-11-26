@@ -358,3 +358,16 @@ func TestSubjectsHangRules(t *testing.T) {
 		t.Fatalf("subjects = %v", got)
 	}
 }
+
+// A rule's occasion is among its subjects (0.2.6), so a decisions_query tag of one occasion word finds it.
+func TestSubjectsOccasion(t *testing.T) {
+	st := &store.State{}
+	e := &entry.Entry{Facet: entry.Interaction, Type: "dispatch", Impact: entry.Impact{Moment: "dispatch"}}
+	got := Subjects(st, e)
+	if !slices.Contains(got, "派活") || !slices.Contains(got, "dispatch") {
+		t.Errorf("subjects %v", got)
+	}
+	if got := Subjects(st, &entry.Entry{Facet: entry.World, Impact: entry.Impact{Moment: "dispatch"}}); len(got) != 0 {
+		t.Errorf("a fact's subjects %v", got)
+	}
+}

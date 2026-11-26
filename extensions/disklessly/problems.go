@@ -61,9 +61,9 @@ const sandboxOffCommand = "personad extension sandbox disklessly off"
 func sandboxProblem() problem {
 	return problem{
 		Cause:   causeSandbox,
-		Title:   "扩展在沙箱里",
-		Reason:  "Disklessly 现在运行在 hub 的沙箱里：沙箱里没有网络，也读不到 hub 上的 ~/.ssh 和本机的会话目录，所以连不上任何远程电脑，本机的结果也不准。",
-		Next:    "在 hub 所在的电脑上运行下面的命令关掉这个扩展的沙箱（从官方市场安装时默认就是关的），然后点「重试」或「扫描全部机器」。",
+		Title:   "被关在隔离环境里",
+		Reason:  "Persona 现在把 Disklessly 关在隔离环境（沙箱）里运行：里面上不了网，也读不到 ~/.ssh 和 AI 对话所在的文件夹，所以连不上任何别的电脑，这台电脑的结果也不准。",
+		Next:    "在运行 Persona 的电脑上运行下面的命令，给这个扩展关掉沙箱（从官方市场安装时默认就是关的），然后点「重试」或「" + scanAllText + "」。",
 		Command: sandboxOffCommand,
 		Retry:   true,
 	}
@@ -113,7 +113,7 @@ func sshProblem(m *Machine, raw string) problem {
 		if loc != nil {
 			line = raw[loc[1]:]
 		}
-		return problem{Title: "本机检查失败", Reason: "在本机运行检查脚本失败。", Next: "点「重试」；还是失败时打开「详情」看脚本的输出。", Raw: strings.TrimSpace(line), Retry: true}
+		return problem{Title: "命令执行失败", Reason: "在运行 Persona 的电脑上执行命令没有成功（这里不经过远程登录）。", Next: "点「重试」；还是不行就打开「详情」看输出。", Raw: strings.TrimSpace(line), Retry: true}
 	}
 	line := raw
 	if loc := sshFailRE.FindStringIndex(raw); loc != nil {
@@ -132,22 +132,22 @@ func sshProblem(m *Machine, raw string) problem {
 	case causeSandbox:
 		s := sandboxProblem()
 		p.Title, p.Command = s.Title, s.Command
-		p.Reason = "连不上" + name + "：Disklessly 运行在 hub 的沙箱里，沙箱里没有网络也读不到 ~/.ssh，这台电脑本身可能没有问题。"
-		p.Next = "在 hub 所在的电脑上运行下面的命令关掉这个扩展的沙箱，然后点「重试」。"
+		p.Reason = "连不上" + name + "：Disklessly 被关在隔离环境（沙箱）里，上不了网也读不到 ~/.ssh，那台电脑本身可能没有问题。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令，给这个扩展关掉沙箱，然后点「重试」。"
 	case causeTimeout:
 		p.Title = "连接超时"
-		p.Reason = "连接" + name + "超时：它可能关机、休眠，或不在同一个网络里（例如 VPN 或 Tailscale 没连上）。"
-		p.Next = "开机或连上网络后点「重试」；也可以在 hub 上运行下面的命令自己试一下。"
+		p.Reason = "连" + name + "等了太久没反应：它可能关机、睡眠了，或者不在同一个网络里（比如 VPN 或 Tailscale 没连上）。"
+		p.Next = "开机或连上网络后点「重试」；也可以在运行 Persona 的电脑上运行下面的命令自己试一下。"
 		p.Command = test
 	case causeAuth:
-		p.Title, p.Edit = "SSH 登录被拒绝", true
-		p.Reason = name + "拒绝了 SSH 登录：它不接受 hub 的密钥，或者用户名不对。"
-		p.Next = "在 hub 上运行下面的命令把公钥装到这台电脑，或在「机器磁盘」页「编辑当前机器节点」里改用户名和私钥，然后点「重试」。"
+		p.Title, p.Edit = "远程登录被拒绝", true
+		p.Reason = name + "不让登录：它不认运行 Persona 的电脑的密钥，或者用户名不对。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令，把密钥装到这台电脑上；或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的用户名和密钥文件，然后点「重试」。"
 		p.Command = "ssh-copy-id " + sshTarget(m)
 	case causeHostKey:
-		p.Title = "主机指纹未确认"
-		p.Reason = "hub 还没有信任" + name + "的主机指纹（或者指纹变了），自动登录被拦下。"
-		p.Next = "在 hub 上运行下面的命令登录一次、核对并接受指纹，然后点「重试」。"
+		p.Title = "还没确认这台电脑的身份"
+		p.Reason = "运行 Persona 的电脑还没认过" + name + "的身份标识（指纹），或者指纹变了，所以自动登录被拦下了。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令手动登录一次，核对并接受指纹，然后点「重试」。"
 		p.Command = "ssh " + sshTarget(m)
 	case causeRefused:
 		p.Title, p.Edit = "连接被拒绝", true
@@ -155,27 +155,27 @@ func sshProblem(m *Machine, raw string) problem {
 		if mm := connectRE.FindStringSubmatch(line); mm != nil && isLoopback(mm[1]) {
 			// The machine is reached through a port forward on the hub, and nothing listens there.
 			p.Title, p.Edit = "端口转发没有运行", false
-			p.Reason = name + "要经过 hub 本机的端口转发（" + mm[1] + ":" + mm[2] + "）才能连上，但这个端口现在没有程序在监听，转发（例如 ssh -L、autossh 或隧道服务）没有在运行。"
-			p.Next = "在 hub 上把到这台电脑的转发重新建起来，然后点「重试」；可以用下面的命令确认能不能连上。"
+			p.Reason = name + "要经过运行 Persona 的电脑上的端口转发（" + mm[1] + ":" + mm[2] + "）才能连上，但这个端口现在没有程序在听，转发（比如 ssh -L、autossh 或隧道服务）没在运行。"
+			p.Next = "在运行 Persona 的电脑上把到这台电脑的转发重新建起来，然后点「重试」；可以用下面的命令确认能不能连上。"
 			break
 		}
-		p.Reason = name + "拒绝了连接：它的 SSH 服务没有打开，或者端口不对。"
+		p.Reason = name + "拒绝了连接：它没打开远程登录（SSH），或者端口不对。"
 		switch plat := m.Platform; {
 		case strings.HasPrefix(plat, "darwin"):
-			p.Next = "在这台 Mac 上打开 SSH（系统设置 › 通用 › 共享 › 远程登录），或在「编辑当前机器节点」里改端口，然后点「重试」。"
+			p.Next = "在这台 Mac 上打开远程登录（系统设置 › 通用 › 共享 › 远程登录），或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的端口，然后点「重试」。"
 		case strings.HasPrefix(plat, "linux"):
-			p.Next = "在这台电脑上启动 SSH 服务（sudo systemctl enable --now sshd，Debian / Ubuntu 上服务名是 ssh），或在「编辑当前机器节点」里改端口，然后点「重试」。"
+			p.Next = "在这台电脑上打开远程登录服务（sudo systemctl enable --now sshd，Debian / Ubuntu 上服务名是 ssh），或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的端口，然后点「重试」。"
 		default:
-			p.Next = "在这台电脑上打开 SSH（macOS：系统设置 › 通用 › 共享 › 远程登录；Linux：启动 sshd 服务），或在「编辑当前机器节点」里改端口，然后点「重试」。"
+			p.Next = "在这台电脑上打开远程登录（Mac：系统设置 › 通用 › 共享 › 远程登录；Linux：启动 sshd 服务），或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的端口，然后点「重试」。"
 		}
 	case causeDNS:
-		p.Title, p.Edit = "找不到主机名", true
-		p.Reason = "hub 找不到" + name + "的主机名 " + cmp.Or(m.Host, m.ID) + "。"
-		p.Next = "检查 hub 上 ~/.ssh/config 里它的 HostName，或在「编辑当前机器节点」里改成能解析的地址，然后点「重试」；下面的命令会显示 ssh 实际用的地址。"
+		p.Title, p.Edit = "找不到这个电脑名", true
+		p.Reason = "运行 Persona 的电脑找不到" + name + "的地址 " + cmp.Or(m.Host, m.ID) + "。"
+		p.Next = "看看那台电脑上 ~/.ssh/config 里它的 HostName 对不对，或者在「" + homeTitle + "」页的「添加或修改电脑」里把这台电脑的地址改成能找到的，然后点「重试」；下面的命令会显示 ssh 实际用的地址。"
 		p.Command = "ssh -G " + cmp.Or(m.Host, m.ID) + " | grep -i '^hostname'"
 	case causeNetwork:
 		p.Title = "网络不通"
-		p.Reason = "hub 到" + name + "的网络不通。"
+		p.Reason = "运行 Persona 的电脑到" + name + "的网络不通。"
 		p.Next = "确认两台电脑在同一个网络或 VPN 里，然后点「重试」。"
 		p.Command = test
 	case causeSSHConfig:
@@ -183,18 +183,18 @@ func sshProblem(m *Machine, raw string) problem {
 		if mm := sshConfigRE.FindStringSubmatch(line); mm != nil {
 			file = strings.TrimRight(mm[1], ".:")
 		}
-		p.Title = "hub 的 SSH 配置有问题"
-		p.Reason = "连不上" + name + "：hub 上的 SSH 配置文件 " + file + " 属主或权限不对，ssh 拒绝读取它，所以连不上任何电脑。"
-		p.Next = "在 hub 上运行下面的命令改好它，然后点「重试」。"
+		p.Title = "远程登录的设置文件有问题"
+		p.Reason = "连不上" + name + "：运行 Persona 的电脑上的 SSH 设置文件 " + file + " 归属或权限不对，ssh 不肯读它，所以哪台电脑都连不上。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令改好它，然后点「重试」。"
 		p.Command = "sudo chown root:root " + file + " && sudo chmod 644 " + file
 	case causeBadHost:
-		p.Title, p.Edit, p.Retry = "主机名无效", true, false
-		p.Reason = name + "的主机名不是有效的 SSH 地址。"
-		p.Next = "在「机器磁盘」页「编辑当前机器节点」里改成 ~/.ssh/config 里的 Host 别名或地址。"
+		p.Title, p.Edit, p.Retry = "电脑地址写错了", true, false
+		p.Reason = name + "的地址不是能远程登录的地址。"
+		p.Next = "在「" + homeTitle + "」页的「添加或修改电脑」里把这台电脑的地址改成 ~/.ssh/config 里的名字或电脑地址。"
 	default:
-		p.Title = "SSH 连接失败"
-		p.Reason = "SSH 连接" + name + "失败。"
-		p.Next = "在 hub 上运行下面的命令看看具体原因（原始输出在「详情」里），修好后点「重试」。"
+		p.Title = "远程登录失败"
+		p.Reason = "远程登录" + name + "没有成功。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令看看具体原因（原始输出在「详情」里），修好后点「重试」。"
 		p.Command = test
 	}
 	return p
@@ -222,8 +222,9 @@ func humanize(s string) (msg, raw string) {
 	return s, ""
 }
 
-// detailError is an error whose message is for people; raw is what the CLI or the tool said.
-type detailError struct{ msg, raw string }
+// detailError is an error whose message is for people; raw is what the CLI or the tool said, and
+// command a command that fixes it (shown under the machine's row).
+type detailError struct{ msg, raw, command string }
 
 func (e *detailError) Error() string { return e.msg }
 
@@ -240,6 +241,34 @@ func humanizeErr(err error) (msg, raw string) {
 		raw = strings.TrimSpace(strings.Join([]string{raw, de.raw}, "\n"))
 	}
 	return msg, raw
+}
+
+// errCommand is the fixing command a detailError carries, or "".
+func errCommand(err error) string {
+	var de *detailError
+	if errors.As(err, &de) {
+		return de.command
+	}
+	return ""
+}
+
+// humanizeErrFor is humanizeErr for a job on machine m: a run on the hub's own computer is not
+// an SSH connection, whatever host name the error text carries.
+func humanizeErrFor(m *Machine, err error) (msg, raw string) {
+	if err == nil || m == nil || !m.IsLocal {
+		return humanizeErr(err)
+	}
+	s := err.Error()
+	if loc := sshFailRE.FindStringIndex(s); loc != nil {
+		p := sshProblem(m, s[loc[0]:])
+		msg, raw = s[:loc[0]]+p.text(), p.Raw
+		var de *detailError
+		if errors.As(err, &de) && de.raw != "" {
+			raw = strings.TrimSpace(raw + "\n" + de.raw)
+		}
+		return msg, raw
+	}
+	return humanizeErr(err)
 }
 
 // userMessage is an error's text for a toast or an action error (no raw part).
@@ -413,17 +442,17 @@ func brewFailure(name string, o brewOutcome) error {
 	why := ""
 	switch o.step {
 	case "nobrew":
-		why = "这台电脑上找不到 Homebrew"
+		why = "这台电脑上找不到 Homebrew（一个装软件的工具）"
 	case "tap":
 		why = "添加 " + brewTap + " 没有成功，可能是网络连不上 GitHub"
 	case "install", "upgrade":
 		why = "Homebrew 下载或" + brewVerb(o.step) + " " + brewFormula + " 没有成功"
 	case "verify":
-		why = cmp.Or(o.reason, "装好的 disklessly 检查没有通过")
+		why = cmp.Or(o.reason, "装好的配套小工具没通过检查")
 	default:
 		why = "Homebrew 没有给出结果"
 	}
-	msg := "在「" + name + "」上用 Homebrew " + brewVerb(cmp.Or(o.op, o.step)) + " disklessly 失败：" + why + "。"
+	msg := "在「" + name + "」上用 Homebrew " + brewVerb(cmp.Or(o.op, o.step)) + "配套小工具没有成功：" + why + "。"
 	if o.log != "" {
 		msg += "Homebrew 的输出在「详情」里；修好后再点一次，或在这台电脑上手动运行页面上的命令。"
 	}

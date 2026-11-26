@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"io"
 	"net"
@@ -49,12 +50,14 @@ type hookInput struct {
 	TranscriptPath string    `json:"transcript_path"`
 	ToolInput      toolInput `json:"tool_input"`
 
-	isAgy      bool
-	kind       hookKind
-	workspaces []string
-	geminiDir  string
-	agyDir     string
-	acpOption  string
+	isAgy         bool
+	kind          hookKind
+	workspaces    []string
+	cmdCwd        string
+	cmdCwdInvalid bool
+	geminiDir     string
+	agyDir        string
+	acpOption     string
 }
 
 // toolInput is what the hook reads of each allowed tool's input.
@@ -133,7 +136,7 @@ func runHook(a hookArgs, in io.Reader, out io.Writer, now time.Time) {
 	}
 	call := req.summary()
 	appendAudit(filepath.Join(a.Data, auditFile), auditEntry{
-		At: now.UTC().Format(time.RFC3339), Session: req.SessionID, Agent: req.AgentID, Cwd: req.Cwd, Tool: req.ToolName,
+		At: now.UTC().Format(time.RFC3339), Session: req.SessionID, Agent: req.AgentID, Cwd: cmp.Or(req.cmdCwd, req.Cwd), Tool: req.ToolName,
 		Command: redact(call), Length: utf8.RuneCountInString(call), ConfigDir: req.auditConfigDir(a),
 		Note: redact(strings.Join(notes, "; ")),
 	})
@@ -193,7 +196,10 @@ func refuse(a hookArgs, req hookInput, now time.Time) (string, []string) {
 	if why != "" || req.ToolName != "Bash" {
 		return why, nil
 	}
-	g := newGuardWithWorkspaces(req.Cwd, req.workspaces, readOptions(a.Data).AllowDestructive)
+	if req.cmdCwdInvalid {
+		return "invalid command cwd", nil
+	}
+	g := newGuardForCommand(req.Cwd, req.workspaces, req.cmdCwd, readOptions(a.Data).AllowDestructive)
 	if why := g.personOnly(req.ToolInput.Command); why != "" {
 		return "only a person approves this: " + why, nil
 	}
