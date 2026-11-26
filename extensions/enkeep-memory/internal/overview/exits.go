@@ -6,14 +6,16 @@ import (
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/memsrc"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 )
 
-// The exit (design 2.4): the used patterns go to the hub through the extension's own memory source, memory.entries,
-// beside the curated entries; the connector and the memory source keep their ids.
+// The exit (unified design §2.1): the used L1 principles and collaboration contracts go to the hub through the
+// extension's own memory source, memory.entries, beside the curated entries; the connector and the memory source keep
+// their ids.
 //
-//   - a pattern with no category and no restricted space: "ov:pattern:<id>", rank 950–985 by its spread, and a
-//     candidate for the standing set with its Score (0.2.0-beta.52: memsrc.Resident picks the few that stand, beside
-//     the curated entries, within the hub's room; before, up to 80 stood, far more than the hub ever took);
+//   - a pattern with no category and no restricted space: "ov:pattern:<id>", rank 950–985 by its spread when recalled,
+//     and a candidate for the three-bucket standing set with its Score and L1 metadata (memsrc decides whether it
+//     stands, never the maker);
 //   - one resting on any categorised evidence or said in a space: "ov:cat:<category>:<id>", never standing, rank 900,
 //     with every category and the space, for the hub to grade by scene.
 const (
@@ -22,22 +24,47 @@ const (
 	rankCat    = 900
 )
 
-// Score is how much a used pattern matters, on entry.Score's scale: its lifecycle (core 25, scoped 20), how many
-// scenes (projects and source kinds) and independent sources it rests on, and over how many weeks; at most 70, so a
-// pattern competes with the curated entries for the standing set and does not take it whole. (The hard evaluation of
-// 2026-11-24: scored up to 99, patterns of 200–300 bytes filled the set and it read worse than the entries alone.)
+// genericRuleTypes name no specific occasion and do not trigger the per-group 20% cap in the contract bucket.
+var genericRuleTypes = map[string]bool{"": true, "correction": true, "preference": true, "纠正": true}
+
+// independentQuotes returns the pattern's distinct normalised user quote count, falling back to SourcesCount for
+// older states written before UniqueQuotes was recorded.
+func independentQuotes(p *Pattern) int {
+	if p.UniqueQuotes > 0 {
+		return p.UniqueQuotes
+	}
+	return p.SourcesCount
+}
+
+// Score ranks a used L1 pattern within its standing bucket (unified design §2.1):
+//   - Hard contract:     100 + min(30, violation_count*6) + min(20, scenes*4)
+//   - Regular contract:  lifecycle(core:30 / scoped:24) + min(25, scenes*4) + min(25, quotes*3) + min(20, weeks*4)
+//   - Principle:         lifecycle(core:30 / scoped:26) + min(25, scenes*5) + min(20, weeks*4) + min(15, quotes*2) + hasPolesOrException(10)
 func Score(p *Pattern) int {
-	s := 0
-	switch p.Lifecycle {
-	case Core:
-		s = 25
-	case Scoped:
-		s = 20
-	default:
+	if p == nil || !p.Used() {
 		return 0
 	}
-	s += min(20, 2*p.ScenesCount) + min(15, p.SourcesCount) + min(10, 2*len(p.ActiveWeeks))
-	return min(70, s)
+	quotes := independentQuotes(p)
+	weeks := len(p.ActiveWeeks)
+	if p.IsContract() {
+		if p.Hard {
+			return 100 + min(30, p.ViolationCount*6) + min(20, p.ScenesCount*4)
+		}
+		base := 24
+		if p.Lifecycle == Core {
+			base = 30
+		}
+		return base + min(25, p.ScenesCount*4) + min(25, quotes*3) + min(20, weeks*4)
+	}
+	base := 26
+	if p.Lifecycle == Core {
+		base = 30
+	}
+	bonus := 0
+	if poleText(p.Poles) != "" || strings.TrimSpace(p.Exception) != "" {
+		bonus = 10
+	}
+	return base + min(25, p.ScenesCount*5) + min(20, weeks*4) + min(15, quotes*2) + bonus
 }
 
 // facetLabel names a facet in the entry's text, so a pattern read alone says which side of the user it is about.
@@ -50,17 +77,21 @@ var facetLabel = map[string]string{
 	string(entry.Persona):     "关于用户",
 }
 
-// Text is a pattern as one line the assistant can act on. A pattern whose evidence goes both ways says both ends, each
-// with when it holds (Poles), not "X unless W".
-func Text(p *Pattern) string {
-	t := "跨事模式（" + facetLabel[p.Facet] + "）：" + strings.TrimSpace(p.Text)
+// suffixOf returns the boundary suffix ("（两端：…）" or "（例外：…）") for p, or "" if none applies.
+func suffixOf(p *Pattern) string {
 	if ends := poleText(p.Poles); ends != "" {
-		return t + "（两端：" + ends + "）"
+		return "（两端：" + ends + "）"
 	}
 	if x := strings.TrimSpace(p.Exception); x != "" && !strings.Contains(p.Text, x) {
-		t += "（例外：" + x + "）"
+		return "（例外：" + x + "）"
 	}
-	return t
+	return ""
+}
+
+// Text is a pattern as one line the assistant can act on (for recall and UI). A pattern whose evidence goes both ways
+// says both ends, each with when it holds (Poles), not "X unless W".
+func Text(p *Pattern) string {
+	return "跨事模式（" + facetLabel[p.Facet] + "）：" + strings.TrimSpace(p.Text) + suffixOf(p)
 }
 
 // poleText is both ends of a pattern, "在 A 时 X；在 B 时 Y"; "" unless there are two.
@@ -71,7 +102,7 @@ func poleText(ps []Pole) string {
 		if w == "" || c == "" {
 			continue
 		}
-		parts = append(parts, w+"时，"+c)
+		parts = append(parts, strings.TrimSuffix(w, "时")+"时，"+c)
 	}
 	if len(parts) < 2 {
 		return ""
@@ -79,8 +110,24 @@ func poleText(ps []Pole) string {
 	return strings.Join(parts[:2], "；")
 }
 
-// Exits are the patterns as memory.entries entries, each with its last evidence day for the order among alike ones,
-// and its score and side for the standing set.
+// contractGroup returns "<facet>:<normalized rule_type>" for a contract's non-generic occasion/type, or "".
+func contractGroup(p *Pattern) string {
+	if !p.IsContract() {
+		return ""
+	}
+	rt := strings.ToLower(strings.TrimSpace(p.RuleType))
+	if genericRuleTypes[rt] {
+		return ""
+	}
+	q := norm.Q(p.RuleType)
+	if q == "" {
+		return ""
+	}
+	return p.Facet + ":" + q
+}
+
+// Exits are the patterns as memory.entries entries, each with its last evidence day, score, and L1 metadata for the
+// three-bucket standing set.
 func Exits(s *State) []memsrc.Extra {
 	if s == nil {
 		return nil
@@ -90,6 +137,7 @@ func Exits(s *State) []memsrc.Extra {
 		hex := strings.TrimPrefix(p.ID, "ov:")
 		x := memsrc.Entry{Text: clip(Text(p), memsrc.MaxText), Facet: p.Facet, Status: "active", Subjects: p.Subjects}
 		kind := ""
+		l1Kind := ""
 		if len(p.Categories) > 0 || p.OriginSpace != "" {
 			cat := "space"
 			if len(p.Categories) > 0 {
@@ -103,9 +151,29 @@ func Exits(s *State) []memsrc.Extra {
 			x.ID = "ov:pattern:" + hex
 			x.Rank = min(rankTop, rankBottom+p.ScenesCount*p.SourcesCount/2)
 			kind = entry.KindOfFacet(p.Facet)
+			if p.IsContract() {
+				l1Kind = memsrc.BucketContract
+			} else {
+				l1Kind = memsrc.BucketPrinciple
+			}
 		}
 		x.Subjects = slices.Clone(x.Subjects)
-		out = append(out, memsrc.Extra{Entry: x, Last: p.LastEvidence, Score: Score(p), Kind: kind, Evidence: slices.Clone(p.EvidenceIDs)})
+		out = append(out, memsrc.Extra{
+			Entry:      x,
+			Last:       p.LastEvidence,
+			Score:      Score(p),
+			Kind:       kind,
+			Evidence:   slices.Clone(p.EvidenceIDs),
+			L1Kind:     l1Kind,
+			Hard:       p.Hard,
+			Polarity:   p.Polarity,
+			Dimension:  p.Dimension,
+			Group:      contractGroup(p),
+			Quotes:     independentQuotes(p),
+			Body:       strings.TrimSpace(p.Text),
+			Suffix:     suffixOf(p),
+			CoveredIDs: slices.Clone(p.CoveredIDs),
+		})
 	}
 	return out
 }

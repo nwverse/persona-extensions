@@ -45,23 +45,79 @@ import (
 )
 
 // collabCue is what a user's correction reads like (the candidates; a model decides).
-var collabCue = regexp.MustCompile(`不是|别再|不要再|又|说过|说了|重复|第[二三四五六]遍|为什么还|怎么还|他妈|错了|搞错|我说的是|早就|不用问|别问|别来问|直接做|直接往下|直接干|废话|脱裤子|搞混|弄混|搞错人|认错|张冠李戴|不是他|不是她|谁负责|他负责|她负责|哪个项目|不是这个项目|不是那个`)
+var collabCue = regexp.MustCompile(`不是|别再|不要再|又|说过|说了|重复|第[二三四五六]遍|为什么还|怎么还|他妈|错了|搞错|我说的是|早就|不用问|别问|别来问|直接做|直接往下|直接干|废话|脱裤子|搞混|弄混|搞错人|认错|张冠李戴|不是他|不是她|谁负责|他负责|她负责|负责人|哪个项目|不是这个项目|不是那个|哪个仓库|搞错仓库|错仓库|派错|找错人|属于哪个|哪台机器|哪个主管|归谁`)
+
+// collabEntityCue targets incidents involving entity ownership, roles, projects, repositories, machines or dependencies
+// (unified design §3.2: entity ablation set expansion).
+var collabEntityCue = regexp.MustCompile(`搞混|弄混|搞错人|认错|张冠李戴|不是他|不是她|谁负责|他负责|她负责|负责人|哪个项目|不是这个项目|不是那个|哪个仓库|搞错仓库|错仓库|哪个库|依赖|归属|派错|找错人|找错|谁的|属于哪个|哪个服务|哪台机器|主机名|搞错机器|哪个主管|错主管|谁管|归谁`)
 
 var collabDay = regexp.MustCompile(`\b(1[0-2]|0?[1-9])-([0-3][0-9])\b`)
 
 const (
-	collabBatch     = 6
-	collabMost      = 60 // incidents kept at most
-	collabCandMost  = 160
-	collabCtxMost   = 1800
-	collabStepModel = "hardeval-collab"
+	collabBatch            = 6
+	collabMost             = 60 // incidents kept at most
+	collabCandMost         = 160
+	collabEntityCandMost   = 320
+	collabCtxMost          = 1800
+	collabStepModel        = "hardeval-collab"
+	decisionsQueryMaxBytes = 3072 // hub decisions_query truncation cap (entries_sources.go)
+	armDecisionsQuerySim   = "decisions-query-sim"
 )
 
+// collabWindow is an inclusive [Start, End] date range (YYYY-MM-DD).
+type collabWindow struct {
+	Start string
+	End   string
+}
+
+func (w collabWindow) String() string { return w.Start + ".." + w.End }
+
+func (w collabWindow) contains(day string) bool { return day >= w.Start && day <= w.End }
+
+func parseCollabWindows(spec, cutoff, end string) ([]collabWindow, error) {
+	if strings.TrimSpace(spec) == "" {
+		if cutoff == "" || end == "" {
+			return nil, errors.New("-windows or both -cutoff and -end are required")
+		}
+		if cutoff > end {
+			return nil, fmt.Errorf("invalid window %s..%s", cutoff, end)
+		}
+		return []collabWindow{{Start: cutoff, End: end}}, nil
+	}
+	var ws []collabWindow
+	for _, part := range strings.Split(spec, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		bounds := strings.Split(part, "..")
+		if len(bounds) != 2 || len(bounds[0]) != 10 || len(bounds[1]) != 10 || bounds[0] > bounds[1] {
+			return nil, fmt.Errorf("invalid window %q (want YYYY-MM-DD..YYYY-MM-DD)", part)
+		}
+		ws = append(ws, collabWindow{Start: bounds[0], End: bounds[1]})
+	}
+	if len(ws) == 0 {
+		return nil, errors.New("empty -windows")
+	}
+	return ws, nil
+}
+
+func windowFor(day string, ws []collabWindow) (string, bool) {
+	for _, w := range ws {
+		if w.contains(day) {
+			return w.String(), true
+		}
+	}
+	return "", false
+}
+
 type collabCand struct {
-	ID     string `json:"id"`
-	Source string `json:"source"` // memory | session
-	Day    string `json:"day"`
-	Text   string `json:"text"`
+	ID        string `json:"id"`
+	Source    string `json:"source"` // memory | session
+	Day       string `json:"day"`
+	Window    string `json:"window,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	Text      string `json:"text"`
 }
 
 // collabIncident is one incident as the model wrote it from a candidate.
@@ -69,6 +125,8 @@ type collabIncident struct {
 	ID        string `json:"id"`
 	Source    string `json:"source"`
 	Day       string `json:"day"`
+	Window    string `json:"window,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
 	Kind      string `json:"kind"` // corrected | scolded | repeated
 	Situation string `json:"situation"`
 	Mistake   string `json:"mistake"`
@@ -76,14 +134,18 @@ type collabIncident struct {
 	// Entity: avoiding it needed who someone is, who is responsible for what, or which project or thing was meant
 	// (design l0-leverage §12): the incidents the entity relations are for, counted apart.
 	Entity bool `json:"entity,omitempty"`
-	// Recall is what the arm's recall brought in for this incident (collabRecall), shown to the answer only.
-	Recall string `json:"-"`
+	// Recall is what the arm's recall brought in for this incident (collabRecall or hub decisions_query), shown to the answer only.
+	Recall      string `json:"-"`
+	RecallLabel string `json:"-"`
 }
 
 type collabSet struct {
 	Cutoff     string           `json:"cutoff"`
 	End        string           `json:"end"`
+	Windows    []string         `json:"windows,omitempty"`
+	EntityOnly bool             `json:"entity_only,omitempty"`
 	Candidates int              `json:"candidates"`
+	Excluded   int              `json:"excluded,omitempty"`
 	NoIncident int              `json:"no_incident"`
 	Duplicates int              `json:"duplicates"`
 	Avoided    int              `json:"avoided_without_memory"`
@@ -118,10 +180,15 @@ const collabJudgeSchema = `{"type":"object","additionalProperties":false,"requir
 
 // collabMemoryCands are the feedback memories dated in [cutoff, end].
 func collabMemoryCands(dir, cutoff, end string) ([]collabCand, error) {
+	return collabMemoryCandsWindows(dir, []collabWindow{{Start: cutoff, End: end}})
+}
+
+func collabMemoryCandsWindows(dir string, ws []collabWindow) ([]collabCand, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "*.md"))
 	if err != nil {
 		return nil, err
 	}
+	year := ws[0].Start[:4]
 	var out []collabCand
 	for _, f := range files {
 		raw, err := os.ReadFile(f)
@@ -142,11 +209,12 @@ func collabMemoryCands(dir, cutoff, end string) ([]collabCand, error) {
 		}
 		mo, _ := strconv.Atoi(m[1])
 		dd, _ := strconv.Atoi(m[2])
-		day := fmt.Sprintf("%s-%02d-%02d", cutoff[:4], mo, dd)
-		if day < cutoff || day > end {
+		day := fmt.Sprintf("%s-%02d-%02d", year, mo, dd)
+		win, ok := windowFor(day, ws)
+		if !ok {
 			continue
 		}
-		out = append(out, collabCand{ID: "m-" + heHash(filepath.Base(f))[:10], Source: "memory", Day: day, Text: heClip(body, 2400)})
+		out = append(out, collabCand{ID: "m-" + heHash(filepath.Base(f))[:10], Source: "memory", Day: day, Window: win, Text: heClip(body, 2400)})
 	}
 	return out, nil
 }
@@ -219,6 +287,13 @@ func collabRead(path string) ([]collabLine, error) {
 
 // collabSessionCands are the user lines in [cutoff, end] that read as a correction, with their context.
 func collabSessionCands(dirs []string, cutoff, end string) ([]collabCand, error) {
+	return collabSessionCandsWindows(dirs, []collabWindow{{Start: cutoff, End: end}}, collabCue)
+}
+
+func collabSessionCandsWindows(dirs []string, ws []collabWindow, cue *regexp.Regexp) ([]collabCand, error) {
+	if cue == nil {
+		cue = collabCue
+	}
 	var out []collabCand
 	for _, dir := range dirs {
 		files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
@@ -230,8 +305,13 @@ func collabSessionCands(dirs []string, cutoff, end string) ([]collabCand, error)
 			if err != nil {
 				return nil, err
 			}
+			sid := strings.TrimSuffix(filepath.Base(f), ".jsonl")
 			for i, l := range lines {
-				if !l.user || l.day < cutoff || l.day > end || len(l.text) > 1500 || !collabCue.MatchString(l.text) {
+				if !l.user || len(l.text) > 1500 || !cue.MatchString(l.text) {
+					continue
+				}
+				win, ok := windowFor(l.day, ws)
+				if !ok {
 					continue
 				}
 				// The request before: the last user line before the assistant's move; the move: what is between.
@@ -250,12 +330,81 @@ func collabSessionCands(dirs []string, cutoff, end string) ([]collabCand, error)
 				move = strings.Join(mv, "\n")
 				text := "用户的请求：" + heClip(lines[req].text, 600) + "\n助手的动作：" + heClip(move, collabCtxMost) +
 					"\n用户随后说：" + heClip(l.text, 600)
-				out = append(out, collabCand{ID: "s-" + heHash(f + fmt.Sprint(i))[:10], Source: "session", Day: l.day, Text: text})
+				out = append(out, collabCand{ID: "s-" + heHash(f + fmt.Sprint(i))[:10], Source: "session", Day: l.day, Window: win, SessionID: sid, Text: text})
 			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return heHash(out[i].ID) < heHash(out[j].ID) })
 	return out, nil
+}
+
+// collabBalanceCands takes at most cap candidates round-robin across windows so one larger window does not starve another.
+func collabBalanceCands(cands []collabCand, ws []collabWindow, limit int) []collabCand {
+	if len(cands) <= limit || len(ws) <= 1 {
+		return cands[:min(len(cands), limit)]
+	}
+	byWin := map[string][]collabCand{}
+	for _, c := range cands {
+		byWin[c.Window] = append(byWin[c.Window], c)
+	}
+	var out []collabCand
+	for len(out) < limit {
+		took := false
+		for _, w := range ws {
+			k := w.String()
+			if xs := byWin[k]; len(xs) > 0 && len(out) < limit {
+				out, byWin[k], took = append(out, xs[0]), xs[1:], true
+			}
+		}
+		if !took {
+			break
+		}
+	}
+	return out
+}
+
+// collabExclusion holds incidents from other sets (e.g. dev set) that must never enter a held-out set.
+type collabExclusion struct {
+	ids  map[string]bool
+	incs []collabIncident
+}
+
+func loadCollabExclusions(spec string) (collabExclusion, error) {
+	ex := collabExclusion{ids: map[string]bool{}}
+	if strings.TrimSpace(spec) == "" {
+		return ex, nil
+	}
+	for _, p := range strings.Split(spec, ",") {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			return ex, err
+		}
+		var s collabSet
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return ex, fmt.Errorf("exclude %s: %w", p, err)
+		}
+		for _, inc := range s.Incidents {
+			ex.ids[inc.ID] = true
+			ex.incs = append(ex.incs, inc)
+		}
+	}
+	return ex, nil
+}
+
+func (ex collabExclusion) matches(inc collabIncident) bool {
+	if ex.ids[inc.ID] {
+		return true
+	}
+	for _, k := range ex.incs {
+		if k.Day == inc.Day && norm.Jaccard(k.Want, inc.Want) >= 0.35 {
+			return true
+		}
+	}
+	return false
 }
 
 // collabCall runs one batched request and decodes its JSON into v.
@@ -318,7 +467,11 @@ func collabAnswer(ctx context.Context, answer, judge model.Model, memory string,
 		for _, x := range b {
 			s := x.Situation
 			if x.Recall != "" {
-				s += "\n\n按需召回（情境里提到的人、项目带出的记忆）：\n" + x.Recall
+				lbl := x.RecallLabel
+				if lbl == "" {
+					lbl = "按需召回（情境里提到的人、项目带出的记忆）："
+				}
+				s += "\n\n" + lbl + "\n" + x.Recall
 			}
 			in.Situations = append(in.Situations, q{x.ID, s})
 		}
@@ -375,8 +528,13 @@ func collabBuild(args []string) error {
 	fs := flag.NewFlagSet("hardeval collab-build", flag.ContinueOnError)
 	memDir := fs.String("memory-dir", "", "the assistant's feedback memory directory (read only)")
 	sessions := fs.String("sessions", "", "comma-separated directories of session transcripts (*.jsonl, read only)")
-	cutoff := fs.String("cutoff", "", "first held-out day, YYYY-MM-DD")
-	end := fs.String("end", "", "last held-out day")
+	cutoff := fs.String("cutoff", "", "first held-out day, YYYY-MM-DD (used when -windows is empty)")
+	end := fs.String("end", "", "last held-out day (used when -windows is empty)")
+	windowsSpec := fs.String("windows", "", "comma-separated date windows YYYY-MM-DD..YYYY-MM-DD (overrides -cutoff/-end)")
+	excludeSpec := fs.String("exclude", "", "comma-separated collab.json files whose incident IDs and same-day wants must be excluded")
+	entityOnly := fs.Bool("entity-only", false, "target entity-related cues and keep only incidents marked entity=true")
+	most := fs.Int("most", collabMost, "incidents kept at most")
+	candMost := fs.Int("cand-most", 0, "session candidates scanned at most (0: 160, or 320 with -entity-only)")
 	out := fs.String("out", "", "directory for collab.json and the caches (keep it local)")
 	cmd := fs.String("model-cmd", "claude", "the model command line")
 	mdl := fs.String("model", "claude-sonnet-5-5", "the model that writes the incidents and answers without memory (the answering one)")
@@ -384,37 +542,82 @@ func collabBuild(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	if *cutoff == "" || *end == "" || *out == "" || (*memDir == "" && *sessions == "") {
-		return errors.New("-cutoff, -end, -out and -memory-dir or -sessions are required")
+	ws, err := parseCollabWindows(*windowsSpec, *cutoff, *end)
+	if err != nil {
+		return err
+	}
+	if *out == "" || (*memDir == "" && *sessions == "") {
+		return errors.New("-out and -memory-dir or -sessions are required")
+	}
+	ex, err := loadCollabExclusions(*excludeSpec)
+	if err != nil {
+		return err
 	}
 	if err := os.MkdirAll(*out, 0o700); err != nil {
 		return err
 	}
+	scanLimit := *candMost
+	if scanLimit <= 0 {
+		scanLimit = collabCandMost
+		if *entityOnly {
+			scanLimit = collabEntityCandMost
+		}
+	}
 	var cands []collabCand
+	excluded := 0
 	if *memDir != "" {
-		c, err := collabMemoryCands(*memDir, *cutoff, *end)
+		c, err := collabMemoryCandsWindows(*memDir, ws)
 		if err != nil {
 			return err
 		}
-		cands = append(cands, c...)
+		for _, x := range c {
+			if ex.ids[x.ID] {
+				excluded++
+				continue
+			}
+			cands = append(cands, x)
+		}
 	}
 	if *sessions != "" {
-		c, err := collabSessionCands(strings.Split(*sessions, ","), *cutoff, *end)
+		cue := collabCue
+		if *entityOnly {
+			cue = collabEntityCue
+		}
+		c, err := collabSessionCandsWindows(strings.Split(*sessions, ","), ws, cue)
 		if err != nil {
 			return err
 		}
-		cands = append(cands, c[:min(len(c), collabCandMost)]...)
+		var filtered []collabCand
+		for _, x := range c {
+			if ex.ids[x.ID] {
+				excluded++
+				continue
+			}
+			filtered = append(filtered, x)
+		}
+		cands = append(cands, collabBalanceCands(filtered, ws, scanLimit)...)
 	}
 	ctx := context.Background()
 	ext := heCLI(*cmd, *mdl, filepath.Join(*out, "extract-cache"))
-	set := collabSet{Cutoff: *cutoff, End: *end, Candidates: len(cands)}
+	winLabels := make([]string, len(ws))
+	for i, w := range ws {
+		winLabels[i] = w.String()
+	}
+	set := collabSet{
+		Cutoff:     ws[0].Start,
+		End:        ws[len(ws)-1].End,
+		Windows:    winLabels,
+		EntityOnly: *entityOnly,
+		Candidates: len(cands),
+		Excluded:   excluded,
+	}
 	var mu sync.Mutex
 	byID := map[string]collabCand{}
 	for _, c := range cands {
 		byID[c.ID] = c
 	}
 	var incs []collabIncident
-	err := collabBatches(cands, func(b []collabCand) error {
+	err = collabBatches(cands, func(b []collabCand) error {
 		type item struct {
 			ID   string `json:"id"`
 			Text string `json:"text"`
@@ -445,8 +648,12 @@ func collabBuild(args []string) error {
 				set.NoIncident++
 				continue
 			}
-			incs = append(incs, collabIncident{ID: c.ID, Source: c.Source, Day: c.Day, Kind: x.Kind, Situation: x.Situation,
-				Mistake: x.Mistake, Want: x.Want, Entity: x.Entity})
+			if *entityOnly && !x.Entity {
+				set.NoIncident++
+				continue
+			}
+			incs = append(incs, collabIncident{ID: c.ID, Source: c.Source, Day: c.Day, Window: c.Window, SessionID: c.SessionID,
+				Kind: x.Kind, Situation: x.Situation, Mistake: x.Mistake, Want: x.Want, Entity: x.Entity})
 		}
 		return nil
 	})
@@ -462,6 +669,10 @@ func collabBuild(args []string) error {
 	})
 	var kept []collabIncident
 	for _, x := range incs {
+		if ex.matches(x) {
+			set.Excluded++
+			continue
+		}
 		dup := false
 		for _, k := range kept {
 			if k.Day == x.Day && norm.Jaccard(k.Want, x.Want) >= 0.35 {
@@ -487,7 +698,7 @@ func collabBuild(args []string) error {
 			set.Avoided++
 			continue
 		}
-		if len(set.Incidents) < collabMost {
+		if len(set.Incidents) < *most {
 			set.Incidents = append(set.Incidents, x)
 		}
 	}
@@ -496,11 +707,19 @@ func collabBuild(args []string) error {
 		return err
 	}
 	n := map[string]int{}
+	byWin := map[string]int{}
+	entN := 0
 	for _, x := range set.Incidents {
 		n[x.Source]++
+		if x.Window != "" {
+			byWin[x.Window]++
+		}
+		if x.Entity {
+			entN++
+		}
 	}
-	fmt.Printf("hardeval collab-build: %d candidates, %d not an incident, %d duplicates, %d avoided without memory, %d incidents (memory %d, session %d)\n",
-		set.Candidates, set.NoIncident, set.Duplicates, set.Avoided, len(set.Incidents), n["memory"], n["session"])
+	fmt.Printf("hardeval collab-build: %d candidates, %d excluded, %d not an incident, %d duplicates, %d avoided without memory, %d incidents (memory %d, session %d, entity %d, windows %v)\n",
+		set.Candidates, set.Excluded, set.NoIncident, set.Duplicates, set.Avoided, len(set.Incidents), n["memory"], n["session"], entN, byWin)
 	return nil
 }
 
@@ -514,8 +733,157 @@ type collabResult struct {
 	Bytes   map[string]map[string]int                `json:"bytes"` // budget → arm → mean bytes of the memory
 	// PerInc: budget → arm → incident → share of the repeats it was avoided in.
 	PerInc map[string]map[string]map[string]float64 `json:"per_incident"`
+	// PerWrong and PerAsk: budget → arm → incident → share of the repeats judged a wrong action / a needless ask.
+	PerWrong map[string]map[string]map[string]float64 `json:"per_incident_wrong,omitempty"`
+	PerAsk   map[string]map[string]map[string]float64 `json:"per_incident_ask,omitempty"`
 	// Entity are the incidents that need entity relations (collabIncident.Entity), reported apart.
 	Entity []string `json:"entity,omitempty"`
+	// Segments reports per-window metrics when incidents carry Window labels (window → budget → arm → metric).
+	Segments map[string]map[string]map[string]map[string]float64 `json:"segments,omitempty"`
+	SegmentN map[string]int                                      `json:"segment_n,omitempty"`
+}
+
+const collabDecisionsQueryPrompt = `你是这位用户的主 AI 助手。线上你可以主动调用 decisions_query(tag) 从记忆池按关键词查询局部规矩、负责人或例外（tag 按空格拆词，所有词都以子串同时匹配才命中，结果截断在 3072 字节；查单个项目名、人名、仓库名、机器名或单个场合词如「派活」「汇报」「提问」「开工」最容易命中）。
+
+下面给你当前常驻记忆和若干互相独立的情境。对每个情境，判断是否需要调用 decisions_query：
+- 不需要查则返回空数组 []；
+- 需要查则返回 1 到 2 个简短 tag（每个 1 个词或 2 个空格分隔的词，不要写长句）。
+输出 JSON。`
+
+const collabDecisionsQuerySchema = `{"type":"object","additionalProperties":false,"required":["queries"],"properties":{"queries":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","tags"],"properties":{"id":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}}}}}}`
+
+// collabQueryPlan asks the answering model which decisions_query tags (0-2) it wants to query for each incident.
+func collabQueryPlan(ctx context.Context, answer model.Model, memory string, incs []collabIncident, attempt int) (map[string][]string, error) {
+	type q struct {
+		ID        string `json:"id"`
+		Situation string `json:"situation"`
+	}
+	planned := map[string][]string{}
+	var mu sync.Mutex
+	err := collabBatches(incs, func(b []collabIncident) error {
+		in := struct {
+			Attempt    int    `json:"attempt,omitempty"`
+			Memory     string `json:"memory"`
+			Situations []q    `json:"situations"`
+		}{Attempt: attempt, Memory: memory}
+		for _, x := range b {
+			in.Situations = append(in.Situations, q{x.ID, x.Situation})
+		}
+		var out struct {
+			Queries []struct {
+				ID   string   `json:"id"`
+				Tags []string `json:"tags"`
+			} `json:"queries"`
+		}
+		if err := collabCall(ctx, answer, collabDecisionsQueryPrompt, collabDecisionsQuerySchema, in, &out); err != nil {
+			return err
+		}
+		mu.Lock()
+		for _, item := range out.Queries {
+			if len(item.Tags) > 2 {
+				item.Tags = item.Tags[:2]
+			}
+			planned[item.ID] = item.Tags
+		}
+		mu.Unlock()
+		return nil
+	})
+	return planned, err
+}
+
+// collabHubPage1 builds the exact first page of memory.entries (up to memsrc.MaxLimit = 500, standing first then rank
+// desc) visible before day with no sensitive or restricted-space entries, matching the hub's decisions_query scope.
+func collabHubPage1(st *store.State, ov *overview.State, f heFilter, day string, budget int) []memsrc.Entry {
+	daySt := &store.State{
+		Contacts: st.Contacts,
+		Entries:  make(map[string]*entry.Entry, len(st.Entries)),
+	}
+	for id, e := range st.Entries {
+		if len(e.Cats()) > 0 || e.OriginSpace != "" || f.entryOut(st, e, day) {
+			continue
+		}
+		daySt.Entries[id] = e
+	}
+	var extras []memsrc.Extra
+	if ov != nil {
+		for _, p := range ov.Sorted(func(p *overview.Pattern) bool {
+			return p.Used() && len(p.Categories) == 0 && p.OriginSpace == "" && !f.patternOut(st, p, day)
+		}) {
+			extras = append(extras, memsrc.Extra{
+				Entry: memsrc.Entry{
+					ID:       p.ID,
+					Text:     overview.Text(p),
+					Facet:    p.Facet,
+					Status:   "active",
+					Rank:     overview.Score(p) * 9,
+					Subjects: p.Subjects,
+				},
+				Last:     p.LastEvidence,
+				Score:    overview.Score(p),
+				Kind:     entry.KindOfFacet(p.Facet),
+				Evidence: p.EvidenceIDs,
+			})
+		}
+	}
+	res, _, err := memsrc.PageWith(daySt, nil, extras, memsrc.Params{
+		Limit:         memsrc.MaxLimit,
+		ResidentBytes: budget,
+	})
+	if err != nil {
+		return nil
+	}
+	return res.Entries
+}
+
+// hubDecisionsQuery matches tags against page-1 entries using the hub's decisions_query rule (entries_sources.go):
+// whitespace-split terms, all-terms case-insensitive substring AND across text, subjects, facet and categories,
+// preserving page-1 order (standing + rank) and truncating at maxBytes (3072 B).
+func hubDecisionsQuery(page []memsrc.Entry, tags []string, maxBytes int) string {
+	if len(tags) == 0 || maxBytes <= 0 {
+		return ""
+	}
+	matched := map[string]bool{}
+	var lines []string
+	for _, rawTag := range tags {
+		terms := strings.Fields(strings.ToLower(strings.TrimSpace(rawTag)))
+		if len(terms) == 0 {
+			continue
+		}
+		for _, e := range page {
+			if matched[e.ID] {
+				continue
+			}
+			if hubEntryMatchesTerms(e, terms) {
+				matched[e.ID] = true
+				lines = append(lines, fmt.Sprintf("- [%s] %s", e.ID, e.Text))
+			}
+		}
+	}
+	return heFit(lines, maxBytes)
+}
+
+func hubEntryMatchesTerms(e memsrc.Entry, terms []string) bool {
+	haystack := make([]string, 0, 2+len(e.Subjects)+len(e.Categories))
+	haystack = append(haystack, strings.ToLower(e.Text), strings.ToLower(e.Facet))
+	for _, s := range e.Subjects {
+		haystack = append(haystack, strings.ToLower(s))
+	}
+	for _, c := range e.Categories {
+		haystack = append(haystack, strings.ToLower(c))
+	}
+	for _, term := range terms {
+		found := false
+		for _, h := range haystack {
+			if strings.Contains(h, term) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
 }
 
 func collabRun(args []string) error {
@@ -528,7 +896,7 @@ func collabRun(args []string) error {
 	mdl := fs.String("model", "claude-sonnet-5-5", "the model that answers")
 	jdg := fs.String("judge-model", "claude-opus-5-5", "the model that judges")
 	label := fs.String("label", "baseline", "name of this reading (collab-<label>.json)")
-	arms := fs.String("arms", strings.Join(heArms, ","), "arms to answer")
+	arms := fs.String("arms", strings.Join(heArms, ","), "arms to answer (supports decisions-query-sim, recall, recall-noent)")
 	budgets := fs.String("budgets", "1400,4096", "memory budgets in bytes")
 	repeats := fs.Int("repeats", 3, "times each arm answers (and is judged), averaged")
 	recallBytes := fs.Int("recall", 2048, "bytes of recall per incident for the recall arms (recall: the standing set and what the incident's names bring in; recall-noent: the same without the world and people entries)")
@@ -568,10 +936,24 @@ func collabRun(args []string) error {
 	ans := heCLI(*cmd, *mdl, filepath.Join(*out, "cache"))
 	judge := heCLI(*cmd, *jdg, filepath.Join(*out, "cache"))
 	res := collabResult{Model: *mdl, Judge: *jdg, Cutoff: "per incident", N: len(set.Incidents), Repeats: *repeats,
-		Score: map[string]map[string]map[string]float64{}, Bytes: map[string]map[string]int{}, PerInc: map[string]map[string]map[string]float64{}}
+		Score: map[string]map[string]map[string]float64{}, Bytes: map[string]map[string]int{}, PerInc: map[string]map[string]map[string]float64{},
+		PerWrong: map[string]map[string]map[string]float64{}, PerAsk: map[string]map[string]map[string]float64{}}
+	winByID := map[string]string{}
+	segN := map[string]int{}
 	for _, inc := range set.Incidents {
 		if inc.Entity {
 			res.Entity = append(res.Entity, inc.ID)
+		}
+		if inc.Window != "" {
+			winByID[inc.ID] = inc.Window
+			segN[inc.Window]++
+		}
+	}
+	if len(segN) > 0 {
+		res.SegmentN = segN
+		res.Segments = map[string]map[string]map[string]map[string]float64{}
+		for w := range segN {
+			res.Segments[w] = map[string]map[string]map[string]float64{}
 		}
 	}
 	names := collabNames(st)
@@ -584,14 +966,24 @@ func collabRun(args []string) error {
 		fmt.Sscan(bs, &budget)
 		bk := fmt.Sprint(budget)
 		res.Score[bk], res.Bytes[bk], res.PerInc[bk] = map[string]map[string]float64{}, map[string]int{}, map[string]map[string]float64{}
+		res.PerWrong[bk], res.PerAsk[bk] = map[string]map[string]float64{}, map[string]map[string]float64{}
+		for w := range segN {
+			res.Segments[w][bk] = map[string]map[string]float64{}
+		}
 		for _, arm := range armList {
 			sc := map[string]float64{}
-			per := map[string]float64{}
+			segSc := map[string]map[string]float64{}
+			for w := range segN {
+				segSc[w] = map[string]float64{}
+			}
+			per, wrong, ask := map[string]float64{}, map[string]float64{}, map[string]float64{}
 			bytes := 0
 			for _, d := range days {
 				mems := heMemories(st, ov, collabCogFor(cogs, d), f, d, budget)
 				mem, incs := mems[arm], byDay[d]
-				if arm == "recall" || arm == "recall-noent" {
+				var hubPage []memsrc.Entry
+				switch arm {
+				case "recall", "recall-noent":
 					mem = mems["resident"]
 					incs = slices.Clone(incs)
 					for i := range incs {
@@ -599,11 +991,32 @@ func collabRun(args []string) error {
 						bytes += len(incs[i].Recall)
 						samples[bk+"/"+arm+"/"+incs[i].ID] = incs[i].Recall
 					}
+				case armDecisionsQuerySim:
+					mem = mems["resident"]
+					hubPage = collabHubPage1(st, ov, f, d, budget)
 				}
 				bytes += len(mem) * len(incs)
 				samples[bk+"/"+arm+"/"+d] = mem
 				for r := 0; r < *repeats; r++ {
-					v, rs, err := collabAnswer(context.Background(), ans, judge, mem, incs, r)
+					runIncs := incs
+					if arm == armDecisionsQuerySim {
+						tagsByID, qerr := collabQueryPlan(context.Background(), ans, mem, incs, r)
+						if qerr != nil {
+							return fmt.Errorf("%s/%s/%s query-plan: %w", bk, arm, d, qerr)
+						}
+						runIncs = slices.Clone(incs)
+						for i := range runIncs {
+							tags := tagsByID[runIncs[i].ID]
+							rec := hubDecisionsQuery(hubPage, tags, decisionsQueryMaxBytes)
+							runIncs[i].Recall = rec
+							runIncs[i].RecallLabel = "decisions_query 返回结果（tag=" + strings.Join(tags, ", ") + "）："
+							if r == 0 {
+								bytes += len(rec)
+								samples[bk+"/"+arm+"/"+runIncs[i].ID] = "tags=" + strings.Join(tags, ", ") + "\n" + rec
+							}
+						}
+					}
+					v, rs, err := collabAnswer(context.Background(), ans, judge, mem, runIncs, r)
 					if err != nil {
 						return fmt.Errorf("%s/%s/%s: %w", bk, arm, d, err)
 					}
@@ -621,7 +1034,15 @@ func collabRun(args []string) error {
 						sc["needless_ask"] += b2f(vv.NeedlessAsk)
 						sc["wrong_action"] += b2f(vv.WrongAction)
 						sc["repeat"] += b2f(vv.Repeat)
+						if w := winByID[x.ID]; w != "" {
+							segSc[w]["avoided"] += b2f(vv.Avoided)
+							segSc[w]["needless_ask"] += b2f(vv.NeedlessAsk)
+							segSc[w]["wrong_action"] += b2f(vv.WrongAction)
+							segSc[w]["repeat"] += b2f(vv.Repeat)
+						}
 						per[x.ID] += b2f(vv.Avoided) / float64(*repeats)
+						wrong[x.ID] += b2f(vv.WrongAction) / float64(*repeats)
+						ask[x.ID] += b2f(vv.NeedlessAsk) / float64(*repeats)
 					}
 				}
 			}
@@ -630,7 +1051,15 @@ func collabRun(args []string) error {
 				sc[k] /= n
 			}
 			res.Score[bk][arm], res.PerInc[bk][arm] = sc, per
+			res.PerWrong[bk][arm], res.PerAsk[bk][arm] = wrong, ask
 			res.Bytes[bk][arm] = bytes / max(1, len(set.Incidents))
+			for w, cnt := range segN {
+				wn := float64(max(1, cnt**repeats))
+				for k := range segSc[w] {
+					segSc[w][k] /= wn
+				}
+				res.Segments[w][bk][arm] = segSc[w]
+			}
 		}
 	}
 	for name, v := range map[string]any{"collab-" + *label + ".json": res, "collab-memories-" + *label + ".json": samples,
@@ -729,6 +1158,21 @@ func collabTable(r collabResult, arms []string) string {
 			}
 			fmt.Fprintf(&b, "| %s | %d | %.0f%% | %.0f%% | %.0f%% | %.0f%% | %d/%d/%d | %s |\n", arm, r.Bytes[bk][arm], 100*s["avoided"],
 				100*s["needless_ask"], 100*s["wrong_action"], 100*s["repeat"], w, t, l, ent)
+		}
+		if len(r.Segments) > 0 {
+			var wins []string
+			for w := range r.Segments {
+				wins = append(wins, w)
+			}
+			sort.Strings(wins)
+			for _, w := range wins {
+				fmt.Fprintf(&b, "\n#### segment %s (%d incidents)\n\n| arm | avoided | needless asks | wrong actions | user repeats |\n|---|---|---|---|---|\n", w, r.SegmentN[w])
+				for _, arm := range arms {
+					s := r.Segments[w][bk][arm]
+					fmt.Fprintf(&b, "| %s | %.0f%% | %.0f%% | %.0f%% | %.0f%% |\n", arm, 100*s["avoided"],
+						100*s["needless_ask"], 100*s["wrong_action"], 100*s["repeat"])
+				}
+			}
 		}
 	}
 	return b.String()

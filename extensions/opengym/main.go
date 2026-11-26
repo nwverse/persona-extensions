@@ -225,17 +225,18 @@ func (a *app) invalidate() {
 
 // health is how the server is doing, for the page and the status.
 type health struct {
-	Server  string
-	Config  error
-	Checked time.Time
-	Err     error
-	Every   time.Duration
+	Server   string
+	Config   error
+	HasToken bool
+	Checked  time.Time
+	Err      error
+	Every    time.Duration
 }
 
 func (a *app) health() health {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	h := health{Config: a.cfgErr, Checked: a.checked, Every: a.every}
+	h := health{Config: a.cfgErr, HasToken: a.token != "", Checked: a.checked, Every: a.every}
 	if a.base != nil {
 		h.Server = a.base.Host + a.base.Path
 	}

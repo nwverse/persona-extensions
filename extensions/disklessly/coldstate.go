@@ -34,25 +34,28 @@ const (
 	causeNetwork = "network"
 )
 
+// localMachineName is what the pages call the computer the hub runs on.
+const localMachineName = "运行 Persona 的电脑"
+
 // coldStateLabel is the short Chinese name of a state, used in badges and the summary.
 func coldStateLabel(s string) string {
 	switch s {
 	case ColdReady:
 		return "正常"
 	case ColdNoCLI:
-		return "未安装 CLI"
+		return "还没装配套小工具"
 	case ColdCLIOld:
-		return "CLI 版本过旧"
+		return "配套小工具太旧"
 	case ColdNoBackend:
-		return "未设置备份后端"
+		return "还没设置网盘"
 	case ColdBackendDown:
-		return "备份后端连不上"
+		return "网盘连不上"
 	case ColdOffline:
 		return "连不上这台电脑"
 	case ColdUnreadable:
-		return "回答无法识别"
+		return "配套小工具出错了"
 	}
-	return "尚未检查"
+	return "还没检查"
 }
 
 func coldStateTone(s string) string {
@@ -260,11 +263,17 @@ func sshCause(msg string) string {
 
 // machineLabel is a machine's name for chips and rows, without the network address that
 // discovery from ~/.ssh/config appends as "alias (hostname)".
+//
+// The hub's own computer keeps a name the user gave it; the default one ("local (<hostname>)",
+// which a narrow filter chip cuts off) reads 运行 Persona 的电脑.
 func machineLabel(m *Machine) string {
 	if m == nil {
 		return ""
 	}
 	name := strings.TrimSpace(m.Name)
+	if m.IsLocal && (name == "" || strings.HasPrefix(name, "local (") || name == "local") {
+		return localMachineName
+	}
 	if name == "" {
 		return cmp.Or(m.ID, m.Host)
 	}

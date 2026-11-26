@@ -200,8 +200,8 @@ func (a *app) status() map[string]any {
 	h := a.health()
 	if h.Config != nil {
 		return map[string]any{"state": "not_configured", "error": h.Config.Error(), "guide": []string{
-			"在扩展设置里填 openGym 服务器地址（你自建的 openGym 的网址）",
-			"在 openGym App 的「设置 › 集成 › API 令牌」里新建一个令牌，填到扩展设置的「API 令牌」里"}}
+			"在" + settingsPath + "里填「openGym 服务器地址」：你自己搭的 openGym 的网址，例如 https://gym.example.com",
+			tokenWhere + "新建一个，填到" + settingsPath + "的「访问密钥（API 令牌）」里"}}
 	}
 	st := map[string]any{"state": "ok", "account": h.Server}
 	if s := a.snapshot(); s != nil && s.Me.User.Name != "" {

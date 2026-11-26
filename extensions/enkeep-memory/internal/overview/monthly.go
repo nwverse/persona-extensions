@@ -62,8 +62,8 @@ func (r *Runner) Monthly(ctx context.Context, st *store.State, s *State, month, 
 	run := &Run{Period: month, At: stamp(r.now()), Counts: map[string]int{}}
 	now := stamp(r.now())
 	var touched []string
-	// 1. Rescue: quiet classes seen often.
-	for _, f := range Facets {
+	// 1. Rescue: quiet classes seen often (principle facets).
+	for _, f := range PrincipleFacets {
 		cands := candidates(st, f, addDays(end, -rescueDays), "", func(e *entry.Entry) bool {
 			return e.Status == entry.Dormant && e.Grain == entry.Class && e.Count >= rescueMinCount
 		})
@@ -78,7 +78,7 @@ func (r *Runner) Monthly(ctx context.Context, st *store.State, s *State, month, 
 		touched = union(touched, ids...)
 		run.Counts["rescued"] += len(ids)
 	}
-	// 2. Merge alike patterns, facet by facet.
+	// 2. Merge alike patterns, facet by facet (within the same L1 kind).
 	for _, f := range Facets {
 		ps := s.Sorted(func(p *Pattern) bool { return p.Facet == string(f) && p.Lifecycle != Retired })
 		if len(ps) < 2 {
@@ -110,13 +110,26 @@ func (r *Runner) Monthly(ctx context.Context, st *store.State, s *State, month, 
 			n := 0
 			for _, m := range g.Merge {
 				x := local[m]
-				if x == nil || x == keep || x.Lifecycle == Retired {
+				if x == nil || x == keep || x.Lifecycle == Retired || x.KindOf() != keep.KindOf() {
 					continue
 				}
 				keep.EvidenceIDs = union(keep.EvidenceIDs, x.EvidenceIDs...)
 				keep.CounterIDs = union(keep.CounterIDs, x.CounterIDs...)
+				keep.CoveredIDs = union(keep.CoveredIDs, x.CoveredIDs...)
 				if keep.Exception == "" {
 					keep.Exception = x.Exception
+				}
+				if len(keep.Poles) == 0 && len(x.Poles) > 0 {
+					keep.Poles = x.Poles
+				}
+				if keep.Polarity == "" {
+					keep.Polarity = x.Polarity
+				}
+				if keep.Dimension == "" {
+					keep.Dimension = x.Dimension
+				}
+				if x.Hard {
+					keep.Hard = true
 				}
 				x.Lifecycle, x.Reason, x.UpdatedAt = Retired, "merged into "+keep.ID, now
 				touched = union(touched, x.ID)
@@ -169,7 +182,7 @@ func (r *Runner) Monthly(ctx context.Context, st *store.State, s *State, month, 
 		} else {
 			p.DriftMonths = 0
 		}
-		if p.Used() && p.LastEvidence < since && projectBound(st, p) {
+		if p.Used() && !p.Rooted && p.LastEvidence < since && projectBound(st, p) {
 			p.Lifecycle, p.Reason = EraClosed, "its projects have been quiet for 90 days"
 		}
 		if before[p.ID] != p.Lifecycle {

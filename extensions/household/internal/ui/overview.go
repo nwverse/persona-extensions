@@ -37,11 +37,17 @@ func (c *ctx) empty() bool {
 	return len(h.Places)+len(h.Items)+len(h.Buys)+len(h.Chores)+len(h.Recipes)+len(h.Meals) == 0
 }
 
-// welcomeSections is the overview of a household with no records: an empty state with 载入示例, and 添加物品.
+// welcomeTitle is the empty state's title on the page and the card.
+const welcomeTitle = "家里的东西还没开始记"
+
+// welcomeSections is the overview of a household with no records: what the extension is for and the first steps, an
+// empty state with 载入示例, and 添加物品.
 func (c *ctx) welcomeSections() []wire.Section {
 	return []wire.Section{
 		{Items: []wire.Component{{
-			Type: wire.ComponentEmpty, Title: "还没有记录", Detail: "载入示例看看各个页面，或者添加第一件物品",
+			Type: wire.ComponentEmpty, Title: welcomeTitle,
+			Detail: "家庭管家帮你记家里有什么、放在哪，东西快用完或快过期时提醒你买，还能管家务和每天吃什么。" +
+				"先点「添加物品」记下第一件东西，或者载入一组示例看看各页是什么样；也可以直接跟助手说，例如「记一下冰箱里有两盒牛奶」。",
 			Button: &wire.EmptyButton{Title: "载入示例", Action: wire.Action{
 				ID: "load", Confirm: "载入一组虚构的示例记录？",
 			}},
@@ -177,7 +183,7 @@ func (c *ctx) mealSection() wire.Section {
 	for _, idea := range rules.MealIdeas(c.home, c.today, 3) {
 		rows = append(rows, ideaRow(idea))
 	}
-	return wire.Section{Title: "今天吃什么", Items: orQuiet(rows, "还没有可以做的菜，先添加菜谱")}
+	return wire.Section{Title: "今天吃什么", Items: orQuiet(rows, "还没有可以做的菜：先到「餐食」里添加菜谱")}
 }
 
 // ideaRow is a recipe idea: what is missing or what to use first, and the badge says whether the food is all there.

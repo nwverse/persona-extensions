@@ -17,7 +17,7 @@ var CategoryAxisLabels = map[string]string{
 	CatDockerUnused:     "容器",
 	CatRustXcodeBuild:   "Rust/XC",
 	CatTmpLogs:          "日志",
-	CatColdAgentSession: "冷会话",
+	CatColdAgentSession: "旧对话",
 }
 
 // Compact category names for 4-column detail tables on narrow phone viewports (360-390px).
@@ -27,7 +27,7 @@ var CategoryCompactLabels = map[string]string{
 	CatDockerUnused:     "容器与镜像",
 	CatRustXcodeBuild:   "Rust / XC",
 	CatTmpLogs:          "系统与日志",
-	CatColdAgentSession: "冷会话归档",
+	CatColdAgentSession: "旧 AI 对话",
 }
 
 // estTextWidthPx mirrors Persona web's labelWidth(text, px) in web/src/lib/extension-ui.ts.
@@ -112,6 +112,19 @@ func compactFreedCell(freed uint64) string {
 		return "—"
 	}
 	return "+" + compactBytes(freed)
+}
+
+// localMachineCell is 运行 Persona 的电脑 in the 清理记录 table's 电脑 cell (48px on a 360px
+// phone), where clipping would leave 「运行 P…」; the record rows below the table spell it out.
+const localMachineCell = "本机"
+
+// histMachineCell is the computer in the 清理记录 table's narrow 电脑 column.
+func histMachineCell(st *State, h *CleanRecord) string {
+	label := histMachineLabel(st, h)
+	if label == localMachineName {
+		return localMachineCell
+	}
+	return clipCellWidth(label, 12.5, 48.0, 10)
 }
 
 func histMachineLabel(st *State, h *CleanRecord) string {
@@ -206,43 +219,43 @@ func (bd categoryBreakdown) catTotal(cid string) uint64 {
 func (bd categoryBreakdown) catModeText(cid string) string {
 	tot := bd.catTotal(cid)
 	if tot == 0 {
-		return "无待清理"
+		return "没有"
 	}
 	n := bd.counts[cid]
 	if cid == CatColdAgentSession {
 		if bd.coldPending {
 			if n > 0 {
-				return fmt.Sprintf("待CLI·%d", n)
+				return fmt.Sprintf("缺小工具·%d", n)
 			}
-			return "待配CLI"
+			return "缺小工具"
 		}
 		if n > 0 {
-			return fmt.Sprintf("上云·%d项", n)
+			return fmt.Sprintf("搬网盘·%d项", n)
 		}
-		return "上云归档"
+		return "搬到网盘"
 	}
 	switch {
 	case bd.safe[cid] > 0 && bd.review[cid] > 0:
-		return fmt.Sprintf("混合·%d项", n)
+		return fmt.Sprintf("挑着删·%d项", n)
 	case bd.review[cid] > 0:
-		return fmt.Sprintf("确认·%d项", n)
+		return fmt.Sprintf("先看·%d项", n)
 	default:
-		return fmt.Sprintf("安全·%d项", n)
+		return fmt.Sprintf("放心删·%d项", n)
 	}
 }
 
 func healthLevelText(level string) string {
 	switch level {
 	case HealthCritical:
-		return "红色告警"
+		return "快满了"
 	case HealthWarning:
-		return "橙色预警"
+		return "偏满"
 	case HealthOffline:
-		return "离线"
+		return "连不上"
 	case HealthUnscanned:
-		return "未扫描"
+		return "还没检查"
 	default:
-		return "正常"
+		return "宽裕"
 	}
 }
 
@@ -251,10 +264,10 @@ func healthLevelText(level string) string {
 func healthWatermarkNote(level string, usedPct float64, totalBytes, availBytes uint64) string {
 	base := healthLevelText(level)
 	if level == HealthCritical && usedPct < 90.0 && totalBytes >= 20*gib && availBytes < 10*gib {
-		return fmt.Sprintf("%s，可用 %s < 10 GiB", base, FormatBytes(availBytes))
+		return fmt.Sprintf("%s，只剩 %s（不到 10 GiB）", base, FormatBytes(availBytes))
 	}
 	if level == HealthWarning && usedPct < 80.0 && totalBytes >= 50*gib && availBytes < 25*gib {
-		return fmt.Sprintf("%s，可用 %s < 25 GiB", base, FormatBytes(availBytes))
+		return fmt.Sprintf("%s，只剩 %s（不到 25 GiB）", base, FormatBytes(availBytes))
 	}
 	return base
 }
@@ -326,11 +339,11 @@ func rootUsageChart(ms MachineStatus, mountPoint, keyPrefix string) wire.Compone
 		Key:     boundedKey(keyPrefix+"-root-", ms.Machine.ID),
 		Kind:    wire.ChartKindBar,
 		Stacked: true,
-		Title:   fmt.Sprintf("根分区已用 vs 可用 (%s)", mp),
+		Title:   fmt.Sprintf("系统盘（%s）用了多少、还剩多少", mp),
 		Unit:    unit,
 		Series: []wire.ChartSeries{
 			{
-				Name: "已用 · " + lvlText,
+				Name: "用了 · " + lvlText,
 				Tone: progressTone(ms.Level),
 				Points: []wire.ChartPoint{{
 					Label:   label,
@@ -339,7 +352,7 @@ func rootUsageChart(ms MachineStatus, mountPoint, keyPrefix string) wire.Compone
 				}},
 			},
 			{
-				Name: "可用",
+				Name: "还剩",
 				Tone: wire.ToneNeutral,
 				Points: []wire.ChartPoint{{
 					Label:   label,
@@ -348,7 +361,7 @@ func rootUsageChart(ms MachineStatus, mountPoint, keyPrefix string) wire.Compone
 				}},
 			},
 		},
-		Detail: fmt.Sprintf("已用 %s (%.1f%%，%s) · 可用 %s · 阈值 80%% 橙 / 90%% 红",
+		Detail: fmt.Sprintf("用了 %s（%.1f%%，%s）· 还剩 %s · 用到 80%% 提醒，90%% 告急",
 			FormatBytes(ms.UsedBytes), ms.UsedPercent, lvlNote, FormatBytes(ms.AvailableBytes)),
 	}
 }
@@ -377,24 +390,24 @@ func reclaimCategoryChart(m *Machine, bd categoryBreakdown, keyPrefix string) (w
 	var parts []string
 	if bd.totalSafe > 0 {
 		series = append(series, wire.ChartSeries{
-			Name:   "安全可清",
+			Name:   "放心删",
 			Tone:   wire.TonePositive,
 			Points: ptsFor(bd.safe),
 		})
-		parts = append(parts, "安全可清 "+FormatBytes(bd.totalSafe))
+		parts = append(parts, "放心删 "+FormatBytes(bd.totalSafe))
 	}
 	if bd.totalReview > 0 {
 		series = append(series, wire.ChartSeries{
-			Name:   "需确认",
+			Name:   "建议先看",
 			Tone:   wire.ToneCaution,
 			Points: ptsFor(bd.review),
 		})
-		parts = append(parts, "需确认 "+FormatBytes(bd.totalReview))
+		parts = append(parts, "建议先看 "+FormatBytes(bd.totalReview))
 	}
 	if bd.totalCold > 0 {
-		coldName := "冷会话上云"
+		coldName := "搬到网盘"
 		if bd.coldPending {
-			coldName = "冷会话(需CLI)"
+			coldName = "搬到网盘（缺小工具）"
 		}
 		series = append(series, wire.ChartSeries{
 			Name:   coldName,
@@ -409,7 +422,7 @@ func reclaimCategoryChart(m *Machine, bd categoryBreakdown, keyPrefix string) (w
 		Key:     boundedKey(keyPrefix+"-cats-", m.ID),
 		Kind:    wire.ChartKindBar,
 		Stacked: true,
-		Title:   "可回收空间分类分布",
+		Title:   "能腾出的空间，按种类",
 		Unit:    unit,
 		Series:  series,
 		Detail:  strings.Join(parts, " · "),
@@ -444,40 +457,40 @@ func cleanImpactChart(ms MachineStatus, scan *Scan) (wire.Component, bool) {
 	if beforeTone != afterTone {
 		series = []wire.ChartSeries{
 			{
-				Name: "清理前已用 · " + beforeText,
+				Name: "删之前用了 · " + beforeText,
 				Tone: beforeTone,
 				Points: []wire.ChartPoint{
-					{Label: "清理前", Value: chartValue(scan.Mount.UsedBytes, unit), Display: beforeUsedDisp},
-					{Label: "Safe 清理后", Value: 0, Display: "—"},
+					{Label: "删之前", Value: chartValue(scan.Mount.UsedBytes, unit), Display: beforeUsedDisp},
+					{Label: "删之后", Value: 0, Display: "—"},
 				},
 			},
 			{
-				Name: "清理后已用 · " + afterText,
+				Name: "删之后用了 · " + afterText,
 				Tone: afterTone,
 				Points: []wire.ChartPoint{
-					{Label: "清理前", Value: 0, Display: "—"},
-					{Label: "Safe 清理后", Value: chartValue(afterUsed, unit), Display: afterUsedDisp},
+					{Label: "删之前", Value: 0, Display: "—"},
+					{Label: "删之后", Value: chartValue(afterUsed, unit), Display: afterUsedDisp},
 				},
 			},
 		}
 	} else {
 		series = []wire.ChartSeries{
 			{
-				Name: "已用 · " + beforeText,
+				Name: "用了 · " + beforeText,
 				Tone: beforeTone,
 				Points: []wire.ChartPoint{
-					{Label: "清理前", Value: chartValue(scan.Mount.UsedBytes, unit), Display: beforeUsedDisp},
-					{Label: "Safe 清理后", Value: chartValue(afterUsed, unit), Display: afterUsedDisp},
+					{Label: "删之前", Value: chartValue(scan.Mount.UsedBytes, unit), Display: beforeUsedDisp},
+					{Label: "删之后", Value: chartValue(afterUsed, unit), Display: afterUsedDisp},
 				},
 			},
 		}
 	}
 	series = append(series, wire.ChartSeries{
-		Name: "可用",
+		Name: "还剩",
 		Tone: wire.ToneNeutral,
 		Points: []wire.ChartPoint{
-			{Label: "清理前", Value: chartValue(scan.Mount.AvailableBytes, unit), Display: FormatBytes(scan.Mount.AvailableBytes)},
-			{Label: "Safe 清理后", Value: chartValue(afterAvail, unit), Display: FormatBytes(afterAvail)},
+			{Label: "删之前", Value: chartValue(scan.Mount.AvailableBytes, unit), Display: FormatBytes(scan.Mount.AvailableBytes)},
+			{Label: "删之后", Value: chartValue(afterAvail, unit), Display: FormatBytes(afterAvail)},
 		},
 	})
 
@@ -489,10 +502,10 @@ func cleanImpactChart(ms MachineStatus, scan *Scan) (wire.Component, bool) {
 		Key:     boundedKey("plan-impact-", ms.Machine.ID),
 		Kind:    wire.ChartKindBar,
 		Stacked: true,
-		Title:   "Safe 清理前后根分区对比",
+		Title:   "删掉放心删的之前和之后，系统盘对比",
 		Unit:    unit,
 		Series:  series,
-		Detail: fmt.Sprintf("预计水位 %.1f%% (%s) → %.1f%% (%s)，可用空间 +%s",
+		Detail: fmt.Sprintf("大约从用了 %.1f%%（%s）变成 %.1f%%（%s），多出 %s",
 			ms.UsedPercent, beforeNote, afterPct, afterNote, FormatBytes(scan.SafeBytes)),
 	}, true
 }
@@ -515,7 +528,7 @@ func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreak
 	}
 	mp := cmp.Or(mountPoint, "/")
 	lvlNote := healthWatermarkNote(ms.Level, ms.UsedPercent, ms.TotalBytes, ms.AvailableBytes)
-	caption := fmt.Sprintf("根分区 %s：已用 %s (%.1f%%，%s) · 可用 %s / 总计 %s",
+	caption := fmt.Sprintf("系统盘 %s：用了 %s（%.1f%%，%s）· 还剩 %s / 共 %s",
 		mp, FormatBytes(ms.UsedBytes), ms.UsedPercent, lvlNote,
 		FormatBytes(ms.AvailableBytes), FormatBytes(ms.TotalBytes))
 	return wire.Component{
@@ -523,9 +536,9 @@ func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreak
 		Key:     boundedKey(keyPrefix+"-tbl-", ms.Machine.ID),
 		Caption: caption,
 		Columns: []wire.TableColumn{
-			{Title: "分类"},
-			{Title: "状态"},
-			{Title: "体积", Align: "end"},
+			{Title: "种类"},
+			{Title: "能删吗"},
+			{Title: "大小", Align: "end"},
 			{Title: "占比", Align: "end"},
 		},
 		Rows: rows,
@@ -537,9 +550,9 @@ func machinePlainTextSummary(ms MachineStatus, scan *Scan) string {
 	name := machineLabel(ms.Machine)
 	if ms.TotalBytes == 0 {
 		if ms.Machine.LastError != "" {
-			return fmt.Sprintf("%s：离线（%s）", name, sshProblem(ms.Machine, ms.Machine.LastError).Title)
+			return fmt.Sprintf("%s：连不上（%s）", name, sshProblem(ms.Machine, ms.Machine.LastError).Title)
 		}
-		return fmt.Sprintf("%s：未扫描", name)
+		return fmt.Sprintf("%s：还没检查", name)
 	}
 	mp := "/"
 	var bd categoryBreakdown
@@ -553,11 +566,11 @@ func machinePlainTextSummary(ms MachineStatus, scan *Scan) string {
 			catParts = append(catParts, fmt.Sprintf("%s %s", CategoryAxisLabels[cid], FormatBytes(tot)))
 		}
 	}
-	catLine := "无待清理缓存"
+	catLine := "没有能删的缓存"
 	if len(catParts) > 0 {
-		catLine = "可回收明细：" + strings.Join(catParts, "、")
+		catLine = "能删的：" + strings.Join(catParts, "、")
 	}
-	return fmt.Sprintf("%s [%s %.1f%%] 根分区 %s 已用 %s / %s，可用 %s，可回收 %s（安全项 %s）；%s",
+	return fmt.Sprintf("%s [%s %.1f%%] 系统盘 %s 用了 %s / %s，还剩 %s，可以腾出 %s（其中放心删 %s）；%s",
 		name, healthLevelText(ms.Level), ms.UsedPercent, mp,
 		FormatBytes(ms.UsedBytes), FormatBytes(ms.TotalBytes), FormatBytes(ms.AvailableBytes),
 		FormatBytes(ms.ReclaimableBytes), FormatBytes(ms.SafeBytes), catLine)
@@ -570,13 +583,13 @@ func (d draw) fallbackSummary(statuses []MachineStatus) string {
 		totalReclaim += ms.ReclaimableBytes
 		totalSafe += ms.SafeBytes
 	}
-	lines = append(lines, fmt.Sprintf("Disklessly 机器磁盘（%d 台机器，总可回收 %s，安全可清 %s；预警线 80%% 橙 / 90%% 红）",
+	lines = append(lines, fmt.Sprintf("Disklessly 硬盘空间（%d 台电脑，一共可以腾出 %s，其中放心删 %s；用到 80%% 提醒，90%% 告急）",
 		len(statuses), FormatBytes(totalReclaim), FormatBytes(totalSafe)))
 	for _, ms := range statuses[:min(len(statuses), 12)] {
 		lines = append(lines, "- "+machinePlainTextSummary(ms, d.st.Scans[ms.Machine.ID]))
 	}
 	if len(statuses) > 12 {
-		lines = append(lines, fmt.Sprintf("…其余 %d 台机器请在页面查看", len(statuses)-12))
+		lines = append(lines, fmt.Sprintf("…其余 %d 台电脑请在页面上看", len(statuses)-12))
 	}
 	out := strings.Join(lines, "\n")
 	return clip(out, 1950)
