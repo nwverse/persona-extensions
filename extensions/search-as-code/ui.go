@@ -178,9 +178,15 @@ func (d draw) resultsSections(p page, res *ExecutionResult, recipes []*Recipe) [
 	var secs []wire.Section
 	fresh := p.Query == "" && p.RecipeID == ""
 
-	// 1. What this is for and how to start, until the user searched for something.
-	if fresh {
+	// 1. What this is for and how to start, until the user searched for something, or while there is nothing to
+	// search yet.
+	ready := readinessOf(res, d.fleet != nil)
+	if fresh || ready != readyToShow {
 		secs = append(secs, introSection())
+	}
+	// Nothing read at all: say what is missing and what to do instead of a row of zeros.
+	if ready != readyToShow {
+		return append(secs, d.setupSections(res, ready)...)
 	}
 
 	// 2. Where this result came from: how much was searched, on how many computers.
@@ -226,7 +232,7 @@ func (d draw) resultsSections(p page, res *ExecutionResult, recipes []*Recipe) [
 		secs = append(secs, recSec)
 	}
 
-	// 4. Nothing to search at all, or nothing matched.
+	// 4. Nothing matched.
 	if len(res.Hits) == 0 {
 		empty := wire.Component{
 			Type:   wire.ComponentEmpty,
@@ -234,12 +240,6 @@ func (d draw) resultsSections(p page, res *ExecutionResult, recipes []*Recipe) [
 			Title:  "没找到相关的聊天",
 			Detail: "换几个词试试，或者把上面的「搜哪些内容」换成「全部」。一直什么都搜不到的话，到「搜哪些地方」看看有没有找到聊天记录。",
 			Button: &wire.EmptyButton{Title: "清空重搜", Action: wire.Action{ID: "reset"}},
-		}
-		if res.ScannedSessions == 0 && len(res.Machines) == 0 {
-			empty.Icon = "folder"
-			empty.Title = "还没找到任何聊天记录"
-			empty.Detail = noSessionsDetail
-			empty.Button = &wire.EmptyButton{Title: "再找一次", Action: wire.Action{ID: "reset"}}
 		}
 		secs = append(secs, wire.Section{Title: "找到的聊天", Items: []wire.Component{empty}})
 		return secs
@@ -363,7 +363,7 @@ func (d draw) resultsSections(p page, res *ExecutionResult, recipes []*Recipe) [
 }
 
 // noSessionsDetail says where chats are read from and what to do when none were found.
-const noSessionsDetail = "这里会自动读取这台电脑上 Claude Code（~/.claude/projects）和 Codex（~/.codex/sessions）的聊天记录。先用它们聊几次再回来；记录放在别的文件夹的话，到「搜哪些地方」把文件夹填上；在别的电脑上的话，到扩展设置的「要搜哪些电脑」里选上那台电脑。"
+const noSessionsDetail = "这里会自动读取这台电脑上 Claude Code（~/.claude/projects）和 Codex（~/.codex/sessions）的聊天记录。先用它们聊几次再回来；记录放在别的文件夹的话，到「搜哪些地方」把文件夹填上；在别的电脑上的话，到「" + settingsPlace + "」的「" + machinesSetting + "」里选上那台电脑。"
 
 // introSection says what the page is for, gives one example and the ways to start a search.
 func introSection() wire.Section {
@@ -1210,14 +1210,21 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 // lock meanwhile.
 func (a *app) card(_ context.Context, _ *ext.UIRequest) (*wire.View, error) {
 	var items []wire.Component
+	a.mu.Lock()
+	f := a.fleet
+	a.mu.Unlock()
 	err := a.db().read(func(st *State) {
 		res := st.LastRun
+		// Nothing to search yet, or the last search read nothing: say why instead of the quick searches.
+		if line, intro := cardSetupText(res, f.hasRemote(), chatFoldersEmpty(st), f.selectedCount()); line != "" {
+			if intro {
+				items = append(items, cardIntro())
+			}
+			items = append(items, wire.Component{Type: wire.ComponentText, Key: "card-setup", Text: line})
+			return
+		}
 		if res == nil || res.ScannedSessions == 0 {
-			items = append(items, wire.Component{
-				Type: wire.ComponentText,
-				Key:  "card-intro",
-				Text: "在以前和 Claude Code、Codex 的聊天记录里找东西。点开输入几个词就能搜，也可以直接问 Persona 助手。",
-			})
+			items = append(items, cardIntro())
 		}
 		for i, rec := range st.allRecipes()[:min(len(st.allRecipes()), 3)] {
 			items = append(items, wire.Component{
@@ -1242,6 +1249,15 @@ func (a *app) card(_ context.Context, _ *ext.UIRequest) (*wire.View, error) {
 		}
 	})
 	return &wire.View{Sections: []wire.Section{{Items: items}}}, err
+}
+
+// cardIntro is the card's line about what this is for.
+func cardIntro() wire.Component {
+	return wire.Component{
+		Type: wire.ComponentText,
+		Key:  "card-intro",
+		Text: "在以前和 Claude Code、Codex 的聊天记录里找东西。点开输入几个词就能搜，也可以直接问 Persona 助手。",
+	}
 }
 
 // restoreAction restores an archived session on the computer that holds it (machine: "" for the hub's).
@@ -1380,13 +1396,13 @@ func (a *app) runRemoteRestore(ctx context.Context, r *ext.UIRequest, p page, ma
 }
 
 // remoteRestoreRefused: the computer of a restore is not among the picked ones (any more).
-const remoteRestoreRefused = "没法在那台电脑上恢复：它不在要搜的电脑里了。到扩展设置的「要搜哪些电脑」里重新选上它，再试一次。"
+const remoteRestoreRefused = "没法在那台电脑上恢复：它不在要搜的电脑里了。到「" + settingsPlace + "」的「" + machinesSetting + "」里重新选上它，再试一次。"
 
 // machinesSection lists the computers a search reaches, with their sync state; a row searches that computer.
 func (d draw) machinesSection() wire.Section {
 	sec := wire.Section{
 		Title:  "要搜的电脑",
-		Footer: "在扩展设置的「要搜哪些电脑」里选。在线的电脑当场在它那里搜，只把找到的片段传回来；不在线的，搜之前同步过来的精简副本（每 15 分钟同步一次，只有你和助手说的话）。点一台电脑就只搜它；右边是在搜索框里只搜它的写法。",
+		Footer: "在「" + settingsPlace + "」的「" + machinesSetting + "」里选。在线的电脑当场在它那里搜，只把找到的片段传回来；不在线的，搜之前同步过来的精简副本（每 15 分钟同步一次，只有你和助手说的话）。点一台电脑就只搜它；右边是在搜索框里只搜它的写法。",
 	}
 	for i, m := range d.fleet.statuses(d.ctx) {
 		row := wire.Component{
