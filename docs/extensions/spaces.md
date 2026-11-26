@@ -25,7 +25,7 @@ The pages speak plain Chinese and use one everyday word per concept. The assista
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |
 | `ui` | `spaces`, placement `nav_page`, icon `list` | The "空间" entry on the main navigation: the welcome page (what spaces are for, with examples, and the templates), space overviews, a tab per type (分类), record pages and the schema editor (分类设置). |
-| `ui` | `spaces-card`, placement `overview_card`, opens `spaces` | An overview card with the totals across spaces and the records in progress; with no space yet, a 选个模板 button that opens the page. |
+| `ui` | `spaces-card`, placement `overview_card`, opens `spaces` | The 空间 · 概况 card on the overview, with the totals across spaces and the records in progress; with no space yet, a 选个模板 button that opens the page. |
 | `skills` | `spaces`, directory `skills/spaces` | The assistant's skill: read the structure first, offer a template, agree on types before defining them, then use the tools. |
 | `mcp_servers` | `spaces`, command `spaces`, arguments `mcp`, requires `mcp`, allow `schema` and `query` | The seven assistant tools. The two read-only tools run without asking; the others follow the conversation's permission mode. |
 
@@ -128,7 +128,7 @@ Templates create a space with its types and, optionally, example records. They a
 | `subscription` | 订阅与账单 | subscriptions and payments, with monthly and yearly tables and a list by renewal date. |
 | `blank` | 空白空间 | no types; start with 新建分类. |
 
-The welcome page lists the templates when there is no space yet; afterwards 新建空间 on a space's overview opens the same list. Choosing a template opens a form with the name (a free default such as 「项目与目标 2」 when the name is taken) and, when the template has examples, a switch that leaves them out. With two or more spaces a switcher appears above the tabs.
+The welcome page lists the templates when there is no space yet, each with the names of its types (分类), such as 「书 · 笔记 · 剪藏 · 主题」 (a template with more than four shows the first three and how many there are); afterwards 新建空间 on a space's overview opens the same list. Choosing a template opens a form with the name (a free default such as 「项目与目标 2」 when the name is taken) and, when the template has examples, a switch that leaves them out. With two or more spaces a switcher appears above the tabs.
 
 The example records are invented and use only `example.com` addresses. Dates in examples are relative to the day they are created.
 

@@ -54,7 +54,7 @@ func templateRowsOf(v *wire.View) []wire.Component {
 	return out
 }
 
-// wantTemplateRows asserts a row per template, in order: its icon, name, about and number of types.
+// wantTemplateRows asserts a row per template, in order: its icon, name, about and the names of its types.
 func wantTemplateRows(t *testing.T, v *wire.View) {
 	t.Helper()
 	rows := templateRowsOf(v)
@@ -64,10 +64,11 @@ func wantTemplateRows(t *testing.T, v *wire.View) {
 	}
 	for i, tp := range all {
 		r := rows[i]
-		value := ""
-		if len(tp.Types) > 0 {
-			value = fmt.Sprintf("%d 个分类", len(tp.Types))
+		var names []string
+		for _, ty := range tp.Types {
+			names = append(names, ty.Name)
 		}
+		value := strings.Join(names, " · ")
 		if r.Action.ID != "new:"+tp.Key || r.Title != tp.Name || r.Subtitle != tp.About || r.Value != value || r.Icon != iconName(tp.Icon) {
 			t.Fatalf("row of %s = %+v", tp.Key, r)
 		}
@@ -532,5 +533,36 @@ func TestOverviewButtonsSitInTheirCards(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// TestTemplateRowsNameTheirTypes checks a template row names its types rather than counting them, from the template
+// data, and that a template with many types shows the first three and how many there are.
+func TestTemplateRowsNameTheirTypes(t *testing.T) {
+	reading, ok := templates.Get("reading")
+	if !ok {
+		t.Fatal("no reading template")
+	}
+	if got := templateTypeNames(reading); got != "书 · 笔记 · 剪藏 · 主题" {
+		t.Fatalf("reading row = %q", got)
+	}
+	for _, r := range templateRowsOf(drawPage(t, newApp(storeWith(t, true)), state{}, 5)) {
+		if strings.Contains(r.Value, "个分类") {
+			t.Fatalf("row %s still counts its types: %q", r.Title, r.Value)
+		}
+	}
+	many := templates.Template{}
+	for _, n := range []string{"甲", "乙", "丙", "丁", "戊", "己"} {
+		many.Types = append(many.Types, kernel.Type{Name: n})
+	}
+	if got := templateTypeNames(many); got != "甲 · 乙 · 丙 等 6 个" {
+		t.Fatalf("six types = %q", got)
+	}
+	many.Types = many.Types[:4]
+	if got := templateTypeNames(many); got != "甲 · 乙 · 丙 · 丁" {
+		t.Fatalf("four types = %q", got)
+	}
+	if got := templateTypeNames(templates.Template{}); got != "" {
+		t.Fatalf("no types = %q", got)
 	}
 }

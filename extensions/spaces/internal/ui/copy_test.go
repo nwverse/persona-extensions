@@ -9,6 +9,7 @@ import (
 
 	"github.com/nwverse/persona/sdk/go/wire"
 
+	"github.com/nwverse/persona-extensions/extensions/spaces/internal/templates"
 	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
 )
 
@@ -31,9 +32,15 @@ var latin = regexp.MustCompile(`[A-Za-z]{2,}`)
 // address finds the stored web addresses of the fixtures, which the table shows as they are.
 var address = regexp.MustCompile(`(https://)?example\.com/[^\s|]*`)
 
-// readable is what a user reads of a page state's dump: quoted names, stored addresses and input values left out.
+// readable is what a user reads of a page state's dump: quoted names, stored addresses, input values and the type
+// names a template row repeats from the template (the project template has a type named 记录) left out.
 func readable(text string) string {
 	text = address.ReplaceAllString(fieldValueRe.ReplaceAllString(text, "$1"), "")
+	for _, tp := range templates.All() {
+		if names := templateTypeNames(tp); names != "" {
+			text = strings.ReplaceAll(text, "  "+names+"\n", "\n")
+		}
+	}
 	return quoted.ReplaceAllString(text, "「」")
 }
 
