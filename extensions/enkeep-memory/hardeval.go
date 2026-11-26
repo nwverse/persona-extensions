@@ -102,6 +102,8 @@ func hardevalCmd(args []string) error {
 		return collabBuild(args[1:])
 	case "collab-run":
 		return collabRun(args[1:])
+	case "collab-why":
+		return collabWhy(args[1:])
 	case "standing":
 		return hardevalStanding(args[1:])
 	}

@@ -68,3 +68,21 @@ func TestRooted(t *testing.T) {
 		t.Error("principle on two days")
 	}
 }
+
+// 0.2.5: hard rules rank above 90 by their own leverage, not in a tie at 90; and a rule distilled from dozens of
+// observations outranks one seen seven times.
+func TestHardRulesRankByLeverage(t *testing.T) {
+	ev := func(day string) Evidence { return Evidence{Who: WhoSelf, Day: day, Quote: "以后别再这样"} }
+	narrow := &Entry{Facet: Interaction, Type: "correction", Status: Stable, Grain: Action, Count: 1,
+		Evidence: []Evidence{ev("2026-07-14")}, Leverage: &Leverage{Reach: ReachOneOff, Horizon: HorizonDays}}
+	wide := &Entry{Facet: Interaction, Type: "correction", Status: Stable, Grain: Action, Count: 6,
+		Evidence: []Evidence{ev("2026-11-01"), ev("2026-11-10"), ev("2026-11-20")}, Leverage: &Leverage{Reach: ReachCrossProject, Horizon: HorizonMonths}}
+	if Score(narrow) < 90 || Score(wide) <= Score(narrow) {
+		t.Errorf("hard scores: narrow %d, wide %d", Score(narrow), Score(wide))
+	}
+	seven := &Entry{Facet: Interaction, Grain: Abstract, Status: Stable, Count: 7}
+	dozens := &Entry{Facet: Interaction, Grain: Abstract, Status: Stable, Count: 70}
+	if Score(dozens) <= Score(seven) {
+		t.Errorf("distilled from 70 %d <= seen 7 times %d", Score(dozens), Score(seven))
+	}
+}

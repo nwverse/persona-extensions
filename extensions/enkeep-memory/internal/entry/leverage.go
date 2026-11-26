@@ -204,12 +204,16 @@ func (e *Entry) Principle() string {
 // evidence (independent sightings, source kinds, scopes; at most 30) and the user's own signals (said it holds from
 // now on, corrected the assistant, more each day it had to again, wrote or confirmed it, a principle; at most 28), less for a candidate, a dormant or
 // a low-confidence entry. Every part is a field of the entry: no learnt weights.
+// countMost caps what the times seen add to Score: 15 up to 0.2.4, 25 from 0.2.5, so a rule distilled from dozens of
+// observations (an abstract one) is not ranked like one seen seven times.
+var countMost = 25.0
+
 func Score(e *Entry) int {
 	if e.Pinned {
 		return 100
 	}
 	s := float64(reachOf(e))*6.25 + float64(horizonOf(e))*25.0/3
-	s += math.Min(15, 5*math.Log2(1+float64(max(e.Count, 1))))
+	s += math.Min(countMost, 5*math.Log2(1+float64(max(e.Count, 1))))
 	s += math.Min(8, 4*float64(max(len(e.Kinds)-1, 0)))
 	s += math.Min(7, 3.5*float64(max(len(e.Scopes)-1, 0)))
 	u := 0.0
@@ -241,7 +245,8 @@ func Score(e *Entry) int {
 		s *= 0.5
 	}
 	if Hard(e) && e.Status != Dormant {
-		s = math.Max(s, 90)
+		// 0.2.5: above 90 by its own leverage, so the hard rules are not a tie broken by evidence days or id.
+		s = 90 + 9*math.Max(0, math.Min(99, s))/99
 	}
 	return int(math.Round(math.Max(0, math.Min(99, s))))
 }

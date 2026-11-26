@@ -1,5 +1,18 @@
 # enkeep-memory changelog
 
+## 0.2.5
+
+- **The standing set ranks rules by leverage, and gives rules the larger share.** Hard rules scored exactly 90, and
+  with over a hundred of them, which ones stood was decided by days of evidence and id: a complaint about slow replies
+  stood while a cross-project rule seen on four days did not. Hard rules now score 90 to 99 by their own leverage.
+  Times seen add at most 25 instead of 15, so a rule distilled from dozens of observations ranks above one seen seven
+  times. Rules take 60% of the room and the understanding 40% (the reverse before): in the collaboration evaluation
+  the rules side is what avoids mistakes. On the same snapshot at 4096 bytes, incidents avoided rise from 25% to 29%.
+- **Collaboration evaluation diagnosis.** `hardeval collab-run` records per incident how often an arm was judged a
+  wrong action or a needless ask; `hardeval collab-why` lists, for named incidents, the entries closest to what they
+  needed, whether each stood or was in the scatter memory, and why not, plus (`-show`, `-diff`) the standing set of
+  the day and the scatter lines that did not stand.
+
 ## 0.2.4
 
 - **Non-blocking queued `enkeep_mark_wrong`, cutoff enforcement in `patternOut`, and schema-safe report rendering.**

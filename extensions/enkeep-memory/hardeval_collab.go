@@ -514,6 +514,9 @@ type collabResult struct {
 	Bytes   map[string]map[string]int                `json:"bytes"` // budget → arm → mean bytes of the memory
 	// PerInc: budget → arm → incident → share of the repeats it was avoided in.
 	PerInc map[string]map[string]map[string]float64 `json:"per_incident"`
+	// PerWrong and PerAsk: budget → arm → incident → share of the repeats judged a wrong action / a needless ask.
+	PerWrong map[string]map[string]map[string]float64 `json:"per_incident_wrong,omitempty"`
+	PerAsk   map[string]map[string]map[string]float64 `json:"per_incident_ask,omitempty"`
 	// Entity are the incidents that need entity relations (collabIncident.Entity), reported apart.
 	Entity []string `json:"entity,omitempty"`
 }
@@ -568,7 +571,8 @@ func collabRun(args []string) error {
 	ans := heCLI(*cmd, *mdl, filepath.Join(*out, "cache"))
 	judge := heCLI(*cmd, *jdg, filepath.Join(*out, "cache"))
 	res := collabResult{Model: *mdl, Judge: *jdg, Cutoff: "per incident", N: len(set.Incidents), Repeats: *repeats,
-		Score: map[string]map[string]map[string]float64{}, Bytes: map[string]map[string]int{}, PerInc: map[string]map[string]map[string]float64{}}
+		Score: map[string]map[string]map[string]float64{}, Bytes: map[string]map[string]int{}, PerInc: map[string]map[string]map[string]float64{},
+		PerWrong: map[string]map[string]map[string]float64{}, PerAsk: map[string]map[string]map[string]float64{}}
 	for _, inc := range set.Incidents {
 		if inc.Entity {
 			res.Entity = append(res.Entity, inc.ID)
@@ -584,9 +588,10 @@ func collabRun(args []string) error {
 		fmt.Sscan(bs, &budget)
 		bk := fmt.Sprint(budget)
 		res.Score[bk], res.Bytes[bk], res.PerInc[bk] = map[string]map[string]float64{}, map[string]int{}, map[string]map[string]float64{}
+		res.PerWrong[bk], res.PerAsk[bk] = map[string]map[string]float64{}, map[string]map[string]float64{}
 		for _, arm := range armList {
 			sc := map[string]float64{}
-			per := map[string]float64{}
+			per, wrong, ask := map[string]float64{}, map[string]float64{}, map[string]float64{}
 			bytes := 0
 			for _, d := range days {
 				mems := heMemories(st, ov, collabCogFor(cogs, d), f, d, budget)
@@ -622,6 +627,8 @@ func collabRun(args []string) error {
 						sc["wrong_action"] += b2f(vv.WrongAction)
 						sc["repeat"] += b2f(vv.Repeat)
 						per[x.ID] += b2f(vv.Avoided) / float64(*repeats)
+						wrong[x.ID] += b2f(vv.WrongAction) / float64(*repeats)
+						ask[x.ID] += b2f(vv.NeedlessAsk) / float64(*repeats)
 					}
 				}
 			}
@@ -630,6 +637,7 @@ func collabRun(args []string) error {
 				sc[k] /= n
 			}
 			res.Score[bk][arm], res.PerInc[bk][arm] = sc, per
+			res.PerWrong[bk][arm], res.PerAsk[bk][arm] = wrong, ask
 			res.Bytes[bk][arm] = bytes / max(1, len(set.Incidents))
 		}
 	}

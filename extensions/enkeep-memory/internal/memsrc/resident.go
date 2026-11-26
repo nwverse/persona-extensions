@@ -22,7 +22,7 @@ import (
 // sides, so when the ledger leaves less room both shrink together.
 const (
 	ResidentBytes      = 1400
-	UnderstandingShare = 0.6
+	UnderstandingShare = 0.4
 	ResidentMost       = 12
 	// residentTextMost is the longest line of the set, in bytes.
 	residentTextMost = 240
