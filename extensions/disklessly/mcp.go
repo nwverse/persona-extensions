@@ -134,7 +134,7 @@ var tools = []tool{
 			"categories": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string", "enum": CategoryIDs},
-				"description": "要清理的分类列表（go-cache、node-python-cache、docker-unused、rust-xcode-build、tmp-logs、cold-agent-sessions）；不填默认清理全部 safe 等级项（不含冷会话上云，冷会话需显式指定 cold-agent-sessions 或用 disklessly_sessions_offload）",
+				"description": "要清理的分类列表（go-cache、node-python-cache、docker-unused、rust-xcode-build、tmp-logs、cold-agent-sessions）；不填默认清理全部 safe 等级项（不含冷会话上云，冷会话需显式指定 cold-agent-sessions 或用 disklessly_sessions_offload）。注意：填了分类时，这几类里的 review 等级项（如 Playwright 浏览器缓存）也会一起清理，不看 include_review；只想清理 safe 项请用 items 点名",
 			},
 			"items": map[string]any{
 				"type":        "array",
@@ -143,7 +143,7 @@ var tools = []tool{
 			},
 			"include_review": map[string]any{
 				"type":        "boolean",
-				"description": "是否包含 review 等级项（如 Playwright 浏览器缓存），默认 false 只清理 safe 等级项",
+				"description": "不填 categories 和 items 时是否包含 review 等级项（如 Playwright 浏览器缓存），默认 false 只清理 safe 等级项；填了 categories 时那几类的 review 项总会清理，items 点名的项不论等级都会清理",
 			},
 			"dry_run": map[string]any{
 				"type":        "boolean",
@@ -155,7 +155,7 @@ var tools = []tool{
 				"description": "归档冷会话时必须保留在本地、绝不上传或删除的会话（会话文件绝对路径，或会话 ID：Claude 文件名、Codex rollout 末尾 UUID），例如仍被引用的会话",
 			},
 		},
-		description: "对指定机器执行安全清理计划（支持指定分类、单项或全部 safe 项；冷会话上云只在显式指定 cold-agent-sessions 时执行，会上传后删除本地副本），返回清理前后 df 实测释放空间并写入清理历史台账。绝不触碰运行中容器、活跃 git 仓库、7 天内热会话或凭据密钥。",
+		description: "对指定机器执行安全清理计划（支持指定分类（含该类的 review 项）、单项或全部 safe 项；正在用的项和空项总是跳过；冷会话上云只在显式指定 cold-agent-sessions 时执行，会上传后删除本地副本），返回清理前后 df 实测释放空间并写入清理历史台账。绝不触碰运行中容器、活跃 git 仓库、7 天内热会话或凭据密钥。",
 	},
 	{
 		name:     "disklessly_machine_upsert",
