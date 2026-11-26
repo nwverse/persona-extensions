@@ -15,7 +15,7 @@ import (
 const sectionLimit = 20
 
 // overviewSections is the 总览 tab: one line on what the extension is for, the stat grid with a caption on how its
-// numbers relate, then what needs buying, what to use first, the chores due and the meal ideas for today. With no
+// numbers relate, the imports waiting, today's advice, then what needs buying, what to use first, the chores due and the meal ideas for today. With no
 // records at all it offers the sample set and adding an item instead.
 func (c *ctx) overviewSections() []wire.Section {
 	if c.empty() {
@@ -27,6 +27,7 @@ func (c *ctx) overviewSections() []wire.Section {
 	}
 	out = append(out, c.importSections()...)
 	return append(out,
+		c.adviceSection(),
 		c.restockSection(),
 		c.expiringSection(),
 		c.choreSection(),

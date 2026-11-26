@@ -30,13 +30,13 @@ var wantTools = []string{
 	"household_status", "household_list", "household_meal_suggest", "household_save", "household_use",
 	"household_restock", "household_purchase", "household_chore_done", "household_remove",
 	"household_import_preview", "household_import_list", "household_import_apply", "household_import_undo",
-	"household_import_discard",
+	"household_import_discard", "household_advise",
 }
 
 // readTools are the tools that never change the data; the manifest allows exactly these.
 var readTools = map[string]bool{
 	"household_status": true, "household_list": true, "household_meal_suggest": true,
-	"household_import_preview": true, "household_import_list": true,
+	"household_import_preview": true, "household_import_list": true, "household_advise": true,
 }
 
 // destructiveTools are the tools that overwrite stored data or delete a record (destructiveHint). Restock only adds
@@ -63,6 +63,7 @@ var wantRequired = map[string][]string{
 	"household_import_apply":   {"draft_id"},
 	"household_import_undo":    nil,
 	"household_import_discard": {"draft_id"},
+	"household_advise":         nil,
 }
 
 // ---- JSON helpers ----

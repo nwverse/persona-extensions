@@ -6,7 +6,7 @@ The household extension (`household`, 家庭管家) keeps a home's stock, shoppi
 | --- | --- |
 | `contributes.ui` `nav_page` `household` | The 家庭管家 page: 总览, 库存, 采购, 家务 and 餐食 tabs, with a badge counting what needs attention |
 | `contributes.ui` `overview_card` `household-card` | The 家庭管家 · 概况 card on the overview, with the counts and the most urgent entries |
-| `contributes.mcp_servers` `household` | Fourteen tools for the assistant (`household mcp`), five of them read-only and allowed |
+| `contributes.mcp_servers` `household` | Fifteen tools for the assistant (`household mcp`), six of them read-only and allowed |
 | `contributes.skills` `household` | Tells the assistant when and how to use the tools |
 | `permissions.hub` `notify` | The daily reminder as a push notification |
 | `permissions.hub` `todos.write` | Reminders as to-dos (optional, chosen in the settings) |
@@ -46,13 +46,24 @@ All rules are computed from the records when they are read; nothing derived is s
 
 **Shopping list.** 一键补货 creates one 待买 purchase for every item with an `expired`, `out`, `low` or `runout` finding that has no 待买 purchase yet, in one transaction. Each is derived from its item (the kernel's derive: same title, `unit` and `category` copied, origin recorded; the item's note is not carried over) with `item` pointing back, `amount` = the item's `refill` (1 when unset) and the reason from the table. Running it again creates nothing new.
 
-**Overview numbers.** The 总览 tab opens with one line on what the extension is for, then four numbers. 需要处理 is what the rules find: the items with an `expired`, `out`, `low` or `runout` finding plus the chores due, and its detail shows the two parts (补货 n · 家务 n); items that are only `expiring` are not in it and have their own number, 即将过期. 待买 is the open purchases on the shopping list, however they got there (by hand, 一键补货 or the assistant). The two overlap only when an item that needs buying already has a 待买 purchase; a line under the numbers tells them apart.
+**Overview numbers.** The 总览 tab opens with one line on what the extension is for, then four numbers, then the imports waiting (see "Import") and 今天的建议. 需要处理 is what the rules find: the items with an `expired`, `out`, `low` or `runout` finding plus the chores due, and its detail shows the two parts (补货 n · 家务 n); items that are only `expiring` are not in it and have their own number, 即将过期. 待买 is the open purchases on the shopping list, however they got there (by hand, 一键补货 or the assistant). The two overlap only when an item that needs buying already has a 待买 purchase; a line under the numbers tells them apart.
 
 **Buying.** Marking a purchase 已买 through the page or the `household_purchase` tool stocks the item: `amount` is added to its estimated quantity and `counted` becomes today. When the item's `expires` date is already past, the old batch is taken as thrown away: the quantity becomes `amount` alone and the date is cleared (enter the new one when you put the batch away). An item without `qty` stays untracked; only a past date is cleared. 不买 only closes the purchase.
 
 **Chores.** A chore is due when `next` is today or earlier. 完成 sets `last` to today and `next` to today + `every` (rounded up to whole days, at least one); a chore without `every` is a one-off and has its `next` cleared. A new chore without `next` is due today.
 
 **Meals.** Suggestions rank recipes by the ingredients at hand. An ingredient counts as at hand when the item is not expired and is either untracked or has `est > 0`. Recipes whose ingredients are all at hand come first, then by how many of their ingredients are `expiring` (use those first), then by the share at hand. Each suggestion lists what is missing. Planning a meal creates a 计划 entry for a date and slot; marking it 已做 does not change the stock, because recipes do not record amounts. Adjust items with 用掉 on the stock tab or with the `household_use` tool.
+
+## Today's advice
+
+`household_advise` and the 「今天的建议」 block on 总览 come from one pure function, `rules.Advise`: the same records and day always give the same advice, and it reuses the functions behind the rest of the page, so the two cannot disagree. In rank order:
+
+1. **先吃**: the items with an `expiring` finding, soonest first (the 即将过期 number).
+2. **可以做**: the first three meal ideas, exactly those of 今天吃什么 and `household_meal_suggest` with `limit` 3, each saying which soon-expiring ingredients it uses and what is missing.
+3. **家务**: the chores due, most overdue first (the 家务到期 number).
+4. **该买**: the items with an `expired`, `out`, `low` or `runout` finding (the 补货 part of 需要处理), those not yet on the shopping list first. The reason gives the numbers from the records: days past the date, the estimate against the threshold, or the days left at the daily use.
+
+Each tip carries its reason and the ids (`item_id`, `recipe_id`, `chore_id`, `buy_id`) the existing tools act on. The tool also returns the same `summary` as `household_status`. The records have no "opened" state, so 先吃 goes by the expiry date alone. The page block has at most one line per kind, and each line opens the tab where the user acts (库存, 餐食, 采购, 家务).
 
 ## Reminders
 
@@ -93,6 +104,7 @@ Settings (`configuration`):
 | `household_import_apply` | no | Writes a draft in one transaction, with optional `skip` and `edits`; refuses open questions and drafts the records have overtaken |
 | `household_import_undo` | no | Undoes the last import while nothing it touched has changed since |
 | `household_import_discard` | no | Drops a draft; no record changes |
+| `household_advise` | yes | Today's advice from the records, ranked, each with its reason and record ids (see "Today's advice") |
 
 Meals are planned with `household_save` (type `meal`, with `date`, `slot` and `recipe`).
 
@@ -147,12 +159,12 @@ Both extensions reach them through their existing kind of `replace` directive fo
 | Package | Role |
 | --- | --- |
 | `internal/model` | The schema (space id, type and property keys, stage and option names), `Ensure`, fictional sample records, and `Load`, which reads a space into typed records |
-| `internal/rules` | Pure functions over the typed records: estimate, findings, restock suggestions, chores due, meal ideas, summary |
+| `internal/rules` | Pure functions over the typed records: estimate, findings, restock suggestions, chores due, meal ideas, summary, today's advice |
 | `internal/ops` | The transactions: save, use, restock, purchase, add stock, restore, chore done, remove, load samples. Each works on a `*kernel.Base` inside one `Update` |
 | `internal/remind` | The hub client (`notify`, to-dos), the daily plan and its `remind.json` state |
 | `internal/ui` | The page and the overview card |
 | `internal/imports` | The import: matching and merging, the built-in table, the paste parser, drafts in `imports.json`, apply and undo |
-| `internal/mcp` | The stdio MCP server and the fourteen tools |
+| `internal/mcp` | The stdio MCP server and the fifteen tools |
 | `internal/datadir` | Where the data directory is, and recording it for `household mcp` |
 
 ## Limits

@@ -59,6 +59,7 @@ var table = []Tool{
 	{Name: "household_import_apply", Input: importApplyInput, Run: runImportApply, About: aboutApply},
 	{Name: "household_import_undo", Input: importUndoInput, Run: runImportUndo, About: aboutUndo},
 	{Name: "household_import_discard", Input: importDiscardInput, Run: runImportDiscard, About: aboutDiscard},
+	{Name: "household_advise", Read: true, Input: noInput, Run: runAdvise, About: aboutAdvise},
 }
 
 // Tools returns the tools in the order the server lists them.
