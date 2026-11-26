@@ -33,7 +33,8 @@ const (
 	contractInteractionCap = 80  // nominal cap for ① interaction (unused tools slots spill over)
 	contractToolsCap       = 40  // guaranteed floor/cap for ② tools so interaction never starves it
 	contractNonHardPct     = 40  // at least 40% of each facet's quota reserved for non-hard high-score rules
-	contractCandScore      = 60  // lowest score put to contract aggregation (hard and user-owned always included)
+	contractCandScore      = 50  // lowest score for ① interaction non-hard rules
+	contractToolsScore     = 40  // lowest score for ② tools stable non-hard rules (tools lacks interaction correction bonus)
 	contractMaxTokens      = 8000
 	flagNoAutoMerge        = "no_auto_merge"
 )
@@ -109,7 +110,11 @@ func contractCandidates(st *store.State, cutoff string) []*entry.Entry {
 		if cutoff != "" && e.First >= cutoff {
 			continue
 		}
-		if entry.Score(e) < contractCandScore && !entry.Hard(e) && !isUserOwned(e) {
+		minScore := contractCandScore
+		if e.Facet == entry.Tools && e.Status == entry.Stable {
+			minScore = contractToolsScore
+		}
+		if entry.Score(e) < minScore && !entry.Hard(e) && !isUserOwned(e) {
 			continue
 		}
 		if e.Facet == entry.Tools {

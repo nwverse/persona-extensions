@@ -174,8 +174,9 @@ func TestSyncContracts(t *testing.T) {
 	// Standalone hard rule (explicit ban cue + user confirmation, single source, single week): must still become a used hard contract.
 	rCheck := makeRule("r-check", "correction", "断言前先查真实状态", "", "2026-11-21", "以后一律先查真实状态再说", entry.Behavior, 2)
 	rCheck.Verdicts = []entry.Verdict{{Mark: "right", By: "user"}}
-	// Single-day casual cue without user confirmation or repeat days: must stay non-hard (violation_count==1).
-	rSoftCue := makeRule("r-soft-cue", "correction", "汇报简短一点", "", "2026-11-21", "以后简短点说", entry.Behavior, 1)
+	// Single-day casual cue without user confirmation or repeat days: matches entry.Hard's cue so it enters
+	// contractCandidates, but L1 contractHard keeps it non-hard (violation_count==1).
+	rSoftCue := makeRule("r-soft-cue", "correction", "汇报简短一点", "", "2026-11-21", "以后不要写太长", entry.Behavior, 1)
 
 	st := state(r1, r2, rHand, rConf, rCheck, rSoftCue)
 	calls := 0
