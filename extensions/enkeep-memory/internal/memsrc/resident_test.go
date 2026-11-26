@@ -136,7 +136,7 @@ func TestResidentGroupShare(t *testing.T) {
 		c.Group = "interaction:autonomy"
 		cs = append(cs, c)
 	}
-	other := cand("o0", entry.KindRules, 60, 150)
+	other := cand("b0", entry.KindRules, 60, 150) // "b": its own run of characters, unlike "a"
 	other.Group = "interaction:verification"
 	cs = append(cs, other)
 	got := ResidentWithin(cs, 4096, ResidentMostFor(4096))
