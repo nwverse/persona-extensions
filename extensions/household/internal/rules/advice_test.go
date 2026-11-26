@@ -8,7 +8,8 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/household/internal/model"
 )
 
-// adviceHome is mealHome with a low item, one running out, one on the shopping list, and two chores.
+// adviceHome is mealHome with a low item, one running out, one on the shopping list, two entries of the list for
+// nothing that needs buying (one closed), and two chores.
 func adviceHome() *model.Home {
 	h := mealHome()
 	h.Items = append(h.Items,
@@ -16,7 +17,12 @@ func adviceHome() *model.Home {
 		model.Item{ID: "salt", Title: "盐", Qty: 1, HasQty: true, Min: 1, HasMin: true, Unit: "袋"},
 		model.Item{ID: "dia", Title: "纸尿裤", Qty: 20, HasQty: true, Daily: 5, Counted: today, Unit: "片", Category: model.CategoryBaby},
 	)
-	h.Buys = []model.Buy{{ID: "b1", Title: "大米", Status: model.BuyTodo, ItemID: "rice"}}
+	h.Buys = []model.Buy{
+		{ID: "b1", Title: "大米", Status: model.BuyTodo, ItemID: "rice"},
+		{ID: "b2", Title: "卷纸", Status: model.BuyTodo, Amount: 2, Unit: "提"},
+		{ID: "b3", Title: "洗洁精", Status: model.BuyDone},
+		{ID: "b4", Title: "酱油", Status: model.BuyTodo},
+	}
 	h.Chores = []model.Chore{
 		{ID: "c1", Title: "拖地", Next: today.Add(-3)},
 		{ID: "c2", Title: "倒垃圾", Next: today},
@@ -40,7 +46,8 @@ func TestAdviceRanking(t *testing.T) {
 		"cook:煎蛋", "cook:番茄炒蛋", "cook:牛奶粥", // the first three meal ideas
 		"chore:拖地", "chore:倒垃圾", // most overdue first
 		"restock:老豆腐", "restock:盐", "restock:纸尿裤", // not on the list, in severity order
-		"restock:大米", // on the list, last
+		"restock:大米",                 // on the list, last of the restock
+		"shopping:卷纸", "shopping:酱油", // the rest of the list, in its order; the closed entry is left out
 	}
 	if got := tipKinds(a); !reflect.DeepEqual(got, want) {
 		t.Fatalf("advice\n got %v\nwant %v", got, want)
@@ -62,6 +69,12 @@ func TestAdviceRanking(t *testing.T) {
 	}
 	if tip := byTitle["restock大米"]; !tip.OnList || tip.BuyID != "b1" || !strings.Contains(tip.Reason, "已经在采购清单上") {
 		t.Fatalf("rice %+v", tip)
+	}
+	if tip := byTitle["shopping卷纸"]; !tip.OnList || tip.BuyID != "b2" || tip.ItemID != "" || tip.Reason != "要买 2提，在采购清单上，还没买" {
+		t.Fatalf("shopping %+v", tip)
+	}
+	if tip := byTitle["shopping酱油"]; tip.BuyID != "b4" || tip.Reason != "在采购清单上，还没买" {
+		t.Fatalf("shopping %+v", tip)
 	}
 	if tip := byTitle["cook煎蛋"]; tip.RecipeID != "r_milkegg" || !strings.Contains(tip.Reason, "用得上快过期的纯牛奶") {
 		t.Fatalf("cook %+v", tip)
@@ -95,6 +108,16 @@ func TestAdviceAgreesWithSummaryAndMeals(t *testing.T) {
 		count[AdviceRestock] != sum.Expired+sum.Out+sum.Low+sum.Runout || count[AdviceRestock]+count[AdviceChore] != sum.Alerts {
 		t.Fatalf("counts %v, summary %+v", count, sum)
 	}
+	// Every open purchase is named: as a restock tip on the list, or as a shopping tip.
+	listed := count[AdviceShopping]
+	for _, tip := range a.Tips {
+		if tip.Kind == AdviceRestock && tip.OnList {
+			listed++
+		}
+	}
+	if listed != sum.OpenBuys {
+		t.Fatalf("%d open purchases named, 待买 is %d", listed, sum.OpenBuys)
+	}
 	var cook []string
 	for _, tip := range a.Tips {
 		if tip.Kind == AdviceCook {
@@ -112,5 +135,20 @@ func TestAdviceAgreesWithSummaryAndMeals(t *testing.T) {
 func TestAdviceOnAnEmptyHome(t *testing.T) {
 	if a := Advise(&model.Home{}, today); len(a.Tips) != 0 {
 		t.Fatalf("advice on nothing: %+v", a.Tips)
+	}
+}
+
+func TestAdviceNamesTheShoppingListWhenNothingElseIsDue(t *testing.T) {
+	h := &model.Home{Buys: []model.Buy{
+		{ID: "b1", Title: "牛奶", Status: model.BuyTodo},
+		{ID: "b2", Title: "鸡蛋", Status: model.BuyTodo},
+		{ID: "b3", Title: "面包", Status: model.BuySkip},
+	}}
+	a := Advise(h, today)
+	if got, want := tipKinds(a), []string{"shopping:牛奶", "shopping:鸡蛋"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("advice %v, want %v", got, want)
+	}
+	if a.Summary.OpenBuys != 2 || a.Summary.Alerts != 0 {
+		t.Fatalf("summary %+v", a.Summary)
 	}
 }

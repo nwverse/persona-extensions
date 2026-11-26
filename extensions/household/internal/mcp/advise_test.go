@@ -55,3 +55,23 @@ func TestAdviseOnEmptyStore(t *testing.T) {
 		t.Fatalf("empty advice %v", adv)
 	}
 }
+
+func TestAdviseNamesTheOpenShoppingList(t *testing.T) {
+	s := start(t, seeded(t, false))
+	defer s.finish()
+	for _, title := range []string{"牛奶", "鸡蛋"} {
+		s.done("household_save", `{"type":"buy","title":"`+title+`"}`)
+	}
+	adv := s.done("household_advise", `{}`)
+	tips := get(t, adv, "tips").([]any)
+	if len(tips) != 2 || asStr(t, get(t, tips[0], "kind")) != "shopping" || asStr(t, get(t, tips[0], "buy_id")) == "" {
+		t.Fatalf("tips %v", tips)
+	}
+	says := get(t, adv, "says").([]any)
+	if asStr(t, says[0]) != "1. 待买「牛奶」：在采购清单上，还没买" {
+		t.Fatalf("says %v", says)
+	}
+	if asMap(t, get(t, adv, "summary"))["open_buys"] != float64(2) {
+		t.Fatalf("summary %v", get(t, adv, "summary"))
+	}
+}

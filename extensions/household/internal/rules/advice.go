@@ -17,6 +17,7 @@ const (
 	AdviceCook     = "cook"      // a recipe that suits what is at hand (the meal suggestions)
 	AdviceChore    = "chore"     // a chore due
 	AdviceRestock  = "restock"   // an item to buy: expired, used up, low or running out
+	AdviceShopping = "shopping"  // an open purchase on the shopping list that no restock tip names yet
 )
 
 // AdviceMeals is how many recipes the advice names: the same three the overview's 今天吃什么 shows.
@@ -29,7 +30,8 @@ type Tip struct {
 	Rank   int    `json:"rank"`
 	Title  string `json:"title"`
 	Reason string `json:"reason"`
-	// The records: the item (eat first, restock), the recipe (cook), the chore, the open purchase of a restock item.
+	// The records: the item (eat first, restock, a shopping entry linked to one), the recipe (cook), the chore, the
+	// open purchase (of a restock item, or the shopping entry itself).
 	ItemID   string `json:"item_id,omitempty"`
 	RecipeID string `json:"recipe_id,omitempty"`
 	ChoreID  string `json:"chore_id,omitempty"`
@@ -44,7 +46,8 @@ type Tip struct {
 	Days int `json:"days"`
 }
 
-// Advice is today's advice, ranked: what to eat first, what to cook, the chores due, what to buy. Summary is the same
+// Advice is today's advice, ranked: what to eat first, what to cook, the chores due, what to buy, then the rest of the
+// shopping list. Summary is the same
 // count as the overview's and household_status's, so the advice never contradicts them.
 type Advice struct {
 	Today   model.Day `json:"today"`
@@ -58,7 +61,10 @@ type Advice struct {
 //   - cook: the first AdviceMeals meal ideas (MealIdeas, the same as the overview and household_meal_suggest);
 //   - chores: the chores due, most overdue first (ChoresDue);
 //   - restock: the findings that call for a purchase (expired, used up, low, running out), in the order of Findings;
-//     those not on the shopping list yet come first.
+//     those not on the shopping list yet come first;
+//   - shopping: last and least urgent, the open purchases (待买) whose item has no restock tip, in the order of the
+//     list; with the restock tips marked on_list they cover every open purchase, so the advice is empty only when
+//     the 待买 number is 0 too.
 func Advise(h *model.Home, today model.Day) Advice {
 	a := Advice{Today: today, Tips: []Tip{}, Summary: Summarize(h, today)}
 	findings := Findings(h, today)
@@ -110,6 +116,17 @@ func Advise(h *model.Home, today model.Day) Advice {
 		}
 		a.Tips = append(a.Tips, t)
 	}
+	named := map[string]bool{}
+	for _, f := range buy {
+		named[f.Item.ID] = true
+	}
+	for _, b := range h.Buys {
+		if b.Status != model.BuyTodo || b.ItemID != "" && named[b.ItemID] {
+			continue
+		}
+		a.Tips = append(a.Tips, Tip{Kind: AdviceShopping, Title: b.Title, ItemID: b.ItemID, BuyID: b.ID, OnList: true,
+			Reason: shoppingWords(b)})
+	}
 	for i := range a.Tips {
 		a.Tips[i].Rank = i + 1
 	}
@@ -152,6 +169,15 @@ func restockWords(f Finding) string {
 		return fmt.Sprintf("约剩 %s%s，按每天 %s%s 算，%d 天左右用完", fnum(f.Est), it.Unit, fnum(it.Daily), it.Unit, f.Days)
 	}
 	return f.Kind.Label()
+}
+
+// shoppingWords says why an open purchase is advice: how much, if recorded, and that it is still to buy.
+func shoppingWords(b model.Buy) string {
+	why := "在采购清单上，还没买"
+	if b.Amount > 0 {
+		why = fmt.Sprintf("要买 %s%s，", fnum(b.Amount), b.Unit) + why
+	}
+	return why
 }
 
 // fnum is a number without trailing zeros, rounded to two decimals.
