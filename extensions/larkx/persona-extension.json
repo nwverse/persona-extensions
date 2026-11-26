@@ -108,6 +108,22 @@
         "maxLength": 100,
         "default": "🤖 AI 代答，仅供参考"
       },
+      "agent_engine": {
+        "type": "string",
+        "title": "/agent 会话方式",
+        "description": "选「专用模型会话」后，本人的 /agent 和自动处理都用 hub 模型设置里「Lark /agent」的模型开会话；默认走频道",
+        "default": "channel",
+        "oneOf": [
+          {
+            "const": "channel",
+            "title": "频道"
+          },
+          {
+            "const": "lark_agent",
+            "title": "专用模型会话"
+          }
+        ]
+      },
       "agent_mention": {
         "type": "boolean",
         "title": "@自己唤起助手",
@@ -204,7 +220,10 @@
       "files.pythonhosted.org"
     ],
     "hub": [
-      "models"
+      "models",
+      "agents.control",
+      "agents.read",
+      "assistant.ask"
     ]
   }
 }

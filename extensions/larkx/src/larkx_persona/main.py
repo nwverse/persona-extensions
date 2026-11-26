@@ -6,6 +6,7 @@ import sys
 import tempfile
 
 from .connector import ID, Connector
+from .hub_api import HubAPI
 from .store import Store
 from .wire import Peer, RpcError
 
@@ -75,6 +76,10 @@ class Plugin:
             backend = self.make_backend(data_dir, config.get("region") or "feishu", store)
             self.connector = Connector(backend, store, Hub(self.peer),
                                        config.get("triage_rules") or "", config.get("agent_reply_suffix") or "")
+            hub = params.get("hub") or {}
+            self.connector.hub_api = HubAPI(hub.get("url") or os.environ.get("PERSONA_HUB_URL", ""),
+                                            hub.get("token") or os.environ.get("PERSONA_HUB_TOKEN", ""))
+            self.connector.agent_engine = config.get("agent_engine", "channel")
             self.connector.mention = config.get("agent_mention", True) is not False
             self.connector.topics = config.get("agent_group_topics", True) is not False
             self.connector.auto_handle = config.get("auto_handle") is True

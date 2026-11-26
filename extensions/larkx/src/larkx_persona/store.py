@@ -23,6 +23,12 @@ CREATE TABLE IF NOT EXISTS sends (key TEXT PRIMARY KEY, result TEXT);
 CREATE TABLE IF NOT EXISTS auto_topics (
   account TEXT NOT NULL, scope TEXT NOT NULL, scenario TEXT NOT NULL DEFAULT '', handled REAL NOT NULL DEFAULT 0,
   thread TEXT NOT NULL DEFAULT '', active REAL NOT NULL DEFAULT 0, PRIMARY KEY (account, scope));
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  account TEXT NOT NULL, thread TEXT NOT NULL, machine TEXT NOT NULL, session TEXT NOT NULL, updated REAL NOT NULL,
+  PRIMARY KEY (account, thread));
+CREATE TABLE IF NOT EXISTS agent_runs (
+  account TEXT NOT NULL, request TEXT NOT NULL, thread TEXT NOT NULL, machine TEXT NOT NULL, session TEXT NOT NULL,
+  sent REAL NOT NULL, auto INTEGER NOT NULL, cursor INTEGER NOT NULL DEFAULT 0, baseline INTEGER, PRIMARY KEY (account, request));
 CREATE TABLE IF NOT EXISTS auto_bot_waits (
   account TEXT NOT NULL, chat TEXT NOT NULL, root TEXT NOT NULL, bot TEXT NOT NULL, scenario TEXT NOT NULL,
   batch TEXT NOT NULL, timeout REAL NOT NULL, deadline REAL NOT NULL, sending INTEGER NOT NULL,
@@ -56,6 +62,10 @@ class Store:
         columns = {r["name"] for r in self._db.execute("PRAGMA table_info(auto_bot_waits)")}
         if "retries" not in columns:
             self._db.execute("ALTER TABLE auto_bot_waits ADD COLUMN retries INTEGER NOT NULL DEFAULT 0")
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(agent_runs)")}
+        if "baseline" not in columns:
+            # In-flight runs from before positional matching must still find their own marker.
+            self._db.execute("ALTER TABLE agent_runs ADD COLUMN baseline INTEGER")
         # 0.1 named a direct chat it saw only through the user's own messages 私聊 ("direct chat") for good.
         self._db.execute("UPDATE chats SET name = '' WHERE kind = 'dm' AND name = '私聊'")
         self._db.commit()
@@ -181,6 +191,30 @@ class Store:
                              " ON CONFLICT(account, scope) DO UPDATE SET thread = excluded.thread, active = excluded.active",
                              (account, scope, thread, now))
             return thread
+
+    def agent_session(self, account, thread):
+        return self._one("SELECT * FROM agent_sessions WHERE account = ? AND thread = ?", account, thread)
+
+    def bind_agent_run(self, run, chat, root):
+        with self._lock, self._db:
+            self._db.execute("INSERT OR REPLACE INTO agent_sessions VALUES (:account, :thread, :machine, :session, :sent)", run)
+            self._db.execute("INSERT INTO agent_runs (account, request, thread, machine, session, sent, auto, cursor, baseline)"
+                             " VALUES (:account, :request, :thread, :machine, :session, :sent, :auto, :cursor, :baseline)", run)
+            # A crash before the bot worker clears its wait must not submit the same fallback a second time.
+            self._db.execute("DELETE FROM auto_bot_waits WHERE account = ? AND chat = ? AND root = ? AND sending = 2"
+                             " AND json_extract(batch, '$[#-1].id') = ?", (run["account"], chat, root, run["request"]))
+
+    def agent_busy(self, account, thread):
+        return self._one("SELECT 1 FROM agent_runs WHERE account = ? AND thread = ? LIMIT 1", account, thread)
+
+    def agent_runs(self, account):
+        return self._all("SELECT * FROM agent_runs WHERE account = ? ORDER BY sent", account)
+
+    def agent_cursor(self, run, cursor):
+        self._do("UPDATE agent_runs SET cursor = ? WHERE account = ? AND request = ?", cursor, run["account"], run["request"])
+
+    def finish_agent_run(self, run):
+        self._do("DELETE FROM agent_runs WHERE account = ? AND request = ?", run["account"], run["request"])
 
     def remember_thread(self, chat, root, thread):
         # Only distinct ids need a mapping. A decoder may use root as a fallback anchor.
