@@ -27,7 +27,7 @@ func sliceStateBefore(st *store.State, cutoff string) *store.State {
 		return st
 	}
 	out := &store.State{
-		Schema:     st.Schema,
+		Version:    st.Version,
 		Onboarding: st.Onboarding,
 		Contacts:   st.Contacts,
 		Graph:      st.Graph,
