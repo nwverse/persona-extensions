@@ -220,8 +220,9 @@ type candCluster struct {
 }
 
 // clusterCandidates projects a facet's candidates into compact 3–15 item clusters by cognitive clues
-// (Leverage.Dimension first, then cross-project Principle clues, then remaining spread-ordered items) and packs them
-// into synthesis batches of at most synthBatchItems items (at most synthBatches calls per facet).
+// (Leverage.Dimension buckets, cross-project Principle clues, and spread-ordered general history) and packs them
+// round-robin across buckets into synthesis batches of at most synthBatchItems items (at most synthBatches calls per
+// facet), so no single dimension starves other dimensions or long-lived high-spread entries.
 func clusterCandidates(cands []candidate) [][]candCluster {
 	byDim := map[string][]candidate{}
 	var princCross, rest []candidate
@@ -234,31 +235,62 @@ func clusterCandidates(cands []candidate) [][]candCluster {
 			rest = append(rest, c)
 		}
 	}
-	var clusters []candCluster
-	appendChunks := func(label string, items []candidate) {
+	toChunks := func(label string, items []candidate) []candCluster {
+		var out []candCluster
 		for len(items) > 0 {
 			n := min(len(items), synthClusterMax)
 			if len(items)-n > 0 && len(items)-n < synthClusterMin {
 				n = len(items)
 			}
-			clusters = append(clusters, candCluster{label: label, items: items[:n]})
+			out = append(out, candCluster{label: label, items: items[:n]})
 			items = items[n:]
 		}
+		return out
 	}
+	var queues [][]candCluster
 	for _, dim := range entry.Dimensions {
 		if len(byDim[dim]) >= synthClusterMin {
-			appendChunks("dim:"+dim, byDim[dim])
+			queues = append(queues, toChunks("dim:"+dim, byDim[dim]))
 		} else {
 			rest = append(rest, byDim[dim]...)
 		}
 	}
 	if len(princCross) >= synthClusterMin {
-		appendChunks("principle", princCross)
+		queues = append(queues, toChunks("principle", princCross))
 	} else {
 		rest = append(rest, princCross...)
 	}
 	if len(rest) > 0 {
-		appendChunks("general", rest)
+		// Re-sort rest by spread so high-spread historical/handwritten entries surface first in general chunks.
+		sort.SliceStable(rest, func(i, j int) bool {
+			a, b := rest[i], rest[j]
+			if sa, sb := a.t.sceneCount(), b.t.sceneCount(); sa != sb {
+				return sa > sb
+			}
+			if len(a.t.sources) != len(b.t.sources) {
+				return len(a.t.sources) > len(b.t.sources)
+			}
+			if a.t.last != b.t.last {
+				return a.t.last > b.t.last
+			}
+			return a.e.ID < b.e.ID
+		})
+		queues = append(queues, toChunks("general", rest))
+	}
+	// Round-robin across bucket queues so every dimension and general history gets representation in the first batches.
+	var clusters []candCluster
+	for {
+		took := false
+		for i := range queues {
+			if len(queues[i]) > 0 {
+				clusters = append(clusters, queues[i][0])
+				queues[i] = queues[i][1:]
+				took = true
+			}
+		}
+		if !took {
+			break
+		}
 	}
 	// Pack clusters into calls of at most synthBatchItems items, capped at synthBatches calls.
 	var batches [][]candCluster
@@ -463,7 +495,7 @@ func recount(st *store.State, p *Pattern, cutoff string) {
 		p.Dimension = evDim
 	}
 	apply(p, count(st, live, cutoff))
-	p.Categories, p.OriginSpace = tags(st, append(live, liveIDs(st, p.CounterIDs)...))
+	p.Categories, p.OriginSpace = tags(st, p, append(live, liveIDs(st, p.CounterIDs)...))
 	p.Subjects = subjects(st, live)
 }
 

@@ -309,3 +309,47 @@ func TestCollabTableSegments(t *testing.T) {
 		t.Fatalf("segments missing from table:\n%s", md)
 	}
 }
+
+func TestSliceStateBeforeAndOverviewCheckpoint(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"e-old": {
+			ID: "e-old", Facet: entry.Interaction, Text: "rule old", Status: entry.Stable,
+			First: "2026-10-10", Last: "2026-11-20", Count: 4, Kinds: []string{entry.SrcAssistant, entry.SrcAsk},
+			Evidence: []entry.Evidence{
+				{Source: entry.SrcAssistant, Ref: "a", Day: "2026-10-10", Quote: "q1"},
+				{Source: entry.SrcAssistant, Ref: "b", Day: "2026-11-05", Quote: "q2"},
+				{Source: entry.SrcAsk, Ref: "c", Day: "2026-11-20", Quote: "q3"},
+			},
+		},
+		"e-new": {
+			ID: "e-new", Facet: entry.Interaction, Text: "rule new", Status: entry.Stable,
+			First: "2026-11-15", Last: "2026-11-15", Count: 1,
+		},
+	}}
+	sliced := sliceStateBefore(st, "2026-11-08")
+	if sliced.Entries["e-new"] != nil {
+		t.Fatalf("entry on/after cutoff leaked into sliced state")
+	}
+	old := sliced.Entries["e-old"]
+	if old == nil || len(old.Evidence) != 2 || old.Last != "2026-11-05" || old.Count != 2 {
+		t.Fatalf("unexpected sliced entry: %+v", old)
+	}
+	// Original state must not be mutated.
+	if len(st.Entries["e-old"].Evidence) != 3 || st.Entries["e-old"].Last != "2026-11-20" {
+		t.Fatalf("original state was mutated")
+	}
+	ovs := map[string]*overview.State{
+		"2026-11-01": {Refreshed: "11-01"},
+		"2026-11-08": {Refreshed: "11-08"},
+		"2026-11-25": {Refreshed: "11-25"},
+	}
+	if got := collabOverviewFor(ovs, "2026-11-01"); got == nil || got.Refreshed != "11-01" {
+		t.Fatalf("expected 11-01 checkpoint for 11-01, got %+v", got)
+	}
+	if got := collabOverviewFor(ovs, "2026-11-14"); got == nil || got.Refreshed != "11-08" {
+		t.Fatalf("expected 11-08 checkpoint for 11-14, got %+v", got)
+	}
+	if got := collabOverviewFor(ovs, "2026-10-31"); got != nil {
+		t.Fatalf("expected nil checkpoint before earliest snapshot, got %+v", got)
+	}
+}
