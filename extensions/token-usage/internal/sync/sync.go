@@ -44,13 +44,15 @@ func Loop(ctx context.Context, c *hub.Client, st *store.Store, bf *budget.File, 
 
 // pull reads every machine once and merges what it got, then sends the alerts. Each machine asks for backfillRange
 // until a pull and merge for it has succeeded in backfilled, and recentRange after that. A machine that fails is
-// logged and skipped; the next round tries it again.
+// logged and skipped; the next round tries it again. The round's first error, or none, is reported to c for the page.
 func pull(ctx context.Context, c *hub.Client, st *store.Store, bf *budget.File, loc *time.Location, backfilled map[string]bool) {
 	machines, err := c.Machines(ctx)
 	if err != nil {
-		log.Printf("token-usage: 读取机器列表失败：%v", err)
+		log.Printf("token-usage: 读取机器列表失败：%s", hub.LogText(err))
+		c.ReportPull(time.Now(), err)
 		return
 	}
+	var first error
 	for _, m := range machines {
 		rng := backfillRange
 		if backfilled[m.ID] {
@@ -58,7 +60,10 @@ func pull(ctx context.Context, c *hub.Client, st *store.Store, bf *budget.File, 
 		}
 		buckets, err := c.Pull(ctx, m.ID, rng)
 		if err != nil {
-			log.Printf("token-usage: 读取机器 %s 的用量失败：%v", m.ID, err)
+			log.Printf("token-usage: 读取机器 %s 的用量失败：%s", m.ID, hub.LogText(err))
+			if first == nil {
+				first = err
+			}
 			continue
 		}
 		if _, err := st.Merge(m.ID, buckets, loc); err != nil {
@@ -69,6 +74,7 @@ func pull(ctx context.Context, c *hub.Client, st *store.Store, bf *budget.File, 
 			backfilled[m.ID] = true
 		}
 	}
+	c.ReportPull(time.Now(), first)
 	alert(ctx, c, st, bf, loc)
 }
 
@@ -82,7 +88,7 @@ func alert(ctx context.Context, c *hub.Client, st *store.Store, bf *budget.File,
 		}
 		for _, n := range notes {
 			if err := c.Notify(ctx, n.Title, n.Body, "token-usage-"+n.Key); err != nil {
-				log.Printf("token-usage: 发送提醒失败：%v", err)
+				log.Printf("token-usage: 发送提醒失败：%s", hub.LogText(err))
 			}
 		}
 		return nil

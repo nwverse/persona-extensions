@@ -1,6 +1,6 @@
 // Package ui draws the Token 用量 page and the overview card. The page has three tabs: the overview (totals, the
-// change, the daily trend and the top models, machines and launchers), the detail (a filterable table that exports a
-// CSV) and the budgets. Everything comes from the local store; the hub is asked only for the gateway account list,
+// change, the daily trend and the top models, machines and launchers), the detail (a filterable table whose rows can be
+// shown as CSV text to copy) and the budgets. Everything comes from the local store; the hub is asked only for the gateway account list,
 // which is hidden when it cannot be read.
 package ui
 
@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/csv"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +31,11 @@ const (
 	tabBudget   = "budget"
 
 	topN = 8
+
+	// csvMost is how many bytes of CSV the page shows at once. A code component's text holds at most 200,000
+	// characters (view.schema.json CodeComponent) and a view at most wire.CodeMost bytes of code; bytes are never fewer
+	// than characters, so this stays within both.
+	csvMost = 190_000
 )
 
 // pageState is what a page remembers between draws.
@@ -40,6 +46,7 @@ type pageState struct {
 	Model      string `json:"model,omitempty"`
 	Launcher   string `json:"launcher,omitempty"`
 	BudgetSpan string `json:"budget_span,omitempty"`
+	CSV        bool   `json:"csv,omitempty"` // the detail shows its rows as CSV text
 }
 
 func (p pageState) tab() string {
@@ -164,8 +171,14 @@ func (a *App) Act(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, er
 			return nil, err
 		}
 		return &wire.ActionResult{View: v, Toast: "已删除预算"}, nil
-	case "export":
-		return a.export(ps)
+	case "export", "export-close":
+		ps.Tab = tabDetail
+		ps.CSV = r.Action == "export"
+		v, err := a.renderState(ctx, ps)
+		if err != nil {
+			return nil, err
+		}
+		return &wire.ActionResult{View: v}, nil
 	}
 	return &wire.ActionResult{}, nil
 }
@@ -193,6 +206,9 @@ func (a *App) page(ctx context.Context, st *store.State, ps pageState) (*wire.Vi
 		v.Sections = a.budgets(st, ps, now, loc)
 	default:
 		v.Sections = a.overview(ctx, st, ps, now, loc)
+	}
+	if ps.Tab != tabBudget {
+		v.Sections = append(a.pullNotice(st), v.Sections...)
 	}
 	v.State = ext.EncodeState(ps)
 	return v, nil
@@ -230,9 +246,11 @@ func (a *App) overview(ctx context.Context, st *store.State, ps pageState, now t
 			trendChart(r),
 		},
 	})
-	sections = append(sections, ranking("按模型", "模型", named(r.Models, modelName)))
-	sections = append(sections, ranking("按机器", "机器", named(r.Machines, machineName)))
-	sections = append(sections, ranking("按启动器", "启动器", named(r.Launchers, launcherName)))
+	sections = append(sections, ranking("按模型", "个模型", named(r.Models, modelName)))
+	sections = append(sections, ranking("按电脑", "台电脑", named(r.Machines, machineName)))
+	launchers := ranking("按启动方式", "种启动方式", named(r.Launchers, launcherName))
+	launchers.Footer = strings.TrimPrefix(launchers.Footer+"。", "。") + launcherHint
+	sections = append(sections, launchers)
 
 	if ga, ok := a.hub.GatewayAccounts(ctx); ok {
 		sections = append(sections, gateways(ga))
@@ -252,9 +270,40 @@ func named(in []usage.Share, name func(string) string) []usage.Share {
 
 func machineName(name string) string {
 	if name == "" {
-		return "（未知机器）"
+		return "（未知电脑）"
 	}
 	return name
+}
+
+// launcherHint says what a launcher is.
+const launcherHint = "启动方式是在电脑上开启这次对话的程序；在终端里直接开的对话算在“其他”里。"
+
+// pullNotice is what the page says about reading the usage: why it cannot when the last round failed, and when the
+// first data will come while there is none yet. Nothing when the data is there and the last round went well.
+func (a *App) pullNotice(st *store.State) []wire.Section {
+	at, err := a.hub.LastPull()
+	if err != nil {
+		detail := err.Error()
+		if !at.IsZero() {
+			detail += "最近一次尝试在 " + at.In(a.loc()).Format("1月2日 15:04") + "。"
+		}
+		if len(st.Days) > 0 {
+			detail += "下面是之前已经读到的数据。"
+		}
+		return []wire.Section{{Items: []wire.Component{{
+			Type: wire.ComponentEmpty, Icon: "warning", Title: "最近一次没能读到用量", Detail: detail,
+		}}}}
+	}
+	if len(st.Days) > 0 {
+		return nil
+	}
+	detail := "这里会显示连着 Persona 的每台电脑用 AI 模型花掉的 token。扩展开着时每 10 分钟读一次，第一次会补上最近 7 天，刚装好请等一两分钟再来看。"
+	if !at.IsZero() {
+		detail = "已经读过一次，但最近 7 天里这些电脑还没有用过 AI 模型。用过之后，最多 10 分钟就会出现在这里。"
+	}
+	return []wire.Section{{Items: []wire.Component{{
+		Type: wire.ComponentEmpty, Icon: "chart", Title: "还没有用量", Detail: detail,
+	}}}}
 }
 
 // trendChart is the daily bar chart. A range longer than the chart allows is folded into weeks.
@@ -292,10 +341,11 @@ func trendChart(r usage.Range) wire.Component {
 	return wire.Component{Type: wire.ComponentChart, Kind: "bar", Series: []wire.ChartSeries{{Name: "token", Points: points}}}
 }
 
-// ranking is the top entries of one dimension, the rest folded into 其他.
+// ranking is the top entries of one dimension, the rest folded into 其他. unit counts them (个模型).
 func ranking(title, unit string, shares []usage.Share) wire.Section {
 	if len(shares) == 0 {
-		return wire.Section{Title: title, Items: []wire.Component{{Type: wire.ComponentText, Text: "还没有用量。"}}}
+		return wire.Section{Title: title, Items: []wire.Component{{Type: wire.ComponentText, Style: "secondary",
+			Text: "选的这段时间里没有用量。用过 AI 模型后，最多 10 分钟会出现在这里。"}}}
 	}
 	var total int64
 	for _, s := range shares {
@@ -323,7 +373,7 @@ func ranking(title, unit string, shares []usage.Share) wire.Section {
 		ratio := float64(rest) / float64(total)
 		rows = append(rows, wire.Component{Type: wire.ComponentProgress, Label: "其他", Detail: formatTokens(rest), Ratio: &ratio})
 	}
-	return wire.Section{Title: title, Footer: fmt.Sprintf("共 %d 个%s", len(shares), unit), Items: rows}
+	return wire.Section{Title: title, Footer: fmt.Sprintf("共 %d %s", len(shares), unit), Items: rows}
 }
 
 // detail is the filterable table.
@@ -343,25 +393,34 @@ func (a *App) detail(st *store.State, ps pageState, now time.Time, loc *time.Loc
 		segmented("range", "days", strconv.Itoa(ps.days()), []wire.Choice{
 			{Value: "7", Title: "7 天"}, {Value: "30", Title: "30 天"}, {Value: "90", Title: "90 天"},
 		}),
-		choice("machine", "机器", ps.Machine, machines),
+		choice("machine", "电脑", ps.Machine, machines),
 		choice("model", "模型", ps.Model, models),
-		choice("launcher", "启动器", ps.Launcher, append([]string{""}, launchers...)),
+		choice("launcher", "启动方式", ps.Launcher, append([]string{""}, launchers...)),
 		{Type: wire.ComponentButton, Title: "应用筛选", Action: &wire.Action{ID: "filter", Submit: true}},
 	}
-	if len(rows) == 0 {
-		items = append(items, wire.Component{Type: wire.ComponentText, Text: "这个范围里没有用量。"})
-	} else {
+	switch {
+	case len(rows) > 0:
 		items = append(items, wire.Component{
 			Type: wire.ComponentTable,
 			Columns: []wire.TableColumn{
 				{Title: "日期"}, {Title: "总量", Align: "end"}, {Title: "输入", Align: "end"},
-				{Title: "输出", Align: "end"}, {Title: "缓存读", Align: "end"}, {Title: "请求", Align: "end"},
+				{Title: "输出", Align: "end"}, {Title: "缓存读取", Align: "end"}, {Title: "请求次数", Align: "end"},
 			},
 			Rows: rows,
 		})
+	case f != usage.Filter{}:
+		items = append(items, wire.Component{Type: wire.ComponentEmpty, Icon: "search", Title: "没有符合筛选条件的用量",
+			Detail: fmt.Sprintf("最近 %d 天里，按现在选的电脑、模型和启动方式筛选后没有用量。可以把时间范围改长，或把筛选改回“全部”再点“应用筛选”。", ps.days())})
+	default:
+		items = append(items, wire.Component{Type: wire.ComponentEmpty, Icon: "chart", Title: "这段时间里没有用量",
+			Detail: fmt.Sprintf("最近 %d 天里还没有用量。电脑上用过 AI 模型后，最多 10 分钟会出现在这里。", ps.days())})
 	}
-	items = append(items, wire.Component{Type: wire.ComponentButton, Title: "导出 CSV", Action: &wire.Action{ID: "export"}})
-	return []wire.Section{{Items: items}}
+	sections := []wire.Section{{Items: items}}
+	if !ps.CSV {
+		sections[0].Items = append(sections[0].Items, wire.Component{Type: wire.ComponentButton, Title: "显示 CSV 文本（可复制到表格软件）", Action: &wire.Action{ID: "export"}})
+		return sections
+	}
+	return append(sections, a.csvSection(st, ps, now, loc))
 }
 
 // choice is a drop-down that filters one dimension. The empty value keeps all of them.
@@ -382,36 +441,109 @@ func segmented(action, name, value string, choices []wire.Choice) wire.Component
 	return wire.Component{Type: wire.ComponentSegmented, Name: name, Value: value, Choices: choices, Action: &wire.Action{ID: action}}
 }
 
-// export writes the current detail as CSV and hands it back as a download.
-func (a *App) export(ps pageState) (*wire.ActionResult, error) {
-	var buf strings.Builder
-	w := csv.NewWriter(&buf)
-	_ = w.Write([]string{"date", "machine", "model", "launcher", "input", "cache_write", "cache_read", "output", "requests"})
-	err := a.st.View(func(st *store.State) error {
-		now, loc := a.now(), a.loc()
-		from := now.In(loc).AddDate(0, 0, -(ps.days() - 1)).Format("2006-01-02")
-		to := now.In(loc).Format("2006-01-02")
-		f := usage.Filter{Machine: ps.Machine, Model: ps.Model, Launcher: ps.Launcher}
-		for _, d := range st.Days {
-			if d.Date < from || d.Date > to {
+// csvHeader is the CSV's first line.
+var csvHeader = []string{"日期", "电脑", "模型", "启动方式", "输入", "缓存写入", "缓存读取", "输出", "请求次数"}
+
+// csvRows is the detail's range and filters as CSV records, one per day, machine, model and launcher, oldest first.
+func csvRows(st *store.State, ps pageState, now time.Time, loc *time.Location) [][]string {
+	from := now.In(loc).AddDate(0, 0, -(ps.days() - 1)).Format("2006-01-02")
+	to := now.In(loc).Format("2006-01-02")
+	f := usage.Filter{Machine: ps.Machine, Model: ps.Model, Launcher: ps.Launcher}
+	type key struct{ date, machine, model, launcher string }
+	sums := map[key]*store.Bucket{}
+	for _, d := range st.Days {
+		if d.Date < from || d.Date > to {
+			continue
+		}
+		for _, b := range d.Buckets {
+			if !f.Keeps(d.Machine, b) {
 				continue
 			}
-			for _, b := range d.Buckets {
-				if !f.Keeps(d.Machine, b) {
-					continue
-				}
-				_ = w.Write([]string{d.Date, d.Machine, b.Model, b.Launcher,
-					strconv.FormatInt(b.Input, 10), strconv.FormatInt(b.CacheWrite, 10),
-					strconv.FormatInt(b.CacheRead, 10), strconv.FormatInt(b.Output, 10), strconv.Itoa(b.Requests)})
+			k := key{d.Date, d.Machine, b.Model, b.Launcher}
+			s := sums[k]
+			if s == nil {
+				s = &store.Bucket{}
+				sums[k] = s
 			}
+			s.Input += b.Input
+			s.CacheWrite += b.CacheWrite
+			s.CacheRead += b.CacheRead
+			s.Output += b.Output
+			s.Requests += b.Requests
 		}
-		return nil
-	})
-	if err != nil {
-		return nil, err
 	}
-	w.Flush()
-	return &wire.ActionResult{Toast: "已生成 CSV，请在明细里查看"}, nil
+	keys := make([]key, 0, len(sums))
+	for k := range sums {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		a, b := keys[i], keys[j]
+		if a.date != b.date {
+			return a.date < b.date
+		}
+		if a.machine != b.machine {
+			return a.machine < b.machine
+		}
+		if a.model != b.model {
+			return a.model < b.model
+		}
+		return a.launcher < b.launcher
+	})
+	out := make([][]string, 0, len(keys))
+	for _, k := range keys {
+		s := sums[k]
+		out = append(out, []string{k.date, machineName(k.machine), modelName(k.model), launcherName(k.launcher),
+			strconv.FormatInt(s.Input, 10), strconv.FormatInt(s.CacheWrite, 10),
+			strconv.FormatInt(s.CacheRead, 10), strconv.FormatInt(s.Output, 10), strconv.Itoa(s.Requests)})
+	}
+	return out
+}
+
+// csvText writes the header and as many records as fit in csvMost bytes; shown is how many records it holds.
+func csvText(records [][]string) (text string, shown int) {
+	var buf strings.Builder
+	line := func(rec []string) string {
+		var b strings.Builder
+		w := csv.NewWriter(&b)
+		_ = w.Write(rec)
+		w.Flush()
+		return b.String()
+	}
+	buf.WriteString(line(csvHeader))
+	for _, rec := range records {
+		l := line(rec)
+		if buf.Len()+len(l) > csvMost {
+			break
+		}
+		buf.WriteString(l)
+		shown++
+	}
+	return strings.TrimSuffix(buf.String(), "\n"), shown
+}
+
+// csvSection shows the detail's records as CSV text in a code block. The apps cannot be handed a file: an action
+// answers with a view, a toast, a link, a page or lines (wire.ActionResult), so the text is on the page to copy.
+func (a *App) csvSection(st *store.State, ps pageState, now time.Time, loc *time.Location) wire.Section {
+	records := csvRows(st, ps, now, loc)
+	from := now.In(loc).AddDate(0, 0, -(ps.days() - 1)).Format("2006-01-02")
+	to := now.In(loc).Format("2006-01-02")
+	text, shown := csvText(records)
+	intro := fmt.Sprintf("最近 %d 天、按上面的筛选，共 %d 行，每天每台电脑的每个模型和启动方式各一行，数字是 token 数。"+
+		"把下面的文字全部复制，粘贴进表格软件，或存成扩展名为 .csv 的文件再打开。", ps.days(), len(records))
+	if len(records) == 0 {
+		intro = fmt.Sprintf("最近 %d 天、按上面的筛选没有用量，下面只有表头。", ps.days())
+	}
+	code := wire.Component{Type: wire.ComponentCode, Key: "csv", Path: "token-usage-" + from + "-" + to + ".csv",
+		Language: "csv", Text: text, StartLine: 1}
+	items := []wire.Component{{Type: wire.ComponentText, Text: intro}}
+	if shown < len(records) {
+		code.Truncated = true
+		items = append(items, wire.Component{Type: wire.ComponentText, Style: "secondary",
+			Text: fmt.Sprintf("内容太长，这里只显示了前 %d 行（共 %d 行）。把时间范围改短或加上筛选，可以分几次复制完。", shown, len(records))})
+	}
+	items = append(items, code,
+		wire.Component{Type: wire.ComponentButton, Title: "收起 CSV 文本", Action: &wire.Action{ID: "export-close"}})
+	return wire.Section{Title: "CSV 文本", Items: items}
 }
 
 // budgets is the third tab: the budgets and their progress, and the form for a new one.
@@ -422,7 +554,8 @@ func (a *App) budgets(st *store.State, ps pageState, now time.Time, loc *time.Lo
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: "预算读不出来：" + err.Error()})
 	}
 	if len(statuses) == 0 {
-		items = append(items, wire.Component{Type: wire.ComponentText, Text: "还没有预算。下面可以加一个。"})
+		items = append(items, wire.Component{Type: wire.ComponentEmpty, Icon: "money", Title: "还没有设预算",
+			Detail: "在下面选一个模型（或全部模型）和每日或每周，填上 token 上限，再点“保存预算”。用到八成和用满时，会各提醒你一次。"})
 	}
 	for _, s := range statuses {
 		who := "全部模型"

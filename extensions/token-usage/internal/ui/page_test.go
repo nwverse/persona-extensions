@@ -2,9 +2,13 @@ package ui
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -106,21 +110,107 @@ func TestGatewaySectionHiddenWhenUnavailable(t *testing.T) {
 	}
 }
 
-func TestDetailFiltersAndExports(t *testing.T) {
+func TestDetailFilters(t *testing.T) {
 	a := newApp(t, false)
 	v := render(t, a, `{"tab":"detail","model":"alpha"}`)
 	text := flatten(v)
 	if strings.Contains(text, "beta") {
 		t.Fatalf("the model filter did not apply:\n%s", text)
 	}
+}
+
+// csvOf is the CSV text the view shows, or "" when it shows none.
+func csvOf(v *wire.View) (wire.Component, bool) {
+	for _, s := range v.Sections {
+		for _, it := range s.Items {
+			if it.Type == wire.ComponentCode && it.Key == "csv" {
+				return it, true
+			}
+		}
+	}
+	return wire.Component{}, false
+}
+
+// The export button hands the user the CSV itself: the page it answers with carries the rows as text in a code block,
+// one per day, machine, model and launcher, under Chinese headers, filtered like the detail. No toast claims a file.
+func TestExportShowsTheCSVToCopy(t *testing.T) {
+	a := newApp(t, false)
 	res, err := a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
-		Action: "export", State: `{"tab":"detail","days":7,"model":"beta"}`,
+		Action: "export", State: `{"tab":"detail","days":7,"model":"alpha"}`,
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Toast == "" {
-		t.Fatal("the export answered nothing")
+	if res.Toast != "" {
+		t.Fatalf("the export answers a toast %q instead of the content", res.Toast)
+	}
+	if res.View == nil {
+		t.Fatal("the export answered no page: the CSV never reaches the user")
+	}
+	if err := wire.CheckView(res.View); err != nil {
+		t.Fatalf("view rejected: %v", err)
+	}
+	code, ok := csvOf(res.View)
+	if !ok {
+		t.Fatalf("no CSV on the page:\n%s", flatten(res.View))
+	}
+	want := "日期,电脑,模型,启动方式,输入,缓存写入,缓存读取,输出,请求次数\n" +
+		"2026-11-12,m-a,alpha,cli,300,0,0,0,1\n" +
+		"2026-11-13,m-a,alpha,cli,1000,0,0,100,2\n" +
+		"2026-11-13,m-b,alpha,其他,200,0,0,0,1"
+	if code.Text != want || code.Truncated || code.Language != "csv" || !strings.HasSuffix(code.Path, ".csv") {
+		t.Fatalf("CSV %q (truncated %v, language %q, path %q), want\n%s", code.Text, code.Truncated, code.Language, code.Path, want)
+	}
+	if !strings.Contains(flatten(res.View), "共 3 行") {
+		t.Fatalf("the page does not say how many rows:\n%s", flatten(res.View))
+	}
+
+	// It stays through a refresh and a new filter, and the close button takes it away.
+	v := render(t, a, res.View.State)
+	if _, ok := csvOf(v); !ok {
+		t.Fatal("a refresh dropped the CSV")
+	}
+	res, err = a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Action: "filter", State: v.State, Values: map[string]string{"model": "beta"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, ok := csvOf(res.View); !ok || !strings.Contains(code.Text, "2026-11-13,m-a,beta,其他,400,0,0,0,1") || strings.Contains(code.Text, "alpha") {
+		t.Fatalf("the CSV does not follow the filter: %q", code.Text)
+	}
+	res, err = a.Act(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Action: "export-close", State: res.View.State}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := csvOf(res.View); ok {
+		t.Fatal("the close button left the CSV")
+	}
+}
+
+// A CSV too long for one page is cut at a whole row, inside the code budget, and the page says how many rows it shows.
+func TestALongCSVIsCutAtARowAndSaysSo(t *testing.T) {
+	s := store.Open("")
+	t0, _ := time.ParseInLocation("2006-01-02", "2026-11-13", loc)
+	var buckets []store.Bucket
+	for i := 0; i < 6000; i++ {
+		buckets = append(buckets, store.Bucket{Minute: t0.Unix() + int64(i%1440)*60, Model: fmt.Sprintf("model-%04d-with-a-long-name", i), Input: 123456789, Requests: 1})
+	}
+	if _, err := s.Merge("m-a", buckets, loc); err != nil {
+		t.Fatal(err)
+	}
+	a := New(s, budget.Open(""), hub.New("http://hub.example", "tok", nil), fixedNow, func() *time.Location { return loc })
+	v := render(t, a, `{"tab":"detail","csv":true}`)
+	code, ok := csvOf(v)
+	if !ok || !code.Truncated {
+		t.Fatalf("a long CSV is not marked cut (found %v)", ok)
+	}
+	if len(code.Text) > csvMost || utf8.RuneCountInString(code.Text) > 200000 || strings.HasSuffix(code.Text, ",") {
+		t.Fatalf("the CSV is %d bytes", len(code.Text))
+	}
+	shown := strings.Count(code.Text, "\n")
+	if !strings.Contains(flatten(v), fmt.Sprintf("只显示了前 %d 行（共 6000 行）", shown)) {
+		t.Fatalf("the page does not say how much it shows (%d rows):\n%s", shown, flatten(v))
 	}
 }
 
@@ -169,6 +259,54 @@ func TestEmptyStateStillDraws(t *testing.T) {
 	}
 }
 
+// With no data yet, each tab says what will appear and when, not just that nothing is there.
+func TestEmptyStatesSayWhatAndWhen(t *testing.T) {
+	c := hub.New("http://hub.example", "tok", nil)
+	a := New(store.Open(""), budget.Open(""), c, fixedNow, func() *time.Location { return loc })
+	if text := flatten(render(t, a, "")); !strings.Contains(text, "每 10 分钟读一次") || !strings.Contains(text, "最近 7 天") {
+		t.Fatalf("before the first read:\n%s", text)
+	}
+	c.ReportPull(fixedNow(), nil)
+	if text := flatten(render(t, a, "")); !strings.Contains(text, "已经读过一次") || !strings.Contains(text, "最多 10 分钟") {
+		t.Fatalf("after a read with nothing in it:\n%s", text)
+	}
+	if text := flatten(render(t, a, `{"tab":"detail"}`)); !strings.Contains(text, "最近 30 天里还没有用量") {
+		t.Fatalf("detail:\n%s", text)
+	}
+	if text := flatten(render(t, newApp(t, false), `{"tab":"detail","model":"nope"}`)); !strings.Contains(text, "把筛选改回“全部”") {
+		t.Fatalf("detail with a filter that keeps nothing:\n%s", text)
+	}
+	if text := flatten(render(t, a, `{"tab":"budget"}`)); !strings.Contains(text, "保存预算") || !strings.Contains(text, "八成") {
+		t.Fatalf("budgets:\n%s", text)
+	}
+	if text := flatten(render(t, a, "")); !strings.Contains(text, "启动方式是") || strings.Contains(text, "启动器") {
+		t.Fatalf("the launcher ranking is not explained:\n%s", text)
+	}
+}
+
+// When reading fails the page says why and what to do, in the user's words, above the data it still has.
+func TestAFailedReadIsShownWithWhatToDo(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+	c := hub.New(srv.URL, "tok", nil)
+	_, err := c.Machines(context.Background())
+	c.ReportPull(fixedNow(), err)
+	a := New(filledStore(), budget.Open(""), c, fixedNow, func() *time.Location { return loc })
+	text := flatten(render(t, a, ""))
+	if !strings.Contains(text, "最近一次没能读到用量") || !strings.Contains(text, "关掉再打开") || !strings.Contains(text, "之前已经读到") {
+		t.Fatalf("the failed read is not explained:\n%s", text)
+	}
+	if strings.Contains(text, "hub") || strings.Contains(text, "HTTP") {
+		t.Fatalf("the notice shows jargon:\n%s", text)
+	}
+	a = New(store.Open(""), budget.Open(""), hub.New("", "", nil), fixedNow, func() *time.Location { return loc })
+	if text := flatten(render(t, a, `{"tab":"detail"}`)); !strings.Contains(text, "没有给这个扩展读取用量的权限") {
+		t.Fatalf("no access:\n%s", text)
+	}
+}
+
 // flatten is every string of a view, for assertions that do not care where a number sits.
 func flatten(v *wire.View) string {
 	var b strings.Builder
@@ -183,6 +321,7 @@ func flatten(v *wire.View) string {
 				b.WriteString(strings.Join(row, " ") + "\n")
 			}
 		}
+		b.WriteString(s.Footer + "\n")
 	}
 	return b.String()
 }

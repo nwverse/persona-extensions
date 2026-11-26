@@ -519,3 +519,34 @@ func TestLoopStopsWithoutAHub(t *testing.T) {
 
 // Keep io imported for the request body drain pattern used by other tests of this module.
 var _ = io.Discard
+
+// Each round reports how it ended to the client, so the page can tell the user why nothing new arrives: a failed
+// round's error, then nil once a round reads every machine.
+func TestARoundReportsHowItEnded(t *testing.T) {
+	var fail atomic.Bool
+	fail.Store(true)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail.Load() {
+			http.Error(w, "down", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"machines": []hub.Machine{}})
+	}))
+	defer srv.Close()
+	client := hub.New(srv.URL, "tok", nil)
+	st, bf := store.Open(""), budget.Open("")
+
+	if at, err := client.LastPull(); !at.IsZero() || err != nil {
+		t.Fatalf("before any round: %v %v", at, err)
+	}
+	pull(context.Background(), client, st, bf, time.UTC, map[string]bool{})
+	at, err := client.LastPull()
+	if at.IsZero() || err == nil || !strings.Contains(err.Error(), "自动再试") {
+		t.Fatalf("after a failed round: %v %v", at, err)
+	}
+	fail.Store(false)
+	pull(context.Background(), client, st, bf, time.UTC, map[string]bool{})
+	if _, err := client.LastPull(); err != nil {
+		t.Fatalf("after a good round: %v", err)
+	}
+}

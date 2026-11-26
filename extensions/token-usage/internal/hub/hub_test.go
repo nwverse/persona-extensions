@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -107,7 +108,7 @@ func write(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// A hub error body is shown cut to 200 bytes, and the cut never leaves half a character: the 200th byte is inside the
+// A hub error body is kept for the log cut to 200 bytes, and the cut never leaves half a character: the 200th byte is inside the
 // 67th Han character, and inside the 50th emoji after one ASCII byte.
 func TestAnErrorBodyIsCutAtACharacterBoundary(t *testing.T) {
 	for _, tt := range []struct{ name, body, want string }{
@@ -126,9 +127,61 @@ func TestAnErrorBodyIsCutAtACharacterBoundary(t *testing.T) {
 			if err == nil {
 				t.Fatal("a 502 was not an error")
 			}
-			want := "hub 回了 HTTP 502：" + tt.want
-			if err.Error() != want || !utf8.ValidString(err.Error()) {
-				t.Fatalf("error %q (valid UTF-8 %v), want %q", err.Error(), utf8.ValidString(err.Error()), want)
+			var he *Error
+			if !errors.As(err, &he) {
+				t.Fatalf("error %T, want *Error", err)
+			}
+			want := "HTTP 502：" + tt.want
+			if he.Detail != want || !utf8.ValidString(he.Detail) {
+				t.Fatalf("detail %q (valid UTF-8 %v), want %q", he.Detail, utf8.ValidString(he.Detail), want)
+			}
+		})
+	}
+}
+
+// What the user reads for a failed call says what happened and what to do, in plain Chinese: no "hub", no "HTTP" and no
+// raw body; the technical detail stays in Detail for the log.
+func TestErrorsTellTheCauseAndWhatToDo(t *testing.T) {
+	refused := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "token expired", http.StatusUnauthorized)
+	}))
+	defer refused.Close()
+	busy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+	}))
+	defer busy.Close()
+	old := httptest.NewServer(http.NotFoundHandler())
+	defer old.Close()
+	gone := httptest.NewServer(http.NotFoundHandler())
+	gone.Close()
+
+	for _, tt := range []struct {
+		name string
+		c    *Client
+		want string
+	}{
+		{"no token", New("", "", nil), "关掉再打开"},
+		{"refused", New(refused.URL, "tok", nil), "关掉再打开"},
+		{"busy", New(busy.URL, "tok", nil), "自动再试"},
+		{"too old", New(old.URL, "tok", nil), "更新到最新版"},
+		{"unreachable", New(gone.URL, "tok", nil), "自动再读"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := tt.c.Machines(context.Background())
+			if err == nil {
+				t.Fatal("no error")
+			}
+			msg := err.Error()
+			if !strings.Contains(msg, "运行 Persona 的那台电脑") || !strings.Contains(msg, tt.want) {
+				t.Fatalf("message %q lacks the cause or %q", msg, tt.want)
+			}
+			for _, bad := range []string{"hub", "HTTP", "token expired", "upstream", "127.0.0.1", "dial"} {
+				if strings.Contains(msg, bad) {
+					t.Fatalf("message %q shows %q", msg, bad)
+				}
+			}
+			if LogText(err) == msg && tt.name != "no token" {
+				t.Fatalf("the log text has no detail: %q", LogText(err))
 			}
 		})
 	}
