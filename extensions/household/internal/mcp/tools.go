@@ -89,6 +89,16 @@ type env struct {
 	now time.Time
 	loc *time.Location
 	imp *imports.Store
+	// after holds what a write tool runs once the records were saved (true) or not (false): the second phase of an
+	// import or an undo.
+	after *[]func(ok bool)
+}
+
+// onSaved registers f to run after the records' update, with whether it was saved.
+func (e env) onSaved(f func(ok bool)) {
+	if e.after != nil {
+		*e.after = append(*e.after, f)
+	}
 }
 
 func (e env) today() model.Day { return model.DayOf(e.now, e.loc) }

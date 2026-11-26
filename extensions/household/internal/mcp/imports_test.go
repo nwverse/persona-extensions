@@ -58,7 +58,7 @@ func TestImportFromAReceiptEndToEnd(t *testing.T) {
 		t.Fatalf("list %v", l)
 	}
 
-	done := s.done("household_import_apply", fmt.Sprintf(`{"draft_id":%q}`, id))
+	done := s.done("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":1}`, id))
 	if len(get(t, done, "done").([]any)) != 4 {
 		t.Fatalf("applied %v", done)
 	}
@@ -78,7 +78,7 @@ func TestImportFromAReceiptEndToEnd(t *testing.T) {
 		t.Fatalf("list after apply %v", list)
 	}
 	// Applying twice is refused: the draft is gone.
-	if msg := s.failed("household_import_apply", fmt.Sprintf(`{"draft_id":%q}`, id)); !strings.Contains(msg, "没有草稿") {
+	if msg := s.failed("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":1}`, id)); !strings.Contains(msg, "没有草稿") {
 		t.Fatalf("second apply: %s", msg)
 	}
 
@@ -106,7 +106,7 @@ func TestImportQuestionsAndAnswers(t *testing.T) {
 	if get(t, lineOf(t, pre, 2), "question", "kind") != "unit" {
 		t.Fatalf("tomato %v", lineOf(t, pre, 2))
 	}
-	if msg := s.failed("household_import_apply", fmt.Sprintf(`{"draft_id":%q}`, id)); !strings.Contains(msg, "要用户定") {
+	if msg := s.failed("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":1}`, id)); !strings.Contains(msg, "要用户定") {
 		t.Fatalf("apply with questions: %s", msg)
 	}
 	milkID := idOf(t, s, model.TItem, "纯牛奶")
@@ -115,7 +115,11 @@ func TestImportQuestionsAndAnswers(t *testing.T) {
 	if get(t, lineOf(t, again, 1), "action") != "add_to_item" || get(t, lineOf(t, again, 2), "after") != float64(7) {
 		t.Fatalf("re-preview %v", get(t, again, "lines"))
 	}
-	s.done("household_import_apply", fmt.Sprintf(`{"draft_id":%q}`, id))
+	// The first revision was not agreed to after the re-preview: it is refused, the new one is written.
+	if msg := s.failed("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":1}`, id)); !strings.Contains(msg, "预览已经变了") {
+		t.Fatalf("apply of the old revision: %s", msg)
+	}
+	s.done("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":%v}`, id, get(t, again, "revision")))
 	if got := get(t, rec(t, s, model.TItem, "番茄"), "qty"); got != float64(7) {
 		t.Fatalf("tomato %v", got)
 	}
@@ -125,7 +129,7 @@ func TestImportUndoRefusedAfterALaterChange(t *testing.T) {
 	s := start(t, seeded(t, true))
 	defer s.finish()
 	pre := s.done("household_import_preview", `{"source":"order_screenshot","lines":[{"title":"番茄","qty":2,"unit":"个"}]}`)
-	s.done("household_import_apply", fmt.Sprintf(`{"draft_id":%q}`, asStr(t, get(t, pre, "draft_id"))))
+	s.done("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":1}`, asStr(t, get(t, pre, "draft_id"))))
 	s.done("household_use", fmt.Sprintf(`{"id":%q,"amount":1}`, idOf(t, s, model.TItem, "番茄")))
 	if msg := s.failed("household_import_undo", `{}`); !strings.Contains(msg, "「番茄」在导入之后又改过") {
 		t.Fatalf("undo: %s", msg)
@@ -144,7 +148,7 @@ func TestImportDiscardAndBadInput(t *testing.T) {
 		t.Fatalf("fridge photo mode %v", get(t, pre, "mode"))
 	}
 	s.done("household_import_discard", fmt.Sprintf(`{"draft_id":%q}`, id))
-	if msg := s.failed("household_import_apply", fmt.Sprintf(`{"draft_id":%q}`, id)); !strings.Contains(msg, "没有草稿") {
+	if msg := s.failed("household_import_apply", fmt.Sprintf(`{"draft_id":%q,"revision":1}`, id)); !strings.Contains(msg, "没有草稿") {
 		t.Fatalf("apply after discard: %s", msg)
 	}
 	for name, args := range map[string]string{
@@ -164,3 +168,21 @@ func TestImportDiscardAndBadInput(t *testing.T) {
 
 // oneLine puts a JSON text on one line: the protocol is one message per line.
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
+
+func TestImportApplyNeedsARevision(t *testing.T) {
+	s := start(t, seeded(t, true))
+	defer s.finish()
+	pre := s.done("household_import_preview", `{"source":"text","lines":[{"title":"番茄","qty":1,"unit":"个"}]}`)
+	if get(t, pre, "revision") != float64(1) {
+		t.Fatalf("revision %v", get(t, pre, "revision"))
+	}
+	if msg := s.failed("household_import_apply", fmt.Sprintf(`{"draft_id":%q}`, asStr(t, get(t, pre, "draft_id")))); !strings.Contains(msg, "revision") {
+		t.Fatalf("apply without a revision: %s", msg)
+	}
+}
+
+func TestPreviewDescriptionSaysItStoresADraftAndCountsCanLower(t *testing.T) {
+	if !strings.Contains(aboutPreview, "只存一份草稿") || !strings.Contains(aboutPreview, "可能比现在记的少") {
+		t.Fatal(aboutPreview)
+	}
+}

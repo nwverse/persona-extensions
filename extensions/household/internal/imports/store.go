@@ -27,6 +27,8 @@ const (
 // last shown (the user agrees to that plan; applying refuses a draft whose plan the records have changed).
 type Draft struct {
 	ID      string    `json:"id"`
+	Rev     int       `json:"revision"`          // goes up each time the plan is stored again; a yes is for one revision
+	ByUser  bool      `json:"by_user,omitempty"` // made on the page (粘贴清单): the assistant cannot re-plan or push it out
 	Created time.Time `json:"created"`
 	Expires time.Time `json:"expires"`
 	Input   Input     `json:"input"`
@@ -53,10 +55,15 @@ type Applied struct {
 	Totals  Totals    `json:"totals"`
 	Touched []Touch   `json:"touched"`
 	Undone  time.Time `json:"undone,omitzero"`
+	// Pending marks an import whose records were being saved: it is settled against the records (Settle) as written
+	// or as never written. UndoPending is the same for its undo.
+	Pending     bool `json:"pending,omitempty"`
+	UndoPending bool `json:"undo_pending,omitempty"`
 }
 
 // State is everything the store keeps.
 type State struct {
+	Version int       `json:"version"`
 	Seq     int       `json:"seq"`
 	Drafts  []Draft   `json:"drafts"`
 	Applied []Applied `json:"applied"`
@@ -71,22 +78,30 @@ func (s *State) Draft(id string) (Draft, bool) {
 	return s.Drafts[i], true
 }
 
-// Put stores d, replacing the draft with its id, or adding it as a new draft with a new id and pushing the oldest out
-// beyond DraftsMost. It returns the draft as stored.
-func (s *State) Put(d Draft, now time.Time) Draft {
+// Put stores d: a draft with an id replaces the stored one as its next revision; a new draft gets an id and revision
+// 1. Beyond DraftsMost the oldest draft is pushed out, but a draft the user made on the page only by the user: when
+// the assistant's draft would push out only those, it is refused. It returns the draft as stored.
+func (s *State) Put(d Draft, now time.Time, byUser bool) (Draft, error) {
 	if i := slices.IndexFunc(s.Drafts, func(x Draft) bool { return x.ID == d.ID && d.ID != "" }); i >= 0 {
+		d.Rev = s.Drafts[i].Rev + 1
 		s.Drafts[i] = d
-		return d
+		return d, nil
+	}
+	if len(s.Drafts) >= DraftsMost {
+		i := slices.IndexFunc(s.Drafts, func(x Draft) bool { return byUser || !x.ByUser })
+		if i < 0 {
+			return Draft{}, fmt.Errorf("已经有 %d 份用户在页面上粘贴、还没确认的导入，请先让用户在家庭管家页面上确认或放弃", len(s.Drafts))
+		}
+		s.Drafts = slices.Delete(s.Drafts, i, i+1)
 	}
 	s.Seq++
 	d.ID = "imp-" + strconv.Itoa(s.Seq)
+	d.Rev = 1
+	d.ByUser = byUser
 	d.Created = now
 	d.Expires = now.Add(DraftLife)
 	s.Drafts = append(s.Drafts, d)
-	if over := len(s.Drafts) - DraftsMost; over > 0 {
-		s.Drafts = slices.Delete(s.Drafts, 0, over)
-	}
-	return d
+	return d, nil
 }
 
 // Drop removes the draft with the id and reports whether there was one.
@@ -104,12 +119,15 @@ func (s *State) Record(a Applied) {
 	}
 }
 
-// Last is the import applied last, false when there is none.
+// Last is the import applied last, false when there is none. An import whose records were never confirmed saved
+// (Pending) is not it.
 func (s *State) Last() (*Applied, bool) {
-	if len(s.Applied) == 0 {
-		return nil, false
+	for i := len(s.Applied) - 1; i >= 0; i-- {
+		if !s.Applied[i].Pending {
+			return &s.Applied[i], true
+		}
 	}
-	return &s.Applied[len(s.Applied)-1], true
+	return nil, false
 }
 
 // prune drops the drafts that expired at now.
@@ -134,6 +152,9 @@ type stamp struct {
 	mtime time.Time
 	size  int64
 }
+
+// Version is the format of imports.json this code writes; a file of a newer format is refused, never overwritten.
+const Version = 1
 
 const (
 	fileName = "imports.json"
@@ -229,13 +250,17 @@ func (s *Store) load() (*State, error) {
 			return nil, fmt.Errorf("读不了导入草稿 %s：%w", s.path(), err)
 		}
 	}
-	st := &State{Drafts: []Draft{}, Applied: []Applied{}}
+	st := &State{Version: Version, Drafts: []Draft{}, Applied: []Applied{}}
 	if len(bytes.TrimSpace(raw)) == 0 {
 		return st, nil
 	}
 	if err := json.Unmarshal(raw, st); err != nil {
-		return nil, fmt.Errorf("导入草稿 %s 坏了，没有读它，也不会覆盖它：%w", s.path(), err)
+		return nil, fmt.Errorf("导入草稿的文件 %s 坏了，没有读它，也不会覆盖它：%w", s.path(), err)
 	}
+	if st.Version > Version {
+		return nil, fmt.Errorf("导入草稿的文件 %s 是更新版本的家庭管家写的（格式 %d），这个版本读不了，也不会覆盖它", s.path(), st.Version)
+	}
+	st.Version = Version
 	return st, nil
 }
 

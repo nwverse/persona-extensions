@@ -15,15 +15,20 @@ import (
 
 // The import part of the page: the drafts waiting for the user's yes (made by the assistant from a receipt, a photo or
 // a text, or by 粘贴清单 on this page), the result of the last import with 撤销这次导入, and the two ways to start one.
+//
+// A yes is always for what the user saw: the buttons carry the revision of the plan they were drawn for, and an
+// answer names its choice, so a plan the assistant changed in between is refused and drawn again. 确认写入 is only
+// offered where every line of the draft is listed; a longer draft opens its full list first.
 
 // Limits of the import part, so that the overview stays within a page's budget whatever is stored: at most
-// draftsShown drafts with at most stepsShown lines each.
+// draftsShown drafts with at most stepsShown lines each on the overview; the full list of a draft has every line.
 const (
 	draftsShown = 3
-	stepsShown  = 15
-	unreadShown = 5
-	pasteForm   = "paste" // the form state of 粘贴清单
-	pasteMost   = 4000    // runes the paste field takes
+	stepsShown  = 8
+	pasteForm   = "paste"  // the form state of 粘贴清单
+	draftForm   = "draft:" // the full list of a draft: draft:<id>
+	answerForm  = "ans:"   // the answers to one line: ans:<id>:<rev>:<line>
+	pasteMost   = 4000     // runes the paste field takes
 )
 
 // UseImports makes imp the store of the import drafts; the assistant's tools share it. It returns the app.
@@ -40,14 +45,21 @@ func (a *App) importsOf() *imports.Store {
 	return a.imp
 }
 
-// loadImports reads the drafts and the imports applied, for the request.
+// loadImports reads the drafts and the imports applied for the request, settled against the records (see
+// imports.State.Settle). A store that cannot be read is kept as the error, which the page says.
 func (c *ctx) loadImports() {
-	c.imps = &imports.State{}
-	_ = c.app.importsOf().View(func(st *imports.State) error {
+	c.imps, c.impErr = &imports.State{}, nil
+	err := c.app.importsOf().View(func(st *imports.State) error {
 		cp := *st
+		cp.Drafts = append([]imports.Draft(nil), st.Drafts...)
+		cp.Applied = append([]imports.Applied(nil), st.Applied...)
+		cp.Settle(c.b)
 		c.imps = &cp
 		return nil
 	})
+	if err != nil {
+		c.impErr = err
+	}
 }
 
 // assistantHint is the row that says how to have the assistant fill the household in. A page cannot write to the
@@ -70,8 +82,13 @@ func bulkSection() wire.Section {
 	return wire.Section{Title: "一次记很多", Items: []wire.Component{assistantHint(), pasteButton()}}
 }
 
-// importSections are the drafts waiting, newest first, then the last import when it was today or yesterday.
+// importSections are the drafts waiting, newest first, then the last import when it was within a day. A store that
+// cannot be read is said in plain words instead.
 func (c *ctx) importSections() []wire.Section {
+	if c.impErr != nil {
+		return []wire.Section{{Title: "待确认的导入", Items: []wire.Component{quiet(cut(
+			"导入草稿的文件现在读不了，所以这里先不显示（别的功能照常用）："+c.impErr.Error(), 400))}}}
+	}
 	var out []wire.Section
 	drafts := c.imps.Drafts
 	shown := 0
@@ -88,52 +105,84 @@ func (c *ctx) importSections() []wire.Section {
 	return out
 }
 
-// draftSection is one draft: where it came from and when, a row per line saying what will happen (inferred values and
-// questions marked), the lines that could not be read, the totals, and 确认写入 and 放弃.
+// draftSection is one draft on the overview: where it came from and when, its first lines saying what will happen,
+// the totals, and its buttons. When it has more lines than shown, 确认写入 is on its full list, which a button opens.
 func (c *ctx) draftSection(d imports.Draft, first bool) wire.Section {
 	title := "待确认的导入"
 	if !first {
 		title = "另一份待确认的导入"
 	}
 	var items []wire.Component
-	for i, s := range d.Plan.Steps {
-		if i >= stepsShown {
-			items = append(items, quiet(fmt.Sprintf("还有 %d 行没有列出，写入时一起写", len(d.Plan.Steps)-stepsShown)))
-			break
-		}
-		items = append(items, stepRow(s))
-		if s.Ask != nil {
-			items = append(items, answerButtons(d.ID, s)...)
+	for _, s := range d.Plan.Steps {
+		if len(items) < stepsShown {
+			items = append(items, stepRow(d, s))
 		}
 	}
-	for i, u := range d.Plan.Unread {
-		if i >= unreadShown {
-			items = append(items, quiet(fmt.Sprintf("还有 %d 行没读懂", len(d.Plan.Unread)-unreadShown)))
-			break
+	for _, u := range d.Plan.Unread {
+		if len(items) < stepsShown {
+			items = append(items, unreadRow(u))
 		}
-		items = append(items, wire.Component{Type: wire.ComponentRow, Title: cut(u.Text, maxTitle), Subtitle: u.Why,
-			Badge: &wire.Badge{Text: "没读懂"}})
 	}
+	all := len(d.Plan.Steps)+len(d.Plan.Unread) <= stepsShown
 	items = append(items, quiet("合计："+imports.TotalsText(d.Plan.Totals)))
-	stale := c.draftStale(d)
-	switch {
-	case stale:
-		items = append(items, quiet("家里的记录在这之后变了，先重新算一遍，看过再确认。"),
-			button("重新算一遍", &wire.Action{ID: "impreplan:" + d.ID}, wire.ButtonRoleNormal))
-	case d.Plan.Totals.Questions > 0:
-		items = append(items, quiet(fmt.Sprintf("还有 %d 行要你先定，定好了才能写入。", d.Plan.Totals.Questions)))
-	case d.Plan.Totals.Changes > 0:
-		items = append(items, button("确认写入", &wire.Action{ID: "impapply:" + d.ID,
-			Confirm: imports.ConfirmText(d.Plan.Totals)}, wire.ButtonRoleNormal))
+	if all {
+		items = append(items, c.draftButtons(d)...)
+	} else {
+		n := len(d.Plan.Steps) + len(d.Plan.Unread)
+		items = append(items, button(fmt.Sprintf("看全部 %d 行再确认", n),
+			ext.Open("impopen:"+d.ID, PageUI, state{F: draftForm + d.ID}, "待确认的导入"), wire.ButtonRoleNormal),
+			button("放弃", dropAction(d), wire.ButtonRoleNormal))
 	}
-	items = append(items, button("放弃", &wire.Action{ID: "impdrop:" + d.ID,
-		Confirm: "放弃这份导入？记录不会有任何改动。"}, wire.ButtonRoleNormal))
-	when := c.when(d.Created)
-	footer := join(imports.SourceLabel(d.Input.Source)+" · "+when, cut(d.Input.Note, 60), "24 小时内没确认会自动作废")
-	return wire.Section{Title: title, Footer: footer, Items: items}
+	return wire.Section{Title: title, Footer: c.draftFooter(d), Items: items}
 }
 
-// draftStale reports whether the records changed since the draft was planned, so that it would now do something else.
+func (c *ctx) draftFooter(d imports.Draft) string {
+	return join(imports.SourceLabel(d.Input.Source)+" · "+c.when(d.Created), cut(d.Input.Note, 60), "24 小时内没确认会自动作废")
+}
+
+// draftButtons are the end of a fully listed draft: 确认写入 for the revision drawn (or why it cannot be confirmed
+// yet, with 重新算一遍 for a draft the records have overtaken), and 放弃.
+func (c *ctx) draftButtons(d imports.Draft) []wire.Component {
+	var items []wire.Component
+	rev := strconv.Itoa(d.Rev)
+	switch {
+	case c.draftStale(d):
+		items = append(items, quiet("家里的记录在这之后变了，写进去会和上面说的不一样。先重新算一遍，看过再确认。"),
+			button("重新算一遍", &wire.Action{ID: "impreplan:" + d.ID + ":" + rev}, wire.ButtonRoleNormal))
+	case d.Plan.Totals.Questions > 0:
+		items = append(items, quiet(fmt.Sprintf("还有 %d 行要你先定（点那一行回答），定好了才能写入。", d.Plan.Totals.Questions)))
+	case d.Plan.Totals.Changes > 0:
+		items = append(items, button("确认写入", &wire.Action{ID: "impapply:" + d.ID + ":" + rev,
+			Confirm: imports.ConfirmText(d.Plan.Totals)}, wire.ButtonRoleNormal))
+	}
+	return append(items, button("放弃", dropAction(d), wire.ButtonRoleNormal))
+}
+
+func dropAction(d imports.Draft) *wire.Action {
+	return &wire.Action{ID: "impdrop:" + d.ID, Confirm: "放弃这份导入？记录不会有任何改动。"}
+}
+
+// draftPage is the full list of a draft: every line and every line that could not be read, the totals and the buttons.
+// nil when the draft is gone.
+func (c *ctx) draftPage(id string) *wire.View {
+	d, ok := c.imps.Draft(id)
+	if !ok {
+		return nil
+	}
+	var items []wire.Component
+	for _, s := range d.Plan.Steps {
+		items = append(items, stepRow(d, s))
+	}
+	for _, u := range d.Plan.Unread {
+		items = append(items, unreadRow(u))
+	}
+	items = append(items, quiet("合计："+imports.TotalsText(d.Plan.Totals)))
+	items = append(items, c.draftButtons(d)...)
+	return &wire.View{Title: "待确认的导入", Sections: []wire.Section{{Footer: c.draftFooter(d), Items: items}}}
+}
+
+// draftStale reports whether the records changed since the draft was planned, so that writing it would now do
+// anything other than what it says.
 func (c *ctx) draftStale(d imports.Draft) bool {
 	p, err := imports.Make(c.home, d.Input, d.Edits, c.today)
 	if err != nil {
@@ -151,9 +200,9 @@ func (c *ctx) draftStale(d imports.Draft) bool {
 	return false
 }
 
-// stepRow is one line of a draft: its number and name, what will happen, and a badge for an inferred value, a
-// question, or a line that changes nothing.
-func stepRow(s imports.Step) wire.Component {
+// stepRow is one line of a draft: its number and name, what will happen, and a badge for a question, a count that goes
+// down, an inferred value, or a line that changes nothing. A question opens its answers.
+func stepRow(d imports.Draft, s imports.Step) wire.Component {
 	sub := s.Says
 	if len(s.Notes) > 0 {
 		sub += "。" + strings.Join(s.Notes, "；")
@@ -163,25 +212,58 @@ func stepRow(s imports.Step) wire.Component {
 	switch {
 	case s.Action == imports.ActAsk:
 		row.Badge = &wire.Badge{Text: "要你定", Tone: wire.ToneCaution}
+		f := fmt.Sprintf("%s%s:%d:%d", answerForm, d.ID, d.Rev, s.Line)
+		row.Action = ext.Open("impask:"+d.ID, PageUI, state{F: f}, fmt.Sprintf("第 %d 行", s.Line))
 	case !s.Writes():
 		row.Badge = &wire.Badge{Text: "不改"}
+	case s.Lowers:
+		row.Badge = &wire.Badge{Text: "会变少", Tone: wire.ToneCaution}
 	case len(s.Inferred) > 0:
 		row.Badge = &wire.Badge{Text: "有推测", Tone: wire.ToneCaution}
 	}
 	return row
 }
 
-// answerButtons are the answers to a line's question, one button each.
-func answerButtons(id string, s imports.Step) []wire.Component {
-	var out []wire.Component
-	for k, ch := range s.Ask.Choices {
-		if k >= 4 {
-			break
-		}
-		out = append(out, button(cut(ch.Label, 40),
-			&wire.Action{ID: fmt.Sprintf("impans:%s:%d:%d", id, s.Line, k)}, wire.ButtonRoleNormal))
+func unreadRow(u imports.Unread) wire.Component {
+	return wire.Component{Type: wire.ComponentRow, Title: cut(u.Text, maxTitle), Subtitle: u.Why,
+		Badge: &wire.Badge{Text: "没读懂"}}
+}
+
+// answerPage is the question of one line of a draft with a button per answer, for the revision it was opened for.
+// nil when the draft is gone; a line that has no question any more says so.
+func (c *ctx) answerPage(arg string) *wire.View {
+	parts := strings.Split(arg, ":")
+	if len(parts) != 3 {
+		return nil
 	}
-	return out
+	d, ok := c.imps.Draft(parts[0])
+	if !ok {
+		return nil
+	}
+	line, _ := strconv.Atoi(parts[2])
+	v := &wire.View{Title: fmt.Sprintf("第 %d 行", line)}
+	if parts[1] != strconv.Itoa(d.Rev) {
+		v.Sections = []wire.Section{{Items: []wire.Component{quiet("预览已经变了，请回去看一遍新的。"),
+			button("返回", &wire.Action{ID: "back"}, wire.ButtonRoleNormal)}}}
+		return v
+	}
+	for _, s := range d.Plan.Steps {
+		if s.Line != line || s.Ask == nil {
+			continue
+		}
+		items := []wire.Component{{Type: wire.ComponentRow, Title: cut(s.Title, maxTitle), Subtitle: cut(s.Ask.Text, 400)}}
+		for _, ch := range s.Ask.Choices {
+			items = append(items, button(cut(ch.Label, 40),
+				&wire.Action{ID: fmt.Sprintf("impans:%s:%d:%d:%s", d.ID, d.Rev, line, ch.Key())}, wire.ButtonRoleNormal))
+		}
+		items = append(items, quiet("要改数量或单位，可以跟助手说，或者放弃这份重新粘贴。"),
+			button("返回", &wire.Action{ID: "back"}, wire.ButtonRoleNormal))
+		v.Sections = []wire.Section{{Items: items}}
+		return v
+	}
+	v.Sections = []wire.Section{{Items: []wire.Component{quiet("这一行已经不用回答了。"),
+		button("返回", &wire.Action{ID: "back"}, wire.ButtonRoleNormal)}}}
+	return v
 }
 
 // lastImportSection is 刚才的导入: what the last import wrote, with 撤销这次导入 while it can be undone; shown for a
@@ -236,7 +318,7 @@ func (c *ctx) pastePage() *wire.View {
 			{Type: wire.ComponentField, Name: "paste_mode", Label: "数量怎么算", Kind: wire.FieldKindChoice,
 				Value: choicePrefix + imports.ModeAdd, Choices: []wire.Choice{
 					{Value: choicePrefix + imports.ModeAdd, Title: "刚买回来，加到原有的数量上"},
-					{Value: choicePrefix + imports.ModeCount, Title: "数过了，家里现在就这么多"},
+					{Value: choicePrefix + imports.ModeCount, Title: "数过了，家里现在就这么多（可能会变少）"},
 				}},
 			button("看看会怎么记", &wire.Action{ID: "imppaste", Submit: true}, wire.ButtonRoleNormal),
 			button("取消", &wire.Action{ID: "back"}, wire.ButtonRoleNormal),
@@ -247,6 +329,11 @@ func (c *ctx) pastePage() *wire.View {
 // actPasteOpen opens the 粘贴清单 form (for an app that calls the action instead of pushing).
 func actPasteOpen(_ *ctx, _ string) (*wire.ActionResult, error) {
 	return &wire.ActionResult{Push: pasteButton().Action.Push}, nil
+}
+
+// actOpenDraft opens the full list of a draft (for an app that calls the action instead of pushing).
+func actOpenDraft(_ *ctx, id string) (*wire.ActionResult, error) {
+	return &wire.ActionResult{Push: ext.Open("impopen:"+id, PageUI, state{F: draftForm + id}, "待确认的导入").Push}, nil
 }
 
 // actPaste reads the pasted list into a draft and goes back to the overview, where it waits for 确认写入.
@@ -269,21 +356,40 @@ func actPaste(c *ctx, _ string) (*wire.ActionResult, error) {
 		mode = imports.ModeAdd
 	}
 	in := imports.Input{Source: imports.SrcPaste, Target: target, Mode: mode, Lines: lines, Unread: unread,
-		Note: strings.Join(notes, "；")}
-	if _, err := imports.Preview(c.app.importsOf(), c.home, in, c.loc); err != nil {
+		Note: cut(strings.Join(notes, "；"), imports.NoteMost)}
+	if _, err := imports.Preview(c.app.importsOf(), c.home, in, c.loc, true); err != nil {
 		return nil, err
 	}
 	c.st = state{}
 	return &wire.ActionResult{Toast: fmt.Sprintf("读到 %d 样，请在「待确认的导入」里看一遍再确认", len(lines)), Pop: true}, nil
 }
 
-// actImportApply writes a draft the user confirmed.
-func actImportApply(c *ctx, id string) (*wire.ActionResult, error) {
-	done, err := imports.Apply(c.b, c.app.importsOf(), id, nil, nil, c.now, c.loc)
+// idRev reads "<draft>:<revision>".
+func idRev(arg string) (string, int, error) {
+	id, r, ok := strings.Cut(arg, ":")
+	rev, err := strconv.Atoi(r)
+	if !ok || err != nil || rev < 1 {
+		return "", 0, errors.New("这个按钮已经过时了，请看一遍新的预览")
+	}
+	return id, rev, nil
+}
+
+// actImportApply writes the revision of a draft the user saw and confirmed: <draft>:<revision>.
+func actImportApply(c *ctx, arg string) (*wire.ActionResult, error) {
+	id, rev, err := idRev(arg)
 	if err != nil {
 		return nil, err
 	}
-	return &wire.ActionResult{Toast: "已写入：" + imports.TotalsText(done.Totals)}, nil
+	done, finish, err := imports.Apply(c.b, c.app.importsOf(), id, rev, nil, nil, c.now, c.loc)
+	if err != nil {
+		return nil, err
+	}
+	c.onSaved(func(ok bool) { _ = finish(ok) })
+	res := &wire.ActionResult{Toast: "已写入：" + imports.TotalsText(done.Totals)}
+	if strings.HasPrefix(c.st.F, draftForm) {
+		res.Pop = true
+	}
+	return res, nil
 }
 
 // actImportDrop drops a draft; nothing in the records changes.
@@ -291,25 +397,34 @@ func actImportDrop(c *ctx, id string) (*wire.ActionResult, error) {
 	if _, err := imports.Discard(c.app.importsOf(), id); err != nil {
 		return nil, err
 	}
-	return &wire.ActionResult{Toast: "已放弃这份导入，记录没有改动"}, nil
+	res := &wire.ActionResult{Toast: "已放弃这份导入，记录没有改动"}
+	if strings.HasPrefix(c.st.F, draftForm) {
+		res.Pop = true
+	}
+	return res, nil
 }
 
-// actImportReplan plans a draft again against the records as they are now.
-func actImportReplan(c *ctx, id string) (*wire.ActionResult, error) {
-	if _, err := imports.Replan(c.app.importsOf(), c.home, id, nil, c.loc); err != nil {
+// actImportReplan plans a draft again against the records as they are now: <draft>:<revision>.
+func actImportReplan(c *ctx, arg string) (*wire.ActionResult, error) {
+	id, rev, err := idRev(arg)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := imports.Replan(c.app.importsOf(), c.home, id, rev, nil, c.loc, true); err != nil {
 		return nil, err
 	}
 	return &wire.ActionResult{Toast: "已按现在的记录重新算好，请再看一遍"}, nil
 }
 
-// actImportAnswer answers the question of a draft's line with one of its choices: <draft>:<line>:<choice>.
+// actImportAnswer answers the question of a draft's line: <draft>:<revision>:<line>:<choice key>. The choice is found
+// by what it does, in the revision the answer was drawn for; anything else is refused.
 func actImportAnswer(c *ctx, arg string) (*wire.ActionResult, error) {
-	parts := strings.Split(arg, ":")
-	if len(parts) != 3 {
+	parts := strings.SplitN(arg, ":", 4)
+	if len(parts) != 4 {
 		return nil, errors.New("这个回答看不懂，请刷新页面再试")
 	}
-	line, err1 := strconv.Atoi(parts[1])
-	k, err2 := strconv.Atoi(parts[2])
+	rev, err1 := strconv.Atoi(parts[1])
+	line, err2 := strconv.Atoi(parts[2])
 	if err1 != nil || err2 != nil {
 		return nil, errors.New("这个回答看不懂，请刷新页面再试")
 	}
@@ -317,26 +432,40 @@ func actImportAnswer(c *ctx, arg string) (*wire.ActionResult, error) {
 	if !ok {
 		return nil, errors.New("这份导入已经不在了：可能已经写入、放弃，或者过了 24 小时")
 	}
+	if d.Rev != rev {
+		return nil, imports.ErrChanged
+	}
 	var choice *imports.Choice
 	for _, s := range d.Plan.Steps {
-		if s.Line == line && s.Ask != nil && k >= 0 && k < len(s.Ask.Choices) {
-			choice = &s.Ask.Choices[k]
+		if s.Line != line || s.Ask == nil {
+			continue
+		}
+		for k := range s.Ask.Choices {
+			if s.Ask.Choices[k].Key() == parts[3] {
+				choice = &s.Ask.Choices[k]
+			}
 		}
 	}
 	if choice == nil {
-		return nil, errors.New("这一行已经不用回答了，请刷新页面")
+		return nil, imports.ErrChanged
 	}
 	edit := imports.Edit{Line: line, Match: choice.Match, Qty: choice.Qty, Skip: choice.Skip}
-	if _, err := imports.Replan(c.app.importsOf(), c.home, d.ID, []imports.Edit{edit}, c.loc); err != nil {
+	if _, err := imports.Replan(c.app.importsOf(), c.home, d.ID, rev, []imports.Edit{edit}, c.loc, true); err != nil {
 		return nil, err
 	}
-	return &wire.ActionResult{Toast: "已记下：" + choice.Label}, nil
+	res := &wire.ActionResult{Toast: "已记下：" + choice.Label}
+	if strings.HasPrefix(c.st.F, answerForm) {
+		res.Pop = true
+	}
+	return res, nil
 }
 
 // actImportUndo undoes the last import.
 func actImportUndo(c *ctx, id string) (*wire.ActionResult, error) {
-	if _, err := imports.UndoLast(c.b, c.app.importsOf(), id, c.now); err != nil {
+	_, finish, err := imports.UndoLast(c.b, c.app.importsOf(), id, c.now)
+	if err != nil {
 		return nil, err
 	}
+	c.onSaved(func(ok bool) { _ = finish(ok) })
 	return &wire.ActionResult{Toast: "已撤销这次导入"}, nil
 }

@@ -249,10 +249,17 @@ func (s *server) run(t Tool, raw json.RawMessage) ([]byte, error) {
 		return err
 	}
 	var err error
+	var after []func(ok bool)
 	if t.Read {
 		err = s.st.View(func(b *kernel.Base) error { return do(env{b: b, now: time.Now(), loc: s.loc, imp: s.imp}) })
 	} else {
-		err = s.st.Update(func(b *kernel.Base, now time.Time) error { return do(env{b: b, now: now, loc: s.loc, imp: s.imp}) })
+		err = s.st.Update(func(b *kernel.Base, now time.Time) error {
+			after = nil // a retried update starts over
+			return do(env{b: b, now: now, loc: s.loc, imp: s.imp, after: &after})
+		})
+	}
+	for _, f := range after {
+		f(err == nil)
 	}
 	return out, err
 }

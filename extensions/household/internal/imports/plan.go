@@ -155,6 +155,7 @@ const (
 	AskUnit      = "unit"       // the recorded item is counted in another unit
 	AskQty       = "qty"        // no quantity, for an item that is counted
 	AskSameEntry = "same_entry" // a purchase on the list looks like this one
+	AskDuplicate = "duplicate"  // another line of the import is the same thing in a unit it cannot be added to
 )
 
 // Question is what the user has to decide about a line before it can be written.
@@ -182,16 +183,21 @@ type Step struct {
 	Expires  model.Day `json:"expires,omitempty"`
 	Price    *float64  `json:"price,omitempty"`
 	OldGone  bool      `json:"old_batch_expired,omitempty"` // the recorded batch had expired: only the new one counts
+	Lowers   bool      `json:"lowers,omitempty"`            // a count below the current estimate: the quantity goes down
+	Keeps    int       `json:"usual_days,omitempty"`        // the usual shelf life the table suggests, never stored as a date
 	Inferred []string  `json:"inferred"`
 	Notes    []string  `json:"notes"`
 	Ask      *Question `json:"question,omitempty"`
 	Says     string    `json:"says"`
 
-	// What the step writes on an item that is there, besides the quantity: only values the item lacks.
-	SetUnit, SetCategory string    `json:"-"`
-	SetPlace             *Ref      `json:"-"`
-	SetExpires           model.Day `json:"-"`
-	Track                bool      `json:"-"` // the item had no quantity and gets one
+	// What the step writes on an item that is there, besides the quantity: values the item lacks, and a given expiry
+	// date (OldExpires is the date it replaces).
+	SetUnit     string    `json:"set_unit,omitempty"`
+	SetCategory string    `json:"set_category,omitempty"`
+	SetPlace    *Ref      `json:"set_place,omitempty"`
+	SetExpires  model.Day `json:"set_expires,omitempty"`
+	OldExpires  model.Day `json:"old_expires,omitempty"`
+	Track       bool      `json:"starts_tracking,omitempty"` // the item had no quantity and gets one
 }
 
 // Writes reports whether applying the step changes a record.
@@ -203,16 +209,32 @@ func (s Step) Writes() bool {
 	return false
 }
 
-// sig is what the step decides, without its numbers: a draft whose steps decide differently against the records as
-// they are now is out of date.
+// sig is everything the step promises: what it does, to which records, and the values it writes (the quantity and
+// unit, the resulting quantity, the dates, the place, the category, whether the old batch counts as gone or the
+// quantity goes down). A draft whose steps would promise anything else against the records as they are now is out of
+// date. The estimate before the change is not part of it: it is said for information, and the result is.
 func (s Step) sig() string {
 	ref := func(r *Ref) string {
 		if r == nil {
 			return ""
 		}
-		return r.ID
+		return r.ID + "/" + r.Title
 	}
-	return strings.Join([]string{s.Action, ref(s.Item), ref(s.Buy), ref(s.Place)}, "|")
+	f := func(p *float64) string {
+		if p == nil {
+			return ""
+		}
+		return num(*p)
+	}
+	b := func(v bool) string {
+		if v {
+			return "1"
+		}
+		return "0"
+	}
+	return strings.Join([]string{s.Action, s.Target, ref(s.Item), ref(s.Buy), ref(s.Place), f(s.Qty), s.Unit, f(s.After),
+		string(s.Expires), s.Category, s.SetUnit, s.SetCategory, ref(s.SetPlace), string(s.SetExpires),
+		string(s.OldExpires), b(s.OldGone), b(s.Track), b(s.Lowers)}, "|")
 }
 
 // Totals count the steps of a plan.
@@ -229,6 +251,7 @@ type Totals struct {
 	Unchanged  int      `json:"unchanged"`
 	Skipped    int      `json:"skipped"`
 	Questions  int      `json:"questions"`
+	Lowered    int      `json:"lowered"`
 	Inferred   int      `json:"with_inferred"`
 	Unread     int      `json:"unread"`
 	Changes    int      `json:"changes"`
@@ -274,6 +297,9 @@ func Check(in Input) error {
 	if in.Mode != "" && in.Mode != ModeAdd && in.Mode != ModeCount {
 		return fmt.Errorf("mode 只能是 add 或 count")
 	}
+	if len([]rune(in.Note)) > NoteMost {
+		return fmt.Errorf("备注太长（最多 %d 个字）", NoteMost)
+	}
 	if len(in.Lines) == 0 && len(in.Unread) == 0 {
 		return fmt.Errorf("没有要记的东西：lines 是空的")
 	}
@@ -291,16 +317,35 @@ func Check(in Input) error {
 // MaxLines is the most lines one import has.
 const MaxLines = 60
 
+// Limits of a line, checked when it is previewed, so that a draft that previews can always be written.
+const (
+	titleMost = 100
+	placeMost = 40
+	unitMost  = 10
+	qtyLeast  = 0.001 // quantities are kept to three decimals
+	qtyMost   = 1e6
+	NoteMost  = 200
+)
+
 func checkLine(l Line) error {
 	t := cleanTitle(l.Title)
 	if t == "" {
 		return fmt.Errorf("没有名称")
 	}
-	if len([]rune(t)) > 100 {
-		return fmt.Errorf("名称太长（最多 100 个字）")
+	if len([]rune(t)) > titleMost {
+		return fmt.Errorf("名称太长（最多 %d 个字）", titleMost)
 	}
-	if l.Qty != nil && !(*l.Qty > 0 && *l.Qty < 1e6) {
-		return fmt.Errorf("数量需要大于 0")
+	if l.Qty != nil && !(*l.Qty >= qtyLeast && *l.Qty < qtyMost) {
+		return fmt.Errorf("数量需要在 %s 到 %s 之间", num(qtyLeast), num(qtyMost))
+	}
+	if len([]rune(strings.TrimSpace(l.Unit))) > unitMost {
+		return fmt.Errorf("单位太长（最多 %d 个字）", unitMost)
+	}
+	if len([]rune(cleanTitle(l.Place))) > placeMost {
+		return fmt.Errorf("位置名称太长（最多 %d 个字）", placeMost)
+	}
+	if len([]rune(l.Category)) > 20 {
+		return fmt.Errorf("分类太长")
 	}
 	if l.Price != nil && !(*l.Price >= 0 && *l.Price < 1e7) {
 		return fmt.Errorf("价格不对")
@@ -365,16 +410,21 @@ func withEdits(lines []Line, edits []Edit) ([]Line, map[int]string, map[int]bool
 	return out, match, skip, nil
 }
 
-// group is lines of the same thing in one import, merged.
+// group is lines of the same thing in one import, merged. dupOf is the first line of the same thing that this line
+// could not be merged into (another unit that does not convert, or a quantity on only one of them), with why.
 type group struct {
 	line  Line
 	from  []int
 	notes []string
+	dupOf int
+	why   string
 }
 
 // merge groups the lines that name the same thing for the same target: their quantities add up when they share a
-// unit (or none has a quantity), the earliest date is kept and the prices add up. Lines of the same thing in another
-// unit, or where only some have a quantity, stay apart with a note.
+// unit, after converting a weight or a volume into the unit of the first line (or when none has a quantity), the
+// earliest date is kept and the prices add up. A line of the same thing that cannot be added (a unit that does not
+// convert, or a quantity on only one of the lines) is kept apart and becomes a question: written as a second step, it
+// would overwrite or double the first.
 func merge(lines []Line, target func(Line) string, skip map[int]bool) ([]group, []int) {
 	var gs []group
 	var skipped []int
@@ -393,19 +443,35 @@ func merge(lines []Line, target func(Line) string, skip map[int]bool) ([]group, 
 			if g.line.Target != l.Target || titleKey(g.line.Title) != titleKey(l.Title) {
 				continue
 			}
-			sameUnit := g.line.Unit == l.Unit || g.line.Unit == "" && g.line.Qty == nil || l.Unit == "" && l.Qty == nil
-			bothQty := (g.line.Qty == nil) == (l.Qty == nil)
-			if !sameUnit || !bothQty {
-				why := "单位不同"
-				if sameUnit {
-					why = "一行有数量一行没有"
-				}
-				g.notes = append(g.notes, fmt.Sprintf("第 %d 行也是「%s」，%s，没有合并", n, l.Title, why))
+			if g.dupOf != 0 {
 				continue
+			}
+			bothQty := (g.line.Qty == nil) == (l.Qty == nil)
+			sameUnit := g.line.Unit == l.Unit
+			add := 0.0
+			if bothQty && g.line.Qty == nil {
+				sameUnit = true // nothing to add up
+			}
+			if bothQty && g.line.Qty != nil {
+				if q, ok := convert(*l.Qty, l.Unit, g.line.Unit); ok && (sameUnit || l.Unit != "" && g.line.Unit != "") {
+					add, sameUnit = q, true
+					if l.Unit != g.line.Unit {
+						g.notes = append(g.notes, fmt.Sprintf("第 %d 行的 %s%s 换算成 %s%s 合在一起", n, num(*l.Qty), l.Unit, num(q), g.line.Unit))
+					}
+				}
+			}
+			if !sameUnit || !bothQty {
+				why := fmt.Sprintf("单位不同（%s / %s），没法合在一起", unitName(g.line.Unit), unitName(l.Unit))
+				if !bothQty {
+					why = "一行写了数量、一行没写，没法合在一起"
+				}
+				gs = append(gs, group{line: l, from: []int{n}, dupOf: g.from[0], why: why})
+				joined = true
+				break
 			}
 			g.from = append(g.from, n)
 			if l.Qty != nil {
-				q := *g.line.Qty + *l.Qty
+				q := round3(*g.line.Qty + add)
 				g.line.Qty = &q
 			}
 			if g.line.Unit == "" {
@@ -464,7 +530,12 @@ func Make(h *model.Home, in Input, edits []Edit, today model.Day) (Plan, error) 
 	}
 	for _, g := range groups {
 		var s Step
-		if g.line.Target == ToShopping {
+		if g.dupOf != 0 {
+			s = Step{Line: g.from[0], From: g.from, Title: g.line.Title, Target: g.line.Target, Qty: g.line.Qty,
+				Unit: g.line.Unit, Price: g.line.Price, Action: ActAsk, Ask: &Question{Kind: AskDuplicate,
+					Text:    fmt.Sprintf("第 %d 行也是「%s」，%s。请把两行改成同一个单位（告诉我折合多少），或者这行不记。", g.dupOf, g.line.Title, g.why),
+					Choices: []Choice{{Label: "这行不记", Skip: true}}}}
+		} else if g.line.Target == ToShopping {
 			s = p.shopping(g, match[g.from[0]])
 		} else {
 			s = p.stock(g, match[g.from[0]])
@@ -618,17 +689,14 @@ func (p *planner) newItem(s Step, l Line) Step {
 			s.Inferred = append(s.Inferred, "place")
 		}
 	}
+	// A usual shelf life is only said, never stored as the expiry date: a guessed date would raise 已过期 and make a
+	// later purchase throw the batch away. The user can give the date on the package as an edit.
 	switch {
 	case l.Expires != "":
 		s.Expires = model.Day(l.Expires)
 	case known && g.days > 0 && p.mode == ModeAdd:
-		from := p.today
-		if l.BoughtOn != "" {
-			from = model.Day(l.BoughtOn)
-		}
-		s.Expires = from.Add(g.days)
-		s.Inferred = append(s.Inferred, "expires")
-		s.Notes = append(s.Notes, fmt.Sprintf("保质期按常见的 %d 天推测，包装上的日期为准", g.days))
+		s.Keeps = g.days
+		s.Notes = append(s.Notes, fmt.Sprintf("这类东西一般能放 %d 天左右（推测，不会记成过期日；包装上有日期可以告诉我）", g.days))
 	}
 	if s.Qty == nil {
 		s.Notes = append(s.Notes, "没有数量：只记下名字，不跟踪数量")
@@ -758,8 +826,7 @@ func (p *planner) existing(s Step, l Line, it model.Item) Step {
 		case it.Expires != "" && it.Expires >= p.today && it.Expires < d && p.mode == ModeAdd:
 			s.Notes = append(s.Notes, "过期日还按旧的一批 "+shortDay(it.Expires)+" 提醒")
 		case it.Expires != d:
-			s.SetExpires = d
-			s.Expires = d
+			s.SetExpires, s.Expires, s.OldExpires = d, d, it.Expires
 		}
 	}
 	est := rules.Estimate(it, p.today)
@@ -779,6 +846,7 @@ func (p *planner) existing(s Step, l Line, it model.Item) Step {
 		s.Action = ActSetCount
 		if it.HasQty {
 			s.Before = ptr(est)
+			s.Lowers = *s.Qty < round3(est)
 		}
 		s.After = ptr(*s.Qty)
 	default:
@@ -919,6 +987,9 @@ func totals(p Plan, newPlaces map[string]bool) Totals {
 		case ActAsk:
 			t.Questions++
 		}
+		if s.Lowers && s.Writes() {
+			t.Lowered++
+		}
 		if s.Buy != nil && s.Target == ToStock && s.Writes() {
 			t.Bought++
 		}
@@ -972,8 +1043,13 @@ func says(s Step) string {
 	if s.Place != nil && (s.Action == ActNewItem || s.SetPlace != nil) {
 		extra = append(extra, inf("place", "放「"+s.Place.Title+"」"))
 	}
-	if s.Expires != "" && (s.Action == ActNewItem || s.SetExpires != "") {
-		extra = append(extra, inf("expires", string(s.Expires)+" 过期"))
+	switch {
+	case s.Expires != "" && s.Action == ActNewItem:
+		extra = append(extra, string(s.Expires)+" 过期")
+	case s.SetExpires != "" && s.OldExpires != "":
+		extra = append(extra, "过期日 "+shortDay(s.OldExpires)+" → "+shortDay(s.SetExpires))
+	case s.SetExpires != "":
+		extra = append(extra, string(s.SetExpires)+" 过期")
 	}
 	if s.SetUnit != "" {
 		extra = append(extra, "单位记成「"+s.SetUnit+"」")
@@ -1000,7 +1076,10 @@ func says(s Step) string {
 		}
 	case ActSetCount:
 		head = fmt.Sprintf("「%s」记成 %s", s.Item.Title, inf("unit", amount(s.Qty)))
-		if s.Before != nil {
+		switch {
+		case s.Lowers:
+			head += fmt.Sprintf("：会从约 %s%s 改成 %s%s，变少了", num(*s.Before), s.Unit, num(*s.After), s.Unit)
+		case s.Before != nil:
 			head += fmt.Sprintf("（原来约 %s%s）", num(*s.Before), s.Unit)
 		}
 	case ActUpdateItem:
@@ -1049,4 +1128,23 @@ func joinInts(ns []int) string {
 		parts = append(parts, fmt.Sprint(n))
 	}
 	return strings.Join(parts, "、")
+}
+
+// unitName is a unit as the words say it, 没写单位 for none.
+func unitName(u string) string {
+	if u == "" {
+		return "没写单位"
+	}
+	return u
+}
+
+// Key identifies the choice within its question, whatever its position: the edit it makes.
+func (c Choice) Key() string {
+	switch {
+	case c.Skip:
+		return "skip"
+	case c.Qty != nil:
+		return "qty=" + num(*c.Qty)
+	}
+	return "match=" + c.Match
 }
