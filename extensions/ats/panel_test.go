@@ -134,7 +134,7 @@ func TestQueuePagePutsWhatNeedsTheUserFirstAndATapNeverChangesATask(t *testing.T
 	page := checked(t, view)
 
 	// Tasks first, the one that waits for the user before all; the numbers and the computers below.
-	if got, want := strings.Join(sectionTitles(view), "|"), "这是什么|现在怎么样|等你处理|正在做和排着的|最近做完的|数一数|干活的电脑"; got != want {
+	if got, want := strings.Join(sectionTitles(view), "|"), "|现在怎么样|等你处理|正在做和排着的|最近做完的|数一数|干活的电脑"; got != want {
 		t.Fatalf("sections: %s, want %s", got, want)
 	}
 	if got := sectionOf(view, "active-"+waiting.ID); got != "等你处理" {
@@ -240,16 +240,17 @@ func TestQueuePageBeforeSetupShowsOnlyWhatIsLeftToDo(t *testing.T) {
 	a := newATSApp(newTestQueue(t, DefaultQueueConfig()))
 	view := buildQueueView(a.queue, a.config(), testStart, "")
 	raw := checked(t, view)
-	if got, want := strings.Join(sectionTitles(view), "|"), "这是什么|开始用之前，先做这两步"; got != want {
+	if got, want := strings.Join(sectionTitles(view), "|"), "|第 1 步：选一台干活的电脑|第 2 步：告诉它能动哪个文件夹|第 3 步：保存"; got != want {
 		t.Fatalf("sections: %s, want %s", got, want)
 	}
-	for _, key := range []string{"setup-machines", "setup-repos"} {
-		if row := findRow(t, view, key); row.Badge == nil || row.Badge.Text != "还没做" {
-			t.Errorf("%s: %+v", key, row.Badge)
-		}
+	if row := findRow(t, view, "setup-machines"); row.Type != wire.ComponentText || !strings.Contains(row.Text, "刷新") {
+		t.Errorf("without a list of computers: %+v", row)
 	}
-	if next := findRow(t, view, "setup-next").Text; !strings.Contains(next, "设置 › 扩展 › "+extName) {
-		t.Errorf("the page does not say where to set it up: %q", next)
+	if row := findRow(t, view, "setup-repo"); row.Type != wire.ComponentField || row.Name != "repo" {
+		t.Errorf("the folder field: %+v", row)
+	}
+	if save := findRow(t, view, "setup-save"); save.Action == nil || save.Action.ID != actSetupSave {
+		t.Errorf("the save button: %+v", save)
 	}
 	for _, bad := range []string{"100%", "数一数", "排着", "能动的文件夹", "现在怎么样"} {
 		if strings.Contains(raw, bad) {
@@ -266,10 +267,10 @@ func TestQueuePageBeforeSetupShowsOnlyWhatIsLeftToDo(t *testing.T) {
 	if row := findRow(t, view, "setup-machines"); row.Badge.Text != "做好了" {
 		t.Errorf("the chosen computer is not marked done: %+v", row.Badge)
 	}
-	if row := findRow(t, view, "setup-repos"); row.Badge.Text != "还没做" {
-		t.Errorf("the folders are marked done: %+v", row.Badge)
+	if row := findRow(t, view, "setup-repo"); row.Type != wire.ComponentField {
+		t.Errorf("the folders are marked done: %+v", row)
 	}
-	if next := findRow(t, view, "setup-next").Text; !strings.Contains(next, "之前交给它的事还有 1 件没结束（排着 1 件）") {
+	if next := findRow(t, view, "setup-live").Text; !strings.Contains(next, "之前交给它的事还有 1 件没结束（排着 1 件）") {
 		t.Errorf("the task already handed over is not mentioned: %q", next)
 	}
 
@@ -277,7 +278,7 @@ func TestQueuePageBeforeSetupShowsOnlyWhatIsLeftToDo(t *testing.T) {
 	cfg.Repos = []string{"~/code", "~/src"}
 	view = buildQueueView(a.queue, cfg, testStart, "")
 	checked(t, view)
-	if got, want := strings.Join(sectionTitles(view), "|"), "这是什么|现在怎么样|正在做和排着的|最近做完的|数一数|干活的电脑"; got != want {
+	if got, want := strings.Join(sectionTitles(view), "|"), "|现在怎么样|正在做和排着的|最近做完的|数一数|干活的电脑"; got != want {
 		t.Fatalf("sections when set up: %s, want %s", got, want)
 	}
 	if got := findRow(t, view, "repos").Text; got != "能动的文件夹：~/code、~/src" {
@@ -309,7 +310,7 @@ func TestQueuePageBeforeSetupKeepsLiveWorkInSight(t *testing.T) {
 	} {
 		view := buildQueueView(p.q, cfg, testStart.Add(2*time.Minute), "UTC")
 		raw := checked(t, view)
-		if got, want := strings.Join(sectionTitles(view), "|"), "这是什么|开始用之前，先做这两步|等你处理|正在做和排着的"; got != want {
+		if got, want := strings.Join(sectionTitles(view), "|"), "|第 1 步：选一台干活的电脑|第 2 步：告诉它能动哪个文件夹|第 3 步：保存|等你处理|正在做和排着的"; got != want {
 			t.Fatalf("%s: sections %s, want %s", name, got, want)
 		}
 		if got := sectionOf(view, "active-"+waiting.ID); got != "等你处理" {
@@ -327,7 +328,7 @@ func TestQueuePageBeforeSetupKeepsLiveWorkInSight(t *testing.T) {
 				t.Errorf("%s: an ended task is listed before setup", name)
 			}
 		}
-		if next := findRow(t, view, "setup-next").Text; !strings.Contains(next, "之前交给它的事还有 3 件没结束（正在做 1 件、等你处理 1 件、排着 1 件），就在下面，不想做了可以取消。") {
+		if next := findRow(t, view, "setup-live").Text; !strings.Contains(next, "之前交给它的事还有 3 件没结束（正在做 1 件、等你处理 1 件、排着 1 件），就在下面，不想做了可以取消。") {
 			t.Errorf("%s: the count of live work: %q", name, next)
 		}
 		for _, bad := range []string{"100%", "数一数", "能动的文件夹"} {
@@ -345,11 +346,11 @@ func TestQueuePageBeforeSetupKeepsLiveWorkInSight(t *testing.T) {
 	}
 	view := buildQueueView(q, ExtConfig{}, testStart, "UTC")
 	checked(t, view)
-	if got := strings.Join(sectionTitles(view), "|"); got != "这是什么|开始用之前，先做这两步" {
+	if got := strings.Join(sectionTitles(view), "|"); got != "|第 1 步：选一台干活的电脑|第 2 步：告诉它能动哪个文件夹|第 3 步：保存" {
 		t.Errorf("only ended tasks: sections %s", got)
 	}
-	if next := findRow(t, view, "setup-next").Text; strings.Contains(next, "没结束") {
-		t.Errorf("only ended tasks: %q", next)
+	if raw := checked(t, view); strings.Contains(raw, "没结束") {
+		t.Errorf("only ended tasks: %s", raw)
 	}
 }
 
@@ -454,10 +455,11 @@ func TestManifestNameMatchesWhatThePagesSay(t *testing.T) {
 	if err := json.Unmarshal(manifest, &d); err != nil {
 		t.Fatal(err)
 	}
-	for what, text := range map[string]string{"intro": homeIntro, "description": d.Description} {
-		if !strings.Contains(text, "交给它时说了怎么检查的，它做完还会自己检查一遍") {
-			t.Errorf("the %s does not say the check is only there when one was given: %q", what, text)
-		}
+	if !strings.Contains(d.Description, "交给它时说了怎么检查的，它做完还会自己检查一遍") {
+		t.Errorf("the description does not say the check is only there when one was given: %q", d.Description)
+	}
+	if strings.Contains(homeIntro, "检查") || strings.Count(homeIntro, "\n") > 1 {
+		t.Errorf("the intro promises a check or runs past two lines: %q", homeIntro)
 	}
 	// The state that waits for the user has one name everywhere.
 	for _, src := range []string{"panel.go", "detail.go", "words.go", "persona-extension.json"} {

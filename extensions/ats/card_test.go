@@ -73,7 +73,7 @@ func TestCardBeforeSetupSaysWhatIsMissing(t *testing.T) {
 		{"no folders", ExtConfig{Machines: []string{testMachine}}, "ATS 还没准备好：还没告诉它能动哪些文件夹。"},
 	} {
 		text := cardText(t, c.name, q, c.cfg, testStart)
-		wantCard(t, c.name, text, []string{c.missing, "下一步：到「设置 › 扩展 › ATS 自动做待办」里填好。"}, "没结束", "等你处理", "排着")
+		wantCard(t, c.name, text, []string{c.missing, "下一步：点开这里，在页面上选好电脑和文件夹。"}, "没结束", "等你处理", "排着")
 		if hasLatin(strings.NewReplacer("ATS", "").Replace(text)) {
 			t.Errorf("%s: the card has English: %q", c.name, text)
 		}
@@ -90,7 +90,7 @@ func TestCardBeforeSetupCountsLiveTasks(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := cardText(t, "not set up with live tasks", p.q, ExtConfig{Machines: []string{testMachine}}, testStart.Add(time.Minute))
-	wantCard(t, "not set up with live tasks", text, []string{"ATS 还没准备好：还没告诉它能动哪些文件夹。", "设置 › 扩展 › ATS 自动做待办",
+	wantCard(t, "not set up with live tasks", text, []string{"ATS 还没准备好：还没告诉它能动哪些文件夹。", "点开这里",
 		"之前交给它的事还有 2 件没结束"})
 }
 

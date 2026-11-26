@@ -519,7 +519,7 @@ func TestQueuePageShowsEveryStateAndItsButtonsWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw, _ := json.Marshal(view); !strings.Contains(string(raw), "开始用之前，先做这两步") {
+	if raw, _ := json.Marshal(view); !strings.Contains(string(raw), "第 1 步：选一台干活的电脑") {
 		t.Error("the page does not say that computers and repositories are not set")
 	}
 }
