@@ -171,10 +171,13 @@ func TestSyncContracts(t *testing.T) {
 	rHand := makeRule("r-hand", "correction", "已授权任务直接推进", "", "2026-11-19", "授权过的直接推进", entry.Handwritten, 2)
 	// Conflicting rule: must not be merged into the act contract.
 	rConf := makeRule("r-conf", "correction", "每次行动前都要先问", "", "2026-11-20", "动手前先问我", entry.Behavior, 2)
-	// Standalone hard rule (explicit ban cue, single source, single week): must still become a used hard contract.
+	// Standalone hard rule (explicit ban cue + user confirmation, single source, single week): must still become a used hard contract.
 	rCheck := makeRule("r-check", "correction", "断言前先查真实状态", "", "2026-11-21", "以后一律先查真实状态再说", entry.Behavior, 2)
+	rCheck.Verdicts = []entry.Verdict{{Mark: "right", By: "user"}}
+	// Single-day casual cue without user confirmation or repeat days: must stay non-hard (violation_count==1).
+	rSoftCue := makeRule("r-soft-cue", "correction", "汇报简短一点", "", "2026-11-21", "以后简短点说", entry.Behavior, 1)
 
-	st := state(r1, r2, rHand, rConf, rCheck)
+	st := state(r1, r2, rHand, rConf, rCheck, rSoftCue)
 	calls := 0
 	m := &funcModel{fn: func(r model.Request) (any, error) {
 		switch r.Step {
@@ -205,6 +208,15 @@ func TestSyncContracts(t *testing.T) {
 					Choice:    "先核查真实状态",
 					Exception: "",
 					Reason:    "standalone hard check rule",
+				},
+				{
+					Rules:     []string{idByText[rSoftCue.Text]},
+					Polarity:  PolarityCommunicate,
+					Text:      "汇报时保持简短",
+					Situation: "汇报进度",
+					Choice:    "简短汇报",
+					Exception: "",
+					Reason:    "single-day casual cue",
 				},
 			}}, nil
 		case "overview_counter":
@@ -253,6 +265,10 @@ func TestSyncContracts(t *testing.T) {
 	if checkP == nil || checkP.Polarity != PolarityCheck || !checkP.Hard || checkP.Lifecycle != Core {
 		t.Fatalf("standalone hard check contract wrong: %+v", checkP)
 	}
+	softP := byText(s, "汇报时保持简短")
+	if softP == nil || softP.Hard || softP.ViolationCount != 1 {
+		t.Fatalf("single-day casual cue should NOT be hard: %+v", softP)
+	}
 
 	// Second call with unchanged rules must skip the model call.
 	run2 := &Run{Counts: map[string]int{}}
@@ -281,13 +297,16 @@ func TestRootedNeverAutoClosedInMonthly(t *testing.T) {
 	w2 := action("w2", entry.Judgement, "beta", entry.SrcAsk, "2026-10-12", "week 2")
 	w3 := action("w3", entry.Judgement, "alpha", entry.SrcAgent, "2026-10-19", "week 3")
 	w4 := action("w4", entry.Judgement, "beta", entry.SrcAssistant, "2026-10-26", "week 4")
-	// Hard contract bound to a project.
+	// Hard contract bound to a project (2 days within 7d).
 	hc := &entry.Entry{
 		ID: "hc1", Facet: entry.Interaction, Grain: entry.Action, Type: "correction",
 		Text: "never guess state", Rejected: "guess", Status: entry.Stable, Origin: entry.Behavior, Tagged: true,
-		First: "2026-10-10", Last: "2026-10-10", Count: 2,
-		Scopes:   []entry.Scope{{Kind: entry.ScopeProject, Name: "alpha"}},
-		Evidence: []entry.Evidence{{Source: entry.SrcAssistant, Ref: "chat/hc1", Day: "2026-10-10", Who: entry.WhoSelf, Quote: "以后一律不要猜状态"}},
+		First: "2026-10-10", Last: "2026-10-12", Count: 2,
+		Scopes: []entry.Scope{{Kind: entry.ScopeProject, Name: "alpha"}},
+		Evidence: []entry.Evidence{
+			{Source: entry.SrcAssistant, Ref: "chat/hc1", Day: "2026-10-10", Who: entry.WhoSelf, Quote: "以后一律不要猜状态"},
+			{Source: entry.SrcAssistant, Ref: "chat/hc2", Day: "2026-10-12", Who: entry.WhoSelf, Quote: "说了别猜状态"},
+		},
 	}
 	st := state(w1, w2, w3, w4, hc)
 	s := newState()
@@ -340,5 +359,75 @@ func TestPatternKindBackwardCompat(t *testing.T) {
 	// Verify time import is used via stamp.
 	if !strings.Contains(stamp(time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)), "2026-11-26") {
 		t.Fatal("stamp failed")
+	}
+}
+
+// contractCandidates reserves a dedicated quota for tools and at least 40% of each facet for non-hard rules,
+// so >100 hard interaction rules never starve tools or non-hard stable rules.
+func TestContractCandidatesBalancedQuota(t *testing.T) {
+	var all []*entry.Entry
+	for i := 0; i < 120; i++ {
+		id := "ih-" + string(rune('a'+i/26)) + string(rune('a'+i%26))
+		all = append(all, &entry.Entry{
+			ID: id, Facet: entry.Interaction, Grain: entry.Action, Type: "correction", Text: "hard " + id,
+			Rejected: "wrong", Status: entry.Stable, Origin: entry.Behavior, Tagged: true,
+			First: "2026-11-10", Last: "2026-11-12", Count: 5,
+			Leverage: &entry.Leverage{Reach: entry.ReachCrossProject, Horizon: entry.HorizonLasting},
+			Evidence: []entry.Evidence{{Source: entry.SrcAssistant, Ref: "c/" + id, Day: "2026-11-10", Who: entry.WhoSelf, Quote: "以后一律" + id}},
+		})
+	}
+	for i := 0; i < 40; i++ {
+		id := "ir-" + string(rune('a'+i/26)) + string(rune('a'+i%26))
+		all = append(all, &entry.Entry{
+			ID: id, Facet: entry.Interaction, Grain: entry.Action, Type: "style", Text: "reg " + id,
+			Status: entry.Stable, Origin: entry.Behavior, Tagged: true,
+			First: "2026-11-10", Last: "2026-11-12", Count: 6,
+			Leverage: &entry.Leverage{Reach: entry.ReachCrossProject, Horizon: entry.HorizonLasting},
+			Evidence: []entry.Evidence{{Source: entry.SrcAssistant, Ref: "c/" + id, Day: "2026-11-10", Who: entry.WhoSelf, Quote: "普通规矩" + id}},
+		})
+	}
+	for i := 0; i < 30; i++ {
+		id := "tr-" + string(rune('a'+i/26)) + string(rune('a'+i%26))
+		all = append(all, &entry.Entry{
+			ID: id, Facet: entry.Tools, Grain: entry.Action, Type: "tool_rule", Text: "tool " + id,
+			Status: entry.Stable, Origin: entry.Behavior, Tagged: true,
+			First: "2026-11-10", Last: "2026-11-12", Count: 4,
+			Leverage: &entry.Leverage{Reach: entry.ReachCrossProject, Horizon: entry.HorizonLasting},
+			Evidence: []entry.Evidence{{Source: entry.SrcAssistant, Ref: "c/" + id, Day: "2026-11-10", Who: entry.WhoSelf, Quote: "工具规矩" + id}},
+		})
+	}
+	picked := contractCandidates(state(all...), "")
+	if len(picked) != contractCandMost {
+		t.Fatalf("expected %d candidates, got %d", contractCandMost, len(picked))
+	}
+	toolsN, nonHardInter := 0, 0
+	for _, e := range picked {
+		if e.Facet == entry.Tools {
+			toolsN++
+		} else if !entry.Hard(e) {
+			nonHardInter++
+		}
+	}
+	if toolsN != 30 {
+		t.Fatalf("expected all 30 tools rules picked, got %d", toolsN)
+	}
+	if nonHardInter < 30 {
+		t.Fatalf("expected >=30 non-hard interaction rules picked, got %d", nonHardInter)
+	}
+}
+
+// Evidence majority Leverage.Dimension must win over a model's default "decision" guess on recount.
+func TestEvidenceDimensionWinsOverModelGuess(t *testing.T) {
+	e1 := action("ed1", entry.Judgement, "alpha", entry.SrcAssistant, "2026-11-09", "verify first")
+	e2 := action("ed2", entry.Judgement, "beta", entry.SrcAsk, "2026-11-12", "check logs")
+	e3 := action("ed3", entry.Judgement, "gamma", entry.SrcAgent, "2026-11-18", "probe root cause")
+	for _, e := range []*entry.Entry{e1, e2, e3} {
+		e.Leverage = &entry.Leverage{Dimension: "thinking"}
+	}
+	p := &Pattern{ID: "ov:evdim", Facet: string(entry.Judgement), Kind: KindPrinciple, Dimension: "decision",
+		Text: "verifies before concluding", DefaultContrast: "guesses", EvidenceIDs: []string{"ed1", "ed2", "ed3"}}
+	recount(state(e1, e2, e3), p, "")
+	if p.Dimension != "thinking" {
+		t.Fatalf("expected evidence majority dimension 'thinking', got %q", p.Dimension)
 	}
 }

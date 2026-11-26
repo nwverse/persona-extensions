@@ -29,10 +29,13 @@ var contractsPrompt string
 var contractsSchema []byte
 
 const (
-	contractCandMost  = 120 // rules per call, highest leverage and hard rules first
-	contractCandScore = 60  // lowest score put to contract aggregation (hard and user-owned always included)
-	contractMaxTokens = 8000
-	flagNoAutoMerge   = "no_auto_merge"
+	contractCandMost       = 120 // total rules per call across interaction and tools
+	contractInteractionCap = 80  // nominal cap for ① interaction (unused tools slots spill over)
+	contractToolsCap       = 40  // guaranteed floor/cap for ② tools so interaction never starves it
+	contractNonHardPct     = 40  // at least 40% of each facet's quota reserved for non-hard high-score rules
+	contractCandScore      = 60  // lowest score put to contract aggregation (hard and user-owned always included)
+	contractMaxTokens      = 8000
+	flagNoAutoMerge        = "no_auto_merge"
 )
 
 type (
@@ -85,9 +88,11 @@ func isUserOwned(e *entry.Entry) bool {
 }
 
 // contractCandidates returns the live interaction/tools rules eligible for L1 contract aggregation, before cutoff
-// ("" means all). Hard rules and user-owned rules are always included; other rules need entry.Score >= 60.
+// ("" means all). It reserves a dedicated quota for ② tools (up to contractToolsCap) and reserves at least
+// contractNonHardPct% of each facet's quota for non-hard high-scoring rules so hard rules do not crowd out regular
+// stable rules or starve tools.
 func contractCandidates(st *store.State, cutoff string) []*entry.Entry {
-	var out []*entry.Entry
+	var inter, tools []*entry.Entry
 	for _, e := range st.Entries {
 		if e == nil || !e.Live() || (e.Facet != entry.Interaction && e.Facet != entry.Tools) {
 			continue
@@ -107,21 +112,70 @@ func contractCandidates(st *store.State, cutoff string) []*entry.Entry {
 		if entry.Score(e) < contractCandScore && !entry.Hard(e) && !isUserOwned(e) {
 			continue
 		}
-		out = append(out, e)
+		if e.Facet == entry.Tools {
+			tools = append(tools, e)
+		} else {
+			inter = append(inter, e)
+		}
 	}
-	sort.Slice(out, func(i, j int) bool {
-		hi, hj := entry.Hard(out[i]), entry.Hard(out[j])
-		if hi != hj {
-			return hi
-		}
-		if a, b := entry.Score(out[i]), entry.Score(out[j]); a != b {
-			return a > b
-		}
-		return out[i].ID < out[j].ID
-	})
+	toolsPicked := pickFacetRules(tools, contractToolsCap)
+	interCap := contractCandMost - len(toolsPicked)
+	if interCap < contractInteractionCap {
+		interCap = contractInteractionCap
+	}
+	interPicked := pickFacetRules(inter, interCap)
+	out := append(interPicked, toolsPicked...)
 	if len(out) > contractCandMost {
 		out = out[:contractCandMost]
 	}
+	return out
+}
+
+// pickFacetRules picks up to cap entries from a single facet, reserving at least contractNonHardPct% for non-hard
+// high-scoring entries (unused slots in either pool spill over to the other).
+func pickFacetRules(es []*entry.Entry, capN int) []*entry.Entry {
+	if capN <= 0 || len(es) == 0 {
+		return nil
+	}
+	var hardPool, regPool []*entry.Entry
+	for _, e := range es {
+		if entry.Hard(e) {
+			hardPool = append(hardPool, e)
+		} else {
+			regPool = append(regPool, e)
+		}
+	}
+	sortByScore := func(s []*entry.Entry) {
+		sort.Slice(s, func(i, j int) bool {
+			if a, b := entry.Score(s[i]), entry.Score(s[j]); a != b {
+				return a > b
+			}
+			if s[i].Count != s[j].Count {
+				return s[i].Count > s[j].Count
+			}
+			return s[i].ID < s[j].ID
+		})
+	}
+	sortByScore(hardPool)
+	sortByScore(regPool)
+
+	regFloor := capN * contractNonHardPct / 100
+	hardCap := capN - regFloor
+	takeHard := min(len(hardPool), hardCap)
+	takeReg := min(len(regPool), regFloor)
+	rem := capN - takeHard - takeReg
+	if rem > 0 && takeReg < len(regPool) {
+		add := min(rem, len(regPool)-takeReg)
+		takeReg += add
+		rem -= add
+	}
+	if rem > 0 && takeHard < len(hardPool) {
+		add := min(rem, len(hardPool)-takeHard)
+		takeHard += add
+	}
+	out := make([]*entry.Entry, 0, takeHard+takeReg)
+	out = append(out, hardPool[:takeHard]...)
+	out = append(out, regPool[:takeReg]...)
 	return out
 }
 

@@ -256,17 +256,27 @@ func (t tally) sceneCount() int {
 
 // contractHard computes whether a collaboration contract is hard and its violation_count (distinct days the user
 // corrected it across all member entries), respecting cutoff.
+// A contract is hard only when:
+//   - the user corrected it on >=2 distinct days within a 7-day window; OR
+//   - the user corrected it on >=3 distinct days overall; OR
+//   - a ban/anger cue appears AND is backed by repeated sightings (>=2 days or count>=2) or explicit user ownership/confirmation.
+//
+// A single-day casual phrasing cue with violation_count==1 stays a regular (non-hard) contract.
 func contractHard(st *store.State, ids []string, cutoff string) (hard bool, violations int) {
 	seen := map[string]bool{}
 	corrDays := map[string]bool{}
+	cueHits := 0
+	userConfirmed := false
+	totalCount := 0
 	var walk func(e *entry.Entry, depth int)
 	walk = func(e *entry.Entry, depth int) {
 		if e == nil || !e.Live() || seen[e.ID] {
 			return
 		}
 		seen[e.ID] = true
-		if cutoff == "" && entry.Hard(e) {
-			hard = true
+		totalCount += max(e.Count, 1)
+		if isUserOwned(e) || lastUserMarkRight(e) {
+			userConfirmed = true
 		}
 		isCorr := (e.Facet == entry.Interaction || e.Facet == entry.Tools) &&
 			(strings.EqualFold(e.Type, "correction") || strings.TrimSpace(e.Rejected) != "")
@@ -280,7 +290,7 @@ func contractHard(st *store.State, ids []string, cutoff string) (hard bool, viol
 			if isCorr {
 				corrDays[ev.Day] = true
 				if contractHardCue.MatchString(ev.Quote) {
-					hard = true
+					cueHits++
 				}
 			}
 		}
@@ -299,15 +309,30 @@ func contractHard(st *store.State, ids []string, cutoff string) (hard bool, viol
 		days = append(days, d)
 	}
 	sort.Strings(days)
-	for i := 1; i < len(days); i++ {
+	if len(days) >= 3 {
+		hard = true
+	}
+	for i := 1; !hard && i < len(days); i++ {
 		if a, err1 := time.Parse("2006-01-02", days[i-1]); err1 == nil {
 			if b, err2 := time.Parse("2006-01-02", days[i]); err2 == nil && b.Sub(a) <= 7*24*time.Hour {
 				hard = true
-				break
 			}
 		}
 	}
+	if !hard && cueHits > 0 && (len(days) >= 2 || cueHits >= 2 || userConfirmed) {
+		hard = true
+	}
+	_ = totalCount
 	return hard, len(days)
+}
+
+func lastUserMarkRight(e *entry.Entry) bool {
+	for i := len(e.Verdicts) - 1; i >= 0; i-- {
+		if e.Verdicts[i].By == "user" {
+			return e.Verdicts[i].Mark == "right"
+		}
+	}
+	return false
 }
 
 // inferDimension returns the most frequent Leverage.Dimension among the live entries under ids, or "".

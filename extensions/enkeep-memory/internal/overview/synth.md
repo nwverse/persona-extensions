@@ -42,7 +42,13 @@ For each principle give:
   shown in quotes);
 - `situation`, `choice`, `rejected` (only when shown in quotes; else empty);
 - `exception`: only when the quotes explicitly show a condition where the user does otherwise; else empty;
-- `dimension`: cognitive dimension when applicable (`decision`, `thinking`, `reaction`, `attention`, `communication`), else empty;
+- `dimension`: cognitive dimension when applicable — pick the single best fit, do NOT default every workflow or habit to `decision`:
+  - `decision`: trade-offs and priorities when choosing between competing options at a fork (scope cuts, pilot vs full rollout, what to pick vs drop);
+  - `thinking`: how the user verifies facts, probes assumptions, decomposes problems, or evaluates proposals before concluding;
+  - `attention`: what risks, safety nets (backups/rollbacks), edge cases, or quality bars the user notices first and refuses to overlook;
+  - `reaction`: how the user responds to failures, blockers, mistakes, surprises, or pushback;
+  - `communication`: how the user prefers to align, report, argue, or exchange information with people or the AI;
+  else empty;
 - `default_contrast`, `holds_for_anyone`;
 - `members`: ids of the items whose quotes directly support this single principle (at least three);
 - `reason`: one line on why these items' quotes show the same choice.

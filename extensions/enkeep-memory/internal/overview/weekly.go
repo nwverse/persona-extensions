@@ -458,8 +458,9 @@ func recount(st *store.State, p *Pattern, cutoff string) {
 			}
 		}
 		p.Hard, p.ViolationCount = contractHard(st, live, cutoff)
-	} else if p.Dimension == "" {
-		p.Dimension = inferDimension(st, live)
+	} else if evDim := inferDimension(st, live); evDim != "" {
+		// Evidence majority dimension takes precedence over a model guess (prevents defaulting everything to decision).
+		p.Dimension = evDim
 	}
 	apply(p, count(st, live, cutoff))
 	p.Categories, p.OriginSpace = tags(st, append(live, liveIDs(st, p.CounterIDs)...))
