@@ -227,4 +227,8 @@ func TestSetupKeepsATypedFolderWhenAComputerIsPicked(t *testing.T) {
 	if got := findRow(t, res.View, "setup-repo").Value; got != "~/work" {
 		t.Errorf("an empty field wiped the folder taken before: %q", got)
 	}
+	res = act(t, a, actSetupMachine+":m-laptop", map[string]string{"repo": "code"})
+	if !strings.Contains(res.Toast, "文件夹没记下") || findRow(t, res.View, "setup-repo").Value != "~/work" {
+		t.Errorf("a bad folder sent with a computer: %+v", res)
+	}
 }

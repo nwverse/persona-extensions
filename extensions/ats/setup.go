@@ -117,11 +117,16 @@ func (a *atsApp) setupAction(kind, target string, values map[string]string) (res
 		a.mu.Lock()
 		a.draft.Machine = target
 		// The button sends the page's field too: a folder typed but not yet taken is kept, not wiped by the redraw.
-		if repo, err := cleanRepo(values["repo"]); err == nil {
-			a.draft.Repo = repo
+		res := &wire.ActionResult{}
+		if typed := strings.TrimSpace(values["repo"]); typed != "" && typed != a.draft.Repo {
+			if repo, err := cleanRepo(typed); err == nil {
+				a.draft.Repo = repo
+			} else {
+				res.Toast = "电脑选好了；文件夹没记下：" + err.Error()
+			}
 		}
 		a.mu.Unlock()
-		return &wire.ActionResult{}, true
+		return res, true
 	case actSetupRepo:
 		// A suggestion carries its folder in the action id (an app before UI version 4 sends no action values);
 		// the field's button sends the field.
