@@ -16,9 +16,11 @@
 | Setting | Title in the form | Meaning |
 | --- | --- | --- |
 | `instance_url` | RSSHub 服务地址 | The RSSHub instance, `https://rsshub.app` by default. A self-hosted instance is an `https://` address, which may include a path prefix (`https://example.com/rsshub`). An instance on the hub machine itself may use plain `http` with `127.0.0.1` (any `127.x`), `localhost` or `[::1]`, with a port. Any other `http` address, user info, query or fragment is refused, and the connector's status says why. |
-| `access_auth` | 访问密钥的带法 (choices 直接带上密钥（默认） / 只带校验码，不露出密钥) | How the access key is sent: `key` (default) adds `?key=<access key>`; `code` adds RSSHub's `?code=<md5(route path + access key)>`, so the key itself never appears in a URL. |
+| `access_auth` | 高级：访问密钥的带法 (choices 直接带上密钥（默认） / 只带校验码，不露出密钥) | How the access key is sent: `key` (default) adds `?key=<access key>`; `code` adds RSSHub's `?code=<md5(route path + access key)>`, so the key itself never appears in a URL. |
 | `refresh_minutes` | 多久自动检查一次（分钟） | How often every subscription is refreshed in the background: 5 to 1440, default 30. |
-| `prefer_json` | 让 RSSHub 换一种格式发内容 | Ask the instance for JSON Feed (`?format=json`) instead of its default RSS. Either format is read; the format is recognized from the content, not from the `Content-Type`. |
+| `prefer_json` | 高级：让 RSSHub 换一种格式发内容 | Ask the instance for JSON Feed (`?format=json`) instead of its default RSS. Either format is read; the format is recognized from the content, not from the `Content-Type`. |
+
+The two settings almost nobody needs (`access_auth`, `prefer_json`) start their titles with `高级：`: the hub's settings form has no keyword to fold or group settings (see `scripts/config_form.py`), so the title says it.
 
 | Secret | Title in the form | Meaning |
 | --- | --- | --- |
@@ -49,7 +51,7 @@ Subscriptions, entries and read state live in the extension's data directory (`f
 
 ## The page
 
-The top says in two sentences what the page is for, then shows the number of subscriptions, the unread count, the last check (with the refresh interval) and the RSSHub instance's state (能连上, 连不上, 地址填错了 or 还没试过). Sources whose last check failed are named there, and an unusable instance address or a failing instance is explained. The buttons are **现在检查更新** (refresh all, once something is subscribed), **全部标为已读** (when something is unread) and **试试能不能连上 RSSHub** (check the instance). Below are the latest entries (最新文章), which can be limited to unread ones, and one section per tag (我订阅的 · <tag>; subscriptions without a tag are under 未分类) with each feed's unread count or an 出错 badge.
+The top says in two sentences what the page is for, then shows the number of subscriptions, the unread count, the last check (with the refresh interval) and the RSSHub instance's state (能连上, 连不上, 地址填错了 or 还没用到; with nothing subscribed and nothing read through RSSHub yet, the instance has not been asked, and the stat adds 加订阅时才会去连它，现在什么都不用做). Sources whose last check failed are named there, and an unusable instance address or a failing instance is explained. The buttons are **现在检查更新** (refresh all, once something is subscribed), **全部标为已读** (when something is unread) and **试试能不能连上 RSSHub** (check the instance). Below are the latest entries (最新文章), which can be limited to unread ones, and one section per tag (我订阅的 · <tag>; subscriptions without a tag are under 未分类) with each feed's unread count or an 出错 badge.
 
 - With nothing subscribed, an empty state says what to paste and offers one example to preview (`/github/trending/daily/go/en`).
 - A feed shows its address, tag, unread count and last check, a link to its site, **现在检查更新**, **全部标为已读** and **取消订阅** (asked first).

@@ -14,6 +14,10 @@ const (
 	exampleUPRoute    = "/bilibili/user/video/2267573"
 	routesDocs        = "https://docs.rsshub.app/routes"
 
+	// serviceIdleNote follows the RSSHub service's address while nothing is subscribed and nothing has been read
+	// through it: the service is first asked when a source is previewed or read, or on the page's test button.
+	serviceIdleNote = "加订阅时才会去连它，现在什么都不用做"
+
 	introText = "把常看的网站放在一处看更新：订阅之后，这里会定时去看它们有没有新文章，有就列在这里。" +
 		"比如订阅一个博客、一个新闻网站，或者某位 B 站 UP 主的新视频。"
 	addressHelp = "可以填两种地址：\n" +

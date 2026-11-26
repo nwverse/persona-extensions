@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "rsshub",
   "name": "RSSHub 网站订阅",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "icon": "assets/icon.png",
   "description": "把常看的网站放在一处看更新：订阅博客、新闻网站的 RSS（网站自带的「更新列表」），也能通过 RSSHub（一个免费服务，把 B 站、微博、GitHub 这类没有 RSS 的网站变成可以订阅的）订阅更多网站，比如某位 B 站 UP 主的新视频、GitHub 每天最热门的项目。主导航上多一个「网站订阅」：按分类看新文章和正文，标出未读，订阅前可以先看看；默认每 30 分钟自动检查一次，导航上的数字是未读篇数。助手也能帮你查看、找文章和订阅，每次订阅或取消都会先在手机上问你。默认用免费的公共 RSSHub，一般不用设置；常用的话也可以换成自己搭的。",
   "publisher": "nwverse",
@@ -35,9 +35,9 @@
     "type": "object",
     "properties": {
       "instance_url": {"type": "string", "title": "RSSHub 服务地址", "description": "一般不用改。RSSHub 是把 B 站、微博、GitHub 这类网站变成可订阅内容的服务，默认用免费的公共服务 https://rsshub.app。公共服务有时会被一些网站限制；如果你自己搭了 RSSHub，在这里填它的地址，要以 https:// 开头，装在 Persona 同一台电脑上的也可以写 http://127.0.0.1:1200 这样的地址。清空就回到默认。", "format": "uri", "default": "https://rsshub.app"},
-      "access_auth": {"type": "string", "title": "访问密钥的带法", "description": "一般不用改。只有你自己搭的 RSSHub 设了访问密钥、并且填了下面的「访问密钥」时才有用：默认直接带上密钥；选「只带校验码」时，网址里不会出现密钥本身，只带由它算出的校验码。照你那台 RSSHub 支持的方式选。", "default": "key", "oneOf": [{"const": "key", "title": "直接带上密钥（默认）"}, {"const": "code", "title": "只带校验码，不露出密钥"}]},
+      "access_auth": {"type": "string", "title": "高级：访问密钥的带法", "description": "一般不用改。只有你自己搭的 RSSHub 设了访问密钥、并且填了下面的「访问密钥」时才有用：默认直接带上密钥；选「只带校验码」时，网址里不会出现密钥本身，只带由它算出的校验码。照你那台 RSSHub 支持的方式选。", "default": "key", "oneOf": [{"const": "key", "title": "直接带上密钥（默认）"}, {"const": "code", "title": "只带校验码，不露出密钥"}]},
       "refresh_minutes": {"type": "integer", "title": "多久自动检查一次（分钟）", "description": "每隔多少分钟去看一次所有订阅有没有新文章，可以填 5 到 1440（一天）。一般不用改；想更快看到新文章就调小，被网站提示「太频繁」就调大。", "default": 30, "minimum": 5, "maximum": 1440},
-      "prefer_json": {"type": "boolean", "title": "让 RSSHub 换一种格式发内容", "description": "一般不用改，关着就好。打开后会让 RSSHub 改用另一种格式（JSON）发送内容，读出来的文章是一样的，只在排查读取问题时才用得上。", "default": false}
+      "prefer_json": {"type": "boolean", "title": "高级：让 RSSHub 换一种格式发内容", "description": "一般不用改，关着就好。打开后会让 RSSHub 改用另一种格式（JSON）发送内容，读出来的文章是一样的，只在排查读取问题时才用得上。", "default": false}
     }
   },
   "secrets": [
