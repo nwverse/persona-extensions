@@ -309,3 +309,102 @@ func TestCollabTableSegments(t *testing.T) {
 		t.Fatalf("segments missing from table:\n%s", md)
 	}
 }
+
+func TestDiscoverCollabDirsAndMemoryIDs(t *testing.T) {
+	root := t.TempDir()
+	mk := func(rel string) string {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(p, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	primary := mk("proj-assistant")
+	primaryMem := mk("proj-assistant/memory")
+	sup := mk("proj-supervisor-a")
+	supMem := mk("proj-supervisor-a/memory")
+	agent := mk("ws-agent-1")
+	agentMem := mk("ws-agent-1/memory")
+	_ = mk("unrelated-other")
+
+	sessDirs, memDirs, explicitMem, err := discoverCollabDirs(primaryMem, primary, root, "proj-,ws-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessDirs) != 3 {
+		t.Fatalf("expected 3 deduplicated session dirs, got %d: %v", len(sessDirs), sessDirs)
+	}
+	if len(memDirs) != 3 {
+		t.Fatalf("expected 3 deduplicated memory dirs, got %d: %v", len(memDirs), memDirs)
+	}
+	if !explicitMem[primaryMem] || explicitMem[supMem] || explicitMem[agentMem] {
+		t.Fatalf("unexpected explicitMem map: %v", explicitMem)
+	}
+
+	// Identically named feedback files in two discovered project memory dirs must produce distinct IDs, while the
+	// explicit primary memory dir preserves its legacy basename-hashed ID.
+	fb := "---\nname: fb\nmetadata:\n  type: feedback\n---\n\n11-10 the user corrected ownership of project-alpha.\n"
+	for _, d := range []string{primaryMem, supMem, agentMem} {
+		if err := os.WriteFile(filepath.Join(d, "same.md"), []byte(fb), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws := []collabWindow{{Start: "2026-11-01", End: "2026-11-26"}}
+	cPrim, err := collabMemoryCandsInDir(primaryMem, ws, explicitMem[primaryMem])
+	if err != nil || len(cPrim) != 1 {
+		t.Fatalf("primary mem cands: %v %+v", err, cPrim)
+	}
+	if want := "m-" + heHash("same.md")[:10]; cPrim[0].ID != want {
+		t.Fatalf("primary mem ID = %q, want legacy %q", cPrim[0].ID, want)
+	}
+	cSup, err := collabMemoryCandsInDir(supMem, ws, explicitMem[supMem])
+	cAgt, err2 := collabMemoryCandsInDir(agentMem, ws, explicitMem[agentMem])
+	if err != nil || err2 != nil || len(cSup) != 1 || len(cAgt) != 1 {
+		t.Fatalf("discovered mem cands: %v %v %+v %+v", err, err2, cSup, cAgt)
+	}
+	if cSup[0].ID == cAgt[0].ID || cSup[0].ID == cPrim[0].ID || cAgt[0].ID == cPrim[0].ID {
+		t.Fatalf("expected distinct IDs across memory dirs, got primary=%s sup=%s agt=%s", cPrim[0].ID, cSup[0].ID, cAgt[0].ID)
+	}
+	_ = sup
+	_ = agent
+}
+
+func TestCollabReadStripsPersonaContextAndKeepsLegacyIDs(t *testing.T) {
+	dir := t.TempDir()
+	jsonl := strings.Join([]string{
+		`{"type":"user","timestamp":"2026-11-10T01:00:00Z","message":{"content":[{"type":"text","text":"<persona-context kind=\"context\">meta</persona-context>\ncheck repo-alpha owner"}]}}`,
+		`{"type":"assistant","timestamp":"2026-11-10T01:00:05Z","message":{"content":[{"type":"text","text":"I asked user-b about repo-beta."}]}}`,
+		`{"type":"user","timestamp":"2026-11-10T01:01:00Z","message":{"content":[{"type":"text","text":"<persona-context kind=\"context\">meta</persona-context>\n你搞错仓库了，不是这个库"}]}}`,
+		`{"type":"user","timestamp":"2026-11-10T01:02:00Z","message":{"content":"<system-reminder>谁负责</system-reminder>"}}`,
+		`{"type":"assistant","timestamp":"2026-11-10T01:02:05Z","message":{"content":[{"type":"text","text":"checking now"}]}}`,
+		`{"type":"user","timestamp":"2026-11-10T01:03:00Z","message":{"content":"你又搞混人了，不是他负责"}}`,
+	}, "\n")
+	path := filepath.Join(dir, "managed.jsonl")
+	if err := os.WriteFile(path, []byte(jsonl), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws := []collabWindow{{Start: "2026-11-01", End: "2026-11-26"}}
+	cs, err := collabSessionCandsWindows([]string{dir, dir}, ws, collabEntityCue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cs) != 2 {
+		t.Fatalf("expected 2 deduplicated entity candidates (1 ctx-stripped + 1 legacy), got %d: %+v", len(cs), cs)
+	}
+	// Legacy candidate is after two assistant lines (legacyIdx 0 and 1), so its legacyIdx must remain 2 regardless of
+	// the two context-wrapped user lines before it.
+	wantLegacyID := "s-" + heHash(path + "2")[:10]
+	wantCtxID := "s-" + heHash(path + ":ctx:3")[:10]
+	gotIDs := map[string]string{}
+	for _, c := range cs {
+		gotIDs[c.ID] = c.Text
+	}
+	if _, ok := gotIDs[wantLegacyID]; !ok {
+		t.Errorf("legacy ID %q shifted; got IDs %v", wantLegacyID, gotIDs)
+	}
+	if txt, ok := gotIDs[wantCtxID]; !ok {
+		t.Errorf("ctx-stripped candidate %q missing; got IDs %v", wantCtxID, gotIDs)
+	} else if !strings.Contains(txt, "check repo-alpha owner") || !strings.Contains(txt, "你搞错仓库了") || strings.Contains(txt, "persona-context") {
+		t.Errorf("unexpected ctx-stripped text: %q", txt)
+	}
+}
