@@ -63,7 +63,7 @@ func sandboxProblem() problem {
 		Cause:   causeSandbox,
 		Title:   "被关在隔离环境里",
 		Reason:  "Persona 现在把 Disklessly 关在隔离环境（沙箱）里运行：里面上不了网，也读不到 ~/.ssh 和 AI 对话所在的文件夹，所以连不上任何别的电脑，这台电脑的结果也不准。",
-		Next:    "在运行 Persona 的那台电脑上运行下面的命令，给这个扩展关掉沙箱（从官方市场安装时默认就是关的），然后点「重试」或「" + scanAllText + "」。",
+		Next:    "在运行 Persona 的电脑上运行下面的命令，给这个扩展关掉沙箱（从官方市场安装时默认就是关的），然后点「重试」或「" + scanAllText + "」。",
 		Command: sandboxOffCommand,
 		Retry:   true,
 	}
@@ -113,7 +113,7 @@ func sshProblem(m *Machine, raw string) problem {
 		if loc != nil {
 			line = raw[loc[1]:]
 		}
-		return problem{Title: "这台电脑上执行失败", Reason: "在运行 Persona 的这台电脑上执行命令没有成功（这里不经过远程登录）。", Next: "点「重试」；还是不行就打开「详情」看输出。", Raw: strings.TrimSpace(line), Retry: true}
+		return problem{Title: "命令执行失败", Reason: "在运行 Persona 的电脑上执行命令没有成功（这里不经过远程登录）。", Next: "点「重试」；还是不行就打开「详情」看输出。", Raw: strings.TrimSpace(line), Retry: true}
 	}
 	line := raw
 	if loc := sshFailRE.FindStringIndex(raw); loc != nil {
@@ -133,21 +133,21 @@ func sshProblem(m *Machine, raw string) problem {
 		s := sandboxProblem()
 		p.Title, p.Command = s.Title, s.Command
 		p.Reason = "连不上" + name + "：Disklessly 被关在隔离环境（沙箱）里，上不了网也读不到 ~/.ssh，那台电脑本身可能没有问题。"
-		p.Next = "在运行 Persona 的那台电脑上运行下面的命令，给这个扩展关掉沙箱，然后点「重试」。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令，给这个扩展关掉沙箱，然后点「重试」。"
 	case causeTimeout:
 		p.Title = "连接超时"
 		p.Reason = "连" + name + "等了太久没反应：它可能关机、睡眠了，或者不在同一个网络里（比如 VPN 或 Tailscale 没连上）。"
-		p.Next = "开机或连上网络后点「重试」；也可以在运行 Persona 的那台电脑上运行下面的命令自己试一下。"
+		p.Next = "开机或连上网络后点「重试」；也可以在运行 Persona 的电脑上运行下面的命令自己试一下。"
 		p.Command = test
 	case causeAuth:
 		p.Title, p.Edit = "远程登录被拒绝", true
-		p.Reason = name + "不让登录：它不认运行 Persona 的那台电脑的密钥，或者用户名不对。"
-		p.Next = "在运行 Persona 的那台电脑上运行下面的命令，把密钥装到这台电脑上；或者在「" + homeTitle + "」页「修改这台电脑的设置」里改用户名和密钥文件，然后点「重试」。"
+		p.Reason = name + "不让登录：它不认运行 Persona 的电脑的密钥，或者用户名不对。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令，把密钥装到这台电脑上；或者在「" + homeTitle + "」页「修改这台电脑的设置」里改用户名和密钥文件，然后点「重试」。"
 		p.Command = "ssh-copy-id " + sshTarget(m)
 	case causeHostKey:
 		p.Title = "还没确认这台电脑的身份"
-		p.Reason = "运行 Persona 的那台电脑还没认过" + name + "的身份标识（指纹），或者指纹变了，所以自动登录被拦下了。"
-		p.Next = "在运行 Persona 的那台电脑上运行下面的命令手动登录一次，核对并接受指纹，然后点「重试」。"
+		p.Reason = "运行 Persona 的电脑还没认过" + name + "的身份标识（指纹），或者指纹变了，所以自动登录被拦下了。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令手动登录一次，核对并接受指纹，然后点「重试」。"
 		p.Command = "ssh " + sshTarget(m)
 	case causeRefused:
 		p.Title, p.Edit = "连接被拒绝", true
@@ -155,8 +155,8 @@ func sshProblem(m *Machine, raw string) problem {
 		if mm := connectRE.FindStringSubmatch(line); mm != nil && isLoopback(mm[1]) {
 			// The machine is reached through a port forward on the hub, and nothing listens there.
 			p.Title, p.Edit = "端口转发没有运行", false
-			p.Reason = name + "要经过运行 Persona 的那台电脑上的端口转发（" + mm[1] + ":" + mm[2] + "）才能连上，但这个端口现在没有程序在听，转发（比如 ssh -L、autossh 或隧道服务）没在运行。"
-			p.Next = "在运行 Persona 的那台电脑上把到这台电脑的转发重新建起来，然后点「重试」；可以用下面的命令确认能不能连上。"
+			p.Reason = name + "要经过运行 Persona 的电脑上的端口转发（" + mm[1] + ":" + mm[2] + "）才能连上，但这个端口现在没有程序在听，转发（比如 ssh -L、autossh 或隧道服务）没在运行。"
+			p.Next = "在运行 Persona 的电脑上把到这台电脑的转发重新建起来，然后点「重试」；可以用下面的命令确认能不能连上。"
 			break
 		}
 		p.Reason = name + "拒绝了连接：它没打开远程登录（SSH），或者端口不对。"
@@ -170,12 +170,12 @@ func sshProblem(m *Machine, raw string) problem {
 		}
 	case causeDNS:
 		p.Title, p.Edit = "找不到这个电脑名", true
-		p.Reason = "运行 Persona 的那台电脑找不到" + name + "的地址 " + cmp.Or(m.Host, m.ID) + "。"
+		p.Reason = "运行 Persona 的电脑找不到" + name + "的地址 " + cmp.Or(m.Host, m.ID) + "。"
 		p.Next = "看看那台电脑上 ~/.ssh/config 里它的 HostName 对不对，或者在「修改这台电脑的设置」里改成能找到的地址，然后点「重试」；下面的命令会显示 ssh 实际用的地址。"
 		p.Command = "ssh -G " + cmp.Or(m.Host, m.ID) + " | grep -i '^hostname'"
 	case causeNetwork:
 		p.Title = "网络不通"
-		p.Reason = "运行 Persona 的那台电脑到" + name + "的网络不通。"
+		p.Reason = "运行 Persona 的电脑到" + name + "的网络不通。"
 		p.Next = "确认两台电脑在同一个网络或 VPN 里，然后点「重试」。"
 		p.Command = test
 	case causeSSHConfig:
@@ -184,8 +184,8 @@ func sshProblem(m *Machine, raw string) problem {
 			file = strings.TrimRight(mm[1], ".:")
 		}
 		p.Title = "远程登录的设置文件有问题"
-		p.Reason = "连不上" + name + "：运行 Persona 的那台电脑上的 SSH 设置文件 " + file + " 归属或权限不对，ssh 不肯读它，所以哪台电脑都连不上。"
-		p.Next = "在运行 Persona 的那台电脑上运行下面的命令改好它，然后点「重试」。"
+		p.Reason = "连不上" + name + "：运行 Persona 的电脑上的 SSH 设置文件 " + file + " 归属或权限不对，ssh 不肯读它，所以哪台电脑都连不上。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令改好它，然后点「重试」。"
 		p.Command = "sudo chown root:root " + file + " && sudo chmod 644 " + file
 	case causeBadHost:
 		p.Title, p.Edit, p.Retry = "电脑地址写错了", true, false
@@ -194,7 +194,7 @@ func sshProblem(m *Machine, raw string) problem {
 	default:
 		p.Title = "远程登录失败"
 		p.Reason = "远程登录" + name + "没有成功。"
-		p.Next = "在运行 Persona 的那台电脑上运行下面的命令看看具体原因（原始输出在「详情」里），修好后点「重试」。"
+		p.Next = "在运行 Persona 的电脑上运行下面的命令看看具体原因（原始输出在「详情」里），修好后点「重试」。"
 		p.Command = test
 	}
 	return p

@@ -560,14 +560,7 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 		}
 		if j.Kind != jobRefresh {
 			last = &j
-			retry := coldRetryText // the button this row offers to try again
-			if state != ColdReady {
-				retry = ""
-				if adv.retry != "" {
-					retry = adv.retry + " " + name
-				}
-			}
-			items = append(items, d.jobOutcome(j, retry)...)
+			items = append(items, d.jobOutcome(j, retryFor(j, m, state, adv))...)
 			if j.Raw != "" {
 				raw = strings.TrimSpace(raw + "\n上次操作：" + j.Raw)
 			}
@@ -620,21 +613,63 @@ func offloadButton(m *Machine, title string) wire.Component {
 		Action: &wire.Action{ID: "cold-offload", Values: map[string]string{"m": m.ID}, Confirm: sessionOffloadConfirm(m)}}
 }
 
-// jobOutcome is the line under a machine saying how its last job ended.
-// retry, when set, is the title of the button the row offers to try again: a failure's 「重试」
-// names that button, so the text never points at a button that is not there.
-func (d draw) jobOutcome(j coldJob, retry ...string) []wire.Component {
+// retryHint is how a failed job is tried again from the page: the title of a button that the
+// row really draws, or else a sentence saying where to do it.
+type retryHint struct{ button, how string }
+
+// retryFor names, for the failed job j on machine m, the button under its row that runs the same
+// work again; only buttons machineStateItems draws for m's state are named. A restore is retried
+// from its conversation's row, and a file offload from Persona's disk usage map.
+func retryFor(j coldJob, m *Machine, state string, adv coldAdvice) retryHint {
+	fallback := retryHint{}
+	if adv.retry != "" {
+		fallback.button = adv.retry + " " + machineLabel(m)
+	}
+	switch j.Kind {
+	case jobOffload:
+		if state == ColdReady {
+			return retryHint{button: coldRetryText}
+		}
+	case jobRestore:
+		return retryHint{how: "想再试一次：在下面找到这个对话，点「拿回来」。"}
+	case jobInstall:
+		if adv.copy.src != nil {
+			return retryHint{button: "从 " + machineLabel(adv.copy.src) + " 复制过来"}
+		}
+	case jobBrew:
+		if adv.brew {
+			verb := "安装"
+			if adv.upgrade {
+				verb = "升级"
+			}
+			return retryHint{button: "用 Homebrew " + verb + "配套小工具"}
+		}
+	case jobFileOffload, jobFileRestore:
+		return retryHint{how: "想再试一次：回到 Persona 的磁盘占用图，重新选中它们。"}
+	}
+	return fallback
+}
+
+// jobOutcome is the line under a machine saying how its last job ended. A failure's 「重试」 names
+// the button retry gives, so the text never points at a button that is not there (or at one
+// that does something else).
+func (d draw) jobOutcome(j coldJob, retry ...retryHint) []wire.Component {
 	text := j.Note
 	if j.Err != "" {
 		text = "没有成功：" + j.Err
 		if len(retry) > 0 {
-			if retry[0] == "" {
+			r := retry[0]
+			if r.button == "" {
 				text = strings.ReplaceAll(text, "修好后点「重试」", "修好后再试")
+				text = strings.ReplaceAll(text, "然后点「重试」", "然后再试")
 				text = strings.ReplaceAll(text, "点「重试」", "再试一次")
+				if r.how != "" {
+					text = strings.TrimRight(text, "。；") + "。" + r.how
+				}
 			} else {
-				text = strings.ReplaceAll(text, "「重试」", "「"+retry[0]+"」")
-				if !strings.Contains(text, retry[0]) {
-					text = strings.TrimRight(text, "。；") + "。处理好后点「" + retry[0] + "」。"
+				text = strings.ReplaceAll(text, "「重试」", "「"+r.button+"」")
+				if !strings.Contains(text, r.button) {
+					text = strings.TrimRight(text, "。；") + "。处理好后点「" + r.button + "」。"
 				}
 			}
 		}

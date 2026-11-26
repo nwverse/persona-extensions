@@ -335,7 +335,7 @@ func (d draw) home(p page) *wire.View {
 // homeIntro is the first thing the 所有电脑 tab says: what the page is for, that looking deletes
 // nothing, and where the AI conversations are.
 func homeIntro(statuses []MachineStatus) wire.Section {
-	text := "看看每台电脑的硬盘用了多少，把能自动重新生成的缓存删掉腾地方。「检查」只读取大小，不会删除任何东西；真要删的时候，会先告诉你删什么、再让你确认。一周没动的 AI 对话可以在「AI 对话」页搬到网盘。"
+	text := "看看每台电脑的硬盘用了多少，把能重新生成的缓存和过期的旧日志删掉腾地方。「检查」只读取大小，不会删除任何东西；真要删的时候，会先告诉你删什么、再让你确认。一周没动的 AI 对话可以在「AI 对话」页搬到网盘。"
 	unchecked := 0
 	for _, ms := range statuses {
 		if ms.Level == HealthUnscanned {
@@ -393,7 +393,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 	alertText, alertTone := fleetAlertSummary(statuses)
 
 	topStats := []wire.Stat{
-		{Label: "电脑", Value: fmt.Sprintf("%d 台", len(statuses)), Detail: "运行 Persona 的和远程的"},
+		{Label: "电脑", Value: fmt.Sprintf("%d 台", len(statuses)), Detail: "运行 Persona 的电脑和远程电脑"},
 		{Label: "硬盘用了多少", Value: alertText, Detail: "用到 80% 提醒 · 90% 告急", Tone: alertTone},
 		{Label: "可以腾出", Value: FormatBytes(totalReclaim), Detail: "其中放心删 " + FormatBytes(totalSafe), Tone: toneIf(totalReclaim > 0, wire.TonePositive)},
 		{Label: "已经腾出", Value: FormatBytes(totalFreed), Detail: fmt.Sprintf("共 %d 次清理", len(d.st.History))},
@@ -440,9 +440,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 		compactTail := len(statuses) > 28 && idx >= chartLimit
 
 		var subParts []string
-		if m.IsLocal {
-			subParts = append(subParts, "就是运行 Persona 的这台")
-		} else {
+		if !m.IsLocal {
 			subParts = append(subParts, "远程电脑 "+m.Host)
 		}
 		if m.Platform != "" {
@@ -497,7 +495,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 					Action: &wire.Action{
 						ID:      "clean-safe",
 						Values:  map[string]string{"m": m.ID},
-						Confirm: safeCleanConfirm(m, ms.SafeBytes),
+						Confirm: safeCleanConfirm(m, ms.SafeBytes, scan),
 					},
 				})
 			} else {
@@ -602,7 +600,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 						Action: &wire.Action{
 							ID:      "clean-safe",
 							Values:  map[string]string{"m": m.ID},
-							Confirm: safeCleanConfirm(m, ms.SafeBytes),
+							Confirm: safeCleanConfirm(m, ms.SafeBytes, scan),
 						},
 					})
 				}
@@ -880,12 +878,12 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 
 	summarySec := wire.Section{
 		Title:  "先看看会删什么（不会真删）",
-		Footer: "「放心删」是能自动重新生成的编译和下载缓存，删了不丢东西（不包括 AI 对话）；「建议先看」是比较大的东西（比如自动化测试用的浏览器），删了以后下次用到时会重新下载。",
+		Footer: "「放心删」是能重新生成或重新下载的编译和下载缓存，以及 7 天以前的系统日志、压缩归档的旧日志和过期的临时文件（日志和临时文件删了就没有了，最近的日志会留着）；不包括 AI 对话。「建议先看」是比较大的东西（比如自动化测试用的浏览器），删了以后下次用到时会重新下载。",
 		Items:  append([]wire.Component{head}, d.machineJobItems(m)...),
 	}
 	summarySec.Items = append(summarySec.Items, d.statComponents(boundedKey("plan-stats-", m.ID), []wire.Stat{
 		{Label: "还剩", Value: FormatBytes(scan.Mount.AvailableBytes), Detail: "系统盘 " + scan.Mount.MountPoint},
-		{Label: "放心删能腾出", Value: FormatBytes(scan.SafeBytes), Tone: wire.TonePositive, Detail: "能自动重新生成"},
+		{Label: "放心删能腾出", Value: FormatBytes(scan.SafeBytes), Tone: wire.TonePositive, Detail: "缓存和过期的旧日志"},
 		{Label: "删完还剩", Value: FormatBytes(afterSafeAvail), Tone: wire.TonePositive, Detail: fmt.Sprintf("%s → %s", FormatBytes(scan.Mount.AvailableBytes), FormatBytes(afterSafeAvail))},
 		{Label: "建议先看", Value: FormatBytes(scan.ReviewBytes), Detail: "默认不删", Tone: toneIf(scan.ReviewBytes > 0, wire.ToneCaution)},
 	})...)
@@ -905,7 +903,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 			Action: &wire.Action{
 				ID:      "clean-safe",
 				Values:  map[string]string{"m": m.ID},
-				Confirm: fmt.Sprintf("确定在「%s」上删掉下面列出的所有「放心删」的项目吗？剩余空间大约从 %s 变成 %s（腾出 +%s）。「建议先看」的和 AI 对话都不删。", machineLabel(m), FormatBytes(scan.Mount.AvailableBytes), FormatBytes(afterSafeAvail), FormatBytes(scan.SafeBytes)),
+				Confirm: fmt.Sprintf("确定在「%s」上删掉下面列出的所有「放心删」的项目吗？剩余空间大约从 %s 变成 %s（腾出 +%s）。%s「建议先看」的和 AI 对话都不删。", machineLabel(m), FormatBytes(scan.Mount.AvailableBytes), FormatBytes(afterSafeAvail), FormatBytes(scan.SafeBytes), safeLogsNote(scan)),
 			},
 		})
 	}
@@ -1097,7 +1095,7 @@ func categoryNames(ids []string) string {
 func (d draw) machineForm(p page, m *Machine) *wire.View {
 	title := "添加一台电脑"
 	hostVal, nameVal, userVal, portVal, idFileVal := "", "", "", "", ""
-	intro := "Disklessly 通过远程登录（SSH）连到别的电脑，只读取硬盘用了多少；要删东西之前都会先问你。运行 Persona 的那台电脑需要能用 ssh 不输密码直接登录它（一般已经写在 ~/.ssh/config 里）。"
+	intro := "Disklessly 通过远程登录（SSH）连到别的电脑，只读取硬盘用了多少；要删东西之前都会先问你。运行 Persona 的电脑需要能用 ssh 不输密码直接登录它（一般已经写在 ~/.ssh/config 里）。"
 	if m != nil {
 		title = "修改电脑设置 · " + machineLabel(m)
 		intro = "改的只是 Disklessly 怎么称呼、怎么连这台电脑，不会动这台电脑上的任何文件。"
@@ -1588,9 +1586,31 @@ func sessionOffloadConfirm(m *Machine) string {
 	return fmt.Sprintf("把「%s」上超过 7 天没动的 AI 对话（Claude Code、Codex 等所有 AI 助手的）搬到网盘？会先上传到网盘，再从网盘读回来核对，核对无误才删掉电脑上的那份。正在运行的程序、herdr 或 Persona 还在用的对话不会动；网盘连不上、或者确认不了哪些还在用时，一个都不删。", machineLabel(m))
 }
 
-// safeCleanConfirm says what 删掉放心删的缓存 deletes on m, and what it never touches.
-func safeCleanConfirm(m *Machine, bytes uint64) string {
-	return fmt.Sprintf("在「%s」上删掉所有「放心删」的缓存（大约腾出 %s）？这些都是能自动重新生成的编译和下载缓存。正在运行的容器、正在开发的项目和 AI 对话都不会碰；一周没动的 AI 对话要在「%s」页另外搬到网盘。", machineLabel(m), FormatBytes(bytes), sessionsTitle)
+// safeCleanConfirm says what 删掉放心删的缓存 deletes on m: the rebuildable caches and, when
+// the scan found them, old logs and stale temporary files, which do not come back; and what it
+// never touches.
+func safeCleanConfirm(m *Machine, bytes uint64, scan *Scan) string {
+	return fmt.Sprintf("在「%s」上删掉所有「放心删」的东西（大约腾出 %s）？包括能重新生成或重新下载的编译和下载缓存（Go、Node/Python、Docker、Rust/Xcode 等）。%s正在运行的容器、正在开发的项目和 AI 对话都不会碰；一周没动的 AI 对话要在「%s」页另外搬到网盘。", machineLabel(m), FormatBytes(bytes), safeLogsNote(scan), sessionsTitle)
+}
+
+// safeLogsNote names the old logs and temporary files among scan's 放心删 items: unlike the
+// caches they are gone once deleted. "" when there are none.
+func safeLogsNote(scan *Scan) string {
+	if scan == nil {
+		return ""
+	}
+	var n int
+	var bytes uint64
+	for _, it := range scan.Items {
+		if it.Category == CatTmpLogs && it.Safety == SafetySafe && !it.InUse {
+			n++
+			bytes += it.Bytes
+		}
+	}
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("还会删掉 %d 项旧日志和临时文件（%s：7 天以前的系统日志、压缩归档的旧日志、放了 7 天以上的临时文件），这些删了就找不回来，最近的日志会留着。", n, FormatBytes(bytes))
 }
 
 func categoryConfirm(m *Machine, cid string, n int, bytes uint64) string {
@@ -1642,7 +1662,7 @@ func itemSafetyTag(it ScanItem) string {
 func sourceLabel(src string) string {
 	switch src {
 	case "local":
-		return "就是运行 Persona 的这台"
+		return localMachineName
 	case "persona":
 		return "Persona 里登记的"
 	case "ssh-config":

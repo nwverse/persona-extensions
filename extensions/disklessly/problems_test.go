@@ -107,7 +107,7 @@ func TestSSHProblems(t *testing.T) {
 	}
 	// A failed local command is not an SSH problem.
 	p := sshProblem(&Machine{ID: "local", Name: "local (devbox)", IsLocal: true}, "本地探测命令执行失败：exit status 2")
-	if !strings.Contains(p.Reason, "运行 Persona 的这台电脑") || strings.Contains(p.Reason+p.Next, "SSH") || p.Command != "" || !strings.Contains(p.Raw, "exit status 2") {
+	if !strings.Contains(p.Reason, localMachineName) || strings.Contains(p.Reason+p.Next, "SSH") || p.Command != "" || !strings.Contains(p.Raw, "exit status 2") {
 		t.Fatalf("local problem: %+v", p)
 	}
 }

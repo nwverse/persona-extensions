@@ -1304,7 +1304,7 @@ func (a *app) startOffloadJob(p offloadParams, loc string, t *offloadTarget, rou
 	}
 	runner, streamer := a.run(), a.stream()
 	label := map[string]string{"offload": "正在把选中的内容搬到网盘", "restore": "正在从网盘拿回选中的内容"}[action]
-	kind := map[string]string{"offload": jobOffload, "restore": jobRestore}[action]
+	kind := map[string]string{"offload": jobFileOffload, "restore": jobFileRestore}[action]
 	a.offloadMu().Lock()
 	if a.offloadData.jobs == nil {
 		a.offloadData.jobs = map[string]*offloadJob{}

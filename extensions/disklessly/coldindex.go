@@ -588,7 +588,10 @@ func SearchCold(st *State, query, machine string, limit int, now time.Time) []Co
 			}
 			if len(tokens) > 0 {
 				hay := strings.ToLower(strings.Join([]string{e.Title, e.FirstPrompt, strings.Join(e.Keywords, " "),
-					e.Cwd, e.Project, e.Path, e.SessionID, e.Tool, toolLabel(e.Tool), name, m.ID}, "\n"))
+					e.Cwd, e.Project, e.Path, e.SessionID, e.Tool, toolLabel(e.Tool), name, m.ID,
+					// The stored name and address too: "local (<hostname>)" is shown as 运行 Persona 的电脑,
+					// and searching for the host name still finds that computer's sessions.
+					m.Name, m.Host, m.Hostname}, "\n"))
 				if !allIn(hay, tokens) {
 					continue
 				}

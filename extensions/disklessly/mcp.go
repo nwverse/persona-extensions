@@ -71,11 +71,11 @@ var tools = []tool{
 		required: []string{"query"},
 		props: map[string]any{
 			"query":   str("搜索词（空格分隔，全部命中；不区分大小写，中文按子串匹配）：标题、首条消息、项目、工作目录、关键词、会话 ID、工具或机器名"),
-			"machine": str("只搜索这台机器（ID 或 SSH Host 别名）；不填搜索全部机器"),
+			"machine": str("只搜索这台机器（ID、SSH Host 别名，或结果里的 machine_name，例如「运行 Persona 的电脑」）；不填搜索全部机器"),
 			"limit":   map[string]any{"type": "integer", "minimum": 1, "maximum": 200, "description": "返回条数，默认 20"},
 			"deep":    map[string]any{"type": "boolean", "description": "若为 true，还在机器上运行 disklessly sessions search 全文搜索会话摘要（较慢），结果按 ID 合并"},
 		},
-		description: "在已上云的 Coding Agent 冷会话（Claude Code / Codex）里查找对话：按本地轻量索引搜索，返回机器、工具、项目、日期、首条消息、位置（在云端 / 未知 / 云端缺失 / 本地）与恢复后的继续命令。位置「未知」不代表丢失。",
+		description: "在已上云的 Coding Agent 冷会话（Claude Code / Codex）里查找对话：按本地轻量索引搜索，返回机器（machine_id 与 machine_name；machine_name 可原样传回 machine，运行 Persona 的电脑也接受主机名）、工具、项目、日期、首条消息、位置（在网盘里 / 暂时不确定 / 网盘里找不到 / 还在电脑上）与恢复后的继续命令。位置「暂时不确定」只表示网盘连不上或最近 24 小时没检查，不代表丢失；「网盘里找不到」才是网盘里确实缺了。",
 	},
 	{
 		name:     "disklessly_sessions_status",

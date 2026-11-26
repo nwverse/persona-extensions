@@ -454,7 +454,9 @@ func (st *State) machine(idOrHost string) *Machine {
 			return m
 		}
 	}
-	if isSelfHostAlias(idOrHost) {
+	// The pages and the MCP tools call the hub's own computer 运行 Persona 的电脑 (machineLabel):
+	// an agent sending that label back as machine means this computer.
+	if isSelfHostAlias(idOrHost) || idOrHost == localMachineName {
 		for _, m := range st.Machines {
 			if m.IsLocal {
 				return m
@@ -587,7 +589,7 @@ func (st *State) deleteMachine(idOrHost string) error {
 		return fmt.Errorf("找不到电脑 %q", idOrHost)
 	}
 	if m.IsLocal || m.ID == "local" {
-		return errors.New("运行 Persona 的这台电脑不能去掉")
+		return errors.New("运行 Persona 的电脑不能去掉")
 	}
 	st.rememberDeleted(m)
 	delete(st.Scans, m.ID)

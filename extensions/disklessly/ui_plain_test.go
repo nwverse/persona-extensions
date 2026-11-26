@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -379,5 +380,196 @@ func TestPagesUsePlainWords(t *testing.T) {
 	_, err := a.render(ctx, &ext.UIRequest{UIParams: wire.UIParams{State: "%%%"}})
 	if err == nil || !strings.Contains(err.Error(), "重新打开") {
 		t.Fatalf("bad state: %v", err)
+	}
+}
+
+// setJob puts a finished job of kind with error text errText on machine id.
+func setJob(a *app, id, kind, errText string) {
+	a.jobs.mu.Lock()
+	defer a.jobs.mu.Unlock()
+	if a.jobs.jobs == nil {
+		a.jobs.jobs = map[string]*coldJob{}
+		a.jobs.sem = make(chan struct{}, coldParallel)
+	}
+	a.jobs.jobs[id] = &coldJob{Kind: kind, Label: "x", Started: t0, Finished: t0, Err: errText}
+}
+
+// quoted returns the 「…」 names in s.
+func quoted(s string) []string {
+	var out []string
+	for _, m := range regexp.MustCompile(`「([^「」]+)」`).FindAllStringSubmatch(s, -1) {
+		out = append(out, m[1])
+	}
+	return out
+}
+
+// A failed job's text names only a button its row really draws, and never the upload unless the
+// upload failed: a restore, install, Homebrew or file job that failed does not point at
+// 「重试：搬到网盘」, which deletes local copies.
+func TestFailedJobRetryNamesItsOwnButton(t *testing.T) {
+	f := newUploadFleet(t)
+	const generic = "网盘连不上，修好后点「重试」。"
+	cases := []struct {
+		machine, kind string
+		wantRetry     string // the button the text must name; "" none
+		wantHow       string // a sentence the text must carry instead
+	}{
+		{"local", jobOffload, coldRetryText, ""},
+		{"local", jobRestore, "", "点「拿回来」"},
+		{"local", jobInstall, "重新检查 " + localMachineName, ""},
+		{"local", jobBrew, "重新检查 " + localMachineName, ""},
+		{"local", jobFileOffload, "", "磁盘占用图"},
+		{"local", jobFileRestore, "", "磁盘占用图"},
+		{"build-box", jobOffload, "重新检查 build-box", ""},
+		{"build-box", jobRestore, "", "点「拿回来」"},
+		{"build-box", jobInstall, "重新检查 build-box", ""},
+		{"build-box", jobBrew, "重新检查 build-box", ""},
+		{"nas-box", jobFileOffload, "", "磁盘占用图"},
+	}
+	for _, c := range cases {
+		t.Run(c.machine+"/"+c.kind, func(t *testing.T) {
+			setJob(f.a, c.machine, c.kind, generic)
+			items := itemsOf(f.view(t, c.machine), c.machine)
+			var outcome string
+			buttons := map[string]bool{}
+			for _, it := range items {
+				if it.Type == wire.ComponentText && strings.Contains(it.Text, "没有成功") {
+					outcome = it.Text
+				}
+				if it.Type == wire.ComponentButton {
+					buttons[it.Title] = true
+				}
+			}
+			if outcome == "" {
+				t.Fatalf("no outcome line: %+v", items)
+			}
+			if c.kind != jobOffload && (strings.Contains(outcome, coldRetryText) || buttons[coldRetryText]) {
+				t.Fatalf("a failed %s points at the upload: %q", c.kind, outcome)
+			}
+			if strings.Contains(outcome, "「重试」") {
+				t.Fatalf("names a 重试 button the row does not have: %q", outcome)
+			}
+			if c.wantRetry != "" && (!strings.Contains(outcome, "「"+c.wantRetry+"」") || !buttons[c.wantRetry]) {
+				t.Fatalf("want retry %q (drawn %v): %q", c.wantRetry, buttons, outcome)
+			}
+			if c.wantHow != "" && !strings.Contains(outcome, c.wantHow) {
+				t.Fatalf("want %q: %q", c.wantHow, outcome)
+			}
+			for _, q := range quoted(outcome) {
+				if strings.HasPrefix(q, "重试") || strings.HasPrefix(q, "重新检查") || strings.HasPrefix(q, "用 Homebrew") || strings.HasPrefix(q, "从 ") {
+					if !buttons[q] {
+						t.Fatalf("names button %q that the row does not draw (%v): %q", q, buttons, outcome)
+					}
+				}
+			}
+		})
+	}
+}
+
+// 删掉放心删的缓存 says that old logs and temporary files are deleted too and do not come back.
+func TestSafeCleanConfirmNamesLogs(t *testing.T) {
+	a := newTestApp(t)
+	ctx := context.Background()
+	if _, err := a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{Action: "scan-all"}}); err != nil {
+		t.Fatal(err)
+	}
+	a.waitJobs()
+	var confirms []string
+	for _, tab := range []string{tabFleet, tabPlan} {
+		res, err := a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{State: ext.EncodeState(page{Machine: "local"}), Action: "tab", Values: map[string]string{"tab": tab}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, s := range res.View.Sections {
+			for _, c := range s.Items {
+				if c.Action != nil && c.Action.ID == "clean-safe" {
+					confirms = append(confirms, c.Action.Confirm)
+				}
+			}
+		}
+	}
+	if len(confirms) != 2 {
+		t.Fatalf("clean-safe buttons: %d", len(confirms))
+	}
+	for _, c := range confirms {
+		for _, w := range []string{"7 天以前的系统日志", "压缩归档的旧日志", "临时文件", "找不回来", "AI 对话都不"} {
+			if !strings.Contains(c, w) {
+				t.Fatalf("confirm lacks %q: %s", w, c)
+			}
+		}
+	}
+	if got := safeLogsNote(&Scan{Items: []ScanItem{{Category: CatGoCache, Safety: SafetySafe, Bytes: 1}}}); got != "" {
+		t.Fatalf("no logs, yet: %q", got)
+	}
+}
+
+// The MCP contract: machine_name 运行 Persona 的电脑 is accepted back as machine, the stored host
+// name still finds that computer's sessions, and the tool description lists the location values
+// the results carry.
+func TestMCPAcceptsLocalLabelAndHostName(t *testing.T) {
+	st, m := coldState(t)
+	m.Name = "local (devbox-7)"
+	if got := st.machine(localMachineName); got == nil || got.ID != m.ID {
+		t.Fatalf("machine(%q) = %+v", localMachineName, got)
+	}
+	if hits := SearchCold(st, "checkout", localMachineName, 0, t0); len(hits) != 1 || hits[0].MachineName != localMachineName {
+		t.Fatalf("search by label: %+v", hits)
+	}
+	if hits := SearchCold(st, "devbox-7 checkout", "", 0, t0); len(hits) != 1 {
+		t.Fatalf("search by host name: %d hits", len(hits))
+	}
+
+	s := newStore(t.TempDir())
+	s.homeDir = ""
+	s.now = func() time.Time { return t0 }
+	srv := &mcpServer{store: s, runner: coldRunner(nil)}
+	ctx := context.Background()
+	if _, err := srv.call(ctx, "disklessly_sessions_status", []byte(`{"refresh":true}`)); err != nil {
+		t.Fatal(err)
+	}
+	out, err := srv.call(ctx, "disklessly_sessions_search", []byte(`{"query":"checkout","machine":"`+localMachineName+`"}`))
+	if err != nil {
+		t.Fatalf("machine_name sent back: %v", err)
+	}
+	if txt := fmt.Sprint(out); !strings.Contains(txt, "claude --resume "+uuidClaude) || !strings.Contains(txt, localMachineName) {
+		t.Fatalf("search: %s", txt)
+	}
+
+	var desc string
+	for _, tl := range tools {
+		if tl.name == "disklessly_sessions_search" {
+			desc = tl.description
+		}
+	}
+	for _, w := range []string{LocCloud, LocUnknown, LocMissing, LocLocal, "不代表丢失"} {
+		if !strings.Contains(desc, w) {
+			t.Fatalf("sessions_search description lacks %q: %s", w, desc)
+		}
+	}
+	for _, old := range []string{"在云端", "云端缺失", "位置「未知」"} {
+		if strings.Contains(desc, old) {
+			t.Fatalf("sessions_search description still lists %q", old)
+		}
+	}
+}
+
+// One spelling for the hub's own computer across the code's texts.
+func TestOneNameForThisComputer(t *testing.T) {
+	re := regexp.MustCompile(`运行 Persona 的(那台|这台)电脑|运行 Persona 的这台|本机节点`)
+	for _, f := range []string{"ui.go", "ui_sessions.go", "ui_charts.go", "coldjobs.go", "coldstate.go", "problems.go", "mainjobs.go", "model.go", "offload_i18n.go", "scanner.go", "cleaner.go", "coldindex.go"} {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if m := re.FindAllString(string(b), -1); len(m) > 0 {
+			t.Errorf("%s: %q", f, m)
+		}
+	}
+	for _, loc := range []string{locEN, locJA} {
+		for k, v := range offloadText[loc] {
+			if strings.Contains(strings.ToLower(v), "cloud") || strings.Contains(v, "クラウド") {
+				t.Errorf("%s %s mixes cloud with network drive: %q", loc, k, v)
+			}
+		}
 	}
 }

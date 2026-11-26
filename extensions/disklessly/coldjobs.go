@@ -28,10 +28,14 @@ const (
 	jobRefresh = "refresh"
 	jobRestore = "restore"
 	jobOffload = "offload"
-	jobInstall = "install"
-	jobBrew    = "brew"
-	jobScan    = "scan"
-	jobClean   = "clean"
+	// The disk_offload point's runs on files, folders and apps (offload.go): not cold sessions,
+	// so a failure there never offers the cold-session upload as its retry.
+	jobFileOffload = "file-offload"
+	jobFileRestore = "file-restore"
+	jobInstall     = "install"
+	jobBrew        = "brew"
+	jobScan        = "scan"
+	jobClean       = "clean"
 )
 
 // brewTimeout bounds a Homebrew install: tap, download and verify.
