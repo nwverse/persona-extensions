@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -64,8 +65,12 @@ func locationTone(loc string) string {
 	return wire.ToneCaution
 }
 
-// coldSections draws the cold backup status, actions and results for machine m (nil: all machines).
-func (d draw) coldSections(m *Machine, query string, deep *deepResult) []wire.Section {
+// coldSections draws the cold backup status, actions and results for machine m (nil: all machines),
+// keeping the total component count within maxItems (defaulting to wire.ItemsMost).
+func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems int) []wire.Section {
+	if maxItems <= 0 {
+		maxItems = wire.ItemsMost
+	}
 	query = clipQuery(query)
 	machineArg := ""
 	if m != nil {
@@ -172,11 +177,6 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult) []wire.Se
 		})
 	}
 
-	machineSec := wire.Section{Key: "cold-machines", Title: "各机器状态"}
-	for _, r := range rows {
-		machineSec.Items = append(machineSec.Items, d.machineStateItems(r.m, r.cat, r.state)...)
-	}
-
 	var hits []ColdHit
 	title := "最近归档的会话"
 	if deep != nil {
@@ -196,8 +196,14 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult) []wire.Se
 		}
 	}
 	shown := hits[:min(len(hits), coldShown)]
-	for _, h := range shown {
-		results.Items = append(results.Items, d.coldRow(h))
+	seenColdKeys := map[string]bool{}
+	for i, h := range shown {
+		row := d.coldRow(h)
+		for n := i; seenColdKeys[row.Key]; n++ {
+			row.Key = boundedKey(fmt.Sprintf("cold-%d-", n), h.MachineID+"-"+h.ID)
+		}
+		seenColdKeys[row.Key] = true
+		results.Items = append(results.Items, row)
 	}
 	var notes []string
 	if len(hits) > len(shown) {
@@ -213,6 +219,39 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult) []wire.Se
 			detail = "本地索引没有匹配的会话；可试试「" + coldDeepText + "」在机器上搜索完整摘要。"
 		}
 		results.Items = append(results.Items, d.emptyComponents("chat", "没有会话", detail, nil)...)
+	}
+
+	if allowResults := max(0, maxItems-len(status.Items)); len(results.Items) > allowResults {
+		results.Items = results.Items[:allowResults]
+	}
+	machineSec := wire.Section{Key: "cold-machines", Title: "各机器状态"}
+	machineBudget := max(0, maxItems-len(status.Items)-len(results.Items))
+	compactCount := 0
+	for i, r := range rows {
+		rem := len(rows) - i - 1
+		if machineBudget <= 0 || len(machineSec.Items) >= machineBudget {
+			break
+		}
+		if len(rows) > 1 && len(machineSec.Items) == machineBudget-1 && rem > 0 {
+			machineSec.Items = append(machineSec.Items, wire.Component{
+				Type:  wire.ComponentText,
+				Style: wire.TextStyleSecondary,
+				Text:  fmt.Sprintf("还有 %d 台机器未展开，请使用顶部「机器」筛选查看。", len(rows)-i),
+			})
+			break
+		}
+		full := d.machineStateItems(r.m, r.cat, r.state)
+		if len(rows) == 1 || len(machineSec.Items)+len(full)+rem <= machineBudget {
+			if len(machineSec.Items)+len(full) <= machineBudget {
+				machineSec.Items = append(machineSec.Items, full...)
+				continue
+			}
+		}
+		machineSec.Items = append(machineSec.Items, d.machineStateCompactRow(r.m, r.cat, r.state))
+		compactCount++
+	}
+	if compactCount > 0 {
+		machineSec.Footer = fmt.Sprintf("后 %d 台机器已折叠为摘要行；点任意机器或在顶部筛选该机器可查看完整命令与操作。", compactCount)
 	}
 	if len(machineSec.Items) == 0 {
 		return []wire.Section{status, results}
@@ -367,7 +406,7 @@ func (d draw) detailsItems(key, raw string) []wire.Component {
 		return []wire.Component{{Type: wire.ComponentButton, Title: "详情", Action: &wire.Action{ID: "details", Values: map[string]string{"k": key}}}}
 	}
 	return []wire.Component{
-		{Type: wire.ComponentCode, Key: "raw-" + key, Text: clipRunes(raw, 4000)},
+		{Type: wire.ComponentCode, Key: boundedKey("raw-", key), Text: clipRunes(raw, 4000)},
 		{Type: wire.ComponentButton, Title: "收起详情", Action: &wire.Action{ID: "details", Values: map[string]string{"k": key}}},
 	}
 }
@@ -377,18 +416,17 @@ func commandItem(key, command string) []wire.Component {
 	if command == "" {
 		return nil
 	}
-	return []wire.Component{{Type: wire.ComponentCode, Key: "cmd-" + key, Language: "sh", Text: command}}
+	return []wire.Component{{Type: wire.ComponentCode, Key: boundedKey("cmd-", key), Language: "sh", Text: command}}
 }
 
-// machineStateItems draws one machine's row (name, state, cause and next step) and the actions
-// and command that fix it; raw output stays behind 详情.
-func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wire.Component {
+// machineStateRow builds the header row and advice for one machine.
+func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.Component, coldAdvice) {
 	name := machineLabel(m)
 	row := wire.Component{
 		Type:  wire.ComponentRow,
-		Key:   "mach-" + m.ID,
+		Key:   boundedKey("mach-", m.ID),
 		Icon:  "gauge",
-		Title: name,
+		Title: clip(cmp.Or(strings.TrimSpace(name), strings.TrimSpace(m.ID), "未命名机器"), 200),
 		Badge: &wire.Badge{Text: coldStateLabel(state), Tone: coldStateTone(state)},
 	}
 	var sub []string
@@ -403,7 +441,7 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 	} else if cat != nil && !cat.RefreshedAt.IsZero() {
 		sub = append(sub, d.when(cat.RefreshedAt)+"检查")
 	}
-	row.Subtitle = strings.Join(sub, " · ")
+	row.Subtitle = clip(strings.Join(sub, " · "), 400)
 
 	adv := coldProblem(d.st, m, cat, state)
 	if state == ColdReady {
@@ -430,6 +468,32 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 		row.Detail = adv.text()
 	}
 	row.Detail = clip(row.Detail, 400)
+	return row, adv
+}
+
+// machineStateCompactRow draws one machine as a single tappable summary row that switches the
+// machine filter to m so its full commands and actions remain reachable within wire.ItemsMost.
+func (d draw) machineStateCompactRow(m *Machine, cat *ColdCatalog, state string) wire.Component {
+	row, _ := d.machineStateRow(m, cat, state)
+	if j, ok := d.jobs[m.ID]; ok && j.running() {
+		row.Badge = &wire.Badge{Text: "进行中", Tone: wire.ToneNeutral}
+		row.Detail = clip(fmt.Sprintf("%s…（%s开始）", j.Label, d.when(j.Started)), 400)
+	}
+	// Encode m.ID in Action.ID when it fits within 128 runes so UIVersion 1-3 clients
+	// (which do not send Action.Values) can also select the folded machine; keep Values for UIv4+ and >120-rune IDs.
+	actionID := "machine"
+	if utf8.RuneCountInString("machine:"+m.ID) <= 128 {
+		actionID = "machine:" + m.ID
+	}
+	row.Action = &wire.Action{ID: actionID, Values: map[string]string{"machine": m.ID}}
+	return row
+}
+
+// machineStateItems draws one machine's row (name, state, cause and next step) and the actions
+// and command that fix it; raw output stays behind 详情.
+func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wire.Component {
+	name := machineLabel(m)
+	row, adv := d.machineStateRow(m, cat, state)
 
 	raw := adv.Raw
 	items := []wire.Component{row}
@@ -521,10 +585,10 @@ func (d draw) coldRow(h ColdHit) wire.Component {
 	}
 	row := wire.Component{
 		Type:     wire.ComponentRow,
-		Key:      "cold-" + h.MachineID + "-" + h.ID,
+		Key:      boundedKey("cold-", h.MachineID+"-"+h.ID),
 		Icon:     "chat",
-		Title:    clip(cmp.Or(h.Title, h.FirstPrompt, h.SessionID, h.ID), 120),
-		Subtitle: strings.Join(sub, " · "),
+		Title:    clip(cmp.Or(strings.TrimSpace(h.Title), strings.TrimSpace(h.FirstPrompt), strings.TrimSpace(h.SessionID), strings.TrimSpace(h.ID), "未命名会话"), 120),
+		Subtitle: clip(strings.Join(sub, " · "), 400),
 		Detail:   clip(cmp.Or(h.Preview, h.FirstPrompt), 240),
 		Badge:    &wire.Badge{Text: h.Location, Tone: locationTone(h.Location)},
 	}
@@ -638,15 +702,31 @@ func (d draw) sessionsPage(p sessPage, deep *deepResult) *wire.View {
 			m, p.Machine = nil, ""
 		}
 	}
+	const maxFilterChoices = 100
 	choices := []wire.Choice{{Value: allMachines, Title: "全部机器"}}
+	selectedIncluded := m == nil
 	for _, mm := range d.st.Machines {
-		if mm.Enabled {
-			choices = append(choices, wire.Choice{Value: mm.ID, Title: clip(machineLabel(mm), 28)})
+		if !mm.Enabled {
+			continue
 		}
+		if len(choices) >= maxFilterChoices {
+			break
+		}
+		choices = append(choices, wire.Choice{Value: mm.ID, Title: clip(machineLabel(mm), 28)})
+		if m != nil && mm.ID == m.ID {
+			selectedIncluded = true
+		}
+	}
+	if !selectedIncluded && m != nil && len(choices) > 1 {
+		choices[len(choices)-1] = wire.Choice{Value: m.ID, Title: clip(machineLabel(m), 28)}
 	}
 	value := allMachines
 	if m != nil {
 		value = m.ID
+	}
+	var filter *wire.Filter
+	if len(choices) >= 2 {
+		filter = &wire.Filter{Name: "machine", Title: "机器", Choices: choices, Value: value, Action: wire.Action{ID: "machine"}}
 	}
 	var lead []wire.Section
 	if d.v4() {
@@ -661,8 +741,8 @@ func (d draw) sessionsPage(p sessPage, deep *deepResult) *wire.View {
 		State:        ext.EncodeState(p),
 		RefreshAfter: d.refreshAfter(),
 		Search:       &wire.Search{Placeholder: coldSearchHint, Value: clipQuery(p.Query), Action: wire.Action{ID: "search"}},
-		Filter:       &wire.Filter{Name: "machine", Title: "机器", Choices: choices, Value: value, Action: wire.Action{ID: "machine"}},
-		Sections:     append(lead, d.coldSections(m, p.Query, deep)...),
+		Filter:       filter,
+		Sections:     append(lead, d.coldSections(m, p.Query, deep, wire.ItemsMost-sectionItemCount(lead))...),
 	})
 }
 
@@ -673,14 +753,16 @@ func (a *app) actionSessions(ctx context.Context, r *ext.UIRequest) (*wire.Actio
 	}
 	res := &wire.ActionResult{}
 	var deep *deepResult
-	switch r.Action {
-	case "machine":
+	switch {
+	case r.Action == "machine":
 		p.Machine = r.Values["machine"]
-	case "search":
+	case strings.HasPrefix(r.Action, "machine:"):
+		p.Machine = cmp.Or(r.Values["machine"], strings.TrimPrefix(r.Action, "machine:"))
+	case r.Action == "search":
 		p.Query = clipQuery(r.Values["q"])
-	case "details":
+	case r.Action == "details":
 		p.Open = toggle(p.Open, r.Values["k"])
-	case "cold-deep":
+	case r.Action == "cold-deep":
 		p.Query = clipQuery(cmp.Or(strings.TrimSpace(r.Values["q"]), p.Query))
 		var err error
 		if deep, err = a.coldDeep(ctx, cmp.Or(r.Values["m"], p.Machine), p.Query); err != nil {

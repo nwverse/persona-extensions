@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"fmt"
+	"hash/fnv"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,8 @@ const (
 	// inlineChartMachines caps full per-machine chart+table blocks in fleetTab so a 64-machine fleet stays well under
 	// the View schema's 300-component limit while keeping every machine's row, watermark bar and actions.
 	inlineChartMachines = 12
+	// maxShownScanItems caps tappable ScanItem rows in itemsTab to match the 100-row table and stay well within wire.ItemsMost.
+	maxShownScanItems = 100
 )
 
 type page struct {
@@ -54,6 +57,8 @@ type draw struct {
 	jobs map[string]coldJob
 	// open is the part of the page whose 详情 is shown.
 	open string
+	// leadItems is the component count of leading sections (e.g. sandbox banner) reserved against wire.ItemsMost.
+	leadItems int
 }
 
 func (d draw) v2() bool { return d.uiVersion == 0 || d.uiVersion >= 2 }
@@ -93,7 +98,7 @@ func (d draw) fitVersion(v *wire.View) *wire.View {
 					Type:  wire.ComponentText,
 					Key:   it.Key,
 					Style: wire.TextStyleCode,
-					Text:  clip(cmp.Or(it.Text, "—"), wire.StringMost),
+					Text:  clip(cmp.Or(strings.TrimSpace(it.Text), "—"), wire.StringMost),
 				}
 				it = &s.Items[ii]
 			}
@@ -219,13 +224,30 @@ func (d draw) home(p page) *wire.View {
 	}
 
 	if d.v3() {
-		choices := make([]wire.Choice, 0, len(statuses)+1)
+		const maxFilterChoices = 100
+		const maxMachineChoices = maxFilterChoices - 1 // reserve 1 slot for "+ 添加 SSH 机器"
+		choices := make([]wire.Choice, 0, min(len(statuses), maxMachineChoices)+1)
+		selectedIncluded := false
 		for _, ms := range statuses {
+			if len(choices) >= maxMachineChoices {
+				break
+			}
 			label := clip(machineLabel(ms.Machine), 20)
 			if ms.TotalBytes > 0 {
 				label = fmt.Sprintf("%s · %.0f%%", label, ms.UsedPercent)
 			}
 			choices = append(choices, wire.Choice{Value: ms.Machine.ID, Title: clip(label, 28)})
+			if ms.Machine.ID == selected.ID {
+				selectedIncluded = true
+			}
+		}
+		if !selectedIncluded && len(choices) > 0 {
+			label := clip(machineLabel(selected), 20)
+			ms := d.st.machineStatus(selected)
+			if ms.TotalBytes > 0 {
+				label = fmt.Sprintf("%s · %.0f%%", label, ms.UsedPercent)
+			}
+			choices[len(choices)-1] = wire.Choice{Value: selected.ID, Title: clip(label, 28)}
 		}
 		choices = append(choices, wire.Choice{Value: "+", Title: "＋ 添加 SSH 机器"})
 		v.Filter = &wire.Filter{
@@ -264,6 +286,18 @@ func (d draw) home(p page) *wire.View {
 	}
 	v.State = ext.EncodeState(p)
 
+	var lead []wire.Section
+	if d.v4() {
+		lead = sandboxSection()
+	} else if sandboxed() {
+		sp := sandboxProblem()
+		lead = []wire.Section{{
+			Title: sp.Title,
+			Items: []wire.Component{{Type: wire.ComponentText, Text: sp.message()}},
+		}}
+	}
+	d.leadItems = sectionItemCount(lead)
+
 	switch p.Tab {
 	case tabItems:
 		if d.v3() {
@@ -283,14 +317,8 @@ func (d draw) home(p page) *wire.View {
 	if d.v2() {
 		v.RefreshAfter = d.refreshAfter()
 	}
-	if d.v4() {
-		v.Sections = append(sandboxSection(), v.Sections...)
-	} else if sandboxed() {
-		sp := sandboxProblem()
-		v.Sections = append([]wire.Section{{
-			Title: sp.Title,
-			Items: []wire.Component{{Type: wire.ComponentText, Text: sp.message()}},
-		}}, v.Sections...)
+	if len(lead) > 0 {
+		v.Sections = append(lead, v.Sections...)
 	}
 	return d.fitVersion(v)
 }
@@ -359,7 +387,25 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 		chartLimit = 8
 	}
 
+	// Reserve budget for lead (sandbox), top summary section, and trailing manage section (2 items).
+	fleetBudget := max(0, wire.ItemsMost-d.leadItems-len(topItems)-2)
+	used := 0
+
 	for idx, ms := range statuses {
+		rem := len(statuses) - idx - 1
+		if used >= fleetBudget {
+			break
+		}
+		if used == fleetBudget-1 && rem > 0 {
+			secs = append(secs, wire.Section{
+				Items: []wire.Component{{
+					Type:  wire.ComponentText,
+					Style: wire.TextStyleSecondary,
+					Text:  fmt.Sprintf("还有 %d 台机器未展开，请通过顶部「机器」筛选查看。", len(statuses)-idx),
+				}},
+			})
+			break
+		}
 		m := ms.Machine
 		scan := d.st.Scans[m.ID]
 		badge := healthBadge(ms)
@@ -383,39 +429,42 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 			subParts = append(subParts, "尚未扫描")
 		}
 
-		sec := wire.Section{
-			Title: machineLabel(m),
-			Items: []wire.Component{
-				{
-					Type:     wire.ComponentRow,
-					Key:      "mach-" + m.ID,
-					Icon:     machineIcon(ms.Level),
-					Title:    m.Name,
-					Subtitle: strings.Join(subParts, " · "),
-					Badge:    badge,
-					Action:   &wire.Action{ID: "select-machine", Values: map[string]string{"m": m.ID, "t": tabItems}},
-				},
-			},
+		makeRow := func() wire.Component {
+			return wire.Component{
+				Type:     wire.ComponentRow,
+				Key:      boundedKey("mach-", m.ID),
+				Icon:     machineIcon(ms.Level),
+				Title:    clip(cmp.Or(strings.TrimSpace(m.Name), strings.TrimSpace(m.ID), "未命名机器"), 200),
+				Subtitle: clip(strings.Join(subParts, " · "), 400),
+				Badge:    badge,
+				Action:   &wire.Action{ID: "select-machine", Values: map[string]string{"m": m.ID, "t": tabItems}},
+			}
 		}
 
-		if compactTail {
+		makeCompact := func() wire.Section {
+			sec := wire.Section{
+				Title: machineLabel(m),
+				Items: []wire.Component{makeRow()},
+			}
 			if ms.TotalBytes > 0 {
 				sec.Items = append(sec.Items, machineProgressComponent(ms))
 			}
 			footer := machinePlainTextSummary(ms, scan)
+			if m.LastError != "" && ms.TotalBytes > 0 {
+				footer = "上次扫描失败：" + sshProblem(m, m.LastError).Title + " · " + footer
+			}
 			if ms.CleanCount > 0 {
 				footer += fmt.Sprintf(" · 累计清理 %d 次共释放 %s", ms.CleanCount, FormatBytes(ms.TotalFreedBytes))
 			}
 			sec.Footer = clip(footer, 1800)
 			if d.busy(m) {
 				sec.Items = append(sec.Items, d.machineJobItems(m)...)
-				secs = append(secs, sec)
-				continue
+				return sec
 			}
 			if ms.SafeBytes > 0 {
 				sec.Items = append(sec.Items, wire.Component{
 					Type:  wire.ComponentButton,
-					Key:   "btn-clean-" + m.ID,
+					Key:   boundedKey("btn-clean-", m.ID),
 					Title: fmt.Sprintf("一键安全清理 (%s)", FormatBytes(ms.SafeBytes)),
 					Action: &wire.Action{
 						ID:      "clean-safe",
@@ -426,45 +475,59 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 			} else {
 				sec.Items = append(sec.Items, wire.Component{
 					Type:   wire.ComponentButton,
-					Key:    "btn-scan-" + m.ID,
+					Key:    boundedKey("btn-scan-", m.ID),
 					Title:  "扫描 " + machineLabel(m),
 					Action: &wire.Action{ID: "scan", Values: map[string]string{"m": m.ID}},
 				})
 			}
-			secs = append(secs, sec)
-			continue
+			return sec
 		}
 
-		if ms.TotalBytes > 0 {
-			mountPoint := "/"
-			var bd categoryBreakdown
-			if scan != nil {
-				mountPoint = cmp.Or(scan.Mount.MountPoint, "/")
-				bd = summarizeCategories(scan.Items, &scan.Sessions)
+		var sec wire.Section
+		if compactTail {
+			sec = makeCompact()
+		} else {
+			sec = wire.Section{
+				Title: machineLabel(m),
+				Items: []wire.Component{makeRow()},
 			}
-			sec.Items = append(sec.Items, machineProgressComponent(ms))
-
-			if d.v2() && idx < chartLimit {
-				afterSafe := min(ms.TotalBytes, ms.AvailableBytes+ms.SafeBytes)
-				sec.Items = append(sec.Items, d.statComponents("fleet-stats-"+m.ID, []wire.Stat{
-					{Label: "当前可用", Value: FormatBytes(ms.AvailableBytes), Detail: "总计 " + FormatBytes(ms.TotalBytes)},
-					{Label: "可回收合计", Value: FormatBytes(ms.ReclaimableBytes), Detail: "安全项 " + FormatBytes(ms.SafeBytes), Tone: toneIf(ms.ReclaimableBytes > 0, wire.TonePositive)},
-					{Label: "清理后可用", Value: FormatBytes(afterSafe), Detail: "执行 Safe 项后", Tone: toneIf(ms.SafeBytes > 0, wire.TonePositive)},
-					{Label: "冷会话 (>7d)", Value: fmt.Sprintf("%d 个", ms.Sessions.ColdCount), Detail: FormatBytes(ms.Sessions.ColdBytes) + " · 热 " + strconv.Itoa(ms.Sessions.HotCount) + " 个", Tone: toneIf(ms.Sessions.ColdBytes > 0, wire.ToneCaution)},
-				})...)
-
-				sec.Items = append(sec.Items, rootUsageChart(ms, mountPoint, "fleet"))
-				if catChart, ok := reclaimCategoryChart(m, bd, "fleet"); ok {
-					sec.Items = append(sec.Items, catChart)
-				} else {
-					sec.Items = append(sec.Items, wire.Component{
-						Type:  wire.ComponentText,
-						Style: wire.TextStyleSecondary,
-						Text:  "当前未发现待清理缓存或冷会话（6 类均为 0 B）。",
-					})
+			if ms.TotalBytes > 0 {
+				mountPoint := "/"
+				var bd categoryBreakdown
+				if scan != nil {
+					mountPoint = cmp.Or(scan.Mount.MountPoint, "/")
+					bd = summarizeCategories(scan.Items, &scan.Sessions)
 				}
-				if d.v3() {
-					sec.Items = append(sec.Items, machineBreakdownTable(ms, mountPoint, bd, "fleet"))
+				sec.Items = append(sec.Items, machineProgressComponent(ms))
+
+				if d.v2() && idx < chartLimit {
+					afterSafe := min(ms.TotalBytes, ms.AvailableBytes+ms.SafeBytes)
+					sec.Items = append(sec.Items, d.statComponents(boundedKey("fleet-stats-", m.ID), []wire.Stat{
+						{Label: "当前可用", Value: FormatBytes(ms.AvailableBytes), Detail: "总计 " + FormatBytes(ms.TotalBytes)},
+						{Label: "可回收合计", Value: FormatBytes(ms.ReclaimableBytes), Detail: "安全项 " + FormatBytes(ms.SafeBytes), Tone: toneIf(ms.ReclaimableBytes > 0, wire.TonePositive)},
+						{Label: "清理后可用", Value: FormatBytes(afterSafe), Detail: "执行 Safe 项后", Tone: toneIf(ms.SafeBytes > 0, wire.TonePositive)},
+						{Label: "冷会话 (>7d)", Value: fmt.Sprintf("%d 个", ms.Sessions.ColdCount), Detail: FormatBytes(ms.Sessions.ColdBytes) + " · 热 " + strconv.Itoa(ms.Sessions.HotCount) + " 个", Tone: toneIf(ms.Sessions.ColdBytes > 0, wire.ToneCaution)},
+					})...)
+
+					sec.Items = append(sec.Items, rootUsageChart(ms, mountPoint, "fleet"))
+					if catChart, ok := reclaimCategoryChart(m, bd, "fleet"); ok {
+						sec.Items = append(sec.Items, catChart)
+					} else {
+						sec.Items = append(sec.Items, wire.Component{
+							Type:  wire.ComponentText,
+							Style: wire.TextStyleSecondary,
+							Text:  "当前未发现待清理缓存或冷会话（6 类均为 0 B）。",
+						})
+					}
+					if d.v3() {
+						sec.Items = append(sec.Items, machineBreakdownTable(ms, mountPoint, bd, "fleet"))
+					} else {
+						sec.Items = append(sec.Items, wire.Component{
+							Type:  wire.ComponentText,
+							Style: wire.TextStyleSecondary,
+							Text:  machinePlainTextSummary(ms, scan),
+						})
+					}
 				} else {
 					sec.Items = append(sec.Items, wire.Component{
 						Type:  wire.ComponentText,
@@ -472,59 +535,61 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 						Text:  machinePlainTextSummary(ms, scan),
 					})
 				}
+			} else if m.LastError != "" {
+				// The problem is drawn with the job lines below.
 			} else {
 				sec.Items = append(sec.Items, wire.Component{
 					Type:  wire.ComponentText,
 					Style: wire.TextStyleSecondary,
-					Text:  machinePlainTextSummary(ms, scan),
+					Text:  "点击下方「扫描」探测根分区磁盘水位、可回收缓存与 Agent 会话分布。",
 				})
 			}
-		} else if m.LastError != "" {
-			// The problem is drawn with the job lines below.
-		} else {
-			sec.Items = append(sec.Items, wire.Component{
-				Type:  wire.ComponentText,
-				Style: wire.TextStyleSecondary,
-				Text:  "点击下方「扫描」探测根分区磁盘水位、可回收缓存与 Agent 会话分布。",
-			})
+
+			if ms.CleanCount > 0 {
+				sec.Footer = fmt.Sprintf("上次清理释放 %s · 累计清理 %d 次共释放 %s",
+					FormatBytes(ms.LastFreedBytes), ms.CleanCount, FormatBytes(ms.TotalFreedBytes))
+			}
+
+			sec.Items = append(sec.Items, d.machineJobItems(m)...)
+			if !d.busy(m) {
+				sec.Items = append(sec.Items,
+					wire.Component{
+						Type:   wire.ComponentButton,
+						Key:    boundedKey("btn-scan-", m.ID),
+						Title:  "扫描 " + machineLabel(m),
+						Action: &wire.Action{ID: "scan", Values: map[string]string{"m": m.ID}},
+					},
+					wire.Component{
+						Type:   wire.ComponentButton,
+						Key:    boundedKey("btn-plan-", m.ID),
+						Title:  "生成清理计划",
+						Action: &wire.Action{ID: "open-plan", Values: map[string]string{"m": m.ID}},
+					},
+				)
+				if ms.SafeBytes > 0 {
+					sec.Items = append(sec.Items, wire.Component{
+						Type:  wire.ComponentButton,
+						Key:   boundedKey("btn-clean-", m.ID),
+						Title: fmt.Sprintf("一键安全清理 (%s)", FormatBytes(ms.SafeBytes)),
+						Action: &wire.Action{
+							ID:      "clean-safe",
+							Values:  map[string]string{"m": m.ID},
+							Confirm: fmt.Sprintf("对「%s」执行全部 safe 等级可重建缓存清理（预计释放 %s）？运行中容器、活跃仓库与 Agent 会话绝不触碰；冷会话上云需在「会话与台账」单独执行。", m.Name, FormatBytes(ms.SafeBytes)),
+						},
+					})
+				}
+			}
+			// Fall back to the compact card when expanding this machine would starve remaining machines past wire.ItemsMost.
+			if used+len(sec.Items)+rem*3 > fleetBudget {
+				sec = makeCompact()
+			}
 		}
 
-		if ms.CleanCount > 0 {
-			sec.Footer = fmt.Sprintf("上次清理释放 %s · 累计清理 %d 次共释放 %s",
-				FormatBytes(ms.LastFreedBytes), ms.CleanCount, FormatBytes(ms.TotalFreedBytes))
+		// Ultimate guard for abnormally large fleets (> ~95 machines): collapse to a single row so every machine fits.
+		if used+len(sec.Items)+rem > fleetBudget && len(sec.Items) > 1 {
+			sec.Items = sec.Items[:1]
 		}
-
-		sec.Items = append(sec.Items, d.machineJobItems(m)...)
-		if d.busy(m) {
-			secs = append(secs, sec)
-			continue
-		}
-		sec.Items = append(sec.Items,
-			wire.Component{
-				Type:   wire.ComponentButton,
-				Key:    "btn-scan-" + m.ID,
-				Title:  "扫描 " + machineLabel(m),
-				Action: &wire.Action{ID: "scan", Values: map[string]string{"m": m.ID}},
-			},
-			wire.Component{
-				Type:   wire.ComponentButton,
-				Key:    "btn-plan-" + m.ID,
-				Title:  "生成清理计划",
-				Action: &wire.Action{ID: "open-plan", Values: map[string]string{"m": m.ID}},
-			},
-		)
-		if ms.SafeBytes > 0 {
-			sec.Items = append(sec.Items, wire.Component{
-				Type:  wire.ComponentButton,
-				Key:   "btn-clean-" + m.ID,
-				Title: fmt.Sprintf("一键安全清理 (%s)", FormatBytes(ms.SafeBytes)),
-				Action: &wire.Action{
-					ID:      "clean-safe",
-					Values:  map[string]string{"m": m.ID},
-					Confirm: fmt.Sprintf("对「%s」执行全部 safe 等级可重建缓存清理（预计释放 %s）？运行中容器、活跃仓库与 Agent 会话绝不触碰；冷会话上云需在「会话与台账」单独执行。", m.Name, FormatBytes(ms.SafeBytes)),
-				},
-			})
-		}
+		used += len(sec.Items)
 		secs = append(secs, sec)
 	}
 
@@ -695,8 +760,8 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 		Title:  "可回收项目明细（按体积排序）",
 		Footer: "安全保护红线：绝不触碰运行中的服务容器、活跃 git 仓库未提交改动、7 天内活跃的 Agent 会话或凭据配置。",
 	}
+	shownItems := filtered[:min(len(filtered), maxShownScanItems)]
 	if d.v3() {
-		shownItems := filtered[:min(len(filtered), 100)]
 		itemRows := make([][]string, 0, len(shownItems))
 		for _, it := range shownItems {
 			safetyTag := "safe"
@@ -714,7 +779,7 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 		}
 		detailSec.Items = append(detailSec.Items, wire.Component{
 			Type: wire.ComponentTable,
-			Key:  "items-detail-tbl-" + m.ID,
+			Key:  boundedKey("items-detail-tbl-", m.ID),
 			Columns: []wire.TableColumn{
 				{Title: "项目"},
 				{Title: "分类"},
@@ -725,7 +790,8 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 		})
 	}
 
-	for _, it := range filtered {
+	seenItemKeys := map[string]bool{}
+	for idx, it := range shownItems {
 		bTone := wire.TonePositive
 		bText := "safe · " + FormatBytes(it.Bytes)
 		if it.Safety == SafetyReview {
@@ -738,11 +804,16 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 		if it.Action == "archive" {
 			actVerb = "归档"
 		}
+		key := boundedKey("item-", it.ID)
+		for n := idx; seenItemKeys[key]; n++ {
+			key = boundedKey(fmt.Sprintf("item-%d-", n), it.ID)
+		}
+		seenItemKeys[key] = true
 		detailSec.Items = append(detailSec.Items, wire.Component{
 			Type:     wire.ComponentRow,
-			Key:      "item-" + it.ID,
-			Title:    it.Title,
-			Subtitle: fmt.Sprintf("%s · %s", clip(it.Path, 48), it.Reason),
+			Key:      key,
+			Title:    clip(cmp.Or(strings.TrimSpace(it.Title), strings.TrimSpace(it.ID), "未命名项"), 200),
+			Subtitle: clip(fmt.Sprintf("%s · %s", clip(it.Path, 48), it.Reason), 400),
 			Badge:    &wire.Badge{Text: bText, Tone: bTone},
 			Action: &wire.Action{
 				ID:      "clean-item",
@@ -750,6 +821,9 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 				Confirm: itemConfirm(m, it, actVerb),
 			},
 		})
+	}
+	if len(filtered) > len(shownItems) {
+		detailSec.Footer = fmt.Sprintf("当前显示体积最大的前 %d 项（共 %d 项），可用搜索框缩小范围。%s", len(shownItems), len(filtered), detailSec.Footer)
 	}
 
 	return []wire.Section{catSec, detailSec}
@@ -789,7 +863,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 		Footer: "安全等级说明：safe 为可无损自动重建的编译器/包缓存（一键 safe 清理不含冷会话上云）；review 为较大体积产物（如无头浏览器镜像），重新运行时按需下载。",
 		Items:  append([]wire.Component{head}, d.machineJobItems(m)...),
 	}
-	summarySec.Items = append(summarySec.Items, d.statComponents("plan-stats-"+m.ID, []wire.Stat{
+	summarySec.Items = append(summarySec.Items, d.statComponents(boundedKey("plan-stats-", m.ID), []wire.Stat{
 		{Label: "当前可用", Value: FormatBytes(scan.Mount.AvailableBytes), Detail: scan.Mount.MountPoint},
 		{Label: "Safe 预计释放", Value: FormatBytes(scan.SafeBytes), Tone: wire.TonePositive, Detail: "无损可重建项"},
 		{Label: "清理后可用", Value: FormatBytes(afterSafeAvail), Tone: wire.TonePositive, Detail: fmt.Sprintf("%s → %s", FormatBytes(scan.Mount.AvailableBytes), FormatBytes(afterSafeAvail))},
@@ -890,7 +964,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 				Items: []wire.Component{
 					{
 						Type: wire.ComponentTable,
-						Key:  "plan-tbl-" + m.ID,
+						Key:  boundedKey("plan-tbl-", m.ID),
 						Columns: []wire.TableColumn{
 							{Title: "计划项"},
 							{Title: "分类"},
@@ -906,7 +980,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 			for _, it := range shownPlan {
 				planItems = append(planItems, wire.Component{
 					Type:     wire.ComponentRow,
-					Title:    it.Title,
+					Title:    clip(cmp.Or(strings.TrimSpace(it.Title), strings.TrimSpace(it.ID), "未命名项"), 200),
 					Subtitle: CategoryCompactLabels[it.Category] + " · " + it.Safety,
 					Value:    FormatBytes(it.Bytes),
 				})
@@ -927,7 +1001,7 @@ func (d draw) sessionsAndHistoryTab(p page, m *Machine, _ *Scan) []wire.Section 
 	ms := d.st.machineStatus(m)
 	var secs []wire.Section
 	if d.v4() {
-		secs = d.coldSections(m, p.SessQuery, d.deep)
+		secs = d.coldSections(m, p.SessQuery, d.deep, wire.ItemsMost-d.leadItems-60)
 	}
 
 	sess := ms.Sessions
@@ -944,7 +1018,7 @@ func (d draw) sessionsAndHistoryTab(p page, m *Machine, _ *Scan) []wire.Section 
 	sessSec := wire.Section{
 		Title:  "Coding Agent 会话冷热分层 (" + machineLabel(m) + ")",
 		Footer: "冷会话由 disklessly 上传到备份后端并写入索引后才移除本地副本；7 天内活跃、正在打开或仍被引用的会话保持原样。后端不可达或未安装 CLI 时不会归档或删除任何会话。",
-		Items: d.statComponents("sess-stats-"+m.ID, []wire.Stat{
+		Items: d.statComponents(boundedKey("sess-stats-", m.ID), []wire.Stat{
 			{Label: "热会话 (≤7天)", Value: fmt.Sprintf("%d 个", sess.HotCount), Detail: FormatBytes(sess.HotBytes) + " · 活跃保护中", Tone: wire.TonePositive},
 			{Label: "冷会话 (>7天)", Value: fmt.Sprintf("%d 个", sess.ColdCount), Detail: FormatBytes(sess.ColdBytes) + " · 可上传归档", Tone: toneIf(sess.ColdBytes > 0, wire.ToneCaution)},
 			cloudStat,
@@ -961,7 +1035,7 @@ func (d draw) sessionsAndHistoryTab(p page, m *Machine, _ *Scan) []wire.Section 
 
 	if len(sess.Tools) > 0 && d.v3() {
 		var rows [][]string
-		for _, tl := range sess.Tools {
+		for _, tl := range sess.Tools[:min(len(sess.Tools), 100)] {
 			rows = append(rows, []string{
 				clipCellWidth(tl.Label, 12.5, 82.5, 12),
 				compactCountBytes(tl.HotCount, tl.HotBytes),
@@ -971,7 +1045,7 @@ func (d draw) sessionsAndHistoryTab(p page, m *Machine, _ *Scan) []wire.Section 
 		}
 		sessSec.Items = append(sessSec.Items, wire.Component{
 			Type: wire.ComponentTable,
-			Key:  "sess-tools-tbl-" + m.ID,
+			Key:  boundedKey("sess-tools-tbl-", m.ID),
 			Columns: []wire.TableColumn{
 				{Title: "工具"},
 				{Title: "热 ≤7d", Align: "end"},
@@ -981,10 +1055,10 @@ func (d draw) sessionsAndHistoryTab(p page, m *Machine, _ *Scan) []wire.Section 
 			Rows: rows,
 		})
 	} else if len(sess.Tools) > 0 {
-		for _, tl := range sess.Tools {
+		for _, tl := range sess.Tools[:min(len(sess.Tools), 20)] {
 			sessSec.Items = append(sessSec.Items, wire.Component{
 				Type:  wire.ComponentRow,
-				Title: tl.Label,
+				Title: clip(cmp.Or(strings.TrimSpace(tl.Label), strings.TrimSpace(tl.Tool), "Agent"), 200),
 				Subtitle: fmt.Sprintf("热 %d (%s) · 冷 %d (%s) · 已归档 %d (%s)",
 					tl.HotCount, FormatBytes(tl.HotBytes),
 					tl.ColdCount, FormatBytes(tl.ColdBytes),
@@ -1036,13 +1110,19 @@ func (d draw) sessionsAndHistoryTab(p page, m *Machine, _ *Scan) []wire.Section 
 				Rows: hRows,
 			})
 		}
-		for _, h := range d.st.History[:min(len(d.st.History), 20)] {
+		seenHistKeys := map[string]bool{}
+		for idx, h := range d.st.History[:min(len(d.st.History), 20)] {
+			key := boundedKey("hist-row-", h.ID)
+			for n := idx; seenHistKeys[key]; n++ {
+				key = boundedKey(fmt.Sprintf("hist-row-%d-", n), h.ID)
+			}
+			seenHistKeys[key] = true
 			histSec.Items = append(histSec.Items, wire.Component{
 				Type:     wire.ComponentRow,
-				Key:      "hist-row-" + h.ID,
+				Key:      key,
 				Icon:     "check",
-				Title:    fmt.Sprintf("%s · %s", h.MachineName, h.Summary),
-				Subtitle: fmt.Sprintf("%s · 清理 %d 项（%s）", d.when(h.CreatedAt), len(h.Items), strings.Join(h.Categories, "、")),
+				Title:    clip(fmt.Sprintf("%s · %s", h.MachineName, h.Summary), 200),
+				Subtitle: clip(fmt.Sprintf("%s · 清理 %d 项（%s）", d.when(h.CreatedAt), len(h.Items), strings.Join(h.Categories, "、")), 400),
 				Badge:    &wire.Badge{Text: "+" + FormatBytes(h.FreedBytes), Tone: wire.TonePositive},
 			})
 		}
@@ -1212,7 +1292,7 @@ func (a *app) card(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 				}
 				items = append(items, wire.Component{
 					Type:     wire.ComponentRow,
-					Key:      "card-mach-" + ms.Machine.ID,
+					Key:      boundedKey("card-mach-", ms.Machine.ID),
 					Icon:     machineIcon(ms.Level),
 					Title:    machineLabel(ms.Machine),
 					Subtitle: sub,
@@ -1475,12 +1555,53 @@ func toneIf(cond bool, t string) string {
 }
 
 func clip(s string, maxRunes int) string {
+	if maxRunes <= 0 {
+		return ""
+	}
 	s = strings.TrimSpace(s)
-	if utf8.RuneCountInString(s) <= maxRunes {
+	r := []rune(s)
+	if len(r) <= maxRunes {
 		return s
 	}
-	r := []rune(s)
+	if maxRunes == 1 {
+		return string(r[:1])
+	}
 	return string(r[:maxRunes-1]) + "…"
+}
+
+// sectionItemCount counts components across secs using wire.CheckView's accounting.
+func sectionItemCount(secs []wire.Section) int {
+	n := 0
+	for _, s := range secs {
+		for _, e := range s.Items {
+			n += max(1, len(e.Tiles)+len(e.Nodes)+len(e.Pins)+len(e.Markers))
+		}
+	}
+	return n
+}
+
+// boundedKey returns prefix+raw unchanged when <= 128 runes, or truncates raw with an 8-hex FNV-1a suffix.
+func boundedKey(prefix, raw string) string {
+	full := prefix + raw
+	if utf8.RuneCountInString(full) <= 128 {
+		return full
+	}
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(raw))
+	suffix := fmt.Sprintf("-%08x", h.Sum32())
+	keep := 128 - utf8.RuneCountInString(prefix) - len(suffix)
+	if keep <= 0 {
+		pr := []rune(prefix)
+		if len(pr) > 128-len(suffix) {
+			pr = pr[:max(0, 128-len(suffix))]
+		}
+		return string(pr) + suffix
+	}
+	rr := []rune(raw)
+	if len(rr) > keep {
+		rr = rr[:keep]
+	}
+	return prefix + string(rr) + suffix
 }
 
 func (d draw) when(t time.Time) string {
