@@ -365,7 +365,7 @@ func (r *Runner) synthesize(ctx context.Context, st *store.State, s *State, run 
 					ID: id, Cluster: cl.label, Text: clip(c.e.Shown(), 160), Situation: clip(c.e.Situation, 80),
 					Choice: clip(c.e.Choice, 80), Rejected: clip(c.e.Rejected, 60),
 					Dimension: dim, Hint: hint, Principle: princ,
-					Quotes: itemQuotes(st, c.e, cutoff, 2),
+					Quotes:   itemQuotes(st, c.e, cutoff, 2),
 					Projects: c.t.projects, Sources: c.t.groups,
 					Weeks: len(c.t.weeks), Evidence: len(c.t.sources), People: len(c.t.people),
 				})

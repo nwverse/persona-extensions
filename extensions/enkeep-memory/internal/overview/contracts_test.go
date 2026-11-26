@@ -10,7 +10,6 @@ import (
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
-	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
 // Synthetic fixtures only: made-up projects, sources and quotes.
