@@ -188,6 +188,10 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 			worst = t
 		}
 	}
+	if worst == wire.ToneDanger && ready > 0 {
+		// The detail says how many are fine too: alarm only when none is.
+		worst = wire.ToneCaution
+	}
 	machineStat := wire.Stat{Label: "电脑", Value: fmt.Sprintf("%d 台", len(machines)), Detail: machineCounts(ready, len(machines)), Tone: worst}
 	if len(running) > 0 {
 		machineStat.Detail = fmt.Sprintf("%d 台正在处理 · %s", len(running), machineStat.Detail)

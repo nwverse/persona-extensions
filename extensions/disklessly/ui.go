@@ -385,6 +385,59 @@ func fleetAlertSummary(statuses []MachineStatus) (text, tone string, offline int
 	}
 }
 
+// fleetReclaim splits what the computers of statuses can free into what can be done now and
+// what sits on computers that cannot be reached now (their last check's numbers).
+type fleetReclaim struct {
+	all, safe       uint64 // computers that answer (or were never tried) now
+	offline         uint64 // computers that cannot be reached now, by their last check
+	offlineMachines int
+}
+
+func fleetReclaimOf(statuses []MachineStatus) fleetReclaim {
+	var r fleetReclaim
+	for _, ms := range statuses {
+		if ms.Level == HealthOffline {
+			if ms.ReclaimableBytes > 0 {
+				r.offline += ms.ReclaimableBytes
+				r.offlineMachines++
+			}
+			continue
+		}
+		r.all += ms.ReclaimableBytes
+		r.safe += ms.SafeBytes
+	}
+	return r
+}
+
+// offlineNote is the part about computers that cannot be reached now, or "".
+func (r fleetReclaim) offlineNote() string {
+	if r.offline == 0 {
+		return ""
+	}
+	return fmt.Sprintf("另有 %s 在连不上的 %d 台电脑上，按上次检查的数", FormatBytes(r.offline), r.offlineMachines)
+}
+
+// statDetail is the 可以腾出 stat's detail: the 放心删 part of what can be done now, then the rest.
+func (r fleetReclaim) statDetail() string {
+	text := "其中放心删 " + FormatBytes(r.safe)
+	if n := r.offlineNote(); n != "" {
+		text += "；" + n
+	}
+	return text
+}
+
+// reclaimWords is one computer's 可以腾出 in a row: everything, and how much of it is 放心删 (what
+// its 删掉放心删的缓存 button takes), so the two numbers never look like a mismatch.
+func reclaimWords(all, safe uint64) string {
+	switch {
+	case all == 0 || safe >= all:
+		return "可以腾出 " + FormatBytes(all)
+	case FormatBytes(safe) == FormatBytes(all):
+		return "可以腾出 " + FormatBytes(all) + "，几乎都是放心删的"
+	}
+	return "可以腾出 " + FormatBytes(all) + "，其中放心删 " + FormatBytes(safe)
+}
+
 // offlineNote is the stat detail's part about computers that cannot be reached now.
 func offlineNote(offline int) string {
 	if offline == 0 {
@@ -396,11 +449,8 @@ func offlineNote(offline int) string {
 // ---- Tab 1: Fleet Disk Overview ----
 
 func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wire.Section {
-	var totalReclaim, totalSafe, totalFreed uint64
-	for _, ms := range statuses {
-		totalReclaim += ms.ReclaimableBytes
-		totalSafe += ms.SafeBytes
-	}
+	var totalFreed uint64
+	reclaim := fleetReclaimOf(statuses)
 	for _, h := range d.st.History {
 		totalFreed += h.FreedBytes
 	}
@@ -408,8 +458,8 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 
 	topStats := []wire.Stat{
 		{Label: "电脑", Value: fmt.Sprintf("%d 台", len(statuses)), Detail: "运行 Persona 的电脑和远程电脑"},
-		{Label: "硬盘用了多少", Value: alertText, Detail: "用到 80% 提醒 · 90% 告急" + offlineNote(offline), Tone: alertTone},
-		{Label: "可以腾出", Value: FormatBytes(totalReclaim), Detail: "其中放心删 " + FormatBytes(totalSafe), Tone: toneIf(totalReclaim > 0, wire.TonePositive)},
+		{Label: "硬盘用了多少", Value: alertText, Detail: fullnessLegendShort + offlineNote(offline), Tone: alertTone},
+		{Label: "可以腾出", Value: FormatBytes(reclaim.all), Detail: reclaim.statDetail(), Tone: toneIf(reclaim.all > 0, wire.TonePositive)},
 		{Label: "已经腾出", Value: FormatBytes(totalFreed), Detail: fmt.Sprintf("共 %d 次清理", len(d.st.History))},
 	}
 	topItems := d.statComponents("fleet-summary", topStats)
@@ -481,7 +531,7 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 			subParts = append(subParts, p)
 		}
 		if ms.TotalBytes > 0 && !detailed {
-			subParts = append(subParts, "还剩 "+FormatBytes(ms.AvailableBytes)+" · 可以腾出 "+FormatBytes(ms.ReclaimableBytes))
+			subParts = append(subParts, "还剩 "+FormatBytes(ms.AvailableBytes)+" · "+reclaimWords(ms.ReclaimableBytes, ms.SafeBytes))
 		}
 		if lastKnown(ms) {
 			// The check's time is said with the reachability above.
@@ -739,7 +789,7 @@ func (d draw) itemsTab(p page, m *Machine, scan *Scan) []wire.Section {
 	var filtered []ScanItem
 	for _, it := range scan.Items {
 		if q != "" {
-			hay := strings.ToLower(it.Title + " " + it.Path + " " + it.Category + " " + CategoryLabels[it.Category] + " " + categoryName(it.Category) + " " + it.Reason)
+			hay := strings.ToLower(it.Title + " " + itemTitle(it) + " " + itemReason(it) + " " + it.Path + " " + it.Category + " " + CategoryLabels[it.Category] + " " + categoryName(it.Category) + " " + it.Reason)
 			if !strings.Contains(hay, q) {
 				continue
 			}
@@ -866,7 +916,7 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 			kinds = append(kinds, it.Category)
 			safetyTag := itemSafetyTag(it)
 			itemRows = append(itemRows, []string{
-				clipCellWidth(it.Title, 12.5, 82.5, 13),
+				clipCellWidth(itemTitle(it), 12.5, 82.5, 13),
 				CategoryAxisLabels[it.Category],
 				safetyTag,
 				FormatBytes(it.Bytes),
@@ -905,8 +955,8 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 		detailSec.Items = append(detailSec.Items, wire.Component{
 			Type:     wire.ComponentRow,
 			Key:      key,
-			Title:    clip(cmp.Or(strings.TrimSpace(it.Title), strings.TrimSpace(it.ID), "没有名字的一项"), 200),
-			Subtitle: clip(fmt.Sprintf("%s · %s", clip(it.Path, 48), it.Reason), 400),
+			Title:    clip(cmp.Or(itemTitle(it), strings.TrimSpace(it.ID), "没有名字的一项"), 200),
+			Subtitle: clip(fmt.Sprintf("%s · %s", clip(it.Path, 48), itemReason(it)), 400),
 			Badge:    &wire.Badge{Text: bText, Tone: bTone},
 			Action: &wire.Action{
 				ID:      "clean-item",
@@ -1055,7 +1105,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 			for _, it := range shownPlan {
 				kinds = append(kinds, it.Category)
 				rows = append(rows, []string{
-					clipCellWidth(it.Title, 12.5, 82.5, 13),
+					clipCellWidth(itemTitle(it), 12.5, 82.5, 13),
 					CategoryAxisLabels[it.Category],
 					safetyTag(it.Safety),
 					FormatBytes(it.Bytes),
@@ -1083,7 +1133,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 			for _, it := range shownPlan {
 				planItems = append(planItems, wire.Component{
 					Type:     wire.ComponentRow,
-					Title:    clip(cmp.Or(strings.TrimSpace(it.Title), strings.TrimSpace(it.ID), "没有名字的一项"), 200),
+					Title:    clip(cmp.Or(itemTitle(it), strings.TrimSpace(it.ID), "没有名字的一项"), 200),
 					Subtitle: categoryName(it.Category) + " · " + safetyLabel(it.Safety),
 					Value:    FormatBytes(it.Bytes),
 				})
@@ -1283,11 +1333,10 @@ func (a *app) card(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 		fallback := d.fallbackSummary(statuses)
 		var items []wire.Component
 		if len(statuses) > 0 {
-			var totalReclaim uint64
+			reclaim := fleetReclaimOf(statuses)
 			var featured *MachineStatus
 			for i := range statuses {
 				ms := &statuses[i]
-				totalReclaim += ms.ReclaimableBytes
 				if ms.TotalBytes > 0 && (featured == nil || watermarkChartRank(ms.Level) < watermarkChartRank(featured.Level) ||
 					(watermarkChartRank(ms.Level) == watermarkChartRank(featured.Level) && ms.UsedPercent > featured.UsedPercent)) {
 					featured = ms
@@ -1302,7 +1351,7 @@ func (a *app) card(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 					Stats: []wire.Stat{
 						{Label: "电脑", Value: fmt.Sprintf("%d 台", len(statuses))},
 						{Label: "硬盘", Value: alertText, Detail: strings.TrimPrefix(offlineNote(offline), " · "), Tone: alertTone},
-						{Label: "可以腾出", Value: FormatBytes(totalReclaim), Tone: toneIf(totalReclaim > 0, wire.TonePositive)},
+						{Label: "可以腾出", Value: FormatBytes(reclaim.all), Detail: reclaim.offlineNote(), Tone: toneIf(reclaim.all > 0, wire.TonePositive)},
 					},
 				})
 				if featured != nil {
@@ -1315,7 +1364,7 @@ func (a *app) card(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 					Type:   wire.ComponentMetric,
 					Label:  "硬盘用量",
 					Value:  alertText,
-					Detail: fmt.Sprintf("%d 台电脑 · 可以腾出 %s", len(statuses), FormatBytes(totalReclaim)) + offlineNote(offline),
+					Detail: fmt.Sprintf("%d 台电脑 · 可以腾出 %s", len(statuses), FormatBytes(reclaim.all)) + offlineNote(offline),
 					Tone:   alertTone,
 				})
 			}
@@ -1323,8 +1372,8 @@ func (a *app) card(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 			for _, ms := range statuses[:min(len(statuses), 4)] {
 				sub := "还没检查"
 				if ms.TotalBytes > 0 {
-					sub = fmt.Sprintf("用了 %.0f%%（还剩 %s）· 可以腾出 %s",
-						ms.UsedPercent, FormatBytes(ms.AvailableBytes), FormatBytes(ms.ReclaimableBytes))
+					sub = fmt.Sprintf("用了 %.0f%%（还剩 %s）· %s",
+						ms.UsedPercent, FormatBytes(ms.AvailableBytes), reclaimWords(ms.ReclaimableBytes, ms.SafeBytes))
 					if ms.Partial {
 						sub = fmt.Sprintf("用了 %.0f%%（还剩 %s）· 缓存没算完",
 							ms.UsedPercent, FormatBytes(ms.AvailableBytes))
@@ -1349,13 +1398,13 @@ func (a *app) card(_ context.Context, r *ext.UIRequest) (*wire.View, error) {
 				items = append(items, wire.Component{
 					Type:  wire.ComponentText,
 					Style: wire.TextStyleCaption,
-					Text:  fmt.Sprintf("一共可以腾出 %s · 最近一次清理 %s：%s", FormatBytes(totalReclaim), histMachineLabel(st, last), last.Summary),
+					Text:  fmt.Sprintf("现在一共可以腾出 %s · 最近一次清理 %s：%s", FormatBytes(reclaim.all), histMachineLabel(st, last), last.Summary),
 				})
-			} else if totalReclaim > 0 {
+			} else if reclaim.all > 0 {
 				items = append(items, wire.Component{
 					Type:  wire.ComponentText,
 					Style: wire.TextStyleCaption,
-					Text:  fmt.Sprintf("共 %d 台电脑 · 一共可以腾出 %s", len(statuses), FormatBytes(totalReclaim)),
+					Text:  fmt.Sprintf("共 %d 台电脑 · 现在一共可以腾出 %s", len(statuses), FormatBytes(reclaim.all)),
 				})
 			}
 		}
@@ -1812,7 +1861,7 @@ func logsNoteParts(logs []ScanItem) string {
 		case "tmp-stale":
 			parts = append(parts, "临时文件夹 /tmp 里的文件（"+size+"：编译和安装剩下的，比如 go-build、npm、pnpm、playwright、cargo-install 开头的，最近的也会删；还有其他放了 7 天以上的）")
 		default:
-			parts = append(parts, cmp.Or(strings.TrimSpace(it.Title), it.ID)+"（"+size+"）")
+			parts = append(parts, cmp.Or(itemTitle(it), it.ID)+"（"+size+"）")
 		}
 	}
 	return strings.Join(parts, "；")
@@ -1887,8 +1936,8 @@ func categoryConfirm(m *Machine, scan *Scan, cid string, plan *CleanPlan) string
 	if len(review) > 0 {
 		var named []string
 		for _, it := range review[:min(len(review), maxNamedReviewItems)] {
-			why := strings.TrimRight(strings.TrimSpace(it.Reason), "。；，")
-			named = append(named, fmt.Sprintf("%s（%s），%s", cmp.Or(strings.TrimSpace(it.Title), it.ID), FormatBytes(it.Bytes), clip(cmp.Or(why, "比较大，删了重新下载或重新生成很慢"), 120)))
+			why := strings.TrimRight(itemReason(it), "。；，")
+			named = append(named, fmt.Sprintf("%s（%s），%s", cmp.Or(itemTitle(it), it.ID), FormatBytes(it.Bytes), clip(cmp.Or(why, "比较大，删了重新下载或重新生成很慢"), 120)))
 		}
 		more := ""
 		if len(review) > maxNamedReviewItems {
@@ -1920,7 +1969,7 @@ func itemConfirm(m *Machine, it ScanItem, verb string) string {
 	if it.Category == CatColdAgentSession {
 		return sessionOffloadConfirm(m)
 	}
-	return fmt.Sprintf("确定在「%s」上%s「%s」吗？（位置 %s，大约腾出 %s）", machineLabel(m), verb, it.Title, it.Path, FormatBytes(it.Bytes))
+	return fmt.Sprintf("确定在「%s」上%s「%s」吗？（位置 %s，大约腾出 %s）", machineLabel(m), verb, cmp.Or(itemTitle(it), it.ID), it.Path, FormatBytes(it.Bytes))
 }
 
 // safetyLabel words a safety level: 放心删 (rebuilt on its own) or 建议先看.

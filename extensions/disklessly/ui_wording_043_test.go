@@ -410,7 +410,7 @@ func TestSystemDiskIsACompactBar(t *testing.T) {
 	fleet := diskView(t, a, "local", tabFleet)
 	tbl := findComponentByKey(fleet, "fleet-tbl-local")
 	if findComponentByKey(fleet, "prog-local") == nil || tbl == nil ||
-		!strings.Contains(tbl.Caption, "用了 170.0 GiB（85.0%，偏满）· 还剩 30.0 GiB / 共 200.0 GiB · 用到 80% 提醒，90% 告急") {
+		!strings.Contains(tbl.Caption, "用了 170.0 GiB（85.0%，偏满）· 还剩 30.0 GiB / 共 200.0 GiB · "+fullnessLegend) {
 		t.Fatalf("the system disk's numbers are gone: %+v", tbl)
 	}
 	// Nothing safe to delete: the plan tab shows the bar.

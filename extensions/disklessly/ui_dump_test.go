@@ -15,7 +15,8 @@ import (
 
 // dumpFleet is mixedFleet with the two pages out of step the way a long-running hub gets: the
 // AI 对话 page found studio-mac's network drive without a repository three days ago and a later
-// 硬盘空间 check could not reach it; offline-box was last reached twelve days ago.
+// 硬盘空间 check could not reach it; offline-box was last reached twelve days ago; nas-box's
+// stored check has an older version's item names.
 func dumpFleet(t *testing.T) *app {
 	t.Helper()
 	a := mixedFleet(t)
@@ -29,6 +30,8 @@ func dumpFleet(t *testing.T) *app {
 		o.CheckedAt = now.Add(-10 * 24 * time.Hour)
 		st.setCold("offline-box", &o)
 		st.Scans["offline-box"].ScannedAt = now.Add(-12 * 24 * time.Hour)
+		// nas-box's check was stored by an older version, in its words.
+		renameItem(st.Scans["nas-box"], "cache-playwright", oldPlaywrightTitle, oldPlaywrightReason)
 		return nil
 	}); err != nil {
 		t.Fatal(err)

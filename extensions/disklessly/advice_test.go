@@ -68,16 +68,18 @@ func stepNames(steps []adviceStep) []string {
 	return out
 }
 
-// The fullest computer first; on each, caches (biggest first), then conversations, then old
-// logs; 建议先看 apart.
+// What can be done now first, then what cannot (0.5.4); within each, the fullest computer
+// first and on each, caches (biggest first), then conversations, then old logs; 建议先看 apart.
 func TestAdviseRanking(t *testing.T) {
 	st := newAdviceState(t)
 	adv := mustAdvice(t, st, adviceOptions{})
 	want := []string{
 		"build-box/clean/go-cache", "build-box/clean/node-python-cache", "build-box/clean/docker-unused",
-		"build-box/move_conversations/cold-agent-sessions", "build-box/clean/tmp-logs",
+		"build-box/clean/tmp-logs",
 		"local/clean/go-cache", "local/clean/docker-unused", "local/clean/node-python-cache", "local/clean/rust-xcode-build",
 		"local/move_conversations/cold-agent-sessions", "local/clean/tmp-logs",
+		// build-box has no helper yet; offline-box cannot be reached.
+		"build-box/move_conversations/cold-agent-sessions",
 		"offline-box/clean/go-cache", "offline-box/clean/docker-unused", "offline-box/clean/node-python-cache", "offline-box/clean/rust-xcode-build",
 		"offline-box/move_conversations/cold-agent-sessions", "offline-box/clean/tmp-logs",
 	}
@@ -85,6 +87,9 @@ func TestAdviseRanking(t *testing.T) {
 		t.Fatalf("order:\n got %q\nwant %q", got, want)
 	}
 	for i, s := range adv.Steps {
+		if i > 0 && s.Possible && !adv.Steps[i-1].Possible {
+			t.Errorf("step %d can be done now but comes after one that cannot", i+1)
+		}
 		if s.Rank != i+1 || s.Risk == "" || s.What == "" || s.Frees == "" || s.Page == "" || len(s.PageButtons) == 0 {
 			t.Errorf("step %d incomplete: %+v", i, s)
 		}
@@ -100,12 +105,12 @@ func TestAdviseRanking(t *testing.T) {
 		}
 	}
 	// The kind holding a 建议先看 item names its safe items' own rows, not the kind's 删掉 row.
-	rx := adv.Steps[8]
+	rx := adv.Steps[7]
 	if rx.Kind != CatRustXcodeBuild || slices.Contains(rx.PageButtons, "删掉："+categoryName(CatRustXcodeBuild)) {
 		t.Fatalf("rust step buttons %q", rx.PageButtons)
 	}
-	if !strings.Contains(adv.Steps[10].Risk, "找不回来") || !strings.Contains(adv.Steps[9].Risk, "读回核对") || !strings.Contains(adv.Steps[0].Risk, "重新") {
-		t.Fatalf("risks: %q / %q / %q", adv.Steps[0].Risk, adv.Steps[9].Risk, adv.Steps[10].Risk)
+	if !strings.Contains(adv.Steps[9].Risk, "找不回来") || !strings.Contains(adv.Steps[8].Risk, "读回核对") || !strings.Contains(adv.Steps[0].Risk, "重新") {
+		t.Fatalf("risks: %q / %q / %q", adv.Steps[0].Risk, adv.Steps[8].Risk, adv.Steps[9].Risk)
 	}
 	if adv.Machines[0].MachineID != "build-box" || adv.Machines[len(adv.Machines)-1].MachineID != "never-box" {
 		t.Fatalf("machines: %+v", adv.Machines)

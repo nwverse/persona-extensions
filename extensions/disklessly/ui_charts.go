@@ -306,6 +306,14 @@ func (bd categoryBreakdown) catModeText(cid string) string {
 	}
 }
 
+// The fullness bands of EvaluateHealth in the words healthLevelText gives them, for the pages'
+// legends: fullnessLegendShort for a stat's detail, fullnessLegend where a whole sentence fits.
+// A computer put in a band by its free space alone says so on its own bar (healthWatermarkNote).
+const (
+	fullnessLegendShort = "用到 80% 算偏满 · 90% 算快满了（剩得太少也算）"
+	fullnessLegend      = "用到 80% 算偏满、90% 算快满了；硬盘不小的话，只剩不到 25 GiB 也算偏满、不到 10 GiB 也算快满了"
+)
+
 func healthLevelText(level string) string {
 	switch level {
 	case HealthCritical:
@@ -388,7 +396,7 @@ func lastKnown(ms MachineStatus) bool { return ms.Level == HealthOffline && ms.T
 func machineProgressComponent(ms MachineStatus) wire.Component {
 	ratio := math.Max(0, math.Min(1, ms.UsedPercent/100.0))
 	level := fullnessLevel(ms)
-	detail := fmt.Sprintf("%.1f%% · %s", ms.UsedPercent, healthLevelText(level))
+	detail := fmt.Sprintf("%.1f%% · %s", ms.UsedPercent, healthWatermarkNote(level, ms.UsedPercent, ms.TotalBytes, ms.AvailableBytes))
 	if lastKnown(ms) {
 		// The row above says it cannot be reached now and when these numbers are from.
 		detail = "上次 " + detail
@@ -574,9 +582,9 @@ func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreak
 	}
 	mp := cmp.Or(mountPoint, "/")
 	lvlNote := healthWatermarkNote(fullnessLevel(ms), ms.UsedPercent, ms.TotalBytes, ms.AvailableBytes)
-	caption := fmt.Sprintf("系统盘 %s：用了 %s（%.1f%%，%s）· 还剩 %s / 共 %s · 用到 80%% 提醒，90%% 告急",
+	caption := fmt.Sprintf("系统盘 %s：用了 %s（%.1f%%，%s）· 还剩 %s / 共 %s · %s",
 		mp, FormatBytes(ms.UsedBytes), ms.UsedPercent, lvlNote,
-		FormatBytes(ms.AvailableBytes), FormatBytes(ms.TotalBytes))
+		FormatBytes(ms.AvailableBytes), FormatBytes(ms.TotalBytes), fullnessLegend)
 	if lastKnown(ms) {
 		caption = "上次检查时，" + caption
 	}
@@ -634,13 +642,10 @@ func machinePlainTextSummary(ms MachineStatus, scan *Scan) string {
 
 func (d draw) fallbackSummary(statuses []MachineStatus) string {
 	var lines []string
-	var totalReclaim, totalSafe uint64
-	for _, ms := range statuses {
-		totalReclaim += ms.ReclaimableBytes
-		totalSafe += ms.SafeBytes
-	}
-	lines = append(lines, fmt.Sprintf("Disklessly 硬盘空间（%d 台电脑，一共可以腾出 %s，其中放心删 %s；用到 80%% 提醒，90%% 告急）",
-		len(statuses), FormatBytes(totalReclaim), FormatBytes(totalSafe)))
+	reclaim := fleetReclaimOf(statuses)
+	head := fmt.Sprintf("Disklessly 硬盘空间（%d 台电脑，现在一共可以腾出 %s，%s；%s）",
+		len(statuses), FormatBytes(reclaim.all), reclaim.statDetail(), fullnessLegend)
+	lines = append(lines, head)
 	for _, ms := range statuses[:min(len(statuses), 12)] {
 		lines = append(lines, "- "+machinePlainTextSummary(ms, d.st.Scans[ms.Machine.ID]))
 	}

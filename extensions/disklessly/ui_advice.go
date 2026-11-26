@@ -109,14 +109,41 @@ func (d draw) adviceAllView(p page) *wire.View {
 		return d.fitVersion(v)
 	}
 	if n := len(adv.Steps); n > 0 {
+		// The steps that can be done now, then (under their own heading, numbers going on) the
+		// ones that cannot: buildAdvice already put them in that order.
+		shown := adv.Steps[:min(n, adviceAllMost)]
+		now := 0
+		for _, s := range adv.Steps {
+			if s.Possible {
+				now++
+			}
+		}
 		sec := wire.Section{Key: "advice-all-steps", Title: fmt.Sprintf("按先后的 %d 步", n)}
-		for _, s := range adv.Steps[:min(n, adviceAllMost)] {
-			sec.Items = append(sec.Items, d.adviceRow(s))
+		if now < n {
+			sec.Title = fmt.Sprintf("按先后的 %d 步：现在就能做的 %d 步", n, now)
+		}
+		later := wire.Section{Key: "advice-all-later", Title: fmt.Sprintf("现在还做不了的 %d 步", n-now),
+			Footer: "这些要等那台电脑连得上，或者先照每一步写的办法处理好，才能做。"}
+		for _, s := range shown {
+			if s.Possible {
+				sec.Items = append(sec.Items, d.adviceRow(s))
+			} else {
+				later.Items = append(later.Items, d.adviceRow(s))
+			}
+		}
+		last := &sec
+		if len(later.Items) > 0 {
+			last = &later
 		}
 		if n > adviceAllMost {
-			sec.Footer = fmt.Sprintf("只列出前 %d 步；其余的问 Persona 助手。", adviceAllMost)
+			last.Footer = fmt.Sprintf("只列出前 %d 步；其余的问 Persona 助手。", adviceAllMost)
 		}
-		v.Sections = append(v.Sections, sec)
+		if len(sec.Items) > 0 {
+			v.Sections = append(v.Sections, sec)
+		}
+		if len(later.Items) > 0 {
+			v.Sections = append(v.Sections, later)
+		}
 	}
 	if n := len(adv.LookFirst); n > 0 {
 		sec := wire.Section{Key: "advice-all-look", Title: fmt.Sprintf("「建议先看」的 %d 项", n),

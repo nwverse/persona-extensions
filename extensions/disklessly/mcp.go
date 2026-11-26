@@ -121,7 +121,7 @@ var tools = []tool{
 			},
 			"refresh": map[string]any{"type": "boolean", "description": "默认 false：用上次检查的结果（每台电脑的 checked 说明是多久以前检查的）。若为 true，先对这些电脑做一次和页面「检查」一样的只读检查（只读取大小，不删不搬），较慢"},
 		},
-		description: "只读：帮用户腾硬盘空间时先调用它。根据上次检查的结果、AI 对话的索引和每台电脑的状况，排出一份腾空间的步骤（最满的电脑在前；同一台里先删能重新下载的缓存，再搬一周没动的 AI 对话，再删旧日志和临时文件；「建议先看」的单独放在 look_first 里，默认不删；有 goal 时够了就停）。" +
+		description: "只读：帮用户腾硬盘空间时先调用它。根据上次检查的结果、AI 对话的索引和每台电脑的状况，排出一份腾空间的步骤（现在就能做的在前，现在做不了的（possible 为 false，比如连不上那台电脑、还没装配套小工具）都排在后面；两部分里各自都是最满的电脑在前，同一台里先删能重新下载的缓存，再搬一周没动的 AI 对话，再删旧日志和临时文件；「建议先看」的单独放在 look_first 里，默认不删，也是能做的在前；有 goal 时够了就停；页面「帮我腾空间」的顺序和这里一样）。" +
 			"不删、不搬、不改任何东西，也不读对话内容。每一步 steps[i] 有：machine_id / machine_name（哪台电脑）、action（clean 删放心删的一类 / move_conversations 把一周没动的 AI 对话搬到网盘 / look_first 建议先看）、what（做什么）、frees（大约腾出多少）、risk（一句话的风险）、" +
 			"possible（现在能不能做；false 时 blocked 说为什么、unblock 说怎么才能做、unblock_call 是能帮上忙的工具调用、command 是要在那台电脑上运行的命令）、call（真正执行这一步的现有写入工具和参数，原样调用即可：disklessly_clean 或 disklessly_sessions_offload，执行前 Persona 会请用户确认）、preview_call（只看计划不执行的调用）、page / page_buttons（页面上做这一步的按钮）。" +
 			"另有 machines（每台电脑多满、还剩多少、多久前检查的、连不上的原因）、not_touched（哪些东西绝不碰）、summary 和 how_to_act。只执行用户选中的步骤。",

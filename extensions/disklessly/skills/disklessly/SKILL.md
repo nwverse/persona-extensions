@@ -1,6 +1,6 @@
 ---
 name: disklessly
-description: 管用户每台电脑的硬盘空间（经本机 disklessly MCP 服务器）：运行 Persona 的电脑和 ~/.persona/config.json、~/.ssh/config 里能远程登录的电脑。看每台电脑硬盘用了多少（用到 80% 提醒、90% 告急），找出放心删的缓存和旧日志、建议先看的大东西，把一周没动的 AI 对话（Claude Code、Codex 等）搬到网盘、要用时拿回来。用户说「帮我腾点空间」「哪台电脑快满了」「硬盘不够了」时先调用只读的 mcp__disklessly__disklessly_advise，讲前几步腾出多少、有什么风险，问做哪一步。用户想找回一段旧对话、只说得出大概内容和时间时，调用只读的 mcp__disklessly__disklessly_sessions_find，给用户看最像的几个，选定后再用 disklessly_sessions_restore 拿回来。只看的工具（disklessly_machines_status / disklessly_scan / disklessly_history / disklessly_sessions_search / disklessly_sessions_status / disklessly_sessions_find / disklessly_advise）直接运行；删除、搬到网盘、拿回来、装配套小工具和改电脑列表都要用户在对话里确认。
+description: 管用户每台电脑的硬盘空间（经本机 disklessly MCP 服务器）：运行 Persona 的电脑和 ~/.persona/config.json、~/.ssh/config 里能远程登录的电脑。看每台电脑硬盘用了多少（用到 80% 算偏满、90% 算快满了，剩得太少也算），找出放心删的缓存和旧日志、建议先看的大东西，把一周没动的 AI 对话（Claude Code、Codex 等）搬到网盘、要用时拿回来。用户说「帮我腾点空间」「哪台电脑快满了」「硬盘不够了」时先调用只读的 mcp__disklessly__disklessly_advise，讲前几步腾出多少、有什么风险，问做哪一步。用户想找回一段旧对话、只说得出大概内容和时间时，调用只读的 mcp__disklessly__disklessly_sessions_find，给用户看最像的几个，选定后再用 disklessly_sessions_restore 拿回来。只看的工具（disklessly_machines_status / disklessly_scan / disklessly_history / disklessly_sessions_search / disklessly_sessions_status / disklessly_sessions_find / disklessly_advise）直接运行；删除、搬到网盘、拿回来、装配套小工具和改电脑列表都要用户在对话里确认。
 ---
 
 # Disklessly 硬盘空间（mcp__disklessly__* 工具）
@@ -27,7 +27,7 @@ description: 管用户每台电脑的硬盘空间（经本机 disklessly MCP 服
 1. 调用 `disklessly_advise {machine?, goal?, refresh?}`（只读，不删不搬，也不读对话内容）：
    - 用户点名哪台电脑就填 `machine`；说「最满的那台」就填 `goal: {fullest: true}`；说「腾出 20 G」就填 `goal: {free_gib: 20}`（够了就不再往下列）。
    - 默认用上次检查的结果；每台电脑的 `checked` 说是多久以前检查的，太旧（`stale`）或用户要最新的，就用 `refresh: true`（和页面上的「检查」一样，只读取大小）。
-2. 先用一两句话说哪台电脑最满（`summary`、`machines`），再列前三步左右：每步说 `what`（做什么）、`frees`（大约腾出多少）、`risk`（风险，一句话）；`possible` 为 false 的说 `blocked`（为什么现在做不了）和 `unblock`（怎么才能做）。「建议先看」(`look_first`) 单独说，默认不删。需要时提一句 `not_touched` 里哪些不会动。
+2. 先用一两句话说哪台电脑最满（`summary`、`machines`），再按 `steps` 的顺序列前三步左右（现在就能做的排在前面，`possible` 为 false 的都在后面，和页面上的顺序一样）：每步说 `what`（做什么）、`frees`（大约腾出多少）、`risk`（风险，一句话）；`possible` 为 false 的说 `blocked`（为什么现在做不了）和 `unblock`（怎么才能做）。「建议先看」(`look_first`) 单独说，默认不删。需要时提一句 `not_touched` 里哪些不会动。
 3. 问用户做哪一步（可以选几步）。**用户没选的步骤不做**，不要自己一口气全做。
 4. 对用户选的每一步，照那一步 `call` 里的工具和参数原样调用（`disklessly_clean {machine, items}` 或 `disklessly_sessions_offload {machine}`）；这是写入工具，Persona 会请用户确认，用户不同意就停。搬对话前可以先用 `preview_call`（`dry_run: true`）给用户看会搬哪些、哪些因为还在用会留着。
 5. 每做完一步，按工具回答里的实测数告诉用户**真正**腾出了多少（`record.summary`，比如 `5.4 GiB → 18.0 GiB (+12.6 GiB)`，或 `record.freed_bytes`），不要只报预计数；没做成就照实说原因。

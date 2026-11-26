@@ -265,17 +265,31 @@ func TestAdviceListsEveryStepOnAPage(t *testing.T) {
 	if pushed.Title != adviceAllTitle {
 		t.Errorf("title %q", pushed.Title)
 	}
-	steps, look := sectionByKey(pushed, "advice-all-steps"), sectionByKey(pushed, "advice-all-look")
-	if steps == nil || len(steps.Items) != len(adv.Steps) || look == nil || len(look.Items) != len(adv.LookFirst) {
-		t.Fatalf("every step: %d of %d, look first %+v", len(steps.Items), len(adv.Steps), look)
+	steps, later, look := sectionByKey(pushed, "advice-all-steps"), sectionByKey(pushed, "advice-all-later"), sectionByKey(pushed, "advice-all-look")
+	if steps == nil || later == nil || look == nil {
+		t.Fatalf("sections: %+v %+v %+v", steps, later, look)
 	}
-	for i, c := range append(slices.Clone(steps.Items), look.Items...) {
+	if len(steps.Items)+len(later.Items) != len(adv.Steps) || len(look.Items) != len(adv.LookFirst) {
+		t.Fatalf("every step: %d+%d of %d, look first %+v", len(steps.Items), len(later.Items), len(adv.Steps), look)
+	}
+	for _, c := range later.Items {
+		if !strings.Contains(c.Subtitle, "现在还做不了") {
+			t.Errorf("a step under %q without its reason: %q", later.Title, c.Subtitle)
+		}
+	}
+	for _, c := range steps.Items {
+		if strings.Contains(c.Subtitle, "现在还做不了") {
+			t.Errorf("a step that cannot be done now under %q: %q", steps.Title, c.Title)
+		}
+	}
+	for i, c := range slices.Concat(steps.Items, later.Items, look.Items) {
 		if c.Type == wire.ComponentButton || c.Icon == "check" || c.Action == nil || c.Action.Confirm != "" ||
 			strings.HasPrefix(c.Action.ID, "clean") || strings.HasPrefix(c.Action.ID, "cold-") {
 			t.Errorf("row %d acts by itself or reads as done: %+v", i, c)
 		}
 	}
-	for i, c := range steps.Items {
+	// Numbers go on across the two headings.
+	for i, c := range slices.Concat(steps.Items, later.Items) {
 		if !strings.HasPrefix(c.Title, strconv.Itoa(i+1)+". ") {
 			t.Errorf("step %d not numbered: %q", i+1, c.Title)
 		}

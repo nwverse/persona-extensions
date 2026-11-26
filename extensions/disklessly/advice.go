@@ -237,6 +237,10 @@ func buildAdvice(st *State, now time.Time, opt adviceOptions) (*advice, error) {
 		look = append(look, lf...)
 	}
 
+	// What can be done now comes first, each part keeping its order (fullest computer first,
+	// safest and biggest first within one); the page and this tool list the steps the same way.
+	all, look = doableFirst(all), doableFirst(look)
+
 	goalBytes := uint64(0)
 	if opt.Goal.FreeGiB > 0 {
 		goalBytes = uint64(math.Ceil(opt.Goal.FreeGiB * gib))
@@ -304,6 +308,13 @@ func buildAdvice(st *State, now time.Time, opt adviceOptions) (*advice, error) {
 		"Persona 会请用户确认，用户不同意就不做）；possible 为 false 的步骤先照 unblock 处理。用户没选的步骤不要做。做完一步，用工具回答里实测的腾出空间告诉用户真正腾出了多少。" +
 		"「建议先看」(look_first) 的东西默认不删，只有用户点名要删才做。"
 	return adv, nil
+}
+
+// doableFirst moves the steps that cannot be done now (possible false) after the others,
+// keeping the order within each part.
+func doableFirst(steps []adviceStep) []adviceStep {
+	slices.SortStableFunc(steps, func(a, b adviceStep) int { return cmp.Compare(boolRank(!a.Possible), boolRank(!b.Possible)) })
+	return steps
 }
 
 // adviceMachineOf is what the plan knows about computer m.
@@ -392,7 +403,7 @@ func adviceSteps(st *State, am *adviceMachine, now time.Time) (steps, look []adv
 		for _, it := range items {
 			total += it.Bytes
 			ids = append(ids, it.ID)
-			list = append(list, adviceItem{ID: it.ID, Title: it.Title, Bytes: it.Bytes, Size: FormatBytes(it.Bytes)})
+			list = append(list, adviceItem{ID: it.ID, Title: itemTitle(it), Bytes: it.Bytes, Size: FormatBytes(it.Bytes)})
 		}
 		s := adviceStep{
 			MachineID: m.ID, MachineName: name, Action: adviceClean, Kind: cid, KindName: categoryName(cid),
@@ -410,7 +421,7 @@ func adviceSteps(st *State, am *adviceMachine, now time.Time) (steps, look []adv
 			// The kind's 删掉 row would take its 建议先看 items too: name the items' own rows.
 			var titles []string
 			for _, it := range items {
-				titles = append(titles, clip(cmp.Or(strings.TrimSpace(it.Title), it.ID), 200))
+				titles = append(titles, clip(cmp.Or(itemTitle(it), it.ID), 200))
 			}
 			s.PageButtons = titles
 			s.Page = "「" + homeTitle + "」页选「" + name + "」，在「能删什么」的「每一项」里逐项删：「" + strings.Join(titles, "」「") + "」（同一类里「建议先看」的那项不在这一步里）"
@@ -444,14 +455,14 @@ func adviceSteps(st *State, am *adviceMachine, now time.Time) (steps, look []adv
 
 // lookFirstStep is one 建议先看 item: big, and slow to get back.
 func lookFirstStep(m *Machine, name string, it ScanItem) adviceStep {
-	title := clip(cmp.Or(strings.TrimSpace(it.Title), it.ID), 200)
+	title := clip(cmp.Or(itemTitle(it), it.ID), 200)
 	s := adviceStep{
 		MachineID: m.ID, MachineName: name, Action: adviceLookFirst, Kind: it.Category, KindName: categoryName(it.Category),
 		What:        fmt.Sprintf("「%s」上的「%s」（建议先看：默认不删，删不删由你定）", name, title),
-		Items:       []adviceItem{{ID: it.ID, Title: it.Title, Bytes: it.Bytes, Size: FormatBytes(it.Bytes)}},
+		Items:       []adviceItem{{ID: it.ID, Title: itemTitle(it), Bytes: it.Bytes, Size: FormatBytes(it.Bytes)}},
 		FreesBytes:  it.Bytes,
 		Frees:       "大约 " + FormatBytes(it.Bytes),
-		Risk:        cmp.Or(strings.TrimSpace(it.Reason), "删了以后下次用到时要重新下载，比较大、比较慢。"),
+		Risk:        cmp.Or(itemReason(it), "删了以后下次用到时要重新下载，比较大、比较慢。"),
 		Possible:    m.Reachable,
 		Call:        adviceCallOf("disklessly_clean", map[string]any{"machine": m.ID, "items": []string{it.ID}}),
 		Page:        "「" + homeTitle + "」页选「" + name + "」，在「能删什么」的「每一项」里用「" + title + "」那一行",
@@ -554,7 +565,7 @@ func adviceNotTouched(st *State, machines []adviceMachine) []string {
 		if scan := st.Scans[am.MachineID]; scan != nil {
 			for _, it := range scan.Items {
 				if it.InUse {
-					out = append(out, fmt.Sprintf("「%s」上正在用的「%s」", am.MachineName, clip(cmp.Or(it.Title, it.ID), 80)))
+					out = append(out, fmt.Sprintf("「%s」上正在用的「%s」", am.MachineName, clip(cmp.Or(itemTitle(it), it.ID), 80)))
 				}
 			}
 		}
