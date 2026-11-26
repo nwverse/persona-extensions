@@ -1,5 +1,16 @@
 # enkeep-memory changelog
 
+## 0.2.7
+
+- **Read assistant structured ledger (`S12/ledger`) and sent-as-user provenance (`S13/sent`).** The manifest now requests
+  `assistant.entries.read` and `sent.read` and subscribes to `assistant.entries.changed`.
+  - Daily passes read active `assistant.entries.list` entries into `ledger/<day>` (and `ledger/<space>/<day>` when
+    scoped to another assistant space) with entry-id deduplication, self-write exclusion (`by=enkeep`), per-unit content
+    hash cursors, and structured decision details (`selected`, `rejected`, `reason`, `quote`) as high-evidence input.
+  - With `sent.read`, archived `kb.day` messages sent by the assistant in the user's name (`SentBy != ""`) are
+    relabelled as `voice.Ghost` so AI-drafted sends are not attributed to the user's own words, recalled sends are
+    dropped, and `S13/sent` tracks deduplicated provenance counts and a monotonic `SentLedgerID` cursor.
+
 ## 0.2.6
 
 - **Rules keep when they do not hold.** An entry's exception (read into its own field) was dropped at every exit, so

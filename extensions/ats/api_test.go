@@ -485,12 +485,12 @@ func TestQueuePageShowsEveryStateAndItsButtonsWork(t *testing.T) {
 		return string(raw)
 	}
 	page := render()
-	for _, want := range []string{"Working task", "Queued task", "Finished task", "Agent 在做", "排队中", "cancel:" + working.ID, "cancel:" + queued.ID, "retry:" + finished.ID, "Studio"} {
+	for _, want := range []string{"Working task", "Queued task", "Finished task", "ATS 在做", "排着队", "cancel:" + working.ID, "cancel:" + queued.ID, "retry:" + finished.ID, "Studio"} {
 		if !strings.Contains(page, want) {
 			t.Errorf("the page does not have %q", want)
 		}
 	}
-	if strings.Contains(page, "还差一步") {
+	if strings.Contains(page, "开始用之前") {
 		t.Error("the page asks for settings that are there")
 	}
 
@@ -503,10 +503,10 @@ func TestQueuePageShowsEveryStateAndItsButtonsWork(t *testing.T) {
 		t.Fatalf("after cancel: %s", got.State)
 	}
 	res, err = a.action(context.Background(), &ext.UIRequest{Contribution: queueUI, Action: "retry:" + finished.ID})
-	if err != nil || !strings.Contains(res.Toast, "已重新排队") || r.task(finished.ID).State != StateQueued {
+	if err != nil || !strings.Contains(res.Toast, "已经重新交给它做") || r.task(finished.ID).State != StateQueued {
 		t.Fatalf("retry: %+v %v", res, err)
 	}
-	if res, err := a.action(context.Background(), &ext.UIRequest{Contribution: queueUI, Action: "retry:task_none"}); err != nil || !strings.Contains(res.Toast, "失败") {
+	if res, err := a.action(context.Background(), &ext.UIRequest{Contribution: queueUI, Action: "retry:task_none"}); err != nil || res.Toast != "没能再试一次：找不到这个任务了，可能已经被清掉。刷新一下看看。" {
 		t.Fatalf("retry of an unknown task: %+v %v", res, err)
 	}
 	if _, err := a.render(t.Context(), &ext.UIRequest{Contribution: "other"}); err == nil {
@@ -519,7 +519,7 @@ func TestQueuePageShowsEveryStateAndItsButtonsWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw, _ := json.Marshal(view); !strings.Contains(string(raw), "还差一步") {
+	if raw, _ := json.Marshal(view); !strings.Contains(string(raw), "开始用之前，先做这两步") {
 		t.Error("the page does not say that computers and repositories are not set")
 	}
 }
