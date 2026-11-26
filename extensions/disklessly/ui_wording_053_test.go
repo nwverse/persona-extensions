@@ -64,9 +64,9 @@ func TestNewestCheckDecidesOnBothPages(t *testing.T) {
 		t.Errorf("the failed disk check is said twice:\n%s", lead)
 	}
 	for page, items := range map[string][]wire.Component{
-		"AI 对话":  row,
+		"AI 对话":   row,
 		"AI 对话 1": itemsOf(sessView(t, a, "studio-mac"), "studio-mac"),
-		"硬盘空间":   diskItemsOf(diskView(t, a, "studio-mac", tabFleet), "studio-mac", false),
+		"硬盘空间":    diskItemsOf(diskView(t, a, "studio-mac", tabFleet), "studio-mac", false),
 	} {
 		if got := checkButtons(items, "studio-mac"); !slices.Equal(got, []string{"重试 studio-mac"}) {
 			t.Errorf("%s: buttons %v", page, got)

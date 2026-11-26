@@ -256,7 +256,7 @@ func (d draw) adviceRow(s adviceStep) wire.Component {
 		act = &wire.Action{ID: "open-sessions", Push: &wire.Push{UI: sessionsUI, Title: sessionsTitle, State: ext.EncodeState(sessPage{Machine: s.MachineID})}}
 	}
 	return wire.Component{
-		Type:     wire.ComponentRow,
+		Type: wire.ComponentRow,
 		// No icon: a check mark reads as done; the number says the order.
 		Key:      boundedKey(fmt.Sprintf("advice-%d-", s.Rank), s.MachineID),
 		Title:    clip(title, 200),
