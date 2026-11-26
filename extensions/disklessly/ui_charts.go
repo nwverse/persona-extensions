@@ -92,6 +92,9 @@ func platformLabel(p string) string {
 		}
 		return name + "（ARM 芯片）"
 	case "amd64":
+		if sys == "darwin" {
+			return name + "（Intel 芯片）"
+		}
 		return name + "（Intel 或 AMD 芯片）"
 	}
 	return name

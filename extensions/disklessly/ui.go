@@ -846,7 +846,7 @@ func (d draw) itemsBreakdownSections(m *Machine, ms MachineStatus, scan *Scan, f
 			})
 		}
 		detailSec.Items = append(detailSec.Items, wire.Component{
-			Type: wire.ComponentTable,
+			Type:    wire.ComponentTable,
 			Key:     boundedKey("items-detail-tbl-", m.ID),
 			Caption: categoryLegend(CategoryAxisLabels, kinds),
 			Columns: []wire.TableColumn{
@@ -1038,7 +1038,7 @@ func (d draw) planTab(_ page, m *Machine, scan *Scan) []wire.Section {
 				Title: "会删的每一项（现在还没删）",
 				Items: []wire.Component{
 					{
-						Type: wire.ComponentTable,
+						Type:    wire.ComponentTable,
 						Key:     boundedKey("plan-tbl-", m.ID),
 						Caption: categoryLegend(CategoryAxisLabels, kinds),
 						Columns: []wire.TableColumn{
