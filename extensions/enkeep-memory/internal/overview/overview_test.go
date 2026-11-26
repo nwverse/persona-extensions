@@ -650,3 +650,79 @@ func TestPatternScoreScale(t *testing.T) {
 		t.Error("an unused pattern scored")
 	}
 }
+
+// Audit quotes sample round-robin across EvidenceIDs so one large class cannot crowd out the others.
+func TestAuditQuotesRoundRobin(t *testing.T) {
+	var all []*entry.Entry
+	var bigMembers []*entry.Entry
+	for i := 0; i < 10; i++ {
+		a := action(fmt.Sprintf("big%d", i), entry.Workflow, "alpha", entry.SrcAssistant, "2026-11-10", fmt.Sprintf("big quote %d", i))
+		all = append(all, a)
+		bigMembers = append(bigMembers, a)
+	}
+	big := class("cbig", entry.Workflow, "big class", bigMembers...)
+	other := action("other1", entry.Workflow, "beta", entry.SrcAgent, "2026-11-18", "second evidence quote")
+	all = append(all, big, other)
+	st := state(all...)
+	p := &Pattern{ID: "ov:rr", Facet: string(entry.Workflow), EvidenceIDs: []string{"cbig", "other1"}}
+	qs := quotes(st, p, 4)
+	if len(qs) != 4 {
+		t.Fatalf("got %d quotes: %v", len(qs), qs)
+	}
+	if !slices.ContainsFunc(qs, func(s string) bool { return strings.Contains(s, "second evidence quote") }) {
+		t.Fatalf("second evidence id crowded out: %v", qs)
+	}
+}
+
+// Hard holdout drops strawman distractors and easy candidates a no-memory model gets right in both orders.
+func TestHoldoutHardFilter(t *testing.T) {
+	st := fixture()
+	s := newState()
+	if _, err := runner(&fakeModel{}).Weekly(context.Background(), st, s, "2026-W47", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Strawman distractor: filtered out before any model call.
+	straw := action("qstraw", entry.Judgement, "alpha", entry.SrcAsk, "2026-11-24", "check logs")
+	straw.Situation, straw.Choice, straw.Rejected = "a service fails", "inspect logs before restarting", "blindly ignore errors and restart"
+	// Easy question: fake model answers right without memory in both orders -> dropped by filterHard.
+	easy := action("qeasy", entry.Judgement, "alpha", entry.SrcAsk, "2026-11-24", "easy choice")
+	easy.Situation, easy.Choice, easy.Rejected = "picking a colour", "choose obvious option", "choose odd option"
+	// Hard question: fake model only gets it right when memory mentions "pilot".
+	hard := action("qhard", entry.Judgement, "alpha", entry.SrcAsk, "2026-11-25", "pilot rollout")
+	hard.Situation, hard.Choice, hard.Rejected = "rolling out a change", "pilot with a small batch first", "roll out to all users at once"
+	st.Entries["qstraw"], st.Entries["qeasy"], st.Entries["qhard"] = straw, easy, hard
+
+	m := &fakeModel{predict: func(in predictInput) predictOutput {
+		var o predictOutput
+		for _, q := range in.Questions {
+			pick := "B"
+			switch {
+			case strings.Contains(q.A, "obvious"):
+				pick = "A"
+			case strings.Contains(q.B, "obvious"):
+				pick = "B"
+			case strings.Contains(in.Memory, "pilot"):
+				if strings.Contains(q.A, "pilot") {
+					pick = "A"
+				} else {
+					pick = "B"
+				}
+			}
+			o.Answers = append(o.Answers, struct {
+				ID   string `json:"id"`
+				Pick string `json:"pick"`
+			}{q.ID, pick})
+		}
+		return o
+	}}
+	h, err := runner(m).Holdout(context.Background(), st, s, "2026-W48", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.N != 1 || h.DroppedEasy != 1 || h.Candidates != 2 {
+		t.Fatalf("expected 1 hard question (1 dropped easy, 2 scanned, strawman excluded): %+v", h)
+	}
+	if h.Rate[ArmOverview] != 1 || h.Rate[ArmNone] != 0 {
+		t.Fatalf("unexpected rates: %+v", h)
+	}
+}
