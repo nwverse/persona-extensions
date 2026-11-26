@@ -124,6 +124,7 @@ type (
 		Situation string   `json:"situation,omitempty"`
 		Choice    string   `json:"choice,omitempty"`
 		Rejected  string   `json:"rejected,omitempty"`
+		Quotes    []string `json:"quotes,omitempty"`
 		Projects  []string `json:"projects,omitempty"`
 		Sources   []string `json:"source_kinds,omitempty"`
 		Weeks     int      `json:"weeks"`
@@ -191,8 +192,8 @@ func candidates(st *store.State, f entry.Facet, from, cutoff string, keep func(*
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i], out[j]
-		if len(a.t.scenes) != len(b.t.scenes) {
-			return len(a.t.scenes) > len(b.t.scenes)
+		if sa, sb := a.t.sceneCount(), b.t.sceneCount(); sa != sb {
+			return sa > sb
 		}
 		if len(a.t.sources) != len(b.t.sources) {
 			return len(a.t.sources) > len(b.t.sources)
@@ -266,8 +267,8 @@ func (r *Runner) synthesize(ctx context.Context, st *store.State, s *State, run 
 			id := fmt.Sprintf("i%d", i+1)
 			local[id] = c.e.ID
 			in.Items = append(in.Items, synthItem{ID: id, Text: clip(c.e.Shown(), 160), Situation: clip(c.e.Situation, 80),
-				Choice: clip(c.e.Choice, 80), Rejected: clip(c.e.Rejected, 60), Projects: c.t.projects, Sources: c.t.groups,
-				Weeks: len(c.t.weeks), Evidence: len(c.t.sources), People: len(c.t.people)})
+				Choice: clip(c.e.Choice, 80), Rejected: clip(c.e.Rejected, 60), Quotes: itemQuotes(st, c.e, cutoff, 2),
+				Projects: c.t.projects, Sources: c.t.groups, Weeks: len(c.t.weeks), Evidence: len(c.t.sources), People: len(c.t.people)})
 		}
 		existing := s.Sorted(func(p *Pattern) bool { return p.Facet == string(f) && p.Lifecycle != Retired })
 		for i, p := range existing {
@@ -407,8 +408,37 @@ type (
 	}
 )
 
+// itemQuotes returns up to n distinct representative user quotes under e (before cutoff), so synthesis stays grounded
+// in the user's actual words instead of elaborating on curated summaries alone.
+func itemQuotes(st *store.State, e *entry.Entry, cutoff string, n int) []string {
+	var out []string
+	seenUnit := map[string]bool{}
+	seenText := map[string]bool{}
+	for _, ev := range evidenceOf(st, e, cutoff) {
+		if !ev.quoted || seenUnit[ev.key] || seenText[ev.quoteKey] {
+			continue
+		}
+		x := st.Entries[ev.entry]
+		if x == nil {
+			continue
+		}
+		for _, line := range x.Evidence {
+			if line.Ref+"@"+line.Day == ev.key && strings.TrimSpace(line.Quote) != "" {
+				out = append(out, clip(line.Quote, 100))
+				seenUnit[ev.key] = true
+				seenText[ev.quoteKey] = true
+				break
+			}
+		}
+		if len(out) >= n {
+			break
+		}
+	}
+	return out
+}
+
 // counterCandidates are the entries that might contradict p: its classes' recorded counters first, then the entries of
-// its facet over the counterDays before end that are most alike in words and not among its evidence.
+// its facet over the counterDays before end that share a similar situation while differing in choice.
 func counterCandidates(st *store.State, p *Pattern, end, cutoff string) []*entry.Entry {
 	from := addDays(end, -counterDays)
 	in := map[string]bool{}
@@ -432,7 +462,11 @@ func counterCandidates(st *store.State, p *Pattern, end, cutoff string) []*entry
 			}
 		}
 	}
-	probe := p.Situation + " " + p.Choice + " " + p.Text
+	sitProbe := strings.TrimSpace(p.Situation)
+	if sitProbe == "" {
+		sitProbe = p.Text
+	}
+	choiceProbe := strings.TrimSpace(p.Choice)
 	type scored struct {
 		e *entry.Entry
 		s float64
@@ -445,10 +479,17 @@ func counterCandidates(st *store.State, p *Pattern, end, cutoff string) []*entry
 		if e.Last < from || cutoff != "" && e.First >= cutoff {
 			continue
 		}
-		s := norm.Jaccard(probe, e.Situation+" "+e.Choice+" "+e.Shown())
-		if s >= 0.08 {
-			pool = append(pool, scored{e, s})
+		sitSim := norm.Jaccard(sitProbe, e.Situation+" "+e.Shown())
+		if sitSim < 0.06 {
+			continue
 		}
+		// Down-rank entries that appear to make the same choice, so genuine counter-examples rise first.
+		score := sitSim
+		if choiceProbe != "" {
+			choiceSim := norm.Jaccard(choiceProbe, e.Choice+" "+e.Shown())
+			score = sitSim * (1 - 0.5*choiceSim)
+		}
+		pool = append(pool, scored{e, score})
 	}
 	sort.Slice(pool, func(i, j int) bool {
 		if pool[i].s != pool[j].s {

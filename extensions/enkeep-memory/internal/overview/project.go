@@ -39,11 +39,12 @@ const (
 
 // evid is one piece of evidence under an entry.
 type evid struct {
-	entry  string // the curated entry it is under (an action, or the class itself)
-	key    string // ref@day: one unit on one day, the independent unit of evidence
-	day    string
-	group  string // source kind (sourceGroup)
-	quoted bool
+	entry    string // the curated entry it is under (an action, or the class itself)
+	key      string // ref@day: one unit on one day, the independent unit of evidence
+	day      string
+	group    string // source kind (sourceGroup)
+	quoted   bool
+	quoteKey string // normalised quote text, to reject identical quotes repeated across entries
 }
 
 // sourceGroup is the kind of source a code belongs to: the user's chats with the assistant, cards and to-dos, agent
@@ -114,8 +115,9 @@ func evidenceOf(st *store.State, e *entry.Entry, cutoff string) []evid {
 			if ev.Day == "" || cutoff != "" && ev.Day >= cutoff {
 				continue
 			}
+			q := strings.TrimSpace(ev.Quote)
 			out = append(out, evid{entry: x.ID, key: ev.Ref + "@" + ev.Day, day: ev.Day, group: sourceGroup(ev.Source),
-				quoted: strings.TrimSpace(ev.Quote) != ""})
+				quoted: q != "", quoteKey: norm.Q(q)})
 		}
 		if depth >= 2 {
 			return
@@ -132,14 +134,15 @@ func evidenceOf(st *store.State, e *entry.Entry, cutoff string) []evid {
 
 // tally is a set of evidence counted for the gate.
 type tally struct {
-	scenes   []string // "p:<project>" and "s:<source kind>"
-	sources  []string // quoted ref@day
-	weeks    []string
-	groups   []string
-	projects []string
-	people   []string
-	last     string
-	unquoted int // entries among the evidence without a quoted line
+	scenes       []string // "p:<project>" and "s:<source kind>"
+	sources      []string // quoted ref@day
+	uniqueQuotes []string // distinct normalised quote texts
+	weeks        []string
+	groups       []string
+	projects     []string
+	people       []string
+	last         string
+	unquoted     int // entries among the evidence without a quoted line
 }
 
 // count tallies the evidence of the entries ids, before cutoff.
@@ -175,6 +178,7 @@ func count(st *store.State, ids []string, cutoff string) tally {
 			add(&t.scenes, "s:"+ev.group)
 			add(&t.groups, ev.group)
 			add(&t.sources, ev.key)
+			add(&t.uniqueQuotes, ev.quoteKey)
 			add(&t.weeks, isoWeek(ev.day))
 			if ev.day > t.last {
 				t.last = ev.day
@@ -193,6 +197,24 @@ func count(st *store.State, ids []string, cutoff string) tally {
 	}
 	sort.Strings(t.weeks)
 	return t
+}
+
+// crossScene is true only when the evidence spans at least MinScenes distinct projects OR at least MinScenes distinct
+// source kinds. One project seen through one source kind is a single scene, never two.
+func (t tally) crossScene() bool {
+	return len(t.projects) >= MinScenes || len(t.groups) >= MinScenes
+}
+
+// sceneCount is the effective scene spread: 0 when empty, 1 when confined to a single project and single source kind,
+// and len(projects)+len(groups) once it truly spans multiple projects or multiple source kinds.
+func (t tally) sceneCount() int {
+	if t.crossScene() {
+		return len(t.projects) + len(t.groups)
+	}
+	if len(t.projects) > 0 || len(t.groups) > 0 {
+		return 1
+	}
+	return 0
 }
 
 // perspective is where the evidence differs most: sources first (what was said in one place and done in another),
@@ -220,9 +242,9 @@ func gate(p *Pattern, t tally) string {
 		return GateGeneric
 	case t.unquoted > 0:
 		return GateQuotes
-	case len(t.scenes) < MinScenes:
+	case !t.crossScene():
 		return GateScenes
-	case len(t.sources) < MinSources:
+	case len(t.sources) < MinSources || len(t.uniqueQuotes) < MinSources:
 		return GateSources
 	case len(t.weeks) < MinWeeks:
 		return GateWeeks
@@ -232,7 +254,7 @@ func gate(p *Pattern, t tally) string {
 
 // apply writes a tally onto a pattern: the counts, the weeks, the perspective and the gate.
 func apply(p *Pattern, t tally) {
-	p.ScenesCount, p.SourcesCount, p.ActiveWeeks, p.LastEvidence = len(t.scenes), len(t.sources), t.weeks, t.last
+	p.ScenesCount, p.SourcesCount, p.ActiveWeeks, p.LastEvidence = t.sceneCount(), len(t.sources), t.weeks, t.last
 	p.Perspective = t.perspective()
 	p.Gate = gate(p, t)
 }
