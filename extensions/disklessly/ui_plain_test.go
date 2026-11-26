@@ -798,6 +798,10 @@ func TestInstructionsNameButtonsOnTheirPage(t *testing.T) {
 					t.Fatal(err)
 				}
 				checkTapNames(t, label+" "+m+"/"+tab, res.View)
+				if tab == tabFleet {
+					// Each 帮我腾空间 step names a button the page it opens draws.
+					checkAdviceButtons(t, a, label+" "+m+" 帮我腾空间", res.View)
+				}
 			}
 		}
 	}

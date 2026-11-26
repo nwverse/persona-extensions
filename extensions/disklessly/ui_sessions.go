@@ -243,7 +243,7 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 		hits = deep.hits
 		title = fmt.Sprintf("搜全文「%s」（%d 个）", clip(query, 24), len(hits))
 	} else {
-		hits = SearchCold(d.st, query, machineArg, 0, d.now)
+		hits = d.pageSearch(query, machineArg, 0)
 		if strings.TrimSpace(query) != "" {
 			title = fmt.Sprintf("搜索「%s」（%d 个）", clip(query, 24), len(hits))
 		}
@@ -272,6 +272,7 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	if capped {
 		notes = append(notes, fmt.Sprintf("这里每台电脑只列出最新的 %d 个对话，更早的请用「%s」。", maxColdEntries, coldDeepText))
 	}
+	notes = append(notes, findHint)
 	results.Footer = strings.Join(notes, " ")
 	if len(shown) == 0 {
 		detail := "还没有搬到网盘的对话。点「" + coldRefreshText + "」看看电脑的情况；检查只读取信息，不会搬走或删除任何东西。"
@@ -1198,7 +1199,7 @@ func (d draw) sessionsFallbackSummary(m *Machine, query string) string {
 		scope = machineLabel(m)
 		machineArg = m.ID
 	}
-	hits := SearchCold(d.st, clipQuery(query), machineArg, 5, d.now)
+	hits := d.pageSearch(clipQuery(query), machineArg, 5)
 	var lines []string
 	lines = append(lines, fmt.Sprintf("Disklessly AI 对话（%s，找到 %d 个对话）", scope, len(hits)))
 	for _, mm := range d.st.Machines {
