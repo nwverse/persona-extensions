@@ -263,7 +263,8 @@ func Status(e *entry.Entry) string {
 }
 
 // Rank orders entries by how much they matter (0.2.0-beta.52: entry.Score, 0 to 891; pinned 1000), not by how new they
-// are: recall and hand-offs take the highest first. A weak relation triple ranks last. The standing set has its own
+// are: recall and hand-offs take the highest first. Entity-anchored active local rules keep high recall rank (750–891)
+// without entering standing (unified design §2.2). A weak relation triple ranks last. The standing set has its own
 // ranks above every other (Resident).
 func Rank(e *entry.Entry) int {
 	if e.Pinned {
@@ -272,8 +273,32 @@ func Rank(e *entry.Entry) int {
 	r := entry.Score(e) * 9
 	if IsWeakRelation(e) {
 		r = min(r, 9)
+	} else if entityAnchoredRule(e) && Status(e) == "active" {
+		r = max(r, 750)
 	}
 	return max(0, min(891, r))
+}
+
+// entityAnchoredRule says whether e is a rule or decision explicitly anchored to a person, project, machine or tool
+// (non-global scope, impact.object, or object), so it stays out of global standing while ranking high in recall.
+func entityAnchoredRule(e *entry.Entry) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Facet {
+	case entry.Interaction, entry.Tools, entry.Judgement, entry.Workflow:
+	default:
+		return false
+	}
+	if strings.TrimSpace(e.Impact.Object) != "" || strings.TrimSpace(e.Object) != "" {
+		return true
+	}
+	for _, sc := range e.Scopes {
+		if sc.Kind != entry.ScopeGlobal && strings.TrimSpace(sc.Name) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // LegacyRank is Rank before 0.2.0-beta.52 (facet, grain and count, ties broken by the newest), kept for the hard
@@ -409,9 +434,10 @@ func backfill(st *store.State, e *entry.Entry, depth int) ([]string, string) {
 }
 
 // Subjects are the names whose mention brings the entry in: the person of a card, its object, the person or project
-// its impact is for, its scopes' names.
+// its impact is for, its scopes' names, skeleton endpoints, occasion words, and 1-hop skeleton neighbors (up to MaxSubjects).
 func Subjects(st *store.State, e *entry.Entry) []string {
 	var out []string
+	var entityNames []string
 	add := func(s string) {
 		s = strings.TrimSpace(s)
 		if s == "" || len(out) >= MaxSubjects || slices.Contains(out, s) {
@@ -419,19 +445,50 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 		}
 		out = append(out, clip(s, MaxSubject))
 	}
-	if k := st.Contacts[e.Person]; e.Person != "" && k != nil && k.Manual != "removed" {
-		add(k.Name)
+	addEntity := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if strings.HasPrefix(s, "person:") && st != nil {
+			if k := st.Contacts[s]; k != nil && k.Manual != "removed" && k.Name != "" {
+				s = k.Name
+			} else {
+				s = strings.TrimPrefix(s, "person:")
+			}
+		} else {
+			for _, p := range []string{"project:", "system:", "object:"} {
+				s = strings.TrimPrefix(s, p)
+			}
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		add(s)
+		if !slices.Contains(entityNames, s) {
+			entityNames = append(entityNames, s)
+		}
 	}
-	add(e.Object)
+	if st != nil && e.Person != "" {
+		if k := st.Contacts[e.Person]; k != nil && k.Manual != "removed" {
+			addEntity(k.Name)
+		}
+	}
+	addEntity(e.Object)
 	// The person or project a rule is for (impact.object, design l0-leverage §13: rules hang on entities): mentioning
 	// them brings the rule in. A kind of task named there is a short phrase too and does no harm.
 	if o := strings.TrimSpace(e.Impact.Object); utf8.RuneCountInString(o) <= 24 {
-		add(o)
+		addEntity(o)
 	}
 	for _, sc := range e.Scopes {
 		if sc.Kind != entry.ScopeGlobal {
-			add(sc.Name)
+			addEntity(sc.Name)
 		}
+	}
+	if e.Facet == entry.World && entry.IsSkeletonPredicate(e.Predicate) {
+		addEntity(e.Subject)
+		addEntity(e.Target)
 	}
 	// The occasion a rule is for (0.2.6): decisions_query matches its tag's words as substrings of the text, the
 	// subjects, the facet and the categories, so "派活" or "汇报" in a tag brings the rules for that moment in.
@@ -441,6 +498,14 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 		}
 		if g := GroupOf(st, e); g != "" && !genericTypes[e.Type] {
 			add(strings.TrimPrefix(g, string(e.Facet)+":"))
+		}
+	}
+	// 1-hop skeleton neighbors (unified design §2.2): for entity-anchored rules, attach up to 4 structural
+	// 1-hop neighbor names from the entity graph so querying a related project/person/repo surfaces the rule.
+	if st != nil && st.Graph != nil && len(entityNames) > 0 && len(out) < MaxSubjects &&
+		(entityAnchoredRule(e) || (e.Facet == entry.World && entry.IsSkeletonPredicate(e.Predicate))) {
+		for _, nb := range recall.SkeletonNeighbors(st, entityNames, 4) {
+			add(nb)
 		}
 	}
 	return out
@@ -454,6 +519,7 @@ var momentWords = map[string][]string{
 	"task_start":   {"开工", "task"},
 	"reply_person": {"回复", "reply"},
 	"use_object":   {"工具", "tool"},
+	"review":       {"评审", "review"},
 }
 
 // genericTypes name no occasion: a correction can be of anything.
