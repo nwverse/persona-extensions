@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "disklessly",
   "name": "Disklessly 硬盘空间",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "icon": "assets/icon.png",
   "description": "看每台电脑的硬盘用了多少，把能自动重新生成的缓存删掉腾地方，把一周没动的 AI 对话（Claude Code、Codex 等）搬到你自己的网盘，要用时再拿回来。「检查」只读取大小，不会删任何东西；真要删之前都会先说清楚删什么、再让你确认；对话要先放进网盘、读回核对无误才删电脑上的那份。能看运行 Persona 的这台电脑，也能看通过远程登录（SSH）连得上的其他电脑。还可以在 Persona 的磁盘占用图里把文件、文件夹和 App 搬到网盘或拿回来，并附带给 AI 助手用的查询和操作工具（disklessly mcp）：只看的直接运行，删除、搬走和改电脑设置都要你在对话里确认。",
   "publisher": "nwverse",

@@ -256,6 +256,24 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 	wantAxis := []string{"Go", "Node/Py", "容器", "Rust/XC", "日志", "旧对话"}
 
 	for _, wm := range wantMachines {
+		// The charts are drawn for the selected computer; the others keep their bar only.
+		fleetView, err := a.render(ctx, &ext.UIRequest{UIParams: wire.UIParams{UIVersion: 8, TZ: "Asia/Shanghai", State: ext.EncodeState(page{Machine: wm.id})}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkStrictView(t, fleetView, false)
+		assertMobileReadability360px(t, "fleet "+wm.id, fleetView)
+		for _, other := range wantMachines {
+			if other.id == wm.id {
+				continue
+			}
+			if findComponentByKey(fleetView, "fleet-root-"+other.id) != nil || findComponentByKey(fleetView, "fleet-stats-"+other.id) != nil {
+				t.Fatalf("%s selected: %s also drawn in full", wm.id, other.id)
+			}
+			if findComponentByKey(fleetView, "prog-"+other.id) == nil || findComponentByKey(fleetView, "btn-plan-"+other.id) == nil {
+				t.Fatalf("%s selected: %s lost its bar or buttons", wm.id, other.id)
+			}
+		}
 		if findComponentByKey(fleetView, "fleet-stats-"+wm.id) == nil {
 			t.Fatalf("%s: missing disjoint fleet-stats-%s stat_grid", wm.id, wm.id)
 		}

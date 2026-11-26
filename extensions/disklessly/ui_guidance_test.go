@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"strings"
 	"testing"
@@ -161,5 +162,70 @@ func TestNotReadyCommandsAreSecondary(t *testing.T) {
 		for _, m := range []string{"", "build-box"} {
 			leadsPlainly(t, "AI 对话 "+s.name, itemsOf(g.view(t, m), "build-box"), s.command)
 		}
+	}
+}
+
+// fiveComputers is a 硬盘空间 page state with five computers, four checked and one unreachable.
+func fiveComputers(t *testing.T) *app {
+	t.Helper()
+	a := newTestApp(t)
+	if err := a.db().update(func(st *State, now time.Time) error {
+		st.ensureDefaults(now)
+		st.Scans["local"] = ParseProbeOutput(st.machine("local"), sampleProbeLocal, now)
+		for _, id := range []string{"build-box", "nas-box", "studio-mac", "offline-box"} {
+			m, err := st.upsertMachine(MachineInput{ID: id, Host: id, Name: id, Source: "manual"}, now)
+			if err != nil {
+				return err
+			}
+			if id == "offline-box" {
+				m.LastError, m.Reachable = unreachableErrors[0].err, false
+				continue
+			}
+			st.Scans[id] = ParseProbeOutput(m, sampleProbeLocal, now)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// The 硬盘空间 page draws charts for the selected computer only: every other one is a row with its
+// bar and its buttons, so every action stays one tap away; old page states still open it.
+func TestDiskPageCompactForManyComputers(t *testing.T) {
+	noSandbox(t)
+	a := fiveComputers(t)
+	ctx := context.Background()
+	for _, sel := range []string{"", "nas-box"} {
+		v, err := a.render(ctx, &ext.UIRequest{UIParams: wire.UIParams{UIVersion: 8, State: ext.EncodeState(page{Machine: sel})}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkStrictView(t, v, false)
+		assertMobileReadability360px(t, "five computers "+sel, v)
+		checkTapNames(t, "five computers "+sel, v)
+		want := cmp.Or(sel, "local")
+		for _, id := range []string{"local", "build-box", "nas-box", "studio-mac"} {
+			charts := findComponentByKey(v, "fleet-root-"+id) != nil
+			if charts != (id == want) {
+				t.Errorf("selected %q: %s drawn with charts %v", sel, id, charts)
+			}
+			for _, key := range []string{"mach-", "prog-", "btn-scan-", "btn-plan-", "btn-clean-"} {
+				if findComponentByKey(v, key+id) == nil {
+					t.Errorf("selected %q: %s lost %s", sel, id, key)
+				}
+			}
+		}
+		if n := sectionItemCount(v.Sections); n > 40 {
+			t.Errorf("selected %q: %d components for five computers", sel, n)
+		}
+	}
+	// Saved states of earlier versions: the old sessions tab, a computer no longer there.
+	for _, st := range []map[string]string{{"t": "sessions", "sq": "checkout"}, {"m": "gone-box"}, {"m": "build-box", "t": "fleet", "x": "scan-offline-box"}} {
+		v, err := a.render(ctx, &ext.UIRequest{UIParams: wire.UIParams{UIVersion: 8, State: ext.EncodeState(st)}})
+		if err != nil || v == nil {
+			t.Fatalf("state %s: %v", st, err)
+		}
+		checkStrictView(t, v, false)
 	}
 }

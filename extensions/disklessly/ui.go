@@ -407,6 +407,15 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 		Title:  scanAllText,
 		Action: &wire.Action{ID: "scan-all"},
 	})
+	// Charts and the breakdown are drawn for the selected computer only; say where the others' are.
+	if len(statuses) > 1 && d.v2() {
+		where := "想看别的电脑，点它那一行看它能删什么。"
+		if d.v3() {
+			where = "想看别的电脑，在顶部「电脑」里选它，或者点它那一行看它能删什么。"
+		}
+		topItems = append(topItems, wire.Component{Type: wire.ComponentText, Style: wire.TextStyleCaption,
+			Text: clip("图表和各类明细只画选中的「"+machineLabel(selected)+"」，其他电脑只写用了多少、能腾出多少；"+where, 300)})
+	}
 
 	secs := []wire.Section{{
 		Title: "每台电脑的硬盘",
@@ -441,6 +450,9 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 		scan := d.st.Scans[m.ID]
 		badge := healthBadge(ms)
 		compactTail := len(statuses) > 28 && idx >= chartLimit
+		// Only the selected computer gets its stats, charts and table; the others are one row
+		// (name, state, how full, how much can be freed) with their bar and buttons.
+		detailed := m.ID == selected.ID
 
 		var subParts []string
 		if !m.IsLocal {
@@ -448,6 +460,9 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 		}
 		if m.Platform != "" {
 			subParts = append(subParts, m.Platform)
+		}
+		if ms.TotalBytes > 0 && !detailed {
+			subParts = append(subParts, "还剩 "+FormatBytes(ms.AvailableBytes)+" · 可以腾出 "+FormatBytes(ms.ReclaimableBytes))
 		}
 		if ms.LastScannedAt != nil {
 			subParts = append(subParts, d.when(*ms.LastScannedAt))
@@ -530,7 +545,9 @@ func (d draw) fleetTab(_ page, statuses []MachineStatus, selected *Machine) []wi
 				}
 				sec.Items = append(sec.Items, machineProgressComponent(ms))
 
-				if d.v2() && idx < chartLimit {
+				if !detailed {
+					// The row's subtitle says how much is left and can be freed.
+				} else if d.v2() && idx < chartLimit {
 					afterSafe := min(ms.TotalBytes, ms.AvailableBytes+ms.SafeBytes)
 					sec.Items = append(sec.Items, d.statComponents(boundedKey("fleet-stats-", m.ID), []wire.Stat{
 						{Label: "还剩", Value: FormatBytes(ms.AvailableBytes), Detail: "共 " + FormatBytes(ms.TotalBytes)},
