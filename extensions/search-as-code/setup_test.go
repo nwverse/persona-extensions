@@ -41,7 +41,7 @@ func TestFirstOpenSaysWhatToSetUp(t *testing.T) {
 		want  []string
 		not   []string
 	}{
-		{"01-empty-results", []string{"还没设置好", "还没选要搜哪台电脑", "「设置 › 扩展 › AI 聊天记录搜索」", "「要搜哪些电脑」", "再找一次", "不会自己重新搜", "每 15 分钟"}, []string{"没连上"}},
+		{"01-empty-results", []string{"还没设置好", "还没选要搜哪台电脑", "「设置 › 扩展 › AI 聊天记录搜索」", "「要搜哪些电脑」", "再找一次", "这不是出错了", "每 15 分钟", "「搜哪些地方」"}, []string{"没连上"}},
 		{"08-picked-not-searched-results", []string{"已经选了 2 台电脑，还没去那里搜", "再找一次", "不会自己重新搜"}, []string{"还没选要搜哪台电脑"}},
 		{"09-picked-none-answered-results", []string{"选的电脑都没连上", "「Laptop 2」、「desktop」", "这不代表那里没有聊天记录", "再找一次"}, []string{"还没选要搜哪台电脑", "确实还没有聊天记录"}},
 		{"10-picked-no-chats-results", []string{"确实还没有聊天记录", "「Laptop 2」、「desktop」都回应了", "「其他聊天记录文件夹（一般不用填）」"}, []string{"还没选要搜哪台电脑", "没连上"}},
@@ -74,6 +74,57 @@ func TestFirstOpenSaysWhatToSetUp(t *testing.T) {
 		if !hasStats(s.view) || strings.Contains(s.text, "还没设置好") || strings.Contains(s.text, "选的电脑上还没有聊天记录") {
 			t.Errorf("%s: not the plain result:\n%s", name, s.text)
 		}
+	}
+}
+
+// With no computer picked, a first-time user reads four short lines in the order they act on them (what is
+// missing, where to choose it, what to press, that nothing is broken); the rest is one secondary footer line.
+func TestNothingPickedIsShort(t *testing.T) {
+	s := statesByName(t)["01-empty-results"]
+	var sec *wire.Section
+	for i := range s.view.Sections {
+		if s.view.Sections[i].Title == "还没设置好" {
+			sec = &s.view.Sections[i]
+		}
+	}
+	if sec == nil {
+		t.Fatalf("no setup section:\n%s", s.text)
+	}
+	var lines []string
+	for _, it := range sec.Items {
+		switch it.Type {
+		case wire.ComponentEmpty:
+			lines = append(lines, it.Title, it.Detail)
+		case wire.ComponentText:
+			if it.Style == wire.TextStyleSecondary || it.Style == wire.TextStyleCaption {
+				t.Errorf("secondary text %q belongs in the footer", it.Text)
+			}
+			lines = append(lines, it.Text)
+		}
+	}
+	order := []string{"还没选要搜哪台电脑", "「设置 › 扩展 › AI 聊天记录搜索」的「要搜哪些电脑」", "点「再找一次」", "这不是出错了"}
+	at := 0
+	for _, w := range order {
+		for at < len(lines) && !strings.Contains(lines[at], w) {
+			at++
+		}
+		if at == len(lines) {
+			t.Fatalf("%q missing or out of order in %q", w, lines)
+		}
+	}
+	if len(lines) > 5 {
+		t.Errorf("%d lines, want at most 5: %q", len(lines), lines)
+	}
+	for _, l := range lines {
+		if n := len([]rune(l)); n > 60 {
+			t.Errorf("line of %d characters, want a short one: %q", n, l)
+		}
+	}
+	if !strings.Contains(sec.Footer, "每 15 分钟") || !strings.Contains(sec.Footer, "「搜哪些地方」") {
+		t.Errorf("footer %q", sec.Footer)
+	}
+	if i := slices.IndexFunc(sec.Items, func(c wire.Component) bool { return c.Type == wire.ComponentButton }); i < 0 || sec.Items[i].Title != "再找一次" {
+		t.Errorf("no 再找一次 button: %+v", sec.Items)
 	}
 }
 
