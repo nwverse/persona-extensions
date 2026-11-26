@@ -32,7 +32,7 @@ var actionTools = []tool{
 	{Name: "anytype_create_object", Description: "Create a Markdown object in a specific Anytype space after explicit confirmation. Uses a page/note type already present in that space, not an arbitrary type or v2 payload.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"space_id", "type_key", "name", "body"}, "properties": map[string]any{
 			"space_id": idSchema, "type_key": map[string]any{"type": "string", "enum": []string{"page", "note"}},
-			"name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxNameChars}, "body": map[string]any{"type": "string", "minLength": 1, "maxLength": 30000},
+			"name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxNameChars}, "body": map[string]any{"type": "string", "minLength": 1, "maxLength": maxBodyChars},
 		}}},
 }
 

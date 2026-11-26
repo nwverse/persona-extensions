@@ -43,7 +43,7 @@ const usage = `disklessly: Persona Disklessly machine disk watermark, cache clea
                                disklessly_sessions_search, disklessly_sessions_status,
                                disklessly_clean, disklessly_machine_upsert, disklessly_machine_delete,
                                disklessly_sessions_offload, disklessly_sessions_restore,
-                               disklessly_cli_install)
+                               disklessly_cli_install, disklessly_files_offload)
   disklessly manifest          print persona-extension.json
 
 The MCP server finds the data in --data, else PERSONA_DISKLESSLY_DATA, else the directory the hub's
@@ -80,6 +80,8 @@ type app struct {
 	now      func() time.Time
 	// jobs are the background cold-session jobs (refresh, restore, offload, copy-install).
 	jobs coldJobs
+	// offloadData is the disk_offload point's inventories and jobs (offload.go).
+	offloadData offloadState
 }
 
 func newApp(dir string) *app {
@@ -89,6 +91,8 @@ func newApp(dir string) *app {
 func program(a *app) ext.Program {
 	return ext.Program{
 		ID: about.ID, Version: about.Version, Manifest: manifest, Init: a.init,
+		// The disk_offload point: Persona's usage map lists what is offloaded and moves items to the cloud.
+		Namespaces: map[string]ext.Handler{offloadNamespace: a.offload},
 		UI: map[string]ext.Page{
 			pageUI:     {Render: a.render, Action: a.action},
 			cardUI:     {Render: a.card},

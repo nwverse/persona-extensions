@@ -111,8 +111,11 @@ export class StackExchange {
         const at = this.now(); validate(raw, at); this.save(path, raw, at); this.lastOK = at; this.lastError = undefined;
         return { raw, at };
       } catch (error) {
-        if (request.signal.aborted) throw error instanceof Error && error.name === "AbortError" ? error : new DOMException("Cancelled", "AbortError");
-        const failure = error instanceof ReadError ? error : error instanceof Error && error.name === "AbortError" ? error : new ReadError("network");
+        if (signal?.aborted) throw error instanceof Error && error.name === "AbortError" ? error : new DOMException("Cancelled", "AbortError");
+        const failure = error instanceof ReadError ? error
+          : request.signal.aborted ? (request.signal.reason instanceof ReadError ? request.signal.reason : new ReadError("slow"))
+          : error instanceof Error && error.name === "AbortError" ? error
+          : new ReadError("network");
         if (failure instanceof ReadError) this.lastError = { code: failure.code, at: this.monotonic() };
         throw failure;
       } finally { this.lastRequest = this.monotonic(); request.dispose(); }

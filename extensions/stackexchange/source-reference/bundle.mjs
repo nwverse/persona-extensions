@@ -157,7 +157,8 @@ var fields = {
   grid: ["tiles", "max_columns"],
   carousel: ["title", "tiles", "width"],
   graph: ["nodes", "edges", "layout", "direction", "selected", "folded"],
-  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"]
+  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"],
+  map: ["title", "alt", "caption", "aspect", "viewport", "markers", "routes", "links", "static", "show_list"]
 };
 function pathPart(parent, ...segments) {
   return parent + segments.map((segment) => `${segment.length}:${segment}`).join("");
@@ -767,7 +768,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "stackexchange", name: "Stack Exchange", version: "0.1.2", icon: "assets/icon.png", description: "Search developer questions on Stack Overflow and selected Stack Exchange sites. Read accepted or highly voted answers with code, attribution and original links. Anonymous, read-only public API access.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/stackexchange/README.md", tags: ["Development", "Questions", "Answers", "Stack Overflow"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/stackexchange.mjs", sha256: "" } }, contributes: { connectors: [{ id: "stackexchange", name: "Stack Exchange", capabilities: ["status", "tools"], hosts: ["api.stackexchange.com"], agent_tools: ["stackexchange_*"] }], ui: [{ id: "answers", title: "Stack Exchange", placement: "nav_page", icon: "search" }] }, permissions: { network: ["api.stackexchange.com"] } };
+var persona_extension_default = { manifest_version: 1, id: "stackexchange", name: "Stack Exchange", version: "0.1.4", icon: "assets/icon.png", description: "Search developer questions on Stack Overflow and selected Stack Exchange sites. Read accepted or highly voted answers with code, attribution and original links. Anonymous, read-only public API access.", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/stackexchange/README.md", tags: ["Development", "Questions", "Answers", "Stack Overflow"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/stackexchange.mjs", sha256: "" } }, contributes: { connectors: [{ id: "stackexchange", name: "Stack Exchange", capabilities: ["status", "tools"], hosts: ["api.stackexchange.com"], agent_tools: ["stackexchange_*"] }], ui: [{ id: "answers", title: "Stack Exchange", placement: "nav_page", icon: "search" }] }, permissions: { network: ["api.stackexchange.com"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 2 << 20, fresh: 60 * 6e4, cache: 40, cacheBytes: 2 << 20, gap: 1e3 });
@@ -793,13 +794,25 @@ var sites = Object.freeze({
   security: { name: "Information Security", host: "security.stackexchange.com" }
 });
 var siteIDs = Object.keys(sites);
-var clip = (text, most) => text.length <= most ? text : text.slice(0, most).trimEnd() + "\u2026";
+var clip = (text, most) => {
+  if (most <= 0) return "";
+  const chars = Array.from(text);
+  if (chars.length <= most) return text;
+  if (most === 1) return chars[0];
+  return chars.slice(0, most - 1).join("").trimEnd() + "\u2026";
+};
 var oneLine = (text) => text.replace(/\s+/gu, " ").trim();
 function queryText(value) {
   if (typeof value !== "string" || /[\u0000-\u001f\u007f]/u.test(value)) throw new ReadError("invalid");
   const query = oneLine(value);
   if (!query || Array.from(query).length > 200) throw new ReadError("invalid");
   return query;
+}
+function titleText(value) {
+  if (typeof value !== "string" || /[\u0000-\u001f\u007f]/u.test(value)) throw new ReadError("invalid");
+  const title = oneLine(value);
+  if (!title || Array.from(title).length > 500) throw new ReadError("invalid");
+  return title;
 }
 function siteID(value) {
   if (value == null || value === "") return "stackoverflow";
@@ -905,19 +918,107 @@ function parseQuestions(raw, site, at) {
   return { questions, at, ...quotaRemaining === void 0 ? {} : { quotaRemaining } };
 }
 function markdownText(value) {
-  return value.replace(/\\/g, "\\\\").replace(/([`*_])/g, "\\$1").replace(/\[/g, "\\[").replace(/^[ \t]*#{1,6}(?= )/gm, "\\#").replace(/^[ \t]*([+-]|\d+\.)(?= )/gm, "\\$1");
+  return value.replace(/`/g, "'").replace(/\\/g, "\\\\").replace(/([*_[\]])/g, "\\$1").replace(/\\\]\(/g, "\\]\\(").replace(/\\\]\:/g, "\\]\\:").replace(/<([A-Za-z][A-Za-z0-9+.-]*):(?=[^<> \t\r\n\f]*>)/g, "<$1\\:").replace(/^([ \t]*)(#{1,6})(?= )/gm, "$1\\$2").replace(/^([ \t]*)([+-]|\d+\.)(?= )/gm, "$1\\$2").replace(/^([ \t]*)>/gm, "$1\\>");
+}
+function escapeHTMLText(value) {
+  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function safeLinkHref(raw) {
+  let url;
+  try {
+    url = new URL(raw.trim());
+  } catch {
+    return void 0;
+  }
+  if (url.protocol !== "https:" || !url.hostname || url.username || url.password) return void 0;
+  return url.href.replace(/%(?![0-9a-fA-F]{2})/g, "%25").replace(/\(/g, "%28").replace(/\)/g, "%29").replace(/</g, "%3C").replace(/>/g, "%3E").replace(/\[/g, "%5B").replace(/\]/g, "%5D").replace(/`/g, "%60").replace(/\s/g, "%20");
+}
+function wrapInlineTag(text, tagPattern, sentinel) {
+  let prev;
+  let next = text;
+  for (let pass = 0; pass < 4; pass++) {
+    prev = next;
+    next = next.replace(tagPattern, (_, inner) => {
+      const lead = /^\s/.test(inner) ? " " : "";
+      const trail = /\s$/.test(inner) ? " " : "";
+      const body = inner.trim().replace(/\r?\n+/g, " ");
+      if (!body.replace(/<[^>]*>/g, "").trim()) return lead || trail ? " " : "";
+      return `${lead}${sentinel}${body}${sentinel}${trail}`;
+    });
+    if (next === prev) break;
+  }
+  return next;
+}
+function clipMarkdown(text, most) {
+  if (most <= 0) return "";
+  const chars = Array.from(text);
+  if (chars.length <= most) return text;
+  if (most === 1) return chars[0];
+  let openFence;
+  let kept = "";
+  let used = 0;
+  const reserve = 24;
+  const budget2 = Math.max(1, most - reserve);
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    const lineChars = Array.from(line);
+    const sep = i === 0 ? 0 : 1;
+    if (used + sep + lineChars.length <= budget2) {
+      if (sep) {
+        kept += "\n";
+        used++;
+      }
+      kept += line;
+      used += lineChars.length;
+      const fenceMatch = /^(`{3,})/.exec(line.trimStart());
+      if (fenceMatch) {
+        if (!openFence) openFence = fenceMatch[1];
+        else if (fenceMatch[1].length >= openFence.length && line.trim() === fenceMatch[1]) openFence = void 0;
+      }
+      continue;
+    }
+    const room = budget2 - used - sep;
+    const isClosingFence = openFence !== void 0 && line.trim() === openFence;
+    if (room > 0 && !isClosingFence) {
+      let piece = lineChars.slice(0, room).join("");
+      if (!openFence) {
+        const ticks = (piece.match(/`/g) ?? []).length;
+        if (ticks % 2 === 1) piece = piece.slice(0, piece.lastIndexOf("`"));
+        piece = piece.replace(/!?\[[^\]]*(?:\]\([^)]*)?$/, "").replace(/\]\([^)]*$/, "").replace(/<[A-Za-z][A-Za-z0-9+.-]*:[^<> \t\r\n\f]*$/, "");
+      } else if (/^`+$/.test(piece.trim())) {
+        piece = "";
+      }
+      piece = piece.trimEnd();
+      if (piece) {
+        if (sep) kept += "\n";
+        kept += piece;
+      }
+    }
+    break;
+  }
+  kept = kept.trimEnd();
+  const suffix = openFence ? `
+${openFence}
+\u2026` : "\u2026";
+  const maxBody = most - Array.from(suffix).length;
+  if (maxBody <= 0) return chars.slice(0, most).join("");
+  const bodyChars = Array.from(kept);
+  if (bodyChars.length > maxBody) kept = bodyChars.slice(0, maxBody).join("").trimEnd();
+  const out = kept ? kept + suffix : "\u2026";
+  return Array.from(out).length <= most ? out : Array.from(out).slice(0, most).join("");
 }
 function answerMarkdown(raw) {
   if (raw.length > 2e5) throw new ReadError("bad_answer");
+  const cleaned = raw.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, "");
   const blocks = [];
-  const saved = raw.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_, code) => {
+  const saved = cleaned.replace(/<pre\b[^>]*>([\s\S]*?)<\/pre>/gi, (_, code) => {
     const text2 = decodeEntities(code.replace(/<code\b[^>]*>/gi, "").replace(/<\/code>/gi, "").replace(/<[^>]+>/g, ""));
-    const content = text2.replace(/^\n+|\n+$/g, "");
-    const fence = "`".repeat(Math.max(3, ...Array.from(content.matchAll(/`+/g), (match) => match[0].length + 1)));
-    blocks.push(fence + "\n" + content + "\n" + fence);
+    const content = text2.replace(/^\n+|\n+$/g, "").replace(/`{3,}/g, (run) => "'".repeat(run.length));
+    blocks.push("```\n" + content + "\n```");
     return `
 
-@@CODE${blocks.length - 1}@@
+\x07${blocks.length - 1}\b
 
 `;
   });
@@ -925,27 +1026,72 @@ function answerMarkdown(raw) {
   const links = [];
   text = text.replace(/<a\b[^>]*href\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a>/gi, (_, double, single, label) => {
     const href = decodeEntities(double ?? single ?? "");
-    const text2 = markdownText(decodeEntities(label.replace(/<[^>]+>/g, "")));
-    if (!/^https:\/\/[^\s<>"'()]+$/.test(href)) return text2;
-    links.push(`[${text2}](${href.replace(/\)/g, "%29")})`);
+    const plain = oneLine(decodeEntities(label.replace(/<[^>]+>/g, "")));
+    if (!plain) return "";
+    const safeHref = safeLinkHref(href);
+    if (!safeHref) return escapeHTMLText(plain);
+    links.push(`[${markdownText(plain)}](${safeHref})`);
     return `${links.length - 1}`;
   });
   text = text.replace(/<img\b[^>]*alt\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>/gi, "$1$2");
-  text = text.replace(/<li\b[^>]*>/gi, "\n- ").replace(/<\/(?:p|div|li|ul|ol|blockquote|h[1-6]|table|tr)>/gi, "\n\n").replace(/<br\s*\/?>/gi, "\n");
-  text = text.replace(/<h[1-6]\b[^>]*>/gi, "\n\n### ").replace(/<(?:strong|b)\b[^>]*>/gi, "**").replace(/<\/(?:strong|b)>/gi, "**").replace(/<(?:em|i)\b[^>]*>/gi, "*").replace(/<\/(?:em|i)>/gi, "*");
-  text = text.replace(/<code\b[^>]*>/gi, "").replace(/<\/code>/gi, "");
   const inlineCode = [];
-  text = text.replace(/\u0001([^\u0001\u0002]*)\u0002/g, (_, code) => {
-    const content = decodeEntities(code).replace(/\\/g, "\\\\").replace(/`/g, "'");
+  text = text.replace(/<code\b[^>]*>([\s\S]*?)<\/code>/gi, (_, code) => {
+    if (/\u0007\d+\u0008/.test(code)) return code;
+    const content = oneLine(decodeEntities(code.replace(/<[^>]+>/g, ""))).replace(/`/g, "'");
+    if (!content) return "";
     inlineCode.push("`" + content + "`");
     return `${inlineCode.length - 1}`;
   });
+  text = text.replace(/<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi, (_, _level, inner) => {
+    if (/\u0007\d+\u0008/.test(inner)) return `
+
+${inner}
+
+`;
+    const heading = inner.replace(/\r?\n+/g, " ").trim();
+    if (!heading.replace(/<[^>]*>/g, "").trim()) return "\n\n";
+    return `
+
+${heading}
+
+`;
+  });
+  text = wrapInlineTag(text, /<(?:strong|b)\b[^>]*>([\s\S]*?)<\/(?:strong|b)>/gi, "");
+  text = wrapInlineTag(text, /<(?:em|i)\b[^>]*>([\s\S]*?)<\/(?:em|i)>/gi, "");
+  text = text.replace(/<li\b[^>]*>(?:\s|<p\b[^>]*>)*/gi, "\n");
+  text = text.replace(/<br\s*\/?>/gi, "\n");
+  text = text.replace(/<blockquote\b[^>]*>([\s\S]*?)<\/blockquote>/gi, (_, inner) => {
+    const prepared = inner.replace(/<\/(?:p|div|li|ul|ol|h[1-6]|table|tr)>/gi, "\n\n").replace(/<[^>]*>/g, "");
+    const quoted = prepared.split(/\r?\n/).map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed) return "";
+      if (/^\u0007\d+\u0008$/.test(trimmed)) return `
+
+${trimmed}
+
+`;
+      return `${trimmed}`;
+    }).filter(Boolean).join("\n");
+    return quoted ? `
+
+${quoted}
+
+` : "\n\n";
+  });
+  text = text.replace(/<\/(?:p|div|li|ul|ol|blockquote|h[1-6]|table|tr)>/gi, "\n\n");
   text = decodeEntities(text.replace(/<[^>]*>/g, ""));
-  text = text.split(/\r?\n/).map((line) => markdownText(line)).join("\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
-  text = text.replace(/\u0003(\d+)\u0004/g, (_, index) => inlineCode[Number(index)] ?? "");
-  text = text.replace(/\u0005(\d+)\u0006/g, (_, index) => links[Number(index)] ?? "");
-  text = text.replace(/@@CODE(\d+)@@/g, (_, index) => blocks[Number(index)] ?? "");
-  if (!text || text.length > 3e4) throw new ReadError("bad_answer");
+  text = text.replace(/[\u0011\u0012\u0013][ \t]*(\u0007\d+\u0008)/g, "\n\n$1\n\n").replace(/(\u0007\d+\u0008)/g, "\n\n$1\n\n");
+  text = text.split(/\r?\n/).map((line) => {
+    const prefix = /^([\u0011\u0012\u0013])(.*)$/.exec(line.trimStart());
+    if (prefix) {
+      const body = markdownText(prefix[2].trimStart());
+      return body.trim() ? prefix[1] + body : "";
+    }
+    return markdownText(line);
+  }).join("\n").replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  text = text.replace(/!(?=(?:\u0003\d+\u0004)*\u0005)/g, "! ").replace(/(\\\](?:\u0003\d+\u0004)+)\(/g, "$1\\(").replace(/(\\\](?:\u0003\d+\u0004)+):/g, "$1\\:").replace(/<((?:\u0003\d+\u0004)*[A-Za-z](?:[A-Za-z0-9+.-]|\u0003\d+\u0004)*):(?=[^<> \t\r\n\f]*>)/g, "<$1\\:");
+  text = text.replace(/\u0011/g, "### ").replace(/\u0012/g, "- ").replace(/\u0013/g, "> ").replace(/\u0014/g, "**").replace(/\u0015/g, "*").replace(/\u0003(\d+)\u0004/g, (_, index) => inlineCode[Number(index)] ?? "").replace(/\u0005(\d+)\u0006/g, (_, index) => links[Number(index)] ?? "").replace(/\u0007(\d+)\u0008/g, (_, index) => blocks[Number(index)] ?? "").replace(/\n{3,}/g, "\n\n").trim();
+  if (!text || Array.from(text).length > 3e4) throw new ReadError("bad_answer");
   return text;
 }
 function parseAnswers(raw, id, site, at) {
@@ -1262,8 +1408,8 @@ var StackExchange = class {
         this.lastError = void 0;
         return { raw, at };
       } catch (error) {
-        if (request.signal.aborted) throw error instanceof Error && error.name === "AbortError" ? error : new DOMException("Cancelled", "AbortError");
-        const failure = error instanceof ReadError ? error : error instanceof Error && error.name === "AbortError" ? error : new ReadError("network");
+        if (signal?.aborted) throw error instanceof Error && error.name === "AbortError" ? error : new DOMException("Cancelled", "AbortError");
+        const failure = error instanceof ReadError ? error : request.signal.aborted ? request.signal.reason instanceof ReadError ? request.signal.reason : new ReadError("slow") : error instanceof Error && error.name === "AbortError" ? error : new ReadError("network");
         if (failure instanceof ReadError) this.lastError = { code: failure.code, at: this.monotonic() };
         throw failure;
       } finally {
@@ -1373,6 +1519,9 @@ ${t.attribution}${result.stale ? `
 ${errorText(result.stale, service.locale)}` : ""}`, 29999);
     }
     throw unknownMethod(`connector.tools.${name}`);
+  } catch (error) {
+    if (!signal?.aborted && request.signal.aborted && request.signal.reason instanceof ReadError) throw request.signal.reason;
+    throw error;
   } finally {
     request.dispose();
   }
@@ -1409,7 +1558,7 @@ function questionState(value, site) {
   if (value == null) return void 0;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ReadError("invalid");
   const raw = value, id = questionID(raw.id);
-  const candidate = { id, title: queryText(raw.title), url: "", score: 0, answerCount: 0, tags: [], license: "CC BY-SA 4.0", author: "" };
+  const candidate = { id, title: titleText(raw.title), url: "", score: 0, answerCount: 0, tags: [], license: "CC BY-SA 4.0", author: "" };
   const url = new URL(candidate.url = typeof raw.url === "string" ? raw.url : "");
   if (url.protocol !== "https:" || url.hostname !== sites[site].host || url.username || url.password || url.port || url.pathname !== `/questions/${id}` && !url.pathname.startsWith(`/questions/${id}/`)) throw new ReadError("invalid");
   candidate.url = url.href;
@@ -1486,7 +1635,7 @@ async function loadPage(service, state, refresh, signal) {
     return { kind: "answer", question: state.question, body: answer.body, accepted: answer.accepted, id: answer.id, url: answer.url, author: answer.author, license: answer.license, stale: result.stale, quotaRemaining: result.quotaRemaining };
   } catch (error) {
     checkSignal(signal);
-    return { kind: "error", error };
+    return { kind: "error", error: request.signal.aborted && request.signal.reason instanceof ReadError ? request.signal.reason : error };
   } finally {
     request.dispose();
   }
@@ -1494,7 +1643,7 @@ async function loadPage(service, state, refresh, signal) {
 function page(props) {
   const { service, state, loaded, uiVersion = 0 } = props, t = textsFor(props.locale ?? service.locale), siteName = sites[state.site].name;
   const act = (id, next, title) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "answers", state: encodeState(next), ...title ? { title } : {} } } : { id });
-  const text = (key, value, style = "secondary") => /* @__PURE__ */ jsx(Text, { text: clip(value || t.unknown, 2800), style }, key);
+  const text = (key, value, style = "secondary") => /* @__PURE__ */ jsx(Text, { text: clip(value || t.unknown, 2e3), style }, key);
   const search = /* @__PURE__ */ jsxs(Section, { title: t.search, children: [
     /* @__PURE__ */ jsx(Field, { name: "query", label: t.search, kind: "text", placeholder: t.searchHint, value: state.q }, "stackexchange-query"),
     /* @__PURE__ */ jsx(Field, { name: "site", label: t.site, kind: "choice", value: state.site, choices: siteIDs.map((id) => ({ value: id, title: sites[id].name })) }, "stackexchange-site"),
@@ -1536,7 +1685,7 @@ function page(props) {
   ] }, "stackexchange");
   if (loaded.kind === "answer") return /* @__PURE__ */ jsxs(View, { title: loaded.question.title, state: encodeState(state), children: [
     /* @__PURE__ */ jsxs(Section, { title: loaded.accepted ? t.accepted : t.highest, footer: [fmt(t.score, { count: loaded.question.score }), fmt(t.answers, { count: loaded.question.answerCount })].join(" \xB7 "), children: [
-      /* @__PURE__ */ jsx(Markdown, { text: loaded.body }, "stackexchange-answer-body"),
+      /* @__PURE__ */ jsx(Markdown, { text: clipMarkdown(loaded.body, 2e4) }, "stackexchange-answer-body"),
       text("stackexchange-answer-author", fmt(t.by, { author: loaded.author, license: loaded.license }), "caption"),
       /* @__PURE__ */ jsx(Link, { title: fmt(t.openAnswer, { site: siteName }), url: loaded.url }, "stackexchange-answer-link")
     ] }, "stackexchange-answer-heading"),

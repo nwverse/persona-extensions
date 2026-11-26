@@ -2,16 +2,19 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
 func TestToolsAreListedWithSchemas(t *testing.T) {
 	list := toolList()
-	if len(list) != 6 {
+	if len(list) != 11 {
 		t.Fatalf("%d tools", len(list))
 	}
 	seen := map[string]bool{}
@@ -146,7 +149,7 @@ func TestDrivingRoute(t *testing.T) {
 	// Names are searched for; the second in the first one's city.
 	text := mustCall(t, a, "amap_route", `{"from":"天安门","to":"北京南站"}`)
 	q := f.last("/v5/direction/driving")
-	if q.Get("origin") != "116.397755,39.903182" || q.Get("destination") != "116.378517,39.865246" || q.Get("strategy") != "32" || q.Get("show_fields") != "cost" {
+	if q.Get("origin") != "116.397755,39.903182" || q.Get("destination") != "116.378517,39.865246" || q.Get("strategy") != "32" || q.Get("show_fields") != "cost,polyline" {
 		t.Fatalf("query %v", q)
 	}
 	if f.count("/v5/place/text") != 2 || f.last("/v5/place/text").Get("region") != "010" || f.count("/v3/geocode/geo") != 0 {
@@ -311,5 +314,455 @@ func TestWords(t *testing.T) {
 	}
 	if got := wind("旋转不定", "≤3"); got != "风向不定 ≤3 级" {
 		t.Errorf("wind %q", got)
+	}
+}
+
+func TestDrivingWaypoints(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	// Mix a place name and a WGS-84 "lat,lng" coordinate as waypoints.
+	wpCoord := point{39.9080, 116.3900}
+	text := mustCall(t, a, "amap_route", `{"from":"天安门","to":"北京南站","waypoints":["西单","39.9080,116.3900"]}`)
+	q := f.last("/v5/direction/driving")
+	wantWP := "116.374128,39.907439;" + amapLocation(wpCoord)
+	if q.Get("waypoints") != wantWP {
+		t.Fatalf("waypoints %q, want %q", q.Get("waypoints"), wantWP)
+	}
+	wantIn(t, text, "驾车 天安门（北京市东城区） → 经 西单（北京市西城区）、39.908000,116.390000 → 北京南站（北京市丰台区）（高德推荐）：")
+
+	// Non-driving modes refuse waypoints cleanly without hitting AMap.
+	before := f.count("")
+	if _, err := call(t, a, "amap_route", `{"mode":"transit","from":"天安门","to":"北京南站","waypoints":["西单"]}`); err == nil || !strings.Contains(err.Error(), "只支持驾车") {
+		t.Fatalf("expected non-driving waypoint refusal, got %v", err)
+	}
+	if _, err := call(t, a, "amap_route", `{"mode":"walking","from":"天安门","to":"北京南站","waypoints":["西单"]}`); err == nil || !strings.Contains(err.Error(), "只支持驾车") {
+		t.Fatalf("expected walking waypoint refusal, got %v", err)
+	}
+	// More than 16 waypoints refused.
+	many := `{"from":"天安门","to":"北京南站","waypoints":[` + strings.Repeat(`"39.91,116.40",`, 16) + `"39.91,116.40"]}`
+	if _, err := call(t, a, "amap_route", many); err == nil || !strings.Contains(err.Error(), "最多支持 16") {
+		t.Fatalf("expected >16 waypoint refusal, got %v", err)
+	}
+	if f.count("") != before {
+		t.Fatalf("refused waypoint calls still reached AMap")
+	}
+}
+
+func TestDistance(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	// Sort by distance: origin 2 (西单, 4.2 km) comes before origin 1 (天安门, 9.2 km).
+	text := mustCall(t, a, "amap_distance", `{"origins":["天安门","西单"],"destination":"北京南站","mode":"driving","sort":"distance"}`)
+	q := f.last("/v3/distance")
+	if q.Get("origins") != "116.397755,39.903182|116.374128,39.907439" || q.Get("destination") != "116.378517,39.865246" || q.Get("type") != "1" {
+		t.Fatalf("query %v", q)
+	}
+	first := strings.Index(text, "1. 西单（北京市西城区）：4.2 公里，约 15 分钟")
+	second := strings.Index(text, "2. 天安门（北京市东城区）：9.2 公里，约 34 分钟")
+	if first < 0 || second < 0 || !(first < second) {
+		t.Fatalf("not sorted by distance:\n%s", text)
+	}
+
+	// Straight-line mode hides duration and uses type=0.
+	text = mustCall(t, a, "amap_distance", `{"origins":["39.9042,116.3912","39.9100,116.3800"],"destination_latitude":39.8634,"destination_longitude":116.3722,"destination":"南站","mode":"straight"}`)
+	if q := f.last("/v3/distance"); q.Get("type") != "0" {
+		t.Fatalf("query %v", q)
+	}
+	wantIn(t, text, "高德直线距离测量（到 南站）：", "1. 39.904200,116.391200：9.2 公里")
+	if strings.Contains(text, "分钟") {
+		t.Fatalf("straight-line should not print duration:\n%s", text)
+	}
+
+	// Per-item failure does not fail the whole batch.
+	f.queue("/v3/distance", `{"status":"1","info":"OK","infocode":"10000","results":[{"origin_id":"1","dest_id":"1","distance":"0","duration":"0","info":"距离过远","code":"3"}]}`)
+	text = mustCall(t, a, "amap_distance", `{"origins":["39.9042,116.3912"],"destination":"39.8634,116.3722","mode":"walking"}`)
+	wantIn(t, text, "无法计算（距离过远）")
+
+	// Validation checks.
+	if _, err := call(t, a, "amap_distance", `{"destination":"北京南站"}`); err == nil {
+		t.Fatal("distance without origins ran")
+	}
+	if _, err := call(t, a, "amap_distance", `{"origins":["天安门"]}`); err == nil {
+		t.Fatal("distance without destination ran")
+	}
+	if _, err := call(t, a, "amap_distance", `{"origins":["天安门"],"destination":"北京南站","mode":"fly"}`); err == nil {
+		t.Fatal("distance with invalid mode ran")
+	}
+}
+
+func TestDistrict(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	text := mustCall(t, a, "amap_district", `{"keywords":"杭州市","subdistrict":2}`)
+	q := f.last("/v3/config/district")
+	if q.Get("keywords") != "杭州市" || q.Get("subdistrict") != "2" || q.Get("extensions") != "base" {
+		t.Fatalf("query %v", q)
+	}
+	centerWGS := toWGS(point{30.245853, 120.209947}).String()
+	wantIn(t, text,
+		"杭州市（市） · adcode 330100 · 区号 0571 · 中心 "+centerWGS,
+		"- 西湖区（区县） · adcode 330106",
+		"下辖：北山街道(330106)",
+		"- 上城区（区县） · adcode 330102",
+	)
+
+	// Empty keywords queries top-level China districts.
+	_ = mustCall(t, a, "amap_district", `{}`)
+	if q := f.last("/v3/config/district"); q.Get("keywords") != "" || q.Get("subdistrict") != "1" {
+		t.Fatalf("query %v", q)
+	}
+}
+
+func TestInputTips(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	text := mustCall(t, a, "amap_input_tips", `{"keywords":"天安门","city":"北京","city_only":true,"latitude":39.9055,"longitude":116.3976,"limit":2}`)
+	q := f.last("/v3/assistant/inputtips")
+	if q.Get("keywords") != "天安门" || q.Get("city") != "北京" || q.Get("citylimit") != "true" || q.Get("location") != amapLocation(point{39.9055, 116.3976}) {
+		t.Fatalf("query %v", q)
+	}
+	at := toWGS(point{39.903182, 116.397755}).String()
+	wantIn(t, text, "1. 天安门广场 · 北京市东城区 · 东长安街 · "+at+" · adcode 110101", "2. 天安门东(地铁站)")
+	if strings.Contains(text, "天安门地区") {
+		t.Fatalf("limit 2 should omit 3rd tip:\n%s", text)
+	}
+	if _, err := call(t, a, "amap_input_tips", `{}`); err == nil {
+		t.Fatal("input_tips without keywords ran")
+	}
+}
+
+func TestStaticMap(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	res := mustCallResult(t, a, "amap_static_map", `{"markers":["天安门","北京南站"],"path":["天安门","西单","北京南站"],"width":640,"height":480,"traffic":true}`)
+	q := f.last("/v3/staticmap")
+	if q.Get("size") != "640*480" || q.Get("scale") != "2" || q.Get("traffic") != "1" || q.Get("zoom") != "" {
+		t.Fatalf("query %v", q)
+	}
+	if want := "mid,0xE53935,A:116.397755,39.903182|mid,0xE53935,B:116.378517,39.865246"; q.Get("markers") != want {
+		t.Fatalf("markers %q, want %q", q.Get("markers"), want)
+	}
+	if want := "5,0x1976D2,1,,:116.397755,39.903182;116.374128,39.907439;116.378517,39.865246"; q.Get("paths") != want {
+		t.Fatalf("paths %q, want %q", q.Get("paths"), want)
+	}
+	wantIn(t, res.Text, "高德静态地图（640×480，含实时路况）：", "- A. 天安门（北京市东城区）", "- B. 北京南站（北京市丰台区）", "连线：天安门（北京市东城区） → 西单（北京市西城区） → 北京南站（北京市丰台区）")
+	if len(res.Images) != 1 || res.Images[0].Mime != "image/png" || res.Images[0].Caption == "" {
+		t.Fatalf("images %+v", res.Images)
+	}
+	rawImg, err := base64.StdEncoding.DecodeString(res.Images[0].Data)
+	if err != nil || string(rawImg) != string(tinyPNG) {
+		t.Fatalf("decoded image mismatch: err=%v len=%d", err, len(rawImg))
+	}
+	if err := wire.ValidateJSON("ConnectorCallResult", mustJSON(t, res)); err != nil {
+		t.Fatalf("ConnectorCallResult schema: %v", err)
+	}
+
+	// Center-only request defaults zoom to 14.
+	res = mustCallResult(t, a, "amap_static_map", `{"latitude":39.9042,"longitude":116.3912}`)
+	if q := f.last("/v3/staticmap"); q.Get("zoom") != "14" || q.Get("location") != amapLocation(point{39.9042, 116.3912}) {
+		t.Fatalf("query %v", q)
+	}
+
+	// If scale=2 exceeds 1 MiB, falls back to scale=1.
+	bigPNG := append(append([]byte(nil), tinyPNG...), make([]byte, staticMapMaxBytes+10)...)
+	f.queue("/v3/staticmap", string(bigPNG), string(tinyPNG))
+	res = mustCallResult(t, a, "amap_static_map", `{"place":"天安门","zoom":15}`)
+	if q := f.last("/v3/staticmap"); q.Get("scale") != "1" {
+		t.Fatalf("expected scale=1 fallback, got %v", q)
+	}
+	if len(res.Images) != 1 {
+		t.Fatalf("expected fallback image, got %+v", res.Images)
+	}
+
+	// JSON error from /v3/staticmap is parsed and handled (including key/quota errors).
+	f.queue("/v3/staticmap", refusal("10001", "INVALID_USER_KEY"))
+	if _, err := callResult(t, a, "amap_static_map", `{"latitude":31.23,"longitude":121.47,"zoom":12}`); err == nil || !strings.Contains(err.Error(), "不对或已经过期") {
+		t.Fatalf("expected key error from staticmap JSON refusal, got %v", err)
+	}
+
+	// Validation checks.
+	if _, err := callResult(t, a, "amap_static_map", `{}`); err == nil {
+		t.Fatal("static_map with no location/markers/path ran")
+	}
+	if _, err := callResult(t, a, "amap_static_map", `{"path":["天安门"]}`); err == nil || !strings.Contains(err.Error(), "至少要给 2 个点") {
+		t.Fatalf("expected 1-point path error, got %v", err)
+	}
+}
+
+func TestParseLatLng(t *testing.T) {
+	if p, ok := parseLatLng("39.9042, 116.3912"); !ok || p.Lat != 39.9042 || p.Lng != 116.3912 {
+		t.Fatalf("parseLatLng valid failed: %+v %v", p, ok)
+	}
+	for _, bad := range []string{"", "天安门", "0,0", "91,116", "39,181", "39.9,abc", "39.9"} {
+		if _, ok := parseLatLng(bad); ok {
+			t.Errorf("parseLatLng(%q) unexpectedly succeeded", bad)
+		}
+	}
+}
+
+func TestFixedPlacesInTools(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+
+	// Empty amap_places points to Settings, in-app page, and Persona list_places without calling AMap.
+	emptyRes := mustCall(t, a, "amap_places", `{}`)
+	wantIn(t, emptyRes, "还没有配置常用地点", "设置 › 扩展 › 高德地图", "常用地点", "list_places")
+	if f.count("") != 0 {
+		t.Fatalf("empty amap_places made %d AMap requests", f.count(""))
+	}
+
+	dir := t.TempDir()
+	a.initPlaces(placeConfig{
+		Home:    "天安门广场 39.9032,116.3978",
+		Company: "北京南站",
+		Places:  []string{"西湖边: 杭州"},
+	}, dir)
+	if _, _, err := a.saveUIPlace("西单集合点", "西单"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Listing and inspecting places uses 0 AMap requests.
+	listText := mustCall(t, a, "amap_places", `{}`)
+	wantIn(t, listText, "共 4 个", "1. 家", "2. 公司 · 北京南站", "3. 西湖边 · 杭州", "4. 西单集合点 · 西单 · 来源：页面保存")
+	aliasText := mustCall(t, a, "amap_places", `{"name":"work"}`)
+	wantIn(t, aliasText, "高德地图常用地点「公司」", "来源：扩展设置", "work")
+	missText := mustCall(t, a, "amap_places", `{"name":"老家"}`)
+	wantIn(t, missText, "没有「老家」", "家", "公司", "list_places")
+	if f.count("") != 0 {
+		t.Fatalf("amap_places queries made %d AMap requests", f.count(""))
+	}
+
+	// Route directly using configured places and aliases ("回家" / "home" -> "work"):
+	// Pinned "家" requires 0 location lookups; "公司" is searched globally without needing home's city.
+	beforeSearch := f.count("/v5/place/text")
+	text := mustCall(t, a, "amap_route", `{"from":"home","to":"work"}`)
+	if f.count("/v5/place/text") != beforeSearch+1 {
+		t.Fatalf("expected 1 search (for company) and 0 for pinned home, got %d", f.count("/v5/place/text")-beforeSearch)
+	}
+	if q := f.last("/v5/place/text"); q.Get("keywords") != "北京南站" || q.Get("region") != "" {
+		t.Fatalf("company fixed search query = %v", q)
+	}
+	if q := f.last("/v5/direction/driving"); q.Get("origin") != amapLocation(point{39.9032, 116.3978}) {
+		t.Fatalf("driving origin = %q", q.Get("origin"))
+	}
+	wantIn(t, text, "驾车 家（天安门广场） → 公司（北京市丰台区）")
+
+	// When an unconfigured origin goes to a pinned fixed destination ("天安门" -> "家"),
+	// destination resolves first and supplies the city hint (010) to the unconfigured origin.
+	text = mustCall(t, a, "amap_route", `{"from":"天安门","to":"我家"}`)
+	if q := f.last("/v5/place/text"); q.Get("keywords") != "天安门" || q.Get("region") != "010" {
+		t.Fatalf("origin should get destination city hint 010: %v", q)
+	}
+	wantIn(t, text, "驾车 天安门（北京市东城区） → 家（天安门广场）")
+
+	// Nearby around fixed place ("家") uses pinned WGS-84 coordinates directly.
+	beforeSearch = f.count("/v5/place/text")
+	text = mustCall(t, a, "amap_nearby", `{"place":"家里","keywords":"咖啡"}`)
+	if f.count("/v5/place/text") != beforeSearch {
+		t.Fatalf("nearby on pinned place should not call text search")
+	}
+	if q := f.last("/v5/place/around"); q.Get("location") != amapLocation(point{39.9032, 116.3978}) {
+		t.Fatalf("around location = %q", q.Get("location"))
+	}
+	wantIn(t, text, "家（天安门广场） 周围 1 公里 内找「咖啡」")
+
+	// Distance batch accepts fixed places in origins and destination.
+	text = mustCall(t, a, "amap_distance", `{"origins":["家","西单集合点"],"destination":"company","sort":"distance"}`)
+	wantIn(t, text, "高德驾车距离测量（到 公司（北京市丰台区））", "1. 西单集合点（北京市西城区）", "2. 家（天安门广场）")
+
+	// Static map accepts fixed places in place, markers, and path.
+	res := mustCallResult(t, a, "amap_static_map", `{"place":"家","markers":["家","公司"],"path":["home","西单集合点","company"]}`)
+	wantIn(t, res.Text, "中心：家（天安门广场）", "- A. 家（天安门广场）", "- B. 公司（北京市丰台区）", "连线：家（天安门广场） → 西单集合点（北京市西城区） → 公司（北京市丰台区）")
+	if len(res.Images) != 1 {
+		t.Fatalf("expected static map image for fixed places")
+	}
+
+	// Weather on a fixed place with coords uses reverse geocoding to get district adcode;
+	// fixed place with city name resolves its target globally ("杭州" -> 330100).
+	text = mustCall(t, a, "amap_weather", `{"city":"我家","days":1}`)
+	if q := f.last("/v3/weather/weatherInfo"); q.Get("city") != "110101" {
+		t.Fatalf("weather adcode from home coords = %q, want 110101", q.Get("city"))
+	}
+	wantIn(t, text, "家（北京东城区） 天气（中国气象局，经高德）：")
+
+	text = mustCall(t, a, "amap_weather", `{"city":"西湖边","days":0}`)
+	if q := f.last("/v3/weather/weatherInfo"); q.Get("city") != "330100" {
+		t.Fatalf("weather adcode from 西湖边 = %q, want 330100", q.Get("city"))
+	}
+	wantIn(t, text, "西湖边（")
+}
+
+func validateToolViews(t *testing.T, res wire.ConnectorCallResult) {
+	t.Helper()
+	rawRes := mustJSON(t, res)
+	if len(rawRes) >= 128<<10 {
+		t.Fatalf("ConnectorCallResult JSON size %d exceeds 128 KiB", len(rawRes))
+	}
+	if err := wire.ValidateJSON("ConnectorCallResult", rawRes); err != nil {
+		t.Fatalf("ConnectorCallResult schema: %v\n%s", err, rawRes)
+	}
+	if len(res.Views) > 4 {
+		t.Fatalf("ConnectorCallResult has %d views (max 4)", len(res.Views))
+	}
+	for i := range res.Views {
+		if err := exttest.CheckView(mustJSON(t, res.Views[i]), true); err != nil {
+			t.Fatalf("tool view %d failed CheckView(compact=true): %v", i, err)
+		}
+	}
+	for _, forbidden := range []string{"tool_views", `"viewport"`, `"markers"`, "polyline"} {
+		if strings.Contains(res.Text, forbidden) {
+			t.Errorf("model-visible Text leaks UI internal %q:\n%s", forbidden, res.Text)
+		}
+	}
+}
+
+func firstMapComponent(t *testing.T, res wire.ConnectorCallResult) wire.Component {
+	t.Helper()
+	validateToolViews(t, res)
+	if len(res.Views) != 1 || len(res.Views[0].Sections) == 0 {
+		t.Fatalf("expected 1 view with sections, got %+v", res.Views)
+	}
+	for _, it := range res.Views[0].Sections[0].Items {
+		if it.Type == wire.ComponentMap {
+			return it
+		}
+	}
+	t.Fatalf("no ComponentMap found in view: %+v", res.Views[0])
+	return wire.Component{}
+}
+
+func TestInteractiveToolViews(t *testing.T) {
+	f := newFake(t)
+	a, _ := testApp(t, f)
+	a.initPlaces(placeConfig{
+		Home:    "天安门 39.9032,116.3978",
+		Company: "北京南站",
+	}, t.TempDir())
+
+	// 1. Driving route (single & multi-alternative): real decoded polylines converted to WGS-84, compact chat card.
+	res := mustCallResult(t, a, "amap_route", `{"from":"home","to":"company","alternatives":3}`)
+	mc := firstMapComponent(t, res)
+	if mc.ShowList {
+		t.Fatalf("tool_views chat card should keep show_list=false")
+	}
+	if len(mc.Routes) != 3 {
+		t.Fatalf("expected 3 driving routes, got %d", len(mc.Routes))
+	}
+	if !mc.Routes[0].Selected || mc.Routes[1].Selected || mc.Routes[2].Selected {
+		t.Fatalf("expected only route 0 selected: %+v", mc.Routes)
+	}
+	if mc.Routes[0].Mode != wire.MapTravelModeDriving || mc.Routes[0].DistanceMeters == nil || *mc.Routes[0].DistanceMeters != 9183 {
+		t.Fatalf("unexpected primary route metadata: %+v", mc.Routes[0])
+	}
+	for i, r := range mc.Routes {
+		if len(r.Points) < 5 {
+			t.Errorf("route %d expected decoded multi-point polyline, got %d points", i, len(r.Points))
+		}
+	}
+	// Verify WGS-84 conversion was applied (not raw GCJ-02 39.903182, 116.397755).
+	p0 := mc.Routes[0].Points[0]
+	if *p0.Lat > 39.9025 && *p0.Lon > 116.3970 {
+		t.Fatalf("route polyline appears unconverted GCJ-02 instead of WGS-84: (%v,%v)", *p0.Lat, *p0.Lon)
+	}
+	if len(mc.Markers) < 2 || mc.Markers[0].Icon != "home" || mc.Markers[len(mc.Markers)-1].Kind != wire.MapMarkerKindDestination {
+		t.Fatalf("unexpected route markers: %+v", mc.Markers)
+	}
+	if len(mc.Links) != 1 || !strings.HasPrefix(mc.Links[0].URL, "https://uri.amap.com/navigation?") {
+		t.Fatalf("unexpected navigation links: %+v", mc.Links)
+	}
+
+	// 2. Walking & e-bike map views.
+	walkRes := mustCallResult(t, a, "amap_route", `{"mode":"walking","from_latitude":39.9055,"from_longitude":116.3976,"to":"天安门"}`)
+	walkMap := firstMapComponent(t, walkRes)
+	if len(walkMap.Routes) != 1 || walkMap.Routes[0].Mode != wire.MapTravelModeWalking || len(walkMap.Routes[0].Points) < 4 {
+		t.Fatalf("unexpected walking map: %+v", walkMap.Routes)
+	}
+	ebikeRes := mustCallResult(t, a, "amap_route", `{"mode":"ebike","from_latitude":39.9055,"from_longitude":116.3976,"to":"天安门"}`)
+	ebikeMap := firstMapComponent(t, ebikeRes)
+	if len(ebikeMap.Routes) != 1 || ebikeMap.Routes[0].Mode != wire.MapTravelModeCycling || len(ebikeMap.Routes[0].Points) < 3 {
+		t.Fatalf("unexpected ebike map: %+v", ebikeMap.Routes)
+	}
+
+	// 3. Transit route: handles both string & {"polyline":"..."} shapes, plus intermediate boarding/transfer stops.
+	trRes := mustCallResult(t, a, "amap_route", `{"mode":"transit","from":"天安门","to":"北京南站","alternatives":2}`)
+	trMap := firstMapComponent(t, trRes)
+	if len(trMap.Routes) != 2 || trMap.Routes[0].Mode != wire.MapTravelModeTransit {
+		t.Fatalf("unexpected transit routes: %+v", trMap.Routes)
+	}
+	if len(trMap.Routes[0].Points) < 6 {
+		t.Fatalf("expected merged walking + subway polyline points >= 6, got %d", len(trMap.Routes[0].Points))
+	}
+	foundTransfer := false
+	for _, m := range trMap.Markers {
+		if m.Action != nil {
+			t.Fatalf("tool_views marker should not carry UI action: %+v", m)
+		}
+		if m.Kind == wire.MapMarkerKindWaypoint && strings.Contains(m.Label, "宣武门") {
+			foundTransfer = true
+		}
+	}
+	if !foundTransfer {
+		t.Fatalf("expected intermediate transit stop 宣武门 in markers: %+v", trMap.Markers)
+	}
+
+	// 4. Same-spot (<20m) omits tool_views cleanly while preserving text.
+	sameRes := mustCallResult(t, a, "amap_route", `{"from_latitude":39.9,"from_longitude":116.4,"to_latitude":39.90001,"to_longitude":116.40001}`)
+	validateToolViews(t, sameRes)
+	if len(sameRes.Views) != 0 {
+		t.Fatalf("expected no map view for <20m same-spot route, got %+v", sameRes.Views)
+	}
+
+	// 5. Dense >3000-point synthetic multi-route response is deterministically downsampled inside budgets.
+	var pts []string
+	for i := 0; i < 1200; i++ {
+		pts = append(pts, fmt.Sprintf("%.6f,%.6f", 116.370000+float64(i)*0.00002, 39.865000+float64(i)*0.00003))
+	}
+	denseStep := fmt.Sprintf(`{"instruction":"直行","polyline":"%s"}`, strings.Join(pts, ";"))
+	densePayload := fmt.Sprintf(`{"status":"1","info":"OK","infocode":"10000","count":"3","route":{"paths":[`+
+		`{"distance":"9000","cost":{"duration":"1800"},"steps":[%s]},`+
+		`{"distance":"9500","cost":{"duration":"1900"},"steps":[%s]},`+
+		`{"distance":"9900","cost":{"duration":"2000"},"steps":[%s]}]}}`, denseStep, denseStep, denseStep)
+	f.queue("/v5/direction/driving", densePayload)
+	denseRes := mustCallResult(t, a, "amap_route", `{"from_latitude":39.865,"from_longitude":116.370,"to_latitude":39.901,"to_longitude":116.394,"alternatives":3}`)
+	denseMap := firstMapComponent(t, denseRes)
+	totalPts := 0
+	for i, r := range denseMap.Routes {
+		if len(r.Points) > routePointsPerRouteMax {
+			t.Errorf("route %d exceeded per-route point cap: %d", i, len(r.Points))
+		}
+		totalPts += len(r.Points)
+	}
+	if totalPts > wire.MapPointsMost || totalPts == 0 {
+		t.Fatalf("unexpected total downsampled points %d (limit %d)", totalPts, wire.MapPointsMost)
+	}
+
+	// 6. Search & Nearby tool_views.
+	sRes := mustCallResult(t, a, "amap_search", `{"keywords":"北京南站","city":"北京","limit":2}`)
+	sMap := firstMapComponent(t, sRes)
+	if sMap.ShowList || len(sMap.Markers) != 2 || sMap.Markers[0].Detail == "" || sMap.Markers[0].Action != nil {
+		t.Fatalf("unexpected search map component: %+v", sMap)
+	}
+	f.queue("/v5/place/text", noPOIs)
+	emptySearch := mustCallResult(t, a, "amap_search", `{"keywords":"没有此地点"}`)
+	validateToolViews(t, emptySearch)
+	if len(emptySearch.Views) != 0 {
+		t.Fatalf("empty search should omit tool_views, got %+v", emptySearch.Views)
+	}
+
+	nRes := mustCallResult(t, a, "amap_nearby", `{"place":"home","keywords":"咖啡","limit":3}`)
+	nMap := firstMapComponent(t, nRes)
+	if nMap.ShowList || len(nMap.Markers) != 4 || nMap.Markers[0].ID != "center" || nMap.Markers[0].Icon != "home" {
+		t.Fatalf("unexpected nearby map component: %+v", nMap)
+	}
+	f.queue("/v5/place/around", noPOIs)
+	emptyNearby := mustCallResult(t, a, "amap_nearby", `{"latitude":39.9,"longitude":116.4,"keywords":"咖啡"}`)
+	validateToolViews(t, emptyNearby)
+	if len(emptyNearby.Views) != 0 {
+		t.Fatalf("empty nearby should omit tool_views, got %+v", emptyNearby.Views)
 	}
 }

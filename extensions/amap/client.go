@@ -338,9 +338,19 @@ func (c *client) keep(k string, body []byte) {
 	c.cache[k] = cached{body: body, at: c.now()}
 }
 
-// get asks AMap path with q (without the key) and answers the body of a successful answer, from the cache when an
-// answer younger than ttl is there (ttl 0 always asks).
+// get asks AMap path with q (without the key) and answers the body of a successful JSON answer, from the cache when
+// an answer younger than ttl is there (ttl 0 always asks).
 func (c *client) get(ctx context.Context, g group, path string, q url.Values, ttl time.Duration) ([]byte, error) {
+	return c.getRaw(ctx, g, path, q, ttl, false)
+}
+
+// getImage asks AMap for a binary image (such as /v3/staticmap), sharing pacing, cache, singleflight, quota pauses
+// and counts with get; an AMap JSON error body is still parsed and handled the same way.
+func (c *client) getImage(ctx context.Context, g group, path string, q url.Values, ttl time.Duration) ([]byte, error) {
+	return c.getRaw(ctx, g, path, q, ttl, true)
+}
+
+func (c *client) getRaw(ctx context.Context, g group, path string, q url.Values, ttl time.Duration, binary bool) ([]byte, error) {
 	if c.key == "" {
 		return nil, errNoKey
 	}
@@ -367,7 +377,7 @@ func (c *client) get(ctx context.Context, g group, path string, q url.Values, tt
 	c.flights[k] = f
 	c.mu.Unlock()
 
-	f.body, f.err = c.fetch(ctx, g, path, q)
+	f.body, f.err = c.fetch(ctx, g, path, q, binary)
 	c.mu.Lock()
 	delete(c.flights, k)
 	if f.err == nil {
@@ -381,16 +391,38 @@ func (c *client) get(ctx context.Context, g group, path string, q url.Values, tt
 	return f.body, f.err
 }
 
+// isImageBytes reports whether body begins with a PNG, JPEG or WebP header.
+func isImageBytes(body []byte) bool {
+	switch http.DetectContentType(body) {
+	case "image/png", "image/jpeg", "image/webp":
+		return true
+	}
+	return false
+}
+
 // fetch asks AMap, retrying a per-second refusal once.
-func (c *client) fetch(ctx context.Context, g group, path string, q url.Values) ([]byte, error) {
+func (c *client) fetch(ctx context.Context, g group, path string, q url.Values, binary bool) ([]byte, error) {
 	for attempt := 0; ; attempt++ {
 		body, err := c.ask(ctx, path, q, c.key)
 		if err != nil {
 			return nil, err
 		}
 		c.count(g)
+		if binary {
+			if isImageBytes(body) {
+				return body, nil
+			}
+			// AMap staticmap returns JSON on error (invalid key, quota used up, bad params).
+			trimmed := strings.TrimSpace(string(body))
+			if !strings.HasPrefix(trimmed, "{") {
+				return nil, errBadAnswer
+			}
+		}
 		e := checkAnswer(body)
 		if e == nil {
+			if binary {
+				return nil, errBadAnswer
+			}
 			return body, nil
 		}
 		switch e.kind() {

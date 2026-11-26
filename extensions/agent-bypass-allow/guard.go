@@ -1,6 +1,8 @@
 package main
 
 import (
+	"cmp"
+	"os"
 	"path"
 	"regexp"
 	"slices"
@@ -133,7 +135,8 @@ func personOnly(cmd string) string { return (&guard{}).personOnly(cmd) }
 type guard struct {
 	allowDestructive bool   // the setting: deletions and overwrites go through (not disk formatting)
 	roots            *roots // where scratch targets may be; nil: nowhere
-	cwd              string // the session's working directory
+	cwd              string // the command's working directory
+	inElsewhere      bool   // true while checking a nested command that runs elsewhere (ssh, docker...)
 
 	sv  *shellVars // the command string being read
 	seg int        // the segment being read in it
@@ -148,7 +151,17 @@ func newGuard(cwd string, allowDestructive bool) *guard {
 }
 
 func newGuardWithWorkspaces(cwd string, workspaces []string, allowDestructive bool) *guard {
-	return &guard{allowDestructive: allowDestructive, roots: scratchRootsWithWorkspaces(cwd, workspaces), cwd: cwd}
+	return newGuardForCommand(cwd, workspaces, "", allowDestructive)
+}
+
+// newGuardForCommand builds scratch roots from the session's cwd and workspaces, while resolving
+// relative command targets against cmdCwd when the tool call specifies a separate working directory.
+func newGuardForCommand(sessionCwd string, workspaces []string, cmdCwd string, allowDestructive bool) *guard {
+	return &guard{
+		allowDestructive: allowDestructive,
+		roots:            scratchRootsWithWorkspaces(sessionCwd, workspaces),
+		cwd:              cmp.Or(cmdCwd, sessionCwd),
+	}
 }
 
 // personOnly says why cmd must stay with a person ("" when it need not).
@@ -211,7 +224,17 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 	full, redirects, tail := scanFull(stripped)
 	sv, seg := g.sv, g.seg
 	defer func() { g.sv, g.seg = sv, seg }()
-	g.sv = readVars(stripped, full, tail, g.cwd, depth == 0)
+	var inheritedProt []string
+	var inheritedUnknown bool
+	if depth > 0 && !g.inElsewhere {
+		if sv != nil {
+			inheritedProt = sv.protCwds
+			inheritedUnknown = sv.protUnknown
+		} else if g.cwd != "" {
+			inheritedProt = []string{g.cwd}
+		}
+	}
+	g.sv = readVarsWithProtected(stripped, full, tail, g.cwd, depth == 0, inheritedProt, inheritedUnknown)
 	for _, r := range redirects {
 		g.seg = r.seg
 		if g.quickScratch(r.target) {
@@ -246,7 +269,7 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 			}
 			if b == "env" {
 				for _, a := range kept[i+1:] {
-					if a == "-S" || a == "--split-string" || strings.HasPrefix(a, "-S") || strings.HasPrefix(a, "--split-string=") {
+					if a == "-S" || longOpt(a, "--split-string") || (!strings.HasPrefix(a, "--") && strings.HasPrefix(a, "-") && strings.ContainsRune(a[1:], 'S')) {
 						shell = true
 						break
 					}
@@ -270,24 +293,32 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 				}
 			}
 			sub := strings.Contains(w, "$(") || strings.Contains(w, "`")
-			if sub || (shell && strings.ContainsAny(w, " \t\n;&|()<>")) {
+			if sub {
+				if why := g.nested(kept, w, depth+1); why != "" {
+					return why
+				}
+			}
+			if shell && (sub || strings.ContainsAny(w, " \t\n;&|()<>") || strings.Contains(w, `\_`)) {
 				target := w
-				if shell {
-					switch {
-					case strings.HasPrefix(target, "-S"):
-						target = strings.TrimPrefix(target, "-S")
-					case strings.HasPrefix(target, "--split-string="):
-						target = strings.TrimPrefix(target, "--split-string=")
-					case strings.HasPrefix(target, "--command="):
-						target = strings.TrimPrefix(target, "--command=")
-					case strings.HasPrefix(target, "-c"):
-						target = strings.TrimPrefix(target, "-c")
-					case strings.HasPrefix(target, "-qc"):
-						target = strings.TrimPrefix(target, "-qc")
+				switch {
+				case longOpt(target, "--split-string") && strings.Contains(target, "="):
+					_, target, _ = strings.Cut(target, "=")
+				case strings.HasPrefix(target, "--command="):
+					target = strings.TrimPrefix(target, "--command=")
+				default:
+					if rest, ok := shortFlagAttached(target, 'S'); ok {
+						target = rest
+					} else if rest, ok := shortFlagAttached(target, 'c'); ok {
+						target = rest
 					}
 				}
-				if why := g.nested(kept, target, depth+1); why != "" {
-					return why
+				if strings.Contains(target, `\_`) {
+					target = strings.ReplaceAll(target, `\_`, " ")
+				}
+				if target != w || !sub {
+					if why := g.nested(kept, target, depth+1); why != "" {
+						return why
+					}
 				}
 			}
 		}
@@ -393,10 +424,20 @@ func sftpServerCommands(args []string) []string {
 func (g *guard) nested(words []string, cmd string, depth int) string {
 	for _, w := range words {
 		if elsewhere[progName(w)] {
-			roots := g.roots
-			g.roots = nil
-			defer func() { g.roots = roots }()
+			roots, prevElsewhere := g.roots, g.inElsewhere
+			g.roots, g.inElsewhere = nil, true
+			defer func() { g.roots, g.inElsewhere = roots, prevElsewhere }()
 			break
+		}
+	}
+	if !g.inElsewhere && g.sv != nil {
+		home, _ := os.UserHomeDir()
+		extraCwds, extraUnknown := wrapperCwdChanges(words, resolve(home, true))
+		if len(extraCwds) > 0 || extraUnknown {
+			prevCwds, prevUnknown := g.sv.protCwds, g.sv.protUnknown
+			g.sv.protCwds = append(append([]string(nil), prevCwds...), extraCwds...)
+			g.sv.protUnknown = prevUnknown || extraUnknown
+			defer func() { g.sv.protCwds, g.sv.protUnknown = prevCwds, prevUnknown }()
 		}
 	}
 	return g.personOnlyDepth(cmd, depth)
@@ -726,17 +767,23 @@ func scanFull(cmd string) (segs []segment, redirects []redirect, tail string) {
 			} else {
 				cur.WriteRune(r)
 			}
+		case double:
+			if r == '"' {
+				double = false
+			} else if r == '\\' && i+1 < len(rs) && strings.ContainsRune("$`\"\\\n", rs[i+1]) {
+				i++
+				if rs[i] != '\n' {
+					cur.WriteRune(rs[i])
+					inWord = true
+				}
+			} else {
+				cur.WriteRune(r)
+			}
 		case r == '\\' && i+1 < len(rs):
 			i++
 			if rs[i] != '\n' {
 				cur.WriteRune(rs[i])
 				inWord = true
-			}
-		case double:
-			if r == '"' {
-				double = false
-			} else {
-				cur.WriteRune(r)
 			}
 		case r == '#' && !inWord && (i == 0 || strings.ContainsRune(" \t\r\n;&|(<>", rs[i-1])):
 			// a comment, to the end of the line: decoding $'…' must not leave a quote in it open. Not after ) or a
@@ -998,7 +1045,7 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 		rest := words[i+1:]
 		if why, ok := alwaysPerson[name]; ok {
 			r := why + ": " + name
-			if why == "deletion" && g.protectedTargets(rest) {
+			if why == "deletion" && g.protectedTargetsWithContext(before, rest, false) {
 				return "protected deletion target: " + name
 			}
 			if name == "dd" && ddDisk(rest) {
@@ -1035,7 +1082,8 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 			}
 		case "find": // what -exec runs is checked as the words after it
 			if has(rest, "-delete") {
-				if g.protectedTargets(rest) || (findDefaultStart(rest) && g.protectedTargets([]string{"."})) {
+				starts, followLinks := parseFindStarts(rest)
+				if g.protectedTargetsWithContext(before, append([]string{"--"}, starts...), followLinks) {
 					return "protected deletion target: find -delete"
 				}
 				why = "deletion: find -delete"

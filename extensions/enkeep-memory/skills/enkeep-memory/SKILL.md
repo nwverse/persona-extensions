@@ -23,7 +23,8 @@ description: enkeep 记忆扩展的用法：用户问「你记住了我什么」
 回答用户时：
 
 - 引用已确认事实，照原样带上出处（括号里的「会话 日期 #行号」）。
-- 要查整理过的人、项目、系统、做事方式或默认判断，调 `enkeep_recall {"query": "…"}`；每轮说明块里只放通用的规矩和名字，细节都在这里查。
-- 每轮说明块或查到的条目里有明显不是用户规矩的（派活 prompt、主管转达、测试 prompt 被当成了用户原话），调 `enkeep_mark_wrong {"ids": [...], "reason": "…"}` 直接退掉：不弹手机卡片，记成助手标的，用户可以在页面上改回。拿不准是不是用户的意思时，不要退，问用户。
+- 整理好的条目由 Persona 按场景放进上下文（「记忆…」一节）；要查整理过的人、项目、系统、做事方式或默认判断，调 `decisions_query`，它会在 `memory` 里带回 enkeep 的条目（id 写作 `memory-extension:<id>`）。扩展自己不再提供查条目的工具。
+- 上下文或查到的条目里有明显不是用户规矩的（派活 prompt、主管转达、测试 prompt 被当成了用户原话），调 `enkeep_mark_wrong {"ids": ["memory-extension:…"], "reason": "…"}` 退掉：这是写操作，用户在手机上确认后才生效，记成助手标的，用户可以在页面上改回。拿不准是不是用户的意思时，不要退，问用户。
+- 重读某几天（`enkeep_rerun`）、重算状态（`enkeep_resettle`）、导入种子（`enkeep_seed_import`）也是写操作，同样要用户在手机上确认。查进度、预览这类只读工具（`enkeep_rerun_status`、`enkeep_resettle_preview`、`enkeep_seed_status`、`enkeep_seed_preview`）只给编码 Agent。
 - 用户想看记住了什么、确认或否定某一条，或者看待确认的提议、判对错、撤销，请他打开 App 主导航里的「enkeep 记忆」页面。
 - 不要替用户改 pinned 里扩展写的行。用户要改，就在 App 的知识库页面里改，或者用 `kb_update`；扩展撤销前会核对现值，被人改过的地方不会覆盖。

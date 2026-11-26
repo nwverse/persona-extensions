@@ -71,11 +71,11 @@ var tools = []tool{
 		required: []string{"query"},
 		props: map[string]any{
 			"query":   str("搜索词（空格分隔，全部命中；不区分大小写，中文按子串匹配）：标题、首条消息、项目、工作目录、关键词、会话 ID、工具或机器名"),
-			"machine": str("只搜索这台机器（ID 或 SSH Host 别名）；不填搜索全部机器"),
+			"machine": str("只搜索这台机器（ID、SSH Host 别名，或结果里的 machine_name，例如「运行 Persona 的电脑」）；不填搜索全部机器"),
 			"limit":   map[string]any{"type": "integer", "minimum": 1, "maximum": 200, "description": "返回条数，默认 20"},
 			"deep":    map[string]any{"type": "boolean", "description": "若为 true，还在机器上运行 disklessly sessions search 全文搜索会话摘要（较慢），结果按 ID 合并"},
 		},
-		description: "在已上云的 Coding Agent 冷会话（Claude Code / Codex）里查找对话：按本地轻量索引搜索，返回机器、工具、项目、日期、首条消息、位置（在云端 / 未知 / 云端缺失 / 本地）与恢复后的继续命令。位置「未知」不代表丢失。",
+		description: "在已上云的 Coding Agent 冷会话（Claude Code / Codex）里查找对话：按本地轻量索引搜索，返回机器（machine_id 与 machine_name；machine_name 可原样传回 machine，运行 Persona 的电脑也接受主机名）、工具、项目、日期、首条消息、位置（在网盘里 / 暂时不确定 / 网盘里找不到 / 还在电脑上）与恢复后的继续命令。位置「暂时不确定」只表示网盘连不上或最近 24 小时没检查，不代表丢失；「网盘里找不到」才是网盘里确实缺了。",
 	},
 	{
 		name:     "disklessly_sessions_status",
@@ -84,7 +84,7 @@ var tools = []tool{
 			"machine": str("只看这台机器；不填返回全部机器"),
 			"refresh": map[string]any{"type": "boolean", "description": "若为 true，先在机器上重新读取 disklessly 会话索引并检查备份后端与归档分段"},
 		},
-		description: "查看各机器冷会话云端备份状态：每台机器的状态 state（ready 正常、no_cli 未安装 CLI、cli_too_old CLI 版本过旧、no_backend 未设置备份后端、backend_unreachable 备份后端连不上、unreachable 连不上这台电脑、unreadable 回答无法识别、unchecked 尚未检查）与原因、备份后端是否可达、最近检查时间、已索引会话数、按位置（在云端 / 未知 / 云端缺失 / 本地）统计、缺失或未确认的归档分段。",
+		description: "查看各机器冷会话云端备份状态：每台机器的状态 state（ready 正常、no_cli 还没装配套小工具、cli_too_old 配套小工具太旧、no_backend 还没设置网盘、backend_unreachable 网盘连不上、unreachable 连不上这台电脑、unreadable 配套小工具出错了、unchecked 还没检查）与原因、备份后端是否可达、最近检查时间、已索引会话数、按位置（在网盘里 / 暂时不确定 / 网盘里找不到 / 还在电脑上）统计、缺失或未确认的归档分段。",
 	},
 	{
 		name:     "disklessly_clean",
@@ -177,6 +177,21 @@ var tools = []tool{
 		},
 		description: "给未安装或版本过旧的机器安装 / 升级 disklessly CLI（优先 Homebrew），装好后运行 disklessly version 确认，再重新读取这台机器的会话索引，返回新的状态。会在目标机器上安装软件，需要确认。",
 	},
+	{
+		name:        "disklessly_files_offload",
+		readOnly:    false,
+		destructive: true,
+		required:    []string{"machine", "paths"},
+		props: map[string]any{
+			"machine": str("目标机器 ID 或 SSH Host 别名"),
+			"paths": map[string]any{
+				"type": "array", "minItems": 1, "maxItems": offloadMaxRun, "items": map[string]any{"type": "string"},
+				"description": "要上云的文件、文件夹或 App（/Applications 或个人文件夹里的 .app）的绝对路径，最多 50 个",
+			},
+			"dry_run": map[string]any{"type": "boolean", "description": "若为 true 只检查每个路径能否上云（原因、类型），并说明 CLI 是否已安装，不移动任何东西"},
+		},
+		description: "把指定机器上的文件和文件夹（disklessly offload，原处留下 .disklessly 占位文件）或 App（disklessly pack，原处留下替身 App）上传到 disklessly 的存储，读回校验后才删除本地原件，返回每项结果和 df 实测释放空间。个人文件夹以外、标准文件夹、资源库、App 包内部、符号链接和密钥目录会被拒绝。CLI 缺失或过旧时报错并指向 disklessly_cli_install，不会自动安装。会删除本地原件，执行前请与用户确认，最好先 dry_run。",
+	},
 }
 
 func (t tool) schema() map[string]any {
@@ -248,7 +263,7 @@ func (m *mcpServer) handle(ctx context.Context, method string, params json.RawMe
 			"serverInfo":      map[string]any{"name": "disklessly", "version": about.Version},
 			"instructions": "Disklessly 机器磁盘与冷会话管理：先用 disklessly_machines_status 查看所有纳管机器的水位和可回收空间，" +
 				"再用 disklessly_scan 扫描目标机器查看 Dry-Run 清理计划与冷会话分布；需要执行清理时调用 disklessly_clean；" +
-				"找回以前的 Agent 对话用 disklessly_sessions_search（位置「未知」不代表丢失），恢复用 disklessly_sessions_restore，冷会话上云用 disklessly_sessions_offload。",
+				"找回以前的 Agent 对话用 disklessly_sessions_search（位置「暂时不确定」不代表丢失），恢复用 disklessly_sessions_restore，冷会话上云用 disklessly_sessions_offload。",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -653,6 +668,17 @@ func (m *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		})
 		return out, cmp.Or(werr, err)
 
+	case "disklessly_files_offload":
+		var in struct {
+			Machine string   `json:"machine"`
+			Paths   []string `json:"paths"`
+			DryRun  bool     `json:"dry_run"`
+		}
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		return m.filesOffload(ctx, in.Machine, in.Paths, in.DryRun)
+
 	case "disklessly_machine_upsert":
 		var in struct {
 			ID           string `json:"id"`
@@ -731,7 +757,7 @@ func coldStatusOf(st *State, mach *Machine, now time.Time) map[string]any {
 	res["archived_bytes"] = cat.ArchivedBytes
 	adv := coldProblem(st, mach, cat, state)
 	if state != ColdReady && adv.Reason != "" {
-		// The same words as the Agent 对话 page: what is wrong, what to do, a command to copy;
+		// The same words as the AI 对话 page: what is wrong, what to do, a command to copy;
 		// detail is the raw text (an SSH line, the CLI's answer) for 详情.
 		res["message"] = adv.Reason
 		res["next"] = adv.Next

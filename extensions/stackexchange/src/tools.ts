@@ -49,6 +49,9 @@ export async function callTool(service: StackExchange, name: string, raw: unknow
       return clip(answerText(selectedAnswer(result.answers)) + `\n\n${t.attribution}${result.stale ? `\n${errorText(result.stale, service.locale)}` : ""}`, 29_999);
     }
     throw unknownMethod(`connector.tools.${name}`);
+  } catch (error) {
+    if (!signal?.aborted && request.signal.aborted && request.signal.reason instanceof ReadError) throw request.signal.reason;
+    throw error;
   } finally { request.dispose(); }
 }
 export function connector(getService: () => StackExchange): Handler { return withExactParams(async (method, params: unknown, call) => {

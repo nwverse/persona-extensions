@@ -153,6 +153,21 @@ func parseLngLat(s string) (point, bool) {
 	return p, true
 }
 
+// parseLatLng reads WGS-84 "lat,lng" ("纬度,经度") as used by the tools.
+func parseLatLng(s string) (point, bool) {
+	lat, lng, ok := strings.Cut(strings.TrimSpace(s), ",")
+	if !ok {
+		return point{}, false
+	}
+	y, err1 := strconv.ParseFloat(strings.TrimSpace(lat), 64)
+	x, err2 := strconv.ParseFloat(strings.TrimSpace(lng), 64)
+	p := point{y, x}
+	if err1 != nil || err2 != nil || !p.valid() {
+		return point{}, false
+	}
+	return p, true
+}
+
 func (p point) valid() bool {
 	return !math.IsNaN(p.Lat) && !math.IsNaN(p.Lng) && p.Lat >= -90 && p.Lat <= 90 && p.Lng >= -180 && p.Lng <= 180 &&
 		!(p.Lat == 0 && p.Lng == 0)

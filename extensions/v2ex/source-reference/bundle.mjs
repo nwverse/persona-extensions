@@ -157,7 +157,8 @@ var fields = {
   grid: ["tiles", "max_columns"],
   carousel: ["title", "tiles", "width"],
   graph: ["nodes", "edges", "layout", "direction", "selected", "folded"],
-  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"]
+  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"],
+  map: ["title", "alt", "caption", "aspect", "viewport", "markers", "routes", "links", "static", "show_list"]
 };
 function pathPart(parent, ...segments) {
   return parent + segments.map((segment) => `${segment.length}:${segment}`).join("");

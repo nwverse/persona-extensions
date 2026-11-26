@@ -44,7 +44,10 @@ func (a *app) memoryPage(p memsrc.Params) (memsrc.Result, memsrc.Counts, error) 
 	if snap == nil || snap.State == nil {
 		return memsrc.Result{}, memsrc.Counts{}, &ext.Error{Code: "not_ready", Message: "enkeep memory has not loaded its entries yet"}
 	}
-	return memsrc.Page(snap.State, p)
+	if p.ResidentBytes == 0 && a.c != nil {
+		p.ResidentBytes = a.c.Cfg.ResidentBytes
+	}
+	return memsrc.PageWith(snap.State, snap.Profile, a.overviewExtras(), p)
 }
 
 // memoryReading reads every page as the hub would (200 a page, at most 5 pages) and says what came back, for
@@ -78,6 +81,6 @@ func (a *app) memoryReading() string {
 		p.After = res.After
 	}
 	return fmt.Sprintf("memory.entries: %d entr(ies) in %d page(s) of %d in the pool (%d active, %d standing), tagged %t "+
-		"(%d of the pool not tagged by the 0.2.0-beta.40 rules), in %d ms",
-		got, pages, n.Entries, active, standing, tagged, n.Untagged, time.Since(t0).Milliseconds())
+		"(%d of the pool read before the 0.2.0-beta.40 tagging rules, tagged by them on reading), in %d ms",
+		got, pages, n.Entries, active, standing, tagged, n.Backfilled, time.Since(t0).Milliseconds())
 }

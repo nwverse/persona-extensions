@@ -26,8 +26,10 @@ func (in reviewArgs) validate() error {
 	return nil
 }
 
+const maxCommentChars = 10000
+
 func validComment(body string) error {
-	if strings.TrimSpace(body) == "" || len([]rune(body)) > 10000 {
+	if strings.TrimSpace(body) == "" || len([]rune(body)) > maxCommentChars {
 		return errors.New("comment must be nonempty and at most 10000 characters")
 	}
 	for _, r := range body {

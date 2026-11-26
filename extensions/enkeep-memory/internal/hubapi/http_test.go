@@ -55,6 +55,15 @@ func (f *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			{"id": "2", "seq": 2, "ts": t("3"), "role": "assistant", "kind": "fold", "fold": fold},
 			{"id": "5", "seq": 5, "ts": t("3"), "role": "assistant", "kind": "text", "text": "done"},
 		}}
+	case "/api/v1/sessions/m1/s-raw/items":
+		// A hub answering from its conversation history with after_seq: the work comes unfolded.
+		body = map[string]any{"items": []map[string]any{
+			{"id": "1", "seq": 1, "ts": t("3"), "role": "user", "kind": "text", "text": "fix the build of project-x"},
+			{"id": "2", "seq": 2, "ts": t("3"), "role": "assistant", "kind": "tool_use", "tool_name": "Bash", "tool_input": map[string]any{"command": "make"}},
+			{"id": "3", "seq": 3, "ts": t("3"), "role": "user", "kind": "tool_result", "text": "error", "is_error": true},
+			{"id": "4", "seq": 4, "ts": t("3"), "role": "assistant", "kind": "tool_use", "tool_name": "Edit", "tool_input": map[string]any{"file_path": "/repo/a.go"}},
+			{"id": "5", "seq": 5, "ts": t("3"), "role": "assistant", "kind": "text", "text": "fixed"},
+		}}
 	case "/api/v1/interactions/history":
 		if f.paged {
 			// An extension's token: the private and health cards are left out but still take their place, so the first
@@ -305,5 +314,38 @@ func TestHTTPMemories(t *testing.T) {
 	ms, err := h.Memories(context.Background(), true)
 	if err != nil || len(ms) != 1 || !ms[0].Truncated || ms[0].Type != "feedback" || !ms[0].Created.IsZero() {
 		t.Fatalf("entries: %v %+v", err, ms)
+	}
+}
+
+// A page asked folded that comes back unfolded (the hub's history page with after_seq) is folded here, as the hub
+// would: one fold from the first call through the last, with its calls, files, errors and tools; a segment is not.
+func TestHTTPItemsFoldsUnfoldedWork(t *testing.T) {
+	h := newHTTP(t, &fakeHub{})
+	items, err := h.Items(context.Background(), "m1", "s-raw", ItemsQuery{Fold: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var folds []*Fold
+	for _, it := range items {
+		if it.Kind == KindToolUse || it.Kind == KindToolResult {
+			t.Fatalf("unfolded work left: %+v", it)
+		}
+		if it.Kind == KindFold {
+			folds = append(folds, it.Fold)
+		}
+	}
+	if len(folds) != 1 || folds[0].From != 2 || folds[0].To != 4 || folds[0].Calls != 2 || folds[0].Errors != 1 ||
+		len(folds[0].Files) != 1 || !folds[0].Known {
+		t.Fatalf("folds %+v", folds)
+	}
+	seg, _ := h.Items(context.Background(), "m1", "s-raw", ItemsQuery{From: 2, Through: 4})
+	n := 0
+	for _, it := range seg {
+		if it.Kind == KindToolUse {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("a segment stays unfolded: %d calls", n)
 	}
 }

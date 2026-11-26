@@ -27,6 +27,9 @@ var markers = []string{
 	"<persona-context", "<jarvis-context", "Persona task handoffs:", "<cross-session-message", "[Cross-session",
 	"（Persona：任务的结果", "<task-notification",
 	"经主对话转", "主对话转达", "主管转达", "（转自主管", "relayed by the supervisor", "relayed from the assistant",
+	// The platform's task-brief boilerplate (0.2.0-beta.52): the credential note, the supervisor's report tool and
+	// acceptance list, the result-file line. A brief carrying them is the supervisor's, not the user's habit.
+	"Keep hub credentials private", "report_to_supervisor", "handoff_receipt", "done_when", "file: <",
 }
 
 // probe: a short text that asks for a fixed answer or no tool calls, the shape of a deployment or smoke test.
@@ -71,6 +74,60 @@ func SplitPaste(text string) (own string, pastedRunes int) {
 
 // PasteMark is the short mark left where pasted material was taken out.
 func PasteMark(n int) string { return fmt.Sprintf("[粘贴材料 %d 字]", n) }
+
+var (
+	// boilerplateBlocks are platform-injected XML/tag blocks stripped before text reaches a model.
+	boilerplateBlocks = regexp.MustCompile(`(?s)<(persona-context|jarvis-context|system-reminder|cross-session-message|task-notification|persona-supervision)\b[^>]*>.*?</(persona-context|jarvis-context|system-reminder|cross-session-message|task-notification|persona-supervision)>`)
+	// boilerplateResultBlock is the multi-line Persona file-delivery footer appended to task prompts.
+	boilerplateResultBlock = regexp.MustCompile(`(?s)（Persona：任务的结果是要交给用户的文件时.*?）`)
+	// boilerplateLineMarkers identify single platform boilerplate lines (handoff, credential, scratch, file template).
+	boilerplateLineMarkers = []string{
+		"Persona task handoffs:",
+		"Keep hub credentials private",
+		"临时文件和草稿请放在仓库工作区外",
+		"这是 Persona 的任务通知",
+		"这是 Persona 的督办消息",
+		"这是 Persona 的收件箱通知",
+		"不是用户发的消息",
+		"not a message from the user",
+		"（Persona 叫醒你",
+		"（Persona 叫你接着做）",
+	}
+	boilerplateFileTemplate = regexp.MustCompile(`^\s*file:\s*<[^>]+>\s*$`)
+)
+
+// StripBoilerplate deterministically removes Persona platform system prompts, injected context blocks, and task
+// handoff footers before text is sent to L0 extraction models. Substantive user or task text is preserved.
+func StripBoilerplate(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
+	}
+	s := boilerplateBlocks.ReplaceAllString(text, "\n")
+	s = boilerplateResultBlock.ReplaceAllString(s, "\n")
+	lines := strings.Split(s, "\n")
+	kept := make([]string, 0, len(lines))
+	for _, l := range lines {
+		t := strings.TrimSpace(l)
+		if t == "" {
+			continue
+		}
+		if boilerplateFileTemplate.MatchString(t) {
+			continue
+		}
+		drop := false
+		for _, m := range boilerplateLineMarkers {
+			if strings.Contains(t, m) {
+				drop = true
+				break
+			}
+		}
+		if drop {
+			continue
+		}
+		kept = append(kept, t)
+	}
+	return strings.TrimSpace(strings.Join(kept, "\n"))
+}
 
 // Who a line is by, in three values (design v2 §4.2): the user's own words, the user's words relayed verbatim by
 // Persona or an agent and verified against what the user really said, or anyone else (an agent, Persona, a probe,

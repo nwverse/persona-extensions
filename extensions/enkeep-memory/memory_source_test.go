@@ -23,7 +23,8 @@ func TestMemoryEntries(t *testing.T) {
 		t.Fatalf("before a snapshot: %v", err)
 	}
 	st.S.Entries = map[string]*entry.Entry{"i-a": {ID: "i-a", Facet: entry.Interaction, Grain: entry.Class, Text: "report the conclusion first",
-		Status: entry.Stable, Count: 2, Origin: entry.Behavior}}
+		Status: entry.Stable, Count: 2, Origin: entry.Behavior,
+		Leverage: &entry.Leverage{Reach: entry.ReachCrossProject, Horizon: entry.HorizonLasting}}}
 	a.c.Live = &curate.Live{}
 	a.c.Publish()
 	if _, err := a.memory(t.Context(), "entries", raw(map[string]any{"contribution": "other", "limit": 200})); err == nil {
@@ -34,11 +35,13 @@ func TestMemoryEntries(t *testing.T) {
 	}
 	out, err := a.memory(t.Context(), "entries", raw(map[string]any{"contribution": "memory", "limit": 200}))
 	r, _ := out.(memsrc.Result)
-	if err != nil || len(r.Entries) != 1 || r.Entries[0].Status != "active" || !r.Entries[0].Standing || r.Tagged {
+	// 1 curated entry (i-a, the standing set) + 2 profile summary entries (recalled on their own, after it).
+	if err != nil || len(r.Entries) != 3 || r.Entries[0].ID != "i-a" || r.Entries[1].ID != "profile:overview" || r.Entries[2].ID != "profile:interaction" ||
+		r.Entries[0].Status != "active" || !r.Entries[0].Standing || r.Entries[1].Standing || !r.Tagged {
 		t.Fatalf("page: %+v %v", out, err)
 	}
 	status, _ := call(t, a, "enkeep_rerun_status", map[string]any{})
-	if !strings.Contains(status, "memory.entries: 1 entr(ies) in 1 page(s) of 1 in the pool (1 active, 1 standing), tagged false (1 of the pool not tagged") {
+	if !strings.Contains(status, "memory.entries: 3 entr(ies) in 1 page(s) of 3 in the pool (3 active, 1 standing), tagged true (1 of the pool read before the 0.2.0-beta.40 tagging rules") {
 		t.Fatalf("status: %q", status)
 	}
 }

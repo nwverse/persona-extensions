@@ -153,6 +153,18 @@ func agyUserRules(geminiDir, agyDir, cwd string, workspaces []string) []string {
 
 func userRulesFor(a hookArgs, req hookInput) []string {
 	rules := userRules(a.ConfigDir, req.Cwd)
+	var extraCwds []string
+	if req.cmdCwd != "" {
+		extraCwds = append(extraCwds, req.cmdCwd)
+		if realCmdCwd := resolve(req.cmdCwd, true); realCmdCwd != "" && realCmdCwd != req.cmdCwd {
+			extraCwds = append(extraCwds, realCmdCwd)
+		}
+		for _, d := range extraCwds {
+			if d != req.Cwd {
+				rules = append(rules, userRules("", d)...)
+			}
+		}
+	}
 	if !req.isAgy && a.GeminiDir == "" && a.AgyDir == "" {
 		return rules
 	}
@@ -160,7 +172,11 @@ func userRulesFor(a hookArgs, req hookInput) []string {
 	if geminiDir == "" && agyDir == "" {
 		geminiDir, agyDir = resolveAgyDirs(a)
 	}
-	return append(rules, agyUserRules(geminiDir, agyDir, req.Cwd, req.workspaces)...)
+	workspaces := req.workspaces
+	if len(extraCwds) > 0 {
+		workspaces = append(append([]string(nil), workspaces...), extraCwds...)
+	}
+	return append(rules, agyUserRules(geminiDir, agyDir, req.Cwd, workspaces)...)
 }
 
 func canonicalRuleTool(r string) string {

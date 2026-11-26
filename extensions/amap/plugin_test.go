@@ -30,11 +30,28 @@ func TestManifestMatchesTheCode(t *testing.T) {
 		!slices.Equal(c[0].Hosts, []string{"restapi.amap.com"}) {
 		t.Fatalf("connectors %+v", c)
 	}
+	if len(m.Contributes.UI) != 2 ||
+		m.Contributes.UI[0].ID != pageUI || m.Contributes.UI[0].Placement != wire.PlacementNavPage || m.Contributes.UI[0].Icon != "location" ||
+		m.Contributes.UI[1].ID != cardUI || m.Contributes.UI[1].Placement != wire.PlacementOverviewCard || m.Contributes.UI[1].Opens != pageUI {
+		t.Fatalf("ui %+v", m.Contributes.UI)
+	}
 	if !slices.Equal(m.Permissions.Network, []string{"restapi.amap.com"}) {
 		t.Fatalf("network %v", m.Permissions.Network)
 	}
 	if !m.SettingsCheck || len(m.Secrets) != 1 || m.Secrets[0].Name != keySecret || !m.Secrets[0].Required || string(m.Secrets[0].Hint) != `"last4"` {
 		t.Fatalf("settings_check %v, secrets %+v", m.SettingsCheck, m.Secrets)
+	}
+	var cfgSchema struct {
+		Type       string                     `json:"type"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	if err := json.Unmarshal(m.Configuration, &cfgSchema); err != nil || cfgSchema.Type != "object" {
+		t.Fatalf("configuration schema: %s (%v)", m.Configuration, err)
+	}
+	for _, k := range []string{"home", "company", "places"} {
+		if _, ok := cfgSchema.Properties[k]; !ok {
+			t.Errorf("configuration missing %q", k)
+		}
 	}
 	var cmds map[string]string
 	if err := json.Unmarshal(m.Runtime.Command, &cmds); err != nil {
@@ -74,8 +91,13 @@ func toolNames() []string {
 
 // startWithKey runs the program through the protocol with key as its secret.
 func startWithKey(t *testing.T, a *app, key string) *exttest.Host {
+	return exttestStartWithConfig(t, a, key, nil)
+}
+
+func exttestStartWithConfig(t *testing.T, a *app, key string, cfg json.RawMessage) *exttest.Host {
 	return exttest.StartWith(t, manifest, exttest.Serve(t, program(a)), func(p *wire.InitializeParams) {
 		p.Secrets = map[string]string{keySecret: key}
+		p.Config = cfg
 		p.Extension = &wire.ExtensionInfo{ID: "amap", Version: about.Version, DataDir: t.TempDir()}
 	})
 }
@@ -83,8 +105,10 @@ func startWithKey(t *testing.T, a *app, key string) *exttest.Host {
 func TestConformance(t *testing.T) {
 	f := newFake(t)
 	a := &app{logf: t.Logf, tune: tuneFor(f, newClock())}
-	exttest.CheckConnectors(t, manifest, exttest.Serve(t, program(a)))
-	if st := a.status(); st.State != wire.ConnectorStateNotConfigured || st.GuideURL != consoleURL {
+	exttest.Check(t, manifest, exttest.Serve(t, program(a)), json.RawMessage(`{"home":"39.9032,116.3978","company":"北京南站"}`))
+	a2 := &app{logf: t.Logf, tune: tuneFor(f, newClock())}
+	exttest.CheckConnectors(t, manifest, exttest.Serve(t, program(a2)))
+	if st := a2.status(); st.State != wire.ConnectorStateNotConfigured || st.GuideURL != consoleURL {
 		t.Fatalf("without a key: %+v", st)
 	}
 

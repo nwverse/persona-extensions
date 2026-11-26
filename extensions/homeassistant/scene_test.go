@@ -78,8 +78,8 @@ func TestSceneCheckView(t *testing.T) {
 	if comp.Caption != "1 盏灯开着" {
 		t.Errorf("caption = %q, want 1 盏灯开着", comp.Caption)
 	}
-	if len(comp.Labels) != 2 {
-		t.Errorf("labels = %+v, want 2 room labels", comp.Labels)
+	if len(comp.Labels) != 0 {
+		t.Errorf("labels = %+v, want none: room names are in alt only", comp.Labels)
 	}
 
 	// Window1 (bottom 0.8 < wall_height 1.1) produces a glass box from 0.8 to 1.1.
@@ -228,12 +228,16 @@ func TestSceneCorrections(t *testing.T) {
 
 	comp := buildScene(parsed, fix, nil)
 	checkSceneView(t, comp)
-	if len(comp.Labels) != 2 || comp.Labels[0].Text != "起居室" || comp.Labels[1].Text != "主卧" {
-		t.Errorf("labels = %+v", comp.Labels)
+	labels, _ := buildRoomLabels(applySceneFix(parsed, fix))
+	if len(labels) != 2 || labels[0].Text != "起居室" || labels[1].Text != "主卧" {
+		t.Errorf("labels = %+v", labels)
 	}
-	if math.Hypot(comp.Labels[0].At[0]-2.0, comp.Labels[0].At[1]-1.5) > 1e-4 ||
-		math.Hypot(comp.Labels[1].At[0]-5.5, comp.Labels[1].At[1]-1.5) > 1e-4 {
-		t.Errorf("label centroids = %+v", comp.Labels)
+	if math.Hypot(labels[0].At[0]-2.0, labels[0].At[1]-1.5) > 1e-4 ||
+		math.Hypot(labels[1].At[0]-5.5, labels[1].At[1]-1.5) > 1e-4 {
+		t.Errorf("label centroids = %+v", labels)
+	}
+	if !strings.Contains(comp.Alt, "起居室") || !strings.Contains(comp.Alt, "主卧") {
+		t.Errorf("alt = %q, want the renamed rooms", comp.Alt)
 	}
 	hasLivingWallColor := slices.ContainsFunc(comp.Shapes, func(s wire.SceneShape) bool { return s.Color == "#C4DEEE" })
 	hasSideboardColor := slices.ContainsFunc(comp.Shapes, func(s wire.SceneShape) bool { return s.Color == "#3A3A3E" })

@@ -23,17 +23,40 @@ const (
 	typingCancel = 2
 )
 
+// Voice encode_type values (openclaw-weixin src/api/types.ts).
+const (
+	VoiceEncodePCM      = 1
+	VoiceEncodeADPCM    = 2
+	VoiceEncodeFeature  = 3
+	VoiceEncodeSpeex    = 4
+	VoiceEncodeAMR      = 5
+	VoiceEncodeSILK     = 6
+	VoiceEncodeMP3      = 7
+	VoiceEncodeOGGSpeex = 8
+)
+
 type wireMedia struct {
 	EncryptQueryParam string `json:"encrypt_query_param"`
 	AESKey            string `json:"aes_key"`
 	FullURL           string `json:"full_url"`
 }
 
+type wirePartialText struct {
+	Start      string `json:"start"`
+	End        string `json:"end"`
+	StartIndex int    `json:"startindex"`
+	EndIndex   int    `json:"endindex"`
+	QuoteMD5   string `json:"quotemd5"`
+}
+
 type wireItem struct {
-	Type   int `json:"type"`
+	Type   int             `json:"type"`
+	MsgID  json.RawMessage `json:"msg_id,omitempty"`
 	RefMsg *struct {
-		Title       string    `json:"title"`
-		MessageItem *wireItem `json:"message_item"`
+		Title       string           `json:"title"`
+		MessageItem *wireItem        `json:"message_item"`
+		SvrID       json.RawMessage  `json:"svr_id"`
+		PartialText *wirePartialText `json:"partial_text"`
 	} `json:"ref_msg"`
 	TextItem *struct {
 		Text string `json:"text"`
@@ -43,8 +66,12 @@ type wireItem struct {
 		AESKey string     `json:"aeskey"`
 	} `json:"image_item"`
 	VoiceItem *struct {
-		Media *wireMedia `json:"media"`
-		Text  string     `json:"text"`
+		Media         *wireMedia `json:"media"`
+		EncodeType    int        `json:"encode_type"`
+		BitsPerSample int        `json:"bits_per_sample"`
+		SampleRate    int        `json:"sample_rate"`
+		PlayTime      int        `json:"playtime"`
+		Text          string     `json:"text"`
 	} `json:"voice_item"`
 	FileItem *struct {
 		Media    *wireMedia `json:"media"`
@@ -80,19 +107,34 @@ const (
 
 // Media is a reference to an encrypted file on WeChat's CDN; Download fetches and decrypts it.
 type Media struct {
-	Kind     MediaKind
-	URL      string
-	Query    string
-	KeyB64   string
-	KeyHex   string
-	FileName string
-	Size     int64
+	Kind          MediaKind
+	URL           string
+	Query         string
+	KeyB64        string
+	KeyHex        string
+	FileName      string
+	Size          int64
+	Transcribed   bool
+	EncodeType    int
+	SampleRate    int
+	BitsPerSample int
+	PlayTime      int
+}
+
+type PartialQuote struct {
+	Start      string
+	End        string
+	StartIndex int
+	EndIndex   int
+	QuoteMD5   string
 }
 
 // Message is a message a user sent the bot.
 type Message struct {
 	// ID is stable across redeliveries: the client id, else the message id, else the sequence number.
-	ID           string
+	ID string
+	// SvrID is the exact server message id, used by newer clients to refer to this message.
+	SvrID        string
 	From         string
 	ContextToken string
 	At           int64 // milliseconds
@@ -101,20 +143,34 @@ type Message struct {
 	Media []Media
 	// Quote is the message this one replies to, as text (its title and text), "" when none.
 	Quote string
+	// QuoteID is the referenced server id when the client omitted the quoted body.
+	QuoteID string
+	// Partial describes the selected substring of the quoted text, when WeChat supplies one.
+	Partial *PartialQuote
 }
 
 func decode(m wireMessage) (Message, bool) {
 	if m.MessageType != nil && *m.MessageType != typeUser {
 		return Message{}, false
 	}
-	out := Message{ID: messageID(m), From: strings.TrimSpace(m.FromUserID), ContextToken: strings.TrimSpace(m.ContextToken), At: m.CreateTimeMS}
+	svrID := messageSvrID(m)
+	out := Message{ID: messageID(m), SvrID: svrID, From: strings.TrimSpace(m.FromUserID), ContextToken: strings.TrimSpace(m.ContextToken), At: m.CreateTimeMS}
 	if out.ID == "" || out.From == "" || out.ContextToken == "" {
 		return Message{}, false
 	}
 	var text []string
 	for _, it := range m.Items {
-		if out.Quote == "" && it.RefMsg != nil {
+		if out.Quote == "" && out.QuoteID == "" && it.RefMsg != nil {
 			out.Quote = quote(it)
+			if strings.TrimSpace(quoteBody(it.RefMsg.MessageItem)) == "" {
+				out.QuoteID = serverMessageID(it.RefMsg.SvrID)
+				if out.QuoteID == "" && it.RefMsg.MessageItem != nil {
+					out.QuoteID = serverMessageID(it.RefMsg.MessageItem.MsgID)
+				}
+			}
+			if p := partialQuote(it.RefMsg.PartialText); p != nil {
+				out.Partial = p
+			}
 		}
 		switch it.Type {
 		case itemText:
@@ -122,7 +178,7 @@ func decode(m wireMessage) (Message, bool) {
 				text = append(text, it.TextItem.Text)
 			}
 		case itemVoice:
-			if it.VoiceItem != nil && it.VoiceItem.Text != "" {
+			if it.VoiceItem != nil && strings.TrimSpace(it.VoiceItem.Text) != "" {
 				text = append(text, it.VoiceItem.Text)
 			}
 		}
@@ -138,18 +194,41 @@ func messageID(m wireMessage) string {
 	if s := strings.TrimSpace(m.ClientID); s != "" {
 		return "client:" + s
 	}
-	if raw := strings.TrimSpace(string(m.MessageID)); raw != "" && raw != "null" {
-		var s string
-		if json.Unmarshal(m.MessageID, &s) == nil {
-			if s = strings.TrimSpace(s); s != "" {
-				return "message:" + s
-			}
-		} else if n, err := strconv.ParseInt(raw, 10, 64); err == nil {
-			return "message:" + strconv.FormatInt(n, 10)
-		}
+	if id := messageSvrID(m); id != "" {
+		return "message:" + id
 	}
 	if m.Seq != nil {
 		return "seq:" + strconv.FormatInt(*m.Seq, 10)
+	}
+	return ""
+}
+
+func messageSvrID(m wireMessage) string {
+	if id := serverMessageID(m.MessageID); id != "" {
+		return id
+	}
+	for _, it := range m.Items {
+		if id := serverMessageID(it.MsgID); id != "" {
+			return id
+		}
+	}
+	return ""
+}
+
+func serverMessageID(raw json.RawMessage) string {
+	text := strings.TrimSpace(string(raw))
+	if text == "" || text == "null" {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return strings.TrimSpace(s)
+	}
+	if n, err := strconv.ParseInt(text, 10, 64); err == nil {
+		return strconv.FormatInt(n, 10)
+	}
+	if _, err := strconv.ParseFloat(text, 64); err == nil {
+		return text
 	}
 	return ""
 }
@@ -160,15 +239,30 @@ func quote(it wireItem) string {
 	if t := strings.TrimSpace(r.Title); t != "" {
 		parts = append(parts, t)
 	}
-	if q := r.MessageItem; q != nil {
-		switch {
-		case q.Type == itemText && q.TextItem != nil:
-			parts = append(parts, q.TextItem.Text)
-		case q.Type == itemVoice && q.VoiceItem != nil:
-			parts = append(parts, q.VoiceItem.Text)
-		}
+	if body := quoteBody(r.MessageItem); body != "" {
+		parts = append(parts, body)
 	}
 	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
+func quoteBody(q *wireItem) string {
+	if q == nil {
+		return ""
+	}
+	switch {
+	case q.Type == itemText && q.TextItem != nil:
+		return q.TextItem.Text
+	case q.Type == itemVoice && q.VoiceItem != nil:
+		return q.VoiceItem.Text
+	}
+	return ""
+}
+
+func partialQuote(p *wirePartialText) *PartialQuote {
+	if p == nil {
+		return nil
+	}
+	return &PartialQuote{Start: p.Start, End: p.End, StartIndex: p.StartIndex, EndIndex: p.EndIndex, QuoteMD5: p.QuoteMD5}
 }
 
 func media(it wireItem) (Media, bool) {
@@ -185,7 +279,13 @@ func media(it wireItem) (Media, bool) {
 		m.KeyHex = it.ImageItem.AESKey
 		return m, true
 	case it.Type == itemVoice && it.VoiceItem != nil:
-		return ref(MediaVoice, it.VoiceItem.Media), true
+		m := ref(MediaVoice, it.VoiceItem.Media)
+		m.Transcribed = strings.TrimSpace(it.VoiceItem.Text) != ""
+		m.EncodeType = it.VoiceItem.EncodeType
+		m.SampleRate = it.VoiceItem.SampleRate
+		m.BitsPerSample = it.VoiceItem.BitsPerSample
+		m.PlayTime = it.VoiceItem.PlayTime
+		return m, true
 	case it.Type == itemFile && it.FileItem != nil:
 		m := ref(MediaFile, it.FileItem.Media)
 		m.FileName = it.FileItem.FileName

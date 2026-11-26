@@ -78,11 +78,14 @@ def icon_url(extension_id, icon, commit):
 
 
 def validate_downloads_timestamp(value):
-    if not isinstance(value, str) or not re.fullmatch(
-            r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})", value):
+    match = isinstance(value, str) and re.fullmatch(
+            r"(?P<date_time>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})"
+            r"(?:\.[0-9]+)?"
+            r"(?:Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])", value)
+    if not match:
         raise ValueError("downloads_updated_at must be RFC 3339")
     try:
-        datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+        datetime.datetime.strptime(match.group("date_time"), "%Y-%m-%dT%H:%M:%S")
     except ValueError:
         raise ValueError("downloads_updated_at must be RFC 3339") from None
 

@@ -14,6 +14,42 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 UPSTREAM = os.environ.get("LARKX_UPSTREAM", "")
 DEPS = os.environ.get("LARKX_DEPS", "")
 
+from larkx_persona.real import RealBackend, mute_state
+
+
+class MuteStateTest(unittest.TestCase):
+    def test_reminder_fields_preserve_presence_and_never_use_mute_at_all(self):
+        cases = [
+            (None, "unknown"),
+            ({}, "unknown"),
+            ({"isRemind": False}, "muted"),
+            ({"isRemind": True}, "normal"),
+            ({"userSetting": {"isRemind": False}}, "muted"),
+            ({"userSetting": {"isRemind": True}}, "normal"),
+            ({"userSetting": {}}, "unknown"),
+            ({"userSetting": {"isMuteAtAll": True}}, "unknown"),
+            ({"userSetting": {"isMuteAtAll": False}}, "unknown"),
+            ({"isRemind": False, "userSetting": {"isRemind": True}}, "unknown"),
+            ({"isRemind": 0}, "unknown"),
+            ({"isRemind": 1}, "unknown"),
+            ({"isRemind": "false"}, "unknown"),
+            ({"userSetting": {"isRemind": "false"}}, "unknown"),
+        ]
+        for info, expected in cases:
+            with self.subTest(info=info):
+                self.assertEqual(mute_state(info), expected)
+
+    def test_chat_info_keeps_existing_fields_and_returns_the_mute_state(self):
+        backend = RealBackend(ROOT, "", "test")
+        backend._client = mock.Mock()
+        info = {"name": "项目群", "lastMessagePosition": 42, "userSetting": {"isRemind": False}}
+        backend._client.get_chat_info.return_value = info
+        self.assertEqual(backend.chat_info("6001"), {"name": "项目群", "last_position": 42, "mute": "muted"})
+        for empty in (None, {}, {"userSetting": {}}, []):
+            with self.subTest(empty=empty):
+                backend._client.get_chat_info.return_value = empty
+                self.assertEqual(backend.chat_info("6001"), {"name": "", "last_position": 0, "mute": "unknown"})
+
 
 @unittest.skipUnless(UPSTREAM and DEPS, "needs LARKX_UPSTREAM and LARKX_DEPS")
 class RealTest(unittest.TestCase):
@@ -25,10 +61,13 @@ class RealTest(unittest.TestCase):
         import larkx
         from larkx import media
         from larkx.proto import decoders
+        from larkx.proto import gateway
         from larkx.proto import lark_all_pb2 as lark
         from larkx.proto import proto_pb2 as P
         cls.larkx, cls.media, cls.decoders, cls.P = larkx, media, decoders, P
+        cls.gateway, cls.full_lark = gateway, lark
         cls.anchor = lark.entities.RichTextElement.AnchorProperty
+        cls.image = lark.entities.RichTextElement.ImageProperty
 
     @classmethod
     def tearDownClass(cls):
@@ -69,6 +108,32 @@ class RealTest(unittest.TestCase):
         from larkx_persona.real import normalize
         return [normalize(m, self.media.extract_resource_key) for m in self.decoders.decode_push_messages(raw)]
 
+    def test_chat_info_uses_the_pinned_chat_setting_presence(self):
+        L = self.full_lark
+        chat_fields = L.entities.Chat.DESCRIPTOR.fields_by_name
+        setting_fields = chat_fields["userSetting"].message_type.fields_by_name
+        self.assertEqual((chat_fields["isRemind"].number, chat_fields["userSetting"].number), (27, 29))
+        self.assertEqual((setting_fields["isRemind"].number, setting_fields["isMuteAtAll"].number), (1, 8))
+        for remind, expected in ((None, "unknown"), (False, "muted"), (True, "normal")):
+            with self.subTest(remind=remind):
+                response = L.chats.PullChatsByIdsResponse()
+                response.chats["6001"].name = "项目群"
+                response.chats["6001"].lastMessagePosition = 42
+                if remind is not None:
+                    response.chats["6001"].userSetting.isRemind = remind
+                decoded = self.gateway.response_to_dict(type(response), response.SerializeToString())
+                info = decoded["chats"]["6001"]
+                self.assertEqual("isRemind" in info.get("userSetting", {}), remind is not None)
+                backend = RealBackend(ROOT, self.home.name, "test")
+                backend._client = mock.Mock()
+                backend._client.get_chat_info.return_value = info
+                self.assertEqual(backend.chat_info("6001"),
+                                 {"name": "项目群", "last_position": 42, "mute": expected})
+        response = L.chats.PullChatsByIdsResponse()
+        response.chats["6001"].userSetting.isMuteAtAll = True
+        info = self.gateway.response_to_dict(type(response), response.SerializeToString())["chats"]["6001"]
+        self.assertEqual(mute_state(info), "unknown")
+
     def test_a_text_in_a_group_that_mentions_the_user(self):
         m = self.normalized(self.frame([self.message("9001", 4, self.text("周五开会"))], at_me=["9001"]))[0]
         self.assertEqual(m["id"], "9001")
@@ -97,6 +162,25 @@ class RealTest(unittest.TestCase):
         self.assertEqual(m["type"], "IMAGE")
         self.assertEqual(m["media"], [{"kind": "image", "key": "img_key"}])
 
+    def test_a_post_keeps_paragraph_children_and_inline_images_in_order(self):
+        P = self.P
+        content = P.PostContent()
+        rich = content.richText
+        rich.elementIds.extend(["10", "20", "30"])
+        for key in ("31", "10", "21", "11", "30", "20"):
+            rich.elements.dictionary[key].tag = 3 if key in ("10", "20", "30") else 1
+        rich.elements.dictionary["10"].childIds.append("11")
+        rich.elements.dictionary["20"].childIds.append("21")
+        rich.elements.dictionary["30"].childIds.append("31")
+        rich.elements.dictionary["11"].property = P.TextProperty(content="/agent\n").SerializeToString()
+        rich.elements.dictionary["21"].tag = 2
+        rich.elements.dictionary["21"].property = self.image(token="img_inline").SerializeToString()
+        rich.elements.dictionary["31"].property = P.TextProperty(content="\ncheck this issue").SerializeToString()
+        rich.imageIds.append("21")
+        m = self.normalized(self.frame([self.message("9010", 2, content.SerializeToString())]))[0]
+        self.assertEqual((m["text"], m["media"]),
+                         ("[富文本] \n/agent\n[图片]\ncheck this issue", [{"kind": "image", "key": "img_inline"}]))
+
     def test_a_pasted_doc_link_keeps_its_title_and_address(self):
         # LarkAgentX's own text drops an A element whole; normalize rebuilds the text from the decoded rich text.
         P, url = self.P, "https://example.feishu.cn/docx/AbC123"
@@ -113,6 +197,26 @@ class RealTest(unittest.TestCase):
             element.tag, element.property = tag, prop
         m = self.normalized(self.frame([self.message("9005", 4, tc.SerializeToString())]))[0]
         self.assertEqual(m["text"], "请看一下 示例文档 " + url)
+        self.assertEqual(m["markdown"], "请看一下 [示例文档](%s)" % url)
+
+    def test_real_style_link_and_formatting_tag_descriptors(self):
+        P = self.P
+        content = P.TextContent()
+        rich = content.richText
+        rich.elementIds.extend(["bold", "space", "link"])
+        rich.elements.dictionary["bold"].tag = 7
+        rich.elements.dictionary["bold"].property = P.TextProperty(content="粗体").SerializeToString()
+        rich.elements.dictionary["space"].tag = 1
+        rich.elements.dictionary["space"].property = P.TextProperty(content=" ").SerializeToString()
+        rich.elements.dictionary["link"].tag = 6
+        rich.elements.dictionary["link"].property = self.anchor(
+            href="https://example.com/docs", content="文档").SerializeToString()
+        m = self.normalized(self.frame([self.message("9006", 4, content.SerializeToString())]))[0]
+        self.assertEqual(m["markdown"], "**粗体** [文档](https://example.com/docs)")
+        tags = P.RichTextElement.DESCRIPTOR.enum_types_by_name["Tag"].values_by_name
+        self.assertEqual({name: tags[name].number for name in ("B", "I", "U", "UL", "OL", "LI", "CODE", "CODE_BLOCK")},
+                         {"B": 7, "I": 8, "U": 9, "UL": 26, "OL": 27, "LI": 28, "CODE": 30, "CODE_BLOCK": 31})
+        self.assertEqual(P.TextProperty.DESCRIPTOR.fields_by_name["content"].number, 1)
 
     def test_the_link_fields_real_py_reads_are_larkagentxs(self):
         # real.py reads an A element's href, content and textContent by number. LarkAgentX's proto.proto has no

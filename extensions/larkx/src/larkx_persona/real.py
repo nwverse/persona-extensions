@@ -6,11 +6,14 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
+import string
 import subprocess
 import sys
 import tarfile
 import time
+import urllib.parse
 import urllib.request
 import zlib
 from pathlib import Path
@@ -75,6 +78,37 @@ def _string(raw, number):
     return value if isinstance(value, str) else value.decode("utf-8", "replace")
 
 
+def _ordered(rich, dictionary):
+    """Rich-text elements in display order: a parent's children come before the next top-level element."""
+    ids = rich.get("elementIds")
+    ids = [k for k in ids if isinstance(k, str)] if isinstance(ids, list) else []
+    out, seen = [], set()
+
+    def add(key):
+        if key in seen or key not in dictionary:
+            return
+        seen.add(key)
+        element = dictionary[key]
+        out.append(element)
+        children = element.get("childIds") if isinstance(element, dict) else []
+        if isinstance(children, list):
+            for child in children:
+                if isinstance(child, str):
+                    add(child)
+
+    for key in ids:
+        add(key)
+    rest = [k for k in dictionary if k not in seen]
+    if not ids:
+        try:
+            rest.sort(key=int)
+        except (TypeError, ValueError):
+            pass
+    for key in rest:
+        add(key)
+    return out
+
+
 # LarkAgentX's rich text: its tags (RichTextElement.Tag) and what it writes for the ones with no text.
 _TEXT_TAGS = (1, 3, 7, 8, 9, 17)  # TEXT, P, B, I, U, LINK: TextProperty.content (LINK: LinkProperty.url) is field 1
 _AT, _ANCHOR, _PARAGRAPH = 5, 6, 3
@@ -90,9 +124,9 @@ def rich_text(rich):
     return linked[0] if linked else None
 
 
-def _linked(rich):
+def _linked(rich, always=False):
     """rich_text's text and the AT elements' spans in that same text ({id, start, end, label}, as _mentions gives them
-    for LarkAgentX's text), or None when the message has no link."""
+    for LarkAgentX's text), or None when the message has no link. POST always rebuilds to retain childIds order."""
     # A decoder of another shape (a dictionary that is not one, elements or ids of another type) leaves LarkAgentX's
     # text as it is: None, never an exception that would lose the whole message.
     try:
@@ -101,23 +135,16 @@ def _linked(rich):
         return None
     if not isinstance(dictionary, dict):
         return None
-    if not any(isinstance(v, dict) and v.get("tag") == _ANCHOR for v in dictionary.values()):
+    if not always and not any(isinstance(v, dict) and v.get("tag") == _ANCHOR for v in dictionary.values()):
         return None
-    ids = rich.get("elementIds")
-    ids = [k for k in ids if isinstance(k, str)] if isinstance(ids, list) else []
-    if ids:
-        listed = set(ids)
-        ordered = [dictionary[k] for k in ids if k in dictionary] + [v for k, v in dictionary.items() if k not in listed]
-    else:
-        try:
-            ordered = [v for _, v in sorted(dictionary.items(), key=lambda item: int(item[0]))]
-        except (ValueError, TypeError):
-            ordered = list(dictionary.values())
+    ordered = _ordered(rich, dictionary)
     text, after_link, spans, linked = "", False, [], False
     for v in ordered:
         if not isinstance(v, dict):
             continue
         tag, prop = v.get("tag", 1), v.get("property")
+        if not isinstance(tag, int) or isinstance(tag, bool):
+            tag = 0
         if not prop:
             continue
         piece, user_id = None, ""
@@ -147,9 +174,180 @@ def _linked(rich):
         text += piece
         if piece:  # an element that adds nothing keeps the last link apart from what comes next
             after_link = tag == _ANCHOR
-    if not linked:
+    if not linked and not always:
         return None  # an anchor with no readable address adds no link: LarkAgentX's text stays
     return text, spans
+
+
+_MARKDOWN_ESCAPES = frozenset(string.punctuation)
+_LIST, _ORDERED_LIST, _LIST_ITEM = 26, 27, 28
+
+
+def _escape_markdown(value):
+    """Literal text, not a chance for message content to inject Markdown or raw HTML."""
+    return "".join("\\" + char if char in _MARKDOWN_ESCAPES else char for char in value)
+
+
+def _safe_markdown_link(href, title=""):
+    """An HTTP(S) Markdown link, or inert text when its address is malformed or has another scheme."""
+    href, title = href.strip(), title.strip()
+    try:
+        parsed = urllib.parse.urlsplit(href)
+        safe = parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc)
+    except ValueError:
+        safe = False
+    safe = safe and not any(char.isspace() or ord(char) < 32 or ord(char) == 127 for char in href)
+    if not safe:
+        return _escape_markdown(title or href)
+    # These characters can close or reshape an inline destination. Percent-encoding them leaves ordinary URLs intact.
+    destination = href
+    for char, encoded in (("\\", "%5C"), ("(", "%28"), (")", "%29"), ("<", "%3C"), (">", "%3E")):
+        destination = destination.replace(char, encoded)
+    if not title or title == href:
+        return "<%s>" % destination
+    return "[%s](%s)" % (_escape_markdown(title), destination)
+
+
+def _inline_code(value):
+    if not value:
+        return ""
+    # A blank line can end the paragraph containing a code span. CommonMark renders line endings in a span as spaces.
+    value = re.sub(r"\r\n?|\n", " ", value)
+    longest = max([len(run) for run in re.findall(r"`+", value)] or [0])
+    fence = "`" * (longest + 1)
+    padding = " " if value[:1] in ("`", " ") or value[-1:] in ("`", " ") else ""
+    return fence + padding + value + padding + fence
+
+
+def _code_block(value):
+    longest = max([len(run) for run in re.findall(r"`+", value)] or [0])
+    fence = "`" * max(3, longest + 1)
+    return fence + "\n" + value + ("" if value.endswith("\n") else "\n") + fence
+
+
+def _markdown(rich):
+    """A safe Markdown display form of LarkAgentX's decoded richText, or None when it cannot be rebuilt.
+
+    The plain normalized text remains authoritative for mentions, /agent and archives. This tree walk retains child
+    order and list nesting; unknown containers still render their children instead of discarding readable text.
+    """
+    try:
+        dictionary = rich["elements"]["dictionary"]
+    except (KeyError, TypeError, IndexError):
+        return None
+    if not isinstance(dictionary, dict):
+        return None
+    ids = rich.get("elementIds")
+    ids = [key for key in ids if isinstance(key, str)] if isinstance(ids, list) else []
+    seen = set()
+
+    def render(key, depth=0, item=""):
+        if key in seen or key not in dictionary:
+            return ""
+        seen.add(key)
+        element = dictionary[key]
+        if not isinstance(element, dict):
+            return ""
+        tag, prop = element.get("tag", 1), element.get("property")
+        if not isinstance(tag, int) or isinstance(tag, bool):
+            tag = 0
+        children = element.get("childIds")
+        children = [child for child in children if isinstance(child, str)] if isinstance(children, list) else []
+
+        def render_children(at_depth=None):
+            return "".join(render(child, depth if at_depth is None else at_depth) for child in children)
+
+        if tag in (_LIST, _ORDERED_LIST):
+            out = _escape_markdown(_string(prop, 1)) + "\n" if prop else ""
+            number = 0
+            for child in children:
+                target = dictionary.get(child)
+                if isinstance(target, dict) and target.get("tag") == _LIST_ITEM and child not in seen:
+                    number += 1
+                    marker = "- " if tag == _LIST else "%d. " % number
+                    out += render(child, depth, marker)
+                else:
+                    out += render(child, depth)
+            return out + ("\n" if out and depth == 0 else "")
+        if tag == _LIST_ITEM:
+            own = _escape_markdown(_string(prop, 1)) if prop else ""
+            indent = "  " * depth
+            out = indent + (item or "- ") + own
+            for child in children:
+                target = dictionary.get(child)
+                nested = isinstance(target, dict) and target.get("tag") in (_LIST, _ORDERED_LIST)
+                piece = render(child, depth + 1 if nested else depth)
+                if not piece:
+                    continue
+                if nested:
+                    if not out.endswith("\n"):
+                        out += "\n"
+                    out += piece
+                elif out.endswith("\n"):
+                    out += indent + "  " + piece
+                else:
+                    out += piece
+            return out if out.endswith("\n") else out + "\n"
+        if tag == 30:  # CODE
+            return _inline_code(_string(prop, 1) if prop else "") + render_children()
+        if tag == 31:  # CODE_BLOCK
+            # A fence is only a fence at the start of a line, including when the preceding element was plain text.
+            return "\n" + _code_block(_string(prop, 1) if prop else "") + "\n\n" + render_children()
+        if tag == 32:  # HR
+            return "---\n\n" + render_children()
+
+        if tag == _ANCHOR:
+            own = _safe_markdown_link(_string(prop, 1), _string(prop, 2) or _string(prop, 3)) if prop else ""
+        elif tag == 17:  # LINK / LinkProperty.url
+            own = _safe_markdown_link(_string(prop, 1)) if prop else ""
+        elif tag == _AT:
+            own = _escape_markdown(_string(prop, 2)) if prop else ""
+        elif tag in _TEXT_TAGS or tag in (23, 24, 25, _LIST_ITEM, 29):
+            own = _escape_markdown(_string(prop, 1)) if prop else ""
+        else:
+            own = _escape_markdown(_PLACEHOLDERS[tag]) if prop and tag in _PLACEHOLDERS else ""
+        body = own + render_children()
+        if tag == _PARAGRAPH:
+            return body.rstrip("\n") + "\n\n" if body or prop else ""
+        if tag in (23, 24, 25):  # H1, H2, H3
+            return "%s %s\n\n" % ("#" * (tag - 22), body.strip("\n")) if body.strip("\n") else ""
+        if tag == 29:  # QUOTE
+            body = body.rstrip("\n")
+            return "\n".join("> " + line for line in body.split("\n")) + "\n\n" if body else ""
+        if tag == 7 and body.strip():  # B
+            return "**%s**" % body
+        if tag == 8 and body.strip():  # I
+            return "*%s*" % body
+        # U has no portable Markdown form. Keep its escaped text rather than emitting raw HTML.
+        return body
+
+    rest = [key for key in dictionary if key not in ids]
+    if not ids:
+        try:
+            rest.sort(key=int)
+        except (TypeError, ValueError):
+            pass
+    out = "".join(render(key) for key in ids + rest).rstrip()
+    return out or None
+
+
+def _inline_images(rich):
+    """The inline images of a POST, in display order. ImageProperty.token/originKey/middleKey/thumbKey are 2/4/5/6."""
+    try:
+        dictionary = rich["elements"]["dictionary"]
+    except (KeyError, TypeError, IndexError):
+        return []
+    if not isinstance(dictionary, dict):
+        return []
+    out = []
+    for element in _ordered(rich, dictionary):
+        if not isinstance(element, dict) or element.get("tag") != 2:
+            continue
+        prop = element.get("property")
+        key = next((value for value in (_string(prop, n) for n in (2, 4, 5, 6)) if value), "")
+        if key:
+            out.append({"kind": "image", "key": key})
+    return out
 
 
 def normalize(msg, extract_key):
@@ -160,7 +358,10 @@ def normalize(msg, extract_key):
     key = extract_key(msg_type, data) if isinstance(data, dict) else ""
     text = msg.get("content") or ""
     mentions = _mentions(data, text)
-    linked = _linked(data.get("richText")) if name in ("TEXT", "POST") and isinstance(data, dict) else None
+    post = name == "POST"
+    rich = data.get("richText") if name in ("TEXT", "POST") and isinstance(data, dict) else None
+    linked = _linked(rich, always=post) if name in ("TEXT", "POST") else None
+    markdown = _markdown(rich) if name in ("TEXT", "POST") else None
     if linked and linked[0]:  # an empty rebuild keeps LarkAgentX's text, as its own `extract_rich_text(...) or text` does
         head = "[富文本] %s\n" % data.get("title", "") if name == "POST" else ""
         text = (head + linked[0]).rstrip() if head else linked[0]
@@ -169,7 +370,10 @@ def normalize(msg, extract_key):
         mentions = [dict(m, start=m["start"] + len(head), end=m["end"] + len(head)) for m in linked[1]]
         if any(text[m["start"]:m["end"]] != m["label"] for m in mentions):
             mentions = []
-    media = []
+    if markdown and post:
+        head = "[富文本] %s" % data.get("title", "")
+        markdown = (_escape_markdown(head) + "\n" + markdown).rstrip()
+    media = _inline_images(rich) if post else []
     if name in ("IMAGE", "STICKER") and key:
         media = [{"kind": name.lower(), "key": key}]
     elif name == "FILE":
@@ -181,14 +385,15 @@ def normalize(msg, extract_key):
     at = float(msg.get("create_time") or 0)
     if at > 1e12:
         at /= 1000
-    root = msg.get("root_id") or ""
+    root = str(msg.get("root_id") or "")
+    parent = str(msg.get("parent_id") or "")
     return {
         "id": str(msg.get("msg_id") or ""), "chat": str(msg.get("chat_id") or ""),
         "chat_kind": "dm" if msg.get("chat_type") == 1 else "group",
         "position": int(msg.get("position") or 0), "sender": str(msg.get("from_id") or ""), "type": name,
         "text": text, "at": at or time.time(), "root": "" if root == "0" else root,
-        "parent": msg.get("parent_id") or "", "at_me": bool(msg.get("at_me")), "media": media,
-        "mentions": mentions,
+        "parent": "" if parent == "0" else parent, "at_me": bool(msg.get("at_me")), "media": media,
+        "mentions": mentions, "markdown": markdown or "",
     }
 
 
@@ -242,6 +447,8 @@ def _mentions(data, text):
         if not isinstance(element, dict):
             return []
         tag, prop = element.get("tag", 1), element.get("property")
+        if not isinstance(tag, int) or isinstance(tag, bool):
+            tag = 0
         if not prop:
             continue
         if tag in (1, 3, 7, 8, 9, 17):
@@ -602,8 +809,11 @@ class RealBackend:
         return [normalize(m, self._extract_key) for m in self._client.pull_history(chat, positions)]
 
     def chat_info(self, chat):
-        info = self._client.get_chat_info(chat) or {}
-        return {"name": info.get("name") or "", "last_position": int(info.get("lastMessagePosition") or 0)}
+        info = self._client.get_chat_info(chat)
+        if not isinstance(info, dict):
+            info = {}
+        return {"name": info.get("name") or "", "last_position": int(info.get("lastMessagePosition") or 0),
+                "mute": mute_state(info)}
 
     def user_name(self, user, chat):
         return self._client.get_user_name(user, chat)
@@ -613,6 +823,29 @@ class RealBackend:
         url = media.message_resource_url(msg_id, key, chat, host=self._auth.region.file_host)
         data, mime = media.download(self._auth, url, max_bytes=most)
         return mime or "application/octet-stream", data
+
+
+def _remind_state(value):
+    if type(value) is not bool:
+        return None
+    return "normal" if value else "muted"
+
+
+def mute_state(info):
+    """The verified whole-chat reminder state; isMuteAtAll is a different setting and is never used here."""
+    if not isinstance(info, dict):
+        return "unknown"
+    states = []
+    settings = info.get("userSetting")
+    if isinstance(settings, dict):
+        state = _remind_state(settings.get("isRemind"))
+        if state is not None:
+            states.append(state)
+    state = _remind_state(info.get("isRemind"))
+    if state is not None:
+        states.append(state)
+    return states[0] if states and len(set(states)) == 1 else "unknown"
+
 
 def mention_parts(text, mentions):
     """Split only exact @name occurrences of explicit, numeric user ids; longest names win at the same position."""

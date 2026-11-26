@@ -1,5 +1,314 @@
 # enkeep-memory changelog
 
+## 0.2.7
+
+- **Read assistant structured ledger (`S12/ledger`) and sent-as-user provenance (`S13/sent`).** The manifest now requests
+  `assistant.entries.read` and `sent.read` and subscribes to `assistant.entries.changed`.
+  - Daily passes read active `assistant.entries.list` entries into `ledger/<day>` (and `ledger/<space>/<day>` when
+    scoped to another assistant space) with entry-id deduplication, self-write exclusion (`by=enkeep`), per-unit content
+    hash cursors, and structured decision details (`selected`, `rejected`, `reason`, `quote`) as high-evidence input.
+  - With `sent.read`, archived `kb.day` messages sent by the assistant in the user's name (`SentBy != ""`) are
+    relabelled as `voice.Ghost` so AI-drafted sends are not attributed to the user's own words, recalled sends are
+    dropped, and `S13/sent` tracks deduplicated provenance counts and a monotonic `SentLedgerID` cursor.
+
+## 0.2.6
+
+- **Rules keep when they do not hold.** An entry's exception (read into its own field) was dropped at every exit, so
+  a standing "do not stop to ask" went without "only when it is live, public or deletes data". Rules, ways of working
+  and choices now carry it, `（例外：…）`, in the standing set, memory.entries and the exits; the standing line cuts its
+  other words first, never the exception.
+- **Rules saying one thing in other words are made one.** A rule merge puts the assistant's rules that compete for the
+  standing set (settled or hard, across types and grains) to the model together, after each daily pass whose rules
+  changed and in the weekly pass. Rules telling the assistant to do the same thing on the same kind of occasion become
+  one: the strongest stays, with one sentence for the default and every condition under which it does not hold that
+  any of them or the user's lines state. A rule the assistant's own memory or the user wrote is marked covered by it
+  instead of merged away, and stands again if the covering rule goes. Every merge is an event and undoable.
+- **One class takes at most a fifth of the standing room.** A facet and its type (as the type table names it) is a
+  class; no class fills more than 20% of the room, whatever its scores.
+- **Rules are found by their occasion.** A rule's subjects carry the words of its moment (派活 / dispatch, 汇报 /
+  report, 提问 / ask, 开工 / task…) and its type, so a decisions_query tag of one occasion word brings them in; exit
+  A's recall line says to query by occasion before dispatching, reporting or asking.
+- **Evaluation.** `hardeval merge-rules` runs the rule merge on a copy of the state (`-before` an evaluation's cutoff).
+
+## 0.2.5
+
+- **The standing set ranks rules by leverage, and gives rules the larger share.** Hard rules scored exactly 90, and
+  with over a hundred of them, which ones stood was decided by days of evidence and id: a complaint about slow replies
+  stood while a cross-project rule seen on four days did not. Hard rules now score 90 to 99 by their own leverage.
+  Times seen add at most 25 instead of 15, so a rule distilled from dozens of observations ranks above one seen seven
+  times. Rules take 60% of the room and the understanding 40% (the reverse before): in the collaboration evaluation
+  the rules side is what avoids mistakes. On the same snapshot at 4096 bytes, incidents avoided rise from 25% to 29%.
+- **Collaboration evaluation diagnosis.** `hardeval collab-run` records per incident how often an arm was judged a
+  wrong action or a needless ask; `hardeval collab-why` lists, for named incidents, the entries closest to what they
+  needed, whether each stood or was in the scatter memory, and why not, plus (`-show`, `-diff`) the standing set of
+  the day and the scatter lines that did not stand.
+
+## 0.2.4
+
+- **Non-blocking queued `enkeep_mark_wrong`, cutoff enforcement in `patternOut`, and schema-safe report rendering.**
+  `applyMarks` now releases `marksMu` before waiting on `St.Lock()` and trims only the applied queue prefix (matching
+  `applyReruns`), while `queueMarks` reads the lock-free `Live` snapshot so concurrent or pre-snapshot calls never
+  deadlock. `heFilter.patternOut` now passes the evaluation `cutoff` to `entryOut` (with `LastEvidence` fallback when
+  evidence entries are absent), preventing post-cutoff overview patterns from leaking into evaluation arms.
+  `reportPage` now validates each chunk via `wire.CheckView` with plain-text fallback and a chunk cap.
+
+## 0.2.3
+
+- **Queue `enkeep_rerun` requests while a pass holds the store lock.** Instead of returning `busy` after the user
+  approves an `enkeep_rerun` card while a daily or fast pass is running, `enkeep_rerun` validates the date range,
+  persists the request to `reruns-queue.json` beside `state.json`, and returns `Queued` immediately. Pending requests
+  are merged into `State.RerunQueue` / `State.ForceReruns` (leaving already-queued days intact) as soon as the lock
+  frees, before `tick` starts the next day (and on startup if the process restarted), and are surfaced by
+  `enkeep_rerun_status`.
+
+## 0.2.2
+
+- **Collaboration evaluation: recall like a search, not every subject.** The recall arms weigh each name in an
+  incident by how few entries it points at (a repository's own name over the platform's), and find a world fact by an
+  identifier named only in its text. The first version matched every subject, and common names filled the recall
+  budget with unrelated rules. With it, the entity ablation goes the expected way on the baseline snapshot: without
+  the world and people entries, entity incidents avoided fall from 10% to 0% and wrong actions rise from 44% to 49%.
+
+## 0.2.1
+
+- **Avoid untracked `MarkShown` writes when rendering the review tab.** Opening the review tab now records unseen
+  proposals synchronously via a non-blocking lock when idle instead of spawning an untracked goroutine on every render,
+  deduplicates and flushes pending marks when a curation run finishes (or via at most one tracked worker if another
+  holder briefly owns the store lock), and skips state and overview writes in the read-only `enkeep-memory page`
+  subcommand.
+
+## 0.2.0
+
+The first stable release. It ships what was prepared as 0.2.0-beta.53 (never published), listed below; from now on
+releases are numbered without a pre-release suffix (0.2.1, …). The hub sees 0.2.0 as newer than every 0.2.0-beta.N,
+so installs on a beta upgrade to it. The beta entries below keep their headings: those versions were published as
+pre-releases.
+
+The daily pass looks for the user's own thinking moves first, and the people-and-project skeleton is back in recall.
+
+- **Daily prompt daily/18.** Before anything else it looks for how the user checks a claim (back to the first-hand
+  source, a hunch marked as one and tested on data, an over-precise number taken as a weak sign), finds the holes (a
+  premise that breaks the conclusion, the premise of a two-option question, what a limit really prevents) and keeps
+  to the goal (stop detail that changes nothing, direction before strategy, the main contradiction first), also when
+  the lines are not about the assistant. It writes the move, not the episode; how to use one machine or path is a
+  tools observation at most. On the same raw input (19 day-batches, blind-judged, sentence only) the share of
+  thinking moves goes from 21% (daily/16) to 57–61%, level with the old pipeline's 57%. The new version reads the
+  rerun range again.
+- **Rules hang on the person or project they are for.** daily/18 puts a rule that holds for one person, project,
+  machine or chat in its scope and impact object; the impact object is now one of the subjects memory.entries
+  answers, so mentioning that person or project brings the rule in.
+- **Relation triples in three kinds.** The skeleton (assigned, depends_on, member_of, collaborates_with, with owns,
+  role and reports_to) is in the pool again: ranked by its score in recall, fed to the overview and the evaluations,
+  never standing. Only noise (about, same_circle) and passing edges (waiting_on, blocked_by, allocated, serves) not
+  seen for 14 days are weak: answered last, out of the pool.
+- **Cross-event patterns stand again.** A pattern scores at most 70, so in beta.52 the single entries above it (hard
+  rules at 90) and the short lines filling what was left kept every pattern out of the standing set (none at 1400
+  bytes, none on the rules side at 4096). Patterns are now offered a quarter of the room first, each side within its
+  quota (live copy: 1 of 9 lines at 1400 bytes, 7 of 23 at 4096), and the room one side leaves takes no line scoring
+  under 50 (it went to fragments such as a story character). `enkeep-memory hardeval standing` prints the set and why
+  each pattern is in or out.
+- **Collaboration evaluation.** Incidents are also tagged when avoiding them needs entity relations (mixing up people
+  or projects, not knowing who is responsible, missing a dependency), reported in a column of their own; two recall
+  arms answer with the standing set plus what the incident's names bring in, with and without the world and people
+  entries (the ablation).
+
+## 0.2.0-beta.52 (pre-release)
+
+What stands in every turn is chosen by how far and how long an entry matters, not by how recent it is; the daily
+prompt asks for the principle behind a choice. Design: the hub gives the extension's standing entries 1536 bytes and
+packs them highest rank first, so the old "thousands standing, newest first" put short fragments in the turn.
+
+- **Leverage (daily/17).** Each observation is labelled with its reach (one-off, a kind of task, a project, across
+  projects, every turn), its horizon (days to lasting), the principle behind it (said, or inferred and marked so) and,
+  for ③ and ⑥, the dimension of thinking (decision, thinking, reaction, attention, communication). The prompt asks
+  not to keep a one-off detail without a principle, and to write an exception as the other pole's situation. Labels merge across
+  sightings (the wider reach and longer horizon stay; a stated principle replaces an inferred one).
+- **The standing set.** `memory.entries` marks only the set chosen by score as standing: the understanding of the user
+  60% and the assistant's rules 40% of 1400 bytes, at most 12 lines, alike lines once, the two sides interleaved
+  (docs/exits.md). Every other entry is recalled on demand and carries a line of the user's own words. Overview
+  patterns compete for the same set on the entries' scale (at most 70, so long patterns do not fill it); the
+  80-pattern standing cap is gone; the profile summary is no longer standing.
+- **Two poles, not "unless".** The counter-example check may keep a contradiction as both ends, each in its situation
+  (`两端：A时，X；B时，Y`), instead of an exception.
+- **Rooted principles are not put to sleep.** A stable entry with evidence in four ISO weeks, or a lasting
+  cross-project principle seen on two days, is not made dormant by 40 quiet days: the user is asked once instead.
+- **Deep reading works again (S4).** The hub folds a conversation's tool work only when a page is read without
+  `after_seq`, and the extension always pages with it, so every deep-reading signal was skipped as "no folded work
+  near it". The extension now folds unfolded pages itself, as the hub would. Deep reading costs a model call per
+  signal that finds work again.
+- **Template lines are not the user's.** A line the user is said to have typed in agents' sessions (S3) that recurs
+  word for word in three sessions or more is a dispatch prompt's or the platform's template, not the user's habit:
+  an entry resting only on such lines never stands, nor a pattern resting mostly on them. The platform's task-brief
+  boilerplate (the credential note, the supervisor's report tool and acceptance list, the result-file line) marks a
+  whole text as Persona's. Nothing is deleted; a rerun reads the days again.
+- **Corrections weigh, hard rules stand.** A correction of the assistant scores more for each day the user had to make
+  it again; one made on two days within a week, or with a ban or anger in the user's words, is a hard rule: it stands
+  at once, even as a candidate, and scores at least 90. Alike scores are ordered by days of evidence, then the
+  latest, no longer by id.
+- **Correction fast path.** Every `fast_minutes` (10; 0 off), when nothing else runs, today's assistant conversations
+  are looked at past the last look; one where the user corrected the assistant is read at once with the daily prompt
+  (one call, at most 24 a day) and the snapshot is published, so the correction stands in the next turns. The source
+  cursors are not moved: the night's pass reads the whole day as always.
+- **`resident_bytes`** (1400; 800–8192): the room the standing set is chosen for, so a wider standing room from the
+  hub needs a setting, not a release; one more line per 120 bytes beyond 1400.
+- **Hard and collaboration evaluations.** `enkeep-memory hardeval collab-build|collab-run` draws real collaboration
+  incidents (the assistant's feedback memories, the user's corrections in its transcripts), answers each with every
+  arm's memory as of the day before, and has another model judge blind whether the incident was avoided, with fewer
+  questions, wrong actions and repeats. `enkeep-memory hardeval build|run` draws held-out questions from a copy of the state (real
+  choices first seen after a cutoff: a trade-off, a correction of the assistant, the same judgement in another
+  project), drops what a stranger model gets right both ways, and answers them with no memory, the scattered entries,
+  the patterns, an external injection text and the new standing set, at the hub's budget and a wide one.
+
+## 0.2.0-beta.51 (pre-release)
+
+- **The profile synthesis is no longer cut off.** Its reply bound goes from 1,600 to 4,000 tokens: with a coherent
+  description per facet the live replies ran to 2,500–3,200 and were cut at the bound, so the summary fell back to
+  the patterns strung together.
+
+## 0.2.0-beta.50 (pre-release)
+
+- **Recent highlights again.** With the overview feeding the profile summary, a facet with a pattern dropped its
+  scattered entries, the current-work ones the recent highlights come from among them, so the live summary had none.
+  What the user is doing now is kept.
+- **Profile page on a phone.** Under each facet's description, at most four sources, each a one-line title cut with
+  an ellipsis (a long line was clipped at the screen's edge); a cross-event pattern is marked and opens the periodic
+  overview (it opened an entry page that did not exist).
+
+## 0.2.0-beta.49 (pre-release)
+
+- **The weekly report waits for the running overview.** A pass is recorded as tried when it starts, so the report
+  took a running week's overview for a failed one and went out without its section (2026-W47). It now waits until
+  the pass ends; a failed pass still does not hold it.
+- **The profile summary from the overview is synthesised.** After an overview pass the summary is written again with
+  the daily pass's one synthesis call, not left as the patterns strung together until the next daily pass.
+- **Recent highlights: only what the user is doing.** Only ⑥ entries of a doing or focus type (current work, focus,
+  goal) make them; a ⑤ line (a repository's status, a decision on a rule, a colleague's commitment) no longer does,
+  even in the user's own words.
+
+## 0.2.0-beta.48 (pre-release)
+
+The periodic cross-event overview (docs/periodic-overview.md): a layer above the daily curation that finds the same
+way of deciding across projects, people, sources and weeks, checks it against counter-examples, and keeps it in its
+own file. The daily curation and `state.json` are unchanged.
+
+- **Weekly synthesis (L1).** After the week's curation pass, each of the six facets' classes and actions with
+  evidence in the four weeks before are projected by time, project, people and source kind and synthesised into
+  patterns (at most two calls per facet). A pattern is used only when code counts at least two scenes (projects or
+  source kinds), three independent quoted unit·days and two ISO weeks, a capable stranger's default that differs, and
+  a counter-example search (likely contradicting entries over sixty days, judged by a model) that does not overturn
+  it: an exception makes it `scoped`, recent counter-examples at 25% or more make it `drifting` (not used).
+- **Monthly consolidation (L2).** On the first Monday of a month: quiet but often-seen classes looked at again, alike
+  patterns merged, the counter-search again for every pattern through the gate; drifting two months running →
+  retired, project-bound and quiet for ninety days → `era_closed`. A principle is no longer dropped by the 40-day
+  dormancy alone.
+- **Light refresh (L3).** On every published snapshot, without a model: a pattern whose evidence the user marked
+  wrong, deleted or forgot is counted again and leaves the exits at once; marking it right brings it back.
+- **Exit.** Used patterns are answered by `memory.entries` beside the curated entries, connector and contribution
+  ids unchanged: `ov:pattern:<id>` standing, rank 950–985; a pattern resting on any categorised evidence or a
+  restricted space as `ov:cat:<category>:<id>`, never standing, rank 900, with every category and the space.
+- **Weekly report.** The push is a summary of at most 300 characters (the hub refuses a body over 1000, which is why
+  the 2026-W47 report was not sent); the full report, with the overview's section, is on the new start-tab page
+  Periodic overview, with the monthly ones.
+- **Forward check and spot check.** Before each weekly synthesis, the patterns kept so far predict the week's real
+  choices (two options, scored by code) against the scattered entries in as many characters and against no memory.
+  `enkeep_overview_run` also runs a backtest (patterns from before a week only) and a model's blind spot check kept
+  for the user to go over.
+- **Tools.** `enkeep_overview_status` (read) and `enkeep_overview_run` (write: weekly, monthly, backtest, audit, or
+  sending a week's report again).
+- **Models.** The overview's calls name their own chain (`model.Request.Models`): Claude only, a configured long or
+  short model of another family is not used for it. Within the shared limit (four at once).
+- **Profile summary.** `OverviewBackedProvider` (`internal/overview`) feeds the six-facet summary from the used
+  patterns first; a facet with a general pattern no longer lists the scattered entries it was made from, a facet
+  with none falls back to the settled entries. The synthesis writes each facet as a coherent description built from
+  the patterns, not a few entries strung together (summary version 2, so every summary is written again).
+- **Recent highlights are the user's own.** Only ⑥ entries and ⑤ lines in the user's own words with no one else's
+  make them, and the model drops any item about what someone else did, arranged or is pushing.
+- **One `memory.entries` entry per facet.** `profile:<facet>` carries the facet's description alone, with its
+  subjects, and is recalled on its own (not standing: `profile:overview` is the standing one).
+- **`page` command.** Also draws the profile summary, the periodic overview and the latest weekly report.
+
+## 0.2.0-beta.47 (pre-release)
+
+Fix View schema validation failures (HTTP 502) on subpages with large data sets:
+
+- **Review tab (`tab=review`)**: paginate pending proposals (100 per page via `Sub` offset) instead of emitting every
+  pending proposal at once, which exceeded the hub's 300-item limit.
+- **Judgement and workflow facet tabs (`tab=facets`, `facet=judgement|workflow`)**: enforce a page-wide component budget
+  across all sections and paginate type groups via `Sub` offset so facets with hundreds or thousands of types stay well
+  under 300 items.
+- **Run report detail (`tab=reports`, `open=<run>`)**: split reports over 18,000 runes into multiple `markdown`
+  components (within `MarkdownComponent.text`'s 20,000-char limit), handle empty reports, and fall back to plain text
+  chunks if a report contains disallowed markdown.
+- **Preventive schema hardening**: cap person card rows (`cardPage`), entry counter-examples (`entryPage`), graph node
+  assertions (`nodePage`), refusal table rows (`health`), legacy judgement rows/members, and long quotes/fields; give
+  `open:card`, `open:u7` and `open:u8` rows distinct action IDs.
+
+## 0.2.0-beta.46 (pre-release)
+
+Six-facet user profile summary, mobile-friendly subpage, and `memory.entries` export (no `state.json` schema change; no external seeds required).
+
+- **Six-facet profile summary (`internal/profile`).** Compiles settled entries across all six facets (`interaction`, `tools`, `judgement`, `workflow`, `world` + factual `people`, `persona` + recent highlights) into a readable "Who I am" overview persisted in `profile-summary.json`. Refreshes after each daily pass (single model synthesis call when the input fingerprint changes, with automatic fallback to deterministic aggregation) and initializes deterministically on startup when absent.
+- **Pluggable input source (`InputProvider`).** Decouples summary generation from `store.State` via `InputProvider` (default `EntriesProvider`), so future periodic cross-event overview pattern entries can be plugged in without rewriting the subpage or `memory.entries` outlet.
+- **Scene-graded privacy isolation.** General overview and six-facet summaries include only non-sensitive general entries (`categories: []`, excluding `people` evaluations/inferences and `life` entries in work-only mode). Sensitive categories (`health`, `finance`, `relationships`, `emotion`, `legal_id`) are isolated per category with full `categories` and `origin_space` metadata and `standing: false` so the hub's scene filter withholds them on lockscreen, outbound, dispatch and third-party scenes.
+- **Mobile-friendly profile subpage (`page_profile.go`).** Adds a "Who I am (profile summary)" entry card on the Start tab and a vertical, mobile-readable subpage with overview, recent highlights, all six facet sections, blank-user onboarding guidance, sensitive-section notice, and an instant refresh button.
+- **Native `memory.entries` export (`internal/memsrc`).** Exports `profile:overview`, `profile:<facet>`, and scene-gated `profile:cat:<category>` through the existing `memory_sources` / `memory.entries` protocol without changing connector or contribution IDs.
+
+## 0.2.0-beta.45 (pre-release)
+
+Recall denoising, priority ranking and dormancy tuning (outlet filtering only; no entries are deleted from state).
+
+- **Filter low-value weak relation triples from `memory.entries`.** Bare world-facet relation triples with weak
+  predicates (`depends_on`, `collaborates_with`, `about`, `member_of`, `same_circle`, `serves`, `assigned`, `allocated`,
+  `waiting_on`, `blocked_by`) are excluded from `memory.entries` unless explicitly pinned, edited or confirmed right by
+  the user. Substantive relations (`owns`, `decides`, `decided`, `reports_to`, `mentors`, `means`, `committed`) and all
+  underlying state entries are preserved.
+- **Re-rank `memory.entries` by usefulness.** `Rank` (0–1000, pinned 1000) now weights facet tier (prioritizing
+  `interaction`, `judgement`, `workflow`, `tools` and `persona`, balanced with substantive `people` and `world`
+  entries), generalization grain (`abstract` > `class` > `durable` > `action`), user authority (self-reported,
+  user-edited or confirmed), evidence strength and status so the hub's 1,000-entry fetch keeps the highest-value
+  entries first.
+- **Tune dormancy thresholds.** One-off/transient entries now go dormant after 90 active days (aligned with
+  `ruleDormantDays` and `roleSeedDays`), and established/durable entries (`class`, `abstract`, `durable`, self/person
+  facts or multi-day entries) after 180 active days, preventing established memory from sleeping prematurely after 40
+  active days.
+
+## 0.2.0-beta.44 (pre-release)
+
+The tools follow the hub's rules for a memory extension (Persona #13532, #13586: `extmgr/memory_sources.go`
+`memoryWithheld`, `extension_assistant.go` `assistantMCPServers`). With beta.42 every `enkeep_*` tool was a read tool
+of the connector, so declaring `memory_sources` withheld all of them from the assistant's conversations; this
+version reads only through `memory.entries`, and the writes are writes.
+
+- **No recall tool.** `enkeep_recall` is removed: the hub reads the entries with `memory.entries`, puts what each
+  scene may use in its context, and `decisions_query` recalls more (`memory: [{id, text}]`, ids as
+  `memory-extension:<id>`). The per-turn block's look-up line and the package skill now point to `decisions_query`.
+- **Writes are actions** (capability `actions`; `actions.list`, `actions.describe`, `actions.do`): `enkeep_rerun`,
+  `enkeep_resettle` (applies; no `dry_run`), `enkeep_seed_import` (imports; no `apply`) and `enkeep_mark_wrong`
+  (takes `memory-extension:<id>` too). The hub runs them only through its gate: a card on the phone, described from
+  the checked arguments and the pages' snapshot (never the store's lock), unless a `connector_gate` rule allows the
+  write. A repeated `request_id` answers the first result.
+- **Reads are read tools, for coding Agents** (`agent_tools`): `enkeep_rerun_status`, `enkeep_seed_status`, and two
+  new previews split off the writes, `enkeep_resettle_preview` (what `dry_run` reported) and `enkeep_seed_preview`
+  (what `apply: false` reported). The writes are in `agent_tools` too, as every tool was before. The hub does not offer
+  the reads in the assistant's conversations, by design. The connector id and the contribution keys are unchanged.
+- **`memory.entries` is tagged.** An untagged page puts none of its entries in any scene (the hub takes each for
+  sensitive everywhere), and beta.42's pages were untagged while any entry read before the 0.2.0-beta.40 tagging rules
+  was in the pool. Such an entry is now tagged on reading by the same rules on what it carries: its old model label,
+  the money words of its text and quotes when it has no label, the identity-paper and legal words, a class's members'
+  categories and space, the space's default categories. Its space is the main one unless it or a member says otherwise
+  (no unit carried its space before beta.40). The state is not changed. `enkeep_rerun_status` says how many were
+  tagged so.
+
+## 0.2.0-beta.43 (pre-release)
+
+Only a tool schema fix; nothing else changes.
+
+- **`enkeep_seed_import` no longer lists an empty string for `expiring`.** Its enum was `["", "recent", "role"]`;
+  Gemini rejects an empty enum value (`enum[0]: cannot be empty`) and then refuses every request of a session that
+  has the tool, so a Gemini agent with Persona's MCP tools could not call its model at all. The enum is now
+  `["recent", "role"]`: leave `expiring` out for no expiry. A caller that still sends `""` imports as before.
+  A test checks that no tool here declares an empty string or nothing in an enum.
+
 ## 0.2.0-beta.42 (pre-release)
 
 Only the memory source; nothing else changes. This version does not read the unified entries ledger, does not add

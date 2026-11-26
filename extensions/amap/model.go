@@ -3,10 +3,42 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"strings"
 )
 
 // The parts of AMap's answers the tools read. v3 endpoints (geocoding, weather) send an empty array for a missing
-// text or object, sometimes nested ("businessAreas": [[]]): str, maybe and list take those as empty.
+// text or object, sometimes nested ("businessAreas": [[]]): str, maybe, polylineStr and list take those as empty.
+
+// polylineStr reads an AMap polyline field, sent by v5 endpoints as a semicolon-separated "lng,lat;..." string, an
+// object {"polyline":"..."} (notably transit walking/bus segments), or [] / null when empty.
+type polylineStr string
+
+func (p *polylineStr) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	switch {
+	case len(b) == 0 || string(b) == "null" || b[0] == '[':
+		*p = ""
+	case b[0] == '"':
+		var v string
+		if err := json.Unmarshal(b, &v); err != nil {
+			return err
+		}
+		*p = polylineStr(strings.TrimSpace(v))
+	case b[0] == '{':
+		var wrap struct {
+			Polyline str `json:"polyline"`
+		}
+		if err := json.Unmarshal(b, &wrap); err != nil {
+			return err
+		}
+		*p = polylineStr(wrap.Polyline.String())
+	default:
+		*p = ""
+	}
+	return nil
+}
+
+func (p polylineStr) String() string { return strings.TrimSpace(string(p)) }
 
 // maybe is an object that may arrive as [] (or anything else that is not an object) when AMap has none.
 type maybe[T any] struct{ V T }
@@ -151,9 +183,10 @@ type path struct {
 }
 
 type step struct {
-	Instruction  str `json:"instruction"`
-	RoadName     str `json:"road_name"`
-	StepDistance str `json:"step_distance"`
+	Instruction  str         `json:"instruction"`
+	RoadName     str         `json:"road_name"`
+	StepDistance str         `json:"step_distance"`
+	Polyline     polylineStr `json:"polyline"`
 }
 
 type transitAnswer struct {
@@ -173,36 +206,53 @@ type transit struct {
 
 type segment struct {
 	Walking maybe[struct {
-		Distance str `json:"distance"`
+		Origin      str         `json:"origin"`
+		Destination str         `json:"destination"`
+		Distance    str         `json:"distance"`
+		Polyline    polylineStr `json:"polyline"`
 	}] `json:"walking"`
 	Bus maybe[struct {
 		Buslines list[busline] `json:"buslines"`
 	}] `json:"bus"`
 	Railway maybe[railway] `json:"railway"`
 	Taxi    maybe[struct {
-		Price    str `json:"price"`
-		Distance str `json:"distance"`
+		Price      str         `json:"price"`
+		Distance   str         `json:"distance"`
+		StartPoint str         `json:"startpoint"`
+		EndPoint   str         `json:"endpoint"`
+		StartName  str         `json:"startname"`
+		EndName    str         `json:"endname"`
+		Polyline   polylineStr `json:"polyline"`
 	}] `json:"taxi"`
 }
 
 type busline struct {
-	Name          str                       `json:"name"`
-	Type          str                       `json:"type"`
-	DepartureStop maybe[struct{ Name str }] `json:"departure_stop"`
-	ArrivalStop   maybe[struct{ Name str }] `json:"arrival_stop"`
-	ViaNum        str                       `json:"via_num"`
+	Name          str         `json:"name"`
+	Type          str         `json:"type"`
+	Polyline      polylineStr `json:"polyline"`
+	DepartureStop maybe[struct {
+		Name     str `json:"name"`
+		Location str `json:"location"`
+	}] `json:"departure_stop"`
+	ArrivalStop maybe[struct {
+		Name     str `json:"name"`
+		Location str `json:"location"`
+	}] `json:"arrival_stop"`
+	ViaNum str `json:"via_num"`
 }
 
 type railway struct {
 	Name          str `json:"name"`
 	Trip          str `json:"trip"`
 	DepartureStop maybe[struct {
-		Name str `json:"name"`
-		Time str `json:"time"`
+		Name     str `json:"name"`
+		Time     str `json:"time"`
+		Location str `json:"location"`
 	}] `json:"departure_stop"`
 	ArrivalStop maybe[struct {
-		Name str `json:"name"`
-		Time str `json:"time"`
+		Name     str `json:"name"`
+		Time     str `json:"time"`
+		Location str `json:"location"`
 	}] `json:"arrival_stop"`
 }
 
@@ -241,4 +291,47 @@ type cast struct {
 	NightWind    str `json:"nightwind"`
 	DayPower     str `json:"daypower"`
 	NightPower   str `json:"nightpower"`
+}
+
+// Distance measurement (/v3/distance).
+type distanceAnswer struct {
+	Results list[distanceItem] `json:"results"`
+}
+
+type distanceItem struct {
+	OriginID str `json:"origin_id"`
+	DestID   str `json:"dest_id"`
+	Distance str `json:"distance"`
+	Duration str `json:"duration"`
+	Info     str `json:"info"`
+	Code     str `json:"code"`
+}
+
+// Administrative district (/v3/config/district).
+type districtAnswer struct {
+	Districts list[district] `json:"districts"`
+}
+
+type district struct {
+	CityCode  str            `json:"citycode"`
+	AdCode    str            `json:"adcode"`
+	Name      str            `json:"name"`
+	Center    str            `json:"center"`
+	Level     str            `json:"level"`
+	Districts list[district] `json:"districts"`
+}
+
+// Input tips (/v3/assistant/inputtips).
+type tipsAnswer struct {
+	Tips list[tip] `json:"tips"`
+}
+
+type tip struct {
+	ID       str `json:"id"`
+	Name     str `json:"name"`
+	District str `json:"district"`
+	AdCode   str `json:"adcode"`
+	Location str `json:"location"`
+	Address  str `json:"address"`
+	TypeCode str `json:"typecode"`
 }

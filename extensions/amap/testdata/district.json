@@ -1,0 +1,42 @@
+{
+  "status": "1",
+  "info": "OK",
+  "infocode": "10000",
+  "count": "1",
+  "districts": [
+    {
+      "citycode": "0571",
+      "adcode": "330100",
+      "name": "杭州市",
+      "center": "120.209947,30.245853",
+      "level": "city",
+      "districts": [
+        {
+          "citycode": "0571",
+          "adcode": "330106",
+          "name": "西湖区",
+          "center": "120.12979,30.25946",
+          "level": "district",
+          "districts": [
+            {
+              "citycode": "0571",
+              "adcode": "330106",
+              "name": "北山街道",
+              "center": "120.1496,30.2654",
+              "level": "street",
+              "districts": []
+            }
+          ]
+        },
+        {
+          "citycode": "0571",
+          "adcode": "330102",
+          "name": "上城区",
+          "center": "120.20517,30.24242",
+          "level": "district",
+          "districts": []
+        }
+      ]
+    }
+  ]
+}

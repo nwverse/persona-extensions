@@ -2,9 +2,9 @@
   "manifest_version": 1,
   "id": "amap",
   "name": "高德地图",
-  "version": "0.1.0",
+  "version": "0.4.0",
   "icon": "assets/icon.png",
-  "description": "让助手用高德地图查中国境内的地点和出行：按名字搜地点，看附近有什么（距离、电话、营业时间、评分、人均），地址和坐标互查，算驾车、步行、骑行、电动车和公交路线（距离、时长、过路费、打车约多少钱、坐哪条线），查中国城市的实况天气和未来几天预报。用你自己在高德开放平台申请的「Web服务」Key，加密存在 hub；保存时先试一次。搜索词、地址和坐标（包括助手转交的你当前的位置）会从 hub 发给高德。",
+  "description": "在 Persona 里用高德地图查中国境内的地点和出行，附带独立的「高德地图」页面和总览用量卡片：按名字搜地点与输入联想，看附近有什么（距离、电话、营业时间、评分、人均），地址和坐标互查，查行政区划，算驾车（含途经点）、步行、骑行、电动车和公交路线（距离、时长、过路费、打车约多少钱、坐哪条线），批量测多个起点到终点的距离耗时，生成带标注/连线/路况的静态地图图片，查中国城市的实况天气和未来几天预报；并支持配置和保存「家」「公司」等常用地点（可直接问「回家要多久」或在页面一键算通勤）。用你自己在高德开放平台申请的「Web服务」Key，加密存在 hub；保存时先试一次。搜索词、地址和坐标（包括助手转交的你当前的位置）会从 hub 发给高德。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/docs/extensions/amap.md",
   "tags": ["地图", "高德", "路线", "周边", "导航", "天气", "出行"],
@@ -22,9 +22,41 @@
       "id": "amap", "name": "高德地图", "capabilities": ["status", "tools"],
       "hosts": ["restapi.amap.com"]
     }],
+    "ui": [
+      {"id": "amap", "title": "高德地图", "placement": "nav_page", "icon": "location"},
+      {"id": "amap-card", "title": "高德地图", "placement": "overview_card", "opens": "amap"}
+    ],
     "skills": [{"id": "amap", "dir": "skills/amap"}]
   },
   "settings_check": true,
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "home": {
+        "type": "string",
+        "title": "家",
+        "description": "常用「家」的位置：写地址、地名，或 WGS-84「纬度,经度」（也可「名称 纬度,经度」），如「北京市朝阳区阜通东大街6号」或「39.9967,116.4809」。设好后可直接让助手查「回家要多久」「家附近」「家天气」，也能在页面一键算通勤。",
+        "maxLength": 160
+      },
+      "company": {
+        "type": "string",
+        "title": "公司",
+        "description": "常用「公司」的位置：写地址、地名，或 WGS-84「纬度,经度」（也可「名称 纬度,经度」）。助手识别「公司 / 单位 / work / office」，在「高德地图」页面也可一键从家到公司或从公司回家。",
+        "maxLength": 160
+      },
+      "places": {
+        "type": "array",
+        "title": "其他常用地点",
+        "description": "每条写「名称: 地址、地名或 WGS-84 纬度,经度」（中英文冒号均可），或「名称 纬度,经度」，如「父母家: 31.2304,121.4737」或「首都机场: 北京首都国际机场」。设好后可在路线、周边、测距、地图和天气里直接用这个名字。",
+        "maxItems": 20,
+        "items": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      }
+    }
+  },
   "secrets": [{
     "name": "api_key",
     "title": "高德 Web 服务 Key",

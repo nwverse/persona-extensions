@@ -139,12 +139,38 @@ func (c *Curator) expire() int {
 
 // MarkShown starts the expiry clock of proposals a page displayed.
 func (c *Curator) MarkShown(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
 	c.St.Lock()
 	defer c.St.Unlock()
-	changed := false
+	c.markShownLocked(ids)
+}
+
+// TryMarkShown starts the expiry clock of displayed proposals if the store lock is immediately available,
+// without waiting on a run in progress.
+func (c *Curator) TryMarkShown(ids []string) bool {
+	if len(ids) == 0 {
+		return true
+	}
+	if !c.St.TryLock() {
+		return false
+	}
+	defer c.St.Unlock()
+	c.markShownLocked(ids)
+	return true
+}
+
+func (c *Curator) markShownLocked(ids []string) {
+	want := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
-		if p := c.St.S.Proposal(id); p != nil && p.Shown == "" {
-			p.Shown = c.today()
+		want[id] = struct{}{}
+	}
+	today := c.today()
+	changed := false
+	for _, p := range c.St.S.Proposals {
+		if _, ok := want[p.ID]; ok && p.Shown == "" {
+			p.Shown = today
 			changed = true
 		}
 	}

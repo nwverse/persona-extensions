@@ -16,8 +16,11 @@ type createArgs struct {
 	Body    string `json:"body"`
 }
 
-// maxNameChars is the longest object name: the validation, the tool schema and the page state check use it.
-const maxNameChars = 255
+// maxNameChars and maxBodyChars bound object names and bodies in characters.
+const (
+	maxNameChars = 255
+	maxBodyChars = 30000
+)
 
 func (in createArgs) validate() error {
 	if err := validObjectID(in.SpaceID); err != nil {
@@ -34,7 +37,7 @@ func (in createArgs) validate() error {
 			return errors.New("object name contains unsupported control characters")
 		}
 	}
-	if strings.TrimSpace(in.Body) == "" || len([]rune(in.Body)) > 30000 {
+	if strings.TrimSpace(in.Body) == "" || len([]rune(in.Body)) > maxBodyChars {
 		return errors.New("object body must be nonempty and at most 30000 characters")
 	}
 	for _, r := range in.Body {

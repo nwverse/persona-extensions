@@ -18,6 +18,9 @@ SECRETS = "connector.secrets."
 INBOX_DAYS = 3
 INBOX_MOST = 200
 CONTEXT_LINES = 8
+# Refresh only stale group mute states, with a bounded number of upstream calls in one inbox poll.
+MUTE_REFRESH_SECONDS = 3600
+MUTE_REFRESH_MOST = 10
 # An archive call reads this many messages at most, whatever the number of chats it asks for.
 ARCHIVE_ROWS = 500
 THREAD_MOST = 50
@@ -48,6 +51,8 @@ AGENT_SUFFIX_MOST = 100
 AGENT_SUFFIX_LEAST = 4
 AGENT_EMPTY = "（只发了 /agent：看上面的上下文和引用的消息，判断要做什么。）"
 AGENT_TYPES = ("TEXT", "POST")
+CHANNEL_IMAGE_MOST = 3 << 20
+CHANNEL_IMAGES_MOST = 4
 AGENT_FRESH_SECONDS = 600
 AGENT_CONTEXT_MESSAGES = 20
 AGENT_RETRY_SECONDS = [2, 5, 15]
@@ -62,7 +67,7 @@ SEND_SCHEMA = {
                      "items": {"type": "object", "additionalProperties": False, "required": ["id", "name"],
                                "properties": {"id": {"type": "string", "description": "The person's id from larkx_search."},
                                               "name": {"type": "string", "description": "The person's exact display name from larkx_search."}}}},
-        "reply_to": {"type": "string", "description": "A message's id, to answer in its topic."},
+        "reply_to": {"type": "string", "description": "A message's id (from larkx_messages), to answer in its topic."},
     },
     "required": ["chat", "text"],
 }
@@ -87,7 +92,7 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "limit": {"type": "integer", "minimum": 1, "maximum": 50},
          "query": {"type": "string", "description": "Only chats whose name contains this."}}}},
-    {"name": "larkx_messages", "description": "Read the latest messages of one Feishu chat, oldest first. For a full-text search use kb_search.",
+    {"name": "larkx_messages", "description": "Read the latest messages of one Feishu chat, oldest first, with each message's id and topic root/parent ids (pass an id to larkx_send's reply_to to answer in that topic). For a full-text search use kb_search.",
      "input_schema": {"type": "object", "properties": {
          "chat": {"type": "string"},
          "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["chat"]}},
@@ -354,6 +359,10 @@ class Connector:
         if text.rstrip().endswith(self.suffix):
             return None
         request = agent_request(text)
+        if request is None and m.get("type") == "POST":
+            first, newline, body = text.lstrip().partition("\n")
+            if newline and (first == "[富文本]" or first.startswith("[富文本] ")):
+                request = agent_request(body)
         if request is not None:
             return request
         return mention_request(text, m.get("mentions"), me) if self.mention else None
@@ -385,6 +394,13 @@ class Connector:
             message["quote"] = _line(parent)
         for wait in AGENT_RETRY_SECONDS + [None]:
             try:
+                media = [x for x in m.get("media") or [] if x.get("kind") == "image" and x.get("key")]
+                images = []
+                for item in media[:CHANNEL_IMAGES_MOST]:
+                    mime, data = self.backend.download(m["id"], m["chat"], item["key"], CHANNEL_IMAGE_MOST)
+                    images.append({"mime": mime, "data": base64.b64encode(data).decode()})
+                if images:
+                    message["images"] = images
                 # The hub keeps each message id once: handing it over again after a cut-off call answers it once.
                 self.hub.call(CHANNEL + "receive", {"contribution": ID, "message": message})
                 return
@@ -578,7 +594,7 @@ class Connector:
         if name == "larkx_messages":
             chat = _required(args, "chat")
             rows = self.store.messages(chat, 0, _limit(args, 20))
-            return {"text": "\n".join(_line(m) for m in rows) or "这个会话还没有消息。"}
+            return {"text": "\n".join(_message_line(m) for m in rows) or "这个会话还没有消息。"}
         if name == "larkx_search":
             self._need_signed_in()
             found = self.backend.search(_required(args, "query"))
@@ -680,8 +696,21 @@ class Connector:
 
     def inbox_collect(self, _):
         since = time.time() - INBOX_DAYS * 86400
-        things = []
+        things, checked, now = [], 0, time.time()
         for chat in self.store.chats_since(since, INBOX_MOST):
+            stale = now - (chat.get("checked_at") or 0) >= MUTE_REFRESH_SECONDS
+            if self._signed_in and chat["kind"] == "group" and stale and checked < MUTE_REFRESH_MOST:
+                checked += 1
+                # A failed check is unknown for this poll and backs off until the next refresh window.
+                mute = "unknown"
+                try:
+                    mute = (self.backend.chat_info(chat["id"]) or {}).get("mute") or "unknown"
+                    if mute not in ("muted", "normal", "unknown"):
+                        mute = "unknown"
+                except Exception as e:
+                    self._log("checking the chat mute state failed: %s" % type(e).__name__)
+                self.store.mute_chat(chat["id"], mute, now)
+                chat = self.store.chat(chat["id"]) or dict(chat, mute=mute, checked_at=now)
             thing = self._thing(chat)
             if thing:
                 things.append(thing)
@@ -703,6 +732,8 @@ class Connector:
         kind = "dm" if dm else ("mention" if mentioned else "group")
         if last["mine"]:
             return self._ruled({"thread": chat["id"], "kind": kind, "done": "replied", "why": "你后来回复了"}, "fyi")
+        if not dm and not mentioned and chat.get("mute") == "muted":
+            return None
         title = _title(chat)
         thing = {
             "thread": chat["id"], "kind": kind, "title": title, "sender": last["sender_name"],
@@ -715,8 +746,8 @@ class Connector:
         }
         if last["sender"]:
             thing["tags"].append({"key": "sender", "value": last["sender"], "name": last["sender_name"]})
-        if kind == "group":
-            # Every group message comes in here: folded by rule, so a busy group costs no model call.
+        if kind == "group" and chat.get("mute") != "normal":
+            # Unknown mute state keeps the old fixed fold. Confirmed normal groups use model triage instead.
             thing["tier"], thing["why"] = "noise", "规则：群消息，没有 @ 你"
         # The fallback tier (capability fallback): used only when the triage model can't be called.
         return self._ruled(thing, "noise" if kind == "group" else "action")
@@ -783,8 +814,12 @@ class Connector:
         media = [_thread_media(m["id"], x) for x in m["media"]]
         if media:
             out["media"] = media
-        if m["text"] and not (media and m["text"].startswith("[")):
-            out["text"] = m["text"]
+        markdown = m.get("markdown") or ""
+        display_text = markdown or m["text"]
+        if display_text and not (media and not markdown and display_text.startswith("[")):
+            out["text"] = display_text
+            if markdown:
+                out["format"] = "markdown"
         elif not media:
             out["text"] = "[消息]"
         if m["parent"]:
@@ -851,8 +886,11 @@ class Connector:
     def _batch(self, chat, rows):
         row = self.store.chat(chat) or {}
         rows = sorted(rows, key=lambda m: (m["at"], m["position"]))
+        info = {"id": chat, "name": _title(row), "kind": row.get("kind") or "group", "updated_at": rfc3339(rows[-1]["at"])}
+        if row.get("mute") in ("muted", "normal"):
+            info["muted"] = row["mute"] == "muted"
         return {
-            "chat": {"id": chat, "name": _title(row), "kind": row.get("kind") or "group", "updated_at": rfc3339(rows[-1]["at"])},
+            "chat": info,
             "messages": [_archive_message(m) for m in rows],
         }
 
@@ -988,6 +1026,22 @@ def _kind_label(kind):
 
 def _line(m):
     return "%s（%s）：%s" % (m["sender_name"] or "系统", local_time(m["at"]), m["text"])
+
+
+def _message_line(m):
+    """One larkx_messages line: prefixes message id and non-empty topic root/parent ids for reply_to."""
+    msg_id = m.get("id") or ""
+    root = m.get("root") or ""
+    parent = m.get("parent") or ""
+    meta = []
+    if msg_id:
+        meta.append("id=%s" % msg_id)
+    if root and root != "0" and root != msg_id:
+        meta.append("root=%s" % root)
+    if parent and parent != "0" and parent != root and parent != msg_id:
+        meta.append("parent=%s" % parent)
+    line = _line(m)
+    return "[%s] %s" % (" ".join(meta), line) if meta else line
 
 
 def _thread_media(msg_id, media):

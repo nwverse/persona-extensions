@@ -11,22 +11,27 @@ import (
 // cardItems is the most components the overview card has: one stat grid and the rows after it.
 const cardItems = 12
 
+// cardRowsTitle heads the card's rows. They include the items about to expire, which 需要处理 does not count, so the
+// rows are not titled 需要处理.
+const cardRowsTitle = "最要紧的"
+
 // card is the overview card: three totals, then the most urgent records, each opening its form. A card has no actions of
-// its own, so its rows carry none.
+// its own, so its rows carry none, and the empty state says what to do on the page the card opens (manifest "opens").
 func (c *ctx) card() *wire.View {
 	if c.empty() {
 		return &wire.View{Sections: []wire.Section{{Items: []wire.Component{{
-			Type: wire.ComponentEmpty, Title: "还没有记录", Detail: "在家庭管家里添加物品或家务",
+			Type: wire.ComponentEmpty, Title: welcomeTitle,
+			Detail: "帮你记家里有什么、该买什么、哪些家务到了该做的时候。点开这里添加第一件物品，或者直接跟助手说，例如「记一下冰箱里有两盒牛奶」。",
 		}}}}}
 	}
 	sum := rules.Summarize(c.home, c.today)
 	v := &wire.View{Sections: []wire.Section{{Items: []wire.Component{statGrid([]wire.Stat{
-		{Label: "需要处理", Value: strconv.Itoa(sum.Alerts), Tone: sum.Tone},
+		alertsStat(sum),
 		{Label: "家务到期", Value: strconv.Itoa(sum.ChoresDue), Tone: cautionIf(sum.ChoresDue)},
 		{Label: "即将过期", Value: strconv.Itoa(sum.Expiring), Tone: cautionIf(sum.Expiring)},
 	})}}}}
 	if rows := c.cardRows(cardItems - 1); len(rows) > 0 {
-		v.Sections = append(v.Sections, wire.Section{Title: "需要处理", Items: rows})
+		v.Sections = append(v.Sections, wire.Section{Title: cardRowsTitle, Items: rows})
 	}
 	return v
 }

@@ -1,6 +1,6 @@
 ---
 name: disklessly
-description: 用户的 Persona 机器磁盘与 Coding Agent 冷会话管理（经本机 disklessly MCP 服务器）：自动接入本机与 ~/.persona/config.json、~/.ssh/config 中的 SSH 远程机器，查看多机根分区水位（80% 橙色预警、90% 红色告警）、扫描可回收缓存（Go、Node/Python、Docker、Rust/Xcode、系统与临时日志）与 Claude Code / Codex 会话冷热分布；生成 Dry-Run 安全清理计划，按机器或分类执行清理并记录 df 实测释放空间，或把 >7 天冷会话上云；搜索已上云的对话并恢复。只读用 mcp__disklessly__disklessly_machines_status / disklessly_scan / disklessly_history / disklessly_sessions_search / disklessly_sessions_status；清理、上云、恢复与机器节点变更按对话权限先请用户确认。
+description: 用户的 Persona 机器磁盘与 Coding Agent 冷会话管理（经本机 disklessly MCP 服务器）：自动接入本机与 ~/.persona/config.json、~/.ssh/config 中的 SSH 远程机器，查看多机根分区水位（80% 橙色预警、90% 红色告警）、扫描可回收缓存（Go、Node/Python、Docker、Rust/Xcode、系统与临时日志）与 Claude Code / Codex 会话冷热分布；生成 Dry-Run 安全清理计划，按机器或分类执行清理并记录 df 实测释放空间，或把 >7 天冷会话上云；搜索已上云的对话并恢复。只读用 mcp__disklessly__disklessly_machines_status / disklessly_scan / disklessly_history / disklessly_sessions_search / disklessly_sessions_status；清理、上云（冷会话、文件、文件夹和 App）、恢复与机器节点变更按对话权限先请用户确认。
 ---
 
 # Disklessly 机器磁盘与冷会话管理（mcp__disklessly__* 工具）
@@ -23,7 +23,7 @@ Disklessly 插件把本机和 SSH 远程机器的磁盘水位监控、可重建�
 1. `disklessly_machines_status {refresh?}`：查看所有纳管机器的磁盘水位（`ok` / `warning` / `critical` / `offline`）、已用/可用空间、总可回收空间与最近清理记录。
 2. `disklessly_scan {machine?, cached?}`：对指定机器（如 `local`、`armbox`、`devvm`、`mini-2`）执行只读扫描，获取根分区 `df` 水位、6 大分类明细、Agent 冷热会话统计以及 Dry-Run 清理计划。
 3. `disklessly_history {machine?, limit?}`：查看各机器历史清理台账（每次清理前后 `df` 实测可用空间对比，如 `5.4 GiB → 18.0 GiB (+12.6 GiB)`）。
-4. `disklessly_sessions_search {query, machine?, limit?, deep?}`：用户想找回以前的 Agent 对话时，按标题、首条消息、项目、工作目录、关键词搜索已上云的会话；本地索引找不到时再用 `deep: true` 在机器上全文搜索摘要。结果里的位置：`在云端`（最近 24 小时检查过、可恢复）、`云端缺失`、`本地`、`未知`（后端不可达或未检查，不代表丢失）。
+4. `disklessly_sessions_search {query, machine?, limit?, deep?}`：用户想找回以前的 Agent 对话时，按标题、首条消息、项目、工作目录、关键词搜索已上云的会话；本地索引找不到时再用 `deep: true` 在机器上全文搜索摘要。结果里的位置：`在网盘里`（最近 24 小时检查过、可恢复）、`网盘里找不到`、`还在电脑上`、`暂时不确定`（网盘连不上或未检查，不代表丢失）。
 5. `disklessly_sessions_status {machine?, refresh?}`：查看各机器备份后端是否可达、已索引会话数和各位置统计；需要最新状态时传 `refresh: true`。每台机器的 `state` 说明它的情况（`ready`、`no_cli`、`cli_too_old`、`no_backend`、`backend_unreachable`、`unreachable`、`unreadable`、`unchecked`），向用户转述时用返回的 `message`（哪台、什么原因）和 `next`（下一步），有 `command` 时把命令原样给用户；`detail` 是原始输出，用户要看细节时再给。CLI 缺失或过旧时优先用 Homebrew：`fix` 指向 `disklessly_cli_install`（`method=brew` 运行 `brew tap nwverse/tap && brew install nwverse/tap/disklessly-cli`，已由 Homebrew 安装时升级），用户确认后再调用；机器上没有 Homebrew 时才用 `method=copy` 从同系统同架构的机器复制，两者都不行就把 `command` 给用户手动运行。
 
 只读工具直接运行；需要真正释放空间或修改机器列表时，先向用户展示扫描出的 Dry-Run 计划明细和预计释放体积，再用写入工具：
@@ -36,3 +36,4 @@ Disklessly 插件把本机和 SSH 远程机器的磁盘水位监控、可重建�
 - `disklessly_sessions_restore {machine, id}`：把一个已上云的会话恢复到原路径，返回继续对话的命令（`claude --resume <id>` 或 `codex resume <id>`；其他 Agent 没有该命令），告诉用户在对应机器上运行。来自另一台设备的会话不会在本机恢复，请在原设备上恢复。
 - `disklessly_machine_upsert {host, id?, name?, user?, port?, identity_file?}`：新增或修改一台 SSH 远程机器节点。
 - `disklessly_machine_delete {machine}`：移除一台远程机器节点（本机 `local` 不可移除）。
+- `disklessly_files_offload {machine, paths, dry_run?}`：把用户点名的文件、文件夹或 App（`/Applications` 或个人文件夹里的 `.app`）上云：文件和文件夹由 `disklessly offload` 上传并在原处留下 `.disklessly` 占位文件，App 由 `disklessly pack` 打包并留下替身 App，读回校验后才删除本地原件，返回每项结果和 `df` 实测释放空间。先用 `dry_run: true` 检查（个人文件夹以外、标准文件夹本身、资源库、App 包内部、符号链接、密钥目录、已有占位文件的路径会被拒绝，并给出原因），把可上云的项目和预计体积告诉用户，确认后再执行。CLI 缺失或过旧时它会报错，不会自动安装：先说明要装什么、装在哪台电脑，经用户确认后用 `disklessly_cli_install`。取回已上云的文件可在那台电脑上运行 `disklessly fetch <占位文件>`。

@@ -223,24 +223,46 @@ func (d *dispatcher) prepare(ctx context.Context, t *Task, att Attempt) bool {
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: classIf(permanent, "rejected", "infra_error"), message: "准备工作目录失败：" + msg})
 		return true
 	}
+	updated, err := d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(e *Execution) {
+		e.Worktree, e.Branch, e.BaseSHA = ws.Path, ws.Branch, ws.BaseSHA
+	})
+	if err != nil {
+		// The attempt is no longer active (for example canceled during ats.prepare): release the worktree
+		// and untouched branch without starting an agent session.
+		t.Exec.Worktree, t.Exec.Branch, t.Exec.BaseSHA = ws.Path, ws.Branch, ws.BaseSHA
+		d.cleanup(context.WithoutCancel(ctx), t, att.AttemptNo, true)
+		return false
+	}
+	t = updated
+	e = t.Exec
+
 	mode := "plan"
 	if !readonly {
 		mode = cfg.writeMode()
 	}
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	agentType := effectiveAgentType(att.Harness, t.AgentType)
+	launcher := ""
+	if agentType != AgentClaude {
+		// AgentType alone does not stop the hub's default Claude launcher from being picked.
+		launcher = agentType
+	}
+	cctx, cancel := context.WithTimeout(ctx, sessionStartTimeout(agentType))
 	sid, err := d.api.CreateSession(cctx, sessionRequest{
-		MachineID: e.MachineID, Cwd: ws.Path, AgentType: "claude", Prompt: buildPrompt(t, ws, readonly, prev, resume != ""),
+		MachineID: e.MachineID, Cwd: ws.Path, AgentType: agentType, Launcher: launcher, Prompt: buildPrompt(t, ws, readonly, prev, resume != ""),
 		PermissionMode: mode, Model: cfg.model(cmpOr(att.ModelTier, t.ModelTier)), TabName: "ATS · " + firstLinePreview(t.Title, 40), Async: true,
 	})
 	cancel()
 	if err != nil {
-		t.Exec.Worktree = ws.Path
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "infra_error", message: "启动 Agent 会话失败：" + err.Error()})
 		return true
 	}
 	if _, err := d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(e *Execution) {
 		e.Phase, e.Worktree, e.Branch, e.BaseSHA, e.SessionID = PhaseWorking, ws.Path, ws.Branch, ws.BaseSHA, sid
 	}); err != nil {
+		// The attempt is no longer active (for example canceled while CreateSession was in flight):
+		// interrupt the live session and release the worktree and branch instead of leaking them.
+		t.Exec.Worktree, t.Exec.Branch, t.Exec.BaseSHA, t.Exec.SessionID = ws.Path, ws.Branch, ws.BaseSHA, sid
+		d.cleanup(context.WithoutCancel(ctx), t, att.AttemptNo, true)
 		return false
 	}
 	if todo := t.TodoID(); todo != "" {
@@ -782,13 +804,12 @@ func (d *dispatcher) cleanup(ctx context.Context, t *Task, attempt int, interrup
 
 // cancel cancels a task from the queue page: the queue first, then what its attempt holds.
 func (d *dispatcher) cancel(ctx context.Context, taskID string) (*Task, error) {
-	before, err := d.q.GetTask(taskID)
+	before, t, canceled, err := d.q.cancelTaskWithSnapshot(taskID, d.now())
 	if err != nil {
 		return nil, err
 	}
-	t, err := d.q.CancelTask(taskID, d.now())
-	if err != nil {
-		return nil, err
+	if !canceled {
+		return t, nil
 	}
 	if before.Exec != nil && len(before.Attempts) > 0 {
 		d.cleanup(ctx, before, before.Attempts[len(before.Attempts)-1].AttemptNo, true)

@@ -383,6 +383,9 @@ type State struct {
 	// them there; the hub still forwards a session's items to its runtime, so a day up to the session's Last is read
 	// from these as well. Any runtime's sessions, not one's in particular.
 	SeenSessions map[string]*SeenSession `json:"seen_sessions,omitempty"`
+	// FastSeen: the correction fast path's place in today's assistant conversations (0.2.0-beta.52), by
+	// "<unit ref>@<day>": the last line it looked at. Older days are dropped; the daily pass reads every day whole.
+	FastSeen map[string]int `json:"fast_seen,omitempty"`
 	// SessionHistory: the days whose agent sessions the hub's session history (nwverse/persona#11529) could not
 	// list in full, by day, as the day's last completed pass found it: an older hub without history, or a machine or
 	// source that did not answer or vouch for the whole window. A day listed in full has no entry.
@@ -393,23 +396,25 @@ type State struct {
 
 	// v4: every facet's entries in one structure (internal/entry), and what feeds and uses them. The event log is
 	// not here: it is append-only in events.jsonl (AppendEvents).
-	Entries       map[string]*entry.Entry         `json:"entries,omitempty"`
-	Tombstones    []entry.Tombstone               `json:"tombstones,omitempty"`
-	Types         map[entry.Facet][]entry.TypeDef `json:"types,omitempty"`
-	Contacts      map[string]*entry.Contact       `json:"contacts,omitempty"` // by "person:<id>"
-	PersonMerges  []entry.PersonMerge             `json:"person_merges,omitempty"`
-	Rhythm        map[string]*people.Rhythm       `json:"rhythm,omitempty"` // by "person:<id>": direct-chat rhythm (P9)
-	Corrections   []entry.Correction              `json:"corrections,omitempty"`
-	Digs          []entry.Dig                     `json:"digs,omitempty"`
-	Sources       map[string]*entry.SourceStatus  `json:"sources,omitempty"` // by source code + "/" + name
-	SpeakerChecks []entry.SpeakerCheck            `json:"speaker_checks,omitempty"`
-	Switches      map[string]entry.SwitchSetting  `json:"switches,omitempty"`
-	Onboarding    *entry.Onboarding               `json:"onboarding,omitempty"`
-	Exits         *entry.Exits                    `json:"exits,omitempty"`
-	Readings      []entry.Reading                 `json:"readings,omitempty"`
-	ActiveDays    []string                        `json:"active_days,omitempty"` // sorted days with any source data
-	Cursors       map[string]string               `json:"cursors,omitempty"`     // per source: where incremental reading resumes
-	Backfill      *Backfill                       `json:"backfill,omitempty"`
+	Entries    map[string]*entry.Entry         `json:"entries,omitempty"`
+	Tombstones []entry.Tombstone               `json:"tombstones,omitempty"`
+	Types      map[entry.Facet][]entry.TypeDef `json:"types,omitempty"`
+	// RulesMerged names the set of rules the rule merge last looked at (curate/rules_merge.go, 0.2.6).
+	RulesMerged   string                         `json:"rules_merged,omitempty"`
+	Contacts      map[string]*entry.Contact      `json:"contacts,omitempty"` // by "person:<id>"
+	PersonMerges  []entry.PersonMerge            `json:"person_merges,omitempty"`
+	Rhythm        map[string]*people.Rhythm      `json:"rhythm,omitempty"` // by "person:<id>": direct-chat rhythm (P9)
+	Corrections   []entry.Correction             `json:"corrections,omitempty"`
+	Digs          []entry.Dig                    `json:"digs,omitempty"`
+	Sources       map[string]*entry.SourceStatus `json:"sources,omitempty"` // by source code + "/" + name
+	SpeakerChecks []entry.SpeakerCheck           `json:"speaker_checks,omitempty"`
+	Switches      map[string]entry.SwitchSetting `json:"switches,omitempty"`
+	Onboarding    *entry.Onboarding              `json:"onboarding,omitempty"`
+	Exits         *entry.Exits                   `json:"exits,omitempty"`
+	Readings      []entry.Reading                `json:"readings,omitempty"`
+	ActiveDays    []string                       `json:"active_days,omitempty"` // sorted days with any source data
+	Cursors       map[string]string              `json:"cursors,omitempty"`     // per source: where incremental reading resumes
+	Backfill      *Backfill                      `json:"backfill,omitempty"`
 	// ModelPause: the model could not be called for a day's pass; the day is kept to run again and passes wait
 	// until NextTry. Cleared by the next pass that reaches the model.
 	ModelPause *ModelPause `json:"model_pause,omitempty"`

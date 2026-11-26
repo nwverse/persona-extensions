@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -163,8 +164,23 @@ func locFor(c City) *time.Location {
 	return time.Local
 }
 
+// windDirLabel names an optional wind direction, falling back to generic "风" when direction is unavailable.
+func windDirLabel(dir nullableFloat) string {
+	if !dir.OK {
+		return "风"
+	}
+	return windDir(dir.Value)
+}
+
 // windDir names a wind direction in degrees (0 is north) as a compass point.
 func windDir(deg float64) string {
+	if math.IsNaN(deg) || math.IsInf(deg, 0) {
+		return "风"
+	}
+	deg = math.Mod(deg, 360)
+	if deg < 0 {
+		deg += 360
+	}
 	names := [...]string{"北风", "东北风", "东风", "东南风", "南风", "西南风", "西风", "西北风"}
 	idx := int((deg+22.5)/45) % 8
 	return names[idx]
