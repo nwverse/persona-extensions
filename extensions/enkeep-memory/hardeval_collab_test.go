@@ -258,7 +258,7 @@ func TestHubDecisionsQuery(t *testing.T) {
 		"e-sensitive": {
 			ID: "e-sensitive", Facet: entry.Interaction, Text: "project-x private finance rule",
 			Status: entry.Stable, Count: 5, First: "2026-11-01", Last: "2026-11-10", Tagged: true, Origin: entry.Behavior,
-			Categories: []string{"finance"},
+			Categories: []entry.Category{{Name: entry.CatFinance}},
 		},
 	}}
 	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}}
