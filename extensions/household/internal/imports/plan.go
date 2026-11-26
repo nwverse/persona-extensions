@@ -181,6 +181,7 @@ type Step struct {
 	Place    *Ref      `json:"place,omitempty"` // ID "" for a place that will be created
 	Expires  model.Day `json:"expires,omitempty"`
 	Price    *float64  `json:"price,omitempty"`
+	OldGone  bool      `json:"old_batch_expired,omitempty"` // the recorded batch had expired: only the new one counts
 	Inferred []string  `json:"inferred"`
 	Notes    []string  `json:"notes"`
 	Ask      *Question `json:"question,omitempty"`
@@ -789,7 +790,7 @@ func (p *planner) existing(s Step, l Line, it model.Item) Step {
 			s.After = ptr(*s.Qty)
 			s.Notes = append(s.Notes, "库存里原来没记数量，从现在起记成这次的数量")
 		case expired:
-			s.Before, s.After = ptr(est), ptr(*s.Qty)
+			s.Before, s.After, s.OldGone = ptr(est), ptr(*s.Qty), true
 			s.Notes = append(s.Notes, "旧的一批已经过期，按扔掉算，只记这次买的")
 			if s.SetExpires == "" {
 				s.Notes = append(s.Notes, "旧的过期日会清掉")
@@ -986,11 +987,13 @@ func says(s Step) string {
 	case ActNewItem:
 		head = "新加「" + s.Title + "」"
 		if q := amount(s.Qty); q != "" {
-			head += " " + inf("unit", q)
+			head += inf("unit", q)
 		}
 	case ActAddToItem:
 		head = fmt.Sprintf("「%s」加 %s", s.Item.Title, inf("unit", amount(s.Qty)))
-		if s.Before != nil {
+		if s.OldGone {
+			head += fmt.Sprintf("：旧的已过期，记成 %s%s", num(*s.After), s.Unit)
+		} else if s.Before != nil {
 			head += fmt.Sprintf("：约 %s → %s%s", num(*s.Before), num(*s.After), s.Unit)
 		} else {
 			head += fmt.Sprintf("：记成 %s%s", num(*s.After), s.Unit)
@@ -1007,9 +1010,9 @@ func says(s Step) string {
 	case ActAddToList:
 		head = "把「" + s.Title + "」"
 		if q := amount(s.Qty); q != "" {
-			head += " " + inf("unit", q)
+			head += inf("unit", q)
 		}
-		head += " 加到采购清单"
+		head += "加到采购清单"
 		if s.Category != "" {
 			extra = append(extra, inf("category", "分类「"+s.Category+"」"))
 		}
