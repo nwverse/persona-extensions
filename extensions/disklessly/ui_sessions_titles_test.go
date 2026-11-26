@@ -77,10 +77,10 @@ func TestConversationTitleIsNeverAnID(t *testing.T) {
 	}{
 		{"real title", ColdEntry{ID: "a1", SessionID: untitledUUID, Title: "Fix the checkout flow", FirstPrompt: "Please fix it"}, "Fix the checkout flow"},
 		{"session id as title, first message", ColdEntry{ID: "a1", SessionID: untitledUUID, Title: untitledUUID, FirstPrompt: "Please fix the checkout flow"}, "Please fix the checkout flow"},
-		{"entry id as title", ColdEntry{ID: "c1b2c3d4e5f6", Title: "c1b2c3d4e5f6", Tool: "claude", Mtime: "2026-11-08T09:30:00Z"}, "没有标题的对话 · 11月8日 · Claude Code"},
+		{"entry id as title", ColdEntry{ID: "c1b2c3d4e5f6", Title: "c1b2c3d4e5f6", Tool: "claude", Mtime: "2026-11-08T09:30:00Z"}, "没有标题的对话 · 11月8日 09:30 · Claude Code"},
 		{"first sentence", ColdEntry{FirstPrompt: "帮我看看为什么 nightly 构建总是失败。日志里一直报磁盘空间不够"}, "帮我看看为什么 nightly 构建总是失败。"},
 		{"long first message", ColdEntry{FirstPrompt: strings.Repeat("长", 80)}, strings.Repeat("长", promptTitleRunes-1) + "…"},
-		{"nothing, tool from path, other year", ColdEntry{SessionID: idTitleUUID, Path: "/home/dev/.codex/sessions/x.jsonl", Mtime: "2025-10-28T09:30:00Z"}, "没有标题的对话 · 2025年10月28日 · Codex"},
+		{"nothing, tool from path, other year", ColdEntry{SessionID: idTitleUUID, Path: "/home/dev/.codex/sessions/x.jsonl", Mtime: "2025-10-28T09:30:00Z"}, "没有标题的对话 · 2025年10月28日 09:30 · Codex"},
 		{"nothing at all", ColdEntry{ID: "c1b2c3d4e5f6"}, "没有标题的对话"},
 		{"placeholder title", ColdEntry{Title: "_unknown", Tool: "claude"}, "没有标题的对话 · Claude Code"},
 	}
@@ -119,8 +119,8 @@ func TestConversationListReadable(t *testing.T) {
 			t.Errorf("%q: project not worded:\n%s", m, txt)
 		}
 		want := map[string]string{
-			untitledUUID: "没有标题的对话 · 11月8日 · Claude Code",
-			idTitleUUID:  "没有标题的对话 · 2025年10月28日 · Claude Code",
+			untitledUUID: "没有标题的对话 · 11月8日 09:30 · Claude Code",
+			idTitleUUID:  "没有标题的对话 · 2025年10月28日 09:30 · Claude Code",
 			promptUUID:   "帮我看看为什么 nightly 构建总是失败。",
 			uuidClaude:   "Fix the checkout flow",
 		}
@@ -149,7 +149,7 @@ func TestConversationListReadable(t *testing.T) {
 	}
 }
 
-// The counts say what 暂时不确定 and 网盘里找不到 mean, apart, and name a button the page draws.
+// The counts say what 还没核对过 and 网盘里找不到 mean, apart, and name a button the page draws.
 func TestWhereaboutsCountsExplained(t *testing.T) {
 	a := untitledApp(t)
 	for _, m := range []string{"", "local"} {
@@ -175,10 +175,14 @@ func TestWhereaboutsCountsExplained(t *testing.T) {
 		if got["还没核对过"] != "1 个" || got[LocMissing] != "1 个" {
 			t.Errorf("%q: stats %v", m, got)
 		}
-		for _, w := range []string{"不是丢了", "24 小时", LocUnknown, "拿不回来"} {
+		for _, w := range []string{"不是丢了", "24 小时", "拿不回来"} {
 			if !strings.Contains(note, w) {
 				t.Errorf("%q: note lacks %q: %q", m, w, note)
 			}
+		}
+		// One word for the state on the page: the stat's, not the MCP value.
+		if txt := visibleText(v); strings.Contains(txt, LocUnknown) {
+			t.Errorf("%q: the page still says %q:\n%s", m, LocUnknown, txt)
 		}
 		button := coldRefreshText
 		if m != "" {

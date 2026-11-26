@@ -57,6 +57,24 @@ type deepResult struct {
 	errs []string
 }
 
+// uncheckedText is what the page calls LocUnknown: the stat, the rows' badges and every sentence
+// use this one word. MCP answers and tool descriptions keep LocUnknown itself.
+const uncheckedText = "还没核对过"
+
+// locationText is a conversation's place as the page words it.
+func locationText(loc string) string {
+	if loc == LocUnknown {
+		return uncheckedText
+	}
+	return loc
+}
+
+// pageWords rewrites a sentence shared with MCP answers (coldProblem, a job's error) to the
+// page's word for LocUnknown.
+func pageWords(s string) string {
+	return strings.ReplaceAll(s, "「"+LocUnknown+"」", "「"+uncheckedText+"」")
+}
+
 func locationTone(loc string) string {
 	switch loc {
 	case LocCloud:
@@ -174,7 +192,7 @@ func (d draw) coldSections(m *Machine, query string, deep *deepResult, maxItems 
 	}
 	status := wire.Section{
 		Title:  "AI 对话：旧对话搬到网盘，要用时再拿回来",
-		Footer: "「在网盘里」只看最近 24 小时内的检查结果；网盘连不上、还没检查或电脑关机时显示「暂时不确定」，不会当成丢了。",
+		Footer: "「在网盘里」只看最近 24 小时内的检查结果；网盘连不上、还没检查或电脑关机时显示「" + uncheckedText + "」，不会当成丢了。",
 		Items: []wire.Component{{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
 			Text: "Claude Code、Codex 这些 AI 助手的聊天记录会一直占着硬盘。一周没动的对话可以搬到你自己的网盘：先上传、再从网盘读回来核对无误，才删掉电脑上的那份；还在用的对话不会动。要用时在下面搜到它，点「拿回来」。"}},
 	}
@@ -316,7 +334,7 @@ func (d draw) recheckButton(m *Machine) string {
 // not confirmed in the network drive by a check of the last 24 hours that reached both the
 // computer and its network drive and got to their data package. Not a loss.
 func uncheckedStat(n int) wire.Stat {
-	s := wire.Stat{Label: "还没核对过", Value: fmt.Sprintf("%d 个", n), Detail: "搬走的都核对过了"}
+	s := wire.Stat{Label: uncheckedText, Value: fmt.Sprintf("%d 个", n), Detail: "搬走的都核对过了"}
 	if n > 0 {
 		s.Detail = "不是丢了，说明在下面"
 	}
@@ -338,7 +356,7 @@ func missingStat(n int) wire.Stat {
 func (d draw) whereaboutsNote(m *Machine, unknown, missing int) string {
 	var parts []string
 	if unknown > 0 {
-		t := fmt.Sprintf("「还没核对过」的 %d 个（列表里标着「%s」）不是丢了：只是最近 24 小时里没能核对它们在不在网盘里，比如电脑或网盘没连上、还没检查，或者上次检查没来得及核对完。", unknown, LocUnknown)
+		t := fmt.Sprintf("「%s」的 %d 个不是丢了：只是最近 24 小时里没能核对它们在不在网盘里，比如电脑或网盘没连上、还没检查，或者上次检查没来得及核对完。", uncheckedText, unknown)
 		if b := d.recheckButton(m); b != "" {
 			t += "电脑和网盘都连得上时点「" + b + "」，核对过的就不算在这里了。"
 		} else {
@@ -577,17 +595,25 @@ func (d draw) detailsItems(key, raw string) []wire.Component {
 		return []wire.Component{{Type: wire.ComponentButton, Title: "详情", Action: &wire.Action{ID: "details", Values: map[string]string{"k": key}}}}
 	}
 	return []wire.Component{
-		{Type: wire.ComponentCode, Key: boundedKey("raw-", key), Text: clipRunes(raw, 4000)},
+		{Type: wire.ComponentCode, Key: boundedKey("raw-", key), Path: rawBlockLabel, Text: clipRunes(raw, 4000)},
 		{Type: wire.ComponentButton, Title: "收起详情", Action: &wire.Action{ID: "details", Values: map[string]string{"k": key}}},
 	}
 }
+
+// The apps head a code block with its path, or with 文件 when it has none (and its line count):
+// a command block names itself instead, so it does not read as a file. The path is only shown;
+// nothing loads or links it without load or line_url.
+const (
+	commandBlockLabel = "终端命令"
+	rawBlockLabel     = "原始信息"
+)
 
 // commandItem draws a command to copy.
 func commandItem(key, command string) []wire.Component {
 	if command == "" {
 		return nil
 	}
-	return []wire.Component{{Type: wire.ComponentCode, Key: boundedKey("cmd-", key), Language: "sh", Text: command}}
+	return []wire.Component{{Type: wire.ComponentCode, Key: boundedKey("cmd-", key), Path: commandBlockLabel, Language: "sh", Text: command}}
 }
 
 // commandItems draws a command to copy, after the line that says where to run it and why.
@@ -647,7 +673,7 @@ func (d draw) machineStateRow(m *Machine, cat *ColdCatalog, state string) (wire.
 	} else {
 		row.Detail = adv.text()
 	}
-	row.Detail = clip(row.Detail, 400)
+	row.Detail = clip(pageWords(row.Detail), 400)
 	return row, adv
 }
 
@@ -681,7 +707,7 @@ func (d draw) machineStateItems(m *Machine, cat *ColdCatalog, state string) []wi
 	var lead []wire.Component
 	if state != ColdReady {
 		row.Detail = ""
-		lead = []wire.Component{{Type: wire.ComponentText, Text: clip(adv.lead(), 600)}}
+		lead = []wire.Component{{Type: wire.ComponentText, Text: clip(pageWords(adv.lead()), 600)}}
 	}
 	items := append([]wire.Component{row}, lead...)
 	command, intro := adv.Command, adv.CmdIntro
@@ -798,7 +824,7 @@ func (d draw) jobOutcome(j coldJob, retry ...retryHint) []wire.Component {
 		return nil
 	}
 	return []wire.Component{{Type: wire.ComponentText, Style: wire.TextStyleSecondary,
-		Text: clip(fmt.Sprintf("%s · %s", d.when(j.Finished), text), 400)}}
+		Text: clip(fmt.Sprintf("%s · %s", d.when(j.Finished), pageWords(text)), 400)}}
 }
 
 // apply rewrites the generic 「重试」 in text to the button r names, or, with no such button,
@@ -907,7 +933,7 @@ func (d draw) shortDate(t time.Time) string {
 }
 
 // coldTitle is the title a conversation's row shows, never an id: its real title, else the
-// start of its first message, else 没有标题的对话 with its date and AI assistant. fromPrompt
+// start of its first message, else 没有标题的对话 with its date, time and AI assistant. fromPrompt
 // reports a title cut from the first message.
 func (d draw) coldTitle(e ColdEntry) (title string, fromPrompt bool) {
 	if t := realTitle(e); t != "" {
@@ -918,7 +944,8 @@ func (d draw) coldTitle(e ColdEntry) (title string, fromPrompt bool) {
 	}
 	parts := []string{untitledText}
 	if t := entryTime(e); !t.IsZero() {
-		parts = append(parts, d.shortDate(t))
+		// With the time of day: several untitled conversations of one day stay apart.
+		parts = append(parts, d.shortDate(t)+" "+t.In(d.loc).Format("15:04"))
 	}
 	if tool := coldTool(e); tool != "" {
 		parts = append(parts, tool)
@@ -931,8 +958,16 @@ func coldID(e ColdEntry) string { return strings.TrimSpace(cmp.Or(e.SessionID, e
 
 func (d draw) coldRow(h ColdHit) wire.Component {
 	sub := []string{h.MachineName, cmp.Or(coldTool(h.ColdEntry), "AI 助手"), cmp.Or(coldProject(h.ColdEntry), noProjectText)}
+	// The working folder too when the project named is another one: what the index knows that
+	// tells rows of one project and day apart, with the time and the size.
+	if dir := strings.TrimSpace(lastPathElem(h.Cwd)); dir != "" && dir != coldProject(h.ColdEntry) {
+		sub = append(sub, "文件夹 "+dir)
+	}
 	if t := entryTime(h.ColdEntry); !t.IsZero() {
-		sub = append(sub, t.In(d.loc).Format(time.DateOnly))
+		sub = append(sub, t.In(d.loc).Format("2006-01-02 15:04"))
+	}
+	if h.Bytes > 0 {
+		sub = append(sub, FormatBytes(h.Bytes))
 	}
 	if !h.Local {
 		sub = append(sub, "来自另一台电脑")
@@ -962,7 +997,7 @@ func (d draw) coldRow(h ColdHit) wire.Component {
 		Title:    clip(title, 120),
 		Subtitle: clip(strings.Join(sub, " · "), 400),
 		Detail:   clip(detail, 240),
-		Badge:    &wire.Badge{Text: h.Location, Tone: locationTone(h.Location)},
+		Badge:    &wire.Badge{Text: locationText(h.Location), Tone: locationTone(h.Location)},
 	}
 	// Another device's row is not restored here: its original path belongs to that device.
 	if h.Location != LocLocal && h.Local {
