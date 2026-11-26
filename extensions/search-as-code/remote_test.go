@@ -478,7 +478,7 @@ func TestApprovalCardSpellsOutTheTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := out.(map[string]string)["summary"]
-	for _, want := range []string{card, "电脑：desktop（离线，查已同步的索引）", "项目：项目 persona-extensions", "范围：纯对话", "查询：quota cooldown", "时间：7d"} {
+	for _, want := range []string{card, "电脑：desktop（离线，查已同步的索引）", "项目：项目 persona-extensions", "范围：只看对话", "查询：quota cooldown", "时间：7d"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("card lacks %q:\n%s", want, got)
 		}
