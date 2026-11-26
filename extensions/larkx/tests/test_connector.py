@@ -396,6 +396,116 @@ class ConnectorTest(unittest.TestCase):
         self.c.channel_send({"ref": "r1", "reply_to": "m1", "text": "@HistoryBot 你好"})
         self.assertEqual(self.backend.sent[0][3], [{"id": "7099", "name": "HistoryBot"}])
 
+    def test_members_cache_refetches_for_larger_limit_and_reuses_complete_roster(self):
+        self.sign_in()
+        # 80-member group: _agent_context (limit=60) must not truncate later limit=200 callers.
+        self.backend.members["g1"] = [
+            {"id": str(8000 + i), "name": "成员%d" % i, "real_name": "成员%d" % i, "kind": "user"}
+            for i in range(80)
+        ]
+        m = message("m1", "g1", 1, sender=ME, text="/agent 打招呼", kind="group")
+        self.c.on_message(m)
+        self.c._agent_context(m)
+        self.assertEqual(self.backend.chat_members_calls, [("g1", 60)])
+
+        self.c.channel_send({"ref": "r1", "reply_to": "m1", "text": "@成员70 你好"})
+        self.assertEqual(self.backend.chat_members_calls, [("g1", 60), ("g1", 200)])
+        self.assertEqual(self.backend.sent[0][3], [{"id": "8070", "name": "成员70"}])
+
+        # Subsequent larkx_members(limit=200) and smaller limit=50 both hit the complete 200-limit cache.
+        out = self.c.tools_call({"name": "larkx_members", "args": {"chat": "g1", "limit": 200}})
+        self.assertEqual(len(out["text"].splitlines()), 80)
+        self.assertEqual(len(self.backend.chat_members_calls), 2)
+        small = self.c._chat_members_cached("g1", limit=50)
+        self.assertEqual(len(small), 50)
+        self.assertEqual(len(self.backend.chat_members_calls), 2)
+
+        # Small group (<60): cached 60-limit fetch is already complete, so limit=200 hits without refetching.
+        self.backend.members["g2"] = [
+            {"id": str(9000 + i), "name": "小组员%d" % i, "real_name": "小组员%d" % i, "kind": "user"}
+            for i in range(10)
+        ]
+        self.assertEqual(len(self.c._chat_members_cached("g2", limit=60)), 10)
+        self.assertEqual(len(self.c._chat_members_cached("g2", limit=200)), 10)
+        self.assertEqual([c for c in self.backend.chat_members_calls if c[0] == "g2"], [("g2", 60)])
+
+    def test_context_mentions_require_boundary_and_prevent_prefix_collisions(self):
+        self.sign_in()
+        self.backend.members["g1"] = [
+            {"id": "8007", "name": "成员7", "real_name": "成员7", "kind": "user"},
+            {"id": "8001", "name": "张三", "real_name": "张三", "kind": "user"},
+            {"id": "8010", "name": "Bot", "real_name": "Bot", "kind": "bot"},
+            {"id": "8011", "name": "Bot Pro", "real_name": "Bot Pro", "kind": "bot"},
+            {"id": "8012", "name": "Bot Pro", "real_name": "Bot Pro", "kind": "bot"},
+        ]
+        m = message("m1", "g1", 1, sender=ME, text="/agent 通知", kind="group")
+        self.c.on_message(m)
+
+        # Unknown longer @names must NOT fall back to shorter prefix candidates.
+        self.c.channel_send({"ref": "r1", "reply_to": "m1", "text": "@成员70 @张三丰 你好"})
+        self.assertEqual(len(self.backend.sent[0]), 3)  # no mentions attached
+
+        # Ambiguous longer candidate (@Bot Pro) must NOT be hijacked by shorter @Bot.
+        self.c.channel_send({"ref": "r2", "reply_to": "m1", "text": "@Bot Pro 你好"})
+        self.assertEqual(len(self.backend.sent[1]), 3)
+
+        # Boundary-terminated @name alongside a longer unknown @name resolves only the real target,
+        # and mention_parts leaves the longer @word untouched as plain text.
+        self.c.channel_send({"ref": "r3", "reply_to": "m1", "text": "@成员70 和 @成员7，@张三：请看"})
+        got = {x["id"]: x["name"] for x in self.backend.sent[2][3]}
+        self.assertEqual(got, {"8007": "成员7", "8001": "张三"})
+        from larkx_persona.real import mention_parts
+        parts = mention_parts("@成员70 和 @成员7，@张三：请看", self.backend.sent[2][3])
+        self.assertEqual(parts[0], ("text", "@成员70 和 "))
+        self.assertEqual(parts[1], ("at", {"id": "8007", "name": "成员7"}))
+        self.assertEqual(parts[3], ("at", {"id": "8001", "name": "张三"}))
+
+    def test_group_nicknames_do_not_overwrite_global_canonical_names(self):
+        self.sign_in()
+        self.c.store.set_name("7001", "张三")
+        self.backend.members["g1"] = [
+            {"id": "7001", "name": "张总", "real_name": "张三", "kind": "user"},
+            {"id": "7002", "name": "仅群昵称", "real_name": "", "kind": "user"},
+            {"id": "7003", "name": "群名机器人", "real_name": "RealBot", "kind": "bot"},
+        ]
+        self.c._chat_members_cached("g1", limit=100)
+        # Canonical global name stays intact; nickname-only user does not pollute global store;
+        # missing canonical real_name can still be backfilled with real_name (never nickname).
+        self.assertEqual(self.c.store.name("7001"), "张三")
+        self.assertEqual(self.c.store.name("7002"), "")
+        self.assertEqual(self.c.store.name("7003"), "RealBot")
+
+        # Inside g1, both group nickname and real name still resolve to real mentions.
+        m = message("m1", "g1", 1, sender=ME, text="/agent 提醒", kind="group")
+        self.c.on_message(m)
+        self.c.channel_send({"ref": "r1", "reply_to": "m1", "text": "@张总 和 @仅群昵称 请看"})
+        got = {x["id"]: x["name"] for x in self.backend.sent[0][3]}
+        self.assertEqual(got, {"7001": "张总", "7002": "仅群昵称"})
+
+    def test_empty_members_are_not_cached_and_logout_drops_inflight_roster(self):
+        self.sign_in()
+        # Transient empty response must not be cached.
+        self.backend.members["g_empty"] = []
+        self.assertEqual(self.c._chat_members_cached("g_empty", limit=100), [])
+        self.backend.members["g_empty"] = [{"id": "7010", "name": "恢复后成员", "real_name": "恢复后成员", "kind": "user"}]
+        got = self.c._chat_members_cached("g_empty", limit=100)
+        self.assertEqual([x["id"] for x in got], ["7010"])
+
+        # An in-flight chat_members fetch must not repopulate _members_cache after logout.
+        orig = self.backend.chat_members
+
+        def slow_members(chat, limit=100):
+            self.c.logout({})
+            return [{"id": "7099", "name": "旧账号成员", "real_name": "旧账号成员", "kind": "user"}]
+
+        self.backend.chat_members = slow_members
+        try:
+            self.assertEqual(self.c._chat_members_cached("g_race", limit=100), [])
+        finally:
+            self.backend.chat_members = orig
+        self.assertNotIn("g_race", self.c._members_cache)
+        self.assertEqual(self.c.store.name("7099"), "")
+
     def test_a_send_that_may_have_gone_out_is_never_repeated(self):
         self.sign_in()
         self.backend.send_result = None

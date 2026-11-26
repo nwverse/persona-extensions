@@ -853,7 +853,7 @@ class RealBackend:
                 out.append({
                     "id": uid,
                     "name": display,
-                    "real_name": real_name or display,
+                    "real_name": real_name,
                     "kind": "bot" if is_bot else "user",
                 })
                 if len(out) >= limit:
@@ -919,7 +919,7 @@ def mention_parts(text, mentions):
         raise ValueError("two mentioned people cannot have the same name")
     targets.sort(key=lambda target: len(target[1]), reverse=True)
     import re
-    pattern = re.compile("(" + "|".join("@" + re.escape(name) for _, name in targets) + ")") if targets else None
+    pattern = re.compile("(" + "|".join("@" + re.escape(name) for _, name in targets) + r")(?![\w-])") if targets else None
     by_name = {name: {"id": user_id, "name": name} for user_id, name in targets}
     out = []
     for part in pattern.split(text) if pattern else [text]:

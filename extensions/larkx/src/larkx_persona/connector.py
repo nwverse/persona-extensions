@@ -162,8 +162,10 @@ class Connector:
         # The user's chat with themself, by account: where pushes go. Emptied at every sign-in and sign-out, so the first
         # push of each sign-in checks the chat again (_own_chat).
         self._own_chats = {}
-        # Group member/bot roster cache, keyed by chat id: (fetched_at, list[member]). Cleared on sign-in and sign-out.
+        # Group member/bot roster cache, keyed by chat id: (fetched_at, fetched_limit, list[member]).
+        # Cleared on sign-in and sign-out; _account_gen prevents an in-flight fetch from repopulating after account change.
         self._members_cache = {}
+        self._account_gen = 0
         self._unreachable = False
         self._last_event = 0.0
         self._last_sync = 0.0
@@ -253,6 +255,7 @@ class Connector:
             self._expired = False
             self._own_chats = {}
             self._members_cache = {}
+            self._account_gen += 1
         self._stop.set()
         self._stop = threading.Event()
         self._linked.clear()
@@ -430,24 +433,36 @@ class Connector:
         """Fetches and caches members (humans and bots) of a group chat."""
         now = time.time()
         with self._lock:
+            if not self._signed_in:
+                return []
+            gen = self._account_gen
             cached = self._members_cache.get(chat_id)
-            if cached and now - cached[0] < ttl and len(cached[1]) <= limit:
-                return list(cached[1])
-        if not self._signed_in or not hasattr(self.backend, "chat_members"):
+            if cached and now - cached[0] < ttl:
+                _, fetched_limit, members = cached
+                if fetched_limit >= limit or len(members) < fetched_limit:
+                    return list(members[:limit])
+        if not hasattr(self.backend, "chat_members"):
             return []
         try:
             members = self.backend.chat_members(chat_id, limit=limit) or []
         except Exception as e:
             self._log("fetching chat members failed: %s" % type(e).__name__)
             return []
+        if not members:
+            return []
+        with self._lock:
+            if not self._signed_in or self._account_gen != gen:
+                return []
+            prev = self._members_cache.get(chat_id)
+            if not prev or prev[1] <= limit or now - prev[0] >= ttl:
+                self._members_cache[chat_id] = (time.time(), limit, list(members))
+        # Only backfill missing canonical real names; never overwrite global names with per-group nicknames.
         for item in members:
             uid = str(item.get("id") or "")
-            name = (item.get("name") or "").strip()
-            if uid.isdigit() and name:
-                self.store.set_name(uid, name)
-        with self._lock:
-            self._members_cache[chat_id] = (now, list(members))
-        return members
+            real_name = (item.get("real_name") or "").strip()
+            if uid.isdigit() and real_name and not self.store.name(uid):
+                self.store.set_name(uid, real_name)
+        return list(members[:limit])
 
     def _agent_context(self, m):
         """Where the request was written and what was said there just before it, for the assistant."""
@@ -568,12 +583,34 @@ class Connector:
                     self.store.set_name(uid, label)
 
         by_uid = {}
+        matched_claimed = []
+        ambiguous_claimed = []
         for name, uids in sorted(candidates.items(), key=lambda kv: len(kv[0]), reverse=True):
-            if len(uids) != 1 or "@" + name not in text:
+            raw_spans = _mention_spans(text, name)
+            if not raw_spans:
+                continue
+            unclaimed = [
+                sp for sp in raw_spans
+                if not any(sp[0] < c_end and sp[1] > c_start for c_start, c_end in matched_claimed)
+                and not any(sp[0] < c_end and sp[1] > c_start for c_start, c_end in ambiguous_claimed)
+            ]
+            if not unclaimed:
+                continue
+            if len(uids) != 1:
+                ambiguous_claimed.extend(unclaimed)
+                continue
+            # If any boundary-valid occurrence of @name sits inside an ambiguous longer @name (e.g. @Bot inside
+            # ambiguous @Bot Pro), skip this shorter name so mention_parts will not mis-mention at that position.
+            if any(
+                sp[0] < c_end and sp[1] > c_start
+                for sp in raw_spans
+                for c_start, c_end in ambiguous_claimed
+            ):
                 continue
             uid = next(iter(uids))
             if uid not in by_uid:
                 by_uid[uid] = name
+                matched_claimed.extend(unclaimed)
         targets = [{"id": uid, "name": name} for uid, name in by_uid.items()]
         if not targets:
             return []
@@ -1042,6 +1079,7 @@ class Connector:
                 self._account_id = ""
                 self._own_chats = {}
                 self._members_cache = {}
+                self._account_gen += 1
         return {}
 
 
@@ -1106,6 +1144,29 @@ def mention_request(text, mentions, me):
         cursor = end
     parts.append(text[cursor:])
     return "".join(parts).strip()
+
+
+def _is_mention_word_char(ch):
+    return ch.isalnum() or ch in ("_", "-")
+
+
+def _mention_spans(text, name):
+    """All occurrences of '@name' in text ended by whitespace, punctuation, or end-of-text."""
+    needle = "@" + name
+    nlen = len(needle)
+    tlen = len(text)
+    spans = []
+    pos = 0
+    while True:
+        idx = text.find(needle, pos)
+        if idx < 0:
+            break
+        end = idx + nlen
+        pos = idx + 1
+        if end < tlen and _is_mention_word_char(text[end]):
+            continue
+        spans.append((idx, end))
+    return spans
 
 
 def _kind_label(kind):
