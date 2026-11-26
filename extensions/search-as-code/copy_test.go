@@ -140,7 +140,7 @@ func TestHomePageExplainsItself(t *testing.T) {
 	if strings.Join(tabs, "|") != "结果|常用搜索|搜哪些地方|高级：怎么搜的" {
 		t.Errorf("tabs %v", tabs)
 	}
-	if !strings.Contains(strings.Join(primaryText(empty), "\n"), "还没找到任何聊天记录") {
+	if !strings.Contains(strings.Join(primaryText(empty), "\n"), "还没选要搜哪台电脑") {
 		t.Errorf("empty state:\n%s", viewText(empty))
 	}
 }

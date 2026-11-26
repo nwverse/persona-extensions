@@ -1,12 +1,15 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/memsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
@@ -161,5 +164,148 @@ func TestHardEvalPatternOutRespectsCutoff(t *testing.T) {
 	}
 	if f.patternOut(st, ov.Patterns["ov:pruned-future"], "") {
 		t.Error("empty cutoff unexpectedly excluded entry-less pattern")
+	}
+}
+
+func TestCollabWindowsAndExclude(t *testing.T) {
+	ws, err := parseCollabWindows("2026-11-01..2026-11-15,2026-11-25..2026-11-26", "", "")
+	if err != nil || len(ws) != 2 {
+		t.Fatalf("parseCollabWindows: %v %+v", err, ws)
+	}
+	if w, ok := windowFor("2026-11-10", ws); !ok || w != "2026-11-01..2026-11-15" {
+		t.Fatalf("expected window 1, got %q %v", w, ok)
+	}
+	if _, ok := windowFor("2026-11-20", ws); ok {
+		t.Fatal("dev-window day unexpectedly matched holdout windows")
+	}
+	if w, ok := windowFor("2026-11-25", ws); !ok || w != "2026-11-25..2026-11-26" {
+		t.Fatalf("expected window 2, got %q %v", w, ok)
+	}
+
+	// Balanced candidate cap keeps both windows represented.
+	var cands []collabCand
+	for i := 0; i < 6; i++ {
+		cands = append(cands, collabCand{ID: fmt.Sprintf("a-%d", i), Window: "2026-11-01..2026-11-15"})
+	}
+	for i := 0; i < 6; i++ {
+		cands = append(cands, collabCand{ID: fmt.Sprintf("b-%d", i), Window: "2026-11-25..2026-11-26"})
+	}
+	bal := collabBalanceCands(cands, ws, 4)
+	if len(bal) != 4 {
+		t.Fatalf("got %d balanced cands", len(bal))
+	}
+	cnt := map[string]int{}
+	for _, c := range bal {
+		cnt[c.Window]++
+	}
+	if cnt["2026-11-01..2026-11-15"] != 2 || cnt["2026-11-25..2026-11-26"] != 2 {
+		t.Fatalf("unbalanced windows: %+v", cnt)
+	}
+
+	// Exclusion by ID and by same-day want Jaccard.
+	dir := t.TempDir()
+	devPath := filepath.Join(dir, "dev.json")
+	devSet := collabSet{
+		Incidents: []collabIncident{
+			{ID: "s-dev001", Day: "2026-11-25", Want: "派活前先检查目标仓库的权限与分支状态"},
+		},
+	}
+	raw, _ := json.Marshal(devSet)
+	if err := os.WriteFile(devPath, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ex, err := loadCollabExclusions(devPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ex.matches(collabIncident{ID: "s-dev001", Day: "2026-11-02", Want: "different"}) {
+		t.Error("expected exact ID exclusion")
+	}
+	if !ex.matches(collabIncident{ID: "m-other", Day: "2026-11-25", Want: "派活前先检查目标仓库的权限与分支"}) {
+		t.Error("expected same-day want exclusion")
+	}
+	if ex.matches(collabIncident{ID: "m-other", Day: "2026-11-26", Want: "派活前先检查目标仓库的权限与分支状态"}) {
+		t.Error("different day should not exclude by want")
+	}
+}
+
+func TestCollabEntityCue(t *testing.T) {
+	for _, s := range []string{
+		"你搞错仓库了，不是这个库",
+		"这个任务依赖另一个服务，归属搞混了",
+		"派错主管了，应该找负责网关的同学",
+		"哪台机器跑门禁，主机名弄错了",
+	} {
+		if !collabEntityCue.MatchString(s) {
+			t.Errorf("collabEntityCue missed %q", s)
+		}
+	}
+}
+
+func TestHubDecisionsQuery(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"e-dispatch": {
+			ID: "e-dispatch", Facet: entry.Interaction, Text: "for project-x, verify branch before dispatch",
+			Status: entry.Stable, Count: 5, First: "2026-11-01", Last: "2026-11-10", Tagged: true, Origin: entry.Behavior,
+			Scopes: []entry.Scope{{Kind: entry.ScopeProject, Name: "project-x"}},
+			Impact: entry.Impact{Moment: "dispatch"},
+		},
+		"e-future": {
+			ID: "e-future", Facet: entry.Interaction, Text: "project-x future rule",
+			Status: entry.Stable, Count: 5, First: "2026-11-20", Last: "2026-11-20", Tagged: true, Origin: entry.Behavior,
+			Scopes: []entry.Scope{{Kind: entry.ScopeProject, Name: "project-x"}},
+		},
+		"e-sensitive": {
+			ID: "e-sensitive", Facet: entry.Interaction, Text: "project-x private finance rule",
+			Status: entry.Stable, Count: 5, First: "2026-11-01", Last: "2026-11-10", Tagged: true, Origin: entry.Behavior,
+			Categories: []entry.Category{{Name: entry.CatFinance}},
+		},
+	}}
+	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}}
+	page := collabHubPage1(st, nil, f, "2026-11-15", 4096)
+	// Multi-word AND across subject ("project-x") and occasion word ("派活"): must match e-dispatch only.
+	got := hubDecisionsQuery(page, []string{"project-x 派活"}, decisionsQueryMaxBytes)
+	if !strings.Contains(got, "[e-dispatch]") {
+		t.Fatalf("expected e-dispatch in hubDecisionsQuery result, got %q", got)
+	}
+	if strings.Contains(got, "e-future") || strings.Contains(got, "e-sensitive") {
+		t.Fatalf("leaked future or sensitive entry: %q", got)
+	}
+	// Missing second AND term must not match.
+	if none := hubDecisionsQuery(page, []string{"project-x nonexistent-term"}, decisionsQueryMaxBytes); none != "" {
+		t.Fatalf("expected empty result for unmatched AND term, got %q", none)
+	}
+	// Truncation at maxBytes.
+	var big []memsrc.Entry
+	for i := 0; i < 40; i++ {
+		big = append(big, memsrc.Entry{
+			ID:   fmt.Sprintf("e-%02d", i),
+			Text: "project-x " + strings.Repeat("x", 120),
+		})
+	}
+	clipped := hubDecisionsQuery(big, []string{"project-x"}, 500)
+	if len(clipped) == 0 || len(clipped) > 500 {
+		t.Fatalf("expected truncated output <= 500 bytes, got %d", len(clipped))
+	}
+}
+
+func TestCollabTableSegments(t *testing.T) {
+	r := collabResult{
+		Model: "m", Judge: "j", N: 3, Repeats: 1,
+		Score:  map[string]map[string]map[string]float64{"4096": {"resident": {"avoided": 0.5}}},
+		Bytes:  map[string]map[string]int{"4096": {"resident": 4000}},
+		PerInc: map[string]map[string]map[string]float64{"4096": {"resident": {"a": 1, "b": 0, "c": 0.5}}},
+		SegmentN: map[string]int{
+			"2026-11-01..2026-11-15": 2,
+			"2026-11-25..2026-11-26": 1,
+		},
+		Segments: map[string]map[string]map[string]map[string]float64{
+			"2026-11-01..2026-11-15": {"4096": {"resident": {"avoided": 0.5, "wrong_action": 0.25}}},
+			"2026-11-25..2026-11-26": {"4096": {"resident": {"avoided": 1.0, "wrong_action": 0.0}}},
+		},
+	}
+	md := collabTable(r, []string{"resident"})
+	if !strings.Contains(md, "#### segment 2026-11-01..2026-11-15 (2 incidents)") || !strings.Contains(md, "#### segment 2026-11-25..2026-11-26 (1 incidents)") {
+		t.Fatalf("segments missing from table:\n%s", md)
 	}
 }

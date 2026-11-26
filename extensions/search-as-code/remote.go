@@ -309,6 +309,16 @@ func (f *fleet) hasRemote() bool {
 	return len(f.selected) > 0
 }
 
+// selectedCount is how many computers are picked in the setting (the hub's own among them, when picked).
+func (f *fleet) selectedCount() int {
+	if f == nil {
+		return 0
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.selected)
+}
+
 // targets are the hub's computer and the picked ones, with names and online state from the hub (kept for
 // machinesTTL; the last list stands when the hub cannot be asked), each with a key unique among them.
 func (f *fleet) targets(ctx context.Context) []target {

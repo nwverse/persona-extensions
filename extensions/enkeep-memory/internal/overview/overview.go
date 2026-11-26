@@ -165,17 +165,19 @@ type Run struct {
 // Holdout is one forward check: the patterns frozen before a week, asked to predict the user's choices in it, against
 // the scattered entries in the same space and against no memory.
 type Holdout struct {
-	Week     string             `json:"week"`
-	At       string             `json:"at"`
-	Backtest bool               `json:"backtest,omitempty"` // patterns built with a cutoff at the week's start
-	N        int                `json:"n"`
-	Hits     map[string]int     `json:"hits"` // arm → right answers
-	Rate     map[string]float64 `json:"rate"`
-	Chars    map[string]int     `json:"chars"` // arm → characters of memory shown
-	Patterns int                `json:"patterns"`
-	Excluded int                `json:"excluded,omitempty"` // patterns left out because they rest on a test item
-	Calls    int                `json:"calls"`
-	Notes    []string           `json:"notes,omitempty"`
+	Week        string             `json:"week"`
+	At          string             `json:"at"`
+	Backtest    bool               `json:"backtest,omitempty"` // patterns built with a cutoff at the week's start
+	N           int                `json:"n"`
+	Candidates  int                `json:"candidates,omitempty"`   // choice candidates scanned before dropping easy ones
+	DroppedEasy int                `json:"dropped_easy,omitempty"` // candidates a no-memory model got right in both orders
+	Hits        map[string]int     `json:"hits"`                   // arm → right answers
+	Rate        map[string]float64 `json:"rate"`
+	Chars       map[string]int     `json:"chars"` // arm → characters of memory shown
+	Patterns    int                `json:"patterns"`
+	Excluded    int                `json:"excluded,omitempty"` // patterns left out because they rest on a test item
+	Calls       int                `json:"calls"`
+	Notes       []string           `json:"notes,omitempty"`
 }
 
 // Audit is a blind spot check of patterns by a model, kept for the user to go over.
