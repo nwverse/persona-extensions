@@ -9,9 +9,6 @@ import unittest
 spec = importlib.util.spec_from_file_location('config_form', pathlib.Path(__file__).with_name('config_form.py'))
 config_form = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(config_form)
-cat_spec = importlib.util.spec_from_file_location('catalog', pathlib.Path(__file__).with_name('catalog.py'))
-catalog = importlib.util.module_from_spec(cat_spec)
-cat_spec.loader.exec_module(catalog)
 
 FORM = json.loads('''{"type": "object", "properties": {
   "url": {"type": "string", "title": "地址", "format": "uri"},
@@ -98,6 +95,8 @@ class SubsetTests(unittest.TestCase):
         # Additive section metadata does not force an engines.persona lower bound.
         self.assertEqual(refused(valid), "")
         self.assertEqual(refused({"type": "object", "properties": {"a": {"type": "string", "section": ""}}}), "")
+        with self.assertRaises(config_form.Refused):
+            config_form.check({"configuration": valid}, allow_section=False)
         for bad in ("general", "unknown", "Connection", "ADVANCED", " connection", "inbox "):
             err = refused({"type": "object", "properties": {"a": {"type": "string", "section": bad}}})
             self.assertIn("connection, channel, inbox or advanced", err, bad)
@@ -108,37 +107,6 @@ class SubsetTests(unittest.TestCase):
             "n": {"type": "string", "section": "bogus"}}}}})
         self.assertIn("g.n", err)
         self.assertIn("connection, channel, inbox or advanced", err)
-
-    def test_legacy_projection_strips_section_recursively_for_pre_section_strict_schema(self):
-        source = {
-            "id": "demo",
-            "version": "1.0.0",
-            "tags": ["demo"],
-            "icon": "assets/icon.png",
-            "engines": {"plugin_protocol": 1},
-            "configuration": {
-                "type": "object",
-                "properties": {
-                    "section": {"type": "string", "section": "connection", "default": "keep-name"},
-                    "nested": {"type": "object", "section": "advanced", "properties": {
-                        "host": {"type": "string", "section": "connection"},
-                    }},
-                    "items_list": {"type": "array", "section": "channel", "items": {"type": "string", "section": "channel"}},
-                },
-            },
-        }
-        with self.assertRaises(config_form.Refused):
-            config_form.check(catalog.source_entry(source)["manifest"], allow_section=False)
-        projected = catalog.legacy_manifest(source)
-        config_form.check(projected, allow_section=False)
-        self.assertNotIn("persona", projected.get("engines", {}))
-        self.assertIn("section", projected["configuration"]["properties"])
-        self.assertNotIn("section", projected["configuration"]["properties"]["section"])
-        self.assertEqual(projected["configuration"]["properties"]["section"]["default"], "keep-name")
-        self.assertNotIn("section", projected["configuration"]["properties"]["nested"])
-        self.assertNotIn("section", projected["configuration"]["properties"]["nested"]["properties"]["host"])
-        self.assertNotIn("section", projected["configuration"]["properties"]["items_list"])
-        self.assertNotIn("section", projected["configuration"]["properties"]["items_list"]["items"])
 
 
 class ConfiguredTests(unittest.TestCase):

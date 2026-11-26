@@ -3,8 +3,7 @@
 
   scripts/manifest.py path <id>       the manifest's path
   scripts/manifest.py version <id>    its version
-  scripts/manifest.py packaged <id>   the runtime manifest: without source-only "tags", "replaces" and "icon"
-  scripts/manifest.py legacy <id>     the legacy persona-plugin.json projection: packaged without configuration "section"
+  scripts/manifest.py packaged <id>   the runtime manifest: without source-only "tags" and "replaces"
   scripts/manifest.py ids             every extension in extensions/
   scripts/manifest.py check           every manifest is sound (what CI runs): id, version, tags, no retired files,
                                       the files it references are in its package, its pack members are here, and a
@@ -78,11 +77,6 @@ def icon(id):
 def packaged(id):
     """The runtime manifest: source-only tags/replaces/icon belong in the signed entry instead."""
     return catalog.source_entry(load(id))["manifest"]
-
-
-def legacy(id):
-    """The legacy persona-plugin.json projection: also strips configuration section hints for older strict hubs."""
-    return catalog.legacy_manifest(load(id))
 
 
 def dumps(m):
@@ -339,8 +333,6 @@ if __name__ == "__main__":
         print(load(sys.argv[2])["version"])
     elif cmd == "packaged":
         sys.stdout.write(dumps(packaged(sys.argv[2])))
-    elif cmd == "legacy":
-        sys.stdout.write(dumps(legacy(sys.argv[2])))
     elif cmd == "ids":
         print("\n".join(ids()))
     elif cmd == "changed":

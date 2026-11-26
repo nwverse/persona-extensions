@@ -263,7 +263,9 @@ class AgentTopicTest(unittest.TestCase):
         self.assertEqual(got["topic_id"], "m1")
         self.assertEqual(got["thread"], "g_reg:m1")
 
-    def test_explicit_thread_id_and_topic_group_root_emit_topic_routing(self):
+    def test_topic_group_root_and_defensive_thread_id_fallback_emit_topic_routing(self):
+        # Synthetic defensive fallback: pinned LarkAgentX (97ad48e) folds threadId into anchor rather than emitting
+        # a top-level thread_id key, but connector/normalize still honor thread_id if a future upstream/fixture adds it.
         m_thread = message("m10", "g_reg", 10, kind="group", sender=ME, text="/agent 带 thread_id", root="m9")
         m_thread["thread_id"] = "omt_thread_1"
         self.c._on_live(m_thread)
@@ -293,6 +295,7 @@ class AgentTopicTest(unittest.TestCase):
         self.assertNotIn("topic_id", got)
         self.assertEqual(got["thread"], "g_reg:0")
 
+        # Synthetic defensive fallback via normalize() when scope="chat" and root_id="0" still carry a thread_id.
         self.hub.got.clear()
         m_chat_scope_thread = normalize(
             {"msg_id": "m22", "chat_id": "g_reg", "chat_type": 2, "position": 12, "from_id": ME,
@@ -318,8 +321,7 @@ class AgentTopicTest(unittest.TestCase):
         self.assertEqual(got["topic_id"], "m1")
         self.assertEqual(got["thread"], "g1:m1")
 
-    def test_manifest_configuration_sections_are_valid_and_preserve_defaults(self):
-        allowed_sections = {"connection", "channel", "inbox", "advanced"}
+    def test_manifest_configuration_preserves_keys_defaults_and_pre_section_compat(self):
         with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
             manifest = json.load(f)
         props = manifest["configuration"]["properties"]
@@ -327,20 +329,16 @@ class AgentTopicTest(unittest.TestCase):
             set(props.keys()),
             {"region", "triage_rules", "agent_reply_suffix", "agent_mention", "agent_group_topics"},
         )
+        # Configuration section hints are deferred to a follow-up PR so pre-#14833 hubs keep installing larkx.
         for name, spec in props.items():
-            self.assertIn("section", spec, name)
-            self.assertIsInstance(spec["section"], str, name)
-            self.assertIn(spec["section"], allowed_sections, name)
-        self.assertEqual(props["region"]["section"], "connection")
+            self.assertNotIn("section", spec, name)
         self.assertEqual(props["region"]["default"], "feishu")
-        self.assertEqual(props["triage_rules"]["section"], "inbox")
         self.assertEqual(props["triage_rules"]["default"], "")
-        self.assertEqual(props["agent_reply_suffix"]["section"], "channel")
         self.assertEqual(props["agent_reply_suffix"]["default"], AGENT_SUFFIX)
-        self.assertEqual(props["agent_mention"]["section"], "channel")
         self.assertIs(props["agent_mention"]["default"], True)
-        self.assertEqual(props["agent_group_topics"]["section"], "advanced")
         self.assertIs(props["agent_group_topics"]["default"], True)
+        self.assertIn("integrations_v2", props["agent_group_topics"]["description"])
+        self.assertIn("thread_mode", props["agent_group_topics"]["description"])
         self.assertNotIn("persona", manifest.get("engines", {}))
 
     def test_initialize_and_the_manifest(self):

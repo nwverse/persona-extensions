@@ -1063,10 +1063,11 @@ class NormalizeTest(unittest.TestCase):
         dispatched_topic_root = normalize({"msg_id": "14", "chat_id": "g_topic2", "chat_type": 2, "scope": "topic", "anchor": "14"}, self.key)
         self.assertEqual((dispatched_topic_root["chat_kind"], dispatched_topic_root["topic_id"]), ("group", "14"))
 
+        # Synthetic defensive fallback cases: pinned LarkAgentX (97ad48e) folds threadId into anchor and does not
+        # emit a top-level thread_id key, so these verify normalize() stays safe if a future payload/fixture adds one.
         explicit_thread = normalize({"msg_id": "15", "chat_id": "g1", "chat_type": 2, "thread_id": "omt_99", "root_id": "11"}, self.key)
         self.assertEqual((explicit_thread["chat_kind"], explicit_thread["topic_id"]), ("group", "omt_99"))
 
-        # Regression: scope="chat" with no root ("0" or "") still honors an explicit nonempty thread_id in groups.
         chat_scope_zero_root = normalize(
             {"msg_id": "16", "chat_id": "g1", "chat_type": 2, "scope": "chat", "root_id": "0", "thread_id": "omt_99"}, self.key
         )

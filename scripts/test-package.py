@@ -149,11 +149,11 @@ def _assert_pre_section_strict_schema(schema):
     walk(schema, '')
 
 
-class LegacyManifestCompatibilityTests(unittest.TestCase):
-    """Packaged persona-extension.json retains configuration section hints without raising engines.persona, while
-    packaged persona-plugin.json strips section hints so older strict schemas still accept it."""
+class PreSectionHubCompatibilityTests(unittest.TestCase):
+    """Packaged larkx manifests and its catalog entry must pass the pre-#14833 strict configuration schema so
+    hubs built before section support can still list, install, and upgrade larkx."""
 
-    def test_larkx_package_projects_section_out_of_legacy_manifest(self):
+    def test_larkx_package_and_catalog_entry_pass_pre_section_strict_schema(self):
         tmp = pathlib.Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, tmp)
         (tmp / 'scripts').mkdir()
@@ -164,33 +164,36 @@ class LegacyManifestCompatibilityTests(unittest.TestCase):
         self.assertEqual(r.returncode, 0, r.stderr + r.stdout)
 
         source = json.loads((tmp / 'extensions' / 'larkx' / manifest.NEW).read_text())
+        catalog_manifest = catalog.source_entry(source)['manifest']
         tarball = tmp / 'dist' / ('larkx-%s.tar.gz' % source['version'])
         with tarfile.open(tarball, 'r:gz') as t:
             ext_manifest = json.loads(t.extractfile('larkx/persona-extension.json').read().decode('utf-8'))
             legacy_manifest = json.loads(t.extractfile('larkx/persona-plugin.json').read().decode('utf-8'))
 
-        # Neither manifest raises an engines.persona lower bound for additive section metadata.
-        self.assertEqual(ext_manifest, catalog.source_entry(source)['manifest'])
+        # Packaged manifests and catalog entry stay identical and do not raise engines.persona.
+        self.assertEqual(ext_manifest, catalog_manifest)
+        self.assertEqual(legacy_manifest, ext_manifest)
         self.assertNotIn('persona', ext_manifest.get('engines', {}))
-        self.assertNotIn('persona', legacy_manifest.get('engines', {}))
-        config_form.check(ext_manifest)
-        for prop in ext_manifest['configuration']['properties'].values():
-            self.assertIn('section', prop)
 
-        # Older strict schema rejects the section-annotated manifest...
+        # Every published manifest copy must pass the pre-#14833 strict schema (allow_section=False).
+        for label, item in (
+            ('persona-extension.json', ext_manifest),
+            ('persona-plugin.json', legacy_manifest),
+            ('catalog entry', catalog_manifest),
+        ):
+            config_form.check(item, allow_section=False)
+            _assert_pre_section_strict_schema(item['configuration'])
+            for prop_name, prop in item['configuration']['properties'].items():
+                self.assertNotIn('section', prop, '%s: %s' % (label, prop_name))
+
+        # Sanity check: injecting section into a copy is caught by both pre-section checks.
+        with_section = json.loads(json.dumps(ext_manifest))
+        with_section['configuration']['properties']['region']['section'] = 'connection'
+        config_form.check(with_section)
         with self.assertRaises(config_form.Refused):
-            config_form.check(ext_manifest, allow_section=False)
+            config_form.check(with_section, allow_section=False)
         with self.assertRaises(ValueError):
-            _assert_pre_section_strict_schema(ext_manifest['configuration'])
-
-        # ...and accepts the legacy persona-plugin.json projection, which preserves all keys and defaults.
-        for name, prop in legacy_manifest['configuration']['properties'].items():
-            self.assertNotIn('section', prop, name)
-            expected = dict(ext_manifest['configuration']['properties'][name])
-            expected.pop('section', None)
-            self.assertEqual(prop, expected, name)
-        config_form.check(legacy_manifest, allow_section=False)
-        _assert_pre_section_strict_schema(legacy_manifest['configuration'])
+            _assert_pre_section_strict_schema(with_section['configuration'])
 
 
 if __name__ == '__main__':

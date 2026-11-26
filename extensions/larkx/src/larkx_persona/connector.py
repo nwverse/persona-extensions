@@ -1040,6 +1040,7 @@ def _channel_routing(m, topics=True):
         # suppress topic_id and group/topic classification so per_topic and per_group_and_topic do not split them.
         return out
     topic_id = ""
+    # topic_id comes from real.normalize() (derived from anchor/root); thread_id is a defensive fallback.
     for key in ("topic_id", "thread_id", "root"):
         value = str(m.get(key) or "").strip()
         if value and value != "0":

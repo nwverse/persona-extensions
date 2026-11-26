@@ -396,6 +396,8 @@ def normalize(msg, extract_key):
     chat_type = msg.get("chat_type")
     scope = str(msg.get("scope") or "").strip()
     anchor = _clean_id(msg.get("anchor"))
+    # Pinned LarkAgentX (97ad48e) folds threadId into anchor and does not emit thread_id; keep thread_id as a
+    # defensive fallback in case a future upstream pin or caller supplies it directly.
     thread_id = _clean_id(msg.get("thread_id"))
     topic_id = ""
     if chat_type != 1:
