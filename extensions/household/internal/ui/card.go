@@ -36,7 +36,7 @@ func (c *ctx) card() *wire.View {
 		{Label: "即将过期", Value: strconv.Itoa(sum.Expiring), Tone: cautionIf(sum.Expiring)},
 	})}}}}
 	if n := len(c.imps.Drafts); n > 0 {
-		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{draftsRow(n)}})
+		v.Sections[0].Items = append(v.Sections[0].Items, draftsRow(n))
 	}
 	limit := cardItems - 1
 	if len(c.imps.Drafts) > 0 {
