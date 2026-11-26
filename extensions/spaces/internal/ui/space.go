@@ -77,7 +77,7 @@ func templateRows() []wire.Component {
 			value = fmt.Sprintf("%d 个分类", len(t.Types))
 		}
 		out = append(out, wire.Component{
-			Type: wire.ComponentRow, Icon: iconName(t.Icon), Title: t.Name, Subtitle: cut(templateAbout(t.Key, t.About), maxText),
+			Type: wire.ComponentRow, Icon: iconName(t.Icon), Title: t.Name, Subtitle: cut(t.About, maxText),
 			Value: value, Action: &wire.Action{ID: "new:" + t.Key},
 		})
 	}
@@ -87,7 +87,7 @@ func templateRows() []wire.Component {
 // createForm is the form of a new space from a template: what the template brings, the name (a free default), the
 // samples choice when it has samples, the primary create, and the button back to the template list.
 func (c *ctx) createForm(t templates.Template) *wire.View {
-	items := []wire.Component{{Type: wire.ComponentHeader, Title: t.Name, Subtitle: cut(templateAbout(t.Key, t.About), maxText)}}
+	items := []wire.Component{{Type: wire.ComponentHeader, Title: t.Name, Subtitle: cut(t.About, maxText)}}
 	if len(t.Types) > 0 {
 		var names []string
 		for _, ty := range t.Types {

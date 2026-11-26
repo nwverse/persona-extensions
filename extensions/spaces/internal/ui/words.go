@@ -74,15 +74,6 @@ func (c *ctx) fieldOf(t *kernel.Type, key string) (kernel.Prop, bool) {
 	return p, ok
 }
 
-// templateAbout is the line under a template in the list of templates. Only the blank template, whose own line
-// speaks of types, is worded here; the others read well as they are.
-func templateAbout(key, about string) string {
-	if key == "blank" {
-		return "什么都没有，自己从头搭：先建一个分类（例如「电影」），再一条条往里加。"
-	}
-	return about
-}
-
 // errWords rewrite the kernel's words in a refused change, in order (longer words first). Quoted names, between
 // 「 and 」, are the user's own and are never rewritten.
 var errWords = strings.NewReplacer(
@@ -130,6 +121,8 @@ func plainError(err error) string {
 		msg += "，请换一个代号"
 	case strings.Contains(msg, "的名称应为"):
 		msg += "，请填一个名称"
+	case strings.Contains(msg, "」应为"):
+		msg += "，请改好再保存"
 	case strings.Contains(msg, "不能直接变为"):
 		msg = strings.Replace(msg, "；可以变为", "。一次只能往前或往后走一步，现在可以改成", 1)
 	}

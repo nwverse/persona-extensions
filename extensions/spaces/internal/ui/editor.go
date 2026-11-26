@@ -920,7 +920,7 @@ func actStageDrop(c *ctx, arg string) (*wire.ActionResult, error) {
 		nt.Flow = nil
 	}
 	if err := c.putType(nt); err != nil {
-		return nil, err
+		return nil, hinted(err, "先把这个状态里的条目挪到别的状态，再删除")
 	}
 	c.st.F = ""
 	return &wire.ActionResult{Toast: "已删除状态"}, nil
@@ -1008,7 +1008,10 @@ func actPropDrop(c *ctx, key string) (*wire.ActionResult, error) {
 		nt.Props = nil
 	}
 	if err := c.putType(nt); err != nil {
-		return nil, err
+		if strings.Contains(err.Error(), "「"+key+"」") {
+			return nil, fmt.Errorf("删不掉「%s」：它还用在「列表里的样子」、某个显示方式或统计里。先在那里去掉它，再删除", cut(t.Props[i].Name, maxTitle))
+		}
+		return nil, hinted(err, "它可能还用在「列表里的样子」、某个显示方式或统计里，先在那里去掉，再删除")
 	}
 	c.st.F = ""
 	return &wire.ActionResult{Toast: "已删除填写项"}, nil

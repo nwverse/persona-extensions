@@ -447,7 +447,7 @@ func (c *ctx) emptyRows(t *kernel.Type) wire.Section {
 // quickAdd is the fold that adds an entity: one title and a primary create. The entity starts at the first stage.
 func (c *ctx) quickAdd(t *kernel.Type) wire.Section {
 	return wire.Section{Items: []wire.Component{
-		{Type: wire.ComponentField, Name: "title", Label: "标题", Kind: wire.FieldKindText, Placeholder: "这一条" + t.Name + "叫什么"},
+		{Type: wire.ComponentField, Name: "title", Label: "标题", Kind: wire.FieldKindText, Placeholder: "新的" + t.Name + "叫什么"},
 		caption("先写标题就行，其他内容添加后点开这一条再填。"),
 		button("添加", &wire.Action{ID: "add", Submit: true}, wire.ButtonRoleNormal),
 	}}
