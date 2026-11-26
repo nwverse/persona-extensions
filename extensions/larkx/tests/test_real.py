@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -14,7 +15,8 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 UPSTREAM = os.environ.get("LARKX_UPSTREAM", "")
 DEPS = os.environ.get("LARKX_DEPS", "")
 
-from larkx_persona.real import RealBackend, mute_state
+from larkx_persona.real import RealBackend, mute_state, normalize
+from larkx_persona.store import Store
 
 
 class MuteStateTest(unittest.TestCase):
@@ -49,6 +51,78 @@ class MuteStateTest(unittest.TestCase):
             with self.subTest(empty=empty):
                 backend._client.get_chat_info.return_value = empty
                 self.assertEqual(backend.chat_info("6001"), {"name": "", "last_position": 0, "mute": "unknown"})
+
+
+class ThreadAndChatterTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = os.path.join(tmp.name, "test.db")
+        self.store = Store(self.path)
+        self.addCleanup(self.store.close)
+        self.backend = RealBackend(ROOT, tmp.name, "test", self.store)
+        self.backend._client = mock.Mock()
+        self.api = self.backend._client.api
+        self.backend._extract_key = lambda *_: ""
+
+    def test_distinct_thread_id_positions_order_scope_and_decoding(self):
+        card = {"id": "reply", "type": 14, "fromId": "bot", "createTime": 123, "content": b"card"}
+        self.api.side_effect = [
+            {"messages": {"root": {"threadId": "thread", "chatId": "group"}}},
+            {"threads": {"thread": {"channelId": "group", "rootMessageId": "root", "lastMessagePosition": 104,
+                                    "lastVisibleMessagePosition": 100, "messageStartPosition": 10}}},
+            {"messages": {100: card, 99: dict(card, id="other", rootId="wrong"),
+                          98: dict(card, id="root"), 97: dict(card, id="first", position=7)}}]
+        decode = mock.Mock(return_value=("card text", {}))
+        decoders = SimpleNamespace(MSG_TYPE_NAMES={14: "CARD"}, enum_to_int=int, decode_message_content=decode)
+        with mock.patch.dict(sys.modules, {"larkx.proto": SimpleNamespace(decoders=decoders)}):
+            rows = self.backend.thread_replies("group", "root", limit=4)
+        self.assertEqual(self.api.call_args_list, [
+            mock.call("messages.PullMessagesByIdsRequest", {"messageIds": ["root"]}),
+            mock.call("thread.PullThreadsByIDsRequest", {"threadIds": ["thread"]}),
+            mock.call("thread.PullThreadMessagesByPositionsRequest", {"threadId": "thread", "positions": [97, 98, 99, 100]})])
+        self.assertEqual([(m["id"], m["position"]) for m in rows], [("first", 7), ("reply", 0)])
+        self.assertEqual([rows[-1][k] for k in ("root", "thread_id", "chat", "sender", "at", "type", "text")],
+                         ["root", "thread", "group", "bot", 123, "CARD", "card text"])
+        self.assertEqual(decode.call_args_list, [mock.call(14, b"card")] * 2)
+
+    def test_live_anchor_remembers_thread_and_does_not_relabel_another_chat(self):
+        row = normalize({"msg_id": "reply", "root_id": "root", "scope": "topic", "anchor": "thread",
+                         "chat_id": "group"}, self.backend._extract_key)
+        self.store.add_message(row, "", False)
+        self.api.return_value = {"threads": {"thread": {"channelId": "different", "lastMessagePosition": 2}}}
+        self.assertEqual(self.backend.thread_replies("group", "root"), [])
+        self.api.assert_called_once_with("thread.PullThreadsByIDsRequest", {"threadIds": ["thread"]})
+
+    def test_bot_cache_survives_restart_and_expires_without_extending_on_hits(self):
+        with mock.patch("larkx_persona.real.time.time", return_value=100) as clock:
+            self.api.return_value = {"chatters": {"sender": {"type": 2}}}
+            self.assertTrue(self.backend.is_bot("sender"))
+            self.api.assert_called_once_with("chatters.PullChattersByIdsRequest",
+                                             {"chatterIds": ["sender"], "notSubscribeChatters": True})
+            with mock.patch.object(self.store, "chatter_type", side_effect=AssertionError):
+                self.assertTrue(self.backend.is_bot("sender"))
+            reopened = Store(self.path)
+            self.addCleanup(reopened.close)
+            fresh = RealBackend(ROOT, "", "test", reopened)
+            fresh._client = mock.Mock()
+            clock.return_value += 86399
+            self.assertTrue(fresh.is_bot("sender"))
+            fresh._client.api.assert_not_called()
+            clock.return_value += 1
+            fresh._client.api.return_value = {"chatters": {"sender": {"type": 1}}}
+            self.assertFalse(fresh.is_bot("sender"))
+            fresh._client.api.assert_called_once()
+            self.assertFalse(self.backend.is_bot("sender"))
+            self.assertEqual(self.api.call_count, 1)
+
+    def test_unknown_sender_type_and_failed_packets_are_not_cached(self):
+        self.api.side_effect = [{"chatters": {"other": {"type": 1}}}, {"chatters": {"s": {"type": 0}}},
+                                {"cmd": 46, "status": 3}, {"chatters": {"s": {"type": 3}}}]
+        for _ in range(3):
+            with self.assertRaises(ValueError):
+                self.backend.is_bot("s")
+        self.assertTrue(self.backend.is_bot("s"))
 
 
 @unittest.skipUnless(UPSTREAM and DEPS, "needs LARKX_UPSTREAM and LARKX_DEPS")

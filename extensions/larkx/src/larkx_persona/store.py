@@ -17,7 +17,16 @@ CREATE TABLE IF NOT EXISTS messages (
   media TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]', markdown TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS messages_chat ON messages (chat, position);
 CREATE TABLE IF NOT EXISTS names (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS chatter_types (id TEXT PRIMARY KEY, bot INTEGER NOT NULL, expires REAL NOT NULL);
+CREATE TABLE IF NOT EXISTS thread_ids (chat TEXT NOT NULL, root TEXT NOT NULL, thread TEXT NOT NULL, PRIMARY KEY (chat, root));
 CREATE TABLE IF NOT EXISTS sends (key TEXT PRIMARY KEY, result TEXT);
+CREATE TABLE IF NOT EXISTS auto_topics (
+  account TEXT NOT NULL, scope TEXT NOT NULL, scenario TEXT NOT NULL DEFAULT '', handled REAL NOT NULL DEFAULT 0,
+  thread TEXT NOT NULL DEFAULT '', active REAL NOT NULL DEFAULT 0, PRIMARY KEY (account, scope));
+CREATE TABLE IF NOT EXISTS auto_bot_waits (
+  account TEXT NOT NULL, chat TEXT NOT NULL, root TEXT NOT NULL, bot TEXT NOT NULL, scenario TEXT NOT NULL,
+  batch TEXT NOT NULL, timeout REAL NOT NULL, deadline REAL NOT NULL, sending INTEGER NOT NULL,
+  PRIMARY KEY (account, chat, root));
 """
 
 
@@ -31,6 +40,8 @@ class Store:
         self._db.executescript(SCHEMA)
         # Databases from before self-mentions have no mention metadata column. Keep those messages inert.
         columns = {r["name"] for r in self._db.execute("PRAGMA table_info(messages)")}
+        if "auto_account" not in columns:
+            self._db.execute("ALTER TABLE messages ADD COLUMN auto_account TEXT NOT NULL DEFAULT ''")
         if "mentions" not in columns:
             self._db.execute("ALTER TABLE messages ADD COLUMN mentions TEXT NOT NULL DEFAULT '[]'")
         # Older messages have no verified safe Markdown representation and keep their original plain-text display.
@@ -42,6 +53,9 @@ class Store:
             self._db.execute("ALTER TABLE chats ADD COLUMN mute TEXT NOT NULL DEFAULT 'unknown'")
         if "checked_at" not in columns:
             self._db.execute("ALTER TABLE chats ADD COLUMN checked_at REAL NOT NULL DEFAULT 0")
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(auto_bot_waits)")}
+        if "retries" not in columns:
+            self._db.execute("ALTER TABLE auto_bot_waits ADD COLUMN retries INTEGER NOT NULL DEFAULT 0")
         # 0.1 named a direct chat it saw only through the user's own messages 私聊 ("direct chat") for good.
         self._db.execute("UPDATE chats SET name = '' WHERE kind = 'dm' AND name = '私聊'")
         self._db.commit()
@@ -66,6 +80,8 @@ class Store:
 
     def add_message(self, m, sender_name, mine):
         """Keeps a message once; True when it is new."""
+        if m.get("thread_id"):
+            self.remember_thread(m["chat"], m.get("root") or m["id"], m["thread_id"])
         return self._do(
             "INSERT OR IGNORE INTO messages (id, chat, position, sender, sender_name, mine, type, text, at, root, parent, at_me, media, mentions, markdown)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -140,6 +156,91 @@ class Store:
                 return True, ""
             row = self._db.execute("SELECT result FROM sends WHERE key = ?", (key,)).fetchone()
         return False, row["result"] or ""
+
+    def mark_auto_request(self, msg_id, account):
+        self._do("UPDATE messages SET auto_account = ? WHERE id = ?", account, msg_id)
+
+    def auto_topic(self, account, scope):
+        return self._one("SELECT * FROM auto_topics WHERE account = ? AND scope = ?", account, scope)
+
+    def auto_handled(self, account, scope, scenario, now):
+        self._do("INSERT INTO auto_topics (account, scope, scenario, handled) VALUES (?, ?, ?, ?)"
+                 " ON CONFLICT(account, scope) DO UPDATE SET scenario = excluded.scenario, handled = excluded.handled",
+                 account, scope, scenario, now)
+
+    def dm_thread(self, account, chat, now, idle_hours):
+        """Manual and automatic requests arriving together must choose the same conversation."""
+        scope = "dm:" + chat
+        with self._lock, self._db:
+            row = self._db.execute("SELECT thread, active FROM auto_topics WHERE account = ? AND scope = ?",
+                                   (account, scope)).fetchone()
+            thread = scope
+            if row and row["thread"]:
+                thread = scope + ":%d" % now if now - row["active"] > idle_hours * 3600 else row["thread"]
+            self._db.execute("INSERT INTO auto_topics (account, scope, thread, active) VALUES (?, ?, ?, ?)"
+                             " ON CONFLICT(account, scope) DO UPDATE SET thread = excluded.thread, active = excluded.active",
+                             (account, scope, thread, now))
+            return thread
+
+    def remember_thread(self, chat, root, thread):
+        # Only distinct ids need a mapping. A decoder may use root as a fallback anchor.
+        if thread and thread not in ("0", root):
+            self._do("INSERT OR REPLACE INTO thread_ids VALUES (?, ?, ?)", chat, root, thread)
+
+    def thread_id(self, chat, root):
+        row = self._one("SELECT thread FROM thread_ids WHERE chat = ? AND root = ?", chat, root)
+        return row["thread"] if row else None
+
+    def chatter_type(self, sender, now):
+        return self._one("SELECT bot, expires FROM chatter_types WHERE id = ? AND expires > ?", sender, now)
+
+    def set_chatter_type(self, sender, bot, expires):
+        self._do("INSERT OR REPLACE INTO chatter_types VALUES (?, ?, ?)", sender, bot, expires)
+
+    def bot_id(self, name, configured=""):
+        """Use the explicit numeric id, or the most recently observed numeric match across all chats."""
+        if configured:
+            return configured if configured.isascii() and configured.isdecimal() else ""
+        row = self._one("SELECT id FROM (SELECT sender AS id, at, seq FROM messages WHERE sender_name = ?"
+                        " UNION ALL SELECT CAST(json_extract(j.value, '$.id') AS TEXT), m.at, m.seq"
+                        " FROM messages m, json_each(m.mentions) j WHERE json_extract(j.value, '$.label') = ?)"
+                        " WHERE id != '' AND id NOT GLOB '*[^0-9]*' ORDER BY at DESC, seq DESC LIMIT 1", name, "@" + name)
+        return row["id"] if row else ""
+
+    def begin_bot_wait(self, account, chat, root, bot, scenario, batch, timeout, now):
+        self._do("INSERT INTO auto_bot_waits (account, chat, root, bot, scenario, batch, timeout, deadline, sending)"
+                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)", account, chat, root, bot, scenario, json.dumps(batch), timeout, now + timeout)
+
+    def arm_bot_wait(self, account, chat, root, now):
+        # A reply during send already deleted the row. Never recreate it.
+        self._do("UPDATE auto_bot_waits SET sending = 0, deadline = ? + timeout WHERE account = ? AND chat = ? AND root = ?",
+                 now, account, chat, root)
+
+    def resume_bot_waits(self, account):
+        # Resume interrupted bot sends (1) and assistant handovers (2) by checking history, never resending to the bot.
+        self._do("UPDATE auto_bot_waits SET sending = 0 WHERE account = ? AND sending != 0", account)
+
+    def confirm_bot(self, account, m, wait_root=None):
+        # A history page can predate another wait in the same chat. Only apply it to the wait that requested it.
+        return self._do("DELETE FROM auto_bot_waits WHERE account = ? AND chat = ? AND bot = ?"
+                        " AND (? = '' OR root = ? OR root = ?) AND (? IS NULL OR root = ?) AND sending != 2",
+                        account, m["chat"], m.get("sender"), m.get("root") or "", m.get("root"), m["id"], wait_root, wait_root)
+
+    def defer_bot_wait(self, item, deadline):
+        return self._do("UPDATE auto_bot_waits SET deadline = ?, retries = retries + 1 WHERE account = ? AND chat = ? AND root = ?",
+                        deadline, item["account"], item["chat"], item["root"])
+
+    def claim_bot_fallback(self, item):
+        # A live reply may have cleared the wait while history was in flight.
+        return self._do("UPDATE auto_bot_waits SET sending = 2 WHERE account = ? AND chat = ? AND root = ? AND sending = 0",
+                        item["account"], item["chat"], item["root"])
+
+    def next_bot_wait(self, account):
+        return self._one("SELECT * FROM auto_bot_waits WHERE account = ? AND sending = 0 ORDER BY deadline LIMIT 1", account)
+
+    def forget_bot_wait(self, item):
+        self._do("DELETE FROM auto_bot_waits WHERE account = ? AND chat = ? AND root = ?",
+                 item["account"], item["chat"], item["root"])
 
     def finish_send(self, key, result):
         self._do("UPDATE sends SET result = ? WHERE key = ?", result, key)

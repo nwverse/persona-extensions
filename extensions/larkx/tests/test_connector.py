@@ -92,6 +92,12 @@ class Backend:
     def search(self, query):
         return []
 
+    def thread_replies(self, chat, root_id, limit=50):
+        return []
+
+    def is_bot(self, sender_id):
+        return False
+
     def history(self, chat, positions):
         return [self.older[p] for p in positions if p in self.older]
 

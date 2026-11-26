@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "larkx",
   "name": "飞书（LarkAgentX）",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "用 LarkAgentX 以你本人的身份接飞书：扫码登录，全部消息进收件箱和知识库，经手机确认后以你的身份发送；在任意会话里发 /agent 或 @自己交给助手。走逆向的网页版协议，不是官方接口。",
   "publisher": "nwverse",
   "homepage": "https://github.com/cv-cat/LarkAgentX",
@@ -119,6 +119,78 @@
         "title": "群话题各开对话",
         "description": "默认开启。群里不在话题里的 /agent 开一段新的助手对话，之后在它的话题里发的 /agent 接着这段对话。私聊里的 /agent 仍进这个频道的对话（默认主对话）。关闭后群里的也都进那段对话。需要支持按话题分对话的 hub。",
         "default": true
+      },
+      "auto_handle": {
+        "type": "boolean",
+        "title": "自动处理别人找我的事",
+        "description": "别人私聊我、或在群里 @我，且是运维 / 查 case、代码 review、审批工单时，自动交给助手处理。",
+        "default": false
+      },
+      "auto_bot_name": {
+        "type": "string",
+        "title": "群内机器人",
+        "description": "群里交给哪个机器人（填它在群里显示的名字）。留空或找不到数字 id 时，直接交给助手。",
+        "default": ""
+      },
+      "auto_bot_id": {
+        "type": "string",
+        "title": "群内机器人 id",
+        "description": "群内机器人的 id（可选）。不填时按名字从见过的消息里自动找",
+        "default": ""
+      },
+      "auto_bot_timeout_seconds": {
+        "type": "integer",
+        "title": "等待机器人响应的秒数",
+        "description": "超过此时间未收到群内机器人的实时回复时，先检查话题回复，再检查群消息记录；仍未发现回复才交给助手。读取失败时每隔 30 秒重试，最多三次。",
+        "default": 180,
+        "minimum": 30,
+        "maximum": 1800
+      },
+      "auto_playbook_dir": {
+        "type": "string",
+        "title": "操作手册目录",
+        "description": "三个场景操作手册所在目录（在跑助手的那台电脑上），写进交给助手和机器人的任务里。",
+        "default": ""
+      },
+      "auto_route_hint": {
+        "type": "string",
+        "title": "分类补充说明",
+        "description": "用你自己的话补充分类标准，例如你负责哪些服务、哪些群里的消息一般是报警",
+        "default": "",
+        "maxLength": 2000
+      },
+      "auto_reply_style": {
+        "type": "string",
+        "title": "自动回复的写法",
+        "default": "",
+        "maxLength": 1000,
+        "description": "交给助手时附上的回复要求。空着用默认：直接写给对方、口语、400 字以内、先给结论、只列关键的 1~3 点。"
+      },
+      "auto_test_senders": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "title": "测试用发送者 id",
+        "description": "这些发送者即使是机器人也按同事处理，只用于自测"
+      },
+      "auto_review_patterns": {
+        "type": "array",
+        "title": "代码 review 链接",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "消息里出现这些正则能匹配的内容（比如你们代码托管平台的合并请求链接）时，直接当作代码 review，不再问模型。"
+      },
+      "auto_dm_idle_hours": {
+        "type": "integer",
+        "title": "私聊闲置时长",
+        "description": "私聊会话闲置多久后换新会话（1~168 小时）。",
+        "default": 24,
+        "minimum": 1,
+        "maximum": 168
       }
     }
   },
@@ -130,6 +202,9 @@
       "codeload.github.com",
       "pypi.org",
       "files.pythonhosted.org"
+    ],
+    "hub": [
+      "models"
     ]
   }
 }

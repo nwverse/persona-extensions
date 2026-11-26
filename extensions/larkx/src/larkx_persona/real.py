@@ -350,6 +350,17 @@ def _inline_images(rich):
     return out
 
 
+def _mentions_all(rich):
+    """An AT for everyone can have a label but no userId, so it need not appear among the personal mention spans."""
+    try:
+        elements = rich["elements"]["dictionary"]
+    except (TypeError, KeyError, IndexError):
+        return False
+    return isinstance(elements, dict) and any(
+        isinstance(e, dict) and e.get("tag") == _AT and _string(e.get("property"), 2).casefold() in ("@所有人", "@all", "@everyone")
+        for e in elements.values())
+
+
 def normalize(msg, extract_key):
     """A message of LarkAgentX's, live or from history, as the connector keeps it. Pure, for the tests."""
     msg_type = msg.get("msg_type") or 0
@@ -392,8 +403,10 @@ def normalize(msg, extract_key):
         "chat_kind": "dm" if msg.get("chat_type") == 1 else "group",
         "position": int(msg.get("position") or 0), "sender": str(msg.get("from_id") or ""), "type": name,
         "text": text, "at": at or time.time(), "root": "" if root == "0" else root,
+        "thread_id": str(msg.get("thread_id") or msg.get("threadId") or
+                         (msg.get("anchor") if msg.get("scope") == "topic" else "") or ""),
         "parent": "" if parent == "0" else parent, "at_me": bool(msg.get("at_me")), "media": media,
-        "mentions": mentions, "markdown": markdown or "",
+        "mentions": mentions, "markdown": markdown or "", "at_all": bool(msg.get("at_me")) and _mentions_all(rich),
     }
 
 
@@ -568,10 +581,12 @@ def drop_others(data_dir, prefix, keep):
 class RealBackend:
     Expired = Expired
 
-    def __init__(self, root, data_dir, region):
+    def __init__(self, root, data_dir, region, store=None):
         self._root = root
         self._data_dir = data_dir
         self._region = region
+        self._store = store
+        self._chatter_types = {}
         self._client = None
         self._auth = None
         self._qr = None
@@ -786,8 +801,11 @@ class RealBackend:
             req.content.richText.elementIds.append(element_id)
         req.content.richText.innerText = text
         content = self._client._gateway_post(builders.wrap_packet(5, req, generate_long_request_id()))
-        return builders.decode_put_message_response(content)
-
+        packet = P.Packet.FromString(content)
+        sent = P.PutMessageResponse.FromString(packet.payload).message
+        if root and self._store and sent.threadId:
+            self._store.remember_thread(str(chat), str(root), sent.threadId)
+        return sent.id
 
     def create_chat(self, user):
         chat = self._client.create_chat(user)
@@ -808,6 +826,79 @@ class RealBackend:
     def history(self, chat, positions):
         return [normalize(m, self._extract_key) for m in self._client.pull_history(chat, positions)]
 
+    def thread_replies(self, chat, root_id, limit=50):
+        # Why the last read returned what it did, for the connector's log (diagnostics only).
+        self.last_thread_trace = "start"
+        if limit <= 0:
+            return []
+        client = self._client
+        thread = self._store.thread_id(chat, root_id) if self._store else None
+        if not thread:
+            roots = client.api("messages.PullMessagesByIdsRequest", {"messageIds": [root_id]})
+            root = _response_map(roots, "messages").get(root_id, {})
+            if (root.get("chatId") or root.get("channelId") or chat) != chat:
+                self.last_thread_trace = "root in another chat: %r" % sorted(root)[:12]
+                return []
+            thread = root.get("threadId")
+            if not thread or thread == "0":
+                thread = root_id
+        result = client.api("thread.PullThreadsByIDsRequest", {"threadIds": [thread]})
+        info = _response_map(result, "threads").get(thread)
+        if (not info or info.get("channelId", chat) != chat or info.get("rootMessageId", root_id) != root_id):
+            self.last_thread_trace = "thread %s info mismatch: found=%s keys=%r" % (thread, bool(info), sorted(info or {})[:14])
+            return []
+        last = int(info.get("lastVisibleMessagePosition", info.get("lastMessagePosition", -1)))
+        first = max(0, int(info.get("messageStartPosition", 0)), last - limit + 1)
+        if last < first:
+            self.last_thread_trace = "thread %s empty range first=%d last=%d" % (thread, first, last)
+            return []
+        # Only the topic and its positions: with the channel fields or onlyVisibleMessages set the server answered an
+        # empty page for a topic whose replies the web client shows.
+        page = client.api("thread.PullThreadMessagesByPositionsRequest", {
+            "threadId": thread, "positions": list(range(first, last + 1))})
+        messages = _response_map(page, "messages")
+        if page.get("threadId", thread) != thread or page.get("channelId", chat) not in (chat, "", "0"):
+            self.last_thread_trace = "thread %s page mismatch" % thread
+            return []
+        from larkx.proto import decoders
+        replies = []
+        for pos, m in sorted(messages.items(), key=lambda kv: int(kv[0])):
+            if (not first <= int(pos) <= last or not m.get("id") or m["id"] == root_id
+                    or (m.get("chatId") or m.get("channelId") or chat) != chat
+                    or m.get("threadId") not in (None, "", "0", thread)
+                    or m.get("rootId") not in (None, "", "0", root_id)):
+                continue
+            kind = decoders.enum_to_int(m.get("type", 0))
+            text, data = decoders.decode_message_content(kind, m.get("content", b""))
+            replies.append(normalize({"msg_id": m["id"], "chat_id": chat, "root_id": root_id, "thread_id": thread,
+                                      "parent_id": m.get("parentId"), "msg_type": kind,
+                                      "msg_type_name": decoders.MSG_TYPE_NAMES.get(kind, str(kind)),
+                                      "from_id": m.get("fromId"), "chat_type": decoders.enum_to_int(m.get("chatType", 0)),
+                                      "position": m.get("position"), "create_time": m.get("createTime"),
+                                      "content": text, "content_data": data}, self._extract_key))
+        self.last_thread_trace = "thread %s positions %d..%d got %d kept %d" % (thread, first, last, len(messages), len(replies))
+        return replies
+
+    def is_bot(self, sender_id):
+        now = time.time()
+        cached = self._chatter_types.get(sender_id)
+        if cached and cached[1] > now:
+            return cached[0]
+        row = self._store.chatter_type(sender_id, now) if self._store else None
+        if row:
+            bot, expires = bool(row["bot"]), row["expires"]
+        else:
+            result = self._client.api("chatters.PullChattersByIdsRequest", {
+                "chatterIds": [sender_id], "notSubscribeChatters": True})
+            kind = _response_map(result, "chatters").get(sender_id, {}).get("type")
+            if kind not in (1, "USER", 2, "BOT", 3, "AI"):
+                raise ValueError("unknown chatter type")
+            bot, expires = kind not in (1, "USER"), now + 86400
+            if self._store:
+                self._store.set_chatter_type(sender_id, bot, expires)
+        self._chatter_types[sender_id] = (bot, expires)
+        return bot
+
     def chat_info(self, chat):
         info = self._client.get_chat_info(chat)
         if not isinstance(info, dict):
@@ -823,6 +914,13 @@ class RealBackend:
         url = media.message_resource_url(msg_id, key, chat, host=self._auth.region.file_host)
         data, mime = media.download(self._auth, url, max_bytes=most)
         return mime or "application/octet-stream", data
+
+
+def _response_map(response, key):
+    # With no decoded payload client.api can return the outer Packet instead.
+    if not isinstance(response, dict) or "cmd" in response or response.get("status"):
+        raise ValueError("unexpected gateway response")
+    return response.get(key, {})
 
 
 def _remind_state(value):

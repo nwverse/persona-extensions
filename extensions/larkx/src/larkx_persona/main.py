@@ -1,6 +1,7 @@
 """The plugin protocol around the connector: the handshake and the methods' namespaces (docs/plugins.md)."""
 import json
 import os
+import re
 import sys
 import tempfile
 
@@ -22,6 +23,8 @@ class Hub:
         self._peer = peer
 
     def call(self, method, params):
+        if method == "model.complete":
+            return self._peer.call(method, params, timeout=params["timeout_seconds"] + 5)
         return self._peer.call(method, params)
 
     def emit(self, event, params):
@@ -68,22 +71,34 @@ class Plugin:
                         or tempfile.mkdtemp(prefix="larkx-"))
             os.makedirs(data_dir, mode=0o700, exist_ok=True)
             config = params.get("config") or {}
-            backend = self.make_backend(data_dir, config.get("region") or "feishu")
-            self.connector = Connector(backend, Store(os.path.join(data_dir, "larkx.db")), Hub(self.peer),
+            store = Store(os.path.join(data_dir, "larkx.db"))
+            backend = self.make_backend(data_dir, config.get("region") or "feishu", store)
+            self.connector = Connector(backend, store, Hub(self.peer),
                                        config.get("triage_rules") or "", config.get("agent_reply_suffix") or "")
             self.connector.mention = config.get("agent_mention", True) is not False
             self.connector.topics = config.get("agent_group_topics", True) is not False
+            self.connector.auto_handle = config.get("auto_handle") is True
+            self.connector.auto_route_hint = (config.get("auto_route_hint") or "").strip()[:2000].rstrip()
+            self.connector.auto_bot_name = (config.get("auto_bot_name") or "").strip()
+            self.connector.auto_bot_id = (config.get("auto_bot_id") or "").strip()
+            self.connector.auto_bot_timeout_seconds = max(30, min(1800, config.get("auto_bot_timeout_seconds", 180)))
+            self.connector.auto_playbook_dir = (config.get("auto_playbook_dir") or "").strip()
+            senders = config.get("auto_test_senders")
+            self.connector.auto_test_senders = {s.strip() for s in senders if isinstance(s, str) and s.strip()} if isinstance(senders, list) else set()
+            self.connector.auto_review_patterns = _patterns(config.get("auto_review_patterns"))
+            self.connector.auto_reply_style = (config.get("auto_reply_style") or "").strip()[:1000]
+            self.connector.auto_dm_idle_hours = max(1, min(168, config.get("auto_dm_idle_hours", 24)))
             self.connector.start()
         return {"protocol": PROTOCOL, "id": self.manifest["id"], "version": self.manifest["version"], "contributes": self.manifest["contributes"]}
 
 
-def make_backend(data_dir, region):
+def make_backend(data_dir, region, store):
     # Only a test sets this: an installed plugin gets a short list of the hub's variables, and this is not on it.
     if os.environ.get("LARKX_PERSONA_BACKEND") == "fixture":
         from .fixture import FixtureBackend
         return FixtureBackend()
     from .real import RealBackend
-    return RealBackend(ROOT, data_dir, region)
+    return RealBackend(ROOT, data_dir, region, store)
 
 
 def main():
@@ -100,3 +115,15 @@ def main():
     # The hub closed stdin: let history writes finish before the data directory is cleaned up.
     if plugin.connector is not None:
         plugin.connector.close()
+
+
+def _patterns(values):
+    """The review patterns that compile (ASCII classes, so a link right next to Chinese text still matches); a
+    broken one is skipped rather than failing the whole start."""
+    out = []
+    for value in values if isinstance(values, list) else []:
+        try:
+            out.append(re.compile(str(value), re.I | re.ASCII))
+        except re.error:
+            pass
+    return out
