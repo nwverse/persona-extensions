@@ -83,7 +83,7 @@ func adviceUnchecked(adv *advice) bool {
 // opens that page (the computer's 能删什么, or its AI 对话), never the deletion itself.
 func (d draw) adviceRow(s adviceStep) wire.Component {
 	m := d.st.machine(s.MachineID)
-	title := fmt.Sprintf("%d. %s：删掉%s", s.Rank, s.MachineName, s.KindName)
+	title := fmt.Sprintf("%d. %s：删掉「%s」", s.Rank, s.MachineName, s.KindName)
 	if s.Action == adviceMove {
 		title = fmt.Sprintf("%d. %s：把%s搬到网盘", s.Rank, s.MachineName, s.KindName)
 	}
