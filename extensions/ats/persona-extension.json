@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "ats",
   "name": "ATS 自动做待办",
-  "version": "0.7.6",
+  "version": "0.7.7",
   "icon": "assets/icon.png",
   "description": "ATS 帮你把待办自动做掉：跟助手说「把这个待办交给 ATS 做」，助手每次都会先问你；你同意后，它在你选好的电脑上把事情做完，再把结果写回待办；交给它时说了怎么检查的，它做完还会自己检查一遍。默认只看不改，而且只会动你允许的文件夹里的项目。",
   "publisher": "nwverse",
@@ -135,7 +135,7 @@
       "launcher": {
         "type": "string",
         "title": "Claude Code 用哪个启动器（可以不填）",
-        "description": "填启动器的名字。要给不同电脑选不同的启动器，可以写成 default-claude,workstation=local-claude。空着就用默认的启动器。",
+        "description": "填启动器名称，用 | 按顺序写备选，如 primary|backup,workstation=local|backup。留空用默认。",
         "maxLength": 512,
         "default": ""
       },
