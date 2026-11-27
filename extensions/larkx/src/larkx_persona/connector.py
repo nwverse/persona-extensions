@@ -8,13 +8,14 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from .hooks import delivery_id
 from .real import mention_parts
 from .wire import RpcError
 
 ID = "larkx"
 SECRETS = "connector.secrets."
 
-# A chat is an inbox thing while it moved in the last few days; how much of it the thing carries for triage.
+# Inbox activity window, maximum chats polled, and per-thread context size.
 INBOX_DAYS = 3
 INBOX_MOST = 200
 CONTEXT_LINES = 8
@@ -60,7 +61,11 @@ CHANNEL_IMAGE_MOST = 3 << 20
 CHANNEL_IMAGES_MOST = 4
 AGENT_FRESH_SECONDS = 600
 AGENT_CONTEXT_MESSAGES = 20
+MENTION_CONTEXT_MESSAGES = 50
+MEMBERS_CACHE_SECONDS = 300
 AGENT_RETRY_SECONDS = [2, 5, 15]
+# The send key a hook delivery claims, once per message id: a message with one is a hook command, not an /agent.
+HOOK_KEY = "hook:"
 SIGNED_OUT_ERROR = "还没登录飞书"
 SIGN_IN_GUIDE = ["在连接器设置里打开「飞书（LarkAgentX）」，用飞书 App 扫码登录。"]
 SEND_SCHEMA = {
@@ -68,10 +73,10 @@ SEND_SCHEMA = {
     "properties": {
         "chat": {"type": "string", "description": "The chat's id, from larkx_chats or an inbox item."},
         "text": {"type": "string", "description": "The message, plain text. Write @name exactly as in mentions."},
-        "mentions": {"type": "array", "maxItems": 100, "description": "People to really @; a plain @name without an entry here is ordinary text.",
+        "mentions": {"type": "array", "maxItems": 100, "description": "People or bots to really @; a plain @name without an entry here is ordinary text.",
                      "items": {"type": "object", "additionalProperties": False, "required": ["id", "name"],
-                               "properties": {"id": {"type": "string", "description": "The person's id from larkx_search."},
-                                              "name": {"type": "string", "description": "The person's exact display name from larkx_search."}}}},
+                               "properties": {"id": {"type": "string", "description": "The person or bot numeric id from larkx_members or larkx_search."},
+                                              "name": {"type": "string", "description": "The exact display name from larkx_members or larkx_search."}}}},
         "reply_to": {"type": "string", "description": "A message's id (from larkx_messages), to answer in its topic."},
     },
     "required": ["chat", "text"],
@@ -86,7 +91,7 @@ SEND_DM_SCHEMA = {
 }
 ACTIONS = [
     {"name": "larkx_send", "input_schema": SEND_SCHEMA,
-     "description": "Send a Feishu message to a chat as the user themself, not a bot. To really @ somebody, pass their id and exact name from larkx_search in mentions and write @name in text; @name alone is ordinary text. The user confirms the full text on the phone first."},
+     "description": "Send a Feishu message to a chat as the user themself, not a bot. To really @ a person or bot, pass their id and exact name from larkx_members or larkx_search in mentions and write @name in text; @name alone is ordinary text. The user confirms the full text on the phone first."},
     {"name": "larkx_send_dm", "input_schema": SEND_DM_SCHEMA,
      "description": "Send a Feishu direct message to a person as the user themself, not a bot. The user confirms the full text on the phone first."},
 ]
@@ -101,6 +106,10 @@ TOOLS = [
      "input_schema": {"type": "object", "properties": {
          "chat": {"type": "string"},
          "limit": {"type": "integer", "minimum": 1, "maximum": 50}}, "required": ["chat"]}},
+    {"name": "larkx_members", "description": "List members and bots of a Feishu group chat with their numeric ids and exact display names for real @ mentions.",
+     "input_schema": {"type": "object", "properties": {
+         "chat": {"type": "string"},
+         "limit": {"type": "integer", "minimum": 1, "maximum": 200}}, "required": ["chat"]}},
     {"name": "larkx_search", "description": "Find Feishu people and groups by name; gives the ids larkx_send_dm and larkx_messages take.",
      "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}},
 ]
@@ -137,6 +146,7 @@ class Connector:
         # The trigger prefix (setting agent_prefix). Blank or invalid values keep AGENT_PREFIX so ordinary messages
         # cannot accidentally trigger an agent reply.
         self.prefix = normalize_agent_prefix(prefix)
+        self.inbox_triage_chats = frozenset()
         # The line every /agent answer ends with (setting agent_reply_suffix). Blank or too short keeps AGENT_SUFFIX: an
         # answer is always marked as written by AI. Stripped after the cut too, since a message is matched against it
         # rstripped.
@@ -147,6 +157,8 @@ class Connector:
         # A group request carries its topic as the channel message's thread: the hub keeps one conversation per topic
         # (setting agent_group_topics).
         self.topics = True
+        # The user's own /commands that go to their own address instead of the assistant (hooks.Hooks), or None.
+        self.hooks = None
         self.store = store
         self.hub = hub
         self._ready = threading.Event()
@@ -164,6 +176,10 @@ class Connector:
         # The user's chat with themself, by account: where pushes go. Emptied at every sign-in and sign-out, so the first
         # push of each sign-in checks the chat again (_own_chat).
         self._own_chats = {}
+        # Group member/bot roster cache, keyed by chat id: (fetched_at, fetched_limit, list[member]).
+        # Cleared on sign-in and sign-out; _account_gen prevents an in-flight fetch from repopulating after account change.
+        self._members_cache = {}
+        self._account_gen = 0
         self._unreachable = False
         self._last_event = 0.0
         self._last_sync = 0.0
@@ -252,6 +268,8 @@ class Connector:
             self._signed_in = True
             self._expired = False
             self._own_chats = {}
+            self._members_cache = {}
+            self._account_gen += 1
         self._stop.set()
         self._stop = threading.Event()
         self._linked.clear()
@@ -293,9 +311,10 @@ class Connector:
         self.store.close()
 
     def _on_live(self, m):
-        """A message pushed on the long connection: kept like any other, and the user's own /agent goes to the assistant.
-        Fetched history never does (catch_up calls on_message), so a restart answers nothing twice."""
-        if self.on_message(m):
+        """A message pushed on the long connection: kept like any other, the user's own hook command goes to their
+        hook, and their own /agent to the assistant. Fetched history never does either (catch_up calls on_message), so
+        a restart handles nothing twice."""
+        if self.on_message(m) and not self._maybe_hook(m):
             self._maybe_agent(m)
 
     def _on_link(self, state):
@@ -362,27 +381,34 @@ class Connector:
 
     def _agent_request(self, m, me):
         """The request in a user's own message, or None. A real self-mention and /agent share the answer-marker guard,
-        and channel.send uses this same rule as live receipt, so a request can always be answered."""
+        and channel.send uses this same rule as live receipt, so a request can always be answered. A command that went
+        to its hook is never one, even with a self-mention in it."""
         text = m.get("text") or ""
         if text.rstrip().endswith(self.suffix):
             return None
-        request = agent_request(text, self.prefix)
-        if request is None and m.get("type") == "POST":
-            first, newline, body = text.lstrip().partition("\n")
-            if newline and (first == "[富文本]" or first.startswith("[富文本] ")):
-                request = agent_request(body, self.prefix)
-        if request is not None:
-            return request
+        if self.store.claimed(HOOK_KEY + m["id"]):
+            return None
+        for source in _command_texts(m):
+            request = agent_request(source, self.prefix)
+            if request is not None:
+                return request
         return mention_request(text, m.get("mentions"), me) if self.mention else None
+
+    def _own_fresh(self, m):
+        """The signed-in account when m is its own fresh text or rich text, else "": what a request has to be."""
+        with self._lock:
+            me = self._account_id
+        if not me or m.get("sender") != me or m.get("type") not in AGENT_TYPES:
+            return ""
+        if time.time() - (m.get("at") or 0) > AGENT_FRESH_SECONDS:
+            return ""
+        return me
 
     def _maybe_agent(self, m):
         """Hands the user's own fresh "/agent …" or self-mention to the hub, which puts it in the assistant's chat and
         answers through channel.send. Someone else's request, an old one, and our own answers never count."""
-        with self._lock:
-            me = self._account_id
-        if not me or m.get("sender") != me or m.get("type") not in AGENT_TYPES:
-            return
-        if time.time() - (m.get("at") or 0) > AGENT_FRESH_SECONDS:
+        me = self._own_fresh(m)
+        if not me:
             return
         request = self._agent_request(m, me)
         if request is None:
@@ -418,6 +444,47 @@ class Connector:
                     return
                 time.sleep(wait)
 
+    # command hooks (hooks.py): the user's own /commands, signed, to the user's own address
+
+    def _maybe_hook(self, m):
+        """Hands the user's own fresh message starting with a hook command to the hook, once per message id. True when
+        it was one, delivered now or before: then it is not an /agent request too, even with a self-mention in it. The
+        same guards as /agent: someone else's message, an old one, fetched history and our own answers never count."""
+        hooks = self.hooks
+        if hooks is None or not hooks.enabled or not self._own_fresh(m):
+            return False
+        if (m.get("text") or "").rstrip().endswith(self.suffix):
+            return False
+        found = None
+        for source in _command_texts(m):
+            found = hooks.match(source)
+            if found is not None:
+                break
+        if found is None:
+            return False
+        claimed, _ = self.store.claim_send(HOOK_KEY + m["id"])
+        if claimed:
+            hooks.dispatch(self._hook_payload(m, hooks, *found))
+        return True
+
+    def _hook_payload(self, m, hooks, command, request, raw_text):
+        chat = self.store.chat(m["chat"]) or {}
+        payload = {
+            "delivery_id": delivery_id(m["id"]), "command": command, "text": request, "raw_text": raw_text,
+            "message": {"id": m["id"], "chat": m["chat"], "chat_kind": m.get("chat_kind") or chat.get("kind") or "group",
+                        "chat_name": chat.get("name") or "", "root": m.get("root") or "", "parent": m.get("parent") or "",
+                        "at": rfc3339(m.get("at") or time.time())},
+        }
+        parent = self.store.message(m["parent"]) if hooks.quote and m.get("parent") else None
+        if parent:
+            payload["quote"] = _hook_message(parent)
+        if hooks.context:
+            before = [x for x in self.store.messages(m["chat"], m.get("position") or 0, hooks.context + 1) if x["id"] != m["id"]]
+            before = [x for x in before if x["type"] != "SYSTEM"][-hooks.context:]
+            if before:
+                payload["context"] = [_hook_message(x) for x in before]
+        return payload
+
     def _thread(self, m):
         """The topic a group request belongs to, "" for a direct chat: the topic it was written in, or the one its answer
         opens under it (channel_send replies under the same root). The hub gives each one a conversation of its own."""
@@ -425,14 +492,59 @@ class Connector:
             return ""
         return "%s:%s" % (m["chat"], m.get("root") or m["id"])
 
+    def _chat_members_cached(self, chat_id, limit=100, ttl=MEMBERS_CACHE_SECONDS):
+        """Fetches and caches members (humans and bots) of a group chat."""
+        now = time.time()
+        with self._lock:
+            if not self._signed_in:
+                return []
+            gen = self._account_gen
+            cached = self._members_cache.get(chat_id)
+            if cached and now - cached[0] < ttl:
+                _, fetched_limit, members = cached
+                if fetched_limit >= limit or len(members) < fetched_limit:
+                    return list(members[:limit])
+        if not hasattr(self.backend, "chat_members"):
+            return []
+        try:
+            members = self.backend.chat_members(chat_id, limit=limit) or []
+        except Exception as e:
+            self._log("fetching chat members failed: %s" % type(e).__name__)
+            return []
+        if not members:
+            return []
+        with self._lock:
+            if not self._signed_in or self._account_gen != gen:
+                return []
+            prev = self._members_cache.get(chat_id)
+            if not prev or prev[1] <= limit or now - prev[0] >= ttl:
+                self._members_cache[chat_id] = (time.time(), limit, list(members))
+        # Only backfill missing canonical real names; never overwrite global names with per-group nicknames.
+        for item in members:
+            uid = str(item.get("id") or "")
+            real_name = (item.get("real_name") or "").strip()
+            if uid.isdigit() and real_name and not self.store.name(uid):
+                self.store.set_name(uid, real_name)
+        return list(members[:limit])
+
     def _agent_context(self, m):
         """Where the request was written and what was said there just before it, for the assistant."""
         chat = self.store.chat(m["chat"]) or {}
         before = [x for x in self.store.messages(m["chat"], m.get("position") or 0, AGENT_CONTEXT_MESSAGES) if x["id"] != m["id"]]
-        where = "飞书%s「%s」" % (_kind_label(chat.get("kind") or "group"), chat.get("name") or "未命名")
+        chat_kind = chat.get("kind") or m.get("chat_kind") or "group"
+        where = "飞书%s「%s」" % (_kind_label(chat_kind), chat.get("name") or "未命名")
+        members_line = ""
+        if chat_kind == "group" and self._signed_in:
+            members = self._chat_members_cached(m["chat"], limit=60)
+            if members:
+                bots = [x for x in members if x.get("kind") == "bot"]
+                users = [x for x in members if x.get("kind") != "bot"]
+                shown = bots[:20] + users[:20]
+                tags = ["%s[%s](id=%s)" % (x["name"], "BOT" if x.get("kind") == "bot" else "成员", x["id"]) for x in shown]
+                members_line = "本群成员与机器人（回复中写 @显示名 可直接触发真艾特）：" + "、".join(tags) + "\n"
         if not before:
-            return "这条 %s 写在%s里。" % (self.prefix, where)
-        return "这条 %s 写在%s里，之前的 %d 条消息：\n%s" % (self.prefix, where, len(before), "\n".join(_line(x) for x in before))
+            return members_line + "这条 %s 写在%s里。" % (self.prefix, where)
+        return members_line + "这条 %s 写在%s里，之前的 %d 条消息：\n%s" % (self.prefix, where, len(before), "\n".join(_line(x) for x in before))
 
     def channel_send(self, p):
         """An answer for one /agent: in the chat it was written in, under it, as the user, marked as written by AI. A
@@ -491,23 +603,80 @@ class Connector:
         return {}
 
     def _context_mentions(self, request, text):
-        """Known participants' real ids, for a name the assistant wrote. Unrecognized @words stay plain text."""
-        people = {}
-        for m in self.store.messages(request["chat"], 0, CONTEXT_LINES):
-            if "@" + (m.get("sender_name") or "") not in text:
+        """Known participants' real ids (chat members/bots plus recent senders and mentions), for names the assistant
+        wrote. Unrecognized or ambiguous @words stay plain text without dropping valid mentions."""
+        if "@" not in text:
+            return []
+        recent = self.store.messages(request["chat"], 0, MENTION_CONTEXT_MESSAGES)
+        candidates = {}  # name -> set of numeric user ids
+
+        def add_candidate(uid, raw_name):
+            uid = str(uid or "")
+            name = (raw_name or "").lstrip("@").strip()
+            if uid.isdigit() and int(uid) > 0 and name and "@" not in name and "\n" not in name:
+                candidates.setdefault(name, set()).add(uid)
+
+        chat_row = self.store.chat(request["chat"]) or {}
+        if (chat_row.get("kind") or "group") == "group":
+            for item in self._chat_members_cached(request["chat"], limit=200):
+                add_candidate(item.get("id"), item.get("name"))
+                if item.get("real_name") and item.get("real_name") != item.get("name"):
+                    add_candidate(item.get("id"), item.get("real_name"))
+
+        for m in recent:
+            sender = str(m.get("sender") or "")
+            sname = (m.get("sender_name") or "").strip()
+            if sender.isdigit() and int(sender) > 0:
+                if sname and sname not in ("我", UNKNOWN_SENDER) and "@" + sname in text and not self.store.name(sender):
+                    try:
+                        found = self.backend.user_name(sender, request["chat"])
+                    except Exception:
+                        found = None
+                    if found:
+                        self.store.set_name(sender, found)
+                known = (self.store.name(sender) or (sname if sname not in ("我", UNKNOWN_SENDER) else "")).strip()
+                add_candidate(sender, known)
+            for item in m.get("mentions") or []:
+                if not isinstance(item, dict):
+                    continue
+                uid = str(item.get("id") or "")
+                label = (item.get("label") or "").lstrip("@").strip()
+                add_candidate(uid, label)
+                if uid.isdigit() and label and not self.store.name(uid):
+                    self.store.set_name(uid, label)
+
+        by_uid = {}
+        matched_claimed = []
+        ambiguous_claimed = []
+        for name, uids in sorted(candidates.items(), key=lambda kv: len(kv[0]), reverse=True):
+            raw_spans = _mention_spans(text, name)
+            if not raw_spans:
                 continue
-            sender = m.get("sender")
-            if sender and str(sender).isdigit() and not self.store.name(sender):
-                try:
-                    found = self.backend.user_name(sender, request["chat"])
-                except Exception:
-                    found = None
-                if found:
-                    self.store.set_name(sender, found)
-        for m in self.store.messages(request["chat"], 0, CONTEXT_LINES):
-            people[m.get("sender")] = self.store.name(m.get("sender"))
-        targets = [{"id": user_id, "name": name} for user_id, name in people.items()
-                   if user_id and str(user_id).isdigit() and name and "@" + name in text]
+            unclaimed = [
+                sp for sp in raw_spans
+                if not any(sp[0] < c_end and sp[1] > c_start for c_start, c_end in matched_claimed)
+                and not any(sp[0] < c_end and sp[1] > c_start for c_start, c_end in ambiguous_claimed)
+            ]
+            if not unclaimed:
+                continue
+            if len(uids) != 1:
+                ambiguous_claimed.extend(unclaimed)
+                continue
+            # If any boundary-valid occurrence of @name sits inside an ambiguous longer @name (e.g. @Bot inside
+            # ambiguous @Bot Pro), skip this shorter name so mention_parts will not mis-mention at that position.
+            if any(
+                sp[0] < c_end and sp[1] > c_start
+                for sp in raw_spans
+                for c_start, c_end in ambiguous_claimed
+            ):
+                continue
+            uid = next(iter(uids))
+            if uid not in by_uid:
+                by_uid[uid] = name
+                matched_claimed.extend(unclaimed)
+        targets = [{"id": uid, "name": name} for uid, name in by_uid.items()]
+        if not targets:
+            return []
         try:
             mention_parts(text, targets)
         except ValueError:
@@ -579,6 +748,8 @@ class Connector:
             out = {"state": "ok", "account": self._account, "via": "LarkAgentX 长连接"}
             if not self._link_up:
                 out["guide"] = ["长连接断了，正在重连。"]
+            if self.hooks is not None and self.hooks.problem:
+                out.setdefault("guide", []).append(self.hooks.problem)
             if self._last_sync:
                 out["last_sync"] = rfc3339(self._last_sync)
             if self._last_event:
@@ -603,6 +774,16 @@ class Connector:
             chat = _required(args, "chat")
             rows = self.store.messages(chat, 0, _limit(args, 20))
             return {"text": "\n".join(_message_line(m) for m in rows) or "这个会话还没有消息。"}
+        if name == "larkx_members":
+            self._need_signed_in()
+            chat = _required(args, "chat")
+            try:
+                limit = max(1, min(int(args.get("limit") or 100), 200))
+            except (TypeError, ValueError):
+                limit = 100
+            members = self._chat_members_cached(chat, limit=limit, ttl=60)
+            lines = ["%s  %s〔%s〕" % (m["id"], m["name"], "BOT" if m.get("kind") == "bot" else "成员") for m in members]
+            return {"text": "\n".join(lines) or "没有拉到群成员。"}
         if name == "larkx_search":
             self._need_signed_in()
             found = self.backend.search(_required(args, "query"))
@@ -703,8 +884,8 @@ class Connector:
     # inbox
 
     def inbox_collect(self, _):
-        since = time.time() - INBOX_DAYS * 86400
         things, checked, now = [], 0, time.time()
+        since = now - INBOX_DAYS * 86400
         for chat in self.store.chats_since(since, INBOX_MOST):
             stale = now - (chat.get("checked_at") or 0) >= MUTE_REFRESH_SECONDS
             if self._signed_in and chat["kind"] == "group" and stale and checked < MUTE_REFRESH_MOST:
@@ -719,18 +900,24 @@ class Connector:
                     self._log("checking the chat mute state failed: %s" % type(e).__name__)
                 self.store.mute_chat(chat["id"], mute, now)
                 chat = self.store.chat(chat["id"]) or dict(chat, mute=mute, checked_at=now)
-            thing = self._thing(chat)
-            if thing:
-                things.append(thing)
+            if chat["kind"] == "dm":
+                recent = self.store.messages(chat["id"], 0, CONTEXT_LINES)
+                scopes = {"": [m for m in recent if m["type"] != "SYSTEM"]}
+            else:
+                scopes = self.store.inbox_topics(chat["id"], since, CONTEXT_LINES)
+            for root, recent in scopes.items():
+                thing = self._thing(chat, root, recent)
+                if thing:
+                    things.append(thing)
         return {"things": things}
 
-    def _thing(self, chat):
-        recent = self.store.messages(chat["id"], 0, CONTEXT_LINES)
-        recent = [m for m in recent if m["type"] != "SYSTEM"]
+    def _thing(self, chat, root, recent):
         if not recent:
             return None
         last = recent[-1]
         dm = chat["kind"] == "dm"
+        thread = "%s:%s" % (chat["id"], root) if root else chat["id"]
+        last_id = str(last["position"] or last["id"])
         unanswered = []
         for m in reversed(recent):
             if m["mine"]:
@@ -739,22 +926,32 @@ class Connector:
         mentioned = any(m["at_me"] for m in unanswered)
         kind = "dm" if dm else ("mention" if mentioned else "group")
         if last["mine"]:
-            return self._ruled({"thread": chat["id"], "kind": kind, "done": "replied", "why": "你后来回复了"}, "fyi")
-        if not dm and not mentioned and chat.get("mute") == "muted":
+            # Keep last absent on settlement: the hub uses it to recognize a reply it sent for a suggestion.
+            return self._ruled({"thread": thread, "kind": kind, "done": "replied", "why": "你后来回复了"}, "fyi")
+        opted_in = chat["id"] in self.inbox_triage_chats
+        if kind == "group" and not opted_in and chat.get("mute") == "muted":
             return None
         title = _title(chat)
+        reply_to = "回复会以你本人的身份发给『%s』" % title
+        if not dm:
+            where = "的这个话题" if root else ""
+            reply_to = "回复会以你本人的身份发到群『%s』%s，群里所有人都能看到" % (title, where)
+        if root or (kind == "group" and opted_in):
+            older = "\n".join(_inbox_line(m) for m in recent[:-1])
+            context = ("较早的消息：\n" + older + "\n\n" if older else "") + "最新消息：\n" + _inbox_line(last)
+        else:
+            context = "\n".join(_line(m) for m in recent)
         thing = {
-            "thread": chat["id"], "kind": kind, "title": title, "sender": last["sender_name"],
+            "thread": thread, "kind": kind, "title": title, "sender": last["sender_name"],
             "label": {"dm": "私聊", "mention": "群里 @ 了你", "group": "群消息"}[kind],
-            "preview": last["text"][:200], "context": "\n".join(_line(m) for m in recent),
-            "at": rfc3339(last["at"]), "last": str(last["position"] or last["id"]),
-            "can_reply": True,
-            "reply_to": ("回复会以你本人的身份发给『%s』" % title) if dm else ("回复会以你本人的身份发到群『%s』，群里所有人都能看到" % title),
+            "preview": last["text"][:200], "context": context,
+            "at": rfc3339(last["at"]), "last": last_id,
+            "can_reply": True, "reply_to": reply_to,
             "tags": [{"key": "chat", "value": chat["id"], "name": title}],
         }
         if last["sender"]:
             thing["tags"].append({"key": "sender", "value": last["sender"], "name": last["sender_name"]})
-        if kind == "group" and chat.get("mute") != "normal":
+        if kind == "group" and not opted_in and chat.get("mute") != "normal":
             # Unknown mute state keeps the old fixed fold. Confirmed normal groups use model triage instead.
             thing["tier"], thing["why"] = "noise", "规则：群消息，没有 @ 你"
         # The fallback tier (capability fallback): used only when the triage model can't be called.
@@ -769,7 +966,8 @@ class Connector:
     def inbox_reply(self, p):
         thread, text = _required(p, "thread"), _required(p, "text")
         key = p.get("client_id") or hashlib.sha256(("%s|%s|%s" % (thread, p.get("last"), text)).encode()).hexdigest()
-        self._send_once("reply:" + key, thread, text, None)
+        chat, _, root = thread.partition(":")
+        self._send_once("reply:" + key, chat, text, root or None)
         return {}
 
     # threads
@@ -778,16 +976,22 @@ class Connector:
         thread = _required(p, "thread")
         limit = min(int(p.get("limit") or 20), THREAD_MOST)
         before = int(p.get("before") or 0)
-        chat = self.store.chat(thread)
+        chat_id, _, root = thread.partition(":")
+        chat = self.store.chat(chat_id)
         if chat is None:
             raise RpcError("没有这个会话")
-        rows = self.store.messages(thread, before, limit)
-        if len(rows) < limit and self._signed_in:
-            rows = self._fetch_older(thread, before, limit, rows)
+        if root:
+            rows = self.store.topic_messages(chat_id, root, before, limit)
+        else:
+            rows = self.store.messages(chat_id, before, limit)
+            if len(rows) < limit and self._signed_in:
+                rows = self._fetch_older(chat_id, before, limit, rows)
         out = {
-            "chat": {"id": thread, "name": _title(chat), "kind": chat["kind"], "reply": "larkx_send"},
+            "chat": {"id": thread, "name": _title(chat), "kind": chat["kind"]},
             "messages": [self._thread_message(m) for m in rows],
         }
+        if not root:
+            out["chat"]["reply"] = "larkx_send"
         if rows and rows[0]["position"] > 1:
             out["before"] = str(rows[0]["position"])
         return out
@@ -962,6 +1166,8 @@ class Connector:
                 self._account = ""
                 self._account_id = ""
                 self._own_chats = {}
+                self._members_cache = {}
+                self._account_gen += 1
         return {}
 
 
@@ -1017,6 +1223,23 @@ def agent_request(text, prefix=AGENT_PREFIX):
     return rest.lstrip(" \t\r\n:：").strip()
 
 
+def _command_texts(m):
+    """Where a command may start in m: its text, and for rich text also the body under its title line."""
+    text = m.get("text") or ""
+    out = [text]
+    if m.get("type") == "POST":
+        first, newline, body = text.lstrip().partition("\n")
+        if newline and (first == "[富文本]" or first.startswith("[富文本] ")):
+            out.append(body)
+    return out
+
+
+def _hook_message(m):
+    """A kept message as a hook payload carries it: the quoted one, or one of the context before the command."""
+    return {"id": m["id"], "sender_name": m["sender_name"] or "", "mine": bool(m["mine"]), "text": m["text"],
+            "at": rfc3339(m["at"] or 0)}
+
+
 def mention_request(text, mentions, me):
     """The request with the signed-in user's real AT element removed, or None when that element is absent. The sender
     is checked separately; spans, not a name match, decide what to remove. Other mentions remain part of the request."""
@@ -1041,12 +1264,40 @@ def mention_request(text, mentions, me):
     return "".join(parts).strip()
 
 
+def _is_mention_word_char(ch):
+    return ch.isalnum() or ch in ("_", "-")
+
+
+def _mention_spans(text, name):
+    """All occurrences of '@name' in text ended by whitespace, punctuation, or end-of-text."""
+    needle = "@" + name
+    nlen = len(needle)
+    tlen = len(text)
+    spans = []
+    pos = 0
+    while True:
+        idx = text.find(needle, pos)
+        if idx < 0:
+            break
+        end = idx + nlen
+        pos = idx + 1
+        if end < tlen and _is_mention_word_char(text[end]):
+            continue
+        spans.append((idx, end))
+    return spans
+
+
 def _kind_label(kind):
     return "私聊" if kind == "dm" else "群"
 
 
 def _line(m):
     return "%s（%s）：%s" % (m["sender_name"] or "系统", local_time(m["at"]), m["text"])
+
+
+def _inbox_line(m):
+    names = dict.fromkeys(mention["label"] for mention in m["mentions"] if mention.get("label"))
+    return ("提及：%s\n" % "、".join(names) if names else "") + _line(m)
 
 
 def _message_line(m):

@@ -81,6 +81,13 @@ type fakeHub struct {
 	interactions     []hubInteraction
 	interactionsErr  error
 	interactionCalls int
+	resolved         []resolvedInteraction
+	resolveErr       error
+}
+
+type resolvedInteraction struct {
+	ID  string
+	Res interactionResolution
 }
 
 func newFakeHub() *fakeHub {
@@ -150,6 +157,32 @@ func (f *fakeHub) Interactions(context.Context) ([]hubInteraction, error) {
 	defer f.mu.Unlock()
 	f.interactionCalls++
 	return append([]hubInteraction(nil), f.interactions...), f.interactionsErr
+}
+
+func (f *fakeHub) ResolveInteraction(_ context.Context, id string, res interactionResolution) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.resolveErr != nil {
+		return f.resolveErr
+	}
+	f.resolved = append(f.resolved, resolvedInteraction{ID: id, Res: res})
+	var kept []hubInteraction
+	var sid string
+	for _, ix := range f.interactions {
+		if ix.ID == id {
+			sid = ix.SessionID
+			continue
+		}
+		kept = append(kept, ix)
+	}
+	f.interactions = kept
+	if sid != "" {
+		if s := f.sessions[sid]; s != nil {
+			s.PendingInteractions = 0
+			s.State = "working"
+		}
+	}
+	return nil
 }
 
 // set changes a session the way the hub would report it.

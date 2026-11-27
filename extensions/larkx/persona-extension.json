@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "larkx",
   "name": "飞书（LarkAgentX）",
-  "version": "0.3.7",
+  "version": "0.4.1",
   "description": "用 LarkAgentX 以你本人的身份接飞书：扫码登录，全部消息进收件箱和知识库，经手机确认后以你的身份发送；在任意会话里以配置的触发前缀（默认 /agent）或 @自己交给助手。走逆向的网页版协议，不是官方接口。",
   "publisher": "nwverse",
   "homepage": "https://github.com/cv-cat/LarkAgentX",
@@ -108,6 +108,13 @@
         "maxLength": 32,
         "default": "/agent"
       },
+      "inbox_triage_chats": {
+        "type": "array",
+        "title": "分拣普通群消息",
+        "description": "填写 larkx_chats 返回的群 ID。这些群里没有 @ 你的消息也按收件箱规则分拣，即使群已静音。模型不可用时归为噪声。",
+        "items": {"type": "string"},
+        "default": []
+      },
       "agent_reply_suffix": {
         "type": "string",
         "title": "/agent 回复末尾",
@@ -126,9 +133,50 @@
         "title": "群话题各开对话",
         "description": "默认开启。群里不在话题里的助手请求（配置的触发前缀，默认 /agent，或 @自己）开一段新的助手对话，之后在它的话题里发的请求接着这段对话。私聊里的请求仍进这个频道的对话（默认主对话）。关闭后群里的也都进那段对话。需要支持按话题分对话的 hub。",
         "default": true
+      },
+      "command_hooks": {
+        "type": "array",
+        "title": "/命令 Hook",
+        "description": "每项一个命令，比如 /todo、/note。本人发的、以这些命令开头的新鲜消息不交给助手，改为签名 POST 到下面的 Hook 地址；规则和 /agent 一致，别人发的、历史消息、AI 代答都不算，每条消息只发一次。/agent 留给助手，不能用。留空就不开。",
+        "items": {
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9][A-Za-z0-9_-]{0,31}$"
+        },
+        "maxItems": 20,
+        "uniqueItems": true,
+        "default": []
+      },
+      "command_hook_url": {
+        "type": "string",
+        "title": "Hook 地址",
+        "description": "接收 /命令 的 https 地址；同一台机器上的服务可以写 http://127.0.0.1:端口、http://localhost:端口 或 http://[::1]:端口（沙盒里会自动改成 host.persona.internal）。不跟随重定向。没填时 /命令 Hook 不生效。",
+        "format": "uri",
+        "maxLength": 2000
+      },
+      "command_hook_context": {
+        "type": "integer",
+        "title": "Hook 附带上文",
+        "description": "随 Hook 一起发出这个会话里命令之前的几条消息，0 到 20，默认 0 不带。上文里可能有别人的消息，只会发到你自己填的 Hook 地址。",
+        "default": 0,
+        "minimum": 0,
+        "maximum": 20
+      },
+      "command_hook_quote": {
+        "type": "boolean",
+        "title": "Hook 附带引用",
+        "description": "默认开启。命令是回复某条消息时，随 Hook 一起发出被回复的那条消息。",
+        "default": true
       }
     }
   },
+  "secrets": [
+    {
+      "name": "command_hook_secret",
+      "title": "Hook 签名密钥",
+      "description": "填了之后每次 Hook 请求都带 X-Larkx-Signature: sha256=<HMAC-SHA256(密钥, 时间戳.请求体) 的十六进制>，时间戳在 X-Larkx-Timestamp 里；接收方用它确认请求来自这里。留空不签名。",
+      "required": false
+    }
+  ],
   "permissions": {
     "network": [
       "*.feishu.cn",
@@ -136,7 +184,9 @@
       "*.larkoffice.com",
       "codeload.github.com",
       "pypi.org",
-      "files.pythonhosted.org"
+      "files.pythonhosted.org",
+      "config:command_hook_url",
+      "host.persona.internal"
     ]
   }
 }

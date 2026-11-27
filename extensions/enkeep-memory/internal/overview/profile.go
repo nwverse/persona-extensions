@@ -46,13 +46,10 @@ func (o OverviewBackedProvider) Items(st *store.State) []profile.CandidateItem {
 		if len(p.Categories) == 0 && p.OriginSpace != "" && f != entry.Interaction && f != entry.Persona {
 			continue
 		}
-		text := strings.TrimSpace(p.Text)
-		if x := strings.TrimSpace(p.Exception); x != "" && !strings.Contains(text, x) {
-			text += "（例外：" + x + "）"
-		}
+		text := strings.TrimSpace(p.Text) + suffixOf(p)
 		out = append(out, profile.CandidateItem{
 			ID: p.ID, Facet: f, Text: text, Last: p.LastEvidence, Priority: 0, Pattern: true,
-			Weight:     patternWeight + p.ScenesCount*p.SourcesCount,
+			Weight:     patternWeight + Score(p)*10 + p.ScenesCount*p.SourcesCount,
 			Categories: slices.Clone(p.Categories), OriginSpace: p.OriginSpace, Subjects: slices.Clone(p.Subjects),
 		})
 		if len(p.Categories) == 0 {

@@ -1,5 +1,48 @@
 # enkeep-memory changelog
 
+## 0.2.7
+
+- **Read assistant structured ledger (`S12/ledger`) and sent-as-user provenance (`S13/sent`).** The manifest now requests
+  `assistant.entries.read` and `sent.read` and subscribes to `assistant.entries.changed`.
+  - Daily passes read active `assistant.entries.list` entries into `ledger/<day>` (and `ledger/<space>/<day>` when
+    scoped to another assistant space) with entry-id deduplication, self-write exclusion (`by=enkeep`), per-unit content
+    hash cursors, and structured decision details (`selected`, `rejected`, `reason`, `quote`) as high-evidence input.
+  - With `sent.read`, archived `kb.day` messages sent by the assistant in the user's name (`SentBy != ""`) are
+    relabelled as `voice.Ghost` so AI-drafted sends are not attributed to the user's own words, recalled sends are
+    dropped, and `S13/sent` tracks deduplicated provenance counts and a monotonic `SentLedgerID` cursor.
+
+## 0.2.6
+
+- **Rules keep when they do not hold.** An entry's exception (read into its own field) was dropped at every exit, so
+  a standing "do not stop to ask" went without "only when it is live, public or deletes data". Rules, ways of working
+  and choices now carry it, `（例外：…）`, in the standing set, memory.entries and the exits; the standing line cuts its
+  other words first, never the exception.
+- **Rules saying one thing in other words are made one.** A rule merge puts the assistant's rules that compete for the
+  standing set (settled or hard, across types and grains) to the model together, after each daily pass whose rules
+  changed and in the weekly pass. Rules telling the assistant to do the same thing on the same kind of occasion become
+  one: the strongest stays, with one sentence for the default and every condition under which it does not hold that
+  any of them or the user's lines state. A rule the assistant's own memory or the user wrote is marked covered by it
+  instead of merged away, and stands again if the covering rule goes. Every merge is an event and undoable.
+- **One class takes at most a fifth of the standing room.** A facet and its type (as the type table names it) is a
+  class; no class fills more than 20% of the room, whatever its scores.
+- **Rules are found by their occasion.** A rule's subjects carry the words of its moment (派活 / dispatch, 汇报 /
+  report, 提问 / ask, 开工 / task…) and its type, so a decisions_query tag of one occasion word brings them in; exit
+  A's recall line says to query by occasion before dispatching, reporting or asking.
+- **Evaluation.** `hardeval merge-rules` runs the rule merge on a copy of the state (`-before` an evaluation's cutoff).
+
+## 0.2.5
+
+- **The standing set ranks rules by leverage, and gives rules the larger share.** Hard rules scored exactly 90, and
+  with over a hundred of them, which ones stood was decided by days of evidence and id: a complaint about slow replies
+  stood while a cross-project rule seen on four days did not. Hard rules now score 90 to 99 by their own leverage.
+  Times seen add at most 25 instead of 15, so a rule distilled from dozens of observations ranks above one seen seven
+  times. Rules take 60% of the room and the understanding 40% (the reverse before): in the collaboration evaluation
+  the rules side is what avoids mistakes. On the same snapshot at 4096 bytes, incidents avoided rise from 25% to 29%.
+- **Collaboration evaluation diagnosis.** `hardeval collab-run` records per incident how often an arm was judged a
+  wrong action or a needless ask; `hardeval collab-why` lists, for named incidents, the entries closest to what they
+  needed, whether each stood or was in the scatter memory, and why not, plus (`-show`, `-diff`) the standing set of
+  the day and the scatter lines that did not stand.
+
 ## 0.2.4
 
 - **Non-blocking queued `enkeep_mark_wrong`, cutoff enforcement in `patternOut`, and schema-safe report rendering.**

@@ -1037,7 +1037,18 @@
       "trademark_owner": "Telegram",
       "usage": "Exact Raycast extension icon used to identify the corresponding public service."
     },
-    "termwise": {
+    "telegram-bot": {
+      "path": "assets/icon.png",
+      "source_id": "raycast",
+      "source_url": "https://raw.githubusercontent.com/raycast/extensions/dfa15bf5d53b5c97722f9d4df1b1e0af939a81ab/extensions/telegram/assets/telegram.png",
+      "sha256": "892cc76353842417decb03c265d5999c57fc4235c5ea9bb34c30993d57b36b8d",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "Telegram",
+      "usage": "Exact Raycast extension icon used to identify the corresponding public service."
+    },
+    "relingo": {
       "path": "assets/icon.png",
       "source_id": "persona",
       "source_url": "https://raw.githubusercontent.com/nwverse/persona/ba975136899181a7f79b771cfe0d508f088dbaf9/apple/Persona/Resources/Assets.xcassets/AppIcon.appiconset/icon.png",
@@ -1102,6 +1113,18 @@
       "height": 512,
       "trademark_owner": "Tencent",
       "usage": "Exact Raycast extension icon used to identify the corresponding public service."
+    },
+    "wecom": {
+      "path": "assets/icon.png",
+      "source_id": "dify-official-plugins",
+      "source_url": "https://raw.githubusercontent.com/langgenius/dify-official-plugins/60804e30f6fa41fbe890c02c9849b0bdbe28d13a/tools/wecom/_assets/icon.svg",
+      "sha256": "da23a88d05b22fa482fc8f858b2385c6605db1a0b5b562734898bd733721b4ad",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "Tencent (WeCom)",
+      "usage": "Service icon used solely to identify this integration. The upstream 40x40 SVG rasterized with Google Chrome 147.0.7727.56 at 512x512, preserving its artwork and aspect ratio.",
+      "transformation": "The upstream 40x40 SVG rasterized with Google Chrome 147.0.7727.56 at 512x512, preserving its artwork and aspect ratio."
     },
     "wikipedia": {
       "path": "assets/icon.png",
