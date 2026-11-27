@@ -15,7 +15,7 @@ import (
 // All texts are placeholders (project-x, user-a).
 func state() *store.State {
 	es := map[string]*entry.Entry{
-		"i-stable":  {ID: "i-stable", Facet: entry.Interaction, Grain: entry.Class, Text: "report the conclusion first", Status: entry.Stable, Count: 5, Kinds: []string{"S1", "S3"}, Last: "2026-11-02", Tagged: true, Origin: entry.Behavior},
+		"i-stable":  {ID: "i-stable", Facet: entry.Interaction, Grain: entry.Class, Text: "report the conclusion first", Status: entry.Stable, Count: 5, Kinds: []string{"S1", "S3"}, Last: "2026-11-02", Tagged: true, Origin: entry.Behavior, Leverage: &entry.Leverage{Reach: entry.ReachCrossProject, Horizon: entry.HorizonLasting}},
 		"w-shift":   {ID: "w-shift", Facet: entry.Workflow, Text: "run the smoke test on project-x first", Status: entry.Shifting, Count: 3, Last: "2026-11-05", Tagged: true, Object: "project-x", Origin: entry.Behavior},
 		"u-cand":    {ID: "u-cand", Facet: entry.Persona, Text: "user-a sleeps late", Status: entry.Candidate, Count: 1, Last: "2026-11-06", Tagged: true, Origin: entry.Behavior, Categories: []entry.Category{{Name: "health", By: entry.ByModel}}, OriginSpace: "health"},
 		"j-dorm":    {ID: "j-dorm", Facet: entry.Judgement, Text: "prefer the smaller change", Status: entry.Dormant, Count: 2, Last: "2026-09-01", Tagged: true, Origin: entry.Behavior},
@@ -356,5 +356,18 @@ func TestSubjectsHangRules(t *testing.T) {
 		Scopes: []entry.Scope{{Kind: entry.ScopeProject, Name: "project-x"}, {Kind: entry.ScopeGlobal}}}
 	if got := Subjects(st, e); !slices.Equal(got, []string{"user-b", "project-x"}) {
 		t.Fatalf("subjects = %v", got)
+	}
+}
+
+// A rule's occasion is among its subjects (0.2.6), so a decisions_query tag of one occasion word finds it.
+func TestSubjectsOccasion(t *testing.T) {
+	st := &store.State{}
+	e := &entry.Entry{Facet: entry.Interaction, Type: "dispatch", Impact: entry.Impact{Moment: "dispatch"}}
+	got := Subjects(st, e)
+	if !slices.Contains(got, "派活") || !slices.Contains(got, "dispatch") {
+		t.Errorf("subjects %v", got)
+	}
+	if got := Subjects(st, &entry.Entry{Facet: entry.World, Impact: entry.Impact{Moment: "dispatch"}}); len(got) != 0 {
+		t.Errorf("a fact's subjects %v", got)
 	}
 }

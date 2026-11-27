@@ -15,7 +15,7 @@ Read this before installing:
 
 ## Send real mentions
 
-`larkx_send` accepts `mentions: [{id, name}]` using the exact person and numeric id returned by `larkx_search`; write `@name` literally in `text` for each target. It builds a rich-text AT element and the notification user-id list, so the target gets a real mention rather than plain text. Without `mentions`, an @name stays ordinary text and the original send path is unchanged. Assistant replies resolve only known recent chat participants' exact names to their real ids; unknown names are never guessed.
+`larkx_send` accepts `mentions: [{id, name}]` using the exact person or bot and numeric id returned by `larkx_members` or `larkx_search`; write `@name` literally in `text` for each target. It builds a rich-text AT element and the notification user-id list, so the target gets a real mention rather than plain text. Without `mentions`, an @name stays ordinary text and the original send path is unchanged. Assistant replies resolve exact names from the chat's member/bot roster (via `PullChatChattersRequest`) as well as recent senders and historical mentions; unknown or ambiguous names are never guessed.
 
 ## Invoke the assistant by mentioning yourself
 
@@ -26,6 +26,10 @@ Only your own fresh live messages qualify: another person mentioning you does no
 ## Topics in groups
 
 In a group, a request outside a topic starts a new assistant conversation, and its answer opens a topic under it. A later request in that topic continues the same conversation; sending `/new` with the configured trigger prefix (for example `/agent /new`) there starts the topic over. A topic group works the same way, one conversation per topic. Requests in direct chats go to the channel's target, the main chat by default. Set **群话题各开对话** (`agent_group_topics`, enabled by default) to `false` to send group requests there too. This needs a hub with per-thread conversations for extension channels; an older hub sends every request to the target.
+
+## Command hooks
+
+List your own commands, such as `/todo` and `/note`, in **/命令 Hook** (`command_hooks`) and set **Hook 地址** (`command_hook_url`). Your own fresh message that starts with one of them then goes to that address as a JSON POST instead of to the assistant, once per message, without a model call: an `https://` address anywhere, or `http://` on the hub's machine (reached as `host.persona.internal` in the sandbox). The same guards as `/agent` apply: other people's messages, fetched history and AI answers never fire a hook. Set **Hook 签名密钥** (`command_hook_secret`) to sign every request with `X-Larkx-Signature: sha256=<HMAC-SHA256>`; **Hook 附带上文** and **Hook 附带引用** add the messages before the command and the one it replies to. The payload, the signature and the retries are in the [extension guide](../../docs/extensions/larkx.md#command-hooks).
 
 ## Pushes
 

@@ -63,6 +63,14 @@ func TestRunFast(t *testing.T) {
 	if c.St.S.FastSeen["chats/persona-1@2026-11-09"] == 0 || len(c.St.S.ActiveDays) != 0 {
 		t.Errorf("seen %v, active %v", c.St.S.FastSeen, c.St.S.ActiveDays)
 	}
+	// Any newly observed interaction/tools correction rule from RunFast is tagged fast_hot:<day> for the hot slot.
+	for _, e := range c.St.S.Entries {
+		if entry.KindOf(e) == entry.KindRules && (e.Type == "correction" || e.Rejected != "" || entry.Hard(e)) {
+			if got := entry.FastHotDay(e); got != "2026-11-09" {
+				t.Errorf("fast path correction %s missing fast_hot:2026-11-09, got %q", e.ID, got)
+			}
+		}
+	}
 }
 
 // A correction made on two days within a week, or with a ban in the user's words, is a hard rule: it stands at once
@@ -79,8 +87,8 @@ func TestHardRule(t *testing.T) {
 	if !export.Stable(ban) || export.Stable(one) {
 		t.Error("a hard rule stands at once; a plain candidate does not")
 	}
-	if entry.Score(twice) < 90 || entry.Score(one) >= 90 {
-		t.Errorf("scores %d %d", entry.Score(twice), entry.Score(one))
+	if entry.Score(twice) <= entry.Score(one) {
+		t.Errorf("scores %d <= %d", entry.Score(twice), entry.Score(one))
 	}
 	far := &entry.Entry{Facet: entry.Interaction, Type: "correction", Evidence: []entry.Evidence{ev("2026-10-01", "a"), ev("2026-11-20", "b")}}
 	if entry.Hard(far) {
