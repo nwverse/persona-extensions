@@ -450,6 +450,7 @@ func heMemories(st *store.State, ov *overview.State, cog []string, f heFilter, c
 	// overview: the backtest's used patterns.
 	var ovCands []memsrc.Candidate
 	absorbed := map[string]bool{}
+	coveredByPat := map[string][]string{}
 	var contractTexts []string
 	l1LatestDay := ""
 	lines = lines[:0]
@@ -497,6 +498,9 @@ func heMemories(st *store.State, ov *overview.State, cog []string, f heFilter, c
 					Polarity:  p.Polarity,
 					Dimension: p.Dimension,
 				})
+				if len(p.CoveredIDs) > 0 {
+					coveredByPat[p.ID] = p.CoveredIDs
+				}
 				if bucket == memsrc.BucketContract {
 					for _, id := range p.EvidenceIDs {
 						absorbed[id] = true
@@ -519,19 +523,22 @@ func heMemories(st *store.State, ov *overview.State, cog []string, f heFilter, c
 		lines = append(lines, l)
 	}
 	mem["cogpipe"] = heFit(lines, budget)
-	// l0 and resident: the new outlet's choice (mirroring memsrc.standingSet, including Bucket 0 hot-slot and
-	// post-L1 unabsorbed high-certainty rules strictly before cutoff).
-	var l0Cands, hotCands []memsrc.Candidate
+	// l0 and resident: the new outlet's choice (mirroring memsrc.workStandingSet, including Bucket 0 hot-slot,
+	// verbatim UserOwned pass-through per unified design §2.1, and post-L1 unabsorbed non-owned rules strictly before cutoff).
+	var l0Cands, hotCands, uoCands []memsrc.Candidate
 	cutoffTime, _ := time.Parse("2006-01-02", cutoff)
 	for _, e := range pool {
 		if !cutoffTime.IsZero() {
 			hc, ok := memsrc.HotSlotCandidate(st, e, tpl, cutoffTime)
-			if !ok && l1LatestDay != "" {
+			if !ok && !memsrc.IsUserOwned(e) && l1LatestDay != "" {
 				hc, ok = memsrc.UnabsorbedRuleHotCandidate(st, e, tpl, l1LatestDay, cutoffTime)
 			}
 			if ok && (hc.Pinned || (!absorbed[e.ID] && !slices.ContainsFunc(contractTexts, func(t string) bool { return norm.Jaccard(t, hc.Text) >= 0.45 }))) {
 				hotCands = append(hotCands, hc)
 			}
+		}
+		if uc, ok := memsrc.UserOwnedStandingCandidate(st, e, tpl); ok {
+			uoCands = append(uoCands, uc)
 		}
 		if c, ok := memsrc.CuratedCandidate(st, e, tpl); ok {
 			l0Cands = append(l0Cands, c)
@@ -546,7 +553,7 @@ func heMemories(st *store.State, ov *overview.State, cog []string, f heFilter, c
 		return heFit(ls, budget)
 	}
 	mem["l0"] = join(memsrc.ResidentWithin(l0Cands, budget, most))
-	resCands := append(slices.Clone(l0Cands), ovCands...)
+	resCands := append(slices.Clone(l0Cands), memsrc.ApplyUserOwnedPassThrough(ovCands, uoCands, coveredByPat)...)
 	resCands = append(resCands, hotCands...)
 	mem["resident"] = join(memsrc.ResidentWithin(resCands, budget, most))
 	return mem

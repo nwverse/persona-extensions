@@ -86,6 +86,9 @@ type Candidate struct {
 	Bucket string
 	// L1 marks an L1 overview contract or principle (false for hot-slot and cold-start L0 entries).
 	L1 bool
+	// UserOwned marks a user-confirmed rule/principle (S6 handwritten, self_report, or user-edited) that passes through
+	// verbatim into Buckets 1 and 2 without L1 rewriting (unified design §2.1).
+	UserOwned bool
 	// Pinned marks a user-pinned entry (ranks first inside the hot slot).
 	Pinned bool
 	// Hard marks a hard contract (ranks ahead of non-hard contracts in Bucket 1).
@@ -158,14 +161,14 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 			hotPool = append(hotPool, c)
 		case BucketContract:
 			c.Bucket = BucketContract
-			if c.L1 {
+			if c.L1 || c.UserOwned {
 				cL1 = append(cL1, c)
 			} else {
 				cL0 = append(cL0, c)
 			}
 		default:
 			c.Bucket = BucketPrinciple
-			if c.L1 {
+			if c.L1 || c.UserOwned {
 				pL1 = append(pL1, c)
 			} else {
 				pL0 = append(pL0, c)
@@ -364,6 +367,9 @@ func sortContracts(cs []Candidate) {
 		if a.Score != b.Score {
 			return a.Score > b.Score
 		}
+		if a.UserOwned != b.UserOwned {
+			return a.UserOwned
+		}
 		if a.Hard != b.Hard {
 			return a.Hard
 		}
@@ -386,6 +392,9 @@ func sortPrinciples(cs []Candidate) {
 		a, b := cs[i], cs[j]
 		if a.Score != b.Score {
 			return a.Score > b.Score
+		}
+		if a.UserOwned != b.UserOwned {
+			return a.UserOwned
 		}
 		if a.Last != b.Last {
 			return a.Last > b.Last
@@ -583,6 +592,155 @@ func UnabsorbedRuleHotCandidate(st *store.State, e *entry.Entry, tpl map[string]
 		Score:  entry.Score(e),
 		Last:   e.Last,
 	}, true
+}
+
+// IsUserOwned reports whether e is a rule or principle explicitly authored or confirmed by the user or assistant
+// handwritten memory (S6 handwritten, self_report, or non-empty user edit), eligible for verbatim pass-through under
+// unified design §2.1 rather than being rewritten by L1 synthesis.
+func IsUserOwned(e *entry.Entry) bool {
+	if e == nil {
+		return false
+	}
+	return e.Origin == entry.Handwritten || e.Origin == entry.SelfReport ||
+		(e.User != nil && strings.TrimSpace(e.User.Text) != "")
+}
+
+// UserOwnedStandingCandidate converts a live, non-sensitive, non-pinned user-owned rule/principle into a verbatim
+// standing Candidate for Bucket 1 (contracts) or Bucket 2 (principles), preserving the exact user wording and
+// exception without L1 rewriting (unified design §2.1). Multi-source / repeated handwritten rules score on the same
+// unified leverage scale as L1 patterns; single-occurrence uncorroborated notes stay conservative (70–82) so they never
+// crowd out verified handwritten rules or strong behavior-synthesized L1 patterns.
+func UserOwnedStandingCandidate(st *store.State, e *entry.Entry, tpl map[string]bool) (Candidate, bool) {
+	if e == nil || e.Pinned || !IsUserOwned(e) || !e.Live() || !Pool(st, e) || !export.Usable(st, e) {
+		return Candidate{}, false
+	}
+	if entry.TemplateOnly(e, tpl) || (entry.CoveredBy(e) != "" && coverLive(st, e)) {
+		return Candidate{}, false
+	}
+	if cats, space, _ := Tags(st, e); len(cats) > 0 || space != "" {
+		return Candidate{}, false
+	}
+	k := entry.KindOf(e)
+	if k == "" {
+		return Candidate{}, false
+	}
+	bucket := BucketPrinciple
+	maxBytes := PrincipleTextMost
+	if k == entry.KindRules {
+		bucket = BucketContract
+		maxBytes = ContractTextMost
+	}
+	prefix := StandingPrefix(bucket, entry.Hard(e), "")
+	text := FormatResidentLine(prefix+strings.TrimSpace(recall.Head(e)), recall.Exception(e), maxBytes)
+	if text == "" {
+		return Candidate{}, false
+	}
+	userEdit := e.User != nil && strings.TrimSpace(e.User.Text) != ""
+	cnt := max(1, e.Count)
+	kinds := len(e.Kinds)
+	if kinds == 0 && len(e.Evidence) > 0 {
+		seen := map[string]bool{}
+		for _, ev := range e.Evidence {
+			if ev.Source != "" {
+				seen[ev.Source] = true
+			}
+		}
+		kinds = len(seen)
+	}
+	var score int
+	if cnt >= 2 || kinds >= 2 || userEdit {
+		base := 85
+		if bucket == BucketContract {
+			base = 90
+		}
+		score = base + min(40, cnt*4) + min(20, kinds*6)
+		if userEdit || entry.Hard(e) {
+			score += 12
+		}
+	} else {
+		score = 70 + min(12, kinds*4)
+	}
+	days := map[string]bool{}
+	for _, ev := range e.Evidence {
+		if ev.Day != "" {
+			days[ev.Day] = true
+		}
+	}
+	dim := ""
+	if e.Leverage != nil {
+		dim = e.Leverage.Dimension
+	}
+	grp := GroupOf(st, e)
+	if genericTypes[strings.ToLower(strings.TrimSpace(e.Type))] {
+		grp = ""
+	}
+	return Candidate{
+		ID:        e.ID,
+		Text:      text,
+		Kind:      k,
+		Bucket:    bucket,
+		Facet:     string(e.Facet),
+		UserOwned: true,
+		Hard:      entry.Hard(e),
+		Score:     score,
+		Days:      max(cnt, len(days)),
+		Last:      e.Last,
+		Dimension: dim,
+		Group:     grp,
+	}, true
+}
+
+// ApplyUserOwnedPassThrough enforces the unified design §2.1 division of labor between verbatim user-owned rules and
+// L1 synthesis:
+//   - User-owned rules pass through verbatim into the standing candidate pool.
+//   - Any L1 pattern that covers one or more live verbatim user-owned rules (via coveredByPat[pat.ID]) transfers its
+//     cross-event signals (Hard, Polarity, Dimension, and corroboration score) to the covered verbatim rule(s) and is
+//     suppressed from standing so L1 never rewrites or dilutes user-confirmed rules.
+//   - Pure behavior-synthesized L1 patterns (covering no live user-owned rules) remain at full strength alongside
+//     verbatim user-owned rules.
+func ApplyUserOwnedPassThrough(l1Cands, uoCands []Candidate, coveredByPat map[string][]string) []Candidate {
+	if len(uoCands) == 0 {
+		return l1Cands
+	}
+	uoOut := slices.Clone(uoCands)
+	uoIdx := make(map[string]int, len(uoOut))
+	for i, c := range uoOut {
+		uoIdx[c.ID] = i
+	}
+	keptL1 := make([]Candidate, 0, len(l1Cands))
+	for _, p := range l1Cands {
+		var matched []int
+		for _, cid := range coveredByPat[p.ID] {
+			if idx, ok := uoIdx[cid]; ok {
+				matched = append(matched, idx)
+			}
+		}
+		if len(matched) == 0 {
+			keptL1 = append(keptL1, p)
+			continue
+		}
+		for _, idx := range matched {
+			u := &uoOut[idx]
+			if p.Hard {
+				u.Hard = true
+			}
+			if u.Polarity == "" && p.Polarity != "" {
+				u.Polarity = p.Polarity
+			}
+			if u.Dimension == "" && p.Dimension != "" {
+				u.Dimension = p.Dimension
+			}
+			if len(matched) == 1 && p.Score > u.Score {
+				u.Score = p.Score
+			} else if p.Hard {
+				u.Score = max(u.Score, min(p.Score, u.Score+12))
+			}
+		}
+	}
+	out := make([]Candidate, 0, len(uoOut)+len(keptL1))
+	out = append(out, uoOut...)
+	out = append(out, keptL1...)
+	return out
 }
 
 // coverLive: the rule that covers e is still there to stand in its place (when it went, e stands again).

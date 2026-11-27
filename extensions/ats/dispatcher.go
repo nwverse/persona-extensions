@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -17,8 +18,8 @@ import (
 //	           for the user (a question, an approval) or ended its turn saying it is blocked
 //	accepting  the computer's program runs the acceptance command (ats.accept); its exit code is the verdict
 //
-// and then records the outcome, removes the worktree and writes the outcome to the task's to-do. All of its
-// state is in the queue (Task.Exec), so a restart of the program picks every attempt up where it was.
+// and then records the outcome, removes the worktree and writes the outcome to the task's to-do. The queue
+// records each running attempt (Task.Exec), so a restart picks it up where it was.
 
 const (
 	dispatchInterval        = 15 * time.Second
@@ -31,7 +32,20 @@ const (
 	waitingInSession        = "Agent 在会话里等你回答或批准"
 	nodeCallTimeout         = 25 * time.Second
 	maxReadonlyPlanDeclines = 3
+	launcherProbeTimeout    = 5 * time.Second
+	launcherProbeTTL        = 30 * time.Second
+	breakerCooldown         = 3 * time.Minute
+	gatewayStartupWindow    = 30 * time.Second
+	autoContinueGrace       = 45 * time.Second
+	maxAutoContinues        = 2
+	autoContinuePrompt      = "The response stream dropped mid-response. Continue in this session, keeping the work you already verified. Finish the remaining reasoning and actions, then provide the complete final answer."
 )
+
+type launcherProbeState struct {
+	reachable bool
+	until     time.Time
+	err       string
+}
 
 type dispatcher struct {
 	q      *Queue
@@ -50,11 +64,15 @@ type dispatcher struct {
 	planDeclines map[string]int          // count of ExitPlanMode auto-declines per attempt key
 	lastRefresh  time.Time
 	wake         chan struct{}
+
+	probeMu    sync.Mutex
+	probeCache map[string]launcherProbeState
 }
 
 func newDispatcher(q *Queue, api hubAPI, nodes nodeCaller, writer *DecisionWriter, cfg func() ExtConfig, now func() time.Time) *dispatcher {
 	return &dispatcher{q: q, api: api, nodes: nodes, writer: writer, cfg: cfg, now: now,
-		accepted: map[string]acceptResult{}, planDeclines: map[string]int{}, wake: make(chan struct{}, 1)}
+		accepted: map[string]acceptResult{}, planDeclines: map[string]int{}, wake: make(chan struct{}, 1),
+		probeCache: map[string]launcherProbeState{}}
 }
 
 // run is the background loop; it ends with ctx.
@@ -137,10 +155,19 @@ func (d *dispatcher) tick(ctx context.Context) {
 // refreshMachines sets the scheduler's slots from the hub's list of computers: the ones the extension's program
 // is switched on for, each with the configured number of tasks at a time.
 func (d *dispatcher) refreshMachines(ctx context.Context) {
+	now := d.now()
+	d.probeMu.Lock()
+	for key, st := range d.probeCache {
+		if !now.Before(st.until) {
+			delete(d.probeCache, key)
+		}
+	}
+	d.probeMu.Unlock()
+
 	cfg := d.cfg()
-	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
+	cctx, cancelList := context.WithTimeout(ctx, 10*time.Second)
 	machines, err := d.api.Machines(cctx)
+	cancelList()
 	if err != nil {
 		return // keep the last known slots: a hub that is briefly unreachable must not look like no computers
 	}
@@ -150,10 +177,27 @@ func (d *dispatcher) refreshMachines(ctx context.Context) {
 	}
 	var slots []MachineSlot
 	for _, m := range machines {
-		if on[m.ID] {
-			slots = append(slots, MachineSlot{Name: m.ID, Title: m.Name, Online: m.Online, MaxSlots: cfg.parallel()})
+		if !on[m.ID] {
+			continue
 		}
+		slots = append(slots, MachineSlot{Name: m.ID, Title: m.Name, Online: m.Online, MaxSlots: cfg.parallel()})
 	}
+	pctx, cancelProbes := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelProbes()
+	var probes sync.WaitGroup
+	for i, slot := range slots {
+		if !slot.Online {
+			continue
+		}
+		candidates := cfg.launchersFor(slot.Name)
+		if len(candidates) == 0 {
+			continue
+		}
+		probes.Go(func() {
+			_, slots[i].Degraded, _ = d.resolveHealthyLauncher(pctx, slot.Name, candidates, true)
+		})
+	}
+	probes.Wait()
 	_ = d.q.SetMachines(slots)
 }
 
@@ -191,10 +235,89 @@ func (d *dispatcher) nodeCall(ctx context.Context, machine, method string, param
 	return d.nodes.Call(cctx, machine, method, params, out)
 }
 
+func (d *dispatcher) resolveHealthyLauncher(ctx context.Context, machineID string, candidates []string, allowProbe bool) (chosen string, allUnreachable bool, detail string) {
+	if len(candidates) == 0 {
+		return "", false, ""
+	}
+	var failures []string
+	for _, launcher := range candidates {
+		st := d.launcherProbe(ctx, machineID, launcher, allowProbe)
+		if st.reachable {
+			return launcher, false, ""
+		}
+		failures = append(failures, launcher+": "+st.err)
+	}
+	return "", true, strings.Join(failures, "；")
+}
+
+func (d *dispatcher) launcherProbe(ctx context.Context, machineID, launcher string, allowProbe bool) launcherProbeState {
+	key := machineID + "\x00" + launcher
+	d.probeMu.Lock()
+	st := d.probeCache[key]
+	d.probeMu.Unlock()
+	if d.now().Before(st.until) {
+		return st
+	}
+	if !allowProbe || ctx.Err() != nil {
+		return launcherProbeState{reachable: true}
+	}
+	pctx, cancel := context.WithTimeout(ctx, launcherProbeTimeout)
+	var res probeLauncherResult
+	err := d.nodeCall(pctx, machineID, "ats.probe_launcher", probeLauncherParams{Launcher: launcher}, &res)
+	cancel()
+
+	now := d.now()
+	d.probeMu.Lock()
+	defer d.probeMu.Unlock()
+	// 探测期间若已发生会话网关错误，仍须等待熔断期结束。
+	if current := d.probeCache[key]; !current.reachable && now.Before(current.until) {
+		return current
+	}
+	// 旧版节点可能缺少此方法。RPC 的其他错误也交由 ats.prepare 处理。
+	if err != nil || (res.Reachable && res.Skipped) {
+		return launcherProbeState{reachable: true}
+	}
+	st = launcherProbeState{reachable: res.Reachable, until: now.Add(launcherProbeTTL)}
+	if !res.Reachable {
+		st.until = now.Add(breakerCooldown)
+		st.err = strings.TrimSpace(res.Endpoint + " " + res.Error)
+	}
+	d.probeCache[key] = st
+	return st
+}
+
+func (d *dispatcher) invalidateProbe(machineID, launcher, detail string) {
+	if launcher == "" {
+		return
+	}
+	st := launcherProbeState{until: d.now().Add(breakerCooldown), err: detail}
+	d.probeMu.Lock()
+	d.probeCache[machineID+"\x00"+launcher] = st
+	d.probeMu.Unlock()
+}
+
 // prepare checks the worktree out and starts the agent session in it.
 func (d *dispatcher) prepare(ctx context.Context, t *Task, att Attempt) bool {
 	e := t.Exec
 	cfg := d.cfg()
+	agentType := effectiveAgentType(att.Harness, t.AgentType)
+	candidates := launchersForSpec(t.Launcher, e.MachineID)
+	if len(candidates) == 0 {
+		if agentType == AgentClaude {
+			candidates = cfg.launchersFor(e.MachineID)
+		} else {
+			// 只指定引擎时，Hub 仍可能选用默认的 Claude 启动器。
+			candidates = []string{agentType}
+		}
+	}
+	launcher, allUnreachable, detail := d.resolveHealthyLauncher(ctx, e.MachineID, candidates, len(candidates) > 0 && (agentType == AgentClaude || strings.TrimSpace(t.Launcher) != ""))
+	if allUnreachable {
+		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "gateway_unreachable", message: "所有候选启动器网关不可达：" + detail})
+		return true
+	}
+	if launcher == "" {
+		launcher = launcherForSpec(t.Launcher, e.MachineID)
+	}
 	readonly := t.PermissionProfile != PermissionDefault
 	prev := lastFailedReport(t)
 	// A writable retry goes on from what the earlier attempt committed, when that commit is on this computer.
@@ -242,16 +365,6 @@ func (d *dispatcher) prepare(ctx context.Context, t *Task, att Attempt) bool {
 	mode := cfg.readonlyMode()
 	if !readonly {
 		mode = cfg.writeMode()
-	}
-	agentType := effectiveAgentType(att.Harness, t.AgentType)
-	launcher := launcherForSpec(t.Launcher, e.MachineID)
-	if launcher == "" {
-		if agentType == AgentClaude {
-			launcher = cfg.launcherFor(e.MachineID)
-		} else {
-			// 只指定引擎时，Hub 仍可能选用默认的 Claude 启动器。
-			launcher = agentType
-		}
 	}
 	model := strings.TrimSpace(t.Model)
 	if model == "" && agentType == AgentClaude {
@@ -343,6 +456,10 @@ func errorClassInWords(class string) string {
 		return "the computer or the agent session failed, not necessarily the work"
 	case "rate_limited":
 		return "the model service's rate or usage limit was reached"
+	case "gateway_unreachable", "gateway_error":
+		return "the inference gateway was unavailable"
+	case "stream_interrupted":
+		return "the agent's response stream was interrupted"
 	case "lost":
 		return "the agent session disappeared"
 	case "config_error":
@@ -477,23 +594,27 @@ func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt) bool {
 		t = updated
 		e = t.Exec
 	}
+	elapsed := now.Sub(e.PhaseSince)
+	timeout := d.cfg().taskTimeout()
+	working := s.State == "working" || s.BackgroundWorking
+	resumed := working && e.ContinuedAt != nil && s.UpdatedAt != e.ContinuedErrorAt
+	// Hub 可能先报会话恢复，再清除上轮的错误文本。
+	continuationWorking := resumed || (working && e.ContinueCount > 0 && e.ContinuedAt == nil)
 	switch {
 	case s.StartError != "":
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "infra_error", message: "Agent 会话没有启动：" + s.StartError})
 		return true
 	case s.Starting:
 		return false
-	case s.TurnError != "":
-		class := turnErrorClass(s.TurnErrorKind, s.TurnError)
-		text := strings.TrimRight(strings.TrimSpace(s.TurnError), "。.")
-		msg := "Agent 这一轮出错：" + s.TurnError
-		switch class {
-		case "config_error":
-			msg = "模型不可用：" + text + "。到扩展设置里检查「模型」一栏后再重试。"
-		case "auth_expired":
-			msg = "Agent 的登录失效了：" + text + "。在那台电脑上重新登录后再重试。"
+	case s.TurnError != "" && !continuationWorking:
+		if e.ContinuedAt != nil && now.Sub(*e.ContinuedAt) < autoContinueGrace && s.UpdatedAt == e.ContinuedErrorAt {
+			if elapsed >= timeout {
+				d.timeoutAttempt(ctx, t, att, timeout)
+				return true
+			}
+			return false
 		}
-		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: class, message: msg})
+		d.handleTurnError(ctx, t, att, s, now, timeout-elapsed)
 		return true
 	case s.State == "needs_you" || s.PendingInteractions > 0:
 		if t.PermissionProfile != PermissionDefault {
@@ -506,16 +627,18 @@ func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt) bool {
 			return false // the hub did not say what the session asks: keep what was known
 		}
 		return d.setWaiting(t, why, "")
-	case s.State == "working" || s.BackgroundWorking:
-		if timeout := d.cfg().taskTimeout(); now.Sub(e.PhaseSince) > timeout {
-			ictx, cancel := context.WithTimeout(ctx, 10*time.Second)
-			_ = d.api.Interrupt(ictx, e.MachineID, e.SessionID)
-			cancel()
-			d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "timeout", message: fmt.Sprintf("Agent 超过 %d 分钟没有做完，已打断", int(timeout.Minutes()))})
+	case working:
+		if elapsed >= timeout {
+			d.timeoutAttempt(ctx, t, att, timeout)
 			return true
 		}
-		if e.Waiting != "" || e.Stable != 0 {
-			_, err := d.q.UpdateExec(t.ID, t.FenceToken, now, func(e *Execution) { e.Waiting, e.Stable, e.SeenUpdate = "", 0, "" })
+		if e.Waiting != "" || e.Stable != 0 || resumed {
+			_, err := d.q.UpdateExec(t.ID, t.FenceToken, now, func(e *Execution) {
+				e.Waiting, e.Stable, e.SeenUpdate = "", 0, ""
+				if resumed {
+					e.ContinuedAt, e.ContinuedErrorAt = nil, ""
+				}
+			})
 			return err == nil
 		}
 		return false
@@ -545,6 +668,57 @@ func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt) bool {
 		return d.startAcceptance(ctx, t, att, reply)
 	}
 	return false // offline, unknown: the computer is away; the session is still there when it is back
+}
+
+func (d *dispatcher) handleTurnError(ctx context.Context, t *Task, att Attempt, s *hubSession, now time.Time, remaining time.Duration) {
+	e := t.Exec
+	class := turnErrorClass(s.TurnErrorKind, s.TurnError)
+	text := strings.TrimRight(strings.TrimSpace(s.TurnError), "。.")
+	msg := "Agent 这一轮出错：" + s.TurnError
+	switch class {
+	case "config_error":
+		msg = "模型不可用：" + text + "。到扩展设置里检查「模型」一栏后再重试。"
+	case "auth_expired":
+		msg = "Agent 的登录失效了：" + text + "。在那台电脑上重新登录后再重试。"
+	}
+	mayContinue := class == "stream_interrupted" ||
+		(class == "gateway_error" && (now.Sub(e.PhaseSince) >= gatewayStartupWindow || e.ContinueCount > 0))
+	if mayContinue && e.ContinueCount < maxAutoContinues && remaining > 0 {
+		mctx, cancel := context.WithTimeout(ctx, min(10*time.Second, remaining))
+		err := d.api.SendMessage(mctx, e.MachineID, e.SessionID, autoContinuePrompt)
+		cancel()
+		if err == nil {
+			_, err = d.q.UpdateExec(t.ID, t.FenceToken, now, func(e *Execution) {
+				e.ContinueCount++
+				e.ContinuedAt, e.ContinuedErrorAt = &now, s.UpdatedAt
+				e.SeenUpdate, e.Stable = "", 0
+			})
+			if err != nil {
+				// 已发送续跑消息。状态保存失败时结束本次尝试，避免重复发送。
+				d.interruptSession(context.WithoutCancel(ctx), e)
+				if !errors.Is(err, ErrStaleAttempt) && !errors.Is(err, ErrTaskNotFound) {
+					d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "infra_error", message: "保存会话续跑状态失败：" + err.Error()})
+				}
+			}
+			return
+		}
+		msg += "。自动续跑失败：" + err.Error()
+	}
+	if class == "gateway_error" {
+		d.invalidateProbe(e.MachineID, e.Launcher, s.TurnError)
+	}
+	d.finish(ctx, t, att, outcome{state: StateFailed, errClass: class, message: msg})
+}
+
+func (d *dispatcher) interruptSession(ctx context.Context, e *Execution) {
+	ictx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	_ = d.api.Interrupt(ictx, e.MachineID, e.SessionID)
+}
+
+func (d *dispatcher) timeoutAttempt(ctx context.Context, t *Task, att Attempt, timeout time.Duration) {
+	d.interruptSession(ctx, t.Exec)
+	d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "timeout", message: fmt.Sprintf("Agent 超过 %d 分钟没有做完，已打断", int(timeout.Minutes()))})
 }
 
 // blockedReason finds the line the agent ends a reply with when it cannot go on.
@@ -580,7 +754,14 @@ func turnErrorClass(kind, text string) string {
 		return "config_error" // the configured model is not there: every attempt fails the same way
 	case has("401", "authentication", "not logged in", "login", "log in", "credential", "api key", "unauthorized"):
 		return "auth_expired"
-	case has("rate limit", "rate_limit", "ratelimit", "429", "quota", "overloaded", "usage limit", "too many requests"):
+	case has("rate limit", "rate_limit", "ratelimit", "429", "quota", "usage limit", "too many requests"):
+		return "rate_limited"
+	case has("mid-response", "connection lost", "unexpected eof", "stream closed", "stream ended", "response.failed", "before its last event"):
+		return "stream_interrupted"
+	case has("502", "503", "504", "bad gateway", "gateway timeout", "service unavailable", "inference gateway",
+		"connection refused", "connection reset", "no route to host", "dial tcp", "i/o timeout"):
+		return "gateway_error"
+	case has("overloaded"):
 		return "rate_limited"
 	}
 	return "task_failed"
@@ -886,9 +1067,7 @@ func (d *dispatcher) cleanup(ctx context.Context, t *Task, attempt int, interrup
 		return nil, "", nil
 	}
 	if interrupt && e.SessionID != "" {
-		ictx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		_ = d.api.Interrupt(ictx, e.MachineID, e.SessionID)
-		cancel()
+		d.interruptSession(ctx, e)
 	}
 	if e.Worktree == "" {
 		return nil, "", nil

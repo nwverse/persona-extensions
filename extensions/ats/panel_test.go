@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -976,6 +977,9 @@ func TestLauncherForSpec(t *testing.T) {
 		{name: "override_fallback", launcher: "default-claude,workstation=local-claude", machine: "server", want: "default-claude"},
 		{name: "explicit_only_unlisted", launcher: "workstation=local-claude\nserver=default-claude", machine: "laptop", want: ""},
 		{name: "explicit_only_listed", launcher: "workstation=local-claude\nserver=default-claude", machine: "server", want: "default-claude"},
+		{name: "first_machine_candidate", launcher: "default-a|default-b,workstation=primary|backup", machine: "workstation", want: "primary"},
+		{name: "first_default_candidate", launcher: "default-a|default-b,workstation=primary|backup", machine: "server", want: "default-a"},
+		{name: "empty_override_falls_back", launcher: "default-a,workstation=| ", machine: "workstation", want: "default-a"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -987,6 +991,25 @@ func TestLauncherForSpec(t *testing.T) {
 				t.Fatalf("launcherFor(%q) = %q, want %q", tc.machine, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestLaunchersForSpecOrdersAndDeduplicatesCandidates(t *testing.T) {
+	cfg := ExtConfig{Launcher: " default-a | backup ; workstation = primary | backup | primary \nother=ignored,WORKSTATION= || local , default-b | default-a "}
+	for _, tc := range []struct {
+		machine string
+		want    []string
+	}{
+		{" Workstation ", []string{"primary", "backup", "local", "default-a", "default-b"}},
+		{"other", []string{"ignored", "default-a", "backup", "default-b"}},
+		{"unlisted", []string{"default-a", "backup", "default-b"}},
+	} {
+		if got := cfg.launchersFor(tc.machine); !slices.Equal(got, tc.want) {
+			t.Errorf("launchers for %q = %v, want %v", tc.machine, got, tc.want)
+		}
+	}
+	if got := launchersForSpec(" | ; =invalid,other=ignored", ""); len(got) != 0 {
+		t.Fatalf("no candidates expected, got %v", got)
 	}
 }
 

@@ -1859,34 +1859,26 @@ func collabExtractIdents(s string) []string {
 	return out
 }
 
-// recallNonStandingL1 retrieves the most situation-relevant non-standing L1 contracts and principles from ov
-// (strictly pre-cutoff and leak-filtered), keeping the ~60 L1 rules outside 4096 B standing reachable on demand.
+// recallNonStandingL1 retrieves the most situation-relevant non-standing verbatim UserOwned rules/principles and
+// pure-behavior L1 contracts/principles (strictly pre-cutoff and leak-filtered), keeping both handwritten rules and
+// the ~60 L1 rules outside 4096 B standing reachable on demand (unified design §2.1 & §2.2).
 func recallNonStandingL1(st *store.State, ov *overview.State, f heFilter, day, situation, standing string, budget int) []string {
-	if ov == nil || budget <= 0 || strings.TrimSpace(situation) == "" {
+	if budget <= 0 || strings.TrimSpace(situation) == "" {
 		return nil
 	}
 	sitLow := strings.ToLower(situation)
 	sitIdents := collabExtractIdents(situation)
 	sitBi := collabBigrams(situation)
-	type scoredPat struct {
-		p     *overview.Pattern
+	type scoredRule struct {
+		id    string
+		line  string
+		body  string
 		score float64
+		owned bool
 		sc    int
 	}
-	var cands []scoredPat
-	for _, p := range ov.Patterns {
-		if p == nil || !p.Used() || len(p.Categories) > 0 || p.OriginSpace != "" || f.patternOut(st, p, day) {
-			continue
-		}
-		head := strings.TrimSpace(p.Text)
-		if head == "" {
-			continue
-		}
-		if strings.Contains(standing, heClip(head, 24)) {
-			continue
-		}
-		txtLow := strings.ToLower(head + " " + p.Exception)
-		subjs := overview.EnrichSubjects(p)
+	scoreText := func(head, exc string, subjs []string) float64 {
+		txtLow := strings.ToLower(head + " " + exc)
 		s := 0.0
 		for _, idt := range sitIdents {
 			if strings.Contains(txtLow, idt) {
@@ -1916,31 +1908,92 @@ func recallNonStandingL1(st *store.State, ov *overview.State, f heFilter, day, s
 			}
 		}
 		s += 0.35 * float64(ovl)
-		if s >= 3.0 {
-			cands = append(cands, scoredPat{p: p, score: s, sc: overview.Score(p)})
+		return s
+	}
+
+	var cands []scoredRule
+	liveUO := map[string]bool{}
+	if st != nil {
+		tpl := entry.TemplateQuotes(st.Entries)
+		for _, e := range st.Entries {
+			if e == nil || f.entryOut(st, e, day) {
+				continue
+			}
+			uc, ok := memsrc.UserOwnedStandingCandidate(st, e, tpl)
+			if !ok {
+				continue
+			}
+			liveUO[e.ID] = true
+			head := strings.TrimSpace(recall.Head(e))
+			if head == "" || strings.Contains(standing, heClip(head, 24)) {
+				continue
+			}
+			s := scoreText(head, e.Exception, memsrc.Subjects(st, e))
+			if s >= 3.0 {
+				cands = append(cands, scoredRule{
+					id:    e.ID,
+					line:  "- " + heClip(uc.Text, 240),
+					body:  uc.Text,
+					score: s,
+					owned: true,
+					sc:    uc.Score,
+				})
+			}
+		}
+	}
+	if ov != nil {
+		for _, p := range ov.Patterns {
+			if p == nil || !p.Used() || len(p.Categories) > 0 || p.OriginSpace != "" || f.patternOut(st, p, day) {
+				continue
+			}
+			// Suppress L1 paraphrases that wrap a live verbatim UserOwned rule (unified design §2.1).
+			if slices.ContainsFunc(p.CoveredIDs, func(cid string) bool { return liveUO[cid] }) {
+				continue
+			}
+			head := strings.TrimSpace(p.Text)
+			if head == "" || strings.Contains(standing, heClip(head, 24)) {
+				continue
+			}
+			s := scoreText(head, p.Exception, overview.EnrichSubjects(p))
+			if s >= 3.0 {
+				cands = append(cands, scoredRule{
+					id:    p.ID,
+					line:  "- " + heClip(overview.Text(p), 240),
+					body:  head,
+					score: s,
+					sc:    overview.Score(p),
+				})
+			}
 		}
 	}
 	sort.SliceStable(cands, func(i, j int) bool {
 		if cands[i].score != cands[j].score {
 			return cands[i].score > cands[j].score
 		}
+		if cands[i].owned != cands[j].owned {
+			return cands[i].owned
+		}
 		if cands[i].sc != cands[j].sc {
 			return cands[i].sc > cands[j].sc
 		}
-		return cands[i].p.ID < cands[j].p.ID
+		return cands[i].id < cands[j].id
 	})
 	var lines []string
+	var keptBodies []string
 	used := 0
 	for _, c := range cands {
 		if len(lines) >= 6 {
 			break
 		}
-		ln := "- " + heClip(overview.Text(c.p), 240)
-		if used+len(ln)+1 > budget {
+		if slices.ContainsFunc(keptBodies, func(b string) bool { return norm.Jaccard(b, c.body) >= 0.45 }) {
 			continue
 		}
-		lines = append(lines, ln)
-		used += len(ln) + 1
+		if used+len(c.line)+1 > budget {
+			continue
+		}
+		lines = append(lines, c.line)
+		keptBodies = append(keptBodies, c.body)
+		used += len(c.line) + 1
 	}
 	return lines
 }
