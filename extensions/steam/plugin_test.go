@@ -83,8 +83,8 @@ func TestManifestAndTranslations(t *testing.T) {
 			translation.UI[card.ID] == "" || translation.Groups[page.Group.ID] == "" {
 			t.Errorf("incomplete %s manifest translations", lang)
 		}
-		for _, key := range []string{"auth_mode", "steam_id", "country_code", "inbox_events_enabled", "inbox_max_events_per_day", "sale_roundup_enabled",
-			"wishlist_event_triggers", "wishlist_discount_threshold", "wishlist_target_prices"} {
+		for _, key := range []string{"auth_mode", "steam_id", "country_code", "friends_radar_enabled", "discovery_tools_enabled", "discovery_max_results",
+			"inbox_events_enabled", "inbox_max_events_per_day", "sale_roundup_enabled", "wishlist_event_triggers", "wishlist_discount_threshold", "wishlist_target_prices"} {
 			if f := translation.Configuration[key]; f.Title == "" || f.Description == "" {
 				t.Errorf("missing %s translation for %s", lang, key)
 			}
@@ -101,6 +101,77 @@ func TestSetupAndProtocolConformance(t *testing.T) {
 	exttest.Check(t, manifest, exttest.Serve(t, program(f.http, time.Now)), json.RawMessage(fmt.Sprintf(`{"steam_id":%q}`, fixtureID)))
 	if f.hit(playerPath) != 0 {
 		t.Fatal("missing credentials still triggered a request")
+	}
+}
+
+func TestSteamToolFeatureGateMatrix(t *testing.T) {
+	for _, tc := range []struct{ discovery, friends bool }{
+		{false, false}, {false, true}, {true, false}, {true, true},
+	} {
+		t.Run(fmt.Sprintf("discovery=%t/friends=%t", tc.discovery, tc.friends), func(t *testing.T) {
+			f := newFakeSteam(t, time.Second)
+			dir := t.TempDir()
+			settings := fmt.Sprintf(`"discovery_tools_enabled":%t,"friends_radar_enabled":%t,"inbox_events_enabled":false`, tc.discovery, tc.friends)
+			h := startInboxTestHost(t, f, &app{}, time.Now, dir, "en", settings)
+			h.Answer("model.complete", func(json.RawMessage) (any, error) {
+				t.Error("listing tools or invoking gated features called a model")
+				return nil, ext.Unsupported("The test hub has no model.")
+			})
+
+			p := wire.ConnectorParams{Contribution: extensionID}
+			var list wire.ConnectorTools
+			if err := h.Call("connector.tools.list", p, &list); err != nil {
+				t.Fatal(err)
+			}
+			listed := make(map[string]bool, len(list.Tools))
+			for _, tool := range list.Tools {
+				if listed[tool.Name] {
+					t.Fatalf("duplicate tool %s", tool.Name)
+				}
+				listed[tool.Name] = true
+			}
+			if !listed[wishlistDealsName] {
+				t.Fatal("the on-demand wishlist deals tool should always be listed")
+			}
+			for _, group := range []struct {
+				names    []string
+				enabled  bool
+				disabled problem
+			}{
+				{[]string{storeTagsTool, storeSearchTool, gameDetailsTool}, tc.discovery, problemDiscoveryDisabled},
+				{[]string{friendsRadarTool, coopOverlapTool}, tc.friends, problemFriendsDisabled},
+			} {
+				for _, name := range group.names {
+					if listed[name] != group.enabled {
+						t.Fatalf("%s listed = %t, want %t", name, listed[name], group.enabled)
+					}
+					if group.enabled {
+						continue
+					}
+					var out wire.ConnectorCallResult
+					err := h.Call("connector.tools.call", wire.ConnectorCallParams{
+						Contribution: extensionID, Name: name, Args: json.RawMessage(`{}`),
+					}, &out)
+					var refusal *ext.Error
+					if !errors.As(err, &refusal) || refusal.Code != string(group.disabled) || out.Text != "" {
+						t.Fatalf("disabled %s returned %q and %v", name, out.Text, err)
+					}
+				}
+			}
+			skillPath := filepath.Join(dir, discoverySkillDir, discoverySkillID, "SKILL.md")
+			_, skillErr := os.Stat(skillPath)
+			if tc.discovery && skillErr != nil || !tc.discovery && !os.IsNotExist(skillErr) {
+				t.Fatalf("discovery skill visibility should follow the setting, got %v", skillErr)
+			}
+			if got := collectWishlistInbox(t, h); len(got) != 0 || hasEvent(h, "connector.changed") {
+				t.Fatal("disabled Inbox produced an event")
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			if len(f.hits) != 0 {
+				t.Fatalf("listing tools or calling disabled features contacted Steam: %v", f.hits)
+			}
+		})
 	}
 }
 
