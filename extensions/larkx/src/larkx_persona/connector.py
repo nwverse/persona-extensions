@@ -113,6 +113,21 @@ def _placeholder(text):
     return any(text == exact or text.startswith(prefixes) for exact, prefixes in AUTO_PLACEHOLDERS)
 
 
+_CJK = re.compile(r"[\u4e00-\u9fff]")
+_LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
+_VERBATIM = re.compile(r"```.*?```|`[^`\n]*`|https?://\S+|\[[^\]\n]*\]\([^)\s]*\)", re.S)
+# Rewrites an automatic answer written in another language; the answer goes out as the user, in their language.
+AUTO_CHINESE = ("把下面这段要以我的身份发给同事的飞书回复改写成简体中文。代码、命令、标识符、指标名、文件路径和链接保持原样；"
+                "删掉过程性的话（如“我再确认一下”“正在检查”），只保留最终结论和要点；不增加内容。只输出改写后的回复。")
+
+
+def _mostly_foreign(text):
+    """True when an answer is mostly words of a Latin-script language rather than Chinese (code and links aside)."""
+    plain = _VERBATIM.sub(" ", text)
+    words = len(_LATIN_WORD.findall(plain))
+    return words >= 8 and len(_CJK.findall(plain)) < words
+
+
 AUTO_BOT = {"review": ("请 review 这个话题里的 MR", "处理", "结论"),
             "oncall": ("请看一下这个话题里 @我 的问题", "排查", "结论"),
             "approval": ("请处理这个话题里的审批", "处理", "结果")}
@@ -1300,6 +1315,8 @@ class Connector:
             raise RpcError("没有可以回复的 %s 消息" % self.prefix, CANNOT_SEND)
         root = request.get("root") or request["id"]
         if auto:
+            body = self._in_chinese(body)
+            text = body + "\n\n" + self.suffix
             with self._session_lock:
                 if not self._signed_in or self._account_id != me:
                     raise RpcError("没有可以回复的 %s 消息" % self.prefix, CANNOT_SEND)
@@ -1340,6 +1357,23 @@ class Connector:
                 self._log("agent reply placeholder sent to own chat")
                 return self._channel_out(key, own, text, None)
         return self._channel_out(key, request["chat"], text, root, lambda: self._context_mentions(request, text))
+
+    def _in_chinese(self, body):
+        candidate = body.removesuffix("\n" + self.suffix).strip()
+        if _placeholder(candidate) or not _mostly_foreign(candidate):
+            return body
+        try:
+            result = self.hub.call("model.complete", {"system": AUTO_CHINESE, "messages": [{"role": "user", "content": candidate}],
+                                   "max_tokens": 2048, "timeout_seconds": 90, "label": "auto-chinese"})
+            rewritten = str(result.get("text") or "").strip()
+        except Exception as e:
+            self._log("auto reply rewrite failed: %s" % type(e).__name__)
+            return body
+        if not rewritten or _mostly_foreign(rewritten):
+            self._log("auto reply rewrite failed: still not Chinese")
+            return body
+        self._log("auto reply rewritten in Chinese")
+        return rewritten
 
     def _channel_out(self, key, chat, text, root, mentions=None):
         """Sends one channel message once, keyed on its ref: again, it answers what the first send ended with."""

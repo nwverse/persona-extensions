@@ -96,6 +96,32 @@ class AutoTest(unittest.TestCase):
         self.assertTrue(call["system"].endswith(self.c.auto_route_hint))
         self.assertEqual(call["messages"], [{"role": "user", "content": "会话：私聊「示例」\n本次需要判断的消息：\n" + text}])
 
+    def test_auto_reply_in_another_language_is_rewritten_in_chinese(self):
+        self.live(1, MR)
+        self.done("assistant")
+        english = ("Looks fine: the switch logic is sound and the dependencies are set up. "
+                   "Re-checking the commit before I approve. See `cfg.flag` at https://example.com/x")
+        self.hub.calls.clear()
+        self.hub.result = {"text": "没问题：开关逻辑对，依赖也都初始化了，见 `cfg.flag`。"}
+        self.assertEqual(self.c.channel_send({"ref": "en", "reply_to": "m1", "text": english}), {"message_id": "m_new"})
+        self.assertEqual(self.backend.sent[-1], ("c", "没问题：开关逻辑对，依赖也都初始化了，见 `cfg.flag`。\n\nagent生成", None))
+        call, = self.hub.calls
+        self.assertEqual(call["label"], "auto-chinese")
+        self.assertEqual(call["messages"][0]["content"], english)
+
+    def test_chinese_auto_reply_is_not_rewritten_and_a_failed_rewrite_keeps_the_answer(self):
+        self.live(1, MR)
+        self.done("assistant")
+        self.hub.calls.clear()
+        chinese = "可以合：ACK 开关只读 enable_search_use_union_ack，缺省走老路径，SearchAdAckHandler 和老逻辑一一对应。"
+        self.c.channel_send({"ref": "zh", "reply_to": "m1", "text": chinese})
+        self.assertEqual(self.hub.calls, [])
+        self.assertEqual(self.backend.sent[-1][1], chinese + "\n\nagent生成")
+        self.hub.result = OSError("model unavailable")
+        english = "Looks fine to me, the switch logic is sound and all dependencies are already initialized."
+        self.c.channel_send({"ref": "en2", "reply_to": "m1", "text": english})
+        self.assertEqual(self.backend.sent[-1][1], english + "\n\nagent生成")
+
     def test_auto_reply_suppresses_only_hub_placeholders(self):
         self.live(1, MR)
         self.done("assistant")
@@ -809,7 +835,7 @@ class AutoTest(unittest.TestCase):
     def test_manifest_and_initialize_enable_the_settings(self):
         with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
             manifest = json.load(f)
-        self.assertEqual(manifest["version"], "0.5.3")
+        self.assertEqual(manifest["version"], "0.5.4")
         self.assertIn("models", manifest["permissions"]["hub"])
         settings = manifest["configuration"]["properties"]
         self.assertEqual(settings["auto_active_minutes"]["default"], 10)

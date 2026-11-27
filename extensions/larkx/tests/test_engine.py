@@ -449,6 +449,7 @@ class EngineTest(unittest.TestCase):
 
     def test_start_gateway_timeout_hands_request_to_channel_once(self):
         error = HTTPError("https://example.com/hub", 502, "gateway", {}, None)
+        self.addCleanup(error.close)
         with mock.patch.object(self.api, "start", side_effect=error) as post:
             self.live(1, "check")
             self.assertTrue(self.hub.got.wait(2))
