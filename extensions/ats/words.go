@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"unicode/utf8"
 )
 
 // failureWords says why an attempt failed in the user's words. The error class is what the queue decides on;
@@ -140,6 +141,21 @@ func lastErrorClass(t *Task) string {
 func acceptanceOutput(message string) (head, tail string) {
 	head, tail, _ = strings.Cut(strings.TrimSpace(message), "\n")
 	return strings.TrimSpace(head), strings.TrimSpace(tail)
+}
+
+// outputEnd is a report's message in at most about max runes: its first line, which says how the attempt or its
+// acceptance command ended, and the end of the output under it.
+func outputEnd(message string, max int) string {
+	message = strings.TrimSpace(message)
+	if utf8.RuneCountInString(message) <= max {
+		return message
+	}
+	head, tail := acceptanceOutput(message)
+	if tail == "" {
+		return tailRunes(head, max)
+	}
+	head = headRunes(head, max/4)
+	return head + "\n" + tailRunes(tail, max-utf8.RuneCountInString(head))
 }
 
 func attemptCount(n int) string { return fmt.Sprintf("第 %d 次", max(n, 1)) }
