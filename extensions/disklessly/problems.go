@@ -23,10 +23,31 @@ type problem struct {
 	Raw     string // the untranslated text, shown under 详情
 	Retry   bool   // trying again may help
 	Edit    bool   // the machine's SSH settings may be wrong
+	// Lead is what a page says first, in plain words: what is wrong, its likely everyday causes
+	// and what to do first without a terminal (a button on the same row, when there is one).
+	// Empty: Reason and Next are said instead. Toasts and MCP answers keep Reason and Next.
+	Lead string
+	// CmdIntro introduces Command on a page as a secondary step: where to run it and why.
+	CmdIntro string
 }
 
 // text is the reason and the next step, for a row's detail.
 func (p problem) text() string { return p.Reason + p.Next }
+
+// lead is what a page row says first: Lead, or the reason and the next step.
+func (p problem) lead() string { return cmp.Or(p.Lead, p.text()) }
+
+// renamed is p with the generic 「重试」 of its texts renamed (or dropped) as r says.
+func (p problem) renamed(r retryHint) problem {
+	p.Reason, p.Next, p.Lead = r.rename(p.Reason), r.rename(p.Next), r.rename(p.Lead)
+	return p
+}
+
+// hubCmdIntro introduces a command run on the hub's own computer to see the exact error.
+const hubCmdIntro = "懂终端的话，可以在运行 Persona 的电脑上试这条命令看具体报错："
+
+// unreachableCauses are the everyday reasons a computer does not answer.
+const unreachableCauses = "最常见的原因：它关机或睡眠了；它和运行 Persona 的电脑不在同一个网络里（比如 VPN 或 Tailscale 没连上）；它的地址或登录方式变了。"
 
 // message is the text with the command, for toasts and MCP answers.
 func (p problem) message() string {
@@ -134,21 +155,29 @@ func sshProblem(m *Machine, raw string) problem {
 		p.Title, p.Command = s.Title, s.Command
 		p.Reason = "连不上" + name + "：Disklessly 被关在隔离环境（沙箱）里，上不了网也读不到 ~/.ssh，那台电脑本身可能没有问题。"
 		p.Next = "在运行 Persona 的电脑上运行下面的命令，给这个扩展关掉沙箱，然后点「重试」。"
+		p.Lead = p.Reason + "要在运行 Persona 的电脑上用一条命令给这个扩展关掉沙箱（从官方市场安装时默认就是关的），关掉后点「重试」。"
+		p.CmdIntro = "在运行 Persona 的电脑的终端里运行这条命令："
 	case causeTimeout:
 		p.Title = "连接超时"
 		p.Reason = "连" + name + "等了太久没反应：它可能关机、睡眠了，或者不在同一个网络里（比如 VPN 或 Tailscale 没连上）。"
 		p.Next = "开机或连上网络后点「重试」；也可以在运行 Persona 的电脑上运行下面的命令自己试一下。"
 		p.Command = test
+		p.Lead = "连不上" + name + "：等了太久没反应。" + unreachableCauses + "先把它开机、唤醒，或者连上同一个网络，再点「重试」。"
+		p.CmdIntro = hubCmdIntro
 	case causeAuth:
 		p.Title, p.Edit = "远程登录被拒绝", true
 		p.Reason = name + "不让登录：它不认运行 Persona 的电脑的密钥，或者用户名不对。"
 		p.Next = "在运行 Persona 的电脑上运行下面的命令，把密钥装到这台电脑上；或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的用户名和密钥文件，然后点「重试」。"
 		p.Command = "ssh-copy-id " + sshTarget(m)
+		p.Lead = name + "回应了，但不让登录：多半是它的登录用户名或密钥变了，或者还没把运行 Persona 的电脑的密钥装到它上面。改过用户名或密钥文件的话，在「" + homeTitle + "」页的「添加或修改电脑」里改好，再点「重试」。"
+		p.CmdIntro = "还没把密钥装过去的话，懂终端可以在运行 Persona 的电脑上用这条命令装（会问一次那台电脑的密码）："
 	case causeHostKey:
 		p.Title = "还没确认这台电脑的身份"
 		p.Reason = "运行 Persona 的电脑还没认过" + name + "的身份标识（指纹），或者指纹变了，所以自动登录被拦下了。"
 		p.Next = "在运行 Persona 的电脑上运行下面的命令手动登录一次，核对并接受指纹，然后点「重试」。"
 		p.Command = "ssh " + sshTarget(m)
+		p.Lead = "运行 Persona 的电脑认不出" + name + "了：它的身份标识（指纹）还没确认过，或者和以前的不一样，所以为了安全没有自动登录。多半是第一次连它、它重装过系统，或者这个地址现在换成了另一台电脑。这一步要在终端里确认一次，确认后点「重试」。"
+		p.CmdIntro = "在运行 Persona 的电脑的终端里运行这条命令，核对指纹后输入 yes 接受："
 	case causeRefused:
 		p.Title, p.Edit = "连接被拒绝", true
 		p.Command = test
@@ -157,9 +186,12 @@ func sshProblem(m *Machine, raw string) problem {
 			p.Title, p.Edit = "端口转发没有运行", false
 			p.Reason = name + "要经过运行 Persona 的电脑上的端口转发（" + mm[1] + ":" + mm[2] + "）才能连上，但这个端口现在没有程序在听，转发（比如 ssh -L、autossh 或隧道服务）没在运行。"
 			p.Next = "在运行 Persona 的电脑上把到这台电脑的转发重新建起来，然后点「重试」；可以用下面的命令确认能不能连上。"
+			p.Lead = "连不上" + name + "：它要经过运行 Persona 的电脑上的一个转发（" + mm[1] + ":" + mm[2] + "）才能连到，但这个转发现在没在运行，多半是运行 Persona 的电脑重启过，或者转发的程序停了。把转发重新开起来，再点「重试」。"
+			p.CmdIntro = hubCmdIntro
 			break
 		}
 		p.Reason = name + "拒绝了连接：它没打开远程登录（SSH），或者端口不对。"
+		p.CmdIntro = hubCmdIntro
 		switch plat := m.Platform; {
 		case strings.HasPrefix(plat, "darwin"):
 			p.Next = "在这台 Mac 上打开远程登录（系统设置 › 通用 › 共享 › 远程登录），或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的端口，然后点「重试」。"
@@ -168,16 +200,21 @@ func sshProblem(m *Machine, raw string) problem {
 		default:
 			p.Next = "在这台电脑上打开远程登录（Mac：系统设置 › 通用 › 共享 › 远程登录；Linux：启动 sshd 服务），或者在「" + homeTitle + "」页的「添加或修改电脑」里改这台电脑的端口，然后点「重试」。"
 		}
+		p.Lead = name + "回应了，但不让远程登录（SSH）：多半是它的远程登录被关掉了（比如系统更新或重装以后），或者端口改了。" + p.Next
 	case causeDNS:
 		p.Title, p.Edit = "找不到这个电脑名", true
 		p.Reason = "运行 Persona 的电脑找不到" + name + "的地址 " + cmp.Or(m.Host, m.ID) + "。"
 		p.Next = "看看那台电脑上 ~/.ssh/config 里它的 HostName 对不对，或者在「" + homeTitle + "」页的「添加或修改电脑」里把这台电脑的地址改成能找到的，然后点「重试」；下面的命令会显示 ssh 实际用的地址。"
 		p.Command = "ssh -G " + cmp.Or(m.Host, m.ID) + " | grep -i '^hostname'"
+		p.Lead = "运行 Persona 的电脑找不到" + name + "（地址 " + cmp.Or(m.Host, m.ID) + "）。多半是它改了名字或地址，或者要先连上 VPN 才找得到它。先确认 VPN 连上了；地址变了的话，在「" + homeTitle + "」页的「添加或修改电脑」里改成新地址，再点「重试」。"
+		p.CmdIntro = "懂终端的话，可以在运行 Persona 的电脑上用这条命令看 ssh 实际用的是哪个地址："
 	case causeNetwork:
 		p.Title = "网络不通"
 		p.Reason = "运行 Persona 的电脑到" + name + "的网络不通。"
 		p.Next = "确认两台电脑在同一个网络或 VPN 里，然后点「重试」。"
 		p.Command = test
+		p.Lead = "连不上" + name + "：两台电脑之间的网络不通。" + unreachableCauses + "先确认它开着，并且两台电脑在同一个网络或 VPN 里，再点「重试」。"
+		p.CmdIntro = hubCmdIntro
 	case causeSSHConfig:
 		file := "/etc/ssh/ssh_config"
 		if mm := sshConfigRE.FindStringSubmatch(line); mm != nil {
@@ -187,6 +224,8 @@ func sshProblem(m *Machine, raw string) problem {
 		p.Reason = "连不上" + name + "：运行 Persona 的电脑上的 SSH 设置文件 " + file + " 归属或权限不对，ssh 不肯读它，所以哪台电脑都连不上。"
 		p.Next = "在运行 Persona 的电脑上运行下面的命令改好它，然后点「重试」。"
 		p.Command = "sudo chown root:root " + file + " && sudo chmod 644 " + file
+		p.Lead = p.Reason + "那台电脑本身多半没问题。这要在运行 Persona 的电脑上用一条命令改好，改好后点「重试」。"
+		p.CmdIntro = "在运行 Persona 的电脑的终端里运行这条命令（会要你输入这台电脑的密码）："
 	case causeBadHost:
 		p.Title, p.Edit, p.Retry = "电脑地址写错了", true, false
 		p.Reason = name + "的地址不是能远程登录的地址。"
@@ -196,6 +235,8 @@ func sshProblem(m *Machine, raw string) problem {
 		p.Reason = "远程登录" + name + "没有成功。"
 		p.Next = "在运行 Persona 的电脑上运行下面的命令看看具体原因（原始输出在「详情」里），修好后点「重试」。"
 		p.Command = test
+		p.Lead = "远程登录" + name + "没有成功。" + unreachableCauses + "先确认它开着、连着同一个网络，再点「重试」；具体原因在「详情」里。"
+		p.CmdIntro = hubCmdIntro
 	}
 	return p
 }

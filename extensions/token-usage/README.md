@@ -8,7 +8,7 @@ The page has three tabs:
 - **明细** — the same ranges filtered by machine, model or launcher, one row per day. 「显示 CSV 文本」 shows the rows as CSV text in a code block on the page, to copy into a spreadsheet: the extension protocol has no way to hand the apps a file (an action answers with a view, a toast, a link, a page or lines).
 - **预算** — a daily or weekly limit, for one model or for everything, with the share used so far.
 
-The overview card shows today's total against the 7-day daily average and the model that used the most today.
+The overview card, titled 「Token 用量 · 概况」 so that the hub's settings page does not list it as a second 「Token 用量」, shows today's total against the 7-day daily average and the model that used the most today.
 
 Numbers are written in K and M. The page redraws itself once a minute and is readable at a phone's width.
 

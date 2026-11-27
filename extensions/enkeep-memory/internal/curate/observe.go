@@ -552,6 +552,10 @@ func (c *Curator) checkObservation(w *verify.Window, u *Unit, k *known, tier str
 	switch {
 	case origin == entry.SelfReport && f != entry.Interaction && f != entry.Tools && f != entry.Persona:
 		return bad(obsFacetNotAllowed) // what the user says about how they choose is not how they choose (4.1, 4.3)
+	case unitCode(u) == entry.SrcAgent && f != entry.Tools && f != entry.Interaction && f != entry.Judgement:
+		// S3 agent sessions are scoped to reusable tools experience and explicit user-authored (WhoSelf)
+		// interaction/judgement observations (unified design §1.3, §5.1 block 2).
+		return bad(obsFacetNotAllowed)
 	case tier == triage.TierBackground && f != entry.People && f != entry.Persona:
 		return bad(verify.TierNotAllowed)
 	}

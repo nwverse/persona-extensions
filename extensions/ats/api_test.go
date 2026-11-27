@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -519,7 +520,7 @@ func TestQueuePageShowsEveryStateAndItsButtonsWork(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if raw, _ := json.Marshal(view); !strings.Contains(string(raw), "开始用之前，先做这两步") {
+	if raw, _ := json.Marshal(view); !strings.Contains(string(raw), "第 1 步：选一台干活的电脑") {
 		t.Error("the page does not say that computers and repositories are not set")
 	}
 }
@@ -565,5 +566,271 @@ func TestAcceptanceResultArrivesAsANodeEventOrByAsking(t *testing.T) {
 	got := r.task(task.ID)
 	if got.State != StateSucceeded || got.Verdict != VerdictPass || !strings.Contains(got.Reports[len(got.Reports)-1].Message, "by asking") {
 		t.Fatalf("by asking: %s %s", got.State, got.Verdict)
+	}
+}
+
+// GET /tasks/{id} is read to see how a task is going, so it does not hand back the whole brief or the queue's
+// bookkeeping unless asked: a long prompt is cut to its beginning, with the length of the whole.
+func TestGetTaskCutsALongPromptUnlessAskedForAll(t *testing.T) {
+	a := newTestApp(t)
+	long := strings.Repeat("修复登录页。", 100) // 600 runes, 1800 bytes
+	short := mustEnqueue(t, a.queue, EnqueueInput{Title: "short", Prompt: "  Do the thing\n", Repo: "/srv/code/app", Now: testStart})
+	task := mustEnqueue(t, a.queue, EnqueueInput{Title: "long", Prompt: long, Repo: "/srv/code/app", Now: testStart})
+	if _, _, err := a.queue.LeaseTask(task.ID, "dispatcher", testMachine, testStart); err != nil {
+		t.Fatal(err)
+	}
+
+	got := taskOf(t, call(t, a, "GET", "/tasks/"+short.ID, ""))
+	if _, has := got["prompt_bytes"]; got["prompt"] != "Do the thing" || has {
+		t.Fatalf("a short prompt: %v", got)
+	}
+
+	brief := call(t, a, "GET", "/tasks/"+task.ID, "")
+	got = taskOf(t, brief)
+	head, _ := got["prompt"].(string)
+	if want := string([]rune(long)[:promptHeadRunes]) + "…"; head != want || got["prompt_bytes"] != float64(len(long)) {
+		t.Fatalf("a long prompt: %d bytes of prompt, prompt_bytes %v", len(head), got["prompt_bytes"])
+	}
+	att := brief.Body["attempts"].([]any)[0].(map[string]any)
+	for _, k := range []string{"attempt_no", "state", "machine", "started_at"} {
+		if _, has := att[k]; !has {
+			t.Errorf("the attempt lost %s: %v", k, att)
+		}
+	}
+	for _, k := range []string{"task_id", "attempt_id", "fence_token", "worker_id", "leased_at", "lease_expires_at"} {
+		if _, has := att[k]; has {
+			t.Errorf("the attempt carries %s: %v", k, att)
+		}
+	}
+
+	full := call(t, a, "GET", "/tasks/"+task.ID+"?view=full", "")
+	got = taskOf(t, full)
+	if _, has := got["prompt_bytes"]; got["prompt"] != long || has {
+		t.Fatalf("view=full: %d bytes of prompt, prompt_bytes %v", len(got["prompt"].(string)), got["prompt_bytes"])
+	}
+	att = full.Body["attempts"].([]any)[0].(map[string]any)
+	for _, k := range []string{"attempt_id", "fence_token", "worker_id", "lease_expires_at"} {
+		if _, has := att[k]; !has {
+			t.Errorf("view=full: the attempt lost %s: %v", k, att)
+		}
+	}
+
+	if ans := call(t, a, "GET", "/tasks/"+task.ID+"?view=brief", ""); ans.Status != 400 || ans.Code != "invalid_view" {
+		t.Fatalf("an unknown view: %d %s", ans.Status, ans.Code)
+	}
+}
+
+// The evidence is read to learn whether a task is really done: the conclusion comes first in the answer, the
+// last report keeps the end of its output, and attempt=N has the whole report of one attempt.
+func TestEvidencePutsTheConclusionFirstAndCutsTheOutput(t *testing.T) {
+	a := newTestApp(t)
+	q := a.queue
+	one := 1
+	output := "验收命令退出码 1\n" + strings.Repeat("ok  \tpkg\t0.1s\n", 200) + "--- FAIL: TestLogin\nFAIL"
+	task := mustEnqueue(t, q, EnqueueInput{Title: "t", Prompt: "p", Repo: "/srv/code/app", AcceptanceCommand: "make check", Now: testStart})
+	for i := range 2 {
+		_, att, err := q.LeaseTask(task.ID, "dispatcher", testMachine, testStart.Add(time.Duration(i)*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := q.CompleteAttempt(CompleteAttemptInput{TaskID: task.ID, FenceToken: att.FenceToken, WorkerID: "dispatcher", Outcome: StateFailed,
+			Verdict: VerdictFail, ErrorClass: "task_failed", ExitCode: &one, Message: fmt.Sprintf("%s (attempt %d)", output, att.AttemptNo), Summary: "tried", Now: testStart}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	raw := tokRaw(t, a, "GET", "/tasks/"+task.ID+"/evidence", "")
+	if !strings.HasPrefix(raw, `{"verified":false,"state":"`) || strings.Index(raw, `"verdict"`) > strings.Index(raw, `"last_report"`) {
+		t.Fatalf("the conclusion does not come first: %.200s", raw)
+	}
+	ev := call(t, a, "GET", "/tasks/"+task.ID+"/evidence", "")
+	last := ev.Body["last_report"].(map[string]any)
+	msg, _ := last["message"].(string)
+	if n := len([]rune(msg)); n > evidenceTailRunes+2 || !strings.HasPrefix(msg, "验收命令退出码 1\n…") || !strings.HasSuffix(msg, "--- FAIL: TestLogin\nFAIL (attempt 2)") {
+		t.Fatalf("the output: %d runes: %q", n, msg)
+	}
+	if last["message_bytes"] != float64(len(output)+len(" (attempt 2)")) || last["exit_code"] != float64(1) || last["summary"] != "tried" || last["attempt_no"] != float64(2) {
+		t.Fatalf("the last report: %v", last)
+	}
+	for _, k := range []string{"task_id", "worker_id", "report_id", "fence_token"} {
+		if _, has := last[k]; has {
+			t.Errorf("the last report carries %s", k)
+		}
+	}
+
+	whole := call(t, a, "GET", "/tasks/"+task.ID+"/evidence?attempt=1", "")
+	rep, _ := whole.Body["report"].(map[string]any)
+	if _, has := whole.Body["last_report"]; has || rep["message"] != output+" (attempt 1)" || rep["attempt_no"] != float64(1) || whole.Body["verified"] != false {
+		t.Fatalf("attempt=1: %v", whole.Body)
+	}
+	for path, want := range map[string]string{"?attempt=3": "no_report", "?attempt=0": "invalid_attempt", "?attempt=last": "invalid_attempt"} {
+		if ans := call(t, a, "GET", "/tasks/"+task.ID+"/evidence"+path, ""); ans.Code != want || ans.Status == 200 {
+			t.Errorf("%s: %d %s", path, ans.Status, ans.Code)
+		}
+	}
+}
+
+// With no acceptance command the report's message is the agent's whole reply; the evidence shows its summary.
+func TestEvidenceLeavesOutAReplyItsSummaryStandsFor(t *testing.T) {
+	a := newTestApp(t)
+	q := a.queue
+	reply := strings.Repeat("I looked at the code. ", 100) + "\nSummary: nothing to fix"
+	task := mustEnqueue(t, q, EnqueueInput{Title: "t", Prompt: "p", Repo: "/srv/code/app", Now: testStart})
+	_, att, err := q.LeaseTask(task.ID, "dispatcher", testMachine, testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.CompleteAttempt(CompleteAttemptInput{TaskID: task.ID, FenceToken: att.FenceToken, WorkerID: "dispatcher", Outcome: StateSucceeded,
+		Verdict: VerdictUnverified, Message: reply, Summary: agentSummary(reply), Now: testStart}); err != nil {
+		t.Fatal(err)
+	}
+	ev := call(t, a, "GET", "/tasks/"+task.ID+"/evidence", "")
+	last := ev.Body["last_report"].(map[string]any)
+	if _, has := last["message"]; has || last["summary"] != "nothing to fix" || last["message_bytes"] != float64(len(reply)) || ev.Body["verified"] != false {
+		t.Fatalf("the last report: %v", last)
+	}
+	if rep := call(t, a, "GET", "/tasks/"+task.ID+"/evidence?attempt=1", "").Body["report"].(map[string]any); rep["message"] != reply {
+		t.Fatalf("attempt=1: %v", rep)
+	}
+}
+
+func TestOutputEnd(t *testing.T) {
+	for name, tc := range map[string]struct{ in, want string }{
+		"short":            {" 验收命令退出码 0\nok\n", "验收命令退出码 0\nok"},
+		"long output":      {"验收命令退出码 2\n" + strings.Repeat("x", 50) + "\nend", "验收命令退出码 2\n…" + strings.Repeat("x", 27) + "\nend"},
+		"one long line":    {strings.Repeat("y", 50), "…" + strings.Repeat("y", 40)},
+		"a long first one": {strings.Repeat("头", 130) + "\ntail", strings.Repeat("头", 10) + "…\ntail"},
+	} {
+		if got := outputEnd(tc.in, 40); got != tc.want {
+			t.Errorf("%s: %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// The list is read to see how the tasks of a to-do are going: a task is listed in short, a field at its default
+// is left out, and view=full lists every field.
+func TestListShowsTasksInShortUnlessAskedForAll(t *testing.T) {
+	a := newTestApp(t)
+	q := a.queue
+	plain := mustEnqueue(t, q, EnqueueInput{Title: "plain", Repo: "/srv/code/app", AcceptanceCommand: "make check",
+		Labels: map[string]string{PersonaTodoLabel: "todo_1"}, Now: testStart})
+	special := mustEnqueue(t, q, EnqueueInput{Title: "special", Repo: "/srv/code/app", Priority: PriorityP0, PermissionProfile: PermissionDefault,
+		AgentType: "codex", Labels: map[string]string{PersonaTodoLabel: "todo_1"}, Now: testStart.Add(time.Second)})
+	zero := 0
+	for i := range 2 { // fails once, then passes on its second attempt
+		_, att, err := q.LeaseTask(special.ID, "dispatcher", testMachine, testStart.Add(time.Duration(i)*time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := CompleteAttemptInput{TaskID: special.ID, FenceToken: att.FenceToken, WorkerID: "dispatcher", Outcome: StateFailed, Verdict: VerdictFail,
+			ErrorClass: "task_failed", Now: testStart.Add(time.Duration(i) * time.Hour)}
+		if i == 1 {
+			in.Outcome, in.Verdict, in.ErrorClass, in.ExitCode = StateSucceeded, VerdictPass, "", &zero
+		}
+		if _, err := q.CompleteAttempt(in); err != nil {
+			t.Fatal(err)
+		}
+	}
+	byID := func(path string) map[string]map[string]any {
+		out := map[string]map[string]any{}
+		for _, v := range call(t, a, "GET", path, "").Body["tasks"].([]any) {
+			task := v.(map[string]any)
+			out[task["id"].(string)] = task
+		}
+		return out
+	}
+
+	got := byID("/tasks")
+	if p := got[plain.ID]; len(p) != 5 || p["title"] != "plain" || p["state"] != StateQueued || p["todo_id"] != "todo_1" || p["submitted_at"] == nil {
+		t.Fatalf("a task with every field at its default: %v", p)
+	}
+	s := got[special.ID]
+	if s["priority"] != PriorityP0 || s["permission_profile"] != PermissionDefault || s["agent_type"] != "codex" || s["attempt_no"] != float64(2) ||
+		s["verdict"] != VerdictPass || s["finished_at"] == nil {
+		t.Fatalf("a task with fields off their default: %v", s)
+	}
+	for _, k := range []string{"repo", "ref", "acceptance", "difficulty", "model_tier", "retries_left", "session_id", "prompt"} {
+		if _, has := s[k]; has {
+			t.Errorf("the list carries %s", k)
+		}
+	}
+	if p := byID("/tasks?todo_id=todo_1")[plain.ID]; len(p) != 4 || p["todo_id"] != nil {
+		t.Fatalf("a task in its to-do's list: %v", p)
+	}
+
+	p := byID("/tasks?view=full")[plain.ID]
+	if p["priority"] != PriorityP2 || p["permission_profile"] != PermissionReadonly || p["agent_type"] != AgentClaude || p["verdict"] != VerdictUnverified ||
+		p["repo"] != "/srv/code/app" || p["acceptance"] != "make check" || p["todo_id"] != "todo_1" || p["attempt_no"] != float64(0) {
+		t.Fatalf("view=full: %v", p)
+	}
+	if ans := call(t, a, "GET", "/tasks?view=short", ""); ans.Status != 400 || ans.Code != "invalid_view" {
+		t.Fatalf("an unknown view: %d %s", ans.Status, ans.Code)
+	}
+}
+
+// A list longer than the limit says where the next page starts, and the pages together are the whole list, each
+// task once.
+func TestListGoesOnInPages(t *testing.T) {
+	a := newTestApp(t)
+	var want []string
+	for i := range 7 {
+		todo := []string{"todo_1", "todo_2"}[i%2]
+		task := mustEnqueue(t, a.queue, EnqueueInput{Title: fmt.Sprint(i), Repo: "/srv/code/app", Labels: map[string]string{PersonaTodoLabel: todo}, Now: testStart})
+		want = append([]string{task.ID}, want...) // the same submission time: newest id first
+	}
+	pages := func(query string) (ids []string, n int) {
+		for after := ""; ; n++ {
+			ans := call(t, a, "GET", "/tasks?"+query+after, "")
+			if ans.Status != 200 || n > 10 {
+				t.Fatalf("page %d of %s: %d %v", n, query, ans.Status, ans.Body)
+			}
+			for _, v := range ans.Body["tasks"].([]any) {
+				ids = append(ids, v.(map[string]any)["id"].(string))
+			}
+			next, more := ans.Body["next"].(string)
+			if !more {
+				return ids, n + 1
+			}
+			if !strings.HasSuffix(next, "-"+ids[len(ids)-1]) {
+				t.Fatalf("next is %s, the page ends with %s", next, ids[len(ids)-1])
+			}
+			after = "&after=" + next
+		}
+	}
+	if ids, n := pages("limit=3"); !slices.Equal(ids, want) || n != 3 {
+		t.Fatalf("7 tasks by 3: %d pages, %v, want %v", n, ids, want)
+	}
+	if ids, n := pages("limit=7"); !slices.Equal(ids, want) || n != 1 {
+		t.Fatalf("7 tasks by 7: %d pages, %v", n, ids)
+	}
+	if ids, n := pages("limit=2&todo_id=todo_2"); len(ids) != 3 || n != 2 {
+		t.Fatalf("a to-do's 3 tasks by 2: %d pages, %v", n, ids)
+	}
+	if ids, n := pages("limit=200"); !slices.Equal(ids, want) || n != 1 {
+		t.Fatalf("the largest limit: %d pages, %v", n, ids)
+	}
+	// The page goes on from a place, not from a task: the last task of a page may leave the filtered list (it
+	// starts running) before the next page is asked for.
+	first := call(t, a, "GET", "/tasks?state=queued&limit=3", "")
+	next := first.Body["next"].(string)
+	if _, _, err := a.queue.LeaseTask(want[2], "dispatcher", testMachine, testStart); err != nil {
+		t.Fatal(err)
+	}
+	second := call(t, a, "GET", "/tasks?state=queued&limit=3&after="+next, "")
+	var ids []string
+	for _, v := range second.Body["tasks"].([]any) {
+		ids = append(ids, v.(map[string]any)["id"].(string))
+	}
+	if second.Status != 200 || !slices.Equal(ids, want[3:6]) {
+		t.Fatalf("the page after a task that left the list: %d %v, want %v", second.Status, ids, want[3:6])
+	}
+	// Past the end there is nothing more; what is not a cursor is refused.
+	if ans := call(t, a, "GET", "/tasks?after=1-task_0", ""); ans.Status != 200 || len(ans.Body["tasks"].([]any)) != 0 || ans.Body["next"] != nil {
+		t.Fatalf("past the end: %d %v", ans.Status, ans.Body)
+	}
+	for _, path := range []string{"/tasks?after=task_3", "/tasks?after=-task_3", "/tasks?after=12-"} {
+		if ans := call(t, a, "GET", path, ""); ans.Status != 400 || ans.Code != "invalid_after" {
+			t.Fatalf("%s: %d %s", path, ans.Status, ans.Code)
+		}
 	}
 }

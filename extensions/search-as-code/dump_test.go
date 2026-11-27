@@ -279,7 +279,52 @@ func pageStates(t *testing.T) []pageState {
 	}
 	cv, err = ma.card(ctx, &ext.UIRequest{})
 	add("07-machines-card", cv, err, "")
+
+	// 8. Computers picked, nothing to read on the hub's own computer: before the first search reached them, when
+	// none of them answered, and when they answered but have no chats.
+	for _, c := range []struct {
+		name   string
+		online bool
+		search bool
+	}{
+		{"08-picked-not-searched", true, false},
+		{"09-picked-none-answered", false, true},
+		{"10-picked-no-chats", true, true},
+	} {
+		fa := emptyFleetApp(t, c.online)
+		if c.search {
+			res, err := act(fa, page{}, "reset", nil)
+			add(c.name+"-results", res.View, err, res.Toast)
+		} else {
+			v, err := render(fa, page{})
+			add(c.name+"-results", v, err, "")
+		}
+		cv, err := fa.card(ctx, &ext.UIRequest{})
+		add(c.name+"-card", cv, err, "")
+	}
 	return out
+}
+
+// emptyFleetApp is a hub with no chats of its own and two picked computers, both online (with empty chat
+// folders) or both offline and never synced.
+func emptyFleetApp(t *testing.T, online bool) *app {
+	t.Helper()
+	nodes := &fakeNodes{workers: map[string]*nodeWorker{}, down: map[string]bool{}}
+	lister := &fakeLister{}
+	for _, m := range []hubMachine{{ID: "m-1a2b", Name: "Laptop 2"}, {ID: "m-3c4d", Name: "desktop"}} {
+		w := newNodeWorker(t.TempDir(), configSpec{SessionDirs: t.TempDir()})
+		w.now = func() time.Time { return t0 }
+		nodes.workers[m.ID] = w
+		nodes.down[m.ID] = !online
+		m.Online = online
+		lister.machines = append(lister.machines, m)
+	}
+	f := newFleet(nodes, lister, t.TempDir(), []string{"m-1a2b", "m-3c4d"})
+	f.now = func() time.Time { return t0 }
+	a := newApp(t.TempDir())
+	a.now = func() time.Time { return t0 }
+	a.fleet = f
+	return a
 }
 
 // TestDumpPages writes every page state as text into $SAC_DUMP_DIR (skipped without it).

@@ -21,6 +21,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/recall"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -87,17 +88,27 @@ type item struct {
 	text     string // a curated entry's line as answered, when not its recall line (standing, or with its quote)
 }
 
-// Extra is an entry made elsewhere in the extension (the periodic overview's patterns, internal/overview), answered
-// beside the curated ones in the same order: Last is its newest evidence day.
+// Extra is an entry made elsewhere in the extension (the periodic overview's L1 principles and contracts,
+// internal/overview), answered beside the curated ones in the same order: Last is its newest evidence day.
 type Extra struct {
 	Entry Entry
 	Last  string
-	// Score (0–100, as entry.Score) and Kind (entry.KindRules or KindUnderstanding) make it a candidate for the
-	// standing set; Kind "" never stands. Entry.Standing is decided here, not by the maker.
+	// Score and Kind (entry.KindRules or KindUnderstanding) make it a candidate for the standing set; Kind "" never
+	// stands. Entry.Standing is decided here, not by the maker.
 	Score int
 	Kind  string
 	// Evidence are the curated entries it rests on: a pattern resting mostly on template lines never stands.
 	Evidence []string
+	// L1 metadata for three-bucket standing selection (unified design §2.1).
+	L1Kind     string   // "contract" or "principle"
+	Hard       bool     // contract: hard rule
+	Polarity   string   // contract: act / check / communicate / route
+	Dimension  string   // principle: decision / thinking / reaction / attention / communication
+	Group      string   // normalized "<facet>:<rule_type>" (empty for generic types)
+	Quotes     int      // distinct normalised user quotes (tie-breaker)
+	Body       string   // core statement without prefix/suffix (clipped first when over budget)
+	Suffix     string   // "（例外：…）" or "（两端：…）" (never clipped)
+	CoveredIDs []string // L0 entries covered by this L1 contract (used to retire absorbed hot-slot entries)
 }
 
 func (it item) id() string {
@@ -252,7 +263,8 @@ func Status(e *entry.Entry) string {
 }
 
 // Rank orders entries by how much they matter (0.2.0-beta.52: entry.Score, 0 to 891; pinned 1000), not by how new they
-// are: recall and hand-offs take the highest first. A weak relation triple ranks last. The standing set has its own
+// are: recall and hand-offs take the highest first. Entity-anchored active local rules keep high recall rank (750–891)
+// without entering standing (unified design §2.2). A weak relation triple ranks last. The standing set has its own
 // ranks above every other (Resident).
 func Rank(e *entry.Entry) int {
 	if e.Pinned {
@@ -261,8 +273,32 @@ func Rank(e *entry.Entry) int {
 	r := entry.Score(e) * 9
 	if IsWeakRelation(e) {
 		r = min(r, 9)
+	} else if entityAnchoredRule(e) && Status(e) == "active" {
+		r = max(r, 750)
 	}
 	return max(0, min(891, r))
+}
+
+// entityAnchoredRule says whether e is a rule or decision explicitly anchored to a person, project, machine or tool
+// (non-global scope, impact.object, or object), so it stays out of global standing while ranking high in recall.
+func entityAnchoredRule(e *entry.Entry) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Facet {
+	case entry.Interaction, entry.Tools, entry.Judgement, entry.Workflow:
+	default:
+		return false
+	}
+	if strings.TrimSpace(e.Impact.Object) != "" || strings.TrimSpace(e.Object) != "" {
+		return true
+	}
+	for _, sc := range e.Scopes {
+		if sc.Kind != entry.ScopeGlobal && strings.TrimSpace(sc.Name) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // LegacyRank is Rank before 0.2.0-beta.52 (facet, grain and count, ties broken by the newest), kept for the hard
@@ -398,9 +434,10 @@ func backfill(st *store.State, e *entry.Entry, depth int) ([]string, string) {
 }
 
 // Subjects are the names whose mention brings the entry in: the person of a card, its object, the person or project
-// its impact is for, its scopes' names.
+// its impact is for, its scopes' names, skeleton endpoints, occasion words, and 1-hop skeleton neighbors (up to MaxSubjects).
 func Subjects(st *store.State, e *entry.Entry) []string {
 	var out []string
+	var entityNames []string
 	add := func(s string) {
 		s = strings.TrimSpace(s)
 		if s == "" || len(out) >= MaxSubjects || slices.Contains(out, s) {
@@ -408,19 +445,50 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 		}
 		out = append(out, clip(s, MaxSubject))
 	}
-	if k := st.Contacts[e.Person]; e.Person != "" && k != nil && k.Manual != "removed" {
-		add(k.Name)
+	addEntity := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if strings.HasPrefix(s, "person:") && st != nil {
+			if k := st.Contacts[s]; k != nil && k.Manual != "removed" && k.Name != "" {
+				s = k.Name
+			} else {
+				s = strings.TrimPrefix(s, "person:")
+			}
+		} else {
+			for _, p := range []string{"project:", "system:", "object:"} {
+				s = strings.TrimPrefix(s, p)
+			}
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		add(s)
+		if !slices.Contains(entityNames, s) {
+			entityNames = append(entityNames, s)
+		}
 	}
-	add(e.Object)
+	if st != nil && e.Person != "" {
+		if k := st.Contacts[e.Person]; k != nil && k.Manual != "removed" {
+			addEntity(k.Name)
+		}
+	}
+	addEntity(e.Object)
 	// The person or project a rule is for (impact.object, design l0-leverage §13: rules hang on entities): mentioning
 	// them brings the rule in. A kind of task named there is a short phrase too and does no harm.
 	if o := strings.TrimSpace(e.Impact.Object); utf8.RuneCountInString(o) <= 24 {
-		add(o)
+		addEntity(o)
 	}
 	for _, sc := range e.Scopes {
 		if sc.Kind != entry.ScopeGlobal {
-			add(sc.Name)
+			addEntity(sc.Name)
 		}
+	}
+	if e.Facet == entry.World && entry.IsSkeletonPredicate(e.Predicate) {
+		addEntity(e.Subject)
+		addEntity(e.Target)
 	}
 	// The occasion a rule is for (0.2.6): decisions_query matches its tag's words as substrings of the text, the
 	// subjects, the facet and the categories, so "派活" or "汇报" in a tag brings the rules for that moment in.
@@ -430,6 +498,14 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 		}
 		if g := GroupOf(st, e); g != "" && !genericTypes[e.Type] {
 			add(strings.TrimPrefix(g, string(e.Facet)+":"))
+		}
+	}
+	// 1-hop skeleton neighbors (unified design §2.2): for entity-anchored rules, attach up to 4 structural
+	// 1-hop neighbor names from the entity graph so querying a related project/person/repo surfaces the rule.
+	if st != nil && st.Graph != nil && len(entityNames) > 0 && len(out) < MaxSubjects &&
+		(entityAnchoredRule(e) || (e.Facet == entry.World && entry.IsSkeletonPredicate(e.Predicate))) {
+		for _, nb := range recall.SkeletonNeighbors(st, entityNames, 4) {
+			add(nb)
 		}
 	}
 	return out
@@ -443,6 +519,7 @@ var momentWords = map[string][]string{
 	"task_start":   {"开工", "task"},
 	"reply_person": {"回复", "reply"},
 	"use_object":   {"工具", "tool"},
+	"review":       {"评审", "review"},
 }
 
 // genericTypes name no occasion: a correction can be of anything.
@@ -579,9 +656,9 @@ func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (
 	return res, n, nil
 }
 
-// profileItems converts a profile summary into memory.entries items. General overview and six-facet summaries carry no
-// sensitive categories and are standing; sensitive category summaries carry their exact categories and origin_space and
-// are never standing so the hub's scene filter gates them.
+// profileItems converts a profile summary into memory.entries items. Profile summaries (general overview, six-facet
+// summaries, and sensitive category summaries) are never standing (unified design §2.1): they stay in the recallable
+// pool for on-demand lookup and UI views, with sensitive summaries carrying their exact categories and origin_space.
 func profileItems(sum *profile.Summary) []item {
 	if sum == nil || sum.SourceCount == 0 {
 		return nil
@@ -753,10 +830,16 @@ var standingCache struct {
 func standingSet(st *store.State, extras []Extra, room int) map[string]standing {
 	var kb strings.Builder
 	kb.WriteString(strconv.Itoa(room) + "|")
+	kb.WriteString(nowFn().Format("2006-01-02") + "|")
 	for _, x := range extras {
 		kb.WriteString(x.Entry.ID)
 		kb.WriteString(strconv.Itoa(x.Score))
+		kb.WriteString(x.L1Kind)
+		kb.WriteString(x.Polarity)
+		kb.WriteString(x.Dimension)
 		kb.WriteString(x.Entry.Text)
+		kb.WriteString(x.Body)
+		kb.WriteString(x.Suffix)
 	}
 	key := strconv.Itoa(len(st.Entries)) + "|" + kb.String()
 	standingCache.Lock()
@@ -780,23 +863,119 @@ func ResidentMostFor(room int) int {
 func workStandingSet(st *store.State, extras []Extra, room int) map[string]standing {
 	var cands []Candidate
 	tpl := entry.TemplateQuotes(st.Entries)
-	for _, e := range st.Entries {
-		if c, ok := CuratedCandidate(st, e, tpl); ok && idRe.MatchString(e.ID) {
-			cands = append(cands, c)
-		}
-	}
+	now := nowFn()
+
+	// Collect L1 candidates and track which L0 entries are already absorbed by a live L1 contract.
+	absorbed := map[string]bool{}
+	var contractTexts []string
+	hasL1Contract, hasL1Principle := false, false
+	l1LatestDay := ""
 	for _, x := range extras {
 		e := x.Entry
 		if x.Kind == "" || len(e.Categories) > 0 || e.OriginSpace != "" || st.Entries[e.ID] != nil || !idRe.MatchString(e.ID) ||
 			entry.TemplateBacked(st.Entries, x.Evidence, tpl) {
 			continue
 		}
-		cands = append(cands, Candidate{ID: e.ID, Text: clipBytes(strings.TrimSpace(e.Text), residentTextMost), Kind: x.Kind, Score: x.Score,
-			Days: len(x.Evidence), Last: x.Last, Pattern: strings.HasPrefix(e.ID, "ov:pattern:")})
+		if x.Last > l1LatestDay {
+			l1LatestDay = x.Last
+		}
+		bucket := BucketPrinciple
+		maxBytes := PrincipleTextMost
+		if x.L1Kind == BucketContract || (x.L1Kind == "" && x.Kind == entry.KindRules) {
+			bucket = BucketContract
+			maxBytes = ContractTextMost
+		}
+		prefix := StandingPrefix(bucket, x.Hard, x.Polarity)
+		text := ""
+		if strings.TrimSpace(x.Body) != "" {
+			text = FormatResidentLine(prefix+strings.TrimSpace(x.Body), x.Suffix, maxBytes)
+		} else {
+			text = FormatResidentLine(prefix+strings.TrimSpace(e.Text), "", maxBytes)
+		}
+		if text == "" {
+			continue
+		}
+		quotes := x.Quotes
+		if quotes <= 0 {
+			quotes = len(x.Evidence)
+		}
+		cands = append(cands, Candidate{
+			ID:        e.ID,
+			Text:      text,
+			Kind:      x.Kind,
+			Bucket:    bucket,
+			Facet:     e.Facet,
+			L1:        true,
+			Hard:      x.Hard,
+			Score:     x.Score,
+			Days:      quotes,
+			Last:      x.Last,
+			Polarity:  x.Polarity,
+			Dimension: x.Dimension,
+			Group:     x.Group,
+		})
+		if bucket == BucketContract {
+			hasL1Contract = true
+			for _, id := range x.Evidence {
+				absorbed[id] = true
+			}
+			for _, id := range x.CoveredIDs {
+				absorbed[id] = true
+			}
+			contractTexts = append(contractTexts, text)
+		} else {
+			hasL1Principle = true
+		}
 	}
+
+	// Collect Bucket 0 (Hot Slot: Pinned + active Fast-Path + unabsorbed post-L1 high-certainty rules) and, only when
+	// a main bucket has zero qualified L1 candidates, cold-start L0 fallback candidates for that bucket.
+	for _, e := range st.Entries {
+		if !idRe.MatchString(e.ID) {
+			continue
+		}
+		hc, ok := HotSlotCandidate(st, e, tpl, now)
+		if !ok && hasL1Contract && l1LatestDay != "" {
+			hc, ok = UnabsorbedRuleHotCandidate(st, e, tpl, l1LatestDay, now)
+		}
+		if ok {
+			if !hc.Pinned {
+				if absorbed[e.ID] || slices.ContainsFunc(contractTexts, func(t string) bool { return norm.Jaccard(t, hc.Text) >= sameRule }) {
+					continue // absorbed by L1 contract
+				}
+			}
+			cands = append(cands, hc)
+			continue
+		}
+		if hasL1Contract && hasL1Principle {
+			continue
+		}
+		if !entry.ColdStartEligible(e) {
+			continue
+		}
+		c, ok := CuratedCandidate(st, e, tpl)
+		if !ok {
+			continue
+		}
+		if c.Bucket == BucketContract && hasL1Contract {
+			continue
+		}
+		if c.Bucket == BucketPrinciple && hasL1Principle {
+			continue
+		}
+		cands = append(cands, c)
+	}
+
 	out := map[string]standing{}
-	for i, c := range ResidentWithin(cands, room, ResidentMostFor(room)) {
-		out[c.ID] = standing{rank: rankStand - i, text: c.Text}
+	hotIdx, standIdx := 0, 0
+	for _, c := range ResidentWithin(cands, room, ResidentMostFor(room)) {
+		if c.Bucket == BucketHot {
+			out[c.ID] = standing{rank: rankHot - hotIdx, text: c.Text}
+			hotIdx++
+		} else {
+			out[c.ID] = standing{rank: rankStand - standIdx, text: c.Text}
+			standIdx++
+		}
 	}
 	return out
 }

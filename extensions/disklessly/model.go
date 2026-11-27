@@ -1188,20 +1188,24 @@ func (st *State) DiscoverMachines(homeDir string, now time.Time) int {
 	return added
 }
 
-// FormatBytes formats a byte count in human-readable binary units (GiB, MiB, KiB, B).
+// FormatBytes formats a byte count in human-readable binary units (GiB, MiB, KiB, B). A value
+// that would read 1000 or more of a unit is written in the next one (1023.0 MiB reads 1.0 GiB),
+// so a size never shows four digits before the point.
 func FormatBytes(b uint64) string {
 	const (
 		tiB = 1024 * gib
 		kiB = 1024
 	)
+	// under reports that b, rounded to one decimal in unit, stays below 1000 of it.
+	under := func(unit uint64) bool { return float64(b)/float64(unit) < 999.95 }
 	switch {
-	case b >= tiB:
+	case b >= tiB || !under(gib):
 		return fmt.Sprintf("%.2f TiB", float64(b)/float64(tiB))
-	case b >= gib:
+	case b >= gib || !under(mib):
 		return fmt.Sprintf("%.1f GiB", float64(b)/float64(gib))
-	case b >= mib:
+	case b >= mib || !under(kiB):
 		return fmt.Sprintf("%.1f MiB", float64(b)/float64(mib))
-	case b >= kiB:
+	case b >= kiB || b >= 1000:
 		return fmt.Sprintf("%.1f KiB", float64(b)/float64(kiB))
 	default:
 		return fmt.Sprintf("%d B", b)

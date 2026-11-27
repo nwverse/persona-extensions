@@ -23,8 +23,12 @@ Propose a principle ONLY when all of these hold:
    choice). Prefer extending an existing principle (`extends`) rather than creating a near-duplicate.
 2. Grounded in every clause: every action, condition, rejected alternative, and exception you write in `text`,
    `situation`, `choice`, `rejected` and `exception` MUST be directly visible in the `quotes` of the chosen `members`.
-   - Write ONE concise, narrow core principle (<= 55 Chinese characters / <= 160 bytes, or <= 25 English words). NEVER
+   - Write ONE concise, actionable core principle (<= 80 Chinese characters / <= 240 bytes, or <= 35 English words). NEVER
      bundle several different habits or sub-rules into one multi-clause sentence.
+   - For items in the `core_owned` cluster (curated handwritten or cross-month abstract principles backed by multiple
+     sources), preserve their concrete trade-off criteria and explicit rejections (e.g. cost transparency vs blind SOTA,
+     first-principles design vs patching) — NEVER dilute them into vague platitudes or drop them just because they stand
+     alone.
    - NEVER promote a specific detail that appears in only one member (such as one tool/checklist/machine name or one
      incidental step) into the principle's general statement, and NEVER infer mechanisms not stated in the quotes.
    - If the quotes do not explicitly show a rejected alternative or an exception, leave `rejected` or `exception` empty.
@@ -50,7 +54,7 @@ For each principle give:
   - `communication`: how the user prefers to align, report, argue, or exchange information with people or the AI;
   else empty;
 - `default_contrast`, `holds_for_anyone`;
-- `members`: ids of the items whose quotes directly support this single principle (at least three);
+- `members`: ids of the items whose quotes directly support this single principle (usually at least three; one or two high-spread items are allowed when those items themselves already carry >=3 independent cross-scene sources across >=2 weeks);
 - `reason`: one line on why these items' quotes show the same choice.
 
 Do not invent or overstate: narrow and strictly quote-backed beats broad and speculative.

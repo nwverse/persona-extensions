@@ -90,14 +90,29 @@ Custom recipes can be created, edited, and deleted from the page or through the 
 
 ## The page
 
-| Contribution | Behavior |
-| --- | --- |
-| `ui` `search-as-code` (`nav_page`) | Search box, content filter `搜哪些内容` (`conversation` 只看对话, `all` 全部, `user` 只看我说的, `assistant` 只看助手说的, `errors` 只看报错), tabs (`结果` with an intro `这是做什么的` until the first search, `常用搜索` for recipes, `搜哪些地方` for sources and computers, `高级：怎么搜的` for the program, step trace, pipeline editor and history), hit detail view, and recipe editor. |
-| `ui` `search-as-code-card` (`overview_card`) | One line on what it is for (until the first search), the first saved searches, and the last stored run. |
-| `skills` `search-as-code` | Guides the assistant on composing `\|>` pipelines, using `conversation` scope to avoid tool noise, and saving reusable recipes. |
-| `assistant` `sessions` | The `sac-remote` skill and the `sac` command gate for searching other computers and projects (see above). |
-| `mcp_servers` `search-as-code` | `search-as-code mcp` over stdio. Only `sac_recipes_list` is in `allow`; the searches and the write tools follow the conversation's permission policy. |
-| `node` | `search-as-code node` on the computers picked in `machines`: `sac.search`, `sac.index`, `sac.projects`, `sac.restore`. |
+| Contribution | What it is (in plain words) | Behavior |
+| --- | --- | --- |
+| `ui` `search-as-code` (`nav_page`) | 页面「AI 聊天记录搜索」 | Search box, content filter `搜哪些内容` (`conversation` 只看对话, `all` 全部, `user` 只看我说的, `assistant` 只看助手说的, `errors` 只看报错), tabs (`结果` with an intro `这是做什么的` until the first search, `常用搜索` for recipes, `搜哪些地方` for sources and computers, `高级：怎么搜的` for the program, step trace, pipeline editor and history), hit detail view, and recipe editor. |
+| `ui` `search-as-code-card` (`overview_card`) | 概览卡片「AI 聊天记录搜索 · 概况」 | Titled apart from the page because the hub's settings page lists contribution switches by title; the title is also the card's header on Overview. One line on what it is for (until the first search), the first saved searches, and the last stored run; or, when nothing could be searched, why (see below). |
+| `skills` `search-as-code` | 教助手怎么在这台电脑的聊天记录里搜的说明 | Guides the assistant on composing `\|>` pipelines, using `conversation` scope to avoid tool noise, and saving reusable recipes. |
+| `assistant` `sessions` | 让助手去其他电脑、其他项目搜聊天记录的 `sac` 命令（先问你） | The `sac-remote` skill and the `sac` command gate for searching other computers and projects (see above). |
+| `mcp_servers` `search-as-code` | 助手在这台电脑上搜聊天记录用的工具 | `search-as-code mcp` over stdio. Only `sac_recipes_list` is in `allow`; the searches and the write tools follow the conversation's permission policy. |
+| `node` | 装在选中电脑上的小程序 | `search-as-code node` on the computers picked in `machines`: `sac.search`, `sac.index`, `sac.projects`, `sac.restore`. |
+
+The hub's settings page labels each contribution switch from the manifest: a `ui` item by its `title`, but a skill, an assistant contribution and an MCP server by their `id` only (`search-as-code`, `sessions`), because the manifest schema (`SkillItem`, `AssistantItem`, `MCPServerItem` in `sdk/go/wire/schema/manifest.schema.json`) has no display field for them and refuses an unknown one. Those ids cannot be renamed for display: the MCP server's id is the `mcp__search-as-code__*` prefix of its tools, and every id keys the switch's stored state (and `off_by_default`). The plain names above wait for a display field in the hub's schema.
+
+### When nothing could be searched
+
+When a search read no chat at all, the `结果` tab keeps the intro and replaces the counts, the quick searches and the empty list with one of four states, and the card shows the matching line instead of its saved searches:
+
+- **No computer picked** (`还没设置好`), and nothing in this computer's chat folders: four short lines in the order a first-time user acts on them: what is missing, where to pick one (`设置 › 扩展 › AI 聊天记录搜索` → `要搜哪些电脑`), to press `再找一次` afterwards, and that this is not an error. One footer line adds that the picked computer must be on and connected, the background sync (every 15 minutes), and that chats in another folder on this computer go under `搜哪些地方` instead.
+- **Computers picked, not searched there yet** (the shown run did not reach them): how many are picked, and that `再找一次` searches them.
+- **None answered**: which computers were offline or did not answer with nothing synced, that this does not mean they have no chats, and what to check.
+- **They answered and have no chats**: which ones answered (and which did not), and where extra chat folders are set (`其他聊天记录文件夹（一般不用填）`).
+
+The card goes by the stored run and by whether this computer's chat folders hold anything (their own entries only), so drawing it still runs no search.
+
+Switching a computer on in `要搜哪些电脑` asks for confirmation (`x-confirm`): this extension's program runs there with the user's own rights (not sandboxed) and reads the Claude Code and Codex chat folders, the disklessly text indexes and the extra chat folders; it is read-only and writes nothing there except when the user restores a chat moved to the cloud (then disklessly writes that file back); it makes no outside connection and sends to the hub, over Persona's own connection, only the snippets and project names a search finds and the compact synced copy described above.
 
 ## The MCP server
 
@@ -122,4 +137,4 @@ The extension and `search-as-code mcp` share `search_as_code_state.json` synchro
 go -C extensions/search-as-code test -race ./...
 ```
 
-The test suite verifies protocol conformance and manifest schema validation, Claude Code and Codex JSONL session parsing, `Without tools` (`conversation`) noise filtering vs `all` / `user` / `assistant` / `errors` scopes, natural-language to Search-as-Code compilation, multi-step pipeline execution (`where`, `exclude_tools`, `match_regex`, `correlate`, `dedup`, `group_by`, `rank`, `limit`), local repository file scanning, UI rendering and actions across all tabs and detail views (`wire.CheckView`), all six MCP tools, and archived sessions: synthetic text indexes found by `scan_sessions` and marked `已上云`, restored and live duplicates not counted twice, and restore through a fake `disklessly` (success, exit 4). Cross-computer search runs each computer's node program in process through the JSON `nodes.call` carries: fan-out and merge with source computers, the synced index for an offline computer (no tool output in it), index pages that lose no session, the API's routes and their pinning against widening code and inline tokens, the gate's rules, the approval card's text, restore routed to the computer that holds the session, route keys that stay one remembered segment, and that nothing changes with no computer picked.
+The test suite verifies protocol conformance and manifest schema validation, Claude Code and Codex JSONL session parsing, `Without tools` (`conversation`) noise filtering vs `all` / `user` / `assistant` / `errors` scopes, natural-language to Search-as-Code compilation, multi-step pipeline execution (`where`, `exclude_tools`, `match_regex`, `correlate`, `dedup`, `group_by`, `rank`, `limit`), local repository file scanning, UI rendering and actions across all tabs and detail views (`wire.CheckView`), all six MCP tools, and archived sessions: synthetic text indexes found by `scan_sessions` and marked `已上云`, restored and live duplicates not counted twice, and restore through a fake `disklessly` (success, exit 4). Cross-computer search runs each computer's node program in process through the JSON `nodes.call` carries: fan-out and merge with source computers, the synced index for an offline computer (no tool output in it), index pages that lose no session, the API's routes and their pinning against widening code and inline tokens, the gate's rules, the approval card's text, restore routed to the computer that holds the session, route keys that stay one remembered segment, that nothing changes with no computer picked, the four states of a search that read nothing on the page and the card, the confirmation for switching a computer on, and that the contribution ids stay as they are.

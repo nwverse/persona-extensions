@@ -140,7 +140,7 @@ func TestHomePageExplainsItself(t *testing.T) {
 	if strings.Join(tabs, "|") != "结果|常用搜索|搜哪些地方|高级：怎么搜的" {
 		t.Errorf("tabs %v", tabs)
 	}
-	if !strings.Contains(strings.Join(primaryText(empty), "\n"), "还没找到任何聊天记录") {
+	if !strings.Contains(strings.Join(primaryText(empty), "\n"), "还没选要搜哪台电脑") {
 		t.Errorf("empty state:\n%s", viewText(empty))
 	}
 }
@@ -173,11 +173,22 @@ func TestManifestSpeaksPlainChinese(t *testing.T) {
 	for _, tag := range m.Tags {
 		findJargon(t, "tag", tag)
 	}
+	// The hub lists every UI contribution by its title among the extension's switches: the page carries the
+	// extension's name, the card the name and 「 · 概况」, so the two never read as a duplicate.
+	wantTitle := map[string]string{pageUI: pageTitle, cardUI: cardTitle}
+	titles := map[string]bool{}
 	for _, u := range m.Contributes.UI {
 		findJargon(t, "ui "+u.ID, u.Title)
-		if u.Title != pageTitle {
-			t.Errorf("ui %s title %q, want %q", u.ID, u.Title, pageTitle)
+		if u.Title != wantTitle[u.ID] {
+			t.Errorf("ui %s title %q, want %q", u.ID, u.Title, wantTitle[u.ID])
 		}
+		if titles[u.Title] {
+			t.Errorf("two UI contributions are titled %q", u.Title)
+		}
+		titles[u.Title] = true
+	}
+	if len(titles) != len(wantTitle) {
+		t.Errorf("ui contributions %v, want %v", titles, wantTitle)
 	}
 	if m.Name != pageTitle {
 		t.Errorf("name %q, want %q", m.Name, pageTitle)

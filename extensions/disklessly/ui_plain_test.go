@@ -798,6 +798,10 @@ func TestInstructionsNameButtonsOnTheirPage(t *testing.T) {
 					t.Fatal(err)
 				}
 				checkTapNames(t, label+" "+m+"/"+tab, res.View)
+				if tab == tabFleet {
+					// Each 帮我腾空间 step names a button the page it opens draws.
+					checkAdviceButtons(t, a, label+" "+m+" 帮我腾空间", res.View)
+				}
 			}
 		}
 	}
@@ -819,6 +823,23 @@ func TestInstructionsNameButtonsOnTheirPage(t *testing.T) {
 	}
 	setJob(a, "build-box", jobScan, sshDown)
 	mainTabs("unreachable")
+	// A later AI 对话 check reached it: the line says so and still names 重试.
+	if err := a.db().update(func(st *State, now time.Time) error {
+		st.machine("build-box").Reachable = true
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mainTabs("unreachable, reached later")
+	// Never checked and unreachable: its own tab draws 重试 in the empty state only.
+	if err := a.db().update(func(st *State, now time.Time) error {
+		delete(st.Scans, "build-box")
+		st.machine("build-box").Reachable = false
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	mainTabs("unreachable, never checked")
 
 	// A check running on a computer never checked: its 检查 button is hidden meanwhile.
 	g := newUploadFleet(t)
@@ -848,6 +869,9 @@ func TestInstructionsNameButtonsOnTheirPage(t *testing.T) {
 		{"no tool, Homebrew unknown", func(c *ColdCatalog) { c.State, c.Brew, c.BrewKnown = ColdNoCLI, "", false }},
 		{"no tool, no Homebrew", func(c *ColdCatalog) { c.State, c.Brew, c.BrewKnown = ColdNoCLI, "", true }},
 		{"old tool", func(c *ColdCatalog) { c.State, c.Brew, c.BrewKnown = ColdCLIOld, "/opt/homebrew/bin/brew", true }},
+		{"old tool, no Homebrew", func(c *ColdCatalog) { c.State, c.Brew, c.BrewKnown = ColdCLIOld, "", true }},
+		{"old tool, Homebrew unknown", func(c *ColdCatalog) { c.State, c.Brew, c.BrewKnown = ColdCLIOld, "", false }},
+		{"no tool, system unknown", func(c *ColdCatalog) { c.State, c.Brew, c.BrewKnown, c.Platform = ColdNoCLI, "", true, "" }},
 		{"no drive", func(c *ColdCatalog) { c.State = ColdNoBackend }},
 		{"drive down", func(c *ColdCatalog) { c.State, c.Backend.Reachable = ColdBackendDown, &down }},
 		{"drive without repo", func(c *ColdCatalog) {
@@ -892,6 +916,33 @@ func TestInstructionsNameButtonsOnTheirPage(t *testing.T) {
 	g.a.jobs.mu.Lock()
 	g.a.jobs.jobs["build-box"].Finished = t0
 	g.a.jobs.mu.Unlock()
+
+	// Every way a computer cannot be reached, on both pages: the plain line under its row names
+	// only buttons drawn there.
+	for _, cause := range unreachableErrors {
+		h := newUploadFleet(t)
+		if err := h.a.db().update(func(st *State, now time.Time) error {
+			m := st.machine("build-box")
+			m.LastError, m.Reachable = cause.err, false
+			c := *st.cold("build-box")
+			c.State, c.Error = ColdOffline, cause.err
+			st.setCold("build-box", &c)
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		setJob(h.a, "build-box", jobScan, cause.err)
+		for _, tab := range []string{tabFleet, tabItems, tabPlan} {
+			res, err := h.a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{State: ext.EncodeState(page{Machine: "build-box"}), Action: "tab", Values: map[string]string{"tab": tab}}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			checkTapNames(t, "硬盘空间 "+cause.name+"/"+tab, res.View)
+		}
+		for _, m := range []string{"", "build-box"} {
+			checkTapNames(t, fmt.Sprintf("AI 对话 %s/%q", cause.name, m), h.view(t, m))
+		}
+	}
 
 	// 还不知道有没有 Homebrew: the button it says will appear is the one drawn once it is known.
 	if adv := coldProblem(&State{}, &Machine{ID: "x", Name: "x"}, nil, ColdNoCLI); !strings.Contains(adv.Next, "「"+brewButtonTitle(false)+"」") {

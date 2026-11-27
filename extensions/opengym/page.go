@@ -22,6 +22,9 @@ const (
 	weeksShown   = 12
 	weightDays   = 90
 	renderBudget = 8 * time.Second
+	// cardTitle is the card's header on the overview and its name among the contribution switches; it differs from
+	// the page's 健身 so the two do not read as one listed twice (TestManifestMatchesTheCode).
+	cardTitle = "健身 · 概况"
 )
 
 type pageState struct {
@@ -68,7 +71,7 @@ func (a *app) pageAction(ctx context.Context, r *ext.UIRequest) (*wire.ActionRes
 		ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
 		if err = a.sync(ctx, true); err != nil {
-			toast = "没连上：" + clip(oneLine(err.Error()), 120)
+			toast = "没连上：" + explain(err).Title
 		} else {
 			toast = "已同步到最新"
 		}
@@ -90,7 +93,7 @@ func caution(s string) wire.Component {
 // empty is an empty state (UI version 3) or, for an older app, a text.
 func empty(version int, title, detail string) wire.Component {
 	if version >= 3 {
-		return wire.Component{Type: wire.ComponentEmpty, Title: title, Text: detail, Icon: wire.NavIconHeart}
+		return wire.Component{Type: wire.ComponentEmpty, Title: title, Detail: detail, Icon: wire.NavIconHeart}
 	}
 	return text(strings.TrimSpace(title + "\n" + detail))
 }
@@ -100,18 +103,17 @@ func (a *app) page(r *ext.UIRequest, st pageState, syncErr error) *wire.View {
 	version := r.UIVersion
 	h := a.health()
 	if h.Config != nil {
-		v.Sections = []wire.Section{{Items: []wire.Component{empty(version, "还没有连上 openGym",
-			h.Config.Error()+"。在扩展设置里填 openGym 服务器地址和 API 令牌（openGym App 的「设置 › 集成 › API 令牌」里新建）。")}}}
+		v.Sections = setupSections(version, h)
 		v.State = ext.EncodeState(pageState{})
 		return v
 	}
 	s := a.snapshot()
 	if s == nil {
-		msg := "还没有读到数据"
+		p, footer := problem{"还没有读到数据", "稍等一会儿再点「重试」。"}, ""
 		if syncErr != nil {
-			msg = syncErr.Error()
+			p, footer = explain(syncErr), detail(syncErr)
 		}
-		v.Sections = []wire.Section{{Items: []wire.Component{empty(version, "连不上 openGym", msg),
+		v.Sections = []wire.Section{{Footer: footer, Items: []wire.Component{empty(version, p.Title, p.Do),
 			{Type: wire.ComponentButton, Title: "重试", Action: &wire.Action{ID: "refresh"}}}}}
 		v.State = ext.EncodeState(pageState{})
 		return v
@@ -139,7 +141,9 @@ func (a *app) page(r *ext.UIRequest, st pageState, syncErr error) *wire.View {
 		Items: []wire.Tab{{Value: tabOverview, Title: "总览"}, {Value: tabPlan, Title: "计划"}}}
 	var top []wire.Component
 	if syncErr != nil {
-		top = append(top, caution("上次没连上 openGym，下面是 "+s.At.In(loc).Format("01-02 15:04")+" 读到的："+clip(oneLine(syncErr.Error()), 200)))
+		p := explain(syncErr)
+		top = append(top, caution("这次没连上："+p.Title+"。下面是 "+s.At.In(loc).Format("01-02 15:04")+" 读到的。"),
+			secondary(p.Do), caption(detail(syncErr)))
 	}
 	if st.Tab == tabPlan {
 		v.Sections = a.planSections(s, loc)
@@ -212,7 +216,7 @@ func (a *app) overviewSections(s *snapshot, loc *time.Location, version int) []w
 		}
 		out = append(out, a.recentSection(st))
 	} else {
-		out = append(out, wire.Section{Items: []wire.Component{caution("API 令牌没有读训练记录的权限：在 openGym 里给令牌的「训练」开「查看」。")}},
+		out = append(out, wire.Section{Items: []wire.Component{caution("访问密钥没有看训练记录的权限：" + tokenWhere + "给这个密钥的「训练」选「查看」。")}},
 			a.nextSection(s, loc))
 	}
 	if version >= 2 && s.Me.can("bodyweight", "view") {
@@ -234,7 +238,7 @@ func (a *app) overviewSections(s *snapshot, loc *time.Location, version int) []w
 func (a *app) nextSection(s *snapshot, loc *time.Location) wire.Section {
 	sec := wire.Section{Title: "下一次训练"}
 	if !s.Me.can("plans", "view") {
-		sec.Items = []wire.Component{caution("API 令牌没有读计划的权限：在 openGym 里给令牌的「计划」开「查看」。")}
+		sec.Items = []wire.Component{caution("访问密钥没有看计划的权限：" + tokenWhere + "给这个密钥的「计划」选「查看」。")}
 		return sec
 	}
 	now := a.now()
@@ -277,7 +281,7 @@ func (a *app) recentSection(st gymState) wire.Section {
 		row := wire.Component{Type: wire.ComponentRow, Title: clip(w.title(st), 120), Subtitle: strings.Join(parts, " · "),
 			Action: &wire.Action{ID: "workout:" + w.ID}}
 		if w.hasPR() {
-			row.Badge = &wire.Badge{Text: "PR", Tone: wire.TonePositive}
+			row.Badge = &wire.Badge{Text: "破纪录", Tone: wire.TonePositive}
 		}
 		sec.Items = append(sec.Items, row)
 	}
@@ -304,7 +308,7 @@ func (a *app) workoutSections(st gymState, w workout, loc *time.Location) []wire
 		for _, id := range w.PRs {
 			names = append(names, a.exName(id))
 		}
-		head = append(head, wire.Component{Type: wire.ComponentText, Text: "PR：" + strings.Join(names, "、"), Tone: wire.TonePositive})
+		head = append(head, wire.Component{Type: wire.ComponentText, Text: "破了个人纪录：" + strings.Join(names, "、"), Tone: wire.TonePositive})
 	}
 	if w.Note != "" {
 		head = append(head, text("备注："+clip(w.Note, 500)))
@@ -317,7 +321,7 @@ func (a *app) workoutSections(st gymState, w workout, loc *time.Location) []wire
 		}
 		row := wire.Component{Type: wire.ComponentRow, Title: a.exName(e.ID), Subtitle: clip(strings.Join(sets, " · "), 300)}
 		if containsID(w.PRs, e.ID) {
-			row.Badge = &wire.Badge{Text: "PR", Tone: wire.TonePositive}
+			row.Badge = &wire.Badge{Text: "破纪录", Tone: wire.TonePositive}
 		}
 		ex.Items = append(ex.Items, row)
 	}
@@ -338,7 +342,7 @@ func containsID(list []string, id string) bool {
 
 func (a *app) planSections(s *snapshot, loc *time.Location) []wire.Section {
 	if !s.Me.can("plans", "view") {
-		return []wire.Section{{Items: []wire.Component{caution("API 令牌没有读计划的权限：在 openGym 里给令牌的「计划」开「查看」。")}}}
+		return []wire.Section{{Items: []wire.Component{caution("访问密钥没有看计划的权限：" + tokenWhere + "给这个密钥的「计划」选「查看」。")}}}
 	}
 	st, now := s.State, a.now()
 	today := dateOf(now, loc)
@@ -389,17 +393,17 @@ func (a *app) renderCard(ctx context.Context, r *ext.UIRequest) (*wire.View, err
 	ctx, cancel := context.WithTimeout(ctx, renderBudget)
 	defer cancel()
 	err := a.sync(ctx, false)
-	v := &wire.View{Title: "健身", State: ext.EncodeState(pageState{}), RefreshAfter: 600}
+	v := &wire.View{Title: cardTitle, State: ext.EncodeState(pageState{}), RefreshAfter: 600}
 	h := a.health()
 	s := a.snapshot()
 	switch {
 	case h.Config != nil:
-		v.Sections = []wire.Section{{Items: []wire.Component{text("在扩展设置里填 openGym 服务器地址和 API 令牌")}}}
+		v.Sections = []wire.Section{{Items: []wire.Component{text(setupNeeded(h))}}}
 		return v, nil
 	case s == nil:
 		msg := "还没有读到数据"
 		if err != nil {
-			msg = clip(oneLine(err.Error()), 160)
+			msg = explain(err).Title + "，点开看怎么办"
 		}
 		v.Sections = []wire.Section{{Items: []wire.Component{caution(msg)}}}
 		return v, nil
@@ -428,7 +432,7 @@ func (a *app) renderCard(ctx context.Context, r *ext.UIRequest) (*wire.View, err
 		items = append(items, caution("上次没连上 openGym"))
 	}
 	if len(items) == 0 {
-		items = []wire.Component{text("API 令牌没有读训练和计划的权限")}
+		items = []wire.Component{text("访问密钥没有看训练和计划的权限")}
 	}
 	v.Sections = []wire.Section{{Items: items}}
 	return v, nil

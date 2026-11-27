@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -579,6 +580,27 @@ type TaskFilter struct {
 	Difficulty string
 	Machine    string
 	Limit      int
+	// After is the cursor (taskCursor) of the last task of the page before: the list goes on after its place.
+	After string
+}
+
+// ErrBadCursor is ListTasks's answer to an After that is not a cursor.
+var ErrBadCursor = errors.New("after is not the next of a page")
+
+// taskCursor is a task's place in the list: when it was submitted, then its id, which is the list's order. A
+// place holds whatever became of the task since (it started, finished or was pruned), so the next page is found
+// without the task.
+func taskCursor(t *Task) string {
+	return strconv.FormatInt(t.SubmittedAt.UnixNano(), 10) + "-" + t.ID
+}
+
+func parseTaskCursor(s string) (submitted time.Time, id string, err error) {
+	ns, id, ok := strings.Cut(s, "-")
+	n, perr := strconv.ParseInt(ns, 10, 64)
+	if !ok || perr != nil || id == "" {
+		return time.Time{}, "", ErrBadCursor
+	}
+	return time.Unix(0, n), id, nil
 }
 
 // storeVersion is the layout of queue-state.json. Version 1 (0.3.0) had no version field and no exec records;
@@ -1351,6 +1373,21 @@ func (q *Queue) ListTasks(f TaskFilter) ([]*Task, error) {
 		}
 		return out[i].ID > out[j].ID
 	})
+
+	if f.After != "" {
+		at, id, err := parseTaskCursor(f.After)
+		if err != nil {
+			return nil, err
+		}
+		// The first task after the cursor's place, in the order of the sort above.
+		i := slices.IndexFunc(out, func(t *Task) bool {
+			return t.SubmittedAt.Before(at) || (t.SubmittedAt.Equal(at) && t.ID < id)
+		})
+		if i < 0 {
+			i = len(out)
+		}
+		out = out[i:]
+	}
 
 	limit := f.Limit
 	if limit <= 0 {

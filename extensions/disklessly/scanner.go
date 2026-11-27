@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -327,12 +328,12 @@ func ParseProbeOutput(m *Machine, output string, now time.Time) *Scan {
 			items = append(items, ScanItem{
 				ID:       "journalctl-vacuum",
 				Category: CatTmpLogs,
-				Title:    "系统日志（只删 7 天以前的）",
+				Title:    journalTitle,
 				Path:     "/var/log/journal",
 				Bytes:    b,
 				Safety:   SafetySafe,
 				Action:   "clean",
-				Reason:   "这里显示的是全部系统日志的大小，只删其中 7 天以前的部分，最近 7 天的留着",
+				Reason:   journalReason,
 			})
 		}
 	}
@@ -358,12 +359,12 @@ func ParseProbeOutput(m *Machine, output string, now time.Time) *Scan {
 				items = append(items, ScanItem{
 					ID:       "docker-buildx",
 					Category: CatDockerUnused,
-					Title:    "Docker 构建缓存（没在用的）",
+					Title:    buildCacheTitle,
 					Path:     "docker://build-cache",
 					Bytes:    b,
 					Safety:   SafetySafe,
 					Action:   "clean",
-					Reason:   "正在进行的构建没用到的缓存，正在运行的服务和容器绝不碰",
+					Reason:   buildCacheReason,
 				})
 			}
 		}
@@ -690,15 +691,78 @@ func applySessionCLI(sess *SessionSummary, sections map[string][]string) []ScanI
 		items = append(items, ScanItem{
 			ID:         "sessions-cold-" + ts.Tool,
 			Category:   CatColdAgentSession,
-			Title:      fmt.Sprintf("%s 一周没动的对话（%d 个）", ts.Label, ts.ColdCount),
+			Title:      coldItemTitle(ts.Label, ts.ColdCount),
 			Path:       ts.Directory,
 			Bytes:      ts.ColdBytes,
 			Safety:     SafetySafe,
 			Action:     "archive",
-			Reason:     "先放进网盘、读回核对无误才删电脑上的那份；最近 7 天用过、正打开着或还有程序在用的对话留着",
+			Reason:     coldItemReason,
 			SessionCnt: ts.ColdCount,
 			RealPath:   ts.RealDirectory,
 		})
 	}
 	return items
+}
+
+// The titles and reasons of the items the parser makes itself (the probe script prints the others).
+const (
+	journalTitle     = "系统日志（只删 7 天以前的）"
+	journalReason    = "这里显示的是全部系统日志的大小，只删其中 7 天以前的部分，最近 7 天的留着"
+	buildCacheTitle  = "Docker 构建缓存（没在用的）"
+	buildCacheReason = "正在进行的构建没用到的缓存，正在运行的服务和容器绝不碰"
+	coldItemReason   = "先放进网盘、读回核对无误才删电脑上的那份；最近 7 天用过、正打开着或还有程序在用的对话留着"
+)
+
+func coldItemTitle(label string, count int) string {
+	return fmt.Sprintf("%s 一周没动的对话（%d 个）", label, count)
+}
+
+// itemText is the current wording of one kind of scan item.
+type itemText struct{ title, reason string }
+
+// itemWords is the wording this version gives each scan item, by item id: the probe script's
+// probe_dir and printf lines, and the items the parser makes itself. A scan stored by an older
+// version keeps that version's words (such as 「Playwright 浏览器缓存 (ms-playwright)」); the
+// pages show these instead, so one kind of item has one name and one description everywhere.
+var itemWords = func() map[string]itemText {
+	out := map[string]itemText{
+		"journalctl-vacuum": {journalTitle, journalReason},
+		"docker-buildx":     {buildCacheTitle, buildCacheReason},
+	}
+	probe := regexp.MustCompile(`(?m)^probe_dir "([^"]+)" "[^"]+" "([^"]+)" "[^"]+" "[^"]+" "([^"]+)"$`)
+	for _, m := range probe.FindAllStringSubmatch(ProbeScript, -1) {
+		out[m[1]] = itemText{m[2], m[3]}
+	}
+	printed := regexp.MustCompile(`(?m)^\s*printf '([a-z-]+)\\t[a-z-]+\\t([^\\]+)\\t[^\\]+\\t%s\\t[a-z]+\\t([^\\]+)\\n'`)
+	for _, m := range printed.FindAllStringSubmatch(ProbeScript, -1) {
+		out[m[1]] = itemText{m[2], m[3]}
+	}
+	return out
+}()
+
+// coldToolLabels names the AI assistants of the probe script's session directories.
+var coldToolLabels = map[string]string{"claude": "Claude Code", "codex": "Codex"}
+
+// itemTitle is the name the pages give scan item it: this version's wording of its kind, else its own.
+func itemTitle(it ScanItem) string {
+	if w, ok := itemWords[it.ID]; ok {
+		return w.title
+	}
+	if tool, ok := strings.CutPrefix(it.ID, "sessions-cold-"); ok && it.Category == CatColdAgentSession && it.SessionCnt > 0 {
+		if label, ok := coldToolLabels[tool]; ok {
+			return coldItemTitle(label, it.SessionCnt)
+		}
+	}
+	return strings.TrimSpace(it.Title)
+}
+
+// itemReason is the description the pages give scan item it, as itemTitle does for its name.
+func itemReason(it ScanItem) string {
+	if w, ok := itemWords[it.ID]; ok {
+		return w.reason
+	}
+	if it.Category == CatColdAgentSession && strings.HasPrefix(it.ID, "sessions-cold-") {
+		return coldItemReason
+	}
+	return strings.TrimSpace(it.Reason)
 }

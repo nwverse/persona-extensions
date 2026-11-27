@@ -112,7 +112,10 @@ func recallCmd(args []string) error {
 		query.Facets = append(query.Facets, x)
 	}
 	res := recall.Search(st, query)
-	fmt.Printf("%d hit(s) of %d entries\n", len(res.Hits), res.Pool)
+	fmt.Printf("%d hit(s) of %d entries (%d entity skeleton(s))\n", len(res.Hits), res.Pool, len(res.Entities))
+	for _, ec := range res.Entities {
+		fmt.Print(recall.FormatEntity(ec))
+	}
 	for _, h := range res.Hits {
 		fmt.Print(recall.Format(h))
 	}

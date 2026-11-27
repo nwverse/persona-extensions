@@ -256,6 +256,24 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 	wantAxis := []string{"Go", "Node/Py", "容器", "Rust/XC", "日志", "旧对话"}
 
 	for _, wm := range wantMachines {
+		// The charts are drawn for the selected computer; the others keep their bar only.
+		fleetView, err := a.render(ctx, &ext.UIRequest{UIParams: wire.UIParams{UIVersion: 8, TZ: "Asia/Shanghai", State: ext.EncodeState(page{Machine: wm.id})}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkStrictView(t, fleetView, false)
+		assertMobileReadability360px(t, "fleet "+wm.id, fleetView)
+		for _, other := range wantMachines {
+			if other.id == wm.id {
+				continue
+			}
+			if findComponentByKey(fleetView, "fleet-root-"+other.id) != nil || findComponentByKey(fleetView, "fleet-stats-"+other.id) != nil {
+				t.Fatalf("%s selected: %s also drawn in full", wm.id, other.id)
+			}
+			if findComponentByKey(fleetView, "prog-"+other.id) == nil || findComponentByKey(fleetView, "btn-plan-"+other.id) == nil {
+				t.Fatalf("%s selected: %s lost its bar or buttons", wm.id, other.id)
+			}
+		}
 		if findComponentByKey(fleetView, "fleet-stats-"+wm.id) == nil {
 			t.Fatalf("%s: missing disjoint fleet-stats-%s stat_grid", wm.id, wm.id)
 		}
@@ -268,20 +286,9 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 				wm.id, prog.Tone, prog.Label, prog.Detail, wm.tone, wm.wantLabel, wm.wantDetail)
 		}
 
-		rootChart := findComponentByKey(fleetView, "fleet-root-"+wm.id)
-		if rootChart == nil || rootChart.Type != wire.ComponentChart || rootChart.Kind != wire.ChartKindBar || !rootChart.Stacked {
-			t.Fatalf("%s: missing or non-stacked root chart: %+v", wm.id, rootChart)
-		}
-		if len(rootChart.Series) != 2 || rootChart.Series[0].Tone != wm.tone || rootChart.Series[1].Tone != wire.ToneNeutral {
-			t.Fatalf("%s: root chart series = %+v, want [tone=%s, tone=neutral]", wm.id, rootChart.Series, wm.tone)
-		}
-		if !strings.Contains(rootChart.Series[0].Name, wm.levelWord) || !strings.Contains(rootChart.Detail, wm.levelWord) ||
-			!strings.Contains(rootChart.Series[0].Points[0].Display, wm.levelWord) {
-			t.Fatalf("%s: root chart must carry non-color level text %q: series=%q display=%q detail=%q",
-				wm.id, wm.levelWord, rootChart.Series[0].Name, rootChart.Series[0].Points[0].Display, rootChart.Detail)
-		}
-		if len(rootChart.Series[0].Points) != 1 || len(rootChart.Series[1].Points) != 1 {
-			t.Fatalf("%s: root share bar must have 1 point per series: %+v", wm.id, rootChart.Series)
+		// The system disk is the bar above (prog-) and the table's caption: no tall one-bar chart.
+		if rootChart := findComponentByKey(fleetView, "fleet-root-"+wm.id); rootChart != nil {
+			t.Fatalf("%s: a separate system-disk chart is drawn next to its bar: %+v", wm.id, rootChart)
 		}
 
 		catChart := findComponentByKey(fleetView, "fleet-cats-"+wm.id)
@@ -322,7 +329,7 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 	}
 	checkStrictView(t, itemsView, false)
 	assertMobileReadability360px(t, "items", itemsView)
-	if findComponentByKey(itemsView, "items-root-local") == nil || findComponentByKey(itemsView, "items-cats-local") == nil {
+	if findComponentByKey(itemsView, "prog-local") == nil || findComponentByKey(itemsView, "items-cats-local") == nil {
 		t.Fatal("items tab missing per-machine charts")
 	}
 	if tbl := findComponentByKey(itemsView, "items-detail-tbl-local"); tbl == nil || len(tbl.Columns) != 4 {
@@ -356,7 +363,7 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 	}
 	checkStrictView(t, emptyFilterRes.View, false)
 	assertMobileReadability360px(t, "items-empty-filter", emptyFilterRes.View)
-	if findComponentByKey(emptyFilterRes.View, "items-root-local") == nil || findComponentByKey(emptyFilterRes.View, "items-tbl-local") == nil {
+	if findComponentByKey(emptyFilterRes.View, "prog-local") == nil || findComponentByKey(emptyFilterRes.View, "items-tbl-local") == nil {
 		t.Fatalf("empty search filter on items tab must still include companion detail table items-tbl-local: %+v", emptyFilterRes.View)
 	}
 
@@ -415,7 +422,7 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 	if findComponentByKey(cardBefore, "card-stats") == nil || cardBeforeRoot == nil || findComponentByKey(cardBefore, "card-mach-armbox") == nil {
 		t.Fatalf("overview card before clean-safe should feature highest-severity machine armbox chart and card-mach-* rows: %+v", cardBefore)
 	}
-	if cardBeforeRoot.Series[0].Tone != wire.ToneDanger || !strings.Contains(cardBeforeRoot.Series[0].Name, "快满了") {
+	if cardBeforeRoot.Type != wire.ComponentProgress || cardBeforeRoot.Tone != wire.ToneDanger || !strings.Contains(cardBeforeRoot.Detail, "快满了") || !strings.HasPrefix(cardBeforeRoot.Label, "armbox · ") {
 		t.Fatalf("card-root-armbox should reflect critical danger state: %+v", cardBeforeRoot)
 	}
 
@@ -455,7 +462,7 @@ func TestPerMachineChartsThresholdsAndDetailTables(t *testing.T) {
 	if findComponentByKey(cardAfter, "card-stats") == nil || cardAfterRoot == nil || findComponentByKey(cardAfter, "card-root-armbox") != nil {
 		t.Fatalf("overview card after armbox clean-safe should switch featured chart to warning machine local: %+v", cardAfter)
 	}
-	if cardAfterRoot.Series[0].Tone != wire.ToneCaution || !strings.Contains(cardAfterRoot.Series[0].Name, "偏满") {
+	if cardAfterRoot.Type != wire.ComponentProgress || cardAfterRoot.Tone != wire.ToneCaution || !strings.Contains(cardAfterRoot.Detail, "偏满") {
 		t.Fatalf("card-root-local should reflect warning caution state: %+v", cardAfterRoot)
 	}
 	if !strings.Contains(texts(cardAfter), "最近一次清理 armbox") {
@@ -622,7 +629,7 @@ func TestMobileAxisLabelsFit360pxPhoneAndPrivacy(t *testing.T) {
 		}
 	}
 
-	// Verify exact 80% / 90% / <80% thresholds across EvaluateHealth, machineProgressComponent, and rootUsageChart.
+	// Verify exact 80% / 90% / <80% thresholds across EvaluateHealth, machineProgressComponent, and rootUsageMeter.
 	cases := []struct {
 		name      string
 		totalGiB  uint64
@@ -657,9 +664,9 @@ func TestMobileAxisLabelsFit360pxPhoneAndPrivacy(t *testing.T) {
 		if prog.Tone != tc.wantTone || prog.Detail != wantDetail {
 			t.Fatalf("%s: progress tone=%q detail=%q, want tone=%q detail=%q", tc.name, prog.Tone, prog.Detail, tc.wantTone, wantDetail)
 		}
-		rc := rootUsageChart(ms, "/", "test")
-		if rc.Series[0].Tone != tc.wantTone || !strings.Contains(rc.Series[0].Name, tc.wantText) {
-			t.Fatalf("%s: rootUsageChart series[0]=%+v, want tone=%q with %q", tc.name, rc.Series[0], tc.wantTone, tc.wantText)
+		rc := rootUsageMeter(ms, "test")
+		if rc.Type != wire.ComponentProgress || rc.Tone != tc.wantTone || !strings.Contains(rc.Detail, tc.wantText) || rc.Key != "test-root-node" {
+			t.Fatalf("%s: rootUsageMeter=%+v, want a bar with tone=%q and %q", tc.name, rc, tc.wantTone, tc.wantText)
 		}
 	}
 
@@ -784,8 +791,8 @@ func TestDisjointComponentKeyNamespacesAndEmptyItemsDetailTable(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if findComponentByKey(v, "items-root-"+machID) == nil || findComponentByKey(v, "items-tbl-"+machID) == nil {
-			t.Fatalf("%s: itemsTab with 0 cache items must render both items-root-%s and items-tbl-%s", machID, machID, machID)
+		if findComponentByKey(v, "prog-"+machID) == nil || findComponentByKey(v, "items-tbl-"+machID) == nil {
+			t.Fatalf("%s: itemsTab with 0 cache items must render both prog-%s and items-tbl-%s", machID, machID, machID)
 		}
 	}
 	coldOnlyItems, _ := a.render(ctx, &ext.UIRequest{UIParams: wire.UIParams{
@@ -857,7 +864,7 @@ func TestUIVersion1PlainTextDegradation(t *testing.T) {
 		}
 		if tab == tabFleet {
 			all := texts(v)
-			for _, want := range []string{"偏满", "快满了", "Go", "容器"} {
+			for _, want := range []string{"偏满", "快满了", "Go", "Docker"} {
 				if !strings.Contains(all, want) {
 					t.Fatalf("UIVersion 1 fleet text missing %q:\n%s", want, all)
 				}

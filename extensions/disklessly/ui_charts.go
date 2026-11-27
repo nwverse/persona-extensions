@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -20,14 +21,75 @@ var CategoryAxisLabels = map[string]string{
 	CatColdAgentSession: "旧对话",
 }
 
-// Compact category names for 4-column detail tables on narrow phone viewports (360-390px).
-var CategoryCompactLabels = map[string]string{
-	CatGoCache:          "Go 缓存",
-	CatNodePythonCache:  "Node / Py",
-	CatDockerUnused:     "容器与镜像",
-	CatRustXcodeBuild:   "Rust / XC",
-	CatTmpLogs:          "系统与日志",
-	CatColdAgentSession: "旧 AI 对话",
+// The breakdown table names the kinds by these same short labels, so the chart and the table
+// above and below each other say one set of names, spelled out once (categoryLegend).
+
+// CategoryPlainNames are the kinds as the pages name them wherever a whole line has room (rows,
+// check boxes, confirms, the clean-up record, the plain summaries). CategoryLabels stays as it
+// is: MCP answers carry it.
+var CategoryPlainNames = map[string]string{
+	CatGoCache:          "Go 的编译和下载缓存",
+	CatNodePythonCache:  "Node 和 Python 下载的包",
+	CatDockerUnused:     "Docker 没在用的镜像和构建缓存",
+	CatRustXcodeBuild:   "Rust 和 Xcode 的编译缓存",
+	CatTmpLogs:          "系统日志和过期的临时文件",
+	CatColdAgentSession: "一周没动的 AI 对话",
+}
+
+// categoryName is a kind's plain name, or its id when it has none.
+func categoryName(id string) string { return cmp.Or(CategoryPlainNames[id], CategoryLabels[id], id) }
+
+// legendCategories are the kinds whose short label in a narrow chart column or table cell does
+// not say what it is by itself.
+var legendCategories = []string{CatNodePythonCache, CatRustXcodeBuild, CatDockerUnused, CatTmpLogs}
+
+// categoryLegend spells out the short labels (from labels) of the kinds in ids that need it,
+// in CategoryIDs order; "" when none does.
+func categoryLegend(labels map[string]string, ids []string) string {
+	var parts []string
+	for _, cid := range legendCategories {
+		if slices.Contains(ids, cid) && labels[cid] != "" {
+			name := CategoryPlainNames[cid]
+			if name != "" && name[0] < utf8.RuneSelf {
+				name = " " + name // a space before a Latin word, as the pages write it
+			}
+			parts = append(parts, "「"+labels[cid]+"」是"+name)
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "简称：" + strings.Join(parts, "，") + "。"
+}
+
+// platformLabel words a computer's system and chip (parsePlatformString: linux-arm64,
+// darwin-amd64…) for people: Mac or Linux 电脑, with the chip in brackets; "" for none, and an
+// unknown system as it was reported.
+func platformLabel(p string) string {
+	p = strings.TrimSpace(p)
+	sys, arch, _ := strings.Cut(p, "-")
+	var name string
+	switch sys {
+	case "darwin":
+		name = "Mac"
+	case "linux":
+		name = "Linux 电脑"
+	default:
+		return p
+	}
+	switch arch {
+	case "arm64":
+		if sys == "darwin" {
+			return name + "（Apple 芯片）"
+		}
+		return name + "（ARM 芯片）"
+	case "amd64":
+		if sys == "darwin" {
+			return name + "（Intel 芯片）"
+		}
+		return name + "（Intel 或 AMD 芯片）"
+	}
+	return name
 }
 
 // estTextWidthPx mirrors Persona web's labelWidth(text, px) in web/src/lib/extension-ui.ts.
@@ -244,6 +306,14 @@ func (bd categoryBreakdown) catModeText(cid string) string {
 	}
 }
 
+// The fullness bands of EvaluateHealth in the words healthLevelText gives them, for the pages'
+// legends: fullnessLegendShort for a stat's detail, fullnessLegend where a whole sentence fits.
+// A computer put in a band by its free space alone says so on its own bar (healthWatermarkNote).
+const (
+	fullnessLegendShort = "用到 80% 算偏满 · 90% 算快满了（剩得太少也算）"
+	fullnessLegend      = "用到 80% 算偏满、90% 算快满了；硬盘不小的话，只剩不到 25 GiB 也算偏满、不到 10 GiB 也算快满了"
+)
+
 func healthLevelText(level string) string {
 	switch level {
 	case HealthCritical:
@@ -264,10 +334,10 @@ func healthLevelText(level string) string {
 func healthWatermarkNote(level string, usedPct float64, totalBytes, availBytes uint64) string {
 	base := healthLevelText(level)
 	if level == HealthCritical && usedPct < 90.0 && totalBytes >= 20*gib && availBytes < 10*gib {
-		return fmt.Sprintf("%s，只剩 %s（不到 10 GiB）", base, FormatBytes(availBytes))
+		return fmt.Sprintf("%s，只剩 %s，不到 10 GiB", base, FormatBytes(availBytes))
 	}
 	if level == HealthWarning && usedPct < 80.0 && totalBytes >= 50*gib && availBytes < 25*gib {
-		return fmt.Sprintf("%s，只剩 %s（不到 25 GiB）", base, FormatBytes(availBytes))
+		return fmt.Sprintf("%s，只剩 %s，不到 25 GiB", base, FormatBytes(availBytes))
 	}
 	return base
 }
@@ -309,61 +379,44 @@ func chartValue(b uint64, unit string) float64 {
 	return v
 }
 
+// fullnessLevel is how full ms's system disk is by its last check, whether or not the computer
+// answers now: a bar's colour and its words say only this. A computer that cannot be reached
+// and was never checked stays HealthOffline (nothing known about its disk).
+func fullnessLevel(ms MachineStatus) string {
+	if ms.Level == HealthOffline && ms.TotalBytes > 0 {
+		return EvaluateHealth(true, ms.TotalBytes, ms.AvailableBytes)
+	}
+	return ms.Level
+}
+
+// lastKnown reports a computer that cannot be reached now but whose disk was checked before:
+// its numbers are the last check's.
+func lastKnown(ms MachineStatus) bool { return ms.Level == HealthOffline && ms.TotalBytes > 0 }
+
 func machineProgressComponent(ms MachineStatus) wire.Component {
 	ratio := math.Max(0, math.Min(1, ms.UsedPercent/100.0))
+	level := fullnessLevel(ms)
+	detail := fmt.Sprintf("%.1f%% · %s", ms.UsedPercent, healthWatermarkNote(level, ms.UsedPercent, ms.TotalBytes, ms.AvailableBytes))
+	if lastKnown(ms) {
+		// The row above says it cannot be reached now and when these numbers are from.
+		detail = "上次 " + detail
+	}
 	return wire.Component{
 		Type:   wire.ComponentProgress,
 		Key:    boundedKey("prog-", ms.Machine.ID),
 		Label:  compactUsedTotalLabel(ms.UsedBytes, ms.TotalBytes),
-		Detail: fmt.Sprintf("%.1f%% · %s", ms.UsedPercent, healthLevelText(ms.Level)),
+		Detail: detail,
 		Ratio:  &ratio,
-		Tone:   progressTone(ms.Level),
+		Tone:   progressTone(level),
 	}
 }
 
-// rootUsageChart builds a per-machine stacked bar chart (1 category -> horizontal share bar) of root partition
-// used vs free capacity, colored with the 80% orange (caution) and 90% red (danger) watermark thresholds.
-func rootUsageChart(ms MachineStatus, mountPoint, keyPrefix string) wire.Component {
-	unit := chartUnit(ms.TotalBytes)
-	usedVal := chartValue(ms.UsedBytes, unit)
-	availVal := chartValue(ms.AvailableBytes, unit)
-	if usedVal+availVal <= 0 {
-		availVal = chartValue(max(ms.TotalBytes, 1), unit)
-	}
-	label := clip(machineLabel(ms.Machine), 20)
-	mp := cmp.Or(mountPoint, "/")
-	lvlText := healthLevelText(ms.Level)
-	lvlNote := healthWatermarkNote(ms.Level, ms.UsedPercent, ms.TotalBytes, ms.AvailableBytes)
-	return wire.Component{
-		Type:    wire.ComponentChart,
-		Key:     boundedKey(keyPrefix+"-root-", ms.Machine.ID),
-		Kind:    wire.ChartKindBar,
-		Stacked: true,
-		Title:   fmt.Sprintf("系统盘（%s）用了多少、还剩多少", mp),
-		Unit:    unit,
-		Series: []wire.ChartSeries{
-			{
-				Name: "用了 · " + lvlText,
-				Tone: progressTone(ms.Level),
-				Points: []wire.ChartPoint{{
-					Label:   label,
-					Value:   usedVal,
-					Display: fmt.Sprintf("%s (%.1f%% · %s)", FormatBytes(ms.UsedBytes), ms.UsedPercent, lvlText),
-				}},
-			},
-			{
-				Name: "还剩",
-				Tone: wire.ToneNeutral,
-				Points: []wire.ChartPoint{{
-					Label:   label,
-					Value:   availVal,
-					Display: FormatBytes(ms.AvailableBytes),
-				}},
-			},
-		},
-		Detail: fmt.Sprintf("用了 %s（%.1f%%，%s）· 还剩 %s · 用到 80%% 提醒，90%% 告急",
-			FormatBytes(ms.UsedBytes), ms.UsedPercent, lvlNote, FormatBytes(ms.AvailableBytes)),
-	}
+// rootUsageMeter is a computer's system disk as one compact bar (used of total, how full, what
+// is left), where no other bar on the view shows it: the plan tab and the overview card.
+func rootUsageMeter(ms MachineStatus, keyPrefix string) wire.Component {
+	c := machineProgressComponent(ms)
+	c.Key = boundedKey(keyPrefix+"-root-", ms.Machine.ID)
+	return c
 }
 
 // reclaimCategoryChart builds a 6-category stacked bar chart (Go, Node/Py, 容器, Rust/XC, 日志, 冷会话)
@@ -425,7 +478,7 @@ func reclaimCategoryChart(m *Machine, bd categoryBreakdown, keyPrefix string) (w
 		Title:   "能腾出的空间，按种类",
 		Unit:    unit,
 		Series:  series,
-		Detail:  strings.Join(parts, " · "),
+		Detail:  strings.TrimSpace(strings.Join(parts, " · ") + "。" + categoryLegend(CategoryAxisLabels, CategoryIDs)),
 	}, true
 }
 
@@ -445,9 +498,9 @@ func cleanImpactChart(ms MachineStatus, scan *Scan) (wire.Component, bool) {
 	afterPct := float64(afterUsed) * 100.0 / float64(scan.Mount.TotalBytes)
 	afterLevel := EvaluateHealth(true, scan.Mount.TotalBytes, afterAvail)
 
-	beforeText := healthLevelText(ms.Level)
+	beforeText := healthLevelText(fullnessLevel(ms))
 	afterText := healthLevelText(afterLevel)
-	beforeTone := progressTone(ms.Level)
+	beforeTone := progressTone(fullnessLevel(ms))
 	afterTone := progressTone(afterLevel)
 
 	beforeUsedDisp := fmt.Sprintf("%s (%.1f%% · %s)", FormatBytes(scan.Mount.UsedBytes), ms.UsedPercent, beforeText)
@@ -494,7 +547,7 @@ func cleanImpactChart(ms MachineStatus, scan *Scan) (wire.Component, bool) {
 		},
 	})
 
-	beforeNote := healthWatermarkNote(ms.Level, ms.UsedPercent, scan.Mount.TotalBytes, scan.Mount.AvailableBytes)
+	beforeNote := healthWatermarkNote(fullnessLevel(ms), ms.UsedPercent, scan.Mount.TotalBytes, scan.Mount.AvailableBytes)
 	afterNote := healthWatermarkNote(afterLevel, afterPct, scan.Mount.TotalBytes, afterAvail)
 
 	return wire.Component{
@@ -511,7 +564,8 @@ func cleanImpactChart(ms MachineStatus, scan *Scan) (wire.Component, bool) {
 }
 
 // machineBreakdownTable renders a compact 4-column table so neither root usage nor category shares rely on color alone.
-func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreakdown, keyPrefix string) wire.Component {
+// legend spells the short names out in its caption: when no category chart above it does.
+func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreakdown, keyPrefix string, legend bool) wire.Component {
 	rows := make([][]string, 0, len(CategoryIDs))
 	for _, cid := range CategoryIDs {
 		tot := bd.catTotal(cid)
@@ -520,17 +574,24 @@ func machineBreakdownTable(ms MachineStatus, mountPoint string, bd categoryBreak
 			share = fmt.Sprintf("%.1f%%", float64(tot)*100.0/float64(bd.totalShown))
 		}
 		rows = append(rows, []string{
-			CategoryCompactLabels[cid],
+			CategoryAxisLabels[cid],
 			bd.catModeText(cid),
 			FormatBytes(tot),
 			share,
 		})
 	}
 	mp := cmp.Or(mountPoint, "/")
-	lvlNote := healthWatermarkNote(ms.Level, ms.UsedPercent, ms.TotalBytes, ms.AvailableBytes)
-	caption := fmt.Sprintf("系统盘 %s：用了 %s（%.1f%%，%s）· 还剩 %s / 共 %s",
+	lvlNote := healthWatermarkNote(fullnessLevel(ms), ms.UsedPercent, ms.TotalBytes, ms.AvailableBytes)
+	caption := fmt.Sprintf("系统盘 %s：用了 %s（%.1f%%，%s）· 还剩 %s / 共 %s · %s",
 		mp, FormatBytes(ms.UsedBytes), ms.UsedPercent, lvlNote,
-		FormatBytes(ms.AvailableBytes), FormatBytes(ms.TotalBytes))
+		FormatBytes(ms.AvailableBytes), FormatBytes(ms.TotalBytes), fullnessLegend)
+	if lastKnown(ms) {
+		caption = "上次检查时，" + caption
+	}
+	caption += "。"
+	if legend {
+		caption += categoryLegend(CategoryAxisLabels, CategoryIDs)
+	}
 	return wire.Component{
 		Type:    wire.ComponentTable,
 		Key:     boundedKey(keyPrefix+"-tbl-", ms.Machine.ID),
@@ -563,28 +624,28 @@ func machinePlainTextSummary(ms MachineStatus, scan *Scan) string {
 	var catParts []string
 	for _, cid := range CategoryIDs {
 		if tot := bd.catTotal(cid); tot > 0 {
-			catParts = append(catParts, fmt.Sprintf("%s %s", CategoryAxisLabels[cid], FormatBytes(tot)))
+			catParts = append(catParts, fmt.Sprintf("%s %s", categoryName(cid), FormatBytes(tot)))
 		}
 	}
 	catLine := "没有能删的缓存"
 	if len(catParts) > 0 {
 		catLine = "能删的：" + strings.Join(catParts, "、")
 	}
+	if lastKnown(ms) {
+		name += "（" + offlineText + "，下面是上次检查的数）"
+	}
 	return fmt.Sprintf("%s [%s %.1f%%] 系统盘 %s 用了 %s / %s，还剩 %s，可以腾出 %s（其中放心删 %s）；%s",
-		name, healthLevelText(ms.Level), ms.UsedPercent, mp,
+		name, healthLevelText(fullnessLevel(ms)), ms.UsedPercent, mp,
 		FormatBytes(ms.UsedBytes), FormatBytes(ms.TotalBytes), FormatBytes(ms.AvailableBytes),
 		FormatBytes(ms.ReclaimableBytes), FormatBytes(ms.SafeBytes), catLine)
 }
 
 func (d draw) fallbackSummary(statuses []MachineStatus) string {
 	var lines []string
-	var totalReclaim, totalSafe uint64
-	for _, ms := range statuses {
-		totalReclaim += ms.ReclaimableBytes
-		totalSafe += ms.SafeBytes
-	}
-	lines = append(lines, fmt.Sprintf("Disklessly 硬盘空间（%d 台电脑，一共可以腾出 %s，其中放心删 %s；用到 80%% 提醒，90%% 告急）",
-		len(statuses), FormatBytes(totalReclaim), FormatBytes(totalSafe)))
+	reclaim := fleetReclaimOf(statuses)
+	head := fmt.Sprintf("Disklessly 硬盘空间（%d 台电脑，现在一共可以腾出 %s，%s；%s）",
+		len(statuses), FormatBytes(reclaim.all), reclaim.statDetail(), fullnessLegend)
+	lines = append(lines, head)
 	for _, ms := range statuses[:min(len(statuses), 12)] {
 		lines = append(lines, "- "+machinePlainTextSummary(ms, d.st.Scans[ms.Machine.ID]))
 	}

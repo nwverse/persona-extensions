@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "search-as-code",
   "name": "AI 聊天记录搜索",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "icon": "assets/icon.png",
   "description": "在你以前和 Claude Code、Codex 的聊天记录里找东西，比如「上次那个 429 报错是怎么修好的？」：找出当时的聊天，标明是哪个项目、哪台电脑上的。可以同时搜你的几台电脑（不在线的电脑搜之前同步过来的精简副本），也可以连你指定的代码文件夹一起搜；用 disklessly 移到云端的聊天照样能搜到，并能一键恢复到原来的位置。可以在页面上直接输入几个词搜，也可以让 Persona 助手帮你搜：它读其他电脑或其他项目的聊天记录前会先问你。常用的搜索可以存起来，点一下就搜。",
   "publisher": "nwverse",
@@ -33,7 +33,7 @@
   "contributes": {
     "ui": [
       {"id": "search-as-code", "title": "AI 聊天记录搜索", "placement": "nav_page", "icon": "search"},
-      {"id": "search-as-code-card", "title": "AI 聊天记录搜索", "placement": "overview_card", "opens": "search-as-code"}
+      {"id": "search-as-code-card", "title": "AI 聊天记录搜索 · 概况", "placement": "overview_card", "opens": "search-as-code"}
     ],
     "skills": [
       {"id": "search-as-code", "dir": "skills/search-as-code"}
@@ -64,7 +64,7 @@
         "description": "选中的电脑会装上这个扩展的小程序：搜索时在那台电脑上直接查它的聊天记录，只把找到的片段传回来；它还会定时把一份精简副本（只有你和助手说的话，每条截短）同步过来，那台电脑不在线时也能搜。一台都不选时，只搜运行 Persona 的这台电脑。",
         "items": {"type": "string", "format": "machine", "x-os": ["darwin", "linux"]},
         "default": [],
-        "x-confirm": "会搜这台电脑上 Claude Code / Codex 的聊天记录：找到的片段和一份精简副本会传到运行 Persona 的电脑上。助手第一次读其他电脑或其他项目的聊天前会先问你（同一次对话里可以按电脑、项目和范围记住）。"
+        "x-confirm": "选上后，这个扩展的一个小程序会在这台电脑上运行，用的是你自己的账号权限（没有沙箱隔开，你能读的文件它都能读）。它做的事：读 Claude Code（~/.claude/projects）和 Codex（~/.codex/sessions）的聊天记录、disklessly 留下的云端聊天索引，以及你在「其他聊天记录文件夹」里填的文件夹。它是只读的：不会改、不会删任何聊天记录，也不在这台电脑上写文件；只有你点「恢复」把移到云端的聊天放回原处时，才会在这里运行 disklessly 把那个文件写回去。它不连外网，只通过 Persona 自己的连接，把这些传给运行 Persona 的电脑：每次搜索找到的片段和项目名（不是整段聊天），还有每 15 分钟同步一次的精简副本（只有你和助手说的话，每条最多 280 个字，那边最多留最新的 300 段聊天）。助手第一次读其他电脑或其他项目的聊天前会先问你。"
       },
       "session_dirs": {
         "type": "string",

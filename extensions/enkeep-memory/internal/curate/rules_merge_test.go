@@ -21,6 +21,8 @@ func TestMergeRules(t *testing.T) {
 		return e
 	}
 	a := rule("rule-a: do not stop to ask", entry.Behavior, 6, "以后别再停下来问我")
+	a.Leverage = &entry.Leverage{Reach: entry.ReachCrossProject, Horizon: entry.HorizonLasting}
+	a.Flags = []string{"durable"}
 	b := rule("rule-b: no plan card, just start", entry.Behavior, 2, "别再弹计划卡")
 	h := rule("rule-h: act on what was already allowed", entry.Handwritten, 3, "不要再让我确认")
 	d := rule("rule-d: always ask before acting", entry.Behavior, 2, "以后别再自己动手")

@@ -137,7 +137,7 @@ func TestColdStateClassifier(t *testing.T) {
 			if err := wire.CheckView(v); err != nil {
 				t.Fatal(err)
 			}
-			if items[0].Badge == nil || items[0].Badge.Text != coldStateLabel(c.state) {
+			if items[0].Badge == nil || items[0].Badge.Text != coldStatePageLabel(c.state) {
 				t.Fatalf("badge %+v", items[0].Badge)
 			}
 			if strings.Contains(items[0].Badge.Text+items[0].Title, "EX_") {
@@ -194,7 +194,7 @@ func TestOldColdCatalogLoads(t *testing.T) {
 	if err := wire.CheckView(v); err != nil {
 		t.Fatal(err)
 	}
-	if got := texts(v); !strings.Contains(got, "电脑 3 台 1 配套小工具出错了 · 1 还没装配套小工具 · 1 正常") {
+	if got := texts(v); !strings.Contains(got, "电脑 3 台 1 台正常 · 2 台要处理") || !strings.Contains(got, "（1 台配套小工具出错了、1 台还没装配套小工具）") {
 		t.Fatalf("summary:\n%s", got)
 	}
 }
@@ -304,7 +304,7 @@ func TestBackgroundRefreshDoesNotBlock(t *testing.T) {
 	if len(rows) == 0 || rows[0].Badge.Text != coldStateLabel(ColdReady) || !strings.Contains(rows[0].Detail, "记下 4 个对话") {
 		t.Fatalf("build-box after refresh: %+v", rows)
 	}
-	if !strings.Contains(texts(v), "2 正常") {
+	if !strings.Contains(texts(v), "电脑 2 台 都正常") {
 		t.Fatalf("summary:\n%s", texts(v))
 	}
 }
@@ -361,8 +361,8 @@ func TestCopyInstallOffer(t *testing.T) {
 	if btn.Action.Values["m"] != "old-box" || btn.Action.Values["id"] != "build-box" {
 		t.Fatalf("install values: %v", btn.Action.Values)
 	}
-	if !strings.Contains(old[0].Detail, "0.1.0") || !strings.Contains(old[0].Detail, "太旧") {
-		t.Fatalf("old-box detail: %s", old[0].Detail)
+	if says := rowSays(old); !strings.Contains(says, "0.1.0") || !strings.Contains(says, "太旧") {
+		t.Fatalf("old-box detail: %s", says)
 	}
 
 	// Across platforms nothing is offered; the only darwin CLI is a Homebrew install, so the row says why.
@@ -370,8 +370,8 @@ func TestCopyInstallOffer(t *testing.T) {
 	if buttonIn(mini, "从 ") != nil {
 		t.Fatalf("mini-mac offered a copy: %+v", mini)
 	}
-	if !strings.Contains(mini[0].Detail, "studio-mac") || !strings.Contains(mini[0].Detail, "不能复制") {
-		t.Fatalf("mini-mac reason: %s", mini[0].Detail)
+	if says := rowSays(mini); !strings.Contains(says, "studio-mac") || !strings.Contains(says, "也不能从别的电脑复制过来：") {
+		t.Fatalf("mini-mac reason: %s", says)
 	}
 	hasLink := false
 	for _, c := range mini {

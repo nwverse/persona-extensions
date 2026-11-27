@@ -440,7 +440,7 @@ func TestSessionsPageUI(t *testing.T) {
 	r0 := rows[0]
 	if r0.Badge == nil || r0.Badge.Text != LocCloud || r0.Badge.Tone != wire.TonePositive || len(r0.Actions) != 1 ||
 		!strings.Contains(r0.Actions[0].Action.Confirm, "从网盘拿回来，放回原来的位置 /home/dev/.claude/projects/") ||
-		!strings.Contains(r0.Actions[0].Action.Confirm, "claude --resume "+uuidClaude) || !strings.Contains(r0.Subtitle, "Claude Code · shop · 2026-10-20") {
+		!strings.Contains(r0.Actions[0].Action.Confirm, "claude --resume "+uuidClaude) || !strings.Contains(r0.Subtitle, "Claude Code · shop · 10月20日 08:00") {
 		t.Fatalf("row: %+v", r0)
 	}
 	for _, r := range rows {

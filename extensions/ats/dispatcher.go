@@ -334,7 +334,9 @@ func errorClassInWords(class string) string {
 }
 
 const (
-	promptFailureRunes = 1500
+	// promptFailureRunes is how much of the earlier attempt's report a retry is told: its first line (how the
+	// acceptance command ended) and the end of the output. The agent can run the command again for the rest.
+	promptFailureRunes = 800
 	summaryRunes       = 1200
 )
 
@@ -404,10 +406,12 @@ func buildPrompt(t *Task, ws prepareResult, readonly bool, prev *EvidenceReport,
 			attempt = t.Attempts[n-1].AttemptNo
 		}
 		fmt.Fprintf(&b, "\n---\nThis is attempt %d of this task. Attempt %d did not succeed: %s.\n", attempt, prev.AttemptNo, errorClassInWords(prev.ErrorClass))
-		if msg := tailRunes(prev.Message, promptFailureRunes); msg != "" {
+		msg := outputEnd(prev.Message, promptFailureRunes)
+		if msg != "" {
 			fmt.Fprintf(&b, "How it ended (the end of the output):\n%s\n", indentBlock(msg))
 		}
-		if sum := strings.TrimSpace(prev.Summary); sum != "" {
+		// A turn that ended in an error reports the agent's reply as its message: not said twice.
+		if sum := strings.TrimSpace(prev.Summary); sum != "" && !strings.HasSuffix(msg, sum) {
 			fmt.Fprintf(&b, "What that attempt's agent said at its end:\n%s\n", indentBlock(sum))
 		}
 		switch {
