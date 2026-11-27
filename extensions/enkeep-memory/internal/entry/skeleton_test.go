@@ -101,3 +101,14 @@ func TestGenericPeopleNoise(t *testing.T) {
 		t.Error("durable role on a concrete named person must not be dropped")
 	}
 }
+
+func TestIsOpsRunbookEntryIntegratesBlock1Classifier(t *testing.T) {
+	byClass := &Entry{ID: "c1", Facet: Interaction, MemoryClass: ClassOpsRunbook, Text: "generic text", Last: "2026-09-01"}
+	if !IsOpsRunbookEntry(byClass) || !ShouldDormantOpsRunbook(byClass, "2026-11-27") {
+		t.Fatalf("expected MemoryClass=ClassOpsRunbook to integrate with OpsRunbook decay")
+	}
+	byText := &Entry{ID: "c2", Facet: Interaction, Text: "在 build-wsl 上执行 go test 并检查 docker 容器", Last: "2026-10-05"}
+	if !IsOpsRunbookEntry(byText) || OpsRunbookWeight(byText, "2026-11-27") != 0.5 {
+		t.Fatalf("expected ClassifyOpsRunbook match to integrate with OpsRunbookWeight (0.5 at 53d)")
+	}
+}

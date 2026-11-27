@@ -21,29 +21,35 @@ Propose a principle ONLY when all of these hold:
 1. Several items, from different projects or different source kinds, share the SAME single cognitive kernel or
    underlying choice. Name them in `members` (and only include members whose `quotes` actually support that exact
    choice). Prefer extending an existing principle (`extends`) rather than creating a near-duplicate.
-2. Grounded in every clause: every action, condition, rejected alternative, and exception you write in `text`,
+2. **MANDATORY DE-SHELLING (剥事件壳)**: Every principle MUST remain valid after stripping single-incident names,
+   project names, machine/host names, CLI commands, repository names, and specific software/hardware/platform names.
+   - NEVER include single-incident names, hostnames, CLI commands, API endpoints, or specific tool/software names in
+     `text`, `situation`, `choice`, `rejected`, or `exception`.
+   - If an observation is an incident-wrapped rule whose underlying cognitive habit is universal, write the de-shelled
+     universal wording and attach the incident item(s) in `members`.
+   - If an observation loses its meaning once concrete host/tool/platform names are stripped (e.g., CI host routing,
+     backup-before-edit SOP, container upgrade steps, launcher fallback), DO NOT propose it as a cognitive principle.
+3. Grounded in every clause: every action, condition, rejected alternative, and exception you write in `text`,
    `situation`, `choice`, `rejected` and `exception` MUST be directly visible in the `quotes` of the chosen `members`.
    - Write ONE concise, actionable core principle (<= 80 Chinese characters / <= 240 bytes, or <= 35 English words). NEVER
      bundle several different habits or sub-rules into one multi-clause sentence.
-   - For items in the `core_owned` cluster (curated handwritten or cross-month abstract principles backed by multiple
+   - For items in the `core_owned` cluster (user-authored or cross-month abstract principles backed by multiple
      sources), preserve their concrete trade-off criteria and explicit rejections (e.g. cost transparency vs blind SOTA,
      first-principles design vs patching) — NEVER dilute them into vague platitudes or drop them just because they stand
      alone.
-   - NEVER promote a specific detail that appears in only one member (such as one tool/checklist/machine name or one
-     incidental step) into the principle's general statement, and NEVER infer mechanisms not stated in the quotes.
    - If the quotes do not explicitly show a rejected alternative or an exception, leave `rejected` or `exception` empty.
-3. No single-project or single-task conventions: if the quotes all come from one project, one specific task, or one
+4. No single-project or single-task conventions: if the quotes all come from one project, one specific task, or one
    deliverable (even across several days), do NOT generalize them into a personal principle.
-4. Distinctive: `default_contrast` is what a capable person who does not know the user would do in that situation; the
+5. Distinctive: `default_contrast` is what a capable person who does not know the user would do in that situation; the
    user's way must differ from it in a way one could predict from. "Checks facts before answering", "communicates
    clearly", "cares about quality" hold for anyone capable: set `holds_for_anyone` true, or better, leave it out.
-5. General and neutral: `situation` names a kind of situation, never one project, one person or one incident. Do not
+6. General and neutral: `situation` names a kind of situation, never one project, one person or one incident. Do not
    use project or people names in `text`. When writing in Chinese, always refer to the person as「用户」, never「他」or「她」.
 
 For each principle give:
 - `extends`: the id of an existing principle it is the same as (its members are added there), or empty for a new one;
-- `text`: one short sentence the assistant can act on: in situations like X, the user does Y (rather than Z, only if
-  shown in quotes);
+- `text`: one short de-shelled sentence the assistant can act on: in situations like X, the user does Y (rather than Z,
+  only if shown in quotes);
 - `situation`, `choice`, `rejected` (only when shown in quotes; else empty);
 - `exception`: only when the quotes explicitly show a condition where the user does otherwise; else empty;
 - `dimension`: cognitive dimension when applicable — pick the single best fit, do NOT default every workflow or habit to `decision`:

@@ -18,7 +18,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
@@ -262,13 +261,22 @@ func Status(e *entry.Entry) string {
 	return "candidate"
 }
 
-// Rank orders entries by how much they matter (0.2.0-beta.52: entry.Score, 0 to 891; pinned 1000), not by how new they
-// are: recall and hand-offs take the highest first. Entity-anchored active local rules keep high recall rank (750–891)
-// without entering standing (unified design §2.2). A weak relation triple ranks last. The standing set has its own
-// ranks above every other (Resident).
+// Rank orders entries by how much they matter (0 to 940; pinned 1000), not by how new they are:
+//   - Active ops_runbook entries keep high on-demand recall rank (840–940) modulated by entry.OpsRunbookWeight
+//     (45d demote 0.5x, 60d dormant 0.25x) so operational rules stay out of 4 KB standing yet recall reliably when
+//     relevant and naturally decay when stale (v0.4.0 §1.3/§1.7).
+//   - Active genuinely user-owned entries keep rank >= 820; entity-anchored local rules >= 750.
+//   - Weak relation triples rank last (<= 9).
+//   - Standing entries receive their own ranks (995..989 down) in workStandingSet.
 func Rank(e *entry.Entry) int {
 	if e.Pinned {
 		return 1000
+	}
+	if entry.IsOpsRunbookEntry(e) && Status(e) == "active" {
+		base := 840 + min(100, entry.Score(e))
+		today := nowFn().Format("2006-01-02")
+		w := entry.OpsRunbookWeight(e, today)
+		return max(0, min(940, int(float64(base)*w)))
 	}
 	r := entry.Score(e) * 9
 	if IsWeakRelation(e) {
@@ -390,27 +398,42 @@ func Tags(st *store.State, e *entry.Entry) (cats []string, space string, backfil
 	return cats, space, true
 }
 
+// backfill classifies untagged legacy entries strictly by Payload-First (v0.4.0 §1.6):
+//   - NEVER scans raw Evidence quotes (ev.Quote), only the entry's own PayloadTexts().
+//   - Work-methodology facets (interaction, tools, workflow, judgement) do NOT inherit OriginSpace or member
+//     conversation-topic sensitivity unless their own payload discloses personal privacy or was explicitly tagged ByUser.
 func backfill(st *store.State, e *entry.Entry, depth int) ([]string, string) {
-	cats, space := e.Cats(), e.OriginSpace
+	workMethod := entry.IsWorkMethodFacet(e.Facet)
+	var cats []string
+	space := ""
+	if !workMethod {
+		space = e.OriginSpace
+	}
 	add := func(list []string) {
 		for _, c := range list {
-			if !slices.Contains(cats, c) && !slices.Contains(e.CatsRemoved, c) {
+			if c != "" && !slices.Contains(cats, c) && !slices.Contains(e.CatsRemoved, c) {
 				cats = append(cats, c)
 			}
 		}
 	}
-	if !e.Tagged {
-		texts := []string{e.Text, e.Object}
-		for _, ev := range e.Evidence {
-			texts = append(texts, ev.Quote)
+	// Preserve explicit user-authored categories and Payload-First supported categories.
+	ownPayload := entry.PayloadCategories(e.Facet, e.PayloadTexts()...)
+	add(ownPayload)
+	for _, c := range e.Categories {
+		cn := entry.CategoryOf(c.Name)
+		if cn == "" {
+			continue
 		}
-		words, _ := curate.CategoriesOf("", texts...)
-		if e.Sensitive != "" || len(e.Categories) > 0 { // a model's label: the money words add nothing on their own
-			words = slices.DeleteFunc(words, func(c string) bool { return c == entry.CatFinance })
+		if c.By == entry.ByUser || (!workMethod && (c.By == entry.BySpaceDefault || slices.Contains(ownPayload, cn))) {
+			add([]string{cn})
 		}
-		add(words)
 	}
-	if depth < 2 {
+	if !workMethod {
+		if cn := entry.CategoryOf(e.Sensitive); cn != "" && slices.Contains(ownPayload, cn) {
+			add([]string{cn})
+		}
+	}
+	if !workMethod && depth < 2 {
 		for _, id := range e.Members {
 			m := st.Entries[id]
 			if m == nil {
@@ -429,8 +452,10 @@ func backfill(st *store.State, e *entry.Entry, depth int) ([]string, string) {
 			}
 		}
 	}
-	for _, c := range entry.SpaceDefaults(space) {
-		add([]string{c})
+	if !workMethod {
+		for _, c := range entry.SpaceDefaults(space) {
+			add([]string{c})
+		}
 	}
 	return cats, space
 }
@@ -502,15 +527,15 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 			add(strings.TrimPrefix(g, string(e.Facet)+":"))
 		}
 	}
-	// Enrich user-owned rules/principles with concrete tool/host identifiers and occasion cues (unified design §2.1 & §2.2)
-	// so non-standing verbatim S6 rules remain directly reachable via decisions_query(tag).
-	if IsUserOwned(e) && entry.KindOf(e) != "" && len(out) < MaxSubjects {
-		enrichUserOwnedSubjects(recall.Head(e)+" "+e.Exception, add)
+	// Enrich user-owned rules and ops_runbook entries with concrete tool/host/command identifiers and occasion cues
+	// (v0.4.0 §1.7) so non-standing ops runbooks stay 100% reachable via decisions_query(tag) and contextual recall.
+	if (IsUserOwned(e) || entry.IsOpsRunbookEntry(e)) && (entry.KindOf(e) != "" || e.Facet == entry.Tools) && len(out) < MaxSubjects {
+		enrichUserOwnedSubjects(recall.Head(e)+" "+e.Exception+" "+e.Object+" "+e.Pitfall+" "+e.Fix, add)
 	}
-	// 1-hop skeleton neighbors (unified design §2.2): for entity-anchored rules, attach up to 4 structural
-	// 1-hop neighbor names from the entity graph so querying a related project/person/repo surfaces the rule.
+	// 1-hop skeleton neighbors (unified design §2.2): for entity-anchored rules and ops_runbooks, attach up to 4
+	// structural 1-hop neighbor names from the entity graph so querying a related project/person/repo surfaces the rule.
 	if st != nil && st.Graph != nil && len(entityNames) > 0 && len(out) < MaxSubjects &&
-		(entityAnchoredRule(e) || (e.Facet == entry.World && entry.IsSkeletonPredicate(e.Predicate))) {
+		(entityAnchoredRule(e) || entry.IsOpsRunbookEntry(e) || (e.Facet == entry.World && entry.IsSkeletonPredicate(e.Predicate))) {
 		for _, nb := range recall.SkeletonNeighbors(st, entityNames, 4) {
 			add(nb)
 		}
@@ -673,12 +698,6 @@ func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (
 		}
 		e.Subjects = subj
 		e.Rank = min(max(e.Rank, 0), 1000)
-		if slices.ContainsFunc(x.CoveredIDs, func(cid string) bool {
-			ce := st.Entries[cid]
-			return ce != nil && ce.Live() && IsUserOwned(ce)
-		}) {
-			e.Rank = min(e.Rank, 740)
-		}
 		e.Standing = false
 		if c, ok := stand[e.ID]; ok {
 			e.Standing, e.Rank, e.Text = true, c.rank, c.text
@@ -932,15 +951,15 @@ func ResidentMostFor(room int) int {
 }
 
 func workStandingSet(st *store.State, extras []Extra, room int) map[string]standing {
-	var l1Cands, uoCands, hotCands, coldCands []Candidate
+	var l1Cands, hotCands, coldCands []Candidate
 	tpl := entry.TemplateQuotes(st.Entries)
 	now := nowFn()
 
-	// Collect L1 candidates and track which L0 entries are covered or absorbed by a live L1 pattern.
+	// Collect L1 candidates across the three main sections (Profile, Principle, Contract) and track which L0 entries
+	// are absorbed by a live L1 contract.
 	absorbed := map[string]bool{}
-	coveredByPat := map[string][]string{}
 	var contractTexts []string
-	hasMainContract, hasMainPrinciple := false, false
+	hasMainProfile, hasMainPrinciple, hasMainContract := false, false, false
 	l1LatestDay := ""
 	for _, x := range extras {
 		e := x.Entry
@@ -948,14 +967,29 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 			entry.TemplateBacked(st.Entries, x.Evidence, tpl) {
 			continue
 		}
+		if e.Facet == string(entry.Tools) {
+			continue // Class C ops_runbook never enters global 4 KB standing
+		}
 		if x.Last > l1LatestDay {
 			l1LatestDay = x.Last
 		}
 		bucket := BucketPrinciple
 		maxBytes := PrincipleTextMost
-		if x.L1Kind == BucketContract || (x.L1Kind == "" && x.Kind == entry.KindRules) {
+		switch x.L1Kind {
+		case BucketProfile:
+			bucket = BucketProfile
+			maxBytes = ProfileTextMost
+		case BucketContract:
 			bucket = BucketContract
 			maxBytes = ContractTextMost
+		case BucketPrinciple:
+			bucket = BucketPrinciple
+			maxBytes = PrincipleTextMost
+		default:
+			if x.Kind == entry.KindRules {
+				bucket = BucketContract
+				maxBytes = ContractTextMost
+			}
 		}
 		prefix := StandingPrefix(bucket, x.Hard, x.Polarity)
 		text := ""
@@ -986,10 +1020,10 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 			Dimension: x.Dimension,
 			Group:     x.Group,
 		})
-		if len(x.CoveredIDs) > 0 {
-			coveredByPat[e.ID] = x.CoveredIDs
-		}
-		if bucket == BucketContract {
+		switch bucket {
+		case BucketProfile:
+			hasMainProfile = true
+		case BucketContract:
 			hasMainContract = true
 			for _, id := range x.Evidence {
 				absorbed[id] = true
@@ -998,19 +1032,19 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 				absorbed[id] = true
 			}
 			contractTexts = append(contractTexts, text)
-		} else {
+		default:
 			hasMainPrinciple = true
 		}
 	}
 
-	// Collect Bucket 0 (Hot Slot: Pinned + active Fast-Path + unabsorbed post-L1 non-owned high-certainty rules),
-	// verbatim UserOwned pass-through candidates (unified design §2.1), and cold-start L0 fallback candidates.
+	// Collect Bucket 0 (Hot Slot: genuinely user-owned Pinned + active 7d non-ops Fast-Path) and cold-start L0
+	// fallback candidates per section (0 reliance on S6 assistant notes, 0 ops_runbook, 0 ephemeral, 0 sensitive).
 	for _, e := range st.Entries {
 		if !idRe.MatchString(e.ID) {
 			continue
 		}
 		hc, ok := HotSlotCandidate(st, e, tpl, now)
-		if !ok && !IsUserOwned(e) && hasMainContract && l1LatestDay != "" {
+		if !ok && hasMainContract && l1LatestDay != "" {
 			hc, ok = UnabsorbedRuleHotCandidate(st, e, tpl, l1LatestDay, now)
 		}
 		if ok {
@@ -1022,16 +1056,11 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 			hotCands = append(hotCands, hc)
 			continue
 		}
-		if uc, ok := UserOwnedStandingCandidate(st, e, tpl); ok {
-			uoCands = append(uoCands, uc)
-			if uc.Bucket == BucketContract {
-				hasMainContract = true
-			} else {
-				hasMainPrinciple = true
-			}
-			continue
-		}
-		if !entry.ColdStartEligible(e) {
+		// Cold-start L0 fallback: T0 SelfReport/FromOnboarding or T1 eligible entries for any section lacking L1.
+		coldOK := entry.ColdStartEligible(e) ||
+			(e.Facet == entry.Persona && (e.Status == entry.Stable || entry.IsTrueUserOwned(e))) ||
+			(e.Facet == entry.Interaction && e.Status == entry.Stable && !entry.IsOpsRunbookEntry(e))
+		if !coldOK {
 			continue
 		}
 		if c, ok := CuratedCandidate(st, e, tpl); ok {
@@ -1039,14 +1068,17 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 		}
 	}
 
-	cands := make([]Candidate, 0, len(hotCands)+len(uoCands)+len(l1Cands)+len(coldCands))
+	cands := make([]Candidate, 0, len(hotCands)+len(l1Cands)+len(coldCands))
 	cands = append(cands, hotCands...)
-	cands = append(cands, ApplyUserOwnedPassThrough(l1Cands, uoCands, coveredByPat)...)
+	cands = append(cands, l1Cands...)
 	for _, c := range coldCands {
-		if c.Bucket == BucketContract && hasMainContract {
+		if c.Bucket == BucketProfile && hasMainProfile {
 			continue
 		}
 		if c.Bucket == BucketPrinciple && hasMainPrinciple {
+			continue
+		}
+		if c.Bucket == BucketContract && hasMainContract {
 			continue
 		}
 		cands = append(cands, c)

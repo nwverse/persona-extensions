@@ -761,7 +761,8 @@ func TestSliceStateBeforeStatusDowngradePrecision(t *testing.T) {
 	}
 }
 
-// Verify heMemories and recallNonStandingL1 enforce verbatim UserOwned pass-through alongside pure-behavior L1.
+// Verify heMemories uses L1 patterns without old S6/UserOwned pass-through suppression, and recallNonStandingL1
+// retrieves non-standing user-owned rules.
 func TestHeMemoriesAndRecallUserOwnedVerbatim(t *testing.T) {
 	st := &store.State{Entries: map[string]*entry.Entry{
 		"hw-stand": {
@@ -778,32 +779,29 @@ func TestHeMemoriesAndRecallUserOwnedVerbatim(t *testing.T) {
 	ov := &overview.State{Patterns: map[string]*overview.Pattern{
 		"ov:wrap": {
 			ID: "ov:wrap", Facet: string(entry.Interaction), Kind: overview.KindContract, Lifecycle: overview.Core,
-			Text: "抽象改写版自主执行口号", CoveredIDs: []string{"hw-stand"}, EvidenceIDs: []string{"hw-stand"},
+			Text: "已放行的常规任务直接自主推进，不弹确认卡。", CoveredIDs: []string{"hw-stand"}, EvidenceIDs: []string{"hw-stand"},
 			Hard: true, Polarity: overview.PolarityAct, ScenesCount: 3, SourcesCount: 5, LastEvidence: "2026-11-15",
 		},
 		"ov:pure": {
-			ID: "ov:pure", Facet: string(entry.Tools), Kind: overview.KindContract, Lifecycle: overview.Core,
-			Text:        "发消息给用户必须调用 send_message 工具。",
+			ID: "ov:pure", Facet: string(entry.Interaction), Kind: overview.KindContract, Lifecycle: overview.Core,
+			Text:        "发消息给用户必须调用直接投递工具，不要只存本地路径。",
 			ScenesCount: 3, SourcesCount: 10, LastEvidence: "2026-11-15",
 		},
 	}}
 	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}}
 	mems := heMemories(st, ov, nil, f, "2026-11-20", 4096)
 	res := mems["resident"]
-	if !strings.Contains(res, "已放行运维活直接自主执行，严禁弹确认卡") {
-		t.Errorf("resident missing verbatim handwritten rule: %s", res)
+	if !strings.Contains(res, "已放行的常规任务直接自主推进") {
+		t.Errorf("resident missing L1 contract: %s", res)
 	}
-	if strings.Contains(res, "抽象改写版自主执行口号") {
-		t.Errorf("resident should suppress L1 paraphrase covering live handwritten rule: %s", res)
+	if !strings.Contains(res, "直接投递工具") {
+		t.Errorf("resident missing second L1 contract: %s", res)
 	}
-	if !strings.Contains(res, "send_message") {
-		t.Errorf("resident missing pure behavior-synthesized L1 contract: %s", res)
-	}
-	// Non-standing handwritten rule is retrieved verbatim by recallNonStandingL1.
+	// Non-standing user-owned rule is retrieved by recallNonStandingL1.
 	lines := recallNonStandingL1(st, ov, f, "2026-11-20", "准备用 task_plan 派一个开发任务", "- 已放行运维活直接自主执行", 850)
 	joined := strings.Join(lines, "\n")
 	if !strings.Contains(joined, "填全 cwd 与 model 字段") {
-		t.Errorf("recallNonStandingL1 missing verbatim non-standing handwritten rule: %q", joined)
+		t.Errorf("recallNonStandingL1 missing non-standing user-owned rule: %q", joined)
 	}
 }
 

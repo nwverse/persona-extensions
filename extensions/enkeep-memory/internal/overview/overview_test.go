@@ -145,6 +145,10 @@ func (m *fakeModel) Complete(_ context.Context, r model.Request) (model.Response
 		out = m.predict(in)
 	case "overview_merge":
 		out = mergeOutput{Groups: []mergeGroup{}}
+	case "overview_profile_core":
+		out = profileCoreOutput{}
+	case "overview_reconcile":
+		out = reconcileOutput{}
 	case "overview_audit":
 		var in auditInput
 		_ = json.Unmarshal([]byte(r.User), &in)

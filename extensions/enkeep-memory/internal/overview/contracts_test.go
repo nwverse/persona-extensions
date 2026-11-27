@@ -348,8 +348,8 @@ func TestPatternKindBackwardCompat(t *testing.T) {
 	if got := (&Pattern{Facet: string(entry.Interaction)}).KindOf(); got != KindContract {
 		t.Fatalf("interaction inferred %q", got)
 	}
-	if got := (&Pattern{Facet: string(entry.Tools)}).KindOf(); got != KindContract {
-		t.Fatalf("tools inferred %q", got)
+	if got := (&Pattern{Facet: string(entry.Tools)}).KindOf(); got != KindOpsRunbook {
+		t.Fatalf("tools inferred %q, want %q", got, KindOpsRunbook)
 	}
 	if got := (&Pattern{Facet: string(entry.Judgement)}).KindOf(); got != KindPrinciple {
 		t.Fatalf("judgement inferred %q", got)
@@ -433,34 +433,43 @@ func TestEvidenceDimensionWinsOverModelGuess(t *testing.T) {
 	}
 }
 
-// Tags follow subject ownership: one incidental sensitive evidence item must not taint a general collaboration
-// contract, while majority-sensitive evidence or any restricted OriginSpace still taints it.
+// Tags follow v0.4.0 §1.6 Payload-First: work-methodology facets ignore non-payload ByModel/OriginSpace contagion
+// while honoring explicit ByUser labels and genuine payload disclosures; non-work facets (persona/world) still confine
+// restricted OriginSpace strictly.
 func TestTagsSubjectOwnership(t *testing.T) {
 	e1 := action("ts1", entry.Interaction, "alpha", entry.SrcAssistant, "2026-11-05", "stay within asked scope")
 	e2 := action("ts2", entry.Interaction, "beta", entry.SrcAsk, "2026-11-10", "do not expand scope unasked")
 	e3 := action("ts3", entry.Interaction, "gamma", entry.SrcAgent, "2026-11-15", "keep to the user's question")
-	e3.Categories = []entry.Category{{Name: entry.CatEmotion, By: "model"}}
+	e3.Categories = []entry.Category{{Name: entry.CatEmotion, By: entry.ByModel}}
 	p := &Pattern{ID: "ov:gen", Facet: string(entry.Interaction), Kind: KindContract, Text: "只做用户所问范围",
 		EvidenceIDs: []string{"ts1", "ts2", "ts3"}}
 	cats, space := tags(state(e1, e2, e3), p, p.EvidenceIDs)
 	if len(cats) != 0 || space != "" {
-		t.Fatalf("minority sensitive evidence should not taint general contract: cats=%v space=%q", cats, space)
+		t.Fatalf("model emotion tag on work rule must not taint general contract: cats=%v space=%q", cats, space)
 	}
 
-	// Majority (2/3) sensitive evidence must taint.
-	e2.Categories = []entry.Category{{Name: entry.CatFinance, By: "model"}}
-	e3.Categories = []entry.Category{{Name: entry.CatFinance, By: "model"}}
+	// Majority (2/3) explicit ByUser sensitive categories must taint even on work-methodology facets.
+	e2.Categories = []entry.Category{{Name: entry.CatFinance, By: entry.ByUser}}
+	e3.Categories = []entry.Category{{Name: entry.CatFinance, By: entry.ByUser}}
 	cats, _ = tags(state(e1, e2, e3), p, p.EvidenceIDs)
 	if !slices.Contains(cats, entry.CatFinance) {
-		t.Fatalf("majority sensitive evidence must taint: cats=%v", cats)
+		t.Fatalf("majority ByUser sensitive evidence must taint: cats=%v", cats)
 	}
 
-	// Any restricted OriginSpace must still taint unconditionally.
+	// De-shelled general work contract does NOT inherit OriginSpace confinement; non-work persona pattern DOES.
 	e1.OriginSpace = "private-space"
 	e2.Categories, e3.Categories = nil, nil
 	_, space = tags(state(e1, e2, e3), p, p.EvidenceIDs)
+	if space != "" {
+		t.Fatalf("work-methodology contract should not inherit OriginSpace, got %q", space)
+	}
+	pe1 := action("ps1", entry.Persona, "alpha", entry.SrcAssistant, "2026-11-05", "personal reflection")
+	pe1.OriginSpace = "private-space"
+	pp := &Pattern{ID: "ov:pers", Facet: string(entry.Persona), Kind: KindPrinciple, Text: "个人阶段反思",
+		EvidenceIDs: []string{"ps1"}}
+	_, space = tags(state(pe1), pp, pp.EvidenceIDs)
 	if space != "private-space" {
-		t.Fatalf("origin space must taint unconditionally, got %q", space)
+		t.Fatalf("persona pattern must inherit OriginSpace, got %q", space)
 	}
 }
 

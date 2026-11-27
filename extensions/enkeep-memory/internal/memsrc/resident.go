@@ -14,66 +14,76 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
-// The standing set (unified design §2.1): the few entries the hub puts in every main-space turn, chosen in three
-// buckets within the configured room (default 1400 bytes, 4096 on hubs with an independent standing budget):
+// The 0.4.0 three-section + dynamic hot-slot standing set (§1.7):
 //
-//   - Bucket 0 (Hot Slot): dynamic 0%–15% (at most HotSlotMaxBytes and HotSlotMax entries) for user-pinned entries
-//     and Fast-Path temporary hard contracts (TTL 7 days, retired from the hot slot once L1 absorbs them). Unused
-//     hot-slot bytes return to Buckets 1 and 2.
-//   - Bucket 1 (Contracts): 80% of the remaining room for L1 collaboration contracts (①②). Pass 1 applies gentle
-//     anti-monopoly polarity caps (check <= 45%, act <= 35%, communicate <= 30%, route <= 30%) and non-generic group
-//     cap (GroupShare 20%); pass 2 refills leftover bucket room by unified Score so high-leverage cross-scene contracts
-//     are never displaced by low-scoring narrow rules.
-//   - Bucket 2 (Principles): 20% of the remaining room for L1 cognitive principles (③④⑥⑤), chosen strictly by unified
-//     leverage Score with non-generic group cap (GroupShare 20%) rather than forcing low-action dimensions into standing.
+//   - Bucket 0 (Hot Slot): dynamic 0%–10% (at most HotSlotMaxBytes=400 B and HotSlotMax=2 entries) for genuinely
+//     user-owned Pinned entries and active 7-day de-shelled non-ops Fast-Path corrections. Unused hot-slot bytes
+//     return to the three main sections.
+//   - Section 1 (Profile Core, ~20%): user identity, stage, constraints, and anti-misread boundaries (A1).
+//   - Section 2 (Cognitive Principles, ~28%): reconciled cross-scene decision/thinking principles with Poles/Exception (A2).
+//   - Section 3 (Universal Contracts, ~52%): cross-tool universal AI collaboration rules (B), enforcing polarity balance
+//     (check <= 45%, act <= 35%, communicate <= 30%, route <= 30%) and a strict cap of HardContractLimit=3 【硬】 lines
+//     (remaining contracts stay neutral).
 //
-// Bidirectional L1 spillover: when one L1 main bucket exhausts its qualified L1 candidates with bytes left over (for
-// example, few L1 principles), the leftover budget flows to the other L1 main bucket, whose polarity/dimension/group
-// caps scale proportionally with its expanded effective budget. L0 fragments never fill leftover L1 room; L0 fallback
-// applies only to a main bucket that has zero qualified L1 candidates (cold start).
+// Hard invariants enforced in code:
+//   - 0 ops_runbook entries (entry.IsOpsRunbookEntry) in global standing.
+//   - 0 S6 assistant_note pass-through entries (entry.IsAssistantNote) in global standing.
+//   - 0 ephemeral entries (entry.IsEphemeral) in global standing.
+//   - 0 sensitive or restricted-space entries in global standing.
+//   - Blank new-user cold-start fallback: any section with 0 L1 candidates falls back independently to qualified T0/T1
+//     L0 entries (0 reliance on S6). L1 leftover room flows only between L1 sections, never into L0 fragments.
 const (
 	ResidentBytes = 1400
 	ResidentMost  = 12
 
 	// HotSlotShare, HotSlotMaxBytes, HotSlotMax, HotSlotTTLDays bound Bucket 0 (Hot Slot).
-	HotSlotShare    = 0.15
-	HotSlotMaxBytes = 600
-	HotSlotMax      = 3
+	HotSlotShare    = 0.10
+	HotSlotMaxBytes = 400
+	HotSlotMax      = 2
 	HotSlotTTLDays  = 7
 
-	// ContractShare is Bucket 1's nominal share of the room left after Bucket 0 (80%; Bucket 2 gets 20%).
-	ContractShare = 0.80
+	// Main section shares of the room left after Bucket 0 (0.20 + 0.28 + 0.52 = 1.00).
+	ProfileShare   = 0.20
+	PrincipleShare = 0.28
+	ContractShare  = 0.52
+
+	// HardContractLimit caps how many contracts receive the 【硬】 prefix in Section 3 (v0.4.0 §1.7).
+	HardContractLimit = 3
+
 	// PolarityShare is the default cap for an unspecified contract polarity; specific polarities use polarityShareOf
-	// (check <= 45%, act <= 35%, communicate <= 30%, route <= 30%) in pass 1, with pass 2 refilling leftover room
-	// by unified Score so high-leverage cross-scene rules are never displaced by low-scoring narrow rules.
+	// (check <= 45%, act <= 35%, communicate <= 30%, route <= 30%).
 	PolarityShare = 0.35
-	// GroupShare caps any single non-generic occasion/type class ("<facet>:<type>") within a bucket's effective room.
+	// GroupShare caps any single non-generic occasion/type class ("<facet>:<type>") within a section's effective room.
 	GroupShare = 0.20
 
-	// Per-line maximum lengths in bytes by bucket (unified design §2.1): wide enough to keep concrete bans + exceptions intact.
-	HotTextMost       = 280
-	ContractTextMost  = 300
+	// Per-line maximum lengths in bytes by section.
+	HotTextMost       = 260
+	ProfileTextMost   = 240
 	PrincipleTextMost = 280
+	ContractTextMost  = 280
 	residentTextMost  = 280
 
 	// sameRule is the bigram Jaccard threshold above which two standing lines are treated as duplicates.
 	sameRule = 0.45
-	// rankHot is the first hot-slot rank (995..990); rankStand is the first Bucket 1/2 interleaved rank (989 down).
+	// rankHot is the first hot-slot rank (995..994); rankStand is the first main-section rank (989 down).
 	rankHot   = 995
 	rankStand = 989
 	// residentOverhead is what the hub adds to each line ("- " and a line end).
 	residentOverhead = 3
+
+	hardTagPrefix = "【硬】"
 )
 
-// Bucket names for three-bucket standing selection.
+// Bucket names for three-section + hot-slot standing selection.
 const (
 	BucketHot       = "hot"
-	BucketContract  = "contract"
+	BucketProfile   = "profile"
 	BucketPrinciple = "principle"
+	BucketContract  = "contract"
 )
 
-// Candidate is one entry that may stand: a hot-slot entry (Pinned or Fast-Path), an L1 contract/principle, or a
-// cold-start L0 fallback entry.
+// Candidate is one entry that may stand: a hot-slot entry (Pinned or Fast-Path), an L1 profile/principle/contract,
+// or a cold-start L0 fallback entry.
 type Candidate struct {
 	ID    string
 	Text  string
@@ -82,20 +92,19 @@ type Candidate struct {
 	// Days (independent quotes/evidence count) and Last (newest evidence day) break ties in score.
 	Days int
 	Last string
-	// Bucket is BucketHot, BucketContract, or BucketPrinciple (inferred from Kind when empty).
+	// Bucket is BucketHot, BucketProfile, BucketPrinciple, or BucketContract (inferred from Kind/Facet when empty).
 	Bucket string
-	// L1 marks an L1 overview contract or principle (false for hot-slot and cold-start L0 entries).
+	// L1 marks an L1 overview pattern (false for hot-slot and cold-start L0 entries).
 	L1 bool
-	// UserOwned marks a user-confirmed rule/principle (S6 handwritten, self_report, or user-edited) that passes through
-	// verbatim into Buckets 1 and 2 without L1 rewriting (unified design §2.1).
+	// UserOwned marks a genuinely user-sovereign T0 entry (SelfReport, FromOnboarding, Pinned, or user-edited).
 	UserOwned bool
 	// Pinned marks a user-pinned entry (ranks first inside the hot slot).
 	Pinned bool
-	// Hard marks a hard contract (ranks ahead of non-hard contracts in Bucket 1).
+	// Hard marks a hard contract candidate (at most HardContractLimit receive 【硬】 in Section 3).
 	Hard bool
 	// Polarity is a contract's action direction (act/check/communicate/route).
 	Polarity string
-	// Facet is the source facet ("interaction", "tools", "judgement", ...), used for the ② tools floor in Bucket 1.
+	// Facet is the source facet ("persona", "judgement", "workflow", "interaction", ...).
 	Facet string
 	// Dimension is a principle's cognitive dimension (decision/thinking/reaction/attention/communication).
 	Dimension string
@@ -103,8 +112,8 @@ type Candidate struct {
 	Group string
 }
 
-// polarityShareOf returns the pass-1 anti-monopoly polarity cap within Bucket 1 (unified design §2.1):
-// verification/boundary rules get the widest headroom (45%), autonomous-push rules 35%, communicate/route 30%.
+// polarityShareOf returns the anti-monopoly polarity cap within Section 3 (v0.4.0 §1.7):
+// check <= 45%, act <= 35%, communicate <= 30%, route <= 30%.
 func polarityShareOf(pol string) float64 {
 	switch pol {
 	case "check":
@@ -120,18 +129,27 @@ func polarityShareOf(pol string) float64 {
 	}
 }
 
-// StandingPrefix returns the lightweight semantic tier tag prepended to L1 standing lines (unified design §2.1).
-// Contracts carry no pressure tag (avoiding 【硬】-wall over-braking of autonomous rules); principles carry 【原则】.
+// StandingPrefix returns the lightweight semantic tier tag prepended to standing lines:
+//   - BucketProfile: "【画像】"
+//   - BucketPrinciple: "【原则】"
+//   - BucketContract: "" (the <=3 【硬】 tags are applied deterministically inside ResidentWithin)
 func StandingPrefix(bucket string, hard bool, polarity string) string {
-	if bucket == BucketPrinciple {
+	switch bucket {
+	case BucketProfile:
+		return "【画像】"
+	case BucketPrinciple:
 		return "【原则】"
+	default:
+		return ""
 	}
-	return ""
 }
 
 func (c Candidate) bucket() string {
 	if c.Bucket != "" {
 		return c.Bucket
+	}
+	if c.Facet == string(entry.Persona) {
+		return BucketProfile
 	}
 	if c.Kind == entry.KindRules {
 		return BucketContract
@@ -145,12 +163,12 @@ func Resident(cands []Candidate) []Candidate {
 }
 
 // ResidentWithin picks the standing set from cands in total bytes, at most most entries (most <= 0 means no count cap
-// beyond HotSlotMax for Bucket 0 and total bytes for Buckets 1 and 2).
+// beyond HotSlotMax for Bucket 0 and total bytes for the three main sections).
 func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 	if total <= 0 {
 		total = ResidentBytes
 	}
-	var hotPool, cL1, cL0, pL1, pL0 []Candidate
+	var hotPool, profL1, profL0, princL1, princL0, contL1, contL0 []Candidate
 	for _, c := range cands {
 		if strings.TrimSpace(c.Text) == "" {
 			continue
@@ -159,39 +177,52 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 		case BucketHot:
 			c.Bucket = BucketHot
 			hotPool = append(hotPool, c)
+		case BucketProfile:
+			c.Bucket = BucketProfile
+			if c.L1 {
+				profL1 = append(profL1, c)
+			} else {
+				profL0 = append(profL0, c)
+			}
 		case BucketContract:
 			c.Bucket = BucketContract
-			if c.L1 || c.UserOwned {
-				cL1 = append(cL1, c)
+			if c.L1 {
+				contL1 = append(contL1, c)
 			} else {
-				cL0 = append(cL0, c)
+				contL0 = append(contL0, c)
 			}
 		default:
 			c.Bucket = BucketPrinciple
-			if c.L1 || c.UserOwned {
-				pL1 = append(pL1, c)
+			if c.L1 {
+				princL1 = append(princL1, c)
 			} else {
-				pL0 = append(pL0, c)
+				princL0 = append(princL0, c)
 			}
 		}
 	}
 
-	// Each main bucket uses L1 exclusively once any qualified L1 candidate exists; only a bucket with 0 L1 candidates
+	// Each main section uses L1 exclusively once any qualified L1 candidate exists; only a section with 0 L1 candidates
 	// falls back to cold-start L0 candidates.
-	cIsL1 := len(cL1) > 0
-	contractPool := cL1
-	if !cIsL1 {
-		contractPool = cL0
+	profIsL1 := len(profL1) > 0
+	profPool := profL1
+	if !profIsL1 {
+		profPool = profL0
 	}
-	pIsL1 := len(pL1) > 0
-	principlePool := pL1
-	if !pIsL1 {
-		principlePool = pL0
+	princIsL1 := len(princL1) > 0
+	princPool := princL1
+	if !princIsL1 {
+		princPool = princL0
+	}
+	contIsL1 := len(contL1) > 0
+	contPool := contL1
+	if !contIsL1 {
+		contPool = contL0
 	}
 
 	sortHot(hotPool)
-	sortContracts(contractPool)
-	sortPrinciples(principlePool)
+	sortPrinciples(profPool)
+	sortPrinciples(princPool)
+	sortContracts(contPool)
 
 	taken := map[string]bool{}
 	var allChosen []Candidate
@@ -205,7 +236,7 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 	}
 	atMost := func() bool { return most > 0 && len(allChosen) >= most }
 
-	// Step 1: Bucket 0 (Hot Slot): min(15% of total, HotSlotMaxBytes), at most HotSlotMax entries.
+	// Step 1: Bucket 0 (Hot Slot): min(10% of total, HotSlotMaxBytes=400 B), at most HotSlotMax=2 entries.
 	hotCap := min(int(float64(total)*HotSlotShare), HotSlotMaxBytes)
 	var hotChosen []Candidate
 	hotUsed := 0
@@ -226,18 +257,20 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 		allChosen = append(allChosen, c)
 	}
 
+	// Step 2: Allocate remaining room across the three main sections (~20% Profile, ~28% Principles, ~52% Contracts).
 	rem := total - hotUsed
-	cBase := int(float64(rem) * ContractShare)
-	pBase := rem - cBase
+	profBase := int(float64(rem) * ProfileShare)
+	princBase := int(float64(rem) * PrincipleShare)
+	contBase := rem - profBase - princBase
 
-	var pChosen, cChosen []Candidate
-	pUsed, cUsed := 0, 0
-	pGroups := map[string]int{}
-	cPols, cGroups := map[string]int{}, map[string]int{}
+	var profChosen, princChosen, contChosen []Candidate
+	profUsed, princUsed, contUsed := 0, 0, 0
+	princGroups := map[string]int{}
+	contPols, contGroups := map[string]int{}, map[string]int{}
+	hardTagged := 0
 
-	fillPrinciples := func(budget int, relaxGroup bool) {
-		grpCap := int(float64(budget) * GroupShare)
-		for _, c := range principlePool {
+	fillProfile := func(budget int) {
+		for _, c := range profPool {
 			if atMost() {
 				return
 			}
@@ -245,103 +278,128 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 				continue
 			}
 			size := len(c.Text) + residentOverhead
-			if pUsed+size > budget || hotUsed+pUsed+cUsed+size > total {
+			if profUsed+size > budget || hotUsed+profUsed+princUsed+contUsed+size > total {
 				continue
 			}
-			if !relaxGroup && c.Group != "" && grpCap > 0 && pGroups[c.Group]+size > grpCap {
-				continue
-			}
-			pUsed += size
-			if c.Group != "" {
-				pGroups[c.Group] += size
-			}
+			profUsed += size
 			taken[c.ID] = true
-			pChosen = append(pChosen, c)
+			profChosen = append(profChosen, c)
 			allChosen = append(allChosen, c)
 		}
 	}
 
-	tryAddContract := func(c Candidate, budget int, relaxPol bool) bool {
-		if taken[c.ID] || alike(c) {
-			return false
-		}
-		size := len(c.Text) + residentOverhead
-		if cUsed+size > budget || hotUsed+pUsed+cUsed+size > total {
-			return false
-		}
-		if !relaxPol && c.Polarity != "" {
-			polCap := int(float64(budget) * polarityShareOf(c.Polarity))
-			if polCap > 0 && cPols[c.Polarity]+size > polCap {
-				return false
-			}
-		}
+	fillPrinciples := func(budget int, relaxGroup bool) {
 		grpCap := int(float64(budget) * GroupShare)
-		if !relaxPol && c.Group != "" && grpCap > 0 && cGroups[c.Group]+size > grpCap {
-			return false
+		for _, c := range princPool {
+			if atMost() {
+				return
+			}
+			if taken[c.ID] || alike(c) {
+				continue
+			}
+			size := len(c.Text) + residentOverhead
+			if princUsed+size > budget || hotUsed+profUsed+princUsed+contUsed+size > total {
+				continue
+			}
+			if !relaxGroup && c.Group != "" && grpCap > 0 && princGroups[c.Group]+size > grpCap {
+				continue
+			}
+			princUsed += size
+			if c.Group != "" {
+				princGroups[c.Group] += size
+			}
+			taken[c.ID] = true
+			princChosen = append(princChosen, c)
+			allChosen = append(allChosen, c)
 		}
-		cUsed += size
-		if c.Polarity != "" {
-			cPols[c.Polarity] += size
-		}
-		if c.Group != "" {
-			cGroups[c.Group] += size
-		}
-		taken[c.ID] = true
-		cChosen = append(cChosen, c)
-		allChosen = append(allChosen, c)
-		return true
 	}
 
 	fillContracts := func(budget int) {
-		// Pass 1: enforce anti-monopoly polarity and non-generic group caps.
-		for _, c := range contractPool {
+		grpCap := int(float64(budget) * GroupShare)
+		for _, c := range contPool {
 			if atMost() {
 				return
 			}
-			tryAddContract(c, budget, false)
-		}
-		// Pass 2: refill remaining contract budget strictly by unified Score so high-leverage cross-scene rules are
-		// never left out while lower-scoring narrow rules sit unused or crowd the budget.
-		for _, c := range contractPool {
-			if atMost() {
-				return
+			if taken[c.ID] || alike(c) {
+				continue
 			}
-			tryAddContract(c, budget, true)
+			addHardPrefix := c.Hard && hardTagged < HardContractLimit && !strings.HasPrefix(c.Text, hardTagPrefix)
+			txt := c.Text
+			if addHardPrefix {
+				txt = hardTagPrefix + txt
+			}
+			size := len(txt) + residentOverhead
+			if contUsed+size > budget || hotUsed+profUsed+princUsed+contUsed+size > total {
+				continue
+			}
+			if c.Polarity != "" {
+				polCap := int(float64(budget) * polarityShareOf(c.Polarity))
+				if polCap > 0 && contPols[c.Polarity]+size > polCap {
+					continue
+				}
+			}
+			if c.Group != "" && grpCap > 0 && contGroups[c.Group]+size > grpCap {
+				continue
+			}
+			c.Text = txt
+			if addHardPrefix {
+				hardTagged++
+			}
+			contUsed += size
+			if c.Polarity != "" {
+				contPols[c.Polarity] += size
+			}
+			if c.Group != "" {
+				contGroups[c.Group] += size
+			}
+			taken[c.ID] = true
+			contChosen = append(contChosen, c)
+			allChosen = append(allChosen, c)
 		}
 	}
 
-	// Step 2: Fill Bucket 2 (Principles, 20%) strictly by unified leverage Score, then fill Bucket 1 (Contracts, 80% +
-	// any unused principle room).
-	fillPrinciples(pBase, false)
-	cEff := cBase
-	if pLeft := pBase - pUsed; pLeft > 0 && cIsL1 {
-		cEff += pLeft
-	}
-	fillContracts(cEff)
+	// Pass A: fill each section within its nominal budget.
+	fillProfile(profBase)
+	fillPrinciples(princBase, false)
 
-	// Step 3: If contracts still leave room unused and principles are L1, spill back into principles.
-	// Never spill leftover L1 room into L0 fragments.
-	if remLeft := rem - pUsed - cUsed; remLeft > 0 && pIsL1 {
-		pEff := pUsed + remLeft
-		fillPrinciples(pEff, false)
-		if pUsed < pEff {
-			fillPrinciples(pEff, true)
+	// Unused profile/principle room flows into contracts if contracts are L1 (or during pure cold-start when all
+	// sections are L0). Never spill L1 leftover into L0 fragments.
+	unusedProf := max(0, profBase-profUsed)
+	unusedPrinc := max(0, princBase-princUsed)
+	contEff := contBase
+	if contIsL1 || (!profIsL1 && !princIsL1) {
+		contEff += unusedProf + unusedPrinc
+	}
+	fillContracts(contEff)
+
+	// Pass B: if room remains, spill back into L1 principles, then L1 profile, then L1 contracts (strictly preserving
+	// polarity caps so no single polarity monopolizes the section).
+	if remLeft := rem - profUsed - princUsed - contUsed; remLeft > 0 {
+		if princIsL1 || (!profIsL1 && !contIsL1) {
+			princEff := princUsed + remLeft
+			fillPrinciples(princEff, false)
+			if princUsed < princEff {
+				fillPrinciples(princEff, true)
+			}
+		}
+	}
+	if remLeft := rem - profUsed - princUsed - contUsed; remLeft > 0 {
+		if profIsL1 || (!princIsL1 && !contIsL1) {
+			fillProfile(profUsed + remLeft)
+		}
+	}
+	if remLeft := rem - profUsed - princUsed - contUsed; remLeft > 0 {
+		if contIsL1 {
+			fillContracts(contUsed + remLeft)
 		}
 	}
 
-	// Step 4: Output order — Hot Slot first (ranks 995..990), then Bucket 1 (Contracts, ordered naturally by unified
-	// leverage Score without artificially walling all check rules ahead of high-score act rules) and Bucket 2
-	// (Principles) interleaved from rank 989 downward.
-	out := make([]Candidate, 0, len(hotChosen)+len(cChosen)+len(pChosen))
+	// Output order: Hot Slot -> Section 1 (Profile) -> Section 2 (Principles) -> Section 3 (Contracts).
+	out := make([]Candidate, 0, len(hotChosen)+len(profChosen)+len(princChosen)+len(contChosen))
 	out = append(out, hotChosen...)
-	for i := 0; i < len(cChosen) || i < len(pChosen); i++ {
-		if i < len(cChosen) {
-			out = append(out, cChosen[i])
-		}
-		if i < len(pChosen) {
-			out = append(out, pChosen[i])
-		}
-	}
+	out = append(out, profChosen...)
+	out = append(out, princChosen...)
+	out = append(out, contChosen...)
 	return out
 }
 
@@ -364,6 +422,12 @@ func sortHot(cs []Candidate) {
 func sortContracts(cs []Candidate) {
 	sort.SliceStable(cs, func(i, j int) bool {
 		a, b := cs[i], cs[j]
+		// Prefer Hard check-polarity guardrails first for the <=3 【硬】 slots, then unified Score.
+		aHardCheck := a.Hard && a.Polarity == "check"
+		bHardCheck := b.Hard && b.Polarity == "check"
+		if aHardCheck != bHardCheck {
+			return aHardCheck
+		}
 		if a.Score != b.Score {
 			return a.Score > b.Score
 		}
@@ -372,10 +436,6 @@ func sortContracts(cs []Candidate) {
 		}
 		if a.Hard != b.Hard {
 			return a.Hard
-		}
-		aCheck, bCheck := a.Polarity == "check", b.Polarity == "check"
-		if aCheck != bCheck {
-			return aCheck
 		}
 		if a.Last != b.Last {
 			return a.Last > b.Last
@@ -430,7 +490,7 @@ func FormatResidentLine(body, suffix string, maxBytes int) string {
 // whole.
 func ResidentText(e *entry.Entry) string {
 	line := strings.TrimSpace(recall.Head(e))
-	if p := e.Principle(); p != "" && entry.KindOf(e) == entry.KindUnderstanding && e.User == nil {
+	if p := e.Principle(); p != "" && entry.KindOf(e) == entry.KindUnderstanding && e.User == nil && e.Facet != entry.Persona {
 		ex := strings.TrimSpace(e.Choice)
 		if s := strings.TrimSpace(e.Situation); s != "" && ex != "" {
 			ex = s + "：" + ex
@@ -459,32 +519,74 @@ func clipBytes(s string, n int) string {
 	return s + ellipsis
 }
 
-// CuratedCandidate converts e into a standing Candidate (used by cold-start fallback and offline evaluation tools), or
-// returns false when e may not stand (not usable, no side, sensitive/space-tagged, template-only, or covered).
+// standingForbidden enforces the v0.4.0 §1.7 hard bans for any entry entering global 4 KB standing:
+// 0 ops_runbook, 0 S6 assistant_note, 0 ephemeral, 0 sensitive, 0 restricted-space non-work entries.
+func standingForbidden(st *store.State, e *entry.Entry) bool {
+	if e == nil || !e.Live() || !Pool(st, e) {
+		return true
+	}
+	if entry.IsOpsRunbookEntry(e) || entry.IsAssistantNote(e.Origin) || entry.IsEphemeral(e) {
+		return true
+	}
+	cats, space, _ := Tags(st, e)
+	if len(cats) > 0 {
+		return true
+	}
+	if space != "" && !entry.IsWorkMethodFacet(e.Facet) {
+		return true
+	}
+	return false
+}
+
+// isS3S4OnlyEntry reports whether e has evidence and all of it comes solely from S3/S4 agent/tool sessions.
+func isS3S4OnlyEntry(e *entry.Entry) bool {
+	if e == nil || entry.IsTrueUserOwned(e) || len(e.Evidence) == 0 {
+		return false
+	}
+	for _, ev := range e.Evidence {
+		if ev.Source != entry.SrcAgent && ev.Source != entry.SrcTools {
+			return false
+		}
+	}
+	return true
+}
+
+// CuratedCandidate converts e into a cold-start L0 standing Candidate for one of the three sections (Profile,
+// Principle, or Contract), or returns false when e is forbidden or ineligible for standing.
 func CuratedCandidate(st *store.State, e *entry.Entry, tpl map[string]bool) (Candidate, bool) {
+	if standingForbidden(st, e) {
+		return Candidate{}, false
+	}
+	if e.Facet == entry.World || e.Facet == entry.People || e.Facet == entry.Tools {
+		return Candidate{}, false
+	}
+	if e.Facet == entry.Persona && isS3S4OnlyEntry(e) {
+		return Candidate{}, false
+	}
 	k := entry.KindOf(e)
-	if k == "" && e.Pinned { // what the user pinned stands whatever it is
+	if k == "" && e.Pinned {
 		if k = entry.KindOfFacet(string(e.Facet)); k == "" {
 			k = entry.KindUnderstanding
 		}
 	}
-	if k == "" || !export.Usable(st, e) || !Pool(st, e) || (!e.Pinned && entry.TemplateOnly(e, tpl)) ||
+	if k == "" || !export.Usable(st, e) || (!e.Pinned && entry.TemplateOnly(e, tpl)) ||
 		(!e.Pinned && entry.CoveredBy(e) != "" && coverLive(st, e)) {
-		return Candidate{}, false
-	}
-	if cats, space, _ := Tags(st, e); len(cats) > 0 || space != "" {
 		return Candidate{}, false
 	}
 	days := map[string]bool{}
 	for _, ev := range e.Evidence {
-		days[ev.Day] = true
+		if ev.Day != "" {
+			days[ev.Day] = true
+		}
 	}
 	bucket := BucketPrinciple
-	if k == entry.KindRules {
-		bucket = BucketContract
-	}
-	if e.Pinned {
+	switch {
+	case e.Pinned && entry.IsTrueUserOwned(e):
 		bucket = BucketHot
+	case e.Facet == entry.Persona:
+		bucket = BucketProfile
+	case k == entry.KindRules:
+		bucket = BucketContract
 	}
 	dim := ""
 	if e.Leverage != nil {
@@ -499,6 +601,8 @@ func CuratedCandidate(st *store.State, e *entry.Entry, tpl map[string]bool) (Can
 		Text:      ResidentText(e),
 		Kind:      k,
 		Bucket:    bucket,
+		Facet:     string(e.Facet),
+		UserOwned: entry.IsTrueUserOwned(e),
 		Pinned:    e.Pinned,
 		Hard:      entry.Hard(e),
 		Score:     entry.Score(e),
@@ -509,16 +613,13 @@ func CuratedCandidate(st *store.State, e *entry.Entry, tpl map[string]bool) (Can
 	}, true
 }
 
-// HotSlotCandidate returns e as a Bucket 0 (Hot Slot) candidate when it is either user-pinned or an active Fast-Path
-// temporary hard contract within HotSlotTTLDays, excluding sensitive/space-tagged or template-only entries.
+// HotSlotCandidate returns e as a Bucket 0 (Hot Slot) candidate when it is either genuinely user-owned Pinned or
+// an active Fast-Path temporary hard contract within HotSlotTTLDays (v0.4.0 §1.7), enforcing all hard bans.
 func HotSlotCandidate(st *store.State, e *entry.Entry, tpl map[string]bool, now time.Time) (Candidate, bool) {
-	if e == nil || !e.Live() || !Pool(st, e) {
+	if standingForbidden(st, e) {
 		return Candidate{}, false
 	}
-	if cats, space, _ := Tags(st, e); len(cats) > 0 || space != "" {
-		return Candidate{}, false
-	}
-	if e.Pinned {
+	if e.Pinned && entry.IsTrueUserOwned(e) {
 		k := entry.KindOf(e)
 		if k == "" {
 			if k = entry.KindOfFacet(string(e.Facet)); k == "" {
@@ -526,13 +627,15 @@ func HotSlotCandidate(st *store.State, e *entry.Entry, tpl map[string]bool, now 
 			}
 		}
 		return Candidate{
-			ID:     e.ID,
-			Text:   ResidentText(e),
-			Kind:   k,
-			Bucket: BucketHot,
-			Pinned: true,
-			Score:  entry.Score(e),
-			Last:   e.Last,
+			ID:        e.ID,
+			Text:      ResidentText(e),
+			Kind:      k,
+			Bucket:    BucketHot,
+			Facet:     string(e.Facet),
+			UserOwned: true,
+			Pinned:    true,
+			Score:     entry.Score(e),
+			Last:      e.Last,
 		}, true
 	}
 	if !entry.IsFastHot(e, now, HotSlotTTLDays) {
@@ -546,17 +649,18 @@ func HotSlotCandidate(st *store.State, e *entry.Entry, tpl map[string]bool, now 
 		Text:   ResidentText(e),
 		Kind:   entry.KindRules,
 		Bucket: BucketHot,
+		Facet:  string(e.Facet),
 		Hard:   true,
 		Score:  entry.Score(e),
 		Last:   entry.FastHotDay(e),
 	}, true
 }
 
-// UnabsorbedRuleHotCandidate promotes a high-certainty rule (UserOwned, Hard, or cross-month Abstract with Count >= 3)
-// first seen strictly after the latest L1 build day (l1LatestDay, YYYY-MM-DD) into Bucket 0 (Hot Slot) within
-// HotSlotTTLDays of now, closing the 1–6 day gap between new rules and weekly L1 aggregation.
+// UnabsorbedRuleHotCandidate promotes a high-certainty universal rule (UserOwned, Hard, or cross-month Abstract with
+// Count >= 3) first seen strictly after the latest L1 build day (l1LatestDay, YYYY-MM-DD) into Bucket 0 (Hot Slot)
+// within HotSlotTTLDays of now, excluding all ops_runbook, assistant_note, ephemeral, and sensitive entries.
 func UnabsorbedRuleHotCandidate(st *store.State, e *entry.Entry, tpl map[string]bool, l1LatestDay string, now time.Time) (Candidate, bool) {
-	if e == nil || l1LatestDay == "" || !e.Live() || !Pool(st, e) {
+	if e == nil || l1LatestDay == "" || standingForbidden(st, e) {
 		return Candidate{}, false
 	}
 	if e.First == "" || e.First <= l1LatestDay {
@@ -568,11 +672,8 @@ func UnabsorbedRuleHotCandidate(st *store.State, e *entry.Entry, tpl map[string]
 	if !export.Usable(st, e) || entry.TemplateOnly(e, tpl) || (entry.CoveredBy(e) != "" && coverLive(st, e)) {
 		return Candidate{}, false
 	}
-	if cats, space, _ := Tags(st, e); len(cats) > 0 || space != "" {
-		return Candidate{}, false
-	}
 	isUserOwned := entry.IsTrueUserOwned(e)
-	highAbstract := e.Grain == entry.Abstract && e.Count >= 3 && (e.Facet == entry.Interaction || e.Facet == entry.Tools)
+	highAbstract := e.Grain == entry.Abstract && e.Count >= 3 && e.Facet == entry.Interaction
 	if !isUserOwned && !entry.Hard(e) && !highAbstract {
 		return Candidate{}, false
 	}
@@ -584,13 +685,15 @@ func UnabsorbedRuleHotCandidate(st *store.State, e *entry.Entry, tpl map[string]
 		return Candidate{}, false
 	}
 	return Candidate{
-		ID:     e.ID,
-		Text:   ResidentText(e),
-		Kind:   k,
-		Bucket: BucketHot,
-		Hard:   entry.Hard(e),
-		Score:  entry.Score(e),
-		Last:   e.Last,
+		ID:        e.ID,
+		Text:      ResidentText(e),
+		Kind:      k,
+		Bucket:    BucketHot,
+		Facet:     string(e.Facet),
+		UserOwned: isUserOwned,
+		Hard:      entry.Hard(e),
+		Score:     entry.Score(e),
+		Last:      e.Last,
 	}, true
 }
 
@@ -598,144 +701,6 @@ func UnabsorbedRuleHotCandidate(st *store.State, e *entry.Entry, tpl map[string]
 // entries (SelfReport, FromOnboarding, Pinned, or non-empty User edit) qualify; S6 assistant notes never do.
 func IsUserOwned(e *entry.Entry) bool {
 	return entry.IsTrueUserOwned(e)
-}
-
-// UserOwnedStandingCandidate converts a live, non-sensitive, non-pinned user-owned rule/principle into a verbatim
-// standing Candidate for Bucket 1 (contracts) or Bucket 2 (principles), preserving the exact user wording and
-// exception without L1 rewriting (unified design §2.1). Multi-source / repeated handwritten rules score on the same
-// unified leverage scale as L1 patterns; single-occurrence uncorroborated notes stay conservative (70–82) so they never
-// crowd out verified handwritten rules or strong behavior-synthesized L1 patterns.
-func UserOwnedStandingCandidate(st *store.State, e *entry.Entry, tpl map[string]bool) (Candidate, bool) {
-	if e == nil || e.Pinned || !IsUserOwned(e) || !e.Live() || !Pool(st, e) || !export.Usable(st, e) {
-		return Candidate{}, false
-	}
-	if entry.TemplateOnly(e, tpl) || (entry.CoveredBy(e) != "" && coverLive(st, e)) {
-		return Candidate{}, false
-	}
-	if cats, space, _ := Tags(st, e); len(cats) > 0 || space != "" {
-		return Candidate{}, false
-	}
-	k := entry.KindOf(e)
-	if k == "" {
-		return Candidate{}, false
-	}
-	bucket := BucketPrinciple
-	maxBytes := PrincipleTextMost
-	if k == entry.KindRules {
-		bucket = BucketContract
-		maxBytes = ContractTextMost
-	}
-	prefix := StandingPrefix(bucket, entry.Hard(e), "")
-	text := FormatResidentLine(prefix+strings.TrimSpace(recall.Head(e)), recall.Exception(e), maxBytes)
-	if text == "" {
-		return Candidate{}, false
-	}
-	userEdit := e.User != nil && strings.TrimSpace(e.User.Text) != ""
-	cnt := max(1, e.Count)
-	kinds := len(e.Kinds)
-	if kinds == 0 && len(e.Evidence) > 0 {
-		seen := map[string]bool{}
-		for _, ev := range e.Evidence {
-			if ev.Source != "" {
-				seen[ev.Source] = true
-			}
-		}
-		kinds = len(seen)
-	}
-	var score int
-	if cnt >= 2 || kinds >= 2 || userEdit {
-		base := 85
-		if bucket == BucketContract {
-			base = 90
-		}
-		score = base + min(40, cnt*4) + min(20, kinds*6)
-		if userEdit || entry.Hard(e) {
-			score += 12
-		}
-	} else {
-		score = 70 + min(12, kinds*4)
-	}
-	days := map[string]bool{}
-	for _, ev := range e.Evidence {
-		if ev.Day != "" {
-			days[ev.Day] = true
-		}
-	}
-	dim := ""
-	if e.Leverage != nil {
-		dim = e.Leverage.Dimension
-	}
-	grp := GroupOf(st, e)
-	if genericTypes[strings.ToLower(strings.TrimSpace(e.Type))] {
-		grp = ""
-	}
-	return Candidate{
-		ID:        e.ID,
-		Text:      text,
-		Kind:      k,
-		Bucket:    bucket,
-		Facet:     string(e.Facet),
-		UserOwned: true,
-		Hard:      entry.Hard(e),
-		Score:     score,
-		Days:      max(cnt, len(days)),
-		Last:      e.Last,
-		Dimension: dim,
-		Group:     grp,
-	}, true
-}
-
-// ApplyUserOwnedPassThrough enforces the unified design §2.1 division of labor between verbatim user-owned rules and
-// L1 synthesis:
-//   - User-owned rules pass through verbatim into the standing candidate pool.
-//   - Any L1 pattern that covers one or more live verbatim user-owned rules (via coveredByPat[pat.ID]) transfers its
-//     cross-event signals (Hard, Polarity, Dimension, and corroboration score) to the covered verbatim rule(s) and is
-//     suppressed from standing so L1 never rewrites or dilutes user-confirmed rules.
-//   - Pure behavior-synthesized L1 patterns (covering no live user-owned rules) remain at full strength alongside
-//     verbatim user-owned rules.
-func ApplyUserOwnedPassThrough(l1Cands, uoCands []Candidate, coveredByPat map[string][]string) []Candidate {
-	if len(uoCands) == 0 {
-		return l1Cands
-	}
-	uoOut := slices.Clone(uoCands)
-	uoIdx := make(map[string]int, len(uoOut))
-	for i, c := range uoOut {
-		uoIdx[c.ID] = i
-	}
-	keptL1 := make([]Candidate, 0, len(l1Cands))
-	for _, p := range l1Cands {
-		var matched []int
-		for _, cid := range coveredByPat[p.ID] {
-			if idx, ok := uoIdx[cid]; ok {
-				matched = append(matched, idx)
-			}
-		}
-		if len(matched) == 0 {
-			keptL1 = append(keptL1, p)
-			continue
-		}
-		for _, idx := range matched {
-			u := &uoOut[idx]
-			if p.Hard {
-				u.Hard = true
-			}
-			if u.Polarity == "" && p.Polarity != "" {
-				u.Polarity = p.Polarity
-			}
-			if u.Dimension == "" && p.Dimension != "" {
-				u.Dimension = p.Dimension
-			}
-			if len(matched) == 1 && p.Score > u.Score {
-				u.Score = p.Score
-			} else if p.Hard {
-				u.Score = max(u.Score, min(p.Score, u.Score+12))
-			}
-		}
-	}
-	out := make([]Candidate, 0, len(uoOut)+len(keptL1))
-	out = append(out, uoOut...)
-	out = append(out, keptL1...)
-	return out
 }
 
 // coverLive: the rule that covers e is still there to stand in its place (when it went, e stands again).

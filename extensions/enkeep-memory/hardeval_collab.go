@@ -1912,31 +1912,25 @@ func recallNonStandingL1(st *store.State, ov *overview.State, f heFilter, day, s
 	}
 
 	var cands []scoredRule
-	liveUO := map[string]bool{}
 	if st != nil {
-		tpl := entry.TemplateQuotes(st.Entries)
 		for _, e := range st.Entries {
-			if e == nil || f.entryOut(st, e, day) {
+			if e == nil || f.entryOut(st, e, day) || !entry.IsTrueUserOwned(e) || !e.Live() || !memsrc.Pool(st, e) {
 				continue
 			}
-			uc, ok := memsrc.UserOwnedStandingCandidate(st, e, tpl)
-			if !ok {
-				continue
-			}
-			liveUO[e.ID] = true
 			head := strings.TrimSpace(recall.Head(e))
 			if head == "" || strings.Contains(standing, heClip(head, 24)) {
 				continue
 			}
 			s := scoreText(head, e.Exception, memsrc.Subjects(st, e))
 			if s >= 5.0 {
+				txt := memsrc.ResidentText(e)
 				cands = append(cands, scoredRule{
 					id:    e.ID,
-					line:  "- " + heClip(uc.Text, 240),
-					body:  uc.Text,
+					line:  "- " + heClip(txt, 240),
+					body:  txt,
 					score: s,
 					owned: true,
-					sc:    uc.Score,
+					sc:    entry.Score(e),
 				})
 			}
 		}
@@ -1944,10 +1938,6 @@ func recallNonStandingL1(st *store.State, ov *overview.State, f heFilter, day, s
 	if ov != nil {
 		for _, p := range ov.Patterns {
 			if p == nil || !p.Used() || len(p.Categories) > 0 || p.OriginSpace != "" || f.patternOut(st, p, day) {
-				continue
-			}
-			// Suppress L1 paraphrases that wrap a live verbatim UserOwned rule (unified design §2.1).
-			if slices.ContainsFunc(p.CoveredIDs, func(cid string) bool { return liveUO[cid] }) {
 				continue
 			}
 			head := strings.TrimSpace(p.Text)

@@ -184,6 +184,12 @@ func candidates(st *store.State, f entry.Facet, from, cutoff string, keep func(*
 		if !usable(st, e) || facetOf(e) != f || (keep != nil && !keep(e)) {
 			continue
 		}
+		if entry.IsAssistantNote(e.Origin) || entry.IsEphemeral(e) {
+			continue
+		}
+		if f == entry.Persona && isS3S4Only(e) {
+			continue
+		}
 		if cutoff != "" && e.First >= cutoff {
 			continue
 		}
@@ -339,6 +345,12 @@ func (r *Runner) Weekly(ctx context.Context, st *store.State, s *State, week, cu
 	run := &Run{Period: week, At: stamp(r.now()), Cutoff: cutoff, Counts: map[string]int{"window_days": window}}
 	now := stamp(r.now())
 	var touched []string
+	// 0. A1 Core Profile & Anti-Misread Boundaries (T0 + multi-week cross-scene T1 Persona).
+	pcIDs, err := r.SyncProfileCore(ctx, st, s, run, cutoff, now)
+	if err != nil {
+		return run, err
+	}
+	touched = union(touched, pcIDs...)
 	// 1. L1 Principles (③ Judgement, ④ Workflow, ⑤ World, ⑥ Persona).
 	for _, f := range PrincipleFacets {
 		cands := candidates(st, f, from, cutoff, nil)
@@ -352,18 +364,27 @@ func (r *Runner) Weekly(ctx context.Context, st *store.State, s *State, week, cu
 		}
 		touched = union(touched, ids...)
 	}
-	// 2. L1 Collaboration Contracts (① Interaction, ② Tools): folded rules_merge channel.
+	// 2. L1 Collaboration Contracts & Ops Runbooks (① Interaction, ② Tools).
 	cIDs, err := r.SyncContracts(ctx, st, s, run, cutoff, now)
 	if err != nil {
 		return run, err
 	}
 	touched = union(touched, cIDs...)
-	// 3. Counter-example search for all passing principles and contracts.
+	// 3. Counter-example search for all passing principles and universal contracts.
 	if err := r.counterSearch(ctx, st, s, run, touched, end, cutoff, now); err != nil {
 		return run, err
 	}
+	// 4. Global Reconciliation Pass (synonym merge, tension resolution into Poles, ops diversion).
+	recIDs, err := r.Reconcile(ctx, st, s, run, cutoff, now)
+	if err != nil {
+		return run, err
+	}
+	touched = union(touched, recIDs...)
 	for _, id := range touched {
 		p := s.Patterns[id]
+		if p == nil {
+			continue
+		}
 		run.Counts["lifecycle_"+p.Lifecycle]++
 		if p.Gate != "" {
 			run.Counts["gate_"+p.Gate]++
@@ -478,6 +499,11 @@ func (r *Runner) synthesize(ctx context.Context, st *store.State, s *State, run 
 			sort.Strings(p.CoveredIDs)
 			p.Reason = strings.TrimSpace(prop.Reason)
 			p.UpdatedAt = now
+			if patternIsOpsRunbook(p) {
+				p.Kind = KindOpsRunbook
+				p.Hard = false
+				run.Counts["principle_diverted_ops"]++
+			}
 			recount(st, p, cutoff)
 			touched = union(touched, p.ID)
 		}
@@ -493,17 +519,29 @@ func recount(st *store.State, p *Pattern, cutoff string) {
 	p.CounterIDs = followMerges(st, p.CounterIDs)
 	sort.Strings(p.EvidenceIDs)
 	live := liveIDs(st, p.EvidenceIDs)
-	if p.IsContract() {
-		// Also include live user-owned entries that may not pass memsrc.Pool filters (e.g. handwritten).
+	if p.IsProfileCore() || p.IsOpsRunbook() || p.IsContract() {
+		// Also include live user-owned entries (T0) that may not pass memsrc.Pool filters.
 		for _, id := range p.EvidenceIDs {
 			if e := st.Entries[id]; e != nil && e.Live() && isUserOwned(e) && !slices.Contains(live, id) {
 				live = append(live, id)
 			}
 		}
-		p.Hard, p.ViolationCount = contractHard(st, live, cutoff)
-	} else if evDim := inferDimension(st, live); evDim != "" {
-		// Evidence majority dimension takes precedence over a model guess (prevents defaulting everything to decision).
-		p.Dimension = evDim
+	}
+	switch {
+	case p.IsProfileCore(), p.IsOpsRunbook():
+		p.Hard = false
+	case p.IsContract():
+		if patternIsOpsRunbook(p) {
+			p.Kind = KindOpsRunbook
+			p.Hard = false
+		} else {
+			p.Hard, p.ViolationCount = contractHard(st, live, cutoff)
+		}
+	default:
+		if evDim := inferDimension(st, live); evDim != "" {
+			// Evidence majority dimension takes precedence over a model guess (prevents defaulting everything to decision).
+			p.Dimension = evDim
+		}
 	}
 	apply(p, count(st, live, cutoff))
 	p.Categories, p.OriginSpace = tags(st, p, append(live, liveIDs(st, p.CounterIDs)...))
@@ -678,7 +716,7 @@ func (r *Runner) counterSearch(ctx context.Context, st *store.State, s *State, r
 	byFacet := map[string][]*Pattern{}
 	for _, id := range ids {
 		p := s.Patterns[id]
-		if p == nil {
+		if p == nil || p.IsProfileCore() || p.IsOpsRunbook() {
 			continue
 		}
 		if p.Gate != "" {

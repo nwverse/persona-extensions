@@ -169,6 +169,12 @@ func (r *Runner) Monthly(ctx context.Context, st *store.State, s *State, month, 
 	if err := r.counterSearch(ctx, st, s, run, check, end, "", now); err != nil {
 		return run, err
 	}
+	// 4. Global Reconciliation Pass at month end (v0.4.0 §1.4).
+	if recIDs, err := r.Reconcile(ctx, st, s, run, "", now); err != nil {
+		return run, err
+	} else {
+		touched = union(touched, recIDs...)
+	}
 	since := addDays(end, -eraDays)
 	for _, p := range s.Patterns {
 		if p.Lifecycle == Retired {

@@ -20,9 +20,11 @@ import (
 //   - one resting on any categorised evidence or said in a space: "ov:cat:<category>:<id>", never standing, rank 900,
 //     with every category and the space, for the hub to grade by scene.
 const (
-	rankTop    = 985
-	rankBottom = 950
-	rankCat    = 900
+	rankTop           = 985
+	rankBottom        = 950
+	rankRunbookTop    = 940
+	rankRunbookBottom = 840
+	rankCat           = 900
 )
 
 // genericRuleTypes name no specific occasion and do not trigger the per-group 20% cap in the contract bucket.
@@ -52,6 +54,20 @@ func Score(p *Pattern) int {
 	weeks := len(p.ActiveWeeks)
 	cov := len(p.CoveredIDs)
 	owned := cov > 0
+	if p.IsProfileCore() {
+		s := 110 + min(20, p.ScenesCount*5) + min(15, weeks*3) + min(10, quotes*2)
+		if owned {
+			s += 15
+		}
+		return s
+	}
+	if p.IsOpsRunbook() {
+		s := 40 + min(20, p.ScenesCount*5) + min(20, quotes*3)
+		if owned {
+			s += 10
+		}
+		return s
+	}
 	if p.IsContract() {
 		if p.Hard {
 			s := 80 + min(20, p.ViolationCount*4) + min(24, p.ScenesCount*6) + min(16, quotes*2)
@@ -269,6 +285,18 @@ func Exits(s *State) []memsrc.Extra {
 			x.Categories = p.Categories[:min(len(p.Categories), memsrc.MaxCats)]
 			x.OriginSpace = p.OriginSpace
 			x.Rank = rankCat
+		} else if p.IsOpsRunbook() || patternIsOpsRunbook(p) {
+			// Class C ops_runbook: never enters global 4 KB standing (kind="" / l1Kind=""), stays high-rank (840-940)
+			// in on-demand recall with enriched tool/host/command Subjects (v0.4.0 §1.7).
+			x.ID = "ov:runbook:" + hex
+			x.Rank = min(rankRunbookTop, rankRunbookBottom+p.ScenesCount*p.SourcesCount*4)
+			kind = ""
+			l1Kind = ""
+		} else if p.IsProfileCore() {
+			x.ID = "ov:profile:" + hex
+			x.Rank = rankTop
+			kind = entry.KindUnderstanding
+			l1Kind = memsrc.BucketProfile
 		} else {
 			x.ID = "ov:pattern:" + hex
 			x.Rank = min(rankTop, rankBottom+p.ScenesCount*p.SourcesCount/2)

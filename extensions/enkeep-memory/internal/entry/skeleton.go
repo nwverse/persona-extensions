@@ -180,10 +180,13 @@ func IsGenericPeopleNoise(e *Entry, contactName string) bool {
 }
 
 // IsOpsRunbookEntry reports whether e is an operational runbook entry subject to the 45d demote / 60d dormant
-// lifecycle (v0.4.0 §1.3 C). Compatible with both facet==tools and Block 1's ClassOpsRunbook marker.
+// lifecycle (v0.4.0 §1.3 C). Compatible with both facet==tools and Block 1's ClassOpsRunbook / ClassifyOpsRunbook.
 func IsOpsRunbookEntry(e *Entry) bool {
 	if e == nil {
 		return false
+	}
+	if e.MemoryClass == ClassOpsRunbook || ClassifyOpsRunbook(e) {
+		return true
 	}
 	if e.Facet == Tools {
 		return true

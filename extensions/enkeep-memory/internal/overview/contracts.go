@@ -16,11 +16,13 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
-// The L1 collaboration contract channel (unified design §1.3 step C): folds the 0.2.6 rule merge (curate/rules_merge)
-// into the unified L1 overview state for facets ① interaction and ② tools. It merges synonymous rules, preserves every
-// stated exception, assigns a polarity (act/check/communicate/route) so downstream standing selection can balance
-// action vs verification, computes hard and violation_count deterministically from evidence, and preserves covered_by
-// protection for handwritten or user-edited entries.
+// The L1 collaboration contract channel (v0.4.0 §1.3/§1.4):
+//  1. Deterministically diverts ops_runbook entries (entry.ClassifyOpsRunbook) straight into KindOpsRunbook without
+//     consuming LLM tokens or crowding the universal contract prompt.
+//  2. Aggregates the remaining universal collaboration rules in bounded small batches (<= contractBatchSize per call)
+//     with generous output headroom (contractMaxTokens) so large rule pools never truncate JSON in production.
+//  3. Enforces post-synthesis de-shelling and proper-noun diversion so single-incident shells never inherit Hard
+//     contract status or enter the global 4 KB standing set.
 
 //go:embed contracts.md
 var contractsPrompt string
@@ -29,13 +31,14 @@ var contractsPrompt string
 var contractsSchema []byte
 
 const (
-	contractCandMost       = 120 // total rules per call across interaction and tools
-	contractInteractionCap = 80  // nominal cap for ① interaction (unused tools slots spill over)
-	contractToolsCap       = 40  // guaranteed floor/cap for ② tools so interaction never starves it
-	contractNonHardPct     = 40  // at least 40% of each facet's quota reserved for non-hard high-score rules
-	contractCandScore      = 50  // lowest score for ① interaction non-hard rules
-	contractToolsScore     = 40  // lowest score for ② tools stable non-hard rules (tools lacks interaction correction bonus)
-	contractMaxTokens      = 8000
+	contractCandMost       = 120   // total rules considered across interaction and tools
+	contractInteractionCap = 80    // nominal cap for ① interaction (unused tools slots spill over)
+	contractToolsCap       = 40    // guaranteed floor/cap for ② tools so interaction never starves it
+	contractBatchSize      = 35    // max universal rules per LLM call to guarantee zero max_tokens truncation
+	contractNonHardPct     = 40    // at least 40% of each facet's quota reserved for non-hard high-score rules
+	contractCandScore      = 50    // lowest score for ① interaction non-hard rules
+	contractToolsScore     = 40    // lowest score for ② tools stable non-hard rules (tools lacks interaction correction bonus)
+	contractMaxTokens      = 12000 // ample output headroom per small batch (<=35 rules)
 	flagNoAutoMerge        = "no_auto_merge"
 )
 
@@ -85,14 +88,15 @@ func isUserOwned(e *entry.Entry) bool {
 	return entry.IsTrueUserOwned(e)
 }
 
-// contractCandidates returns the live interaction/tools rules eligible for L1 contract aggregation, before cutoff
-// ("" means all). Live non-sensitive user-owned rules (handwritten/edited/pinned) are admitted first so high-precision
-// curated specs are never starved; remaining slots reserve a dedicated quota for ② tools (up to contractToolsCap) and
-// at least contractNonHardPct% per facet for non-hard high-scoring rules (including cross-month Abstract entries).
+// contractCandidates returns the live interaction/tools rules eligible for L1 contract or ops_runbook aggregation,
+// before cutoff ("" means all). Excludes S6 assistant notes and ephemeral entries (v0.4.0 §1.2/§1.3).
 func contractCandidates(st *store.State, cutoff string) []*entry.Entry {
 	var ownedInter, ownedTools, inter, tools []*entry.Entry
 	for _, e := range st.Entries {
 		if e == nil || !e.Live() || (e.Facet != entry.Interaction && e.Facet != entry.Tools) {
+			continue
+		}
+		if entry.IsAssistantNote(e.Origin) || entry.IsEphemeral(e) {
 			continue
 		}
 		if entry.KindOf(e) != entry.KindRules || e.Predicate != "" {
@@ -229,9 +233,68 @@ func normalizePolarity(p string) string {
 	return ""
 }
 
-// SyncContracts aggregates interaction and tools rules into L1 collaboration contracts in s. When cutoff is "" and the
-// rule set signature has not changed since the last run (and s already holds contracts), it skips the model call.
-// Returns the ids of created or updated contracts.
+// syncOpsRunbookEntries deterministically routes ops_runbook entries into KindOpsRunbook patterns in s (0 LLM calls)
+// so environment/tool/host/API runbooks stay out of global 4 KB standing while keeping rich Subjects for recall.
+func syncOpsRunbookEntries(st *store.State, s *State, opsRules []*entry.Entry, cutoff, now string, run *Run) []string {
+	var touched []string
+	for _, e := range opsRules {
+		text := strings.TrimSpace(e.Shown())
+		if text == "" {
+			continue
+		}
+		facet := string(e.Facet)
+		id := patternID(KindOpsRunbook+":"+facet, e.Object, e.Situation, text)
+		p := s.Patterns[id]
+		if p == nil {
+			p = &Pattern{ID: id, Facet: facet, Kind: KindOpsRunbook, Lifecycle: Core, Created: now}
+			s.Patterns[id] = p
+			run.Counts["ops_runbooks_new"]++
+		}
+		p.Kind = KindOpsRunbook
+		p.Hard = false
+		p.Text = text
+		if sit := strings.TrimSpace(e.Situation); sit != "" {
+			p.Situation = sit
+		}
+		if ch := strings.TrimSpace(e.Choice); ch != "" {
+			p.Choice = ch
+		}
+		if ex := strings.TrimSpace(e.Exception); ex != "" {
+			p.Exception = ex
+		}
+		if p.RuleType == "" {
+			p.RuleType = strings.TrimSpace(e.Type)
+		}
+		p.EvidenceIDs = union(p.EvidenceIDs, e.ID)
+		if isUserOwned(e) {
+			p.CoveredIDs = union(p.CoveredIDs, e.ID)
+			sort.Strings(p.CoveredIDs)
+		}
+		p.Reason = "ops_runbook: deterministic diversion"
+		p.UpdatedAt = now
+		recount(st, p, cutoff)
+		if p.Gate == "" {
+			if p.Exception != "" {
+				p.Lifecycle = Scoped
+			} else {
+				p.Lifecycle = Core
+			}
+		} else {
+			p.Lifecycle = Candidate
+		}
+		touched = union(touched, p.ID)
+		run.Counts["ops_runbooks_synced"]++
+	}
+	return touched
+}
+
+// SyncContracts aggregates interaction and tools rules into L1 universal contracts and KindOpsRunbook in s:
+//  1. Ops runbook entries (entry.ClassifyOpsRunbook) are deterministically diverted to KindOpsRunbook first (0 LLM calls).
+//  2. Remaining universal contract candidates are processed in small batches (<= contractBatchSize) with
+//     contractMaxTokens output headroom so large candidate pools never truncate JSON.
+//
+// When cutoff is "" and the rule set signature has not changed since the last run (and s already holds contracts or
+// ops runbooks), it skips the model calls. Returns the ids of created or updated patterns.
 func (r *Runner) SyncContracts(ctx context.Context, st *store.State, s *State, run *Run, cutoff, now string) ([]string, error) {
 	rules := contractCandidates(st, cutoff)
 	run.Counts["contract_candidates"] = len(rules)
@@ -239,57 +302,86 @@ func (r *Runner) SyncContracts(ctx context.Context, st *store.State, s *State, r
 		return nil, nil
 	}
 	sig := contractsSignature(rules)
-	existing := s.Sorted(func(p *Pattern) bool { return p.IsContract() && p.Lifecycle != Retired })
-	if cutoff == "" && s.ContractsSig == sig && len(existing) > 0 {
+	existingAll := s.Sorted(func(p *Pattern) bool {
+		return (p.IsContract() || p.IsOpsRunbook()) && p.Lifecycle != Retired
+	})
+	if cutoff == "" && s.ContractsSig == sig && len(existingAll) > 0 {
 		run.Counts["contracts_skipped_unchanged"]++
 		return nil, nil
 	}
 
-	in := contractInput{Lang: r.lang()}
-	local := map[string]*entry.Entry{}
-	for i, e := range rules {
-		id := fmt.Sprintf("r%d", i+1)
-		local[id] = e
-		in.Rules = append(in.Rules, contractRuleInput{
-			ID:        id,
-			Facet:     string(e.Facet),
-			Type:      e.Type,
-			Text:      clip(e.Shown(), 180),
-			Exception: clip(e.Exception, 140),
-			Count:     e.Count,
-			Hard:      entry.Hard(e),
-			UserOwned: isUserOwned(e),
-			Quotes:    itemQuotes(st, e, cutoff, 2),
-		})
-	}
-	localP := map[string]*Pattern{}
-	for i, p := range existing {
-		if i >= synthExisting {
-			break
+	// Step 1: Deterministic ops_runbook diversion before any LLM call.
+	var opsRules, universalRules []*entry.Entry
+	for _, e := range rules {
+		if entry.ClassifyOpsRunbook(e) || hasProperNounOrOps(e.PayloadTexts()...) {
+			opsRules = append(opsRules, e)
+		} else {
+			universalRules = append(universalRules, e)
 		}
-		pid := fmt.Sprintf("p%d", i+1)
-		localP[pid] = p
-		in.Existing = append(in.Existing, contractExistingInput{
-			ID:        pid,
-			Facet:     p.Facet,
-			Polarity:  p.Polarity,
-			Text:      clip(p.Text, 200),
-			Exception: clip(p.Exception, 120),
-		})
+	}
+	run.Counts["contract_ops_diverted"] = len(opsRules)
+	run.Counts["contract_universal_candidates"] = len(universalRules)
+
+	var touched []string
+	if len(opsRules) > 0 {
+		touched = union(touched, syncOpsRunbookEntries(st, s, opsRules, cutoff, now, run)...)
 	}
 
-	var out contractOutput
-	err := r.call(ctx, run, "contracts", model.Medium, contractsPrompt, contractsSchema, in, contractMaxTokens, &out)
-	if errors.Is(err, model.ErrRefused) {
-		run.Counts["contracts_refused"]++
-		run.Notes = append(run.Notes, "contracts: the model declined")
-		return nil, nil
-	}
-	if err != nil {
-		return nil, err
+	// Step 2: Process remaining universal collaboration rules in small batches (<= contractBatchSize).
+	for start := 0; start < len(universalRules); start += contractBatchSize {
+		end := min(start+contractBatchSize, len(universalRules))
+		batch := universalRules[start:end]
+		run.Counts["contract_batches"]++
+
+		in := contractInput{Lang: r.lang()}
+		local := map[string]*entry.Entry{}
+		for i, e := range batch {
+			id := fmt.Sprintf("r%d", i+1)
+			local[id] = e
+			in.Rules = append(in.Rules, contractRuleInput{
+				ID:        id,
+				Facet:     string(e.Facet),
+				Type:      e.Type,
+				Text:      clip(e.Shown(), 180),
+				Exception: clip(e.Exception, 140),
+				Count:     e.Count,
+				Hard:      entry.Hard(e),
+				UserOwned: isUserOwned(e),
+				Quotes:    itemQuotes(st, e, cutoff, 2),
+			})
+		}
+		existing := s.Sorted(func(p *Pattern) bool { return p.IsContract() && p.Lifecycle != Retired })
+		localP := map[string]*Pattern{}
+		for i, p := range existing {
+			if i >= synthExisting {
+				break
+			}
+			pid := fmt.Sprintf("p%d", i+1)
+			localP[pid] = p
+			in.Existing = append(in.Existing, contractExistingInput{
+				ID:        pid,
+				Facet:     p.Facet,
+				Polarity:  p.Polarity,
+				Text:      clip(p.Text, 200),
+				Exception: clip(p.Exception, 120),
+			})
+		}
+
+		var out contractOutput
+		err := r.call(ctx, run, "contracts", model.Medium, contractsPrompt, contractsSchema, in, contractMaxTokens, &out)
+		if errors.Is(err, model.ErrRefused) {
+			run.Counts["contracts_refused"]++
+			run.Notes = append(run.Notes, fmt.Sprintf("contracts: the model declined batch %d", run.Counts["contract_batches"]))
+			continue
+		}
+		if err != nil {
+			return touched, err
+		}
+
+		batchTouched := applyContractProposals(st, s, local, localP, out.Contracts, cutoff, now, run)
+		touched = union(touched, batchTouched...)
 	}
 
-	touched := applyContractProposals(st, s, local, localP, out.Contracts, cutoff, now, run)
 	if cutoff == "" {
 		s.ContractsSig = sig
 	}
@@ -297,6 +389,8 @@ func (r *Runner) SyncContracts(ctx context.Context, st *store.State, s *State, r
 }
 
 // applyContractProposals validates and writes the model's contract proposals into s.
+// Any proposal whose synthesized text still carries concrete host/tool/incident proper nouns is automatically
+// diverted to KindOpsRunbook with Hard=false (v0.4.0 §1.4).
 func applyContractProposals(st *store.State, s *State, local map[string]*entry.Entry, localP map[string]*Pattern,
 	proposals []contractProposal, cutoff, now string, run *Run) []string {
 	used := map[string]bool{}
@@ -372,6 +466,13 @@ func applyContractProposals(st *store.State, s *State, local map[string]*entry.E
 		}
 		p.Reason = strings.TrimSpace(prop.Reason)
 		p.UpdatedAt = now
+		// Code-level proper-noun / ops guard AFTER de-shelling and aggregation: single-incident shells or
+		// concrete host/tool rules are diverted to KindOpsRunbook and never inherit cross-month Hard status.
+		if patternIsOpsRunbook(p) {
+			p.Kind = KindOpsRunbook
+			p.Hard = false
+			run.Counts["contracts_diverted_ops"]++
+		}
 		recount(st, p, cutoff)
 		if p.Gate == "" {
 			if p.Exception != "" {
