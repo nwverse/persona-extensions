@@ -369,13 +369,13 @@ func TestCategoriesTagged(t *testing.T) {
 	if e := entryWith(c4, money.Text); e == nil || !slices.Contains(e.Cats(), entry.CatFinance) {
 		t.Errorf("unlabelled money: %+v %+v", e, c4.St.S.Rejections)
 	}
-	if cats, ok := categoriesOf("", "下周去办护照续签"); !ok || !slices.Equal(cats, []string{entry.CatLegalID}) {
+	if cats, ok := CategoriesOf("", "下周去办护照续签"); !ok || !slices.Equal(cats, []string{entry.CatLegalID}) {
 		t.Errorf("legal_id by words: %v %v", cats, ok)
 	}
-	if _, ok := categoriesOf("gossip"); ok {
+	if _, ok := CategoriesOf("gossip"); ok {
 		t.Error("an unknown label passed")
 	}
-	if cats, _ := categoriesOf("", "合同评审排在周三"); len(cats) != 0 {
+	if cats, _ := CategoriesOf("", "合同评审排在周三"); len(cats) != 0 {
 		t.Errorf("a work contract is not legal_id: %v", cats)
 	}
 }
