@@ -44,13 +44,18 @@ CANNOT_SEND = "cannot_send"
 PUSH = "push"
 # /agent: the user's own message starting with it goes to the assistant; the answer comes back in that chat.
 AGENT_PREFIX = "/agent"
+# The setting agent_prefix takes its place; the manifest's maxLength is the same. A prefix must start with "/" (not
+# "//"), stay within [AGENT_PREFIX_LEAST, AGENT_PREFIX_MOST] characters, and contain no whitespace, control characters
+# or colons so ordinary messages, URLs or delimiters cannot trigger an agent reply. Anything invalid keeps AGENT_PREFIX.
+AGENT_PREFIX_LEAST = 2
+AGENT_PREFIX_MOST = 32
 AGENT_SUFFIX = "🤖 AI 代答，仅供参考"
 # The setting agent_reply_suffix takes its place; the manifest's maxLength is the same. A shorter one than
 # AGENT_SUFFIX_LEAST keeps the default: the user's own message ending with the line is not a request, and a line
 # like "AI" would end too many of them.
 AGENT_SUFFIX_MOST = 100
 AGENT_SUFFIX_LEAST = 4
-AGENT_EMPTY = "（只发了 /agent：看上面的上下文和引用的消息，判断要做什么。）"
+AGENT_EMPTY = "（只发了 %s：看上面的上下文和引用的消息，判断要做什么。）"
 AGENT_TYPES = ("TEXT", "POST")
 CHANNEL_IMAGE_MOST = 3 << 20
 CHANNEL_IMAGES_MOST = 4
@@ -133,11 +138,14 @@ def media_ref(msg_id, key):
 
 
 class Connector:
-    def __init__(self, backend, store, hub, rules="", suffix=""):
+    def __init__(self, backend, store, hub, rules="", suffix="", prefix=""):
         self.backend = backend
         # The user's own triage rules (setting triage_rules): handed over with every inbox item, the hub uses them
         # instead of its global ones. The hub reads at most 4000 characters.
         self.rules = (rules or "").strip()[:4000]
+        # The trigger prefix (setting agent_prefix). Blank or invalid values keep AGENT_PREFIX so ordinary messages
+        # cannot accidentally trigger an agent reply.
+        self.prefix = normalize_agent_prefix(prefix)
         self.inbox_triage_chats = frozenset()
         # The line every /agent answer ends with (setting agent_reply_suffix). Blank or too short keeps AGENT_SUFFIX: an
         # answer is always marked as written by AI. Stripped after the cut too, since a message is matched against it
@@ -381,7 +389,7 @@ class Connector:
         if self.store.claimed(HOOK_KEY + m["id"]):
             return None
         for source in _command_texts(m):
-            request = agent_request(source)
+            request = agent_request(source, self.prefix)
             if request is not None:
                 return request
         return mention_request(text, m.get("mentions"), me) if self.mention else None
@@ -408,7 +416,7 @@ class Connector:
         threading.Thread(target=self._hand_over, args=(m, request), daemon=True).start()
 
     def _hand_over(self, m, request):
-        message = {"id": m["id"], "text": request or AGENT_EMPTY}
+        message = {"id": m["id"], "text": request or (AGENT_EMPTY % self.prefix)}
         message.update(_channel_routing(m, topics=self.topics))
         thread = self._thread(m)
         if thread:
@@ -536,8 +544,8 @@ class Connector:
                 tags = ["%s[%s](id=%s)" % (x["name"], "BOT" if x.get("kind") == "bot" else "成员", x["id"]) for x in shown]
                 members_line = "本群成员与机器人（回复中写 @显示名 可直接触发真艾特）：" + "、".join(tags) + "\n"
         if not before:
-            return members_line + "这条 /agent 写在%s里。" % where
-        return members_line + "这条 /agent 写在%s里，之前的 %d 条消息：\n%s" % (where, len(before), "\n".join(_line(x) for x in before))
+            return members_line + "这条 %s 写在%s里。" % (self.prefix, where)
+        return members_line + "这条 %s 写在%s里，之前的 %d 条消息：\n%s" % (self.prefix, where, len(before), "\n".join(_line(x) for x in before))
 
     def channel_send(self, p):
         """An answer for one /agent: in the chat it was written in, under it, as the user, marked as written by AI. A
@@ -556,7 +564,7 @@ class Connector:
         request = self.store.message(p.get("reply_to") or "") if p.get("reply_to") else None
         if not signed_in or request is None or request["sender"] != me or self._agent_request(request, me) is None:
             # Only an answer to one of the user's own /agent goes out: nothing in a chat they did not ask in.
-            raise RpcError("没有可以回复的 /agent 消息", CANNOT_SEND)
+            raise RpcError("没有可以回复的 %s 消息" % self.prefix, CANNOT_SEND)
         return self._channel_out("channel:" + ref, request["chat"], text, request.get("root") or request["id"],
                                  lambda: self._context_mentions(request, text))
 
@@ -1191,13 +1199,26 @@ def _limit(args, default):
         return default
 
 
-def agent_request(text):
-    """What the user asks with "/agent …" (case aside, then a space, a colon, a line or nothing), or None when the text
-    is not one: "/agents" is not."""
+def normalize_agent_prefix(value):
+    """Returns a valid trigger prefix, or AGENT_PREFIX when blank or invalid."""
+    p = (value or "").strip()
+    if len(p) < AGENT_PREFIX_LEAST or len(p) > AGENT_PREFIX_MOST:
+        return AGENT_PREFIX
+    if not p.startswith("/") or p.startswith("//"):
+        return AGENT_PREFIX
+    if any(ch.isspace() or ch in ":：" or ord(ch) < 32 or 127 <= ord(ch) <= 159 for ch in p):
+        return AGENT_PREFIX
+    return p
+
+
+def agent_request(text, prefix=AGENT_PREFIX):
+    """What the user asks with "<prefix> …" (case aside, then a space, a colon, a line or nothing), or None when the
+    text is not one: "/agents" is not for "/agent"."""
+    p = normalize_agent_prefix(prefix)
     s = (text or "").lstrip()
-    if s[:len(AGENT_PREFIX)].lower() != AGENT_PREFIX:
+    if s[:len(p)].lower() != p.lower():
         return None
-    rest = s[len(AGENT_PREFIX):]
+    rest = s[len(p):]
     if rest and not (rest[0].isspace() or rest[0] in ":："):
         return None
     return rest.lstrip(" \t\r\n:：").strip()

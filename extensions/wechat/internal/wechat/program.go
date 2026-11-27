@@ -26,7 +26,7 @@ func Item() wire.ConnectorItem {
 const MaxText = 3500
 
 // Network is where it goes: iLink and WeChat's media CDN.
-var Network = []string{"*.weixin.qq.com"}
+var Network = []string{"*.weixin.qq.com", "*.wechat.com"}
 
 // Channel is the channel it contributes (docs/extensions/channels.md): pictures, documents, videos and voice (WeChat's
 // own transcript, or decrypted audio delivered as a file when WeChat sends no transcript) come in, plain text goes out

@@ -65,6 +65,10 @@ func sliceStateBefore(st *store.State, cutoff string) *store.State {
 				if cp.Count <= 0 {
 					cp.Count = len(evs)
 				}
+				isOwned := cp.Origin == entry.Handwritten || cp.Origin == entry.SelfReport || cp.Pinned || cp.User != nil
+				if cp.Count <= 1 && cp.Status == entry.Stable && !isOwned {
+					cp.Status = entry.Candidate
+				}
 				if len(kinds) > 0 {
 					ks := make([]string, 0, len(kinds))
 					for k := range kinds {
