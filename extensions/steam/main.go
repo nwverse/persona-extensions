@@ -16,7 +16,7 @@ import (
 
 const (
 	extensionID = "steam"
-	version     = "0.2.0"
+	version     = "0.3.0"
 	summaryID   = "steam-summary"
 )
 

@@ -1,6 +1,6 @@
 {
   "name": "Steam",
-  "description": "在 Persona 中调研 Steam 商店游戏。用 Steam 手机 App 扫码登录后，只读查看玩家状态、游玩记录、游戏库、成就、官方更新和愿望单地区价格，可在本机标注游戏进度并订阅愿望单提醒。也可用 Web API 密钥读取公开账号数据。",
+  "description": "在 Persona 中调研 Steam 商店游戏，查看游戏库、成就、更新、愿望单价格和游玩复盘，在本机标注游戏进度。可选用好友开黑雷达、愿望单提醒和个人游玩画像。支持 Steam 手机 App 扫码和只读 Web API 密钥。",
   "configuration": {
     "auth_mode": {
       "title": "登录方式",
@@ -62,7 +62,7 @@
     },
     "discovery_tools_enabled": {
       "title": "Steam 游戏调研工具和技能",
-      "description": "允许游戏调研工具将结果加入助手上下文。工具默认开启，调研技能可在贡献列表单独开启。关闭此设置后同时停用。"
+      "description": "游戏调研工具默认开启，调研技能可在贡献列表单独开启，投递由 Hub 管理。关闭此设置后同时停用。"
     },
     "discovery_max_results": {
       "title": "单次游戏调研候选上限",
