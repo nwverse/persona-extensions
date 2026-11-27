@@ -535,6 +535,17 @@ func standingForbidden(st *store.State, e *entry.Entry) bool {
 	if space != "" && !entry.IsWorkMethodFacet(e.Facet) {
 		return true
 	}
+	// For non-work facets (e.g. Persona class aggregating sensitive actions), also block if any live member is sensitive
+	// or space-confined so sensitive child entries never leak into global standing via a parent class.
+	if st != nil && !entry.IsWorkMethodFacet(e.Facet) {
+		for _, mid := range e.Members {
+			if m := st.Entries[mid]; m != nil && m.Live() {
+				if mc, ms, _ := Tags(st, m); len(mc) > 0 || ms != "" {
+					return true
+				}
+			}
+		}
+	}
 	return false
 }
 
