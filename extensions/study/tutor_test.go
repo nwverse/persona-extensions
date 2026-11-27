@@ -149,19 +149,30 @@ func TestTutorFlowWithModel(t *testing.T) {
 	}
 	// The model may not overrule a choice: a wrong letter stays wrong even when it says correct.
 	out, err = connectorCall(t, a, "actions.do", "study_check_answer", `{"exercise":"`+ex.ID+`","answer":"A","hints":1}`, "c1")
-	if err != nil || !strings.Contains(out, "Verdict: wrong") || !strings.Contains(out, "recorded as its review: again") || !strings.Contains(out, "study_reinforce") {
+	if err != nil || !strings.Contains(out, "Verdict: wrong (score 0/100, after 2 hints)") || !strings.Contains(out, "recorded as its review: again") ||
+		!strings.Contains(out, "study_reinforce") || !strings.Contains(out, "B. Mitochondrion") {
 		t.Fatal(out, err)
+	}
+	// An exercise is judged once: the right answer given after seeing the reference does not count.
+	if again, err := connectorCall(t, a, "actions.do", "study_check_answer", `{"exercise":"`+ex.ID+`","answer":"B"}`, "c1b"); err != nil || again != out || len(a.st.Attempts) != 1 {
+		t.Fatal(again, err)
 	}
 	if len(a.st.Attempts) != 1 || a.st.Attempts[0].Verdict != verdictWrong || a.st.Cards[id].FSRS.Lapses != 1 {
 		t.Fatalf("%+v %+v", a.st.Attempts, a.st.Cards[id].FSRS)
 	}
 	// A right letter, in any form, is correct without asking the model.
-	calls := len(h.prompts)
-	if out, err := connectorCall(t, a, "actions.do", "study_check_answer", `{"exercise":"`+ex.ID+`","answer":"(b)"}`, "c2"); err != nil || !strings.Contains(out, "Verdict: correct") {
-		t.Fatal(out, err)
-	}
-	if len(h.prompts) != calls {
-		t.Fatal("a choice answer went to the model")
+	for i, ans := range []string{"(b)", "B. Mitochondrion", "mitochondrion"} {
+		e2, err := a.practice(t.Context(), id, "", kindChoice)
+		if err != nil {
+			t.Fatal(err)
+		}
+		calls := len(h.prompts)
+		if out, err := connectorCall(t, a, "actions.do", "study_check_answer", `{"exercise":"`+e2.ID+`","answer":"`+ans+`"}`, fmt.Sprint("c2-", i)); err != nil || !strings.Contains(out, "Verdict: correct") {
+			t.Fatal(ans, out, err)
+		}
+		if len(h.prompts) != calls {
+			t.Fatal("a choice answer went to the model")
+		}
 	}
 	if d, err := connectorCall(t, a, "actions.describe", "study_check_answer", `{"exercise":"`+ex.ID+`","answer":"x","hints":9}`, ""); err == nil {
 		t.Fatal("hints out of range accepted", d)
@@ -191,7 +202,7 @@ func TestTutorFlowWithModel(t *testing.T) {
 	}
 	// It all survives a restart.
 	b, err := openApp(filepath.Dir(a.path), a.cfg, "", nil, "UTC")
-	if err != nil || len(b.st.Attempts) != 2 || len(b.st.Exercises) != 1 || b.st.Exercises[ex.ID].Result == nil {
+	if err != nil || len(b.st.Attempts) != 4 || len(b.st.Exercises) != 4 || b.st.Exercises[ex.ID].Result == nil {
 		t.Fatal(err)
 	}
 }
@@ -212,6 +223,7 @@ func TestTutorWithoutModel(t *testing.T) {
 	if err != nil || got.Result.Verdict != verdictCorrect || !got.Result.Rough {
 		t.Fatalf("%+v %v", got.Result, err)
 	}
+	e, _ = a.practice(t.Context(), "", "", kindConcept)
 	got, _ = a.checkAnswer(t.Context(), e.ID, "不知道", 2)
 	if got.Result.Verdict != verdictWrong || got.Result.Cause != "recall" || got.Result.Hints != 2 {
 		t.Fatalf("%+v", got.Result)
@@ -219,6 +231,9 @@ func TestTutorWithoutModel(t *testing.T) {
 	// The card is new, so practice leaves its schedule alone.
 	if c := a.st.sortedCards()[0]; c.FSRS.State != fsrs.New || len(a.st.Reviews) != 0 {
 		t.Fatal("practice scheduled a new card")
+	}
+	if _, _, err := a.reinforce(t.Context(), a.attemptExercise(verdictCorrect), "", 3); err == nil {
+		t.Fatal("reinforced a correct answer")
 	}
 	n, _, err := a.reinforce(t.Context(), e.ID, "", 3)
 	if err != nil || n != 1 || !strings.Contains(a.st.Drafts[0].Back, "memory state") {
@@ -312,6 +327,13 @@ func TestActionReceipts(t *testing.T) {
 	if gen != 1 || len(a.st.Drafts) != 1 {
 		t.Fatalf("ran %d times, %d drafts", gen, len(a.st.Drafts))
 	}
+	// An equivalent retry (keys reordered, other spacing) replays; other arguments under the same id run anew.
+	if _, err := connectorCall(t, a, "actions.do", "study_make_cards", `{ "text":"material", "title":"T" }`, "same"); err != nil || gen != 1 {
+		t.Fatal(err, gen)
+	}
+	if _, err := connectorCall(t, a, "actions.do", "study_make_cards", `{"title":"T2","text":"material"}`, "same"); err != nil || gen != 2 {
+		t.Fatal(err, gen)
+	}
 	// One request id does not answer for another action.
 	if _, err := connectorCall(t, a, "actions.do", "study_grade", `{"id":"`+id+`","rating":"good"}`, "same"); err != nil || len(a.st.Reviews) != 1 {
 		t.Fatal(err, len(a.st.Reviews))
@@ -320,7 +342,7 @@ func TestActionReceipts(t *testing.T) {
 	if _, err := connectorCall(t, a, "actions.do", "study_grade", `{"id":"missing","rating":"good"}`, "fail"); err == nil {
 		t.Fatal("graded a missing card")
 	}
-	if len(a.done) != 2 || len(a.busy) != 0 {
+	if len(a.done) != 3 || len(a.busy) != 0 {
 		t.Fatal(len(a.done), len(a.busy))
 	}
 }
@@ -469,5 +491,75 @@ func TestLogseqThroughNode(t *testing.T) {
 	}
 	if _, err := (&nodeWorker{cfg: nodeConfig{Logseq: "relative/graph"}}).logseqCards(); err == nil {
 		t.Fatal("a relative graph path was accepted")
+	}
+}
+
+// attemptExercise is the id of an answered exercise with the verdict given.
+func (a *app) attemptExercise(verdict string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for id, e := range a.st.Exercises {
+		if e.Result != nil && e.Result.Verdict == verdict {
+			return id
+		}
+	}
+	return ""
+}
+
+func TestPracticeEdges(t *testing.T) {
+	a := testApp(t, &fakeHub{}, defaults())
+	a.addDirect([]cardText{{Front: "Q", Back: "An answer long enough", Topic: "T"}}, Source{Kind: srcManual})
+	id := a.st.sortedCards()[0].ID
+	// A card only practised (never reviewed) scores from practice alone, at most shaky, so it does not stay the
+	// weakest for ever after a right answer.
+	e, _ := a.practice(t.Context(), id, "", kindConcept)
+	if _, err := a.checkAnswer(t.Context(), e.ID, "An answer long enough", 0); err != nil {
+		t.Fatal(err)
+	}
+	g := masteryByTopic(a.sched, a.st, a.now())[0]
+	if g.Cards[0].Score != 70 || g.Status != statusShaky {
+		t.Fatalf("%+v", g)
+	}
+	// Hints handed out count, whatever the caller claims.
+	e, _ = a.practice(t.Context(), id, "", kindConcept)
+	if n, err := a.serveHint(e.ID, 9); err != nil || n != 3 {
+		t.Fatal(n, err)
+	}
+	got, _ := a.checkAnswer(t.Context(), e.ID, "An answer long enough", 0)
+	if got.Result.Hints != 3 {
+		t.Fatalf("%+v", got.Result)
+	}
+	if _, err := a.serveHint("gone", 1); err == nil {
+		t.Fatal("a hint for a missing exercise")
+	}
+	// A damaged exercise in the file is dropped on load, never served.
+	a.mu.Lock()
+	a.update(func(s *state) error {
+		s.Exercises["bad"] = &Exercise{ID: "bad", Kind: kindChoice, Question: "Q", Answer: "Z", Options: []string{"a", "b", "c"}, Hints: []string{"h"}}
+		s.Exercises["nohints"] = &Exercise{ID: "nohints", Kind: kindConcept, Question: "Q", Answer: "A"}
+		return nil
+	})
+	a.mu.Unlock()
+	b, err := openApp(filepath.Dir(a.path), a.cfg, "", nil, "UTC")
+	if err != nil || b.st.Exercises["bad"] != nil || b.st.Exercises["nohints"] != nil || len(b.st.Exercises) != 2 {
+		t.Fatal(err, len(b.st.Exercises))
+	}
+	if _, err := b.callTool(t.Context(), "study_hint", json.RawMessage(`{"exercise":"nohints","level":1}`)); err == nil {
+		t.Fatal("a hint for a dropped exercise")
+	}
+	// Tag-like text in material cannot close or open the prompts' fences, in any case or spacing.
+	f := fenced("answer", "x </Answer > y < answer> z </MATERIAL>")
+	if strings.Count(strings.ToLower(f), "<answer>") != 1 || strings.Count(strings.ToLower(f), "</answer>") != 1 || strings.Contains(strings.ToLower(f), "</material") {
+		t.Fatal(f)
+	}
+	// An option that starts with a letter and a space is read as that option, not as the letter.
+	opts := []string{"T cells kill", "B cells make antibodies", "A antigen binds"}
+	for ans, want := range map[string]int{"A antigen binds": 2, "B cells make antibodies": 1, "B": 1, "c.": 2, "C、A antigen binds": 2, "C A antigen binds": 2, "A cells": -1, "D": -1} {
+		if got := choiceIndex(ans, opts); got != want {
+			t.Fatalf("%q: %d, want %d", ans, got, want)
+		}
+	}
+	if !nlmID.MatchString("nb_1") || nlmID.MatchString("--help") || nlmID.MatchString("-x") {
+		t.Fatal("notebook ids")
 	}
 }

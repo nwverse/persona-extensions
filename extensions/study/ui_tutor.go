@@ -224,7 +224,9 @@ func (a *app) tutorView(st pageState) *wire.View {
 	var answer []wire.Component
 	if e.Kind == kindChoice {
 		for k, o := range e.Options {
-			answer = append(answer, row(optionLetter(k)+". "+o, "", "tutor_answer", map[string]string{"answer": optionLetter(k)}))
+			// The whole option, not a row's one-line title: a cut option could be a different answer.
+			answer = append(answer, wire.Component{Type: wire.ComponentRow, Title: fit(optionLetter(k)+". "+o, optionLetter(k)),
+				Action: &wire.Action{ID: "tutor_answer", Values: map[string]string{"answer": optionLetter(k)}}})
 		}
 	} else {
 		answer = []wire.Component{

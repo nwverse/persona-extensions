@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -444,5 +446,144 @@ func TestViewsConcurrent(t *testing.T) {
 	}
 	if len(a.st.Exercises) > maxExercises {
 		t.Fatal(len(a.st.Exercises))
+	}
+}
+
+func TestViewsStateRoundTrip(t *testing.T) {
+	// What an action writes into the page state, the next render must read back: long Chinese text is clipped by
+	// characters and checked by characters.
+	run := func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		switch cmd := strings.Join(args, " "); {
+		case strings.HasPrefix(cmd, "--quiet auth check"):
+			return []byte(`{}`), nil
+		case strings.HasPrefix(cmd, "--quiet artifact list -n nb_1 --type flashcard"):
+			return []byte(`{"artifacts":[{"id":"art_f","title":"` + strings.Repeat("卡", 300) + `","status":"completed"}]}`), nil
+		case strings.HasPrefix(cmd, "--quiet artifact list -n nb_1 --type quiz"):
+			return []byte(`{"artifacts":[{"id":"art_q","title":"Quiz","status":"completed"}]}`), nil
+		case cmd == "--quiet list --json":
+			return []byte(`{"notebooks":[{"id":"nb_1","title":"` + strings.Repeat("本", 300) + `"}]}`), nil
+		}
+		return nil, errors.New("unexpected")
+	}
+	vault, graph := writeVault(t), writeGraph(t)
+	h := &fakeHub{node: &nodeWorker{cfg: nodeConfig{Vault: vault, Logseq: graph}, look: func() string { return "/bin/notebooklm" }, run: run}}
+	a := testApp(t, h, config{Machines: []string{"mac"}})
+	long := strings.Repeat("搜", 500)
+	for _, c := range []struct{ mode, action string }{{modeObsidian, "vault_search"}, {modeLogseq, "logseq_search"}, {modeNotion, "notion_search"}} {
+		res, err := actOn(t, a, c.action, pageState{Mode: c.mode}, map[string]string{"q": long})
+		if err != nil {
+			t.Fatal(c.action, err)
+		}
+		if _, err := a.render(t.Context(), request("", stateOf(t, res.View), nil)); err != nil {
+			t.Fatalf("%s: the state it wrote is refused: %v", c.action, err)
+		}
+	}
+	// Notebooks and their sets, with titles at the limit, and back.
+	res, err := actOn(t, a, "go", pageState{}, map[string]string{"mode": modeNLM})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err = actOn(t, a, "nlm_open", stateOf(t, res.View), map[string]string{"id": "nb_1", "title": strings.Repeat("本", 300)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := stateOf(t, res.View)
+	if _, err := a.render(t.Context(), request("", st, nil)); err != nil || st.Notebook != "nb_1" {
+		t.Fatal(err)
+	}
+	if _, err := actOn(t, a, "nlm_back", st, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Lists of real notes and pages.
+	viewOf(t, a, pageState{Mode: modeObsidian})
+	if v := viewOf(t, a, pageState{Mode: modeLogseq}); !strings.Contains(fmt.Sprint(v.Sections), "lang/rust") {
+		t.Fatal("the Logseq page list")
+	}
+	if _, err := actOn(t, a, "import_logseq", pageState{Mode: modeLogseq}, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Forged ids are refused rather than clipped into another id.
+	if _, err := a.action(t.Context(), request("open_card", pageState{}, map[string]string{"id": strings.Repeat("c", 65)})); err == nil {
+		t.Fatal("a forged card id")
+	}
+}
+
+func TestViewsErrorPages(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+	fail := func(context.Context, string, ...string) ([]byte, error) {
+		return nil, errors.New(strings.Repeat("错", 3000))
+	}
+	h := &fakeHub{node: &nodeWorker{cfg: nodeConfig{Vault: "/nonexistent/vault", Logseq: "relative"}, look: func() string { return "/bin/notebooklm" }, run: fail}}
+	a := testApp(t, h, config{Machines: []string{"mac"}})
+	a.notion = newNotion(srv.URL, "synthetic-secret")
+	for _, m := range []string{modeNotion, modeObsidian, modeLogseq, modeNLM} {
+		v := viewOf(t, a, pageState{Mode: m})
+		if !strings.Contains(fmt.Sprint(v.Sections), "empty") {
+			t.Fatalf("%s: %+v", m, v.Sections)
+		}
+	}
+	// The notebook is not signed in: the page says how to sign in.
+	viewOf(t, a, pageState{Mode: modeNLM, Notebook: "nb_1", NBTitle: "x"})
+}
+
+func TestViewsTutorResults(t *testing.T) {
+	long := strings.Repeat("题", maxQuestion)
+	options := `["` + strings.Repeat("甲", maxOption) + `","` + strings.Repeat("乙", maxOption) + `","丙","丁"]`
+	hints := `["` + strings.Repeat("提", maxHint) + `","b","c"]`
+	verdict := `{"verdict":"correct","score":100,"cause":"none","diagnosis":"Spot on.","feedback":"` + strings.Repeat("好", 800) + `"}`
+	h := &fakeHub{}
+	h.model = func(p wire.ModelCompleteParams) (wire.ModelCompleteResult, error) {
+		switch p.Label {
+		case "study.exercise":
+			if strings.Contains(p.Messages[0].Content, "Kind: choice") {
+				return wire.ModelCompleteResult{JSON: json.RawMessage(`{"question":"` + long + `","options":` + options + `,"answer":"A","hints":` + hints + `,"explanation":"` + strings.Repeat("解", 1000) + `"}`)}, nil
+			}
+			return wire.ModelCompleteResult{JSON: json.RawMessage(`{"question":"` + long + `","answer":"` + strings.Repeat("答", maxAnswerText) + `","hints":` + hints + `}`)}, nil
+		case "study.judge":
+			return wire.ModelCompleteResult{JSON: json.RawMessage(verdict)}, nil
+		}
+		return wire.ModelCompleteResult{}, errors.New("no")
+	}
+	a := testApp(t, h, defaults())
+	a.addDirect([]cardText{{Front: "Q", Back: "A", Topic: strings.Repeat("知", maxTopic)}}, Source{Kind: srcNotion, Title: "Page", URL: "https://www.notion.so/page-1"})
+	id := a.st.sortedCards()[0].ID
+	if v := viewOf(t, a, pageState{Mode: modeCard, Card: id}); !strings.Contains(fmt.Sprint(v.Sections), "https://www.notion.so/page-1") {
+		t.Fatal("no link to the source")
+	}
+	for _, k := range []string{kindChoice, kindConcept} {
+		e, err := a.practice(t.Context(), id, "", k)
+		if err != nil || e.Plain {
+			t.Fatal(k, err)
+		}
+		st := pageState{Mode: modeTutor, Exercise: e.ID, Kind: k, Hints: 3}
+		v := viewOf(t, a, st)
+		if k == kindChoice && !strings.Contains(fmt.Sprint(v.Sections), strings.Repeat("甲", maxOption)) {
+			t.Fatal("a choice option was cut")
+		}
+		answer := "A"
+		if k == kindChoice {
+			answer = "B" // wrong, whatever the model says
+		}
+		if _, err := a.checkAnswer(t.Context(), e.ID, answer, 3); err != nil {
+			t.Fatal(err)
+		}
+		v = viewOf(t, a, st)
+		hasReinforce := false
+		for _, act := range wire.Actions(v) {
+			hasReinforce = hasReinforce || act.ID == "reinforce_exercise"
+		}
+		if (k == kindChoice) != hasReinforce {
+			t.Fatalf("%s: reinforce button %v", k, hasReinforce)
+		}
+	}
+	for _, fam := range []string{wire.WidgetFamilyMedium, wire.WidgetFamilyLarge} {
+		w, err := a.renderWidget(t.Context(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: widgetID, Placement: wire.PlacementWidget, Size: fam, UIVersion: 4}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		checkPage(t, "widget "+fam, w)
 	}
 }

@@ -74,12 +74,15 @@ func recentTallies(st state, now time.Time) map[string]*tally {
 			continue
 		}
 		t := get(at.Card)
+		if at.Verdict == verdictWrong {
+			t.wrong++ // a practice mistake, also when the attempt was recorded as the review
+		}
+		if at.Rated {
+			continue // its answer already counts as that review
+		}
 		t.n++
-		switch at.Verdict {
-		case verdictCorrect:
+		if at.Verdict == verdictCorrect {
 			t.good++
-		case verdictWrong:
-			t.wrong++
 		}
 	}
 	return out
@@ -92,7 +95,8 @@ func recentTallies(st state, now time.Time) map[string]*tally {
 //	15% ease, from FSRS difficulty (1 easy … 10 hard)
 //	20% recent accuracy over reviews and practice answers in the last 30 days
 //
-// minus 6 points a lapse, at most 30. A card never reviewed nor practised is new and scores 0.
+// minus 6 points a lapse, at most 30. A card never reviewed nor practised is new and scores 0; one only practised
+// scores 70 times its recent accuracy.
 func scoreCard(s scheduler, c *Card, t *tally, now time.Time) cardScore {
 	out := cardScore{Card: c}
 	if t != nil && t.n > 0 {
@@ -101,6 +105,13 @@ func scoreCard(s scheduler, c *Card, t *tally, now time.Time) cardScore {
 	seen := c.FSRS.State != fsrs.New || out.RecentN > 0
 	if !seen {
 		out.Status = statusNew
+		return out
+	}
+	if c.FSRS.State == fsrs.New {
+		// Practised but never reviewed: FSRS knows nothing yet, so the score is recent accuracy alone, capped at 70
+		// (shaky) until spaced reviews show it lasts.
+		out.Score = int(math.Round(70 * out.Recent))
+		out.Status = statusOf(out.Score, true)
 		return out
 	}
 	var r float64

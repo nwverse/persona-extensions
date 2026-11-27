@@ -48,7 +48,7 @@ func hubNotifier(base, token string, scopes []string) func(context.Context, noti
 		defer res.Body.Close()
 		data, _ := io.ReadAll(io.LimitReader(res.Body, 64<<10))
 		if res.StatusCode/100 != 2 {
-			return fmt.Errorf("hub 拒收了提醒（%d）", res.StatusCode)
+			return fmt.Errorf("Persona 没收下这条提醒（%d）", res.StatusCode)
 		}
 		var out struct {
 			Sent   bool   `json:"sent"`

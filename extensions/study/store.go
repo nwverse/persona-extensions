@@ -85,6 +85,7 @@ type Attempt struct {
 	Verdict  string    `json:"verdict"` // correct, partial or wrong
 	Cause    string    `json:"cause,omitempty"`
 	Hints    int       `json:"hints,omitempty"`
+	Rated    bool      `json:"rated,omitempty"` // also recorded as the card's FSRS review, so counted once
 	At       time.Time `json:"at"`
 }
 
@@ -167,8 +168,8 @@ func loadState(path string) (state, error) {
 		}
 	}
 	for id, e := range s.Exercises {
-		if e == nil || e.ID != id {
-			delete(s.Exercises, id)
+		if e == nil || e.ID != id || !e.valid() {
+			delete(s.Exercises, id) // an exercise is a cache: one that does not hold together is dropped, not trusted
 		}
 	}
 	s.Version = stateVersion

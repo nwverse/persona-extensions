@@ -39,7 +39,7 @@ Each card that was reviewed or practised gets a mastery score from 0 to 100:
 | Ease | 15% | FSRS difficulty (1 easy to 10 hard) |
 | Recent accuracy | 20% | Reviews not rated 忘了 and practice answers judged correct, in the last 30 days |
 
-Each lapse takes off 6 points, at most 30. A knowledge point's score is the average of its studied cards. Scores below 50 are 薄弱 (weak), 50 to 74 不稳 (shaky), 75 and above 掌握 (solid); cards never studied are 未学 (new). **薄弱知识点** lists knowledge points weakest first, filtered by status, and a knowledge point's page lists its cards weakest first with their lapses, practice mistakes and the causes of recent mistakes.
+Each lapse takes off 6 points, at most 30. A card that was only practised, never reviewed, scores 70 times its recent practice accuracy (at most 不稳) until spaced reviews show the memory lasts. A practice answer that was also recorded as the card's review counts once. A knowledge point's score is the average of its studied cards. Scores below 50 are 薄弱 (weak), 50 to 74 不稳 (shaky), 75 and above 掌握 (solid); cards never studied are 未学 (new). **薄弱知识点** lists knowledge points weakest first, filtered by status, and a knowledge point's page lists its cards weakest first with their lapses, practice mistakes and the causes of recent mistakes.
 
 ## Tutor practice
 
@@ -52,9 +52,9 @@ Each lapse takes off 6 points, at most 30. A knowledge point's score is the aver
 | 选择 (choice) | Pick the right one of four options, the others being plausible mistakes |
 | 场景变式 (scenario) | Apply the idea to a new, concrete situation |
 
-The model writes the question, its answer and three Socratic hints that narrow down without giving the answer away. Choice and exact fill-in answers are graded by the extension itself; other answers are judged by the model on meaning, which also names the cause of a mistake (概念混淆, 记忆遗漏, 审题偏差, 推理错误, 迁移不足 or 粗心笔误) with a diagnosis and feedback. The model cannot overrule a wrong choice. When the exercise's card is due, the result is recorded as its review: wrong is 忘了, partly right or right after two or more hints is 模糊, otherwise 记得. Practice never changes the schedule of a card that is not due, and never rates 很熟.
+The model writes the question, its answer and three Socratic hints that narrow down without giving the answer away. Choice and exact fill-in answers are graded by the extension itself; other answers are judged by the model on meaning, which also names the cause of a mistake (概念混淆, 记忆遗漏, 审题偏差, 推理错误, 迁移不足 or 粗心笔误) with a diagnosis and feedback. The model cannot overrule a wrong choice. Each exercise is judged once: answering it again returns the first judgement, so an answer written after seeing the reference answer does not count. The number of hints is the larger of what the caller reports and what the extension handed out. Tag-like text inside material and answers is neutralized before it reaches the model, so it cannot close or open the prompts' fences. When the exercise's card is due, the result is recorded as its review: wrong is 忘了, partly right or right after two or more hints is 模糊, otherwise 记得. Practice never changes the schedule of a card that is not due, and never rates 很熟.
 
-After a wrong or partial answer, **生成强化卡** drafts cards aimed at that mistake; a knowledge point's page drafts cards for the whole point. They wait in 待确认 like other drafts and join FSRS once kept.
+After a wrong or partial answer (and only then), **生成强化卡** drafts cards aimed at that mistake; a knowledge point's page drafts cards for the whole point. They wait in 待确认 like other drafts and join FSRS once kept.
 
 Without a model, the card's own question is asked with hints cut from its answer, open answers are judged roughly by wording (and say so), and reinforcement turns the missed exercise itself into a card. The extension keeps the last 100 exercises and 5,000 practice answers.
 
@@ -73,13 +73,13 @@ The quick prompts **考考我** (quiz the due cards one at a time), **深度辅�
 - `study_due`, `study_card`, `study_search`, `study_stats`: read-only. `study_due` lists questions without answers.
 - `study_weak_points`: read-only. Knowledge points weakest first with mastery, weakest cards and recent mistake causes; filter by `status` (`weak`, `shaky`, `solid`, `new`) or `topic`.
 - `study_practice`: makes one exercise (`kind`: `concept`, `cloze`, `choice`, `scenario`) for a `card`, the weakest card of a `topic`, or the weakest overall, and returns its question without the answer. It only stores the exercise in the extension's practice cache.
-- `study_hint`: read-only. Hint level 1, 2 or 3 of an exercise.
+- `study_hint`: hint level 1, 2 or 3 of an exercise; it only notes on the exercise how many hints were handed out.
 - `study_grade`: records your rating for a card.
 - `study_check_answer`: judges an answer to an exercise, with the number of hints seen, and returns the verdict, score, cause, diagnosis, feedback and reference answer; records the review when the card is due.
 - `study_reinforce`: drafts reinforcement cards for an `exercise` or a `topic`.
 - `study_make_cards`: makes draft cards from text or from cards the assistant wrote, optionally under a `topic`; nothing is added to the review queue until you keep the drafts.
 
-The last four are connector actions, so they go through the hub's confirmation rules. A repeated request id for the same action returns the first result and is recorded once, also when the repeat arrives while the first is still running; receipts are kept per action, so one id cannot answer for another action.
+The last four are connector actions, so they go through the hub's confirmation rules. A repeated request (the same action, request id and arguments, compared as canonical JSON) returns the first result and is recorded once, also when the repeat arrives while the first is still running; one request id can answer neither for another action nor for other arguments. A failed action is not remembered, so a retry runs again.
 
 ## Feishu documents and Relingo vocabulary
 

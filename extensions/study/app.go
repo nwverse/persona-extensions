@@ -145,7 +145,7 @@ func (a *app) node(ctx context.Context, method string, params, out any) error {
 		return err
 	}
 	if a.hub == nil {
-		return errors.New("hub 还没连上")
+		return errors.New("还没连上 Persona")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
@@ -207,7 +207,7 @@ func (a *app) generate(ctx context.Context, src Source, material, topic string) 
 
 func (a *app) fromTopic(ctx context.Context, id string) (int, error) {
 	if a.hub == nil {
-		return 0, errors.New("hub 还没连上")
+		return 0, errors.New("还没连上 Persona")
 	}
 	if id == "" || len(id) > 200 {
 		return 0, errors.New("知识点 ID 不对")
@@ -242,7 +242,7 @@ func topicName(d wire.KBDetail, fallback string) string {
 
 func (a *app) topics(ctx context.Context) ([]wire.KBEntry, error) {
 	if a.hub == nil {
-		return nil, errors.New("hub 还没连上")
+		return nil, errors.New("还没连上 Persona")
 	}
 	res, err := a.hub.KBList(ctx, wire.KBListParams{Kind: "topics", Limit: 50})
 	if err != nil {
@@ -335,6 +335,9 @@ func (a *app) fromNotebookLM(ctx context.Context, notebook, artifact, kind, note
 	title := strings.TrimSpace(notebookTitle)
 	if set.Title != "" {
 		title = strings.TrimSpace(title + " · " + set.Title)
+	}
+	for i := range set.Cards {
+		set.Cards[i].Topic = "" // filed under the notebook, not under what the export says
 	}
 	return a.addDrafts(set.Cards, Source{Kind: srcNotebookLM, Ref: notebook + "/" + artifact, Title: strings.Trim(title, " ·")})
 }

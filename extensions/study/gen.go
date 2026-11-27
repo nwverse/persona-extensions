@@ -34,12 +34,10 @@ func makeCards(ctx context.Context, m modelAPI, title, material string, n int) (
 	}
 	n = min(max(n, 1), 20)
 	material = clip(material, maxMaterial)
-	material = strings.ReplaceAll(material, "</material>", "</ material>")
-	user := "<material>\n"
 	if title != "" {
-		user += "# " + strings.ReplaceAll(title, "\n", " ") + "\n\n"
+		material = "# " + strings.ReplaceAll(title, "\n", " ") + "\n\n" + material
 	}
-	user += material + "\n</material>"
+	user := fenced("material", material)
 	res, err := m.ModelComplete(ctx, wire.ModelCompleteParams{
 		System:     strings.ReplaceAll(cardsPrompt, "{{N}}", strconv.Itoa(n)),
 		Messages:   []wire.ModelMessage{{Role: "user", Content: user}},

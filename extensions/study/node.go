@@ -436,7 +436,8 @@ func (w *nodeWorker) logseqRead(rel string) (noteText, error) {
 // nlmPaths are where uv, pipx and Homebrew put the command when it is not on the node's PATH.
 var nlmPaths = []string{"~/.local/bin/notebooklm", "/opt/homebrew/bin/notebooklm", "/usr/local/bin/notebooklm", "/usr/bin/notebooklm"}
 
-var nlmID = regexp.MustCompile(`^[A-Za-z0-9_-]{1,128}$`)
+// An id never starts with "-", so it cannot be read as an option of the command.
+var nlmID = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]{0,127}$`)
 
 func findNLM(configured string) string {
 	home, _ := os.UserHomeDir()
@@ -601,7 +602,7 @@ func (w *nodeWorker) nlmDownload(ctx context.Context, notebook, artifact, kind s
 	return nlmSet{Kind: kind, Title: clip(title, 200), Cards: cards}, nil
 }
 
-// lastJSON is the JSON object the command printed, skipping any line of other output before it.
+// lastJSON is the command's output from its first "{" on, skipping lines of other output printed before the JSON.
 func lastJSON(out []byte) []byte {
 	if i := bytes.IndexByte(out, '{'); i >= 0 {
 		return out[i:]

@@ -55,7 +55,9 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.Card) > 64 || len(st.Query) > 200 || len(st.Notebook) > 128 || len(st.NBTitle) > 300 ||
+	// Text the page clips by characters is checked by characters, so a long Chinese query never locks the page.
+	if err := r.DecodeState(&st); err != nil || len(st.Card) > 64 || utf8.RuneCountInString(st.Query) > 200 || len(st.Notebook) > 128 ||
+		utf8.RuneCountInString(st.NBTitle) > 300 ||
 		utf8.RuneCountInString(st.Topic) > maxTopic || len(st.Exercise) > 64 || st.Hints < 0 || st.Hints > maxHints || st.Done < 0 ||
 		(st.Status != "" && !validStatus(st.Status)) || (st.Kind != "" && !validKind(st.Kind)) {
 		return pageState{}, errors.New("invalid page state")
@@ -82,10 +84,20 @@ func text(s, style string) wire.Component {
 	return wire.Component{Type: wire.ComponentText, Text: s, Style: style}
 }
 func button(title, id string, values map[string]string) wire.Component {
-	return wire.Component{Type: wire.ComponentButton, Title: fit(title, "打开"), Action: &wire.Action{ID: id, Values: values}}
+	return wire.Component{Type: wire.ComponentButton, Title: fit(title, "打开"), Action: &wire.Action{ID: id, Values: fitValues(values)}}
 }
 func row(title, subtitle, id string, values map[string]string) wire.Component {
-	return wire.Component{Type: wire.ComponentRow, Title: fit(oneLine(title), "无标题"), Subtitle: clip(subtitle, wire.StringMost), Action: &wire.Action{ID: id, Values: values}}
+	return wire.Component{Type: wire.ComponentRow, Title: fit(oneLine(title), "无标题"), Subtitle: clip(subtitle, wire.StringMost), Action: &wire.Action{ID: id, Values: fitValues(values)}}
+}
+
+// fitValues holds an action's values to the 2000 characters each may have.
+func fitValues(values map[string]string) map[string]string {
+	for k, v := range values {
+		if utf8.RuneCountInString(v) > wire.StringMost {
+			values[k] = clip(v, wire.StringMost)
+		}
+	}
+	return values
 }
 func empty(title, detail string) wire.Component {
 	return wire.Component{Type: wire.ComponentEmpty, Title: fit(title, "这里还没有内容"), Text: clip(detail, wire.StringMost)}
@@ -94,7 +106,10 @@ func empty(title, detail string) wire.Component {
 // answerBlock shows a card's answer as Markdown when it is in the subset the apps draw (https links, no images), and
 // as plain text otherwise: an Obsidian ![[embed]] or an http link must not make the whole page refused.
 func answerBlock(s string) wire.Component {
-	md := wire.Component{Type: wire.ComponentMarkdown, Text: fit(clip(s, 20000), "—")}
+	if strings.TrimSpace(s) == "" {
+		return text("", wire.TextStyleBody)
+	}
+	md := wire.Component{Type: wire.ComponentMarkdown, Text: clip(s, 20000)}
 	if wire.CheckView(&wire.View{Sections: []wire.Section{{Items: []wire.Component{md}}}}) == nil {
 		return md
 	}
@@ -124,7 +139,10 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		case modeReview, modeDrafts, modeTopics, modeNotion, modeObsidian, modeNLM, modeCards, modeWrite, modeLogseq, modeWeak:
 			st = pageState{Mode: m}
 		case modeTutor:
-			st = pageState{Mode: m, Topic: cleanTopic(v["topic"]), Card: clip(v["card"], 64), Kind: st.Kind}
+			if len(v["card"]) > 64 {
+				return nil, errors.New("卡片 ID 不对")
+			}
+			st = pageState{Mode: m, Topic: cleanTopic(v["topic"]), Card: v["card"], Kind: st.Kind}
 			if st.Kind == "" {
 				st.Kind = kindConcept
 			}
@@ -260,11 +278,11 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			toast = "模型暂时不可用，先用卡片原题练"
 		}
 	case "tutor_hint":
-		e, ok := a.exercise(st.Exercise)
-		if !ok {
-			return nil, errors.New("这道题已经过期了，换一道吧")
+		n, err := a.serveHint(st.Exercise, st.Hints+1)
+		if err != nil {
+			return nil, err
 		}
-		st.Hints = min(st.Hints+1, len(e.Hints))
+		st.Hints = n
 	case "tutor_answer":
 		answer := v["answer"]
 		if strings.TrimSpace(answer) == "" {
@@ -303,7 +321,10 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		toast = "知识点改好了"
 	case "open_card":
-		st = pageState{Mode: modeCard, Card: clip(v["id"], 64)}
+		if len(v["id"]) > 64 {
+			return nil, errors.New("卡片 ID 不对")
+		}
+		st = pageState{Mode: modeCard, Card: v["id"]}
 	case "pause", "resume", "delete":
 		id := st.Card
 		a.mu.Lock()

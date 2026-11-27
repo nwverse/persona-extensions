@@ -8,11 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
-	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/wire"
 	fsrs "github.com/open-spaced-repetition/go-fsrs/v4"
@@ -76,9 +76,21 @@ type Exercise struct {
 	Accepted    []string   `json:"accepted,omitempty"`
 	Hints       []string   `json:"hints"`
 	Explanation string     `json:"explanation,omitempty"`
-	Plain       bool       `json:"plain,omitempty"` // made without the model, straight from the card
+	Plain       bool       `json:"plain,omitempty"`  // made without the model, straight from the card
+	Served      int        `json:"served,omitempty"` // the most hints handed out so far
 	Created     time.Time  `json:"created"`
 	Result      *Judgement `json:"result,omitempty"`
+}
+
+// valid reports whether a stored exercise holds together, so a damaged file cannot make a tool index past its hints.
+func (e Exercise) valid() bool {
+	if !validKind(e.Kind) || e.Question == "" || e.Answer == "" || len(e.Hints) == 0 || len(e.Hints) > maxHints {
+		return false
+	}
+	if e.Kind == kindChoice {
+		return len(e.Options) >= 3 && len(e.Options) <= 5 && len(e.Answer) == 1 && int(e.Answer[0])-'A' >= 0 && int(e.Answer[0])-'A' < len(e.Options)
+	}
+	return true
 }
 
 func (e Exercise) clone() Exercise {
@@ -143,9 +155,14 @@ var judgeSchema = json.RawMessage(`{"type":"object","additionalProperties":false
 	`"diagnosis":{"type":"string","maxLength":300},` +
 	`"feedback":{"type":"string","maxLength":800}}}`)
 
-// fence wraps untrusted text in tags the prompts name, so it cannot close them early.
+// fenceTag is anything in untrusted text that looks like one of the prompts' own tags, opening or closing, in any
+// case and with any spacing.
+var fenceTag = regexp.MustCompile(`(?i)<\s*/?\s*(material|exercise|answer)\b`)
+
+// fenced wraps untrusted text in a tag the prompts name. Tag-like text inside loses its "<", so it can neither close
+// the fence early nor open a fake one.
 func fenced(tag, s string) string {
-	s = strings.ReplaceAll(s, "</"+tag+">", "</ "+tag+">")
+	s = fenceTag.ReplaceAllStringFunc(s, func(m string) string { return "‹" + m[1:] })
 	return "<" + tag + ">\n" + s + "\n</" + tag + ">"
 }
 
@@ -274,20 +291,36 @@ func plainHints(topic, answer string) []string {
 	}
 }
 
-// choiceIndex reads a choice answer: a letter (A, b., (C)) or an option's own text.
+// choiceIndex reads a choice answer: an option's own text first (an option may itself start with a letter and a
+// space), then a letter alone (A, b., (C)), then a letter with a separator ("B. …", "C、…") whose rest, if any, is that
+// option or a space-separated letter followed by that option's text.
 func choiceIndex(ans string, options []string) int {
-	t := strings.TrimSpace(ans)
-	t = strings.Trim(t, "()（）.。、:： ")
-	if utf8.RuneCountInString(t) == 1 {
-		r := unicode.ToUpper([]rune(t)[0])
-		if k := int(r - 'A'); k >= 0 && k < len(options) {
-			return k
-		}
-	}
 	n := normalize(ans)
 	for k, o := range options {
 		if n != "" && normalize(o) == n {
 			return k
+		}
+	}
+	t := strings.Trim(strings.TrimSpace(ans), "()（）.。、:： ")
+	rs := []rune(t)
+	letter := func(r rune) int {
+		if k := int(unicode.ToUpper(r) - 'A'); r < unicode.MaxASCII && k >= 0 && k < len(options) {
+			return k
+		}
+		return -1
+	}
+	if len(rs) == 1 {
+		return letter(rs[0])
+	}
+	if len(rs) > 2 {
+		if k := letter(rs[0]); k >= 0 {
+			rest := normalize(strings.TrimLeft(string(rs[2:]), ".、:：)） "))
+			switch {
+			case strings.ContainsRune(".、:：)）", rs[1]):
+				return k
+			case rs[1] == ' ' && rest == normalize(options[k]):
+				return k
+			}
 		}
 	}
 	return -1
@@ -345,10 +378,10 @@ func judge(ctx context.Context, m modelAPI, e Exercise, answer string, hints int
 		if err := askModel(ctx, m, judgePrompt, judgeInput(e, answer), judgeSchema, "study.judge", &out); err == nil {
 			if _, ok := verdictLabels[out.Verdict]; ok {
 				j.Verdict = out.Verdict
-				if fixed != "" {
-					j.Verdict = fixed
-				}
 				j.Score = min(max(out.Score, 0), 100)
+				if fixed != "" {
+					j.Verdict, j.Score = fixed, 0
+				}
 				if _, ok := causeLabels[out.Cause]; ok {
 					j.Cause = out.Cause
 				}
@@ -483,7 +516,7 @@ func (a *app) practice(ctx context.Context, cardID, topic, kind string) (Exercis
 	card := *c
 	var neighbours []*Card
 	for _, o := range a.st.sortedCards() {
-		if o.ID != card.ID && topicOf(o) == topicOf(&card) && len(neighbours) < 4 {
+		if o.ID != card.ID && !o.Suspended && topicOf(o) == topicOf(&card) && len(neighbours) < 4 {
 			cp := *o
 			neighbours = append(neighbours, &cp)
 		}
@@ -513,13 +546,36 @@ func (a *app) exercise(id string) (Exercise, bool) {
 	return e.clone(), true
 }
 
+// serveHint hands out hints up to level (1 to the exercise's count) and remembers the most handed out, so the
+// grading knows how much help was given whatever the caller says. It answers how many are out now.
+func (a *app) serveHint(id string, level int) (int, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	e := a.st.Exercises[id]
+	if e == nil {
+		return 0, errors.New("这道题已经过期了，换一道吧")
+	}
+	level = min(max(level, 1), len(e.Hints))
+	if level > e.Served && e.Result == nil {
+		if err := a.update(func(s *state) error { s.Exercises[id].Served = level; return nil }); err != nil {
+			return 0, err
+		}
+	}
+	return level, nil
+}
+
 // checkAnswer judges an answer to a stored exercise, logs the attempt and, when the card is due, records the review
-// with FSRS.
+// with FSRS. An exercise is judged once: answering it again gives the first judgement, so an answer written after
+// seeing the reference answer does not count.
 func (a *app) checkAnswer(ctx context.Context, id, answer string, hints int) (Exercise, error) {
 	e, ok := a.exercise(id)
 	if !ok {
 		return Exercise{}, errors.New("这道题已经过期了，换一道吧")
 	}
+	if e.Result != nil {
+		return e, nil
+	}
+	hints = max(hints, e.Served)
 	var m modelAPI
 	if a.hub != nil {
 		m = a.hub
@@ -533,6 +589,10 @@ func (a *app) checkAnswer(ctx context.Context, id, answer string, hints int) (Ex
 		if x == nil {
 			return errors.New("这道题已经过期了，换一道吧")
 		}
+		if x.Result != nil { // judged meanwhile by another call
+			e = x.clone()
+			return nil
+		}
 		if c := s.Cards[x.Card]; c != nil && !c.Suspended && c.FSRS.State != fsrs.New && !c.FSRS.Due.After(now) {
 			r := ratingFor(j)
 			if _, err := a.sched.grade(s, c.ID, r, now); err != nil {
@@ -541,7 +601,8 @@ func (a *app) checkAnswer(ctx context.Context, id, answer string, hints int) (Ex
 			j.Rated = ratingKey(r)
 		}
 		x.Result = &j
-		s.logAttempt(Attempt{Exercise: x.ID, Card: x.Card, Topic: x.Topic, Kind: x.Kind, Verdict: j.Verdict, Cause: j.Cause, Hints: j.Hints, At: now.UTC()})
+		s.logAttempt(Attempt{Exercise: x.ID, Card: x.Card, Topic: x.Topic, Kind: x.Kind, Verdict: j.Verdict, Cause: j.Cause, Hints: j.Hints,
+			Rated: j.Rated != "", At: now.UTC()})
 		e = x.clone()
 		return nil
 	})
@@ -562,6 +623,10 @@ func (a *app) reinforce(ctx context.Context, exerciseID, topic string, n int) (i
 		if e == nil {
 			a.mu.Unlock()
 			return 0, "", errors.New("这道题已经过期了")
+		}
+		if e.Result == nil || e.Result.Verdict == verdictCorrect {
+			a.mu.Unlock()
+			return 0, "", errors.New("只有答错或只答对一部分的题才做强化卡")
 		}
 		name, ref = e.Topic, "exercise:"+e.ID
 		material = reinforceFromExercise(*e)
