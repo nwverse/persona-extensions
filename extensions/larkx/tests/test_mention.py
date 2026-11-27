@@ -163,6 +163,7 @@ class MentionSettingsTest(unittest.TestCase):
             manifest = json.load(f)
         self.assertIs(manifest["configuration"]["properties"]["agent_mention"]["default"], True)
         self.assertEqual(manifest["version"], "0.4.0")
+        self.assertEqual(manifest["configuration"]["properties"]["inbox_triage_chats"]["default"], [])
 
 
 class MentionStoreMigrationTest(unittest.TestCase):

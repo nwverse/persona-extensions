@@ -89,23 +89,24 @@ func isUserOwned(e *entry.Entry) bool {
 }
 
 // contractCandidates returns the live interaction/tools rules eligible for L1 contract aggregation, before cutoff
-// ("" means all). It reserves a dedicated quota for ② tools (up to contractToolsCap) and reserves at least
-// contractNonHardPct% of each facet's quota for non-hard high-scoring rules so hard rules do not crowd out regular
-// stable rules or starve tools.
+// ("" means all). Live non-sensitive user-owned rules (handwritten/edited/pinned) are admitted first so high-precision
+// curated specs are never starved; remaining slots reserve a dedicated quota for ② tools (up to contractToolsCap) and
+// at least contractNonHardPct% per facet for non-hard high-scoring rules (including cross-month Abstract entries).
 func contractCandidates(st *store.State, cutoff string) []*entry.Entry {
-	var inter, tools []*entry.Entry
+	var ownedInter, ownedTools, inter, tools []*entry.Entry
 	for _, e := range st.Entries {
 		if e == nil || !e.Live() || (e.Facet != entry.Interaction && e.Facet != entry.Tools) {
 			continue
 		}
-		if entry.KindOf(e) != entry.KindRules || e.Grain == entry.Abstract || e.Predicate != "" {
+		if entry.KindOf(e) != entry.KindRules || e.Predicate != "" {
 			continue
 		}
 		if entry.CoveredBy(e) != "" || slices.Contains(e.Flags, flagNoAutoMerge) {
 			continue
 		}
 		fastHot := entry.FastHotDay(e) != ""
-		if !usable(st, e) && !isUserOwned(e) && !fastHot {
+		owned := isUserOwned(e)
+		if !usable(st, e) && !owned && !fastHot {
 			continue
 		}
 		if cutoff != "" && e.First >= cutoff {
@@ -115,7 +116,15 @@ func contractCandidates(st *store.State, cutoff string) []*entry.Entry {
 		if e.Facet == entry.Tools && e.Status == entry.Stable {
 			minScore = contractToolsScore
 		}
-		if entry.Score(e) < minScore && !entry.Hard(e) && !isUserOwned(e) && !fastHot {
+		if entry.Score(e) < minScore && !entry.Hard(e) && !owned && !fastHot && e.Grain != entry.Abstract {
+			continue
+		}
+		if owned {
+			if e.Facet == entry.Tools {
+				ownedTools = append(ownedTools, e)
+			} else {
+				ownedInter = append(ownedInter, e)
+			}
 			continue
 		}
 		if e.Facet == entry.Tools {
@@ -124,12 +133,32 @@ func contractCandidates(st *store.State, cutoff string) []*entry.Entry {
 			inter = append(inter, e)
 		}
 	}
-	toolsPicked := pickFacetRules(tools, contractToolsCap)
-	interCap := contractCandMost - len(toolsPicked)
-	if interCap < contractInteractionCap {
-		interCap = contractInteractionCap
+	sortByScore := func(s []*entry.Entry) {
+		sort.Slice(s, func(i, j int) bool {
+			if a, b := entry.Score(s[i]), entry.Score(s[j]); a != b {
+				return a > b
+			}
+			if s[i].Count != s[j].Count {
+				return s[i].Count > s[j].Count
+			}
+			return s[i].ID < s[j].ID
+		})
 	}
-	interPicked := pickFacetRules(inter, interCap)
+	sortByScore(ownedInter)
+	sortByScore(ownedTools)
+
+	toolsRem := max(0, contractToolsCap-len(ownedTools))
+	toolsPicked := append(ownedTools, pickFacetRules(tools, toolsRem)...)
+	if len(toolsPicked) > contractToolsCap {
+		toolsPicked = toolsPicked[:contractToolsCap]
+	}
+	interCap := contractCandMost - len(toolsPicked)
+	if interCap < 0 {
+		interCap = 0
+	}
+	interOwnedCap := min(len(ownedInter), interCap)
+	interRem := max(0, interCap-interOwnedCap)
+	interPicked := append(ownedInter[:interOwnedCap], pickFacetRules(inter, interRem)...)
 	out := append(interPicked, toolsPicked...)
 	if len(out) > contractCandMost {
 		out = out[:contractCandMost]

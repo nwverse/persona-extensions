@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path"
 	"strings"
+	"unicode/utf8"
 )
 
 // failureWords says why an attempt failed in the user's words. The error class is what the queue decides on;
@@ -142,13 +143,28 @@ func acceptanceOutput(message string) (head, tail string) {
 	return strings.TrimSpace(head), strings.TrimSpace(tail)
 }
 
+// outputEnd is a report's message in at most about max runes: its first line, which says how the attempt or its
+// acceptance command ended, and the end of the output under it.
+func outputEnd(message string, max int) string {
+	message = strings.TrimSpace(message)
+	if utf8.RuneCountInString(message) <= max {
+		return message
+	}
+	head, tail := acceptanceOutput(message)
+	if tail == "" {
+		return tailRunes(head, max)
+	}
+	head = headRunes(head, max/4)
+	return head + "\n" + tailRunes(tail, max-utf8.RuneCountInString(head))
+}
+
 func attemptCount(n int) string { return fmt.Sprintf("第 %d 次", max(n, 1)) }
 
 // The words below are for the pages only. failureWords and outcomeWords above also go into the decision written
 // to the to-do, so the pages use their own variants and leave those strings alone.
 
-// extName is the extension's name as the settings list shows it (persona-extension.json "name"). A page cannot
-// link to the settings page, so it says where to go in these words.
+// extName is the extension's name as the settings list shows it (persona-extension.json "name"). Pages name the
+// settings in these words; the setup page also opens them (setup.go).
 const extName = "ATS 自动做待办"
 
 // settingsPath is where the user changes this extension's settings.

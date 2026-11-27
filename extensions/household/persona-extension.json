@@ -2,9 +2,9 @@
   "manifest_version": 1,
   "id": "household",
   "name": "家庭管家",
-  "version": "0.1.4",
+  "version": "0.2.2",
   "icon": "assets/icon.png",
-  "description": "管家里的库存、采购、家务和餐食：物品少了、快过期或用完时提醒，一键补货，家务到期提醒，按库存推荐今天吃什么。页面和总览卡片在 Persona 里直接用；助手可以查库存、记用量、补货、完成家务和排餐食。",
+  "description": "管家里的库存、采购、家务和餐食：物品少了、快过期或用完时提醒，一键补货，家务到期提醒，按库存推荐今天吃什么。页面和总览卡片在 Persona 里直接用；助手可以查库存、记用量、补货、完成家务和排餐食；把小票、冰箱照片、订单截图或一段文字发给助手，它会整理成一份待确认的导入，你点头后才写进去，记错了可以撤销。页面上也能直接粘贴清单。每天按库存、过期日和家务给出今天的建议：先吃什么、能做什么菜、该买什么、哪些家务到期，每条都写明原因。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/docs/extensions/household.md",
   "tags": ["家庭", "库存", "采购", "家务", "餐食"],
@@ -19,13 +19,13 @@
   "contributes": {
     "ui": [
       {"id": "household", "title": "家庭管家", "placement": "nav_page", "icon": "home"},
-      {"id": "household-card", "title": "家庭管家", "placement": "overview_card", "opens": "household"}
+      {"id": "household-card", "title": "家庭管家 · 概况", "placement": "overview_card", "opens": "household"}
     ],
     "skills": [{"id": "household", "dir": "skills/household"}],
     "mcp_servers": [{
       "id": "household", "command": "household", "env": "PERSONA_HOUSEHOLD_BIN",
       "args": ["mcp"], "requires": ["mcp"],
-      "allow": ["household_status", "household_list", "household_meal_suggest"]
+      "allow": ["household_status", "household_list", "household_meal_suggest", "household_import_preview", "household_import_list", "household_advise"]
     }]
   },
   "permissions": {

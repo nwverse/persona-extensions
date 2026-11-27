@@ -22,6 +22,10 @@ const queueUI = "queue"
 // cardUI is the card on the Overview page; a tap on it opens queueUI (persona-extension.json "opens").
 const cardUI = "queue-card"
 
+// cardTitle is the card's title (persona-extension.json) and its header on Overview. The hub's settings page
+// lists every UI contribution by its title, so the card's says 「概况」 to tell it from the home page's.
+const cardTitle = extName + " · 概况"
+
 // ExtConfig is the extension's settings (configuration in persona-extension.json). Both programs read it: the
 // hub program all of it, the program on a computer the repository allowlist.
 type ExtConfig struct {
@@ -113,6 +117,8 @@ type atsApp struct {
 	// api and nodes are set by tests; init makes the real ones.
 	api   hubAPI
 	nodes nodeCaller
+	// draft is what the user picked on the home page before setup and has not saved in the settings yet.
+	draft setupDraft
 }
 
 func newATSApp(q *Queue) *atsApp {
@@ -177,6 +183,15 @@ func (a *atsApp) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[stri
 	if a.disp != nil {
 		a.disp.poke()
 		return nil, nil
+	}
+	// Saving the settings restarts the program. Once it is up, ask the apps to draw the pages again, so that a
+	// home page left open on its setup steps becomes the usual one without waiting for its next refresh.
+	if hub != nil {
+		go func() {
+			time.Sleep(time.Second) // after the hub has its answer to initialize
+			_ = hub.Invalidate(queueUI)
+			_ = hub.Invalidate(cardUI)
+		}()
 	}
 	if a.api == nil {
 		a.api = newHubClient(in.Hub.URL, in.Hub.Token)
@@ -275,8 +290,20 @@ func (a *atsApp) render(ctx context.Context, r *ext.UIRequest) (*wire.View, erro
 	if id := pageTask(r); id != "" {
 		return buildTaskView(q, id, a.now(), r.TZ), nil
 	}
-	return buildQueueView(q, a.config(), a.now(), r.TZ), nil
+	return a.homeView(ctx, q, a.now(), r.TZ), nil
 }
+
+// homeView is the home page; before setup it reads the computers the setup steps offer.
+func (a *atsApp) homeView(ctx context.Context, q *Queue, now time.Time, tz string) *wire.View {
+	cfg := a.config()
+	var info setupInfo
+	if !setUp(cfg) {
+		info = a.setupInfo(ctx)
+	}
+	return buildHomeView(q, cfg, info, now, tz)
+}
+
+func setUp(cfg ExtConfig) bool { return len(cfg.Machines) > 0 && len(cfg.Repos) > 0 }
 
 // notReadyWords is what the app shows when a page is asked for before the program has opened its queue.
 const notReadyWords = "ATS 还在启动，过几秒刷新一下。"
@@ -294,6 +321,13 @@ func (a *atsApp) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResu
 	a.mu.Unlock()
 	now := a.now()
 	kind, target, _ := strings.Cut(strings.TrimSpace(r.Action), ":")
+
+	if res, ok := a.setupAction(kind, target, r.Values); ok {
+		if res.OpenURL == "" {
+			res.View = a.homeView(ctx, q, now, r.TZ)
+		}
+		return res, nil
+	}
 
 	var toast string
 	switch kind {
@@ -335,7 +369,7 @@ func (a *atsApp) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResu
 	if id := pageTask(r); id != "" {
 		return &wire.ActionResult{View: buildTaskView(q, id, now, r.TZ), Toast: toast}, nil
 	}
-	return &wire.ActionResult{View: buildQueueView(q, a.config(), now, r.TZ), Toast: toast}, nil
+	return &wire.ActionResult{View: a.homeView(ctx, q, now, r.TZ), Toast: toast}, nil
 }
 
 func toastTitle(t *Task) string {
@@ -364,9 +398,8 @@ func viewLocation(tz string) *time.Location {
 	return time.UTC
 }
 
-// homeIntro is the fixed text at the top of the home page: what this is and how to hand it work.
-const homeIntro = "ATS 帮你把待办自动做掉：它在你选好的电脑上把事情做完，再把结果写回待办；交给它时说了怎么检查的，它做完还会自己检查一遍。\n" +
-	"怎么交给它：在任意一个待办里跟助手说「把这个交给 ATS 做」，助手问过你、你同意后，这件事就会出现在这一页。"
+// homeIntro is the one line at the top of the home page: what this is and how to hand it work.
+const homeIntro = "它在你选的电脑上把待办做完，再把结果写回待办。交给它：在待办里跟助手说「把这个交给 ATS 做」。"
 
 // buildQueueView is the home page. Before the extension is set up it shows what is left to set up, and, when
 // tasks handed over earlier have not ended (the settings were cleared after they were queued), those tasks with
@@ -374,12 +407,17 @@ const homeIntro = "ATS 帮你把待办自动做掉：它在你选好的电脑上
 // user acts on comes first: one line on how things stand, the tasks that wait for the user, what is being done
 // and queued, what ended; the counts and the computers are below.
 func buildQueueView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.View {
+	return buildHomeView(q, cfg, setupInfo{}, now, tz)
+}
+
+// buildHomeView is buildQueueView with what the setup steps offer before setup (info).
+func buildHomeView(q *Queue, cfg ExtConfig, info setupInfo, now time.Time, tz string) *wire.View {
 	loc := viewLocation(tz)
 	plan := q.PlanSchedule(now)
 	quota := plan.Quota
 	view := &wire.View{Title: extName, RefreshAfter: 30}
-	view.Sections = append(view.Sections, wire.Section{Title: "这是什么", Items: []wire.Component{
-		{Type: wire.ComponentText, Key: "intro", Text: homeIntro},
+	view.Sections = append(view.Sections, wire.Section{Items: []wire.Component{
+		{Type: wire.ComponentText, Key: "intro", Style: wire.TextStyleSecondary, Text: homeIntro},
 	}})
 
 	names := map[string]string{}
@@ -407,9 +445,21 @@ func buildQueueView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.Vie
 	needsSection := wire.Section{Title: "等你处理", Items: needs,
 		Footer: "怎么处理：打开这件事对应的待办，在里面 ATS 的对话里回答它的问题或点同意，它就会接着做。"}
 
-	if len(cfg.Machines) == 0 || len(cfg.Repos) == 0 {
+	if !setUp(cfg) {
+		for _, m := range plan.Machines {
+			if info.names == nil {
+				info.names = map[string]string{}
+			}
+			if _, ok := info.names[m.Name]; !ok && m.Title != "" {
+				info.names[m.Name] = m.Title
+			}
+		}
+		view.Sections = append(view.Sections, setupSections(cfg, info)...)
 		running, waiting := plan.CountsByState[StateRunning], plan.CountsByState[StateNeedsInput]
-		view.Sections = append(view.Sections, setupSection(cfg, running, waiting, plan.CountsByState[StateQueued]))
+		if note := liveWorkNote(running, waiting, plan.CountsByState[StateQueued]); note != "" {
+			view.Sections[len(view.Sections)-1].Items = append(view.Sections[len(view.Sections)-1].Items,
+				wire.Component{Type: wire.ComponentText, Key: "setup-live", Style: wire.TextStyleSecondary, Text: note})
+		}
 		if len(needs) > 0 {
 			view.Sections = append(view.Sections, needsSection)
 		}
@@ -480,34 +530,22 @@ func buildQueueView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.Vie
 	return view
 }
 
-// setupSection is the home page before the extension is set up: each step, whether it is done, and where.
-func setupSection(cfg ExtConfig, running, waiting, queued int) wire.Section {
-	step := func(key, title, detail string, done bool) wire.Component {
-		badge := &wire.Badge{Text: "还没做", Tone: wire.ToneDanger}
-		if done {
-			badge = &wire.Badge{Text: "做好了", Tone: wire.TonePositive}
+// liveWorkNote says, before setup, how many tasks handed over earlier have not ended; "" when none.
+func liveWorkNote(running, waiting, queued int) string {
+	live := running + waiting + queued
+	if live == 0 {
+		return ""
+	}
+	var parts []string
+	for _, p := range []struct {
+		n    int
+		what string
+	}{{running, "正在做"}, {waiting, "等你处理"}, {queued, "排着"}} {
+		if p.n > 0 {
+			parts = append(parts, fmt.Sprintf("%s %d 件", p.what, p.n))
 		}
-		return wire.Component{Type: wire.ComponentRow, Key: key, Title: title, Subtitle: detail, Badge: badge}
 	}
-	items := []wire.Component{
-		step("setup-machines", "第 1 步：选一台干活的电脑", "事情会在这台电脑上做。它要开着，并且登录着 Persona。", len(cfg.Machines) > 0),
-		step("setup-repos", "第 2 步：告诉它能动哪些文件夹", "写项目所在的文件夹，比如 ~/code。只有这些文件夹里的项目能交给它。", len(cfg.Repos) > 0),
-	}
-	next := "去哪儿设：打开「" + settingsPath + "」，在「设置」里把这两项填好。两步都做好后，回到这一页就能看到要做的事和电脑。"
-	if live := running + waiting + queued; live > 0 {
-		var parts []string
-		for _, p := range []struct {
-			n    int
-			what string
-		}{{running, "正在做"}, {waiting, "等你处理"}, {queued, "排着"}} {
-			if p.n > 0 {
-				parts = append(parts, fmt.Sprintf("%s %d 件", p.what, p.n))
-			}
-		}
-		next += fmt.Sprintf("\n之前交给它的事还有 %d 件没结束（%s），就在下面，不想做了可以取消。", live, strings.Join(parts, "、"))
-	}
-	items = append(items, wire.Component{Type: wire.ComponentText, Key: "setup-next", Text: next})
-	return wire.Section{Title: "开始用之前，先做这两步", Items: items}
+	return fmt.Sprintf("之前交给它的事还有 %d 件没结束（%s），就在下面，不想做了可以取消。", live, strings.Join(parts, "、"))
 }
 
 // statusLine is the one line on how things stand: taking work, low on quota, out of quota, or no computer.
@@ -544,12 +582,12 @@ func buildCardView(q *Queue, cfg ExtConfig, now time.Time, tz string) *wire.View
 	plan := q.PlanSchedule(now)
 	counts := plan.CountsByState
 	waiting, doing, queued, failed := counts[StateNeedsInput], counts[StateRunning]+counts[StateLeased], counts[StateQueued], counts[StateFailed]
-	view := &wire.View{Title: extName, RefreshAfter: 30}
+	view := &wire.View{Title: cardTitle, RefreshAfter: 30}
 
-	if len(cfg.Machines) == 0 || len(cfg.Repos) == 0 {
+	if !setUp(cfg) {
 		items := []wire.Component{
 			{Type: wire.ComponentText, Key: "card-setup", Text: "ATS 还没准备好：" + setupMissingWords(len(cfg.Machines) > 0, len(cfg.Repos) > 0), Tone: wire.ToneCaution},
-			{Type: wire.ComponentText, Key: "card-next", Text: "下一步：到「" + settingsPath + "」里填好。"},
+			{Type: wire.ComponentText, Key: "card-next", Text: "下一步：点开这里，在页面上选好电脑和文件夹。"},
 		}
 		if live := waiting + doing + queued; live > 0 {
 			items = append(items, wire.Component{Type: wire.ComponentText, Key: "card-live", Style: wire.TextStyleSecondary,

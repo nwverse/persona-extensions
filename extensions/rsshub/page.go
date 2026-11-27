@@ -242,7 +242,9 @@ func (a *app) overview(r *ext.UIRequest, feeds []feed, loc *time.Location) wire.
 			failing = append(failing, "「"+clip(f.name(), 40)+"」")
 		}
 	}
-	state, tone := "还没试过", wire.ToneNeutral
+	// Until something is read through RSSHub (a source previewed or read, or the button below) nothing has asked
+	// the service; with nothing subscribed the stat says nothing needs doing, so "not tried" is not read as a task.
+	state, tone := "还没用到", wire.ToneNeutral
 	switch {
 	case h.Config != nil:
 		state, tone = "地址填错了", wire.ToneDanger
@@ -257,6 +259,9 @@ func (a *app) overview(r *ext.UIRequest, feeds []feed, loc *time.Location) wire.
 		service = "设置里的地址用不了"
 	case h.Host == "rsshub.app":
 		service = "免费公共服务 rsshub.app"
+	}
+	if len(feeds) == 0 && h.Config == nil && !h.failing() && h.OK.IsZero() {
+		service += "；" + serviceIdleNote
 	}
 	checked := "还没检查过"
 	if t := lastCheck(feeds); !t.IsZero() {

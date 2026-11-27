@@ -187,7 +187,7 @@ func (a *App) Act(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, er
 func (a *App) page(ctx context.Context, st *store.State, ps pageState) (*wire.View, error) {
 	now, loc := a.now(), a.loc()
 	v := &wire.View{
-		Title: "Token 用量",
+		Title: PageTitle,
 		Tabs: &wire.Tabs{
 			Name:  "tab",
 			Value: ps.Tab,

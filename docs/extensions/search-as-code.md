@@ -93,7 +93,7 @@ Custom recipes can be created, edited, and deleted from the page or through the 
 | Contribution | What it is (in plain words) | Behavior |
 | --- | --- | --- |
 | `ui` `search-as-code` (`nav_page`) | 页面「AI 聊天记录搜索」 | Search box, content filter `搜哪些内容` (`conversation` 只看对话, `all` 全部, `user` 只看我说的, `assistant` 只看助手说的, `errors` 只看报错), tabs (`结果` with an intro `这是做什么的` until the first search, `常用搜索` for recipes, `搜哪些地方` for sources and computers, `高级：怎么搜的` for the program, step trace, pipeline editor and history), hit detail view, and recipe editor. |
-| `ui` `search-as-code-card` (`overview_card`) | 概览卡片「AI 聊天记录搜索」 | One line on what it is for (until the first search), the first saved searches, and the last stored run; or, when nothing could be searched, why (see below). |
+| `ui` `search-as-code-card` (`overview_card`) | 概览卡片「AI 聊天记录搜索 · 概况」 | Titled apart from the page because the hub's settings page lists contribution switches by title; the title is also the card's header on Overview. One line on what it is for (until the first search), the first saved searches, and the last stored run; or, when nothing could be searched, why (see below). |
 | `skills` `search-as-code` | 教助手怎么在这台电脑的聊天记录里搜的说明 | Guides the assistant on composing `\|>` pipelines, using `conversation` scope to avoid tool noise, and saving reusable recipes. |
 | `assistant` `sessions` | 让助手去其他电脑、其他项目搜聊天记录的 `sac` 命令（先问你） | The `sac-remote` skill and the `sac` command gate for searching other computers and projects (see above). |
 | `mcp_servers` `search-as-code` | 助手在这台电脑上搜聊天记录用的工具 | `search-as-code mcp` over stdio. Only `sac_recipes_list` is in `allow`; the searches and the write tools follow the conversation's permission policy. |
@@ -105,7 +105,7 @@ The hub's settings page labels each contribution switch from the manifest: a `ui
 
 When a search read no chat at all, the `结果` tab keeps the intro and replaces the counts, the quick searches and the empty list with one of four states, and the card shows the matching line instead of its saved searches:
 
-- **No computer picked** (`还没设置好`), and nothing in this computer's chat folders: what is missing, where to pick one (`设置 › 扩展 › AI 聊天记录搜索` → `要搜哪些电脑`), that the page does not search again by itself (`再找一次` or a search goes to the picked computers, a few seconds, at most 20 s each), and the background sync (soon after the setting is saved, then every 15 minutes).
+- **No computer picked** (`还没设置好`), and nothing in this computer's chat folders: four short lines in the order a first-time user acts on them: what is missing, where to pick one (`设置 › 扩展 › AI 聊天记录搜索` → `要搜哪些电脑`), to press `再找一次` afterwards, and that this is not an error. One footer line adds that the picked computer must be on and connected, the background sync (every 15 minutes), and that chats in another folder on this computer go under `搜哪些地方` instead.
 - **Computers picked, not searched there yet** (the shown run did not reach them): how many are picked, and that `再找一次` searches them.
 - **None answered**: which computers were offline or did not answer with nothing synced, that this does not mean they have no chats, and what to check.
 - **They answered and have no chats**: which ones answered (and which did not), and where extra chat folders are set (`其他聊天记录文件夹（一般不用填）`).

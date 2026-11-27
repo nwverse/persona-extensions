@@ -869,11 +869,15 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 	absorbed := map[string]bool{}
 	var contractTexts []string
 	hasL1Contract, hasL1Principle := false, false
+	l1LatestDay := ""
 	for _, x := range extras {
 		e := x.Entry
 		if x.Kind == "" || len(e.Categories) > 0 || e.OriginSpace != "" || st.Entries[e.ID] != nil || !idRe.MatchString(e.ID) ||
 			entry.TemplateBacked(st.Entries, x.Evidence, tpl) {
 			continue
+		}
+		if x.Last > l1LatestDay {
+			l1LatestDay = x.Last
 		}
 		bucket := BucketPrinciple
 		maxBytes := PrincipleTextMost
@@ -881,11 +885,12 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 			bucket = BucketContract
 			maxBytes = ContractTextMost
 		}
+		prefix := StandingPrefix(bucket, x.Hard, x.Polarity)
 		text := ""
 		if strings.TrimSpace(x.Body) != "" {
-			text = FormatResidentLine(x.Body, x.Suffix, maxBytes)
+			text = FormatResidentLine(prefix+strings.TrimSpace(x.Body), x.Suffix, maxBytes)
 		} else {
-			text = FormatResidentLine(strings.TrimSpace(e.Text), "", maxBytes)
+			text = FormatResidentLine(prefix+strings.TrimSpace(e.Text), "", maxBytes)
 		}
 		if text == "" {
 			continue
@@ -899,6 +904,7 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 			Text:      text,
 			Kind:      x.Kind,
 			Bucket:    bucket,
+			Facet:     e.Facet,
 			L1:        true,
 			Hard:      x.Hard,
 			Score:     x.Score,
@@ -922,13 +928,17 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 		}
 	}
 
-	// Collect Bucket 0 (Hot Slot: Pinned + active Fast-Path temporary hard contracts) and, only when a main bucket has
-	// zero qualified L1 candidates, cold-start L0 fallback candidates for that bucket.
+	// Collect Bucket 0 (Hot Slot: Pinned + active Fast-Path + unabsorbed post-L1 high-certainty rules) and, only when
+	// a main bucket has zero qualified L1 candidates, cold-start L0 fallback candidates for that bucket.
 	for _, e := range st.Entries {
 		if !idRe.MatchString(e.ID) {
 			continue
 		}
-		if hc, ok := HotSlotCandidate(st, e, tpl, now); ok {
+		hc, ok := HotSlotCandidate(st, e, tpl, now)
+		if !ok && hasL1Contract && l1LatestDay != "" {
+			hc, ok = UnabsorbedRuleHotCandidate(st, e, tpl, l1LatestDay, now)
+		}
+		if ok {
 			if !hc.Pinned {
 				if absorbed[e.ID] || slices.ContainsFunc(contractTexts, func(t string) bool { return norm.Jaccard(t, hc.Text) >= sameRule }) {
 					continue // absorbed by L1 contract

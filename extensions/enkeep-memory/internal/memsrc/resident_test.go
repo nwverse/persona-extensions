@@ -185,7 +185,8 @@ func TestResidentHotSlotAndRanks(t *testing.T) {
 	}
 }
 
-// Contract bucket: single polarity <= 35% of effective bucket budget; non-generic group <= 20%.
+// Contract bucket: pass 1 enforces directional polarity caps (check <= 45%, act <= 35%, communicate <= 30%, route <= 30%)
+// and non-generic group cap (<= 20%) so no single polarity monopolizes the bucket.
 func TestResidentContractPolarityAndGroupCaps(t *testing.T) {
 	var cs []Candidate
 	for i := 0; i < 12; i++ {
@@ -195,24 +196,23 @@ func TestResidentContractPolarityAndGroupCaps(t *testing.T) {
 		c.Group = "interaction:autonomy"
 		cs = append(cs, c)
 	}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 8; i++ {
 		c := cand(fmt.Sprint("b", i), entry.KindRules, 110-i, 150)
 		c.Hard = true
 		c.Polarity = "check"
-		c.Group = "interaction:verification"
 		cs = append(cs, c)
 	}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 8; i++ {
 		c := cand(fmt.Sprint("c", i), entry.KindRules, 90-i, 150)
 		c.Polarity = "communicate"
 		cs = append(cs, c)
 	}
-	for i := 0; i < 6; i++ {
+	for i := 0; i < 8; i++ {
 		c := cand(fmt.Sprint("d", i), entry.KindRules, 80-i, 150)
 		c.Polarity = "route"
 		cs = append(cs, c)
 	}
-	// Add 2 principles so principles don't use full 50% and leftover spills to L1 contracts.
+	// Add 2 principles so principles don't use full 20% and leftover spills to L1 contracts.
 	cs = append(cs,
 		cand("p1", entry.KindUnderstanding, 85, 120),
 		cand("p2", entry.KindUnderstanding, 80, 120),
@@ -234,8 +234,14 @@ func TestResidentContractPolarityAndGroupCaps(t *testing.T) {
 		}
 	}
 	cEff := room - pBytes
-	if polBytes["act"] > int(float64(cEff)*PolarityShare) {
+	if polBytes["act"] > int(float64(cEff)*0.35) {
 		t.Errorf("act polarity bytes %d exceeded 35%% of effective contract budget %d", polBytes["act"], cEff)
+	}
+	if StandingPrefix(BucketContract, true, "check") != "" ||
+		StandingPrefix(BucketContract, true, "act") != "" ||
+		StandingPrefix(BucketContract, true, "communicate") != "" ||
+		StandingPrefix(BucketPrinciple, false, "") != "【原则】" {
+		t.Errorf("StandingPrefix violated neutral-contract / principle-tag rule")
 	}
 	if grpBytes["interaction:autonomy"] > int(float64(cEff)*GroupShare) {
 		t.Errorf("group autonomy bytes %d exceeded 20%% of effective contract budget %d", grpBytes["interaction:autonomy"], cEff)
@@ -245,34 +251,95 @@ func TestResidentContractPolarityAndGroupCaps(t *testing.T) {
 	}
 }
 
-// Principle bucket: pass 1 caps each dimension at 35% to ensure diversity; pass 2 fills remaining room with qualified
-// L1 principles when other dimensions are exhausted; L0 fragments are never used to fill leftover L1 room.
-func TestResidentPrincipleDimensionAndSpillover(t *testing.T) {
+// High-scoring route/interaction contracts are never displaced by low-scoring narrow tools rules; pass 2 refills
+// leftover contract room by unified Score; contracts stay in unified Score order without an artificial check-wall.
+func TestResidentTwoPassAndScoreOrder(t *testing.T) {
 	var cs []Candidate
-	// 5 decision L1 principles + 1 thinking L1 principle; no contracts -> principle bucket gets 100% of room.
-	for i := 0; i < 5; i++ {
-		c := cand(fmt.Sprint("d", i), entry.KindUnderstanding, 90-i, 150)
-		c.Dimension = "decision"
+	for i := 0; i < 12; i++ {
+		c := cand(fmt.Sprintf("i%d", i), entry.KindRules, 140-i, 200)
+		c.Facet = string(entry.Interaction)
+		c.Hard = true
+		c.Polarity = "act"
+		if i == 5 {
+			c.Polarity = "check"
+		}
 		cs = append(cs, c)
 	}
-	t1 := cand("t1", entry.KindUnderstanding, 70, 150)
-	t1.Dimension = "thinking"
-	cs = append(cs, t1)
-	// Also add an L0 fragment in principle bucket: must be ignored once L1 principles exist.
-	l0 := cand("l0", entry.KindUnderstanding, 99, 100)
-	l0.L1 = false
-	cs = append(cs, l0)
+	highRoute := cand("r-hi", entry.KindRules, 128, 220)
+	highRoute.Facet = string(entry.Interaction)
+	highRoute.Hard = true
+	highRoute.Polarity = "route"
+	lowTool := cand("t-lo", entry.KindRules, 75, 220)
+	lowTool.Facet = string(entry.Tools)
+	lowTool.Polarity = "route"
+	cs = append(cs, highRoute, lowTool)
 
 	got := ResidentWithin(cs, 1400, ResidentMostFor(1400))
 	var ids []string
 	for _, c := range got {
 		ids = append(ids, c.ID)
 	}
-	if !slices.Contains(ids, "t1") {
-		t.Fatalf("pass 1 dimension cap should bring thinking principle in: %v", ids)
+	if !slices.Contains(ids, "r-hi") {
+		t.Fatalf("high-scoring route contract r-hi should stand: %v", ids)
 	}
-	if len(ids) < 4 {
-		t.Fatalf("pass 2 should fill remaining room with qualified L1 principles: %v", ids)
+	if slices.Contains(ids, "t-lo") {
+		t.Fatalf("low-scoring narrow tools rule t-lo must not preempt higher-scoring contracts: %v", ids)
+	}
+	if len(got) == 0 || got[0].ID != "i0" || !slices.Contains(ids, "i5") {
+		t.Fatalf("expected highest-score contract i0 first and check rule i5 included, got %v", ids)
+	}
+	// Pass 2 refill: when only act/check/route exist, leftover room refills with remaining highest-scoring contracts.
+	totalBytes := 0
+	for _, c := range got {
+		totalBytes += len(c.Text) + residentOverhead
+	}
+	if totalBytes < 1100 {
+		t.Fatalf("pass 2 should refill remaining contract room, used only %d/1400 B: %v", totalBytes, ids)
+	}
+}
+
+// Post-L1 unabsorbed high-certainty rules enter Bucket 0 (Hot Slot) until L1 absorbs them, closing the 1–6 day gap
+// between daily new rules and weekly L1 builds without admitting older pre-L1 L0 fragments.
+func TestUnabsorbedRuleHotSlotTransition(t *testing.T) {
+	now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"t-new": {ID: "t-new", Facet: entry.Tools, Grain: entry.Abstract, Text: "共用机负载紧张时把编译门禁转到专用门禁机", Status: entry.Stable, Count: 55, First: "2026-11-17", Last: "2026-11-17", Tagged: true, Origin: entry.Behavior},
+		"t-old": {ID: "t-old", Facet: entry.Tools, Grain: entry.Abstract, Text: "早于 L1 检查点的旧规则不应进热槽", Status: entry.Stable, Count: 55, First: "2026-11-10", Last: "2026-11-15", Tagged: true, Origin: entry.Behavior},
+	}}
+	if _, ok := UnabsorbedRuleHotCandidate(st, st.Entries["t-new"], nil, "2026-11-15", now); !ok {
+		t.Fatal("new high-count abstract rule after l1LatestDay should enter hot slot")
+	}
+	if _, ok := UnabsorbedRuleHotCandidate(st, st.Entries["t-old"], nil, "2026-11-15", now); ok {
+		t.Fatal("rule first seen on or before l1LatestDay must not enter transitional hot slot")
+	}
+}
+
+// Principle bucket selects strictly by unified leverage Score without forcing low-scoring dimensions into standing;
+// L0 fragments never enter once L1 principles exist.
+func TestResidentPrincipleScoreOrderAndNoL0Spill(t *testing.T) {
+	var cs []Candidate
+	// 5 high-scoring decision L1 principles + 1 low-scoring thinking L1 principle; no contracts -> principle bucket gets full room.
+	for i := 0; i < 5; i++ {
+		c := cand(fmt.Sprint("d", i), entry.KindUnderstanding, 110-i, 180)
+		c.Dimension = "decision"
+		cs = append(cs, c)
+	}
+	t1 := cand("t1", entry.KindUnderstanding, 70, 180)
+	t1.Dimension = "thinking"
+	cs = append(cs, t1)
+	// Also add an L0 fragment in principle bucket: must be ignored once L1 principles exist.
+	l0 := cand("l0", entry.KindUnderstanding, 150, 100)
+	l0.L1 = false
+	cs = append(cs, l0)
+
+	got := ResidentWithin(cs, 950, ResidentMostFor(950))
+	var ids []string
+	for _, c := range got {
+		ids = append(ids, c.ID)
+	}
+	want := []string{"d0", "d1", "d2", "d3", "d4"}
+	if !slices.Equal(ids, want) {
+		t.Fatalf("principles should rank by Score without forced dimension padding: got %v, want %v", ids, want)
 	}
 	if slices.Contains(ids, "l0") {
 		t.Fatalf("L0 fragment must never enter once L1 principles exist: %v", ids)

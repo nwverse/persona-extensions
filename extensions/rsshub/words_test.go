@@ -73,6 +73,18 @@ func TestPagesSpeakPlainChinese(t *testing.T) {
 			t.Errorf("the empty page does not say %q", want)
 		}
 	}
+	// Before anything is subscribed the service has not been asked yet; the page says nothing needs doing.
+	for _, name := range []string{"01-empty-v4", "01-empty-v1"} {
+		raw, _ := json.Marshal(states[name].view)
+		if !strings.Contains(string(raw), "还没用到") || !strings.Contains(string(raw), serviceIdleNote) || strings.Contains(string(raw), "还没试过") {
+			t.Errorf("%s does not say the RSSHub service needs nothing yet: %s", name, raw)
+		}
+	}
+	for _, name := range []string{"05-several-sources", "12-instance-address-wrong", "15-instance-unreachable-ping"} {
+		if raw, _ := json.Marshal(states[name].view); strings.Contains(string(raw), serviceIdleNote) {
+			t.Errorf("%s says nothing needs doing", name)
+		}
+	}
 	old, _ := json.Marshal(states["01-empty-v1"].view)
 	if !strings.Contains(string(old), `"type":"button","title":"试一个例子`) {
 		t.Errorf("an older app gets no example button: %s", old)
@@ -137,6 +149,13 @@ func TestSettingsSpeakPlainChinese(t *testing.T) {
 		}
 		if k != "refresh_minutes" && !strings.HasPrefix(p.Description, "一般不用改") {
 			t.Errorf("%s does not start with 一般不用改: %s", k, p.Description)
+		}
+	}
+	// The form cannot fold settings away, so the two that almost nobody needs say so first thing in their titles.
+	for k, p := range m.Configuration.Properties {
+		rare := k == "access_auth" || k == "prefer_json"
+		if strings.HasPrefix(p.Title, "高级：") != rare {
+			t.Errorf("%s title %q: 「高级：」 belongs at the start of access_auth and prefer_json only", k, p.Title)
 		}
 	}
 	slices.Sort(keys)

@@ -1,6 +1,7 @@
 package overview
 
 import (
+	"regexp"
 	"slices"
 	"strings"
 
@@ -36,25 +37,47 @@ func independentQuotes(p *Pattern) int {
 	return p.SourcesCount
 }
 
-// Score ranks a used L1 pattern within its standing bucket (unified design §2.1):
-//   - Hard contract:     100 + min(30, violation_count*6) + min(20, scenes*4)
-//   - Regular contract:  lifecycle(core:30 / scoped:24) + min(25, scenes*4) + min(25, quotes*3) + min(20, weeks*4)
-//   - Principle:         lifecycle(core:30 / scoped:26) + min(25, scenes*5) + min(20, weeks*4) + min(15, quotes*2) + hasPolesOrException(10)
+// Score ranks a used L1 pattern within its standing bucket by multi-dimensional leverage (unified design §2.1):
+//   - Hard contract:     80 + min(20, viol*4) + min(24, scenes*6) + min(16, quotes*2) + owned(12+min(18,cov*3)) + check(6);
+//     capped at 70 when confined to a single scene and not user-owned (keeps narrow incidents in entity recall).
+//   - Regular contract:  lifecycle(core:30 / scoped:24) + min(24, scenes*6) + min(20, quotes*2) + min(16, weeks*4)
+//   - owned(15+min(15,cov*3)); single-scene non-owned capped at 70.
+//   - Principle:         lifecycle(core:30 / scoped:26) + min(25, scenes*5) + min(20, weeks*4) + min(15, quotes*2)
+//   - hasPolesOrException(10) + owned(18) + decisionOrAttention(8) + judgementOrWorkflow(6)
 func Score(p *Pattern) int {
 	if p == nil || !p.Used() {
 		return 0
 	}
 	quotes := independentQuotes(p)
 	weeks := len(p.ActiveWeeks)
+	cov := len(p.CoveredIDs)
+	owned := cov > 0
 	if p.IsContract() {
 		if p.Hard {
-			return 100 + min(30, p.ViolationCount*6) + min(20, p.ScenesCount*4)
+			s := 80 + min(20, p.ViolationCount*4) + min(24, p.ScenesCount*6) + min(16, quotes*2)
+			if owned {
+				s += 12 + min(18, cov*3)
+			}
+			if p.Polarity == PolarityCheck {
+				s += 6
+			}
+			if p.ScenesCount <= 1 && !owned {
+				s = min(s, 70)
+			}
+			return s
 		}
 		base := 24
 		if p.Lifecycle == Core {
 			base = 30
 		}
-		return base + min(25, p.ScenesCount*4) + min(25, quotes*3) + min(20, weeks*4)
+		s := base + min(24, p.ScenesCount*6) + min(20, quotes*2) + min(16, weeks*4)
+		if owned {
+			s += 15 + min(15, cov*3)
+		}
+		if p.ScenesCount <= 1 && !owned {
+			s = min(s, 70)
+		}
+		return s
 	}
 	base := 26
 	if p.Lifecycle == Core {
@@ -62,7 +85,16 @@ func Score(p *Pattern) int {
 	}
 	bonus := 0
 	if poleText(p.Poles) != "" || strings.TrimSpace(p.Exception) != "" {
-		bonus = 10
+		bonus += 10
+	}
+	if owned {
+		bonus += 18
+	}
+	if p.Dimension == "decision" || p.Dimension == "attention" {
+		bonus += 8
+	}
+	if p.Facet == string(entry.Judgement) || p.Facet == string(entry.Workflow) {
+		bonus += 6
 	}
 	return base + min(25, p.ScenesCount*5) + min(20, weeks*4) + min(15, quotes*2) + bonus
 }
@@ -126,6 +158,96 @@ func contractGroup(p *Pattern) string {
 	return p.Facet + ":" + q
 }
 
+// patternIdent matches high-specificity ASCII tool, command, host, service, or repo names inside an L1 pattern text
+// (e.g. task_plan, agent_start, sj-wsl, 1Password, Cloudflare, todo_complete) so on-demand recall and decisions_query
+// can reach non-standing L1 contracts and principles by concrete tool/entity tags (unified design §2.2).
+var patternIdent = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9_.-]{2,}`)
+
+var patternIdentStop = map[string]bool{
+	"the": true, "and": true, "for": true, "not": true, "all": true, "true": true, "false": true,
+	"ttl": true, "api": true, "cli": true, "url": true, "pdf": true, "json": true, "md": true,
+}
+
+type patternOccasionRule struct {
+	cues []string
+	tags []string
+}
+
+var patternOccasions = []patternOccasionRule{
+	{cues: []string{"派活", "派发", "派 Agent", "主管", "task_plan", "agent_start", "agent_send", "conversation_send"}, tags: []string{"派活", "dispatch"}},
+	{cues: []string{"汇报", "交付", "结论", "摘要", "进展", "耗时", "时间戳"}, tags: []string{"汇报", "report"}},
+	{cues: []string{"提问", "追问", "请示", "确认", "待定", "选项", "大白话", "授权卡", "卡片"}, tags: []string{"提问", "ask"}},
+	{cues: []string{"开工", "执行", "plan mode", "大纲", "框架", "方案"}, tags: []string{"开工", "task"}},
+	{cues: []string{"验收", "核实", "核对", "源头", "门禁", "测试", "编译"}, tags: []string{"验收", "门禁"}},
+	{cues: []string{"排期", "估时间", "工期", "估计交付"}, tags: []string{"排期", "估时间"}},
+	{cues: []string{"密钥", "凭据", "token", "1Password", "op CLI", "secret_env"}, tags: []string{"密钥", "凭据"}},
+	{cues: []string{"配置", "升级", "回滚", "镜像", "备份"}, tags: []string{"配置", "升级"}},
+	{cues: []string{"待办", "todo_complete", "STATE.md"}, tags: []string{"待办"}},
+	{cues: []string{"飞书", "云文档", "多维表格"}, tags: []string{"飞书"}},
+	{cues: []string{"评审", "质疑", "分歧", "独立判断"}, tags: []string{"评审", "review"}},
+}
+
+// EnrichSubjects builds up to memsrc.MaxSubjects recallable subjects for an L1 pattern by preserving its existing
+// Subjects and deterministically adding high-specificity tool/entity identifiers and occasion words present in its
+// text/exception. This keeps the ~60 non-standing L1 contracts and principles reachable via decisions_query and
+// contextual recall without re-running L1 models (unified design §2.2).
+func EnrichSubjects(p *Pattern) []string {
+	if p == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" || len(out) >= memsrc.MaxSubjects {
+			return
+		}
+		k := strings.ToLower(s)
+		if seen[k] {
+			return
+		}
+		seen[k] = true
+		out = append(out, s)
+	}
+	for _, s := range p.Subjects {
+		add(s)
+	}
+	src := strings.TrimSpace(p.Text) + " " + strings.TrimSpace(p.Exception)
+	for _, m := range patternIdent.FindAllString(src, -1) {
+		m = strings.Trim(m, ".-_")
+		if len(m) < 3 || patternIdentStop[strings.ToLower(m)] {
+			continue
+		}
+		hasLetter := false
+		for i := 0; i < len(m); i++ {
+			if (m[i] >= 'a' && m[i] <= 'z') || (m[i] >= 'A' && m[i] <= 'Z') {
+				hasLetter = true
+				break
+			}
+		}
+		if !hasLetter {
+			continue
+		}
+		add(m)
+	}
+	low := strings.ToLower(src)
+	for _, r := range patternOccasions {
+		for _, cue := range r.cues {
+			if strings.Contains(low, strings.ToLower(cue)) {
+				for _, tag := range r.tags {
+					add(tag)
+				}
+				break
+			}
+		}
+	}
+	if p.Facet == string(entry.Tools) {
+		add("工具")
+		add("tool")
+	}
+	return out
+}
+
 // Exits are the patterns as memory.entries entries, each with its last evidence day, score, and L1 metadata for the
 // three-bucket standing set.
 func Exits(s *State) []memsrc.Extra {
@@ -135,7 +257,7 @@ func Exits(s *State) []memsrc.Extra {
 	var out []memsrc.Extra
 	for _, p := range s.Sorted(func(p *Pattern) bool { return p.Used() }) {
 		hex := strings.TrimPrefix(p.ID, "ov:")
-		x := memsrc.Entry{Text: clip(Text(p), memsrc.MaxText), Facet: p.Facet, Status: "active", Subjects: p.Subjects}
+		x := memsrc.Entry{Text: clip(Text(p), memsrc.MaxText), Facet: p.Facet, Status: "active", Subjects: EnrichSubjects(p)}
 		kind := ""
 		l1Kind := ""
 		if len(p.Categories) > 0 || p.OriginSpace != "" {
@@ -157,7 +279,6 @@ func Exits(s *State) []memsrc.Extra {
 				l1Kind = memsrc.BucketPrinciple
 			}
 		}
-		x.Subjects = slices.Clone(x.Subjects)
 		out = append(out, memsrc.Extra{
 			Entry:      x,
 			Last:       p.LastEvidence,

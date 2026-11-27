@@ -206,7 +206,7 @@ func TestDiskPageCompactForManyComputers(t *testing.T) {
 		checkTapNames(t, "five computers "+sel, v)
 		want := cmp.Or(sel, "local")
 		for _, id := range []string{"local", "build-box", "nas-box", "studio-mac"} {
-			charts := findComponentByKey(v, "fleet-root-"+id) != nil
+			charts := findComponentByKey(v, "fleet-cats-"+id) != nil
 			if charts != (id == want) {
 				t.Errorf("selected %q: %s drawn with charts %v", sel, id, charts)
 			}
@@ -216,7 +216,8 @@ func TestDiskPageCompactForManyComputers(t *testing.T) {
 				}
 			}
 		}
-		if n := sectionItemCount(v.Sections); n > 40 {
+		// 41: the 帮我腾空间 block's 看全部步骤 row came in 0.5.3.
+		if n := sectionItemCount(v.Sections); n > 41 {
 			t.Errorf("selected %q: %d components for five computers", sel, n)
 		}
 	}

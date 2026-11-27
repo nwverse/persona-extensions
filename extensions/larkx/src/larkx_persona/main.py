@@ -80,6 +80,7 @@ class Plugin:
             self.connector.hub_api = HubAPI(hub.get("url") or os.environ.get("PERSONA_HUB_URL", ""),
                                             hub.get("token") or os.environ.get("PERSONA_HUB_TOKEN", ""))
             self.connector.agent_engine = config.get("agent_engine", "channel")
+            self.connector.inbox_triage_chats = frozenset(config.get("inbox_triage_chats") or ())
             self.connector.mention = config.get("agent_mention", True) is not False
             self.connector.topics = config.get("agent_group_topics", True) is not False
             self.connector.auto_handle = config.get("auto_handle") is True

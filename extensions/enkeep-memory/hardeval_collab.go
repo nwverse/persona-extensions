@@ -41,6 +41,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/recall"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
@@ -58,6 +59,7 @@ const (
 	collabMost             = 60 // incidents kept at most
 	collabCandMost         = 160
 	collabEntityCandMost   = 320
+	collabEntityDFMost     = 100 // max World/People DF for a specific entity name in entity-ablation indexing
 	collabCtxMost          = 1800
 	collabStepModel        = "hardeval-collab"
 	decisionsQueryMaxBytes = 3072 // hub decisions_query truncation cap (entries_sources.go)
@@ -112,12 +114,14 @@ func windowFor(day string, ws []collabWindow) (string, bool) {
 }
 
 type collabCand struct {
-	ID        string `json:"id"`
-	Source    string `json:"source"` // memory | session
-	Day       string `json:"day"`
-	Window    string `json:"window,omitempty"`
-	SessionID string `json:"session_id,omitempty"`
-	Text      string `json:"text"`
+	ID        string   `json:"id"`
+	Source    string   `json:"source"` // memory | session | state:<S1|S2|S3|S6|S8>
+	Day       string   `json:"day"`
+	Window    string   `json:"window,omitempty"`
+	SessionID string   `json:"session_id,omitempty"`
+	Text      string   `json:"text"`
+	Leak      []string `json:"leak,omitempty"`
+	Units     []string `json:"units,omitempty"`
 }
 
 // collabIncident is one incident as the model wrote it from a candidate.
@@ -131,37 +135,45 @@ type collabIncident struct {
 	Situation string `json:"situation"`
 	Mistake   string `json:"mistake"`
 	Want      string `json:"want"`
-	// Entity: avoiding it needed who someone is, who is responsible for what, or which project or thing was meant
-	// (design l0-leverage §12): the incidents the entity relations are for, counted apart.
+	// Entity: avoiding it needed concrete World/People entity facts or relations (who someone is/owns/contacts,
+	// or project/repo/service/machine/channel ownership, topology, dependencies, location or entity-bound rules).
 	Entity bool `json:"entity,omitempty"`
+	// PriorMemory marks incidents for which state.json already held a matching pre-incident rule/principle
+	// (First < Day, outside Leak/Units), separating solvable recurrences from first-time novel mistakes.
+	PriorMemory bool `json:"prior_memory,omitempty"`
+	// Leak and Units carry source entry/class IDs and ref@day units (for state.json-sourced incidents) so collab-run
+	// excludes them from every arm's memory in addition to the day cutoff.
+	Leak  []string `json:"leak,omitempty"`
+	Units []string `json:"units,omitempty"`
 	// Recall is what the arm's recall brought in for this incident (collabRecall or hub decisions_query), shown to the answer only.
 	Recall      string `json:"-"`
 	RecallLabel string `json:"-"`
 }
 
 type collabSet struct {
-	Cutoff     string           `json:"cutoff"`
-	End        string           `json:"end"`
-	Windows    []string         `json:"windows,omitempty"`
-	EntityOnly bool             `json:"entity_only,omitempty"`
-	Candidates int              `json:"candidates"`
-	Excluded   int              `json:"excluded,omitempty"`
-	NoIncident int              `json:"no_incident"`
-	Duplicates int              `json:"duplicates"`
-	Avoided    int              `json:"avoided_without_memory"`
-	Incidents  []collabIncident `json:"incidents"`
+	Cutoff        string           `json:"cutoff"`
+	End           string           `json:"end"`
+	Windows       []string         `json:"windows,omitempty"`
+	EntityOnly    bool             `json:"entity_only,omitempty"`
+	Candidates    int              `json:"candidates"`
+	Excluded      int              `json:"excluded,omitempty"`
+	NoIncident    int              `json:"no_incident"`
+	Duplicates    int              `json:"duplicates"`
+	NoPriorMemory int              `json:"no_prior_memory,omitempty"`
+	Avoided       int              `json:"avoided_without_memory"`
+	Incidents     []collabIncident `json:"incidents"`
 }
 
-const collabExtractPrompt = `你在从用户和 AI 助手的真实记录里整理「协作事故」：用户纠正过助手、骂过助手、或者不得不把一件事重复交代。每条材料是一份助手事后写的反馈记忆，或者一段会话（用户的请求、助手的动作、用户随后的话）。
+const collabExtractPrompt = `你在从用户和 AI 助手的真实记录里整理「协作事故」：用户纠正过助手、骂过助手、不得不把一件事重复交代，或者在跨渠道（飞书、微信、知识库、Agent 会话等）记录中对涉及具体人与项目的错误默认做法作出明确纠偏。每条材料是一份助手事后写的反馈记忆、一段会话（用户的请求、助手的动作、用户随后的话），或一条带用户原话的结构化渠道记录（情境、用户实际决定/要求、被否决做法、用户原话）。
 
 对每条材料判断它是不是一次协作事故（incident）。是的话写出：
 - kind：corrected（纠正）、scolded（骂了）、repeated（重复交代）之一；
-- situation：事故发生前的情境，以助手的视角写：用户要什么、事情进行到哪一步、助手手上有什么。只写事实，不能透露正确做法，也不能写出助手后来做错了什么或用户的反应。80–200 字。人名、项目名、系统名照材料原样写（评测只在本机，不进仓库），不写邮箱、账号、密钥。
-- mistake：助手当时怎么做错了，一句话。
+- situation：事故发生前的情境，以助手的视角写：用户要什么、事情进行到哪一步、助手手上有什么。只写事实，不能透露正确做法，也不能写出助手后来做错了什么或用户的反应。必须严格落在 mistake 发生之前的决策岔口，且主题与 mistake 直接对应。80–200 字。人名、项目名、系统名照材料原样写（评测只在本机，不进仓库），不写邮箱、账号、密钥。
+- mistake：助手当时怎么做错了（或若按被否决做法会怎么错），一句话。
 - want：用户真正要的是什么样的做法，一句话，写成能推广到同类情境的做法。
-- entity：要避开这次事故，是否必须知道实体关系：某人是谁、谁负责什么、谁和谁什么关系、说的是哪个项目或哪样东西（搞混人或项目、不知道谁负责、找错人）。是为 true，只靠做事习惯就能避开的为 false。
+- entity：要避开这次事故，是否必须知道具体实体（人、项目、仓库、服务、机器或频道）的事实或关系（对应 World/People 记忆：某人是谁/职权分工/联络对象，或某个项目/仓库/机器/服务的归属、拓扑、依赖、位置与实体绑定约定）。是为 true；只靠与具体实体无关的通用做事习惯就能避开的为 false。
 
-不是协作事故的（只是普通追问、闲聊、用户改主意、技术报错）incident 为 false，其余字段留空。输出 JSON。`
+不是协作事故的（只是普通追问、闲聊、用户改主意、技术报错、没有明确错误默认做法的普通纪要，或者材料只包含事后追问/答完卡片后的后续轮次、前后轮次主题错位而无法还原 mistake 发生前的决策岔口）incident 为 false，其余字段留空。输出 JSON。`
 
 const collabExtractSchema = `{"type":"object","additionalProperties":false,"required":["items"],"properties":{"items":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","incident","kind","situation","mistake","want","entity"],"properties":{"id":{"type":"string"},"incident":{"type":"boolean"},"entity":{"type":"boolean"},"kind":{"type":"string","enum":["","corrected","scolded","repeated"]},"situation":{"type":"string"},"mistake":{"type":"string"},"want":{"type":"string"}}}}}}`
 
@@ -178,17 +190,26 @@ const collabJudgePrompt = `你在评判 AI 助手在一个真实协作情境里�
 
 const collabJudgeSchema = `{"type":"object","additionalProperties":false,"required":["verdicts"],"properties":{"verdicts":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","avoided","needless_ask","wrong_action","repeat"],"properties":{"id":{"type":"string"},"avoided":{"type":"boolean"},"needless_ask":{"type":"boolean"},"wrong_action":{"type":"boolean"},"repeat":{"type":"boolean"}}}}}}`
 
+// collabContextBlock strips Persona/Jarvis context wrappers prepended to real user messages in managed sessions
+// (e.g. supervisor and agent transcripts under ~/.claude/projects/), without touching pure system tags.
+var collabContextBlock = regexp.MustCompile(`(?s)<(?:persona-context|jarvis-context)\b[^>]*>.*?</(?:persona-context|jarvis-context)>`)
+
 // collabMemoryCands are the feedback memories dated in [cutoff, end].
 func collabMemoryCands(dir, cutoff, end string) ([]collabCand, error) {
 	return collabMemoryCandsWindows(dir, []collabWindow{{Start: cutoff, End: end}})
 }
 
 func collabMemoryCandsWindows(dir string, ws []collabWindow) ([]collabCand, error) {
+	return collabMemoryCandsInDir(dir, ws, true)
+}
+
+func collabMemoryCandsInDir(dir string, ws []collabWindow, legacyID bool) ([]collabCand, error) {
 	files, err := filepath.Glob(filepath.Join(dir, "*.md"))
 	if err != nil {
 		return nil, err
 	}
 	year := ws[0].Start[:4]
+	parent := filepath.Base(filepath.Dir(filepath.Clean(dir)))
 	var out []collabCand
 	for _, f := range files {
 		raw, err := os.ReadFile(f)
@@ -214,16 +235,116 @@ func collabMemoryCandsWindows(dir string, ws []collabWindow) ([]collabCand, erro
 		if !ok {
 			continue
 		}
-		out = append(out, collabCand{ID: "m-" + heHash(filepath.Base(f))[:10], Source: "memory", Day: day, Window: win, Text: heClip(body, 2400)})
+		key := filepath.Base(f)
+		if !legacyID {
+			key = filepath.Join(parent, key)
+		}
+		out = append(out, collabCand{ID: "m-" + heHash(key)[:10], Source: "memory", Day: day, Window: win, Text: heClip(body, 2400)})
 	}
 	return out, nil
 }
 
+// discoverCollabDirs resolves session directories and memory directories from explicit comma-separated flags and an
+// optional sessionsRoot (e.g. ~/.claude/projects). When includeSubstrs is non-empty, only subdirectories under
+// sessionsRoot whose basename contains at least one substring (case-insensitive) are included.
+func discoverCollabDirs(memSpec, sessionsSpec, sessionsRoot, includeSpec string) (sessDirs []string, memDirs []string, explicitMem map[string]bool, err error) {
+	explicitMem = map[string]bool{}
+	seenSess := map[string]bool{}
+	seenMem := map[string]bool{}
+	addSess := func(d string) {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			return
+		}
+		c := filepath.Clean(d)
+		if !seenSess[c] {
+			seenSess[c] = true
+			sessDirs = append(sessDirs, c)
+		}
+	}
+	addMem := func(d string, explicit bool) {
+		d = strings.TrimSpace(d)
+		if d == "" {
+			return
+		}
+		c := filepath.Clean(d)
+		if explicit {
+			explicitMem[c] = true
+		}
+		if !seenMem[c] {
+			seenMem[c] = true
+			memDirs = append(memDirs, c)
+		}
+	}
+	for _, d := range strings.Split(memSpec, ",") {
+		addMem(d, true)
+	}
+	for _, d := range strings.Split(sessionsSpec, ",") {
+		addSess(d)
+	}
+	if root := strings.TrimSpace(sessionsRoot); root != "" {
+		var filters []string
+		for _, p := range strings.Split(includeSpec, ",") {
+			if p = strings.ToLower(strings.TrimSpace(p)); p != "" {
+				filters = append(filters, p)
+			}
+		}
+		entries, rerr := os.ReadDir(root)
+		if rerr != nil {
+			return nil, nil, nil, rerr
+		}
+		for _, ent := range entries {
+			if !ent.IsDir() {
+				continue
+			}
+			name := ent.Name()
+			if len(filters) > 0 {
+				low := strings.ToLower(name)
+				matched := false
+				for _, f := range filters {
+					if strings.Contains(low, f) {
+						matched = true
+						break
+					}
+				}
+				if !matched {
+					continue
+				}
+			}
+			sub := filepath.Join(root, name)
+			addSess(sub)
+			if info, serr := os.Stat(filepath.Join(sub, "memory")); serr == nil && info.IsDir() {
+				addMem(filepath.Join(sub, "memory"), false)
+			}
+		}
+	}
+	return sessDirs, memDirs, explicitMem, nil
+}
+
 // collabLine is one line of a transcript: a user's own text, or the assistant's text and calls.
+// legacyIdx keeps the pre-context-stripping line index so existing dev-set incident IDs remain stable; ctxLine > 0
+// marks a user line recovered after stripping a <persona-context> / <jarvis-context> wrapper.
 type collabLine struct {
-	user bool
-	day  string
-	text string
+	user      bool
+	day       string
+	text      string
+	legacyIdx int
+	ctxLine   int
+}
+
+func cleanCollabUserText(raw string) (text string, fromContext bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false
+	}
+	if !strings.HasPrefix(trimmed, "<") {
+		return raw, false
+	}
+	stripped := strings.TrimSpace(collabContextBlock.ReplaceAllString(trimmed, ""))
+	if stripped == "" || strings.HasPrefix(stripped, "<") {
+		return "", false
+	}
+	return stripped, true
 }
 
 func collabRead(path string) ([]collabLine, error) {
@@ -235,7 +356,10 @@ func collabRead(path string) ([]collabLine, error) {
 	var out []collabLine
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1<<20), 64<<20)
+	legacyIdx := 0
+	rawLine := 0
 	for sc.Scan() {
+		rawLine++
 		var j struct {
 			Type      string `json:"type"`
 			Timestamp string `json:"timestamp"`
@@ -253,8 +377,15 @@ func collabRead(path string) ([]collabLine, error) {
 		}
 		var text string
 		if json.Unmarshal(j.Message.Content, &text) == nil {
-			if j.Type == "user" && !strings.HasPrefix(strings.TrimSpace(text), "<") {
-				out = append(out, collabLine{user: true, day: day, text: text})
+			if j.Type == "user" {
+				if cleaned, fromCtx := cleanCollabUserText(text); cleaned != "" {
+					if fromCtx {
+						out = append(out, collabLine{user: true, day: day, text: cleaned, legacyIdx: -1, ctxLine: rawLine})
+					} else {
+						out = append(out, collabLine{user: true, day: day, text: cleaned, legacyIdx: legacyIdx})
+						legacyIdx++
+					}
+				}
 			}
 			continue
 		}
@@ -268,18 +399,38 @@ func collabRead(path string) ([]collabLine, error) {
 			continue
 		}
 		var b strings.Builder
+		var legacyB strings.Builder
+		usedCtx := false
 		for _, p := range parts {
 			switch {
-			case p.Type == "text" && j.Type == "user" && !strings.HasPrefix(strings.TrimSpace(p.Text), "<"):
-				b.WriteString(p.Text)
+			case p.Type == "text" && j.Type == "user":
+				if cleaned, fromCtx := cleanCollabUserText(p.Text); cleaned != "" {
+					if b.Len() > 0 {
+						b.WriteString("\n")
+					}
+					b.WriteString(cleaned)
+					if fromCtx {
+						usedCtx = true
+					} else {
+						legacyB.WriteString(p.Text)
+					}
+				}
 			case p.Type == "text" && j.Type == "assistant":
 				b.WriteString(p.Text + "\n")
+				legacyB.WriteString(p.Text + "\n")
 			case p.Type == "tool_use":
-				b.WriteString("[" + p.Name + " " + heClip(string(p.Input), 160) + "]\n")
+				s := "[" + p.Name + " " + heClip(string(p.Input), 160) + "]\n"
+				b.WriteString(s)
+				legacyB.WriteString(s)
 			}
 		}
 		if t := strings.TrimSpace(b.String()); t != "" {
-			out = append(out, collabLine{user: j.Type == "user", day: day, text: t})
+			if j.Type == "user" && usedCtx && strings.TrimSpace(legacyB.String()) == "" {
+				out = append(out, collabLine{user: true, day: day, text: t, legacyIdx: -1, ctxLine: rawLine})
+			} else {
+				out = append(out, collabLine{user: j.Type == "user", day: day, text: t, legacyIdx: legacyIdx})
+				legacyIdx++
+			}
 		}
 	}
 	return out, sc.Err()
@@ -295,12 +446,18 @@ func collabSessionCandsWindows(dirs []string, ws []collabWindow, cue *regexp.Reg
 		cue = collabCue
 	}
 	var out []collabCand
+	seenFiles := map[string]bool{}
 	for _, dir := range dirs {
 		files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
 		if err != nil {
 			return nil, err
 		}
 		for _, f := range files {
+			cf := filepath.Clean(f)
+			if seenFiles[cf] {
+				continue
+			}
+			seenFiles[cf] = true
 			lines, err := collabRead(f)
 			if err != nil {
 				return nil, err
@@ -330,12 +487,309 @@ func collabSessionCandsWindows(dirs []string, ws []collabWindow, cue *regexp.Reg
 				move = strings.Join(mv, "\n")
 				text := "用户的请求：" + heClip(lines[req].text, 600) + "\n助手的动作：" + heClip(move, collabCtxMost) +
 					"\n用户随后说：" + heClip(l.text, 600)
-				out = append(out, collabCand{ID: "s-" + heHash(f + fmt.Sprint(i))[:10], Source: "session", Day: l.day, Window: win, SessionID: sid, Text: text})
+				idKey := f + fmt.Sprint(l.legacyIdx)
+				if l.ctxLine > 0 {
+					idKey = fmt.Sprintf("%s:ctx:%d", f, l.ctxLine)
+				}
+				out = append(out, collabCand{ID: "s-" + heHash(idKey)[:10], Source: "session", Day: l.day, Window: win, SessionID: sid, Text: text})
 			}
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return heHash(out[i].ID) < heHash(out[j].ID) })
 	return out, nil
+}
+
+// collabPriorEntities indexes non-sensitive, non-inferred World/People entity names with their earliest First day and
+// document frequency, so entity-ablation extraction only selects incidents involving concrete entities that already
+// existed in memory strictly before the incident day (unified design §3.2).
+type collabPriorEntities struct {
+	first map[string]string
+	df    map[string]int
+	names []string // pre-filtered names with df <= collabEntityDFMost
+}
+
+func buildCollabPriorEntities(st *store.State) *collabPriorEntities {
+	if st == nil {
+		return nil
+	}
+	p := &collabPriorEntities{first: map[string]string{}, df: map[string]int{}}
+	rec := func(raw, day string) {
+		n := strings.TrimSpace(raw)
+		if day == "" || collabGeneric[n] || strings.EqualFold(n, "persona") {
+			return
+		}
+		rs := []rune(n)
+		if len(rs) < 2 || (len(n) == len(rs) && len(rs) < 4) {
+			return
+		}
+		p.df[n]++
+		if cur, ok := p.first[n]; !ok || day < cur {
+			p.first[n] = day
+		}
+	}
+	for _, e := range st.Entries {
+		if e == nil || e.Inferred || len(e.Cats()) > 0 || e.OriginSpace != "" || e.First == "" {
+			continue
+		}
+		if e.Facet != entry.World && e.Facet != entry.People {
+			continue
+		}
+		if e.Person != "" {
+			if c := st.Contacts[e.Person]; c != nil && c.Manual != "removed" {
+				rec(c.Name, e.First)
+			}
+		}
+		rec(e.Object, e.First)
+		for _, sc := range e.Scopes {
+			if sc.Kind != entry.ScopeGlobal {
+				rec(sc.Name, e.First)
+			}
+		}
+	}
+	for n, df := range p.df {
+		if df > 0 && df <= collabEntityDFMost {
+			p.names = append(p.names, n)
+		}
+	}
+	sort.Strings(p.names)
+	return p
+}
+
+func (p *collabPriorEntities) hasPrior(name, day string) bool {
+	if p == nil || day == "" {
+		return false
+	}
+	n := strings.TrimSpace(name)
+	d := p.first[n]
+	return d != "" && d < day && p.df[n] <= collabEntityDFMost
+}
+
+func (p *collabPriorEntities) mentionsPrior(text, day string) bool {
+	if p == nil || day == "" || text == "" {
+		return false
+	}
+	for _, n := range p.names {
+		if p.first[n] < day && strings.Contains(text, n) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *collabPriorEntities) entryHasPrior(st *store.State, e *entry.Entry) ([]string, bool) {
+	if p == nil || e == nil || e.First == "" {
+		return nil, false
+	}
+	var out []string
+	add := func(raw string) {
+		n := strings.TrimSpace(raw)
+		if n != "" && p.hasPrior(n, e.First) && !slices.Contains(out, n) {
+			out = append(out, n)
+		}
+	}
+	if e.Person != "" && st != nil {
+		if c := st.Contacts[e.Person]; c != nil && c.Manual != "removed" {
+			add(c.Name)
+		}
+	}
+	add(e.Object)
+	add(e.Impact.Object)
+	for _, sc := range e.Scopes {
+		if sc.Kind != entry.ScopeGlobal {
+			add(sc.Name)
+		}
+	}
+	return out, len(out) > 0
+}
+
+// collabSessionCandsEntity targets real correction turns (collabCue) whose context involves a concrete entity: either
+// an explicit entity-confusion cue (collabEntityCue) or a World/People entity name that already existed before the day.
+// Intersecting collabCue with entity relevance avoids the high non-incident noise of matching collabEntityCue alone.
+func collabSessionCandsEntity(dirs []string, ws []collabWindow, prior *collabPriorEntities) ([]collabCand, error) {
+	var out []collabCand
+	seenFiles := map[string]bool{}
+	for _, dir := range dirs {
+		files, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+		if err != nil {
+			return nil, err
+		}
+		for _, f := range files {
+			cf := filepath.Clean(f)
+			if seenFiles[cf] {
+				continue
+			}
+			seenFiles[cf] = true
+			lines, err := collabRead(f)
+			if err != nil {
+				return nil, err
+			}
+			sid := strings.TrimSuffix(filepath.Base(f), ".jsonl")
+			for i, l := range lines {
+				if !l.user || len(l.text) > 1500 || !collabCue.MatchString(l.text) {
+					continue
+				}
+				win, ok := windowFor(l.day, ws)
+				if !ok {
+					continue
+				}
+				req := -1
+				var mv []string
+				for k := i - 1; k >= 0; k-- {
+					if lines[k].user {
+						req = k
+						break
+					}
+					mv = append([]string{lines[k].text}, mv...)
+				}
+				if req < 0 || len(mv) == 0 {
+					continue
+				}
+				entCtx := heClip(lines[req].text, 600) + "\n" + l.text
+				if !collabEntityCue.MatchString(entCtx) && !prior.mentionsPrior(entCtx, l.day) {
+					continue
+				}
+				move := strings.Join(mv, "\n")
+				text := "用户的请求：" + heClip(lines[req].text, 600) + "\n助手的动作：" + heClip(move, collabCtxMost) +
+					"\n用户随后说：" + heClip(l.text, 600)
+				idKey := f + fmt.Sprint(l.legacyIdx)
+				if l.ctxLine > 0 {
+					idKey = fmt.Sprintf("%s:ctx:%d", f, l.ctxLine)
+				}
+				out = append(out, collabCand{ID: "s-" + heHash(idKey)[:10], Source: "session", Day: l.day, Window: win, SessionID: sid, Text: text})
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return heHash(out[i].ID) < heHash(out[j].ID) })
+	return out, nil
+}
+
+// collabStateCands draws real, user-quoted, entity-bound Action records from state.json across configured sources
+// (e.g. S1/S2/S3/S6 interaction corrections and S8 Feishu/WeChat/KB/GitHub decisions). Every candidate must reference
+// at least one World/People entity that already existed strictly before its First day, and carries Leak/Units so
+// collab-run excludes the source entry, its parent class and same-unit siblings from every arm.
+func collabStateCands(st *store.State, prior *collabPriorEntities, ws []collabWindow, allowedSources map[string]bool) []collabCand {
+	if st == nil || prior == nil || len(allowedSources) == 0 {
+		return nil
+	}
+	byUnit := map[string][]string{}
+	for _, e := range st.Entries {
+		if e == nil {
+			continue
+		}
+		for _, u := range heUnits(e) {
+			byUnit[u] = append(byUnit[u], e.ID)
+		}
+	}
+	var out []collabCand
+	for _, e := range st.Entries {
+		if e == nil || e.Inferred || e.Grain != entry.Action || len(e.Cats()) > 0 || e.OriginSpace != "" {
+			continue
+		}
+		win, ok := windowFor(e.First, ws)
+		if !ok {
+			continue
+		}
+		sit, ch, rej := strings.TrimSpace(e.Situation), strings.TrimSpace(e.Choice), strings.TrimSpace(e.Rejected)
+		if sit == "" || len([]rune(ch)) < 4 || len([]rune(rej)) < 4 {
+			continue
+		}
+		var src, quote string
+		for _, ev := range e.Evidence {
+			if ev.Reported || !allowedSources[ev.Source] {
+				continue
+			}
+			if q := strings.TrimSpace(ev.Quote); q != "" {
+				src, quote = ev.Source, q
+				break
+			}
+		}
+		if src == "" {
+			continue
+		}
+		eligible := false
+		switch {
+		case e.Facet == entry.Interaction:
+			eligible = true
+		case src == entry.SrcChat && (e.Facet == entry.Judgement || e.Facet == entry.Workflow || e.Facet == entry.Tools):
+			eligible = true
+		}
+		if !eligible {
+			continue
+		}
+		ents, ok := prior.entryHasPrior(st, e)
+		if !ok {
+			continue
+		}
+		text := fmt.Sprintf("来源：%s（日期：%s，涉及实体：%s）\n情境：%s\n用户实际决定/要求：%s\n被否决/错误做法：%s\n用户原话：%s",
+			src, e.First, strings.Join(ents, "、"), heClip(sit, 500), heClip(ch, 400), heClip(rej, 400), heClip(quote, 600))
+		out = append(out, collabCand{
+			ID:     "st-" + heHash(e.ID)[:10],
+			Source: "state:" + src,
+			Day:    e.First,
+			Window: win,
+			Text:   text,
+			Leak:   heLeak(st, e, byUnit),
+			Units:  heUnits(e),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool { return heHash(out[i].ID) < heHash(out[j].ID) })
+	return out
+}
+
+// collabBalanceBySource balances candidates round-robin across (source bucket, window) groups up to limit so no single
+// channel or window crowds out the others.
+func collabBalanceBySource(cands []collabCand, limit int) []collabCand {
+	if len(cands) <= limit {
+		return cands
+	}
+	byKey := map[string][]collabCand{}
+	var keys []string
+	for _, c := range cands {
+		k := c.Source + "|" + c.Window
+		if _, exists := byKey[k]; !exists {
+			keys = append(keys, k)
+		}
+		byKey[k] = append(byKey[k], c)
+	}
+	sort.Strings(keys)
+	var out []collabCand
+	for len(out) < limit {
+		took := false
+		for _, k := range keys {
+			if xs := byKey[k]; len(xs) > 0 && len(out) < limit {
+				out, byKey[k], took = append(out, xs[0]), xs[1:], true
+			}
+		}
+		if !took {
+			break
+		}
+	}
+	return out
+}
+
+// collabDayFilter builds the anti-leak filter for all incidents on a given day, merging each incident's Leak and Units.
+func collabDayFilter(incs []collabIncident) heFilter {
+	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}}
+	for _, inc := range incs {
+		for _, id := range inc.Leak {
+			f.leak[id] = true
+		}
+		for _, u := range inc.Units {
+			f.units[u] = true
+		}
+	}
+	return f
+}
+
+func collabSourceRank(src string) int {
+	switch {
+	case src == "memory":
+		return 0
+	case src == "session":
+		return 1
+	default:
+		return 2
+	}
 }
 
 // collabBalanceCands takes at most cap candidates round-robin across windows so one larger window does not starve another.
@@ -526,15 +980,20 @@ func collabAnswer(ctx context.Context, answer, judge model.Model, memory string,
 
 func collabBuild(args []string) error {
 	fs := flag.NewFlagSet("hardeval collab-build", flag.ContinueOnError)
-	memDir := fs.String("memory-dir", "", "the assistant's feedback memory directory (read only)")
+	memDir := fs.String("memory-dir", "", "comma-separated feedback memory directories (read only)")
 	sessions := fs.String("sessions", "", "comma-separated directories of session transcripts (*.jsonl, read only)")
+	sessionsRoot := fs.String("sessions-root", "", "root directory whose subdirectories hold session transcripts (*.jsonl) and optional memory/ dirs (read only)")
+	sessionsInclude := fs.String("sessions-include", "", "comma-separated case-insensitive substrings filtering subdirectory names under -sessions-root (empty: all)")
+	statePath := fs.String("state", "", "optional read-only state.json for prior World/People entity indexing and cross-channel candidate extraction")
+	stateSources := fs.String("state-sources", "", "comma-separated Evidence.Source codes from -state (e.g. S1,S2,S3,S6,S8; defaults to S1,S2,S3,S6,S8 when -state and -entity-only are set)")
 	cutoff := fs.String("cutoff", "", "first held-out day, YYYY-MM-DD (used when -windows is empty)")
 	end := fs.String("end", "", "last held-out day (used when -windows is empty)")
 	windowsSpec := fs.String("windows", "", "comma-separated date windows YYYY-MM-DD..YYYY-MM-DD (overrides -cutoff/-end)")
 	excludeSpec := fs.String("exclude", "", "comma-separated collab.json files whose incident IDs and same-day wants must be excluded")
-	entityOnly := fs.Bool("entity-only", false, "target entity-related cues and keep only incidents marked entity=true")
+	entityOnly := fs.Bool("entity-only", false, "target entity-related incidents (collabCue intersected with entity relevance) and keep only entity=true")
+	requirePrior := fs.Bool("require-prior-memory", false, "keep only incidents that match a pre-incident rule/principle in -state (First < day, outside leak/units)")
 	most := fs.Int("most", collabMost, "incidents kept at most")
-	candMost := fs.Int("cand-most", 0, "session candidates scanned at most (0: 160, or 320 with -entity-only)")
+	candMost := fs.Int("cand-most", 0, "session/state candidates scanned at most (0: 160, or 320 with -entity-only)")
 	out := fs.String("out", "", "directory for collab.json and the caches (keep it local)")
 	cmd := fs.String("model-cmd", "claude", "the model command line")
 	mdl := fs.String("model", "claude-sonnet-5-5", "the model that writes the incidents and answers without memory (the answering one)")
@@ -546,8 +1005,31 @@ func collabBuild(args []string) error {
 	if err != nil {
 		return err
 	}
-	if *out == "" || (*memDir == "" && *sessions == "") {
-		return errors.New("-out and -memory-dir or -sessions are required")
+	if *out == "" || (*memDir == "" && *sessions == "" && *sessionsRoot == "" && *statePath == "") {
+		return errors.New("-out and at least one of -memory-dir, -sessions, -sessions-root or -state are required")
+	}
+	sessDirs, memDirs, explicitMem, err := discoverCollabDirs(*memDir, *sessions, *sessionsRoot, *sessionsInclude)
+	if err != nil {
+		return err
+	}
+	var st *store.State
+	var prior *collabPriorEntities
+	if strings.TrimSpace(*statePath) != "" {
+		st, err = readState(*statePath)
+		if err != nil {
+			return err
+		}
+		prior = buildCollabPriorEntities(st)
+	}
+	allowedStateSrc := map[string]bool{}
+	srcSpec := strings.TrimSpace(*stateSources)
+	if srcSpec == "" && st != nil && *entityOnly {
+		srcSpec = "S1,S2,S3,S6,S8"
+	}
+	for _, s := range strings.Split(srcSpec, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			allowedStateSrc[s] = true
+		}
 	}
 	ex, err := loadCollabExclusions(*excludeSpec)
 	if err != nil {
@@ -564,9 +1046,10 @@ func collabBuild(args []string) error {
 		}
 	}
 	var cands []collabCand
+	seenCandID := map[string]bool{}
 	excluded := 0
-	if *memDir != "" {
-		c, err := collabMemoryCandsWindows(*memDir, ws)
+	for _, md := range memDirs {
+		c, err := collabMemoryCandsInDir(md, ws, explicitMem[md])
 		if err != nil {
 			return err
 		}
@@ -575,27 +1058,53 @@ func collabBuild(args []string) error {
 				excluded++
 				continue
 			}
+			if seenCandID[x.ID] {
+				continue
+			}
+			seenCandID[x.ID] = true
 			cands = append(cands, x)
 		}
 	}
-	if *sessions != "" {
-		cue := collabCue
+	var dynamicCands []collabCand
+	if len(sessDirs) > 0 {
+		var c []collabCand
 		if *entityOnly {
-			cue = collabEntityCue
+			c, err = collabSessionCandsEntity(sessDirs, ws, prior)
+		} else {
+			c, err = collabSessionCandsWindows(sessDirs, ws, collabCue)
 		}
-		c, err := collabSessionCandsWindows(strings.Split(*sessions, ","), ws, cue)
 		if err != nil {
 			return err
 		}
-		var filtered []collabCand
 		for _, x := range c {
 			if ex.ids[x.ID] {
 				excluded++
 				continue
 			}
-			filtered = append(filtered, x)
+			if seenCandID[x.ID] {
+				continue
+			}
+			seenCandID[x.ID] = true
+			dynamicCands = append(dynamicCands, x)
 		}
-		cands = append(cands, collabBalanceCands(filtered, ws, scanLimit)...)
+	}
+	if st != nil && len(allowedStateSrc) > 0 {
+		for _, x := range collabStateCands(st, prior, ws, allowedStateSrc) {
+			if ex.ids[x.ID] {
+				excluded++
+				continue
+			}
+			if seenCandID[x.ID] {
+				continue
+			}
+			seenCandID[x.ID] = true
+			dynamicCands = append(dynamicCands, x)
+		}
+	}
+	if len(allowedStateSrc) > 0 {
+		cands = append(cands, collabBalanceBySource(dynamicCands, scanLimit)...)
+	} else {
+		cands = append(cands, collabBalanceCands(dynamicCands, ws, scanLimit)...)
 	}
 	ctx := context.Background()
 	ext := heCLI(*cmd, *mdl, filepath.Join(*out, "extract-cache"))
@@ -653,17 +1162,18 @@ func collabBuild(args []string) error {
 				continue
 			}
 			incs = append(incs, collabIncident{ID: c.ID, Source: c.Source, Day: c.Day, Window: c.Window, SessionID: c.SessionID,
-				Kind: x.Kind, Situation: x.Situation, Mistake: x.Mistake, Want: x.Want, Entity: x.Entity})
+				Kind: x.Kind, Situation: x.Situation, Mistake: x.Mistake, Want: x.Want, Entity: x.Entity,
+				Leak: c.Leak, Units: c.Units})
 		}
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-	// One incident told twice (a memory written after a session's correction): the memory's stays.
+	// One incident told twice (e.g. a memory written after a session or state record): memory > session > state.
 	sort.Slice(incs, func(i, j int) bool {
-		if incs[i].Source != incs[j].Source {
-			return incs[i].Source == "memory"
+		if ri, rj := collabSourceRank(incs[i].Source), collabSourceRank(incs[j].Source); ri != rj {
+			return ri < rj
 		}
 		return heHash(incs[i].ID) < heHash(incs[j].ID)
 	})
@@ -683,6 +1193,13 @@ func collabBuild(args []string) error {
 		if dup {
 			set.Duplicates++
 			continue
+		}
+		if st != nil {
+			x.PriorMemory = hasPriorRuleMemory(st, x)
+			if *requirePrior && !x.PriorMemory {
+				set.NoPriorMemory++
+				continue
+			}
 		}
 		kept = append(kept, x)
 	}
@@ -710,7 +1227,11 @@ func collabBuild(args []string) error {
 	byWin := map[string]int{}
 	entN := 0
 	for _, x := range set.Incidents {
-		n[x.Source]++
+		if strings.HasPrefix(x.Source, "state:") {
+			n["state"]++
+		} else {
+			n[x.Source]++
+		}
 		if x.Window != "" {
 			byWin[x.Window]++
 		}
@@ -718,8 +1239,8 @@ func collabBuild(args []string) error {
 			entN++
 		}
 	}
-	fmt.Printf("hardeval collab-build: %d candidates, %d excluded, %d not an incident, %d duplicates, %d avoided without memory, %d incidents (memory %d, session %d, entity %d, windows %v)\n",
-		set.Candidates, set.Excluded, set.NoIncident, set.Duplicates, set.Avoided, len(set.Incidents), n["memory"], n["session"], entN, byWin)
+	fmt.Printf("hardeval collab-build: %d candidates, %d excluded, %d not an incident, %d duplicates, %d no prior memory, %d avoided without memory, %d incidents (memory %d, session %d, state %d, entity %d, windows %v)\n",
+		set.Candidates, set.Excluded, set.NoIncident, set.Duplicates, set.NoPriorMemory, set.Avoided, len(set.Incidents), n["memory"], n["session"], n["state"], entN, byWin)
 	return nil
 }
 
@@ -738,21 +1259,23 @@ type collabResult struct {
 	PerAsk   map[string]map[string]map[string]float64 `json:"per_incident_ask,omitempty"`
 	// Entity are the incidents that need entity relations (collabIncident.Entity), reported apart.
 	Entity []string `json:"entity,omitempty"`
+	// PriorMemory are the incidents backed by a matching pre-incident rule/principle in state.json (solvable recurrences).
+	PriorMemory []string `json:"prior_memory,omitempty"`
 	// Segments reports per-window metrics when incidents carry Window labels (window → budget → arm → metric).
 	Segments map[string]map[string]map[string]map[string]float64 `json:"segments,omitempty"`
 	SegmentN map[string]int                                      `json:"segment_n,omitempty"`
 }
 
-const collabDecisionsQueryPrompt = `你是这位用户的主 AI 助手。线上你可以主动调用 decisions_query(tag) 从记忆池按关键词查询局部规矩、负责人或例外（tag 按空格拆词，所有词都以子串同时匹配才命中，结果截断在 3072 字节；查单个项目名、人名、仓库名、机器名或单个场合词如「派活」「汇报」「提问」「开工」最容易命中）。
+const collabDecisionsQueryPrompt = `你是这位用户的主 AI 助手。线上规则提示：涉及具体的人、项目、系统、机器、工具命令或账号，或者要在岔口上替用户选、派活、汇报、验收或问用户之前，先调 decisions_query(tag) 从记忆池查局部规矩、负责人和例外（tag 按空格拆词，所有词以子串同时匹配才命中，结果截断在 3072 字节；用单个实体/工具名如 task_plan、sj-wsl、1Password、项目名、人名，或单个场合词如「派活」「汇报」「提问」「开工」「验收」「排期」「配置」「门禁」最容易命中）。
 
-下面给你当前常驻记忆和若干互相独立的情境。对每个情境，判断是否需要调用 decisions_query：
-- 不需要查则返回空数组 []；
-- 需要查则返回 1 到 2 个简短 tag（每个 1 个词或 2 个空格分隔的词，不要写长句）。
+下面给你当前常驻记忆和若干互相独立的情境。对每个情境，判断是否需要调用 decisions_query 查常驻之外的局部规矩、工具规范或实体关系：
+- 纯粹已被常驻覆盖且不涉具体实体/工具细节时返回空数组 []；
+- 需要查则返回 1 到 3 个简短 tag（每个尽量 1 个词，不要写长句）。
 输出 JSON。`
 
 const collabDecisionsQuerySchema = `{"type":"object","additionalProperties":false,"required":["queries"],"properties":{"queries":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","tags"],"properties":{"id":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}}}}}}`
 
-// collabQueryPlan asks the answering model which decisions_query tags (0-2) it wants to query for each incident.
+// collabQueryPlan asks the answering model which decisions_query tags (0-3) it wants to query for each incident.
 func collabQueryPlan(ctx context.Context, answer model.Model, memory string, incs []collabIncident, attempt int) (map[string][]string, error) {
 	type q struct {
 		ID        string `json:"id"`
@@ -780,8 +1303,8 @@ func collabQueryPlan(ctx context.Context, answer model.Model, memory string, inc
 		}
 		mu.Lock()
 		for _, item := range out.Queries {
-			if len(item.Tags) > 2 {
-				item.Tags = item.Tags[:2]
+			if len(item.Tags) > 3 {
+				item.Tags = item.Tags[:3]
 			}
 			planned[item.ID] = item.Tags
 		}
@@ -792,10 +1315,12 @@ func collabQueryPlan(ctx context.Context, answer model.Model, memory string, inc
 }
 
 // collabHubPage1 builds the exact first page of memory.entries (up to memsrc.MaxLimit = 500, standing first then rank
-// desc) visible before day with no sensitive or restricted-space entries, matching the hub's decisions_query scope.
+// desc) visible before day with no sensitive or restricted-space entries, using real overview.Exits(ov) so non-standing
+// L1 contracts/principles carry enriched subjects and exact online ranks, matching the hub's decisions_query scope.
 func collabHubPage1(st *store.State, ov *overview.State, f heFilter, day string, budget int) []memsrc.Entry {
 	daySt := &store.State{
 		Contacts: st.Contacts,
+		Graph:    sliceGraphBefore(st.Graph, day),
 		Entries:  make(map[string]*entry.Entry, len(st.Entries)),
 	}
 	for id, e := range st.Entries {
@@ -806,24 +1331,13 @@ func collabHubPage1(st *store.State, ov *overview.State, f heFilter, day string,
 	}
 	var extras []memsrc.Extra
 	if ov != nil {
-		for _, p := range ov.Sorted(func(p *overview.Pattern) bool {
-			return p.Used() && len(p.Categories) == 0 && p.OriginSpace == "" && !f.patternOut(st, p, day)
-		}) {
-			extras = append(extras, memsrc.Extra{
-				Entry: memsrc.Entry{
-					ID:       p.ID,
-					Text:     overview.Text(p),
-					Facet:    p.Facet,
-					Status:   "active",
-					Rank:     overview.Score(p) * 9,
-					Subjects: p.Subjects,
-				},
-				Last:     p.LastEvidence,
-				Score:    overview.Score(p),
-				Kind:     entry.KindOfFacet(p.Facet),
-				Evidence: p.EvidenceIDs,
-			})
+		cleanOv := &overview.State{Patterns: map[string]*overview.Pattern{}}
+		for id, p := range ov.Patterns {
+			if p != nil && p.Used() && len(p.Categories) == 0 && p.OriginSpace == "" && !f.patternOut(st, p, day) {
+				cleanOv.Patterns[id] = p
+			}
 		}
+		extras = overview.Exits(cleanOv)
 	}
 	res, _, err := memsrc.PageWith(daySt, nil, extras, memsrc.Params{
 		Limit:         memsrc.MaxLimit,
@@ -890,6 +1404,7 @@ func collabRun(args []string) error {
 	fs := flag.NewFlagSet("hardeval collab-run", flag.ContinueOnError)
 	statePath := fs.String("state", "", "a copy of state.json (read only)")
 	ovPath := fs.String("overview", "", "patterns built before the cutoff (overview-backtest.json)")
+	ovDir := fs.String("overview-dir", "", "directory of time-clean L1 checkpoints <YYYY-MM-DD>.json (each incident uses the latest <= its day)")
 	cogDir := fs.String("cogpipe-dir", "", "the old pipeline's injected texts, one <YYYY-MM-DD>.md a build: each incident gets the last one before its day")
 	out := fs.String("out", "", "the directory collab-build wrote")
 	cmd := fs.String("model-cmd", "claude", "the model command line")
@@ -919,6 +1434,10 @@ func collabRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	ovs, err := collabOverviews(*ovDir)
+	if err != nil {
+		return err
+	}
 	cogs, err := collabCogpipe(*cogDir)
 	if err != nil {
 		return err
@@ -944,6 +1463,9 @@ func collabRun(args []string) error {
 		if inc.Entity {
 			res.Entity = append(res.Entity, inc.ID)
 		}
+		if inc.PriorMemory || hasPriorRuleMemory(st, inc) {
+			res.PriorMemory = append(res.PriorMemory, inc.ID)
+		}
 		if inc.Window != "" {
 			winByID[inc.ID] = inc.Window
 			segN[inc.Window]++
@@ -959,7 +1481,6 @@ func collabRun(args []string) error {
 	names := collabNames(st)
 	samples := map[string]string{}
 	responses := map[string]map[string]string{}
-	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}} // the day is the leak: an incident's own day and later are left out
 	armList := strings.Split(*arms, ",")
 	for _, bs := range strings.Split(*budgets, ",") {
 		budget := 0
@@ -979,7 +1500,16 @@ func collabRun(args []string) error {
 			per, wrong, ask := map[string]float64{}, map[string]float64{}, map[string]float64{}
 			bytes := 0
 			for _, d := range days {
-				mems := heMemories(st, ov, collabCogFor(cogs, d), f, d, budget)
+				daySt := st
+				dayOv := ov
+				dayNames := names
+				if len(ovs) > 0 {
+					daySt = sliceStateBefore(st, d)
+					dayOv = collabOverviewFor(ovs, d)
+					dayNames = collabNames(daySt)
+				}
+				dayF := collabDayFilter(byDay[d])
+				mems := heMemories(daySt, dayOv, collabCogFor(cogs, d), dayF, d, budget)
 				mem, incs := mems[arm], byDay[d]
 				var hubPage []memsrc.Entry
 				switch arm {
@@ -987,13 +1517,13 @@ func collabRun(args []string) error {
 					mem = mems["resident"]
 					incs = slices.Clone(incs)
 					for i := range incs {
-						incs[i].Recall = names.recall(st, f, d, incs[i].Situation, mem, *recallBytes, arm == "recall")
+						incs[i].Recall = dayNames.recallTwoLayer(daySt, dayOv, dayF, d, incs[i].Situation, mem, *recallBytes, arm == "recall")
 						bytes += len(incs[i].Recall)
 						samples[bk+"/"+arm+"/"+incs[i].ID] = incs[i].Recall
 					}
 				case armDecisionsQuerySim:
 					mem = mems["resident"]
-					hubPage = collabHubPage1(st, ov, f, d, budget)
+					hubPage = collabHubPage1(daySt, dayOv, dayF, d, budget)
 				}
 				bytes += len(mem) * len(incs)
 				samples[bk+"/"+arm+"/"+d] = mem
@@ -1159,6 +1689,31 @@ func collabTable(r collabResult, arms []string) string {
 			fmt.Fprintf(&b, "| %s | %d | %.0f%% | %.0f%% | %.0f%% | %.0f%% | %d/%d/%d | %s |\n", arm, r.Bytes[bk][arm], 100*s["avoided"],
 				100*s["needless_ask"], 100*s["wrong_action"], 100*s["repeat"], w, t, l, ent)
 		}
+		if len(r.PriorMemory) > 0 && len(r.PriorMemory) < r.N {
+			fmt.Fprintf(&b, "\n#### prior-memory recurrences (%d/%d incidents)\n\n| arm | avoided | needless asks | wrong actions | vs resident (win/tie/loss for resident) |\n|---|---|---|---|---|\n", len(r.PriorMemory), r.N)
+			for _, arm := range arms {
+				avSum, askSum, wrongSum := 0.0, 0.0, 0.0
+				w, t, l := 0, 0, 0
+				for _, id := range r.PriorMemory {
+					v := r.PerInc[bk][arm][id]
+					avSum += v
+					askSum += r.PerAsk[bk][arm][id]
+					wrongSum += r.PerWrong[bk][arm][id]
+					rv := r.PerInc[bk]["resident"][id]
+					switch {
+					case rv == v:
+						t++
+					case rv > v:
+						w++
+					default:
+						l++
+					}
+				}
+				pn := float64(len(r.PriorMemory))
+				fmt.Fprintf(&b, "| %s | %.0f%% | %.0f%% | %.0f%% | %d/%d/%d |\n", arm,
+					100*avSum/pn, 100*askSum/pn, 100*wrongSum/pn, w, t, l)
+			}
+		}
 		if len(r.Segments) > 0 {
 			var wins []string
 			for w := range r.Segments {
@@ -1176,6 +1731,32 @@ func collabTable(r collabResult, arms []string) string {
 		}
 	}
 	return b.String()
+}
+
+// hasPriorRuleMemory reports whether st already contained a non-sensitive, pool-eligible rule or principle entry
+// strictly before inc.Day (excluding inc.Leak and inc.Units) whose wording or principle overlaps inc.Want.
+// This is computed purely from pre-incident memory (never from arm scores) to separate solvable recurrences from
+// first-time novel mistakes (unified design §3.2).
+func hasPriorRuleMemory(st *store.State, inc collabIncident) bool {
+	if st == nil || strings.TrimSpace(inc.Want) == "" || inc.Day == "" {
+		return false
+	}
+	f := collabDayFilter([]collabIncident{inc})
+	for _, e := range st.Entries {
+		if e == nil || !memsrc.Pool(st, e) || e.Inferred || len(e.Cats()) > 0 || e.OriginSpace != "" {
+			continue
+		}
+		if entry.KindOf(e) == "" || f.entryOut(st, e, inc.Day) {
+			continue
+		}
+		if norm.Jaccard(e.Shown(), inc.Want) >= 0.14 {
+			return true
+		}
+		if p := e.Principle(); p != "" && norm.Jaccard(p, inc.Want) >= 0.16 {
+			return true
+		}
+	}
+	return false
 }
 
 // heInputs reads the overview's backtest patterns and the external injected text, either optional.
@@ -1241,6 +1822,239 @@ var collabIdent = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_.]*-[A-Za-z0-9_.-]{3,}|
 
 // collabNameMost is the most entries one name may bring in before it counts as too common to name anything.
 const collabNameMost = 150
+
+// collabQueryIdent matches ASCII tool/command/host/service tokens (>=3 chars) in an incident situation.
+var collabQueryIdent = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9_.-]{2,}`)
+
+func collabBigrams(s string) map[string]bool {
+	r := []rune(norm.Q(s))
+	out := make(map[string]bool, max(0, len(r)-1))
+	for i := 0; i+1 < len(r); i++ {
+		out[string(r[i:i+2])] = true
+	}
+	return out
+}
+
+func collabExtractIdents(s string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range collabQueryIdent.FindAllString(s, -1) {
+		m = strings.ToLower(strings.Trim(m, ".-_"))
+		if len(m) < 3 || seen[m] {
+			continue
+		}
+		hasLetter := false
+		for i := 0; i < len(m); i++ {
+			if m[i] >= 'a' && m[i] <= 'z' {
+				hasLetter = true
+				break
+			}
+		}
+		if !hasLetter {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	return out
+}
+
+// recallNonStandingL1 retrieves the most situation-relevant non-standing L1 contracts and principles from ov
+// (strictly pre-cutoff and leak-filtered), keeping the ~60 L1 rules outside 4096 B standing reachable on demand.
+func recallNonStandingL1(st *store.State, ov *overview.State, f heFilter, day, situation, standing string, budget int) []string {
+	if ov == nil || budget <= 0 || strings.TrimSpace(situation) == "" {
+		return nil
+	}
+	sitLow := strings.ToLower(situation)
+	sitIdents := collabExtractIdents(situation)
+	sitBi := collabBigrams(situation)
+	type scoredPat struct {
+		p     *overview.Pattern
+		score float64
+		sc    int
+	}
+	var cands []scoredPat
+	for _, p := range ov.Patterns {
+		if p == nil || !p.Used() || len(p.Categories) > 0 || p.OriginSpace != "" || f.patternOut(st, p, day) {
+			continue
+		}
+		head := strings.TrimSpace(p.Text)
+		if head == "" {
+			continue
+		}
+		if strings.Contains(standing, heClip(head, 24)) {
+			continue
+		}
+		txtLow := strings.ToLower(head + " " + p.Exception)
+		subjs := overview.EnrichSubjects(p)
+		s := 0.0
+		for _, idt := range sitIdents {
+			if strings.Contains(txtLow, idt) {
+				s += 5.0
+				continue
+			}
+			for _, sb := range subjs {
+				if strings.Contains(strings.ToLower(sb), idt) {
+					s += 4.0
+					break
+				}
+			}
+		}
+		for _, sb := range subjs {
+			sb = strings.TrimSpace(sb)
+			if len([]rune(sb)) < 2 || collabGeneric[sb] {
+				continue
+			}
+			if strings.Contains(sitLow, strings.ToLower(sb)) {
+				s += 2.5
+			}
+		}
+		ovl := 0
+		for bi := range collabBigrams(head) {
+			if sitBi[bi] {
+				ovl++
+			}
+		}
+		s += 0.35 * float64(ovl)
+		if s >= 3.0 {
+			cands = append(cands, scoredPat{p: p, score: s, sc: overview.Score(p)})
+		}
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].score != cands[j].score {
+			return cands[i].score > cands[j].score
+		}
+		if cands[i].sc != cands[j].sc {
+			return cands[i].sc > cands[j].sc
+		}
+		return cands[i].p.ID < cands[j].p.ID
+	})
+	var lines []string
+	used := 0
+	for _, c := range cands {
+		if len(lines) >= 6 {
+			break
+		}
+		ln := "- " + heClip(overview.Text(c.p), 240)
+		if used+len(ln)+1 > budget {
+			continue
+		}
+		lines = append(lines, ln)
+		used += len(ln) + 1
+	}
+	return lines
+}
+
+// recallTwoLayer implements the unified design §2.2 two-layer contextual recall within budget bytes:
+//   - Layer A: situation-relevant non-standing L1 contracts and principles (kept in both recall and recall-noent);
+//   - Layer B: Block 2 1-hop entity skeleton expansion (recall.Search EntityContext) + high-IDF anchored local rules
+//     and World/People facts (entities=false cleanly ablates World/People skeleton and entity entries).
+func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f heFilter, day, situation, standing string, budget int, entities bool) string {
+	if budget <= 0 {
+		return ""
+	}
+	var out []string
+	seen := map[string]bool{}
+	used := 0
+	addLine := func(ln string) bool {
+		if ln == "" || seen[ln] {
+			return false
+		}
+		if used+len(ln)+1 > budget {
+			return false
+		}
+		seen[ln] = true
+		out = append(out, ln)
+		used += len(ln) + 1
+		return true
+	}
+
+	// Layer A: non-standing L1 contracts and principles (at most 45% of recall budget, <= 900 B).
+	l1Budget := min(900, budget*45/100)
+	if !entities {
+		l1Budget = min(1200, budget*60/100)
+	}
+	for _, ln := range recallNonStandingL1(st, ov, f, day, situation, standing, l1Budget) {
+		addLine(ln)
+	}
+
+	// Layer B1: Block 2 1-hop entity skeleton expansion + anchored local rules when entities=true.
+	if entities && st != nil && st.Graph != nil {
+		cleanSt := &store.State{
+			Version:    st.Version,
+			Onboarding: st.Onboarding,
+			Contacts:   st.Contacts,
+			Graph:      sliceGraphBefore(st.Graph, day),
+			Entries:    make(map[string]*entry.Entry, len(st.Entries)),
+		}
+		for id, e := range st.Entries {
+			if e == nil || len(e.Cats()) > 0 || e.OriginSpace != "" || e.Inferred || f.entryOut(st, e, day) {
+				continue
+			}
+			cleanSt.Entries[id] = e
+		}
+		// Pick up to 3 highest-IDF matched entity names/identifiers from the situation.
+		type entQ struct {
+			name string
+			df   int
+		}
+		var qs []entQ
+		seenQ := map[string]bool{}
+		for n, es := range idx {
+			if strings.Contains(situation, n) && len([]rune(n)) >= 2 && !seenQ[n] {
+				seenQ[n] = true
+				qs = append(qs, entQ{name: n, df: len(es)})
+			}
+		}
+		for _, idt := range collabIdent.FindAllString(situation, -1) {
+			if !seenQ[idt] {
+				seenQ[idt] = true
+				qs = append(qs, entQ{name: idt, df: 1})
+			}
+		}
+		sort.SliceStable(qs, func(i, j int) bool {
+			if qs[i].df != qs[j].df {
+				return qs[i].df < qs[j].df
+			}
+			return len(qs[i].name) > len(qs[j].name)
+		})
+		if len(qs) > 3 {
+			qs = qs[:3]
+		}
+		for _, q := range qs {
+			sr := recall.Search(cleanSt, recall.Query{Text: q.name, Limit: 6})
+			for _, ec := range sr.Entities {
+				for i, edge := range ec.Skeleton {
+					if i >= 4 {
+						break
+					}
+					addLine(fmt.Sprintf("- [实体骨架] %s --%s--> %s", edge.From, edge.Predicate, edge.To))
+				}
+				for i, rule := range ec.Rules {
+					if i >= 3 {
+						break
+					}
+					t := heClip(rule.Text, 200)
+					if strings.Contains(standing, heClip(t, 24)) {
+						continue
+					}
+					addLine("- " + t)
+				}
+			}
+		}
+	}
+
+	// Layer B2: high-IDF name-indexed entries (World/People + entity-anchored rules), filling remaining budget.
+	if rem := budget - used; rem > 40 {
+		for _, ln := range strings.Split(idx.recall(st, f, day, situation, standing, rem, entities), "\n") {
+			ln = strings.TrimSpace(ln)
+			if ln != "" {
+				addLine(ln)
+			}
+		}
+	}
+	return strings.Join(out, "\n")
+}
 
 // recall is what mentioning the incident's names brings in, as the hub's recall would: the entries whose subjects the
 // situation names, first seen before the day, not already in the standing memory, highest rank first, in budget
