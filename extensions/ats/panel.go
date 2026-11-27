@@ -29,30 +29,40 @@ const cardTitle = extName + " · 概况"
 // ExtConfig is the extension's settings (configuration in persona-extension.json). Both programs read it: the
 // hub program all of it, the program on a computer the repository allowlist.
 type ExtConfig struct {
-	Machines             []string `json:"machines"`
-	Repos                []string `json:"repos"`
-	ParallelPerMachine   int      `json:"parallel_per_machine"`
-	WritePermissionMode  string   `json:"write_permission_mode"`
-	TaskTimeoutMinutes   int      `json:"task_timeout_minutes"`
-	AcceptTimeoutMinutes int      `json:"acceptance_timeout_minutes"`
-	MaxQueued            int      `json:"max_queued"`
-	MaxRetries           int      `json:"max_retries"`
-	ReserveHeadroomPct   int      `json:"reserve_headroom_pct"`
-	ModelFast            string   `json:"model_fast"`
-	ModelStandard        string   `json:"model_standard"`
-	ModelStrong          string   `json:"model_strong"`
+	Machines               []string `json:"machines"`
+	Repos                  []string `json:"repos"`
+	ParallelPerMachine     int      `json:"parallel_per_machine"`
+	ReadonlyPermissionMode string   `json:"readonly_permission_mode"`
+	WritePermissionMode    string   `json:"write_permission_mode"`
+	TaskTimeoutMinutes     int      `json:"task_timeout_minutes"`
+	AcceptTimeoutMinutes   int      `json:"acceptance_timeout_minutes"`
+	MaxQueued              int      `json:"max_queued"`
+	MaxRetries             int      `json:"max_retries"`
+	ReserveHeadroomPct     int      `json:"reserve_headroom_pct"`
+	Launcher               string   `json:"launcher"`
+	ModelFast              string   `json:"model_fast"`
+	ModelStandard          string   `json:"model_standard"`
+	ModelStrong            string   `json:"model_strong"`
 }
 
 func defaultExtConfig() ExtConfig {
 	return ExtConfig{
-		ParallelPerMachine: 1, WritePermissionMode: "acceptEdits", TaskTimeoutMinutes: 120, AcceptTimeoutMinutes: 10,
+		ParallelPerMachine: 1, ReadonlyPermissionMode: "plan", WritePermissionMode: "acceptEdits",
+		TaskTimeoutMinutes: 120, AcceptTimeoutMinutes: 10,
 		MaxQueued: 100, MaxRetries: 2, ReserveHeadroomPct: 30,
 	}
 }
 
 func (c ExtConfig) parallel() int { return min(max(c.ParallelPerMachine, 1), 4) }
 
-// writeMode is the permission mode of the session of a task that may write. Read-only tasks always run in plan.
+func (c ExtConfig) readonlyMode() string {
+	if c.ReadonlyPermissionMode == "bypassPermissions" {
+		return "bypassPermissions"
+	}
+	return "plan"
+}
+
+// writeMode is the permission mode of the session of a task that may write.
 func (c ExtConfig) writeMode() string {
 	switch c.WritePermissionMode {
 	case "default", "acceptEdits", "auto", "bypassPermissions":
@@ -86,6 +96,37 @@ func (c ExtConfig) model(tier string) string {
 		return strings.TrimSpace(c.ModelStrong)
 	}
 	return strings.TrimSpace(c.ModelStandard)
+}
+
+func (c ExtConfig) launcherFor(machineID string) string {
+	return launcherForSpec(c.Launcher, machineID)
+}
+
+// launcherForSpec 优先取匹配机器的启动器，首个未指定机器的名称用作默认值。
+func launcherForSpec(spec, machineID string) string {
+	target := strings.TrimSpace(machineID)
+	parts := strings.FieldsFunc(spec, func(r rune) bool {
+		return r == ',' || r == ';' || r == '\n'
+	})
+	fallback := ""
+	for _, raw := range parts {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		if k, v, ok := strings.Cut(entry, "="); ok {
+			k = strings.TrimSpace(k)
+			v = strings.TrimSpace(v)
+			if k != "" && strings.EqualFold(k, target) {
+				return v
+			}
+			continue
+		}
+		if fallback == "" {
+			fallback = entry
+		}
+	}
+	return fallback
 }
 
 func (c ExtConfig) queueConfig() QueueConfig {
