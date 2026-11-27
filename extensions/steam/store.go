@@ -33,6 +33,29 @@ const (
 	eventCursorTTL      = 90 * 24 * time.Hour
 )
 
+type steamStores struct {
+	prices   *PriceHistoryStore
+	playtime *PlaytimeSnapshotStore
+	backlog  *BacklogStore
+	cursors  *EventCursorStore
+}
+
+func newSteamStores(dataDir string) steamStores {
+	return steamStores{
+		prices:   NewPriceHistoryStore(dataDir),
+		playtime: NewPlaytimeSnapshotStore(dataDir),
+		backlog:  NewBacklogStore(dataDir),
+		cursors:  NewEventCursorStore(dataDir),
+	}
+}
+
+func (s steamStores) clearMemory() {
+	s.prices.file.clearMemory()
+	s.playtime.file.clearMemory()
+	s.backlog.file.clearMemory()
+	s.cursors.file.clearMemory()
+}
+
 // Each dataset has its own file and writer lock. Disk readers see either complete version
 // of an atomic replacement. An empty data directory uses a mutex-protected in-memory map.
 type snapshotFile[T any] struct {
@@ -52,6 +75,12 @@ func newSnapshotFile[T any](dataDir, name string) *snapshotFile[T] {
 		s.path = filepath.Join(dataDir, storeDirectory, name+".json")
 	}
 	return s
+}
+
+func (s *snapshotFile[T]) clearMemory() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.mem = nil
 }
 
 func (s *snapshotFile[T]) view(read func(map[string]T)) error {

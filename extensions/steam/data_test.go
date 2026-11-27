@@ -172,7 +172,7 @@ func TestSteamReads(t *testing.T) {
 	if got.Playtime2Weeks != 130 || len(got.Games) != 2 || got.Games[0].AppID != firstApp || got.Games[0].PlaytimeForever != 200 {
 		t.Fatalf("recent games %+v", got)
 	}
-	progress := d.achievements(ctx, p, firstApp).Data
+	progress := d.achievements(ctx, p, firstApp, "english").Data
 	if progress == nil || progress.Unlocked != 2 || progress.Total != 3 {
 		t.Fatalf("achievements %+v", progress)
 	}

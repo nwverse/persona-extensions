@@ -49,6 +49,7 @@ type qrSession struct {
 	ctx        context.Context
 	cancel     context.CancelFunc
 	tokens     steamTokens
+	reads      *steamData
 	rotation   *steamTokens
 	refresh    *authResultWait
 }
@@ -59,10 +60,11 @@ type authResultWait struct {
 }
 
 type qrAuth struct {
-	ctx    context.Context
-	hub    *ext.Hub
-	client steamClient
-	now    func() time.Time
+	ctx     context.Context
+	hub     *ext.Hub
+	client  steamClient
+	now     func() time.Time
+	country string
 
 	loaded     chan struct{}
 	cancelLoad context.CancelFunc
@@ -78,9 +80,9 @@ type qrAuth struct {
 	storeMu sync.Mutex
 }
 
-func newQRAuth(ctx context.Context, hub *ext.Hub, client *http.Client, now func() time.Time) *qrAuth {
+func newQRAuth(ctx context.Context, hub *ext.Hub, client *http.Client, now func() time.Time, country string) *qrAuth {
 	loadCtx, cancel := context.WithTimeout(ctx, httpTimeout)
-	a := &qrAuth{ctx: ctx, hub: hub, client: steamClient{http: client}, now: now,
+	a := &qrAuth{ctx: ctx, hub: hub, client: steamClient{http: client}, now: now, country: country,
 		loaded: make(chan struct{}), cancelLoad: cancel, issue: problemAuthRequired}
 	go a.restore(loadCtx)
 	return a
@@ -198,6 +200,7 @@ func (a *qrAuth) step(ctx context.Context, step string, t *text) wire.AuthPrompt
 	if a.sessionLocked() == nil && a.login == nil && a.clearing == nil && step == "" {
 		loginCtx, cancel := context.WithTimeout(a.ctx, qrLifetime)
 		a.login = &qrLogin{ctx: loginCtx, cancel: cancel, ready: make(chan struct{}), expiresAt: a.now().Add(qrLifetime)}
+		a.issue = problemAuthTimeout
 		go a.runLogin(a.login)
 	}
 	l := a.login
@@ -226,6 +229,7 @@ func (a *qrAuth) step(ctx context.Context, step string, t *text) wire.AuthPrompt
 }
 
 func (a *qrAuth) runLogin(l *qrLogin) {
+	defer l.cancel()
 	challenge, issue := a.client.beginQR(l.ctx)
 	if issue != "" {
 		a.endLogin(l, issue)
@@ -233,6 +237,11 @@ func (a *qrAuth) runLogin(l *qrLogin) {
 		return
 	}
 	a.mu.Lock()
+	if a.login != l {
+		close(l.ready)
+		a.mu.Unlock()
+		return
+	}
 	l.challenge = challenge
 	close(l.ready)
 	a.mu.Unlock()
@@ -257,7 +266,9 @@ func (a *qrAuth) runLogin(l *qrLogin) {
 				challenge.url = grant.url
 			}
 			a.mu.Lock()
-			l.challenge = challenge
+			if a.login == l {
+				l.challenge = challenge
+			}
 			a.mu.Unlock()
 		}
 		if grant.refresh == "" && grant.access == "" && !grant.agreement {
@@ -390,7 +401,9 @@ func (a *qrAuth) save(secret steamSecret) problem {
 func (a *qrAuth) installLocked(t steamTokens) {
 	a.generation++
 	ctx, cancel := context.WithCancel(a.ctx)
-	a.session = &qrSession{auth: a, generation: a.generation, ctx: ctx, cancel: cancel, tokens: t}
+	s := &qrSession{auth: a, generation: a.generation, ctx: ctx, cancel: cancel, tokens: t}
+	s.reads = newAccountData(config{AuthMode: modeQR, SteamID: t.secret.SteamID, CountryCode: a.country}, a.client, "", a.now, s)
+	a.session = s
 	a.issue = ""
 }
 
@@ -519,11 +532,13 @@ func (a *qrAuth) clearLocked(issue problem) *authResultWait {
 	a.cancelLoad()
 	if a.login != nil {
 		a.login.cancel()
+		a.login.challenge = qrChallenge{}
 		a.login = nil
 	}
 	if s := a.session; s != nil {
 		s.cancel()
 		s.tokens, s.rotation = steamTokens{}, nil
+		s.reads.clearLocked()
 		a.session = nil
 	}
 	a.issue = issue
@@ -568,4 +583,19 @@ func (a *qrAuth) logout(ctx context.Context) problem {
 func (a *qrAuth) changed() {
 	_ = a.hub.AuthChanged()
 	_ = a.hub.Invalidate("")
+}
+
+func (a *qrAuth) redact(value string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if s := a.session; s != nil {
+		value = redactCredentials(value, s.tokens.access, s.tokens.secret.RefreshToken)
+		if s.rotation != nil {
+			value = redactCredentials(value, s.rotation.access, s.rotation.secret.RefreshToken)
+		}
+	}
+	if l := a.login; l != nil {
+		value = redactCredentials(value, string(l.challenge.requestID), base64.StdEncoding.EncodeToString(l.challenge.requestID))
+	}
+	return redactCredentials(value)
 }

@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -40,14 +41,17 @@ type cacheSlot[T any] struct {
 	now    func() time.Time
 	loaded bool
 	record cacheRecord[T]
+	// QR slots belong to exactly one account and generation. The session lock
+	// guards their records against logout while the gate serializes fetches.
+	session *qrSession
 
 	retryScope string
 	retryAt    time.Time
 	failedRead reading[T]
 }
 
-func newSlot[T any](dir, name string, now func() time.Time) *cacheSlot[T] {
-	s := &cacheSlot[T]{gate: make(chan struct{}, 1), now: now}
+func newSlot[T any](dir, name string, now func() time.Time, session *qrSession) *cacheSlot[T] {
+	s := &cacheSlot[T]{gate: make(chan struct{}, 1), now: now, session: session}
 	if dir != "" {
 		s.path = filepath.Join(dir, name+".json")
 	}
@@ -61,6 +65,25 @@ func (s *cacheSlot[T]) read(ctx context.Context, scope string, ttl time.Duration
 	case <-ctx.Done():
 		return reading[T]{Issue: sanitizeError(ctx.Err())}
 	}
+	out, ready := s.cached(scope, ttl, refresh)
+	if ready {
+		return out
+	}
+	if ctx.Err() != nil {
+		return reading[T]{Issue: sanitizeError(ctx.Err())}
+	}
+	data, issue := fetch(ctx)
+	return s.update(scope, data, issue)
+}
+
+func (s *cacheSlot[T]) cached(scope string, ttl time.Duration, refresh bool) (reading[T], bool) {
+	if s.session != nil {
+		s.session.auth.mu.Lock()
+		defer s.session.auth.mu.Unlock()
+		if !s.ownsScopeLocked(scope) {
+			return reading[T]{Issue: problemCanceled}, true
+		}
+	}
 	if !s.loaded {
 		s.loaded = true
 		s.record = readRecord[T](s.path)
@@ -72,19 +95,25 @@ func (s *cacheSlot[T]) read(ctx context.Context, scope string, ttl time.Duration
 		if s.retryScope == scope && !s.retryAt.IsZero() {
 			if now.Before(s.retryAt) {
 				if s.failedRead.Stale && age > maxStaleAge {
-					return reading[T]{Issue: s.failedRead.Issue}
+					return reading[T]{Issue: s.failedRead.Issue}, true
 				}
-				return s.failedRead
+				return s.failedRead, true
 			}
 		} else if hasData && age < ttl {
-			return reading[T]{Data: s.record.Data, At: s.record.At}
+			return reading[T]{Data: s.record.Data, At: s.record.At}, true
 		}
 	}
-	if ctx.Err() != nil {
-		return reading[T]{Issue: sanitizeError(ctx.Err())}
-	}
+	return reading[T]{}, false
+}
 
-	data, issue := fetch(ctx)
+func (s *cacheSlot[T]) update(scope string, data *T, issue problem) reading[T] {
+	if s.session != nil {
+		s.session.auth.mu.Lock()
+		defer s.session.auth.mu.Unlock()
+		if !s.ownsScopeLocked(scope) {
+			return reading[T]{Issue: problemCanceled}
+		}
+	}
 	if issue == "" && data != nil {
 		s.record = cacheRecord[T]{Scope: scope, At: s.now(), Data: data}
 		s.retryAt, s.failedRead = time.Time{}, reading[T]{}
@@ -100,7 +129,7 @@ func (s *cacheSlot[T]) read(ctx context.Context, scope string, ttl time.Duration
 
 	out := reading[T]{Data: data, Issue: issue}
 	if issue.temporary() {
-		if hasData && s.now().Sub(s.record.At) <= maxStaleAge {
+		if age := s.now().Sub(s.record.At); s.record.Scope == scope && s.record.Data != nil && age >= 0 && age <= maxStaleAge {
 			out = reading[T]{Data: s.record.Data, Issue: issue, Stale: true, At: s.record.At}
 		}
 	} else if s.record.Scope == scope || issue == problemWishlist {
@@ -112,6 +141,16 @@ func (s *cacheSlot[T]) read(ctx context.Context, scope string, ttl time.Duration
 	}
 	s.retryScope, s.retryAt, s.failedRead = scope, s.now().Add(retryDelay), out
 	return out
+}
+
+func (s *cacheSlot[T]) clear() {
+	s.record, s.failedRead = cacheRecord[T]{}, reading[T]{}
+	s.retryScope, s.retryAt = "", time.Time{}
+}
+
+func (s *cacheSlot[T]) ownsScopeLocked(scope string) bool {
+	id, _, _ := strings.Cut(scope, "/") // Wishlist scopes also include country and language.
+	return s.session.currentLocked() && s.session.reads.config.AuthMode == modeQR && s.session.tokens.secret.SteamID == id
 }
 
 func readRecord[T any](path string) cacheRecord[T] {
