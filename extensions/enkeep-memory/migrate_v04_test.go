@@ -320,7 +320,7 @@ func TestMigrateV04Phase2MockHaiku(t *testing.T) {
 				ID: "i-rule-ops", Facet: entry.Interaction, Grain: entry.Class,
 				Text: "发版前跑一遍远端构建节点检查", Status: entry.Stable, First: "2026-10-01", Last: today, Count: 8,
 				Kinds: []string{entry.SrcAssistant, entry.SrcAsk}, ActiveDays: []string{"2026-10-01", "2026-11-01", "2026-11-20", "2026-11-25", today},
-				Leverage: &entry.Leverage{Reach: "cross_project", Horizon: "permanent"},
+				Leverage: &entry.Leverage{Reach: entry.ReachEveryTurn, Horizon: entry.HorizonLasting},
 				Evidence: []entry.Evidence{
 					{Source: entry.SrcAssistant, Ref: "chat/1", Day: "2026-10-01", Who: entry.WhoSelf, Quote: "发版前跑远端构建节点"},
 					{Source: entry.SrcAsk, Ref: "ask/1", Day: today, Who: entry.WhoSelf, Quote: "先跑远端构建节点检查"},
@@ -330,7 +330,7 @@ func TestMigrateV04Phase2MockHaiku(t *testing.T) {
 				ID: "i-rule-univ", Facet: entry.Interaction, Grain: entry.Class,
 				Text: "先查原始证据再给结论，不要猜测", Status: entry.Stable, First: "2026-10-01", Last: today, Count: 8,
 				Kinds: []string{entry.SrcAssistant, entry.SrcAsk}, ActiveDays: []string{"2026-10-01", "2026-11-01", "2026-11-20", "2026-11-25", today},
-				Leverage: &entry.Leverage{Reach: "cross_project", Horizon: "permanent"},
+				Leverage: &entry.Leverage{Reach: entry.ReachEveryTurn, Horizon: entry.HorizonLasting},
 				Evidence: []entry.Evidence{
 					{Source: entry.SrcAssistant, Ref: "chat/2", Day: "2026-10-01", Who: entry.WhoSelf, Quote: "先查原始证据再给结论"},
 					{Source: entry.SrcAsk, Ref: "ask/2", Day: today, Who: entry.WhoSelf, Quote: "不要猜测，先查证据"},
