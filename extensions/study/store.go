@@ -21,6 +21,8 @@ const (
 	srcObsidian   = "obsidian"   // a note in the Obsidian vault on the chosen computer
 	srcNotebookLM = "notebooklm" // a NotebookLM notebook, read through a community command line
 	srcManual     = "manual"     // text handed over in a conversation
+	srcLogseq     = "logseq"     // a page or journal in the Logseq graph on the chosen computer
+	srcTutor      = "tutor"      // a reinforcement card drafted after a practice mistake or for a weak topic
 )
 
 const (
@@ -30,6 +32,9 @@ const (
 	maxReviews   = 20000
 	maxFront     = 600
 	maxBack      = 2000
+	maxTopic     = 80
+	maxAttempts  = 5000
+	maxExercises = 100
 )
 
 // Source says where a card or draft came from.
@@ -45,6 +50,7 @@ type Card struct {
 	ID        string    `json:"id"`
 	Front     string    `json:"front"`
 	Back      string    `json:"back"`
+	Topic     string    `json:"topic,omitempty"` // the knowledge point the card belongs to; empty falls back to the source title
 	Source    Source    `json:"source"`
 	Created   time.Time `json:"created"`
 	Suspended bool      `json:"suspended,omitempty"`
@@ -56,6 +62,7 @@ type Draft struct {
 	ID      string    `json:"id"`
 	Front   string    `json:"front"`
 	Back    string    `json:"back"`
+	Topic   string    `json:"topic,omitempty"`
 	Source  Source    `json:"source"`
 	Created time.Time `json:"created"`
 }
@@ -69,30 +76,54 @@ type Review struct {
 	Due    time.Time   `json:"due"` // the next due time the review set
 }
 
+// Attempt is one answer to a practice exercise, kept so mastery can weigh recent practice beside FSRS reviews.
+type Attempt struct {
+	Exercise string    `json:"exercise"`
+	Card     string    `json:"card,omitempty"`
+	Topic    string    `json:"topic"`
+	Kind     string    `json:"kind"`
+	Verdict  string    `json:"verdict"` // correct, partial or wrong
+	Cause    string    `json:"cause,omitempty"`
+	Hints    int       `json:"hints,omitempty"`
+	At       time.Time `json:"at"`
+}
+
 type state struct {
-	Version    int              `json:"version"`
-	Cards      map[string]*Card `json:"cards"`
-	Drafts     []Draft          `json:"drafts"`
-	Reviews    []Review         `json:"reviews"`
-	LastRemind string           `json:"last_remind,omitempty"` // YYYY-MM-DD of the last daily reminder check
+	Version    int                  `json:"version"`
+	Cards      map[string]*Card     `json:"cards"`
+	Drafts     []Draft              `json:"drafts"`
+	Reviews    []Review             `json:"reviews"`
+	Attempts   []Attempt            `json:"attempts,omitempty"`
+	Exercises  map[string]*Exercise `json:"exercises,omitempty"`
+	LastRemind string               `json:"last_remind,omitempty"` // YYYY-MM-DD of the last daily reminder check
 }
 
 func emptyState() state {
-	return state{Version: stateVersion, Cards: map[string]*Card{}, Drafts: []Draft{}, Reviews: []Review{}}
+	return state{Version: stateVersion, Cards: map[string]*Card{}, Drafts: []Draft{}, Reviews: []Review{},
+		Attempts: []Attempt{}, Exercises: map[string]*Exercise{}}
 }
 
+// clone deep-copies everything a later update may change in place, so a failed write leaves the old state whole.
 func (s state) clone() state {
 	out := state{Version: s.Version, LastRemind: s.LastRemind, Cards: make(map[string]*Card, len(s.Cards)),
-		Drafts: append([]Draft(nil), s.Drafts...), Reviews: append([]Review(nil), s.Reviews...)}
+		Drafts: append([]Draft(nil), s.Drafts...), Reviews: append([]Review(nil), s.Reviews...),
+		Attempts: append([]Attempt(nil), s.Attempts...), Exercises: make(map[string]*Exercise, len(s.Exercises))}
 	for id, c := range s.Cards {
 		cp := *c
 		out.Cards[id] = &cp
+	}
+	for id, e := range s.Exercises {
+		cp := e.clone()
+		out.Exercises[id] = &cp
 	}
 	if out.Drafts == nil {
 		out.Drafts = []Draft{}
 	}
 	if out.Reviews == nil {
 		out.Reviews = []Review{}
+	}
+	if out.Attempts == nil {
+		out.Attempts = []Attempt{}
 	}
 	return out
 }
@@ -124,9 +155,20 @@ func loadState(path string) (state, error) {
 	if s.Reviews == nil {
 		s.Reviews = []Review{}
 	}
+	if s.Attempts == nil {
+		s.Attempts = []Attempt{}
+	}
+	if s.Exercises == nil {
+		s.Exercises = map[string]*Exercise{}
+	}
 	for id, c := range s.Cards {
 		if c == nil || c.ID != id {
 			return state{}, errors.New("复习记录里有无效的卡片")
+		}
+	}
+	for id, e := range s.Exercises {
+		if e == nil || e.ID != id {
+			delete(s.Exercises, id)
 		}
 	}
 	s.Version = stateVersion
@@ -174,7 +216,7 @@ func cardID(src Source, front string) string {
 func normalize(s string) string { return strings.Join(strings.Fields(strings.ToLower(s)), " ") }
 
 // addCard adds a new card; it reports false when the card already exists or the collection is full.
-func (s *state) addCard(front, back string, src Source, now time.Time) (*Card, bool) {
+func (s *state) addCard(front, back, topic string, src Source, now time.Time) (*Card, bool) {
 	front, back = clip(strings.TrimSpace(front), maxFront), clip(strings.TrimSpace(back), maxBack)
 	if front == "" || back == "" || len(s.Cards) >= maxCards {
 		return nil, false
@@ -183,7 +225,7 @@ func (s *state) addCard(front, back string, src Source, now time.Time) (*Card, b
 	if old, ok := s.Cards[id]; ok {
 		return old, false
 	}
-	c := &Card{ID: id, Front: front, Back: back, Source: src, Created: now.UTC(), FSRS: fsrs.NewCard(now.UTC())}
+	c := &Card{ID: id, Front: front, Back: back, Topic: cleanTopic(topic), Source: src, Created: now.UTC(), FSRS: fsrs.NewCard(now.UTC())}
 	s.Cards[id] = c
 	return c, true
 }
@@ -205,7 +247,7 @@ func (s *state) addDrafts(items []cardText, src Source, now time.Time) int {
 			continue
 		}
 		seen[id] = true
-		s.Drafts = append(s.Drafts, Draft{ID: id, Front: front, Back: back, Source: src, Created: now.UTC()})
+		s.Drafts = append(s.Drafts, Draft{ID: id, Front: front, Back: back, Topic: cleanTopic(it.Topic), Source: src, Created: now.UTC()})
 		n++
 	}
 	return n
@@ -220,7 +262,7 @@ func (s *state) keepDrafts(ids []string, now time.Time) int {
 	kept, rest := 0, s.Drafts[:0:0]
 	for _, d := range s.Drafts {
 		if len(ids) == 0 || want[d.ID] {
-			if _, ok := s.addCard(d.Front, d.Back, d.Source, now); ok {
+			if _, ok := s.addCard(d.Front, d.Back, d.Topic, d.Source, now); ok {
 				kept++
 			}
 			continue
@@ -248,6 +290,30 @@ func (s *state) dropDrafts(ids []string) int {
 	return n
 }
 
+func (s *state) logAttempt(at Attempt) {
+	s.Attempts = append(s.Attempts, at)
+	if over := len(s.Attempts) - maxAttempts; over > 0 {
+		s.Attempts = append([]Attempt(nil), s.Attempts[over:]...)
+	}
+}
+
+// putExercise stores an exercise, dropping the oldest beyond maxExercises.
+func (s *state) putExercise(e Exercise) {
+	if s.Exercises == nil {
+		s.Exercises = map[string]*Exercise{}
+	}
+	s.Exercises[e.ID] = &e
+	for len(s.Exercises) > maxExercises {
+		oldest := ""
+		for id, x := range s.Exercises {
+			if oldest == "" || x.Created.Before(s.Exercises[oldest].Created) || x.Created.Equal(s.Exercises[oldest].Created) && id < oldest {
+				oldest = id
+			}
+		}
+		delete(s.Exercises, oldest)
+	}
+}
+
 func (s *state) logReview(r Review) {
 	s.Reviews = append(s.Reviews, r)
 	if over := len(s.Reviews) - maxReviews; over > 0 {
@@ -269,6 +335,22 @@ func (s state) sortedCards() []*Card {
 	})
 	return out
 }
+
+// cleanTopic keeps a knowledge-point name to one short line.
+func cleanTopic(t string) string { return clip(strings.Join(strings.Fields(t), " "), maxTopic) }
+
+// topicOf is the knowledge point a card counts toward: its own topic, else its source's title.
+func topicOf(c *Card) string {
+	if c.Topic != "" {
+		return c.Topic
+	}
+	if t := cleanTopic(c.Source.Title); t != "" {
+		return t
+	}
+	return untitledTopic
+}
+
+const untitledTopic = "未归类"
 
 func clip(s string, n int) string {
 	r := []rune(s)

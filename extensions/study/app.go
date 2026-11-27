@@ -18,6 +18,7 @@ import (
 type config struct {
 	Machines     []string `json:"machines"`
 	Vault        string   `json:"obsidian_vault"`
+	Logseq       string   `json:"logseq_graph"`
 	FlashTag     string   `json:"flash_tag"`
 	NLMCommand   string   `json:"notebooklm_command"`
 	NewPerDay    int      `json:"new_per_day"`
@@ -62,7 +63,8 @@ type hubAPI interface {
 }
 
 type app struct {
-	done   map[string]map[string]any // actions.do results by request id
+	done   map[string]map[string]any // actions.do results by action name and request id
+	busy   map[string]chan struct{}  // actions.do requests running now, by the same key
 	mu     sync.Mutex
 	cfg    config
 	st     state
@@ -91,7 +93,7 @@ func openApp(dataDir string, cfg config, notionSecret string, hub hubAPI, tz str
 			loc = l
 		}
 	}
-	return &app{done: map[string]map[string]any{}, cfg: cfg, st: st, path: path, sched: newScheduler(cfg.Retention), hub: hub,
+	return &app{done: map[string]map[string]any{}, busy: map[string]chan struct{}{}, cfg: cfg, st: st, path: path, sched: newScheduler(cfg.Retention), hub: hub,
 		notion: newNotion(notionAPI, notionSecret), now: time.Now, loc: loc}, nil
 }
 
@@ -132,7 +134,7 @@ func (a *app) changed() {
 
 func (a *app) machine() (string, error) {
 	if len(a.cfg.Machines) == 0 || strings.TrimSpace(a.cfg.Machines[0]) == "" {
-		return "", errors.New("先在扩展设置里选一台电脑：Obsidian 和 NotebookLM 都从那台电脑上读")
+		return "", errors.New("先在扩展设置里选一台电脑：Obsidian、Logseq 和 NotebookLM 都从那台电脑上读")
 	}
 	return a.cfg.Machines[0], nil
 }
@@ -160,7 +162,7 @@ func (a *app) addDirect(items []cardText, src Source) (int, error) {
 	err := a.update(func(s *state) error {
 		now := a.now()
 		for _, it := range items {
-			if _, ok := s.addCard(it.Front, it.Back, src, now); ok {
+			if _, ok := s.addCard(it.Front, it.Back, it.Topic, src, now); ok {
 				n++
 			}
 		}
@@ -181,16 +183,24 @@ func (a *app) addDrafts(items []cardText, src Source) (int, error) {
 	return n, err
 }
 
-func (a *app) generate(ctx context.Context, src Source, material string) (int, error) {
+// generate has the model draft cards from material; topic, when given, files them under that knowledge point.
+func (a *app) generate(ctx context.Context, src Source, material, topic string) (int, error) {
 	a.mu.Lock()
 	n := a.cfg.CardsPerNote
 	a.mu.Unlock()
-	cards, err := makeCards(ctx, a.hub, src.Title, material, n)
+	var m modelAPI
+	if a.hub != nil {
+		m = a.hub
+	}
+	cards, err := makeCards(ctx, m, src.Title, material, n)
 	if err != nil {
 		return 0, err
 	}
 	if len(cards) == 0 {
 		return 0, errors.New("这份材料里没找到值得做卡的内容")
+	}
+	for i := range cards {
+		cards[i].Topic = topic
 	}
 	return a.addDrafts(cards, src)
 }
@@ -210,7 +220,8 @@ func (a *app) fromTopic(ctx context.Context, id string) (int, error) {
 	if res.Detail.ID != "" {
 		name = res.Detail.ID
 	}
-	return a.generate(ctx, Source{Kind: srcTopic, Ref: id, Title: topicName(res.Detail, name)}, topicMaterial(res.Detail))
+	title := topicName(res.Detail, name)
+	return a.generate(ctx, Source{Kind: srcTopic, Ref: id, Title: title}, topicMaterial(res.Detail), title)
 }
 
 func topicName(d wire.KBDetail, fallback string) string {
@@ -249,7 +260,7 @@ func (a *app) fromNotion(ctx context.Context, id string) (int, error) {
 	if len(doc.Toggles) > 0 {
 		return a.addDrafts(doc.Toggles, src)
 	}
-	return a.generate(ctx, src, doc.Text)
+	return a.generate(ctx, src, doc.Text, "")
 }
 
 func (a *app) importVault(ctx context.Context) (int, int, error) {
@@ -277,7 +288,43 @@ func (a *app) fromVault(ctx context.Context, path string) (int, error) {
 	if cards := parseObsidian(note.Text); len(cards) > 0 {
 		return a.addDirect(cards, src)
 	}
-	return a.generate(ctx, src, note.Text)
+	return a.generate(ctx, src, note.Text, "")
+}
+
+// importLogseq adds the #card blocks of every Logseq page and journal; each card is filed under its page.
+func (a *app) importLogseq(ctx context.Context) (int, int, error) {
+	var scan vaultScan
+	if err := a.node(ctx, "logseq_cards", map[string]any{}, &scan); err != nil {
+		return 0, 0, err
+	}
+	added := 0
+	for _, n := range scan.Notes {
+		for i := range n.Cards {
+			n.Cards[i].Topic = n.Title
+		}
+		k, err := a.addDirect(n.Cards, Source{Kind: srcLogseq, Ref: n.Path, Title: n.Title})
+		if err != nil {
+			return added, len(scan.Notes), err
+		}
+		added += k
+	}
+	return added, len(scan.Notes), nil
+}
+
+// fromLogseq adds one page's #card blocks, or has the model draft cards from the page when it has none.
+func (a *app) fromLogseq(ctx context.Context, path string) (int, error) {
+	var note noteText
+	if err := a.node(ctx, "logseq_read", map[string]any{"path": path}, &note); err != nil {
+		return 0, err
+	}
+	src := Source{Kind: srcLogseq, Ref: note.Path, Title: note.Title}
+	if cards := parseLogseq(note.Text); len(cards) > 0 {
+		for i := range cards {
+			cards[i].Topic = note.Title
+		}
+		return a.addDirect(cards, src)
+	}
+	return a.generate(ctx, src, logseqText(note.Text), note.Title)
 }
 
 func (a *app) fromNotebookLM(ctx context.Context, notebook, artifact, kind, notebookTitle string) (int, error) {

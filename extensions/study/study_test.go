@@ -30,9 +30,13 @@ type fakeHub struct {
 	prompts []wire.ModelCompleteParams
 	node    *nodeWorker
 	calls   []string
+	kbErr   error
 }
 
 func (h *fakeHub) KBList(_ context.Context, p wire.KBListParams) (wire.KBListResult, error) {
+	if h.kbErr != nil {
+		return wire.KBListResult{}, h.kbErr
+	}
 	if p.Kind != "topics" {
 		return wire.KBListResult{}, errors.New("unexpected kind")
 	}
@@ -50,8 +54,12 @@ func (h *fakeHub) KBGet(_ context.Context, p wire.KBGetParams) (wire.KBGetResult
 func (h *fakeHub) ModelComplete(_ context.Context, p wire.ModelCompleteParams) (wire.ModelCompleteResult, error) {
 	h.mu.Lock()
 	h.prompts = append(h.prompts, p)
+	model := h.model
 	h.mu.Unlock()
-	return h.model(p)
+	if model == nil {
+		return wire.ModelCompleteResult{}, errors.New("no model")
+	}
+	return model(p)
 }
 
 func (h *fakeHub) Call(ctx context.Context, method string, params, out any) error {
@@ -143,11 +151,11 @@ func TestObsidianSyntax(t *testing.T) {
 	}
 	got := parseObsidian(note)
 	want := []cardText{
-		{"What makes ATP?", "Mitochondria"},
-		{"Osmosis", "Water moving across a membrane"}, {"Water moving across a membrane", "Osmosis"},
-		{"Name the stages of mitosis", "Prophase, metaphase,\nanaphase, telophase"},
-		{"Front line", "Back line"}, {"Back line", "Front line"},
-		{"The ［…］ holds the DNA.", "nucleus"}, {"The nucleus holds the ［…］.", "DNA"},
+		{Front: "What makes ATP?", Back: "Mitochondria"},
+		{Front: "Osmosis", Back: "Water moving across a membrane"}, {Front: "Water moving across a membrane", Back: "Osmosis"},
+		{Front: "Name the stages of mitosis", Back: "Prophase, metaphase,\nanaphase, telophase"},
+		{Front: "Front line", Back: "Back line"}, {Front: "Back line", Back: "Front line"},
+		{Front: "The ［…］ holds the DNA.", Back: "nucleus"}, {Front: "The nucleus holds the ［…］.", Back: "DNA"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("got %d cards: %+v", len(got), got)
@@ -201,7 +209,7 @@ func TestQueueGradeAndPersistence(t *testing.T) {
 func TestDraftsKeepAndDrop(t *testing.T) {
 	a := testApp(t, &fakeHub{}, defaults())
 	src := Source{Kind: srcNotebookLM, Ref: "nb/a"}
-	if n, _ := a.addDrafts([]cardText{{"Q1", "A1"}, {"Q2", "A2"}, {"Q1", "dup"}, {"", "x"}}, src); n != 2 {
+	if n, _ := a.addDrafts([]cardText{{Front: "Q1", Back: "A1"}, {Front: "Q2", Back: "A2"}, {Front: "Q1", Back: "dup"}, {Front: "", Back: "x"}}, src); n != 2 {
 		t.Fatalf("drafts: %d", n)
 	}
 	a.mu.Lock()
@@ -214,7 +222,7 @@ func TestDraftsKeepAndDrop(t *testing.T) {
 	if _, err := a.action(t.Context(), request("drop", pageState{Mode: modeDrafts}, map[string]string{"all": "1"})); err != nil || len(a.st.Drafts) != 0 {
 		t.Fatal(err)
 	}
-	if n, _ := a.addDrafts([]cardText{{"Q1", "A1"}}, src); n != 0 {
+	if n, _ := a.addDrafts([]cardText{{Front: "Q1", Back: "A1"}}, src); n != 0 {
 		t.Fatal("a kept card came back as a draft")
 	}
 }
@@ -419,7 +427,7 @@ func TestNotionToggles(t *testing.T) {
 
 func TestReviewFlowAndViews(t *testing.T) {
 	a := testApp(t, &fakeHub{}, defaults())
-	a.addDirect([]cardText{{"What is FSRS?", "**Free Spaced Repetition Scheduler**"}, {"Q2", "A2"}}, Source{Kind: srcManual})
+	a.addDirect([]cardText{{Front: "What is FSRS?", Back: "**Free Spaced Repetition Scheduler**"}, {Front: "Q2", Back: "A2"}}, Source{Kind: srcManual})
 	for _, m := range []string{modeHome, modeReview, modeDrafts, modeCards, modeWrite, modeNotion, modeObsidian, modeNLM} {
 		v, err := a.view(t.Context(), pageState{Mode: m}, "")
 		if err != nil {
@@ -476,7 +484,7 @@ func TestToolsAndActions(t *testing.T) {
 		return wire.ModelCompleteResult{JSON: json.RawMessage(`{"cards":[{"front":"F","back":"B"}]}`)}, nil
 	}}
 	a := testApp(t, h, defaults())
-	a.addDirect([]cardText{{"Capital of France?", "Paris"}}, Source{Kind: srcManual})
+	a.addDirect([]cardText{{Front: "Capital of France?", Back: "Paris"}}, Source{Kind: srcManual})
 	call := func(method string, args string) (any, error) {
 		raw, _ := json.Marshal(map[string]any{"contribution": "study", "name": strings.Fields(method)[1], "args": json.RawMessage(args), "request_id": "r1"})
 		return a.connector(t.Context(), strings.Fields(method)[0], raw)
@@ -518,7 +526,7 @@ func TestDailyReminder(t *testing.T) {
 	a := testApp(t, &fakeHub{}, defaults()) // 20:00 Asia/Shanghai is 12:00 UTC
 	var sent []notice
 	a.notify = func(_ context.Context, n notice) error { sent = append(sent, n); return nil }
-	a.addDirect([]cardText{{"Q", "A"}}, Source{Kind: srcManual})
+	a.addDirect([]cardText{{Front: "Q", Back: "A"}}, Source{Kind: srcManual})
 	at := func(h int) { a.now = func() time.Time { return time.Date(2026, 11, 26, h, 30, 0, 0, time.UTC) } }
 	at(11)
 	a.tick(t.Context())

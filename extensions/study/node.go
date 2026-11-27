@@ -24,11 +24,14 @@ import (
 //	study.vault_cards  the flashcards written in the vault's tagged notes (Spaced Repetition plugin syntax)
 //	study.vault_notes  notes whose path or title matches a query, for making cards with the model
 //	study.vault_read   one note's text
+//	study.logseq_cards the flashcards of the Logseq graph's pages and journals (#card blocks)
+//	study.logseq_pages pages and journals whose path or title matches a query
+//	study.logseq_read  one page's text
 //	study.nlm_status   whether the notebooklm command is installed and signed in
 //	study.nlm_list     NotebookLM notebooks, or the flashcard and quiz sets of one notebook
 //	study.nlm_download one flashcard or quiz set as JSON
 //
-// The vault folder and the notebooklm command come from this extension's settings as the computer reads them, never
+// The vault and graph folders and the notebooklm command come from this extension's settings as the computer reads them, never
 // from the hub's call, so a call cannot point the program at another folder or program.
 
 const (
@@ -42,6 +45,7 @@ const (
 
 type nodeConfig struct {
 	Vault      string `json:"obsidian_vault"`
+	Logseq     string `json:"logseq_graph"`
 	FlashTag   string `json:"flash_tag"`
 	NLMCommand string `json:"notebooklm_command"`
 }
@@ -84,6 +88,12 @@ func (w *nodeWorker) rpc(ctx context.Context, method string, raw json.RawMessage
 		return w.vaultNotes(p.Query)
 	case "vault_read":
 		return w.vaultRead(p.Path)
+	case "logseq_cards":
+		return w.logseqCards()
+	case "logseq_pages":
+		return w.logseqPages(p.Query)
+	case "logseq_read":
+		return w.logseqRead(p.Path)
 	case "nlm_status":
 		return w.nlmStatus(ctx), nil
 	case "nlm_list":
@@ -110,9 +120,14 @@ type vaultScan struct {
 }
 
 func (w *nodeWorker) root() (string, error) {
-	v := strings.TrimSpace(w.cfg.Vault)
+	return folderRoot(w.cfg.Vault, "Obsidian 库")
+}
+
+// folderRoot resolves a configured folder (absolute, or under ~/) to its real path; what names it in messages.
+func folderRoot(configured, what string) (string, error) {
+	v := strings.TrimSpace(configured)
 	if v == "" {
-		return "", errors.New("还没在设置里填 Obsidian 库的文件夹")
+		return "", errors.New("还没在设置里填" + what + "的文件夹")
 	}
 	if strings.HasPrefix(v, "~/") {
 		if home, err := os.UserHomeDir(); err == nil {
@@ -120,19 +135,20 @@ func (w *nodeWorker) root() (string, error) {
 		}
 	}
 	if !filepath.IsAbs(v) {
-		return "", errors.New("Obsidian 库的文件夹要写完整路径")
+		return "", errors.New(what + "的文件夹要写完整路径")
 	}
 	real, err := filepath.EvalSymlinks(filepath.Clean(v))
 	if err != nil {
-		return "", errors.New("这台电脑上找不到设置里的 Obsidian 库文件夹")
+		return "", errors.New("这台电脑上找不到设置里的" + what + "文件夹")
 	}
 	if fi, err := os.Stat(real); err != nil || !fi.IsDir() {
-		return "", errors.New("设置里的 Obsidian 库不是一个文件夹")
+		return "", errors.New("设置里的" + what + "不是一个文件夹")
 	}
 	return real, nil
 }
 
-// walkVault visits the vault's Markdown notes, skipping hidden folders (.obsidian, .trash, .git) and symlinks.
+// walkVault visits the vault's Markdown notes, skipping hidden folders (.obsidian, .trash, .git), hidden files and
+// symlinks.
 func walkVault(root string, fn func(rel string, d fs.DirEntry) bool) (int, bool) {
 	n, cut := 0, false
 	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
@@ -146,7 +162,7 @@ func walkVault(root string, fn func(rel string, d fs.DirEntry) bool) (int, bool)
 			}
 			return nil
 		}
-		if d.Type()&fs.ModeSymlink != 0 || !strings.EqualFold(filepath.Ext(name), ".md") {
+		if d.Type()&fs.ModeSymlink != 0 || strings.HasPrefix(name, ".") || !strings.EqualFold(filepath.Ext(name), ".md") {
 			return nil
 		}
 		if n >= maxNotes {
@@ -269,26 +285,150 @@ func (w *nodeWorker) vaultRead(rel string) (noteText, error) {
 	if err != nil {
 		return noteText{}, err
 	}
+	clean, text, err := readInside(root, rel)
+	if err != nil {
+		return noteText{}, err
+	}
+	return noteText{Path: filepath.ToSlash(clean), Title: noteTitle(clean), Text: text}, nil
+}
+
+// readInside reads one Markdown note by its path relative to root, refusing absolute paths, "..", hidden folders and
+// files, and any symlink on the way.
+func readInside(root, rel string) (string, string, error) {
 	clean := filepath.Clean(filepath.FromSlash(rel))
 	if rel == "" || filepath.IsAbs(clean) || clean == "." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) || clean == ".." ||
 		!strings.EqualFold(filepath.Ext(clean), ".md") {
-		return noteText{}, errors.New("笔记路径不对")
+		return "", "", errors.New("笔记路径不对")
 	}
 	for _, part := range strings.Split(clean, string(filepath.Separator)) {
 		if strings.HasPrefix(part, ".") {
-			return noteText{}, errors.New("笔记路径不对")
+			return "", "", errors.New("笔记路径不对")
 		}
 	}
 	full := filepath.Join(root, clean)
 	real, err := filepath.EvalSymlinks(full)
 	if err != nil || real != full {
-		return noteText{}, errors.New("读不了这条笔记")
+		return "", "", errors.New("读不了这条笔记")
 	}
 	text, _, err := readNote(full)
 	if err != nil {
+		return "", "", err
+	}
+	return clean, text, nil
+}
+
+// ---- Logseq graph ----
+
+// logseqDirs are the folders of a graph that hold pages; logseq/ (settings, backups) and assets/ are never read.
+var logseqDirs = []string{"pages", "journals"}
+
+func (w *nodeWorker) graph() (string, error) { return folderRoot(w.cfg.Logseq, "Logseq 图谱") }
+
+// walkGraph visits the Markdown pages under pages/ and journals/, with paths relative to the graph, sharing one
+// maxNotes budget.
+func walkGraph(root string, fn func(rel string, d fs.DirEntry) bool) (int, bool) {
+	total, cut, stop := 0, false, false
+	for _, dir := range logseqDirs {
+		sub := filepath.Join(root, dir)
+		if fi, err := os.Lstat(sub); err != nil || !fi.IsDir() {
+			continue
+		}
+		_, c := walkVault(sub, func(rel string, d fs.DirEntry) bool {
+			if total >= maxNotes {
+				cut = true
+				return false
+			}
+			total++
+			if !fn(dir+"/"+rel, d) {
+				stop = true
+				return false
+			}
+			return true
+		})
+		cut = cut || c
+		if stop || cut {
+			break
+		}
+	}
+	return total, cut
+}
+
+func inGraph(rel string) bool {
+	for _, d := range logseqDirs {
+		if strings.HasPrefix(filepath.ToSlash(filepath.Clean(filepath.FromSlash(rel))), d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *nodeWorker) logseqCards() (vaultScan, error) {
+	root, err := w.graph()
+	if err != nil {
+		return vaultScan{}, err
+	}
+	out := vaultScan{Notes: []vaultNote{}}
+	total := 0
+	out.Scanned, out.Truncated = walkGraph(root, func(rel string, _ fs.DirEntry) bool {
+		text, mod, err := readNote(filepath.Join(root, filepath.FromSlash(rel)))
+		if err != nil {
+			return true
+		}
+		cards := parseLogseq(text)
+		if len(cards) == 0 {
+			return true
+		}
+		if total+len(cards) > maxScanCards {
+			out.Truncated = true
+			return false
+		}
+		total += len(cards)
+		out.Notes = append(out.Notes, vaultNote{Path: rel, Title: logseqTitle(rel, text), Modified: mod.UTC(), Cards: cards})
+		return true
+	})
+	return out, nil
+}
+
+func (w *nodeWorker) logseqPages(query string) (vaultScan, error) {
+	root, err := w.graph()
+	if err != nil {
+		return vaultScan{}, err
+	}
+	q := strings.ToLower(strings.TrimSpace(query))
+	out := vaultScan{Notes: []vaultNote{}}
+	out.Scanned, out.Truncated = walkGraph(root, func(rel string, d fs.DirEntry) bool {
+		title := logseqTitle(rel, "")
+		if q != "" && !strings.Contains(strings.ToLower(rel), q) && !strings.Contains(strings.ToLower(title), q) {
+			return true
+		}
+		var mod time.Time
+		if fi, err := d.Info(); err == nil {
+			mod = fi.ModTime().UTC()
+		}
+		out.Notes = append(out.Notes, vaultNote{Path: rel, Title: title, Modified: mod})
+		return true
+	})
+	sort.Slice(out.Notes, func(i, j int) bool { return out.Notes[i].Modified.After(out.Notes[j].Modified) })
+	if len(out.Notes) > 50 {
+		out.Notes, out.Truncated = out.Notes[:50], true
+	}
+	return out, nil
+}
+
+func (w *nodeWorker) logseqRead(rel string) (noteText, error) {
+	root, err := w.graph()
+	if err != nil {
 		return noteText{}, err
 	}
-	return noteText{Path: filepath.ToSlash(clean), Title: noteTitle(clean), Text: text}, nil
+	if !inGraph(rel) {
+		return noteText{}, errors.New("只能读 pages 和 journals 里的页面")
+	}
+	clean, text, err := readInside(root, rel)
+	if err != nil {
+		return noteText{}, err
+	}
+	rel = filepath.ToSlash(clean)
+	return noteText{Path: rel, Title: logseqTitle(rel, text), Text: text}, nil
 }
 
 // ---- NotebookLM through notebooklm-py (github.com/teng-lin/notebooklm-py) ----

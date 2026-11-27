@@ -1,11 +1,13 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -15,6 +17,8 @@ import (
 const (
 	pageID   = "study"
 	widgetID = "study-due"
+
+	maxListRows = 100 // rows of one list on a page, well under wire.ItemsMost with the rest of the page
 )
 
 // Page modes.
@@ -29,6 +33,9 @@ const (
 	modeCards    = "cards"
 	modeCard     = "card"
 	modeWrite    = "write"
+	modeLogseq   = "logseq"
+	modeWeak     = "weak"
+	modeTutor    = "tutor"
 )
 
 type pageState struct {
@@ -39,27 +46,59 @@ type pageState struct {
 	Notebook string `json:"n,omitempty"`
 	NBTitle  string `json:"t,omitempty"`
 	Done     int    `json:"d,omitempty"` // cards reviewed in this sitting
+	Topic    string `json:"p,omitempty"` // the knowledge point (weak points, tutor)
+	Status   string `json:"f,omitempty"` // the mastery filter (weak points)
+	Kind     string `json:"k,omitempty"` // the exercise kind (tutor)
+	Exercise string `json:"x,omitempty"` // the exercise on screen (tutor)
+	Hints    int    `json:"h,omitempty"` // hints shown for it
 }
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.Card) > 64 || len(st.Query) > 200 || len(st.Notebook) > 128 || len(st.NBTitle) > 300 {
+	if err := r.DecodeState(&st); err != nil || len(st.Card) > 64 || len(st.Query) > 200 || len(st.Notebook) > 128 || len(st.NBTitle) > 300 ||
+		utf8.RuneCountInString(st.Topic) > maxTopic || len(st.Exercise) > 64 || st.Hints < 0 || st.Hints > maxHints || st.Done < 0 ||
+		(st.Status != "" && !validStatus(st.Status)) || (st.Kind != "" && !validKind(st.Kind)) {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
 }
 
+// The component helpers hold their strings to what a view may carry (wire.CheckView): required text is never
+// empty and nothing is longer than wire.StringMost.
+func fit(s, fallback string) string {
+	if strings.TrimSpace(s) == "" {
+		return fallback
+	}
+	return clip(s, wire.StringMost)
+}
+
+// text draws a paragraph. A headline or title longer than the apps draw one (wire.TitleMost) becomes body text, so a
+// long question is shown whole rather than refused or cut.
 func text(s, style string) wire.Component {
+	s = fit(s, "—")
+	if (style == wire.TextStyleHeadline || style == wire.TextStyleTitle) && utf8.RuneCountInString(s) > wire.TitleMost {
+		style = wire.TextStyleBody
+	}
 	return wire.Component{Type: wire.ComponentText, Text: s, Style: style}
 }
 func button(title, id string, values map[string]string) wire.Component {
-	return wire.Component{Type: wire.ComponentButton, Title: title, Action: &wire.Action{ID: id, Values: values}}
+	return wire.Component{Type: wire.ComponentButton, Title: fit(title, "打开"), Action: &wire.Action{ID: id, Values: values}}
 }
 func row(title, subtitle, id string, values map[string]string) wire.Component {
-	return wire.Component{Type: wire.ComponentRow, Title: title, Subtitle: subtitle, Action: &wire.Action{ID: id, Values: values}}
+	return wire.Component{Type: wire.ComponentRow, Title: fit(oneLine(title), "无标题"), Subtitle: clip(subtitle, wire.StringMost), Action: &wire.Action{ID: id, Values: values}}
 }
 func empty(title, detail string) wire.Component {
-	return wire.Component{Type: wire.ComponentEmpty, Title: title, Text: detail}
+	return wire.Component{Type: wire.ComponentEmpty, Title: fit(title, "这里还没有内容"), Text: clip(detail, wire.StringMost)}
+}
+
+// answerBlock shows a card's answer as Markdown when it is in the subset the apps draw (https links, no images), and
+// as plain text otherwise: an Obsidian ![[embed]] or an http link must not make the whole page refused.
+func answerBlock(s string) wire.Component {
+	md := wire.Component{Type: wire.ComponentMarkdown, Text: fit(clip(s, 20000), "—")}
+	if wire.CheckView(&wire.View{Sections: []wire.Section{{Items: []wire.Component{md}}}}) == nil {
+		return md
+	}
+	return text(s, wire.TextStyleBody)
 }
 
 func (a *app) render(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
@@ -82,8 +121,13 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		st = pageState{}
 	case "go":
 		switch m := v["mode"]; m {
-		case modeReview, modeDrafts, modeTopics, modeNotion, modeObsidian, modeNLM, modeCards, modeWrite:
+		case modeReview, modeDrafts, modeTopics, modeNotion, modeObsidian, modeNLM, modeCards, modeWrite, modeLogseq, modeWeak:
 			st = pageState{Mode: m}
+		case modeTutor:
+			st = pageState{Mode: m, Topic: cleanTopic(v["topic"]), Card: clip(v["card"], 64), Kind: st.Kind}
+			if st.Kind == "" {
+				st.Kind = kindConcept
+			}
 		default:
 			return nil, errors.New("unknown page")
 		}
@@ -171,8 +215,95 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil, err
 		}
 		st, toast = pageState{Mode: modeDrafts}, fmt.Sprintf("从 NotebookLM 读回 %d 张，确认一下", n)
+	case "import_logseq":
+		n, pages, err := a.importLogseq(ctx)
+		if err != nil {
+			return nil, err
+		}
+		toast = fmt.Sprintf("从 %d 个页面导入了 %d 张新卡片", pages, n)
+	case "logseq_search":
+		st.Query = clip(strings.TrimSpace(v["q"]), 200)
+	case "make_logseq":
+		n, err := a.fromLogseq(ctx, v["path"])
+		if err != nil {
+			return nil, err
+		}
+		toast = fmt.Sprintf("这个页面加了 %d 张卡片", n)
+		if a.draftCount() > 0 {
+			st = pageState{Mode: modeDrafts}
+		}
+	case "weak_filter":
+		f := v["status"]
+		if f == "all" {
+			f = ""
+		}
+		if f != "" && !validStatus(f) {
+			return nil, errors.New("unknown filter")
+		}
+		st.Status = f
+	case "go_topic":
+		st = pageState{Mode: modeWeak, Topic: cleanTopic(v["topic"])}
+	case "weak_topic":
+		st.Topic, st.Status = cleanTopic(v["topic"]), ""
+	case "tutor_kind":
+		if !validKind(v["kind"]) {
+			return nil, errors.New("unknown exercise kind")
+		}
+		st.Kind, st.Exercise, st.Hints = v["kind"], "", 0
+	case "tutor_start":
+		e, err := a.practice(ctx, st.Card, st.Topic, cmp.Or(st.Kind, kindConcept))
+		if err != nil {
+			return nil, err
+		}
+		st.Exercise, st.Hints, st.Kind = e.ID, 0, cmp.Or(st.Kind, kindConcept)
+		if e.Plain {
+			toast = "模型暂时不可用，先用卡片原题练"
+		}
+	case "tutor_hint":
+		e, ok := a.exercise(st.Exercise)
+		if !ok {
+			return nil, errors.New("这道题已经过期了，换一道吧")
+		}
+		st.Hints = min(st.Hints+1, len(e.Hints))
+	case "tutor_answer":
+		answer := v["answer"]
+		if strings.TrimSpace(answer) == "" {
+			return nil, errors.New("先写下你的答案；不会的话点「不会，看答案」")
+		}
+		if _, err := a.checkAnswer(ctx, st.Exercise, answer, st.Hints); err != nil {
+			return nil, err
+		}
+	case "reinforce_exercise", "reinforce_topic":
+		var n int
+		var err error
+		if r.Action == "reinforce_exercise" {
+			n, _, err = a.reinforce(ctx, st.Exercise, "", 3)
+		} else {
+			n, _, err = a.reinforce(ctx, "", st.Topic, 3)
+		}
+		if err != nil {
+			return nil, err
+		}
+		st, toast = pageState{Mode: modeDrafts}, fmt.Sprintf("做了 %d 张强化卡，确认一下", n)
+	case "set_topic":
+		topic := cleanTopic(v["topic"])
+		id := st.Card
+		a.mu.Lock()
+		err := a.update(func(s *state) error {
+			c := s.Cards[id]
+			if c == nil {
+				return errors.New("没有这张卡片")
+			}
+			c.Topic = topic
+			return nil
+		})
+		a.mu.Unlock()
+		if err != nil {
+			return nil, err
+		}
+		toast = "知识点改好了"
 	case "open_card":
-		st = pageState{Mode: modeCard, Card: v["id"]}
+		st = pageState{Mode: modeCard, Card: clip(v["id"], 64)}
 	case "pause", "resume", "delete":
 		id := st.Card
 		a.mu.Lock()
@@ -250,6 +381,12 @@ func (a *app) view(ctx context.Context, st pageState, _ string) (*wire.View, err
 		v = a.cardView(st)
 	case modeWrite:
 		v = writeView(st)
+	case modeLogseq:
+		v, err = a.logseqView(ctx, st)
+	case modeWeak:
+		v = a.weakView(st)
+	case modeTutor:
+		v = a.tutorView(st)
 	default:
 		v = a.homeView(st)
 	}
@@ -259,6 +396,7 @@ func (a *app) view(ctx context.Context, st pageState, _ string) (*wire.View, err
 			{Items: []wire.Component{button("返回", "home", nil)}},
 		}}
 	}
+	v.Title = clip(v.Title, wire.StringMost)
 	v.State = ext.EncodeState(a.reviewState(st))
 	return v, nil
 }
@@ -289,13 +427,20 @@ func (a *app) homeView(_ pageState) *wire.View {
 		first = append(first, text(fmt.Sprintf("最近 30 天记得的比例 %.0f%%（%d 次复习）", s.Retention*100, s.RetentionN), wire.TextStyleCaption))
 	}
 	sections := []wire.Section{{Items: first}}
+	if s.Total > 0 {
+		sections = append(sections, wire.Section{Title: "深度辅导", Items: []wire.Component{
+			row("薄弱知识点", a.weakSummary(), "go", map[string]string{"mode": modeWeak}),
+			row("Tutor 练习", "概念辨析、填空、选择、场景变式，一步步提示，答完诊断错因", "go", map[string]string{"mode": modeTutor}),
+		}})
+	}
 	if s.Drafts > 0 {
-		sections = append(sections, wire.Section{Items: []wire.Component{row(fmt.Sprintf("有 %d 张卡片等你确认", s.Drafts), "模型和 NotebookLM 做的卡片，留下的才会排进复习", "go", map[string]string{"mode": modeDrafts})}})
+		sections = append(sections, wire.Section{Items: []wire.Component{row(fmt.Sprintf("有 %d 张卡片等你确认", s.Drafts), "模型、NotebookLM 和辅导做的卡片，留下的才会排进复习", "go", map[string]string{"mode": modeDrafts})}})
 	}
 	sections = append(sections, wire.Section{Title: "加卡片", Items: []wire.Component{
 		row("知识库主题", "从 Persona 记下的知识点做卡片", "go", map[string]string{"mode": modeTopics}),
 		row("Notion", "从分享给 integration 的页面做卡片，折叠块直接成卡", "go", map[string]string{"mode": modeNotion}),
 		row("Obsidian", "导入写了闪卡语法的笔记，或从一条笔记做卡片", "go", map[string]string{"mode": modeObsidian}),
+		row("Logseq", "导入标了 #card 的块，或从一个页面做卡片", "go", map[string]string{"mode": modeLogseq}),
 		row("NotebookLM", "读回 NotebookLM 生成的闪卡和测验", "go", map[string]string{"mode": modeNLM}),
 		row("自己写一张", "", "go", map[string]string{"mode": modeWrite}),
 	}})
@@ -341,7 +486,7 @@ func (a *app) reviewView(st pageState) *wire.View {
 		for _, r := range ratings {
 			btns = append(btns, button(fmt.Sprintf("%s · %s", ratingLabel(r), humanGap(now, pv[r])), "grade", map[string]string{"id": c.ID, "r": ratingKey(r)}))
 		}
-		sections = append(sections, wire.Section{Items: []wire.Component{{Type: wire.ComponentMarkdown, Text: c.Back}}}, wire.Section{Title: "记得怎么样？", Items: btns})
+		sections = append(sections, wire.Section{Items: []wire.Component{answerBlock(c.Back)}}, wire.Section{Title: "记得怎么样？", Items: btns})
 	}
 	sections = append(sections, backSection())
 	return &wire.View{Title: "复习", Sections: sections}
@@ -373,7 +518,7 @@ func (a *app) draftsView(_ pageState) *wire.View {
 	if len(drafts) == 0 {
 		return &wire.View{Title: "待确认", Sections: []wire.Section{{Items: []wire.Component{empty("没有等确认的卡片", "")}}, backSection()}}
 	}
-	sections := []wire.Section{{Footer: "这些卡片是模型或 NotebookLM 做的，可能不准。留下的才会排进复习。", Items: []wire.Component{
+	sections := []wire.Section{{Footer: "这些卡片是模型、NotebookLM 或辅导做的，可能不准。留下的才会排进复习。", Items: []wire.Component{
 		button(fmt.Sprintf("全部留下（%d 张）", len(drafts)), "keep", map[string]string{"all": "1"}),
 		{Type: wire.ComponentButton, Title: "全部不要", Action: &wire.Action{ID: "drop", Values: map[string]string{"all": "1"}, Confirm: "去掉全部待确认的卡片？"}},
 	}}}
@@ -382,7 +527,11 @@ func (a *app) draftsView(_ pageState) *wire.View {
 			sections = append(sections, wire.Section{Items: []wire.Component{text(fmt.Sprintf("还有 %d 张，先处理上面的", len(drafts)-30), wire.TextStyleCaption)}})
 			break
 		}
-		sections = append(sections, wire.Section{Title: sourceLine(d.Source), Items: []wire.Component{
+		title := sourceLine(d.Source)
+		if d.Topic != "" {
+			title += " · " + d.Topic
+		}
+		sections = append(sections, wire.Section{Title: clip(title, wire.StringMost), Items: []wire.Component{
 			text(d.Front, wire.TextStyleBody),
 			text(d.Back, wire.TextStyleSecondary),
 			button("留下", "keep", map[string]string{"id": d.ID}),
@@ -399,8 +548,8 @@ func (a *app) topicsView(ctx context.Context, _ pageState) (*wire.View, error) {
 		return nil, err
 	}
 	var rows []wire.Component
-	for _, t := range items {
-		rows = append(rows, row(t.Name, clip(t.OneLine, 120), "make_topic", map[string]string{"id": t.ID}))
+	for _, t := range items[:min(len(items), maxListRows)] {
+		rows = append(rows, row(cmp.Or(t.Name, t.ID), clip(t.OneLine, 120), "make_topic", map[string]string{"id": t.ID}))
 	}
 	if len(rows) == 0 {
 		rows = []wire.Component{empty("知识库里还没有主题", "Persona 从对话和笔记里整理出主题后，这里就能做卡片。")}
@@ -421,7 +570,7 @@ func (a *app) notionView(ctx context.Context, st pageState) (*wire.View, error) 
 		return nil, err
 	}
 	var rows []wire.Component
-	for _, p := range pages {
+	for _, p := range pages[:min(len(pages), maxListRows)] {
 		rows = append(rows, row(pageTitle(p), "", "make_notion", map[string]string{"id": p.ID}))
 	}
 	if len(rows) == 0 {
@@ -451,8 +600,8 @@ func (a *app) obsidianView(ctx context.Context, st pageState) (*wire.View, error
 		return nil, err
 	}
 	var rows []wire.Component
-	for _, n := range scan.Notes {
-		rows = append(rows, row(n.Title, n.Path, "make_vault", map[string]string{"path": n.Path}))
+	for _, n := range scan.Notes[:min(len(scan.Notes), maxListRows)] {
+		rows = append(rows, row(cmp.Or(n.Title, n.Path), n.Path, "make_vault", map[string]string{"path": n.Path}))
 	}
 	if len(rows) == 0 {
 		rows = []wire.Component{empty("没找到笔记", "")}
@@ -482,6 +631,9 @@ func (a *app) nlmView(ctx context.Context, st pageState) (*wire.View, error) {
 		return nil, err
 	}
 	var rows []wire.Component
+	if len(items) > maxListRows {
+		items = items[:maxListRows]
+	}
 	if st.Notebook == "" {
 		for _, it := range items {
 			rows = append(rows, row(it.Title, "", "nlm_open", map[string]string{"id": it.ID, "title": it.Title}))
@@ -498,7 +650,7 @@ func (a *app) nlmView(ctx context.Context, st pageState) (*wire.View, error) {
 	if len(rows) == 0 {
 		rows = []wire.Component{empty("这个笔记本还没有闪卡或测验", "先在 NotebookLM 里生成一份，再回来读。")}
 	}
-	return &wire.View{Title: st.NBTitle, Sections: []wire.Section{
+	return &wire.View{Title: fit(st.NBTitle, "NotebookLM"), Sections: []wire.Section{
 		{Footer: "点一份读回来，卡片先进待确认。", Items: rows},
 		{Items: []wire.Component{button("其他笔记本", "nlm_back", nil)}}, backSection()}}, nil
 }
@@ -548,8 +700,9 @@ func (a *app) cardView(st pageState) *wire.View {
 	}
 	items := []wire.Component{
 		text(cp.Front, wire.TextStyleHeadline),
-		{Type: wire.ComponentMarkdown, Text: cp.Back},
+		answerBlock(cp.Back),
 		text(cardWhen(&cp, now, loc), wire.TextStyleCaption),
+		text(fmt.Sprintf("知识点：%s · 掌握度 %s", topicOf(&cp), a.cardMasteryLabel(&cp)), wire.TextStyleCaption),
 	}
 	if cp.FSRS.Reps > 0 {
 		items = append(items, text(fmt.Sprintf("复习过 %d 次，忘过 %d 次", cp.FSRS.Reps, cp.FSRS.Lapses), wire.TextStyleCaption))
@@ -562,7 +715,12 @@ func (a *app) cardView(st pageState) *wire.View {
 		pause = button("恢复复习", "resume", nil)
 	}
 	del := wire.Component{Type: wire.ComponentButton, Title: "删除", Action: &wire.Action{ID: "delete", Confirm: "删除这张卡片和它的复习进度？"}}
-	return &wire.View{Title: "卡片", Sections: []wire.Section{{Items: items}, {Items: []wire.Component{pause, del}},
+	topic := []wire.Component{
+		{Type: wire.ComponentField, Name: "topic", Label: "知识点", Kind: wire.FieldKindText, Value: clip(cp.Topic, maxTopic), Placeholder: clip(topicOf(&cp), maxTopic)},
+		{Type: wire.ComponentButton, Title: "改知识点", Action: &wire.Action{ID: "set_topic", Submit: true}},
+	}
+	practice := button("练这张卡", "go", map[string]string{"mode": modeTutor, "card": cp.ID})
+	return &wire.View{Title: "卡片", Sections: []wire.Section{{Items: items}, {Items: []wire.Component{practice, pause, del}}, {Footer: "空着就归到来源的标题下。", Items: topic},
 		{Items: []wire.Component{button("返回", "go", map[string]string{"mode": modeCards})}}}}
 }
 
