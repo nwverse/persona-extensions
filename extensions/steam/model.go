@@ -6,6 +6,7 @@ const (
 	problemSetup        problem = "not_configured"
 	problemInvalidID    problem = "invalid_steam_id"
 	problemCountry      problem = "invalid_country_code"
+	problemMode         problem = "invalid_auth_mode"
 	problemKey          problem = "api_key_rejected"
 	problemPrivate      problem = "private_profile"
 	problemGameDetails  problem = "game_details_unavailable"
@@ -19,6 +20,12 @@ const (
 	problemAuthPending  problem = "steam_sign_in_pending"
 	problemAuthRefused  problem = "steam_sign_in_refused"
 	problemAuthExpired  problem = "steam_session_expired"
+	problemAuthRequired problem = "steam_sign_in_required"
+	problemAuthTimeout  problem = "steam_qr_expired"
+	problemAuthLoad     problem = "steam_session_load_failed"
+	problemAuthSave     problem = "steam_session_save_failed"
+	problemAuthDelete   problem = "steam_session_delete_failed"
+	problemAuthClearing problem = "steam_sign_out_pending"
 
 	// HTTP outcomes interpreted at the endpoint that knows what they mean.
 	problemDenied  problem = "access_denied"

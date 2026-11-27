@@ -34,24 +34,25 @@ type steamData struct {
 }
 
 func newSteamData(cfg config, key, dir string, httpClient *http.Client, now func() time.Time) *steamData {
-	cfg, setup := cfg.normalized()
 	key = strings.TrimSpace(key)
-	if setup == "" {
-		switch {
-		case key == "":
-			setup = problemSetup
-		case cfg.SteamID == key || strings.ContainsAny(key, "\r\n\x00"):
-			setup = problemKey
+	cfg, setup := cfg.normalized(key)
+	if cfg.AuthMode == modeQR || setup != "" {
+		if setup == "" {
+			setup = problemAuthRequired
 		}
+		return &steamData{config: cfg, setup: setup, client: steamClient{key: key}}
 	}
+	return newAccountData(cfg, steamClient{http: httpClient, key: key}, dir, now)
+}
+
+func newAccountData(cfg config, client steamClient, dir string, now func() time.Time) *steamData {
 	var cacheDir string
 	if dir != "" {
 		cacheDir = filepath.Join(dir, "steam-cache-v1")
 	}
 	return &steamData{
-		client:   steamClient{http: httpClient, key: key},
+		client:   client,
 		config:   cfg,
-		setup:    setup,
 		vanity:   newSlot[string](cacheDir, "vanity", now),
 		profile:  newSlot[player](cacheDir, "profile", now),
 		library:  newSlot[gameList](cacheDir, "library", now),

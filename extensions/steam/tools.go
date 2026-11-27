@@ -106,7 +106,7 @@ func (a *app) connector(ctx context.Context, method string, params json.RawMessa
 	}
 	switch method {
 	case "status":
-		return a.status(), nil
+		return a.status(ctx), nil
 	case "tools.list":
 		return wire.ConnectorTools{Tools: tools}, nil
 	case "tools.call":
@@ -116,22 +116,39 @@ func (a *app) connector(ctx context.Context, method string, params json.RawMessa
 	}
 }
 
-func (a *app) status() wire.ConnectorStatus {
+func (a *app) keyStatusIssue() problem {
+	if p := a.lastAccount.Load(); p != nil {
+		// Keep the read tools callable during outages and for private profiles.
+		if p.Issue == problemInvalidID || p.Issue == problemKey {
+			return p.Issue
+		}
+	}
+	return a.setup
+}
+
+func (a *app) status(ctx context.Context) wire.ConnectorStatus {
 	out := wire.ConnectorStatus{State: wire.ConnectorStateOk, Via: extensionID}
-	issue := a.setup
+	if a.qr != nil {
+		st, _ := a.Status(ctx)
+		if st.State != wire.AuthStateSignedIn {
+			out.State, out.Error = wire.ConnectorStateNotSignedIn, st.Message
+			if st.State == wire.AuthStatePending {
+				out.Error = textFor(a.locale).message(problemAuthPending, false)
+			}
+		}
+		out.Account = st.Account
+		return out
+	}
+	issue := a.keyStatusIssue()
 	if p := a.lastAccount.Load(); p != nil {
 		out.LastSync = p.At
 		if p.Data != nil {
 			out.Account = p.Data.Name
 		}
-		// Keep the read tools callable during outages and for private profiles.
-		if p.Issue == problemInvalidID || p.Issue == problemKey {
-			issue = p.Issue
-		}
 	}
 	switch issue {
 	case "":
-	case problemSetup, problemInvalidID, problemCountry:
+	case problemSetup, problemInvalidID, problemCountry, problemMode:
 		out.State = wire.ConnectorStateNotConfigured
 	case problemKey:
 		out.State = wire.ConnectorStateNotSignedIn

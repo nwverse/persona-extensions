@@ -136,10 +136,22 @@ func cleanText(s string, maxRunes int) string {
 }
 
 func (c steamClient) text(s string) string {
-	if c.key != "" {
-		s = strings.ReplaceAll(s, c.key, "[redacted]")
+	return cleanText(redactCredentials(s, c.key), nameRunes)
+}
+
+func redactCredentials(s string, secrets ...string) string {
+	lower := strings.ToLower(s)
+	for _, marker := range []string{"https://s.team/q/", "access_token=", "refresh_token=", "request_id="} {
+		if strings.Contains(lower, marker) {
+			return "[redacted]"
+		}
 	}
-	return cleanText(s, nameRunes)
+	for _, secret := range secrets {
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "[redacted]")
+		}
+	}
+	return s
 }
 
 func (c steamClient) resolve(ctx context.Context, name string) (*string, problem) {

@@ -44,8 +44,21 @@ func TestManifestAndTranslations(t *testing.T) {
 		card.ID != summaryID || card.Placement != wire.PlacementOverviewCard || card.Opens != page.ID {
 		t.Fatal("navigation and card declarations do not match")
 	}
-	if len(m.Secrets) != 1 || m.Secrets[0].Name != keyName || !m.Secrets[0].Required {
-		t.Fatal("the Hub must deliver a required secret")
+	if m.Auth == nil || m.Auth.Title == "" || len(m.Secrets) != 1 || m.Secrets[0].Name != keyName || m.Secrets[0].Required {
+		t.Fatal("the Hub must offer sign-in with an optional API key")
+	}
+	var cfg struct {
+		Required   []string                   `json:"required"`
+		Properties map[string]json.RawMessage `json:"properties"`
+	}
+	var mode struct {
+		Type    string          `json:"type"`
+		Enum    []string        `json:"enum"`
+		Default json.RawMessage `json:"default"`
+	}
+	if json.Unmarshal(m.Configuration, &cfg) != nil || json.Unmarshal(cfg.Properties["auth_mode"], &mode) != nil ||
+		len(cfg.Required) != 0 || mode.Type != "string" || !slices.Equal(mode.Enum, []string{modeQR, modeWebAPIKey}) || mode.Default != nil {
+		t.Fatal("mode selection must preserve the runtime default and let both modes start")
 	}
 
 	for _, lang := range []string{"en", "zh-Hans"} {
@@ -68,7 +81,7 @@ func TestManifestAndTranslations(t *testing.T) {
 			translation.UI[card.ID] == "" || translation.Groups[page.Group.ID] == "" {
 			t.Errorf("incomplete %s manifest translations", lang)
 		}
-		for _, key := range []string{"steam_id", "country_code"} {
+		for _, key := range []string{"auth_mode", "steam_id", "country_code"} {
 			if f := translation.Configuration[key]; f.Title == "" || f.Description == "" {
 				t.Errorf("missing %s translation for %s", lang, key)
 			}
@@ -403,7 +416,7 @@ func TestInvalidSteamConfiguration(t *testing.T) {
 		{fixtureID, "ZZ", problemCountry},
 		{fixtureID, "gb", ""},
 	} {
-		c, issue := (config{SteamID: test.id, CountryCode: test.country}).normalized()
+		c, issue := (config{AuthMode: modeWebAPIKey, SteamID: test.id, CountryCode: test.country}).normalized("synthetic-key")
 		if issue != test.issue || (issue == "" && c.CountryCode != "GB") {
 			t.Errorf("configuration issue=%q country=%q, expected issue %q", issue, c.CountryCode, test.issue)
 		}

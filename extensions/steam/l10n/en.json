@@ -1,10 +1,15 @@
 {
   "name": "Steam",
-  "description": "See Steam player status, two weeks of playtime, your game library, achievement progress and regional prices for your public wishlist in Persona. Access is read-only. The Hub encrypts your Steam Web API key.",
+  "description": "Sign in by scanning with the Steam Mobile App to read player status, playtime, library, achievements and regional wishlist prices in Persona. A Web API key is also available for public data.",
   "configuration": {
+    "auth_mode": {
+      "title": "Sign-in method",
+      "description": "Defaults to Steam Mobile QR. Existing settings with a player ID and Web API key continue to use the key.",
+      "choices": {"qr": "Steam Mobile QR", "web_api_key": "Web API key"}
+    },
     "steam_id": {
       "title": "Steam player ID",
-      "description": "Enter your 17-digit SteamID64 or the vanity name from your Steam profile URL."
+      "description": "For Web API key mode. Enter your 17-digit SteamID64 or the vanity name from your Steam profile URL."
     },
     "country_code": {
       "title": "Store country or region",
@@ -46,7 +51,7 @@
   "secrets": {
     "steam_api_key": {
       "title": "Steam Web API key",
-      "description": "Get a key from your Steam Web API settings. The Hub encrypts it and sends it only to api.steampowered.com."
+      "description": "For Web API key mode. The Hub encrypts the key, and the extension sends it only to api.steampowered.com."
     }
   },
   "ui": {"steam": "Steam", "steam-summary": "Steam overview"},

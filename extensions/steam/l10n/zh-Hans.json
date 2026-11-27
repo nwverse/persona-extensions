@@ -1,10 +1,15 @@
 {
   "name": "Steam",
-  "description": "在 Persona 查看 Steam 玩家状态、近两周游玩记录、游戏库、成就进度和公开愿望单的地区价格。只读访问，Steam Web API 密钥加密保存在 Hub。",
+  "description": "用 Steam 手机 App 扫码登录，在 Persona 中只读查看玩家状态、游玩记录、游戏库、成就和愿望单地区价格。也可用 Web API 密钥读取公开数据。",
   "configuration": {
+    "auth_mode": {
+      "title": "登录方式",
+      "description": "默认使用 Steam 手机 App 扫码。已配置玩家标识和 Web API 密钥的安装会沿用密钥模式。",
+      "choices": {"qr": "Steam 手机 App 扫码", "web_api_key": "Web API 密钥"}
+    },
     "steam_id": {
       "title": "Steam 玩家标识",
-      "description": "填写 17 位 SteamID64，或 Steam 个人资料自定义链接中的名称。"
+      "description": "仅用于 Web API 密钥模式。填写 17 位 SteamID64，或 Steam 个人资料自定义链接中的名称。"
     },
     "country_code": {
       "title": "商店国家或地区",
@@ -46,7 +51,7 @@
   "secrets": {
     "steam_api_key": {
       "title": "Steam Web API 密钥",
-      "description": "从 Steam Web API 设置获取密钥。Hub 会加密保存密钥，仅发送给 api.steampowered.com。"
+      "description": "仅用于 Web API 密钥模式。Hub 会加密保存密钥，扩展仅将其发送给 api.steampowered.com。"
     }
   },
   "ui": {

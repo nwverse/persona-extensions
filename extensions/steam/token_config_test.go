@@ -19,8 +19,8 @@ func fixtureTokenConfig(t *testing.T, fields string) TokenConfig {
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
 		t.Fatal(err)
 	}
-	cfg, issue := cfg.normalized()
-	if issue != "" || cfg.SteamID != fixtureID || cfg.CountryCode != "GB" {
+	cfg, issue := cfg.normalized("fixture-web-api-key")
+	if issue != "" || cfg.AuthMode != modeWebAPIKey || cfg.SteamID != fixtureID || cfg.CountryCode != "GB" {
 		t.Fatalf("legacy account and country settings failed: %+v, issue=%s", cfg, issue)
 	}
 	return cfg.TokenConfig

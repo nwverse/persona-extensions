@@ -14,7 +14,7 @@ import (
 
 const (
 	extensionID = "steam"
-	version     = "0.1.0"
+	version     = "0.2.0"
 	summaryID   = "steam-summary"
 )
 
@@ -25,6 +25,7 @@ var manifest = pluginkit.PackagedManifest(authorManifest)
 
 type app struct {
 	*steamData
+	qr     *qrAuth
 	locale string
 }
 
@@ -34,9 +35,10 @@ func main() {
 
 func program(client *http.Client, now func() time.Time) ext.Program {
 	a := &app{}
+	client = steamHTTP(client.Transport, client.Timeout)
 	return ext.Program{
 		ID: extensionID, Version: version, Manifest: manifest,
-		Init: func(_ context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
+		Init: func(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]any, error) {
 			var cfg config
 			if in.Config(&cfg) != nil {
 				return nil, invalid("Invalid Steam configuration.")
@@ -50,9 +52,12 @@ func program(client *http.Client, now func() time.Time) ext.Program {
 			}
 			a.steamData = newSteamData(cfg, in.Secrets[keyName], dir, client, now)
 			a.locale = in.Hub.Locale
+			if a.setup == problemAuthRequired {
+				a.qr = newQRAuth(ctx, hub, client, now)
+			}
 			return nil, nil
 		},
-		Namespaces: map[string]ext.Handler{"connector": a.connector},
+		Namespaces: map[string]ext.Handler{"connector": a.connector, "auth": ext.AuthHandler(a)},
 		UI: map[string]ext.Page{
 			extensionID: {Render: a.render, Action: a.action},
 			summaryID:   {Render: a.card},

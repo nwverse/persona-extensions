@@ -15,6 +15,7 @@ type text struct {
 	noPrice, priceUnchecked                                             string
 	achievements, noAchievements, unlocked, game, playing, unknown      string
 	minutes, hoursMinutes, discount, atLeast, stale                     string
+	qrHint, keyMode, keySignOut                                         string
 	states                                                              map[string]string
 	problems                                                            map[problem]string
 }
@@ -34,6 +35,9 @@ var english = text{
 	achievements: "Achievements", noAchievements: "Steam lists no achievements for this game.", unlocked: "%d of %d unlocked",
 	game: "App %d", playing: "Playing %s", unknown: "Status unavailable",
 	minutes: "%d min", hoursMinutes: "%d h %d min", discount: "%d%% off", atLeast: "%d+", stale: "Showing cached data.",
+	qrHint:     "Open Steam Guard in the Steam Mobile App, scan the QR code, and approve the sign-in on your phone.",
+	keyMode:    "Web API key mode is managed in Steam's extension settings. Select Steam Mobile QR there to sign in by scanning.",
+	keySignOut: "To disconnect Web API key mode, clear the saved key in Steam's extension settings.",
 	states: map[string]string{
 		"offline": "Offline", "online": "Online", "busy": "Busy", "away": "Away",
 		"snooze": "Snoozing", "looking_to_trade": "Looking to trade", "looking_to_play": "Looking to play", "invisible": "Invisible",
@@ -42,6 +46,7 @@ var english = text{
 		problemSetup:        "Enter your Steam player ID and Web API key in Settings › Extensions › Steam.",
 		problemInvalidID:    "Steam could not find this player. Check the SteamID64 or profile vanity name.",
 		problemCountry:      "Enter an assigned two-letter ISO 3166-1 country code for the Steam Store.",
+		problemMode:         "Choose Steam Mobile QR or Web API key in Steam's extension settings.",
 		problemKey:          "Steam rejected the Web API key. Check the saved secret in Settings › Extensions › Steam.",
 		problemPrivate:      "This Steam profile is private. Make the profile public to see its activity.",
 		problemGameDetails:  "Steam did not share these games. Check that Game details is public in Steam privacy settings.",
@@ -52,6 +57,15 @@ var english = text{
 		problemNetwork:      "Steam is temporarily unavailable. Try again in a moment.",
 		problemResponse:     "Steam returned an unexpected response. Try again in a moment.",
 		problemCanceled:     "The Steam request was canceled.",
+		problemAuthRequired: "Sign in with the Steam Mobile App in Settings › Extensions › Steam.",
+		problemAuthPending:  "Scan the QR code and approve the sign-in on your phone.",
+		problemAuthRefused:  "Steam ended the sign-in request. Start a new QR sign-in.",
+		problemAuthTimeout:  "The Steam QR sign-in expired. Start a new QR sign-in.",
+		problemAuthExpired:  "Your Steam sign-in expired. Scan a new QR code to sign in again.",
+		problemAuthLoad:     "Persona could not restore the saved Steam sign-in. Sign in with a new QR code.",
+		problemAuthSave:     "Persona could not save the Steam sign-in. Try again when the Hub's secret store is available.",
+		problemAuthDelete:   "Persona could not delete the saved Steam sign-in. Try signing out again.",
+		problemAuthClearing: "Persona is clearing the saved Steam sign-in. Try again in a moment.",
 	},
 }
 
@@ -70,6 +84,9 @@ var chinese = text{
 	achievements: "成就", noAchievements: "Steam 没有列出这款游戏的成就。", unlocked: "已解锁 %d / %d",
 	game: "应用 %d", playing: "游戏中 · %s", unknown: "状态不可用",
 	minutes: "%d 分钟", hoursMinutes: "%d 小时 %d 分钟", discount: "优惠 %d%%", atLeast: "%d+", stale: "当前显示缓存数据。",
+	qrHint:     "在 Steam 手机 App 中打开 Steam 令牌，扫描二维码，并在手机上批准登录。",
+	keyMode:    "Web API 密钥在 Steam 扩展设置中管理。如需扫码，请在设置中选择 Steam 手机 App 扫码。",
+	keySignOut: "如需断开 Web API 密钥模式，请在 Steam 扩展设置中清除已保存的密钥。",
 	states: map[string]string{
 		"offline": "离线", "online": "在线", "busy": "忙碌", "away": "离开",
 		"snooze": "暂离", "looking_to_trade": "想交易", "looking_to_play": "想玩游戏", "invisible": "隐身",
@@ -78,6 +95,7 @@ var chinese = text{
 		problemSetup:        "请在「设置 › 扩展 › Steam」填写玩家标识和 Web API 密钥。",
 		problemInvalidID:    "Steam 未找到该玩家，请检查 SteamID64 或个人资料自定义名称。",
 		problemCountry:      "请填写有效的两位 ISO 3166-1 商店国家或地区代码。",
+		problemMode:         "请在 Steam 扩展设置中选择手机 App 扫码或 Web API 密钥。",
 		problemKey:          "Steam 拒绝了 Web API 密钥，请在「设置 › 扩展 › Steam」检查已保存的密钥。",
 		problemPrivate:      "此 Steam 个人资料为私密状态。公开资料后可查看游戏活动。",
 		problemGameDetails:  "Steam 未共享这些游戏。请检查 Steam 隐私设置中的「游戏详情」是否公开。",
@@ -88,6 +106,15 @@ var chinese = text{
 		problemNetwork:      "Steam 暂时不可用，请稍后重试。",
 		problemResponse:     "Steam 返回了无法识别的数据，请稍后重试。",
 		problemCanceled:     "Steam 请求已取消。",
+		problemAuthRequired: "请在「设置 › 扩展 › Steam」使用 Steam 手机 App 扫码登录。",
+		problemAuthPending:  "请扫描二维码，并在手机上批准登录。",
+		problemAuthRefused:  "Steam 已结束此次登录请求，请重新发起扫码登录。",
+		problemAuthTimeout:  "Steam 扫码登录已超时，请重新发起扫码登录。",
+		problemAuthExpired:  "Steam 登录已失效，请重新扫码登录。",
+		problemAuthLoad:     "Persona 无法恢复已保存的 Steam 登录，请重新扫码登录。",
+		problemAuthSave:     "Persona 无法保存 Steam 登录，请在 Hub 密钥存储可用后重试。",
+		problemAuthDelete:   "Persona 无法删除已保存的 Steam 登录，请重试登出。",
+		problemAuthClearing: "Persona 正在清除已保存的 Steam 登录，请稍后重试。",
 	},
 }
 
