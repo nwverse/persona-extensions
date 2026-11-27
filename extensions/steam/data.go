@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -19,14 +20,15 @@ const (
 )
 
 type steamData struct {
-	client  steamClient
-	config  config
-	setup   problem
-	vanity  *cacheSlot[string]
-	profile *cacheSlot[player]
-	library *cacheSlot[gameList]
-	recent  *cacheSlot[gameList]
-	wishes  *cacheSlot[wishList]
+	client      steamClient
+	config      config
+	setup       problem
+	vanity      *cacheSlot[string]
+	profile     *cacheSlot[player]
+	library     *cacheSlot[gameList]
+	recent      *cacheSlot[gameList]
+	wishes      *cacheSlot[wishList]
+	lastAccount atomic.Pointer[reading[player]]
 }
 
 func newSteamData(cfg config, key, dir string, httpClient *http.Client, now func() time.Time) *steamData {
@@ -55,10 +57,15 @@ func newSteamData(cfg config, key, dir string, httpClient *http.Client, now func
 	}
 }
 
-func (d *steamData) account(ctx context.Context, ttl time.Duration, refresh bool) reading[player] {
+func (d *steamData) account(ctx context.Context, ttl time.Duration, refresh bool) (out reading[player]) {
 	if d.setup != "" {
 		return reading[player]{Issue: d.setup}
 	}
+	defer func() {
+		if out.Issue != problemCanceled {
+			d.lastAccount.Store(&out)
+		}
+	}()
 	id := d.config.SteamID
 	if !validSteamID(id) {
 		r := d.vanity.read(ctx, id, profileTTL, refresh, func(ctx context.Context) (*string, problem) {
