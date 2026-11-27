@@ -82,6 +82,9 @@ func (a *app) init(_ context.Context, in *ext.Init, hub *ext.Hub) (map[string]an
 	if a.nodes == nil && hub != nil {
 		a.nodes = hubNodeCaller(hub)
 	}
+	a.api = nil
+	a.lastErr, a.errKind, a.errAt = nil, 0, time.Time{}
+	a.rateErr, a.rateAt = nil, time.Time{}
 	a.forgetMeta() // a new start keeps nothing (locks: mu, then metaMu; never the other way)
 	return nil, nil
 }
@@ -292,13 +295,31 @@ func (a *app) listItems(ctx context.Context, vaultID string) ([]itemInfo, error)
 	return a.readItems(ctx, vaultID, false)
 }
 
+const maxMetaCacheEntries = 128
+
+func putBounded[T any](m map[string]kept[T], key string, val kept[T]) {
+	if _, exists := m[key]; !exists && len(m) >= maxMetaCacheEntries {
+		var oldestKey string
+		var oldestAt time.Time
+		for k, entry := range m {
+			if oldestKey == "" || entry.at.Before(oldestAt) {
+				oldestKey, oldestAt = k, entry.at
+			}
+		}
+		if oldestKey != "" {
+			delete(m, oldestKey)
+		}
+	}
+	m[key] = val
+}
+
 func (a *app) readItems(ctx context.Context, vaultID string, again bool) ([]itemInfo, error) {
 	its, err := cachedRead(a, again, func(c *metaCache) (kept[[]itemInfo], bool) { k, ok := c.items[vaultID]; return k, ok },
 		func(c *metaCache, k kept[[]itemInfo]) {
 			if c.items == nil {
 				c.items = map[string]kept[[]itemInfo]{}
 			}
-			c.items[vaultID] = k
+			putBounded(c.items, vaultID, k)
 		},
 		func() ([]itemInfo, error) {
 			api, err := a.client(ctx)
@@ -332,7 +353,7 @@ func (a *app) readItem(ctx context.Context, vaultID, itemID string, again bool) 
 			if c.details == nil {
 				c.details = map[string]kept[itemDetail]{}
 			}
-			c.details[key] = k
+			putBounded(c.details, key, k)
 		},
 		func() (itemDetail, error) {
 			api, err := a.client(ctx)

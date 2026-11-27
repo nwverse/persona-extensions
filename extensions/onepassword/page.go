@@ -39,7 +39,8 @@ func (a *app) view(ctx context.Context, r *ext.UIRequest) *wire.View {
 	t := textsFor(r.Locale)
 	v := &wire.View{Title: t.connection}
 	a.mu.Lock()
-	configured := a.token != "" || a.machine != ""
+	token := a.token
+	configured := token != "" || a.machine != ""
 	machine, nodes := a.machine, a.nodes
 	a.mu.Unlock()
 	if !configured {
@@ -114,7 +115,14 @@ func (a *app) view(ctx context.Context, r *ext.UIRequest) *wire.View {
 			list.Items = append(list.Items, wire.Component{Type: wire.ComponentText, Text: fmt.Sprintf(t.moreVaults, len(vaults)-mostVaultRows), Style: wire.TextStyleSecondary})
 			break
 		}
-		row := wire.Component{Type: wire.ComponentRow, Title: clip(redact(vault.Title, ""), 200), Icon: "folder"}
+		title := strings.TrimSpace(redact(vault.Title, token))
+		if title == "" {
+			title = strings.TrimSpace(redact(vault.ID, token))
+		}
+		if title == "" {
+			title = "-"
+		}
+		row := wire.Component{Type: wire.ComponentRow, Title: clip(title, 200), Icon: "folder"}
 		if vault.Items >= 0 { // op on a computer may not say
 			row.Subtitle = fmt.Sprintf(t.items, vault.Items)
 		}
@@ -145,8 +153,12 @@ func (a *app) usesSection(t *texts, tz string) wire.Section {
 			parts = append(parts, by)
 		}
 		parts = append(parts, u.At.In(loc).Format("2006-01-02 15:04"))
-		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentRow, Title: clip(redact(u.Reference, token), 120),
-			Subtitle: strings.Join(parts, " · "), Icon: "lock"})
+		refTitle := strings.TrimSpace(redact(u.Reference, token))
+		if refTitle == "" {
+			refTitle = "-"
+		}
+		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentRow, Title: clip(refTitle, 120),
+			Subtitle: clip(redact(strings.Join(parts, " · "), token), 600), Icon: "lock"})
 	}
 	if len(sec.Items) == 0 {
 		sec.Items = []wire.Component{{Type: wire.ComponentEmpty, Title: t.noUses, Detail: t.noUsesDetail, Icon: "lock"}}
