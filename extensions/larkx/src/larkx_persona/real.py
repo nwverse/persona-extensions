@@ -771,45 +771,103 @@ class RealBackend:
         asyncio.run(until_stopped())
 
     def send(self, chat, text, root, mentions=()):
-        # The locked LarkAgentX sends every word in one TEXT element. Keep that path unless the caller supplied
-        # explicit mention ids; a plain @name is never enough to mention somebody.
-        if not mentions:
+        # Keep LarkAgentX's single-TEXT fast path when there are neither explicit mentions nor Markdown formatting.
+        blocks, inner_text, has_rich, has_markdown = parse_markdown_rich_text(text, mentions)
+        if not has_rich:
             return self._client.send_msg(text, chat, root_id=root)
-        parts = mention_parts(text, mentions)
         from larkx.proto import builders, ids
         from larkx.proto import lark_all_pb2 as L
         from larkx.proto import proto_pb2 as P
         from larkx.proto.ids import generate_long_request_id
-        req = L.messages.PutMessageRequest()
-        req.type = 4
-        req.chatId = str(chat)
-        req.cid = ids.generate_request_cid()
-        req.isNotified = True
-        req.version = 1
-        if root:
-            req.rootId = req.parentId = str(root)
-            if not self._client.is_thread_chat(chat):
-                req.isReplyInThread = True
-        notified = set()
-        for kind, value in parts:
-            element_id = ids.generate_request_cid()
-            element = req.content.richText.elements.dictionary[element_id]
-            if kind == "at":
-                element.tag = 5
-                element.property = P.AtProperty(userId=value["id"], content="@" + value["name"]).SerializeToString()
-                req.content.richText.atIds.append(element_id)
-                # atUserIdList (14) exists in the full generated request, not in the older compact proto.proto.
-                user_id = int(value["id"])
-                if user_id not in notified:
-                    req.atUserIdList.append(user_id)
-                    notified.add(user_id)
-            else:
-                element.tag = 1
-                element.property = P.TextProperty(content=value).SerializeToString()
-            req.content.richText.elementIds.append(element_id)
-        req.content.richText.innerText = text
-        content = self._client._gateway_post(builders.wrap_packet(5, req, generate_long_request_id()))
-        return builders.decode_put_message_response(content)
+
+        def decode_error_hint(raw):
+            if not raw:
+                return "empty"
+            out = []
+            try:
+                text_raw = raw[:240].decode("utf-8", "ignore").strip()
+                if text_raw.startswith("{"):
+                    out.append("body=%s" % text_raw.replace("\n", " ")[:160])
+            except Exception:
+                pass
+            try:
+                pkt = P.Packet()
+                pkt.ParseFromString(raw)
+                out.append("pkt_status=%d" % pkt.status)
+                for blob in (pkt.payload, raw):
+                    if not blob:
+                        continue
+                    err = L.errors.LarkError()
+                    err.ParseFromString(blob)
+                    if err.code or err.message or err.userErrMessage:
+                        out.append("err_code=%d err_type=%d err_msg=%s" % (
+                            err.code, err.type, (err.message or err.userErrMessage)[:120].replace("\n", " "),
+                        ))
+                        break
+            except Exception:
+                pass
+            if len(out) <= 1:
+                out.append("len=%d head=%s" % (len(raw), raw[:24].hex()))
+            return " ".join(out)
+
+        def build_and_post(msg_type, use_blocks, use_inner):
+            req = L.messages.PutMessageRequest()
+            req.type = msg_type
+            req.chatId = str(chat)
+            req.cid = ids.generate_request_cid()
+            req.isNotified = True
+            req.version = 1
+            if msg_type == 2:
+                req.content.title = ""
+            if root:
+                req.rootId = req.parentId = str(root)
+                if not self._client.is_thread_chat(chat):
+                    req.isReplyInThread = True
+            tags = _populate_rich_text(req, use_blocks, use_inner, L, P, ids, as_post=(msg_type == 2))
+            try:
+                content = self._client._gateway_post(builders.wrap_packet(5, req, generate_long_request_id()))
+            except Exception as e:
+                resp = getattr(e, "response", None)
+                if resp is not None:
+                    hint = decode_error_hint(getattr(resp, "content", b""))
+                    return None, getattr(resp, "status_code", -1), True, tags, hint
+                raise
+            pkt = P.Packet()
+            pkt.ParseFromString(content)
+            msg_id = builders.decode_put_message_response(content)
+            hint = decode_error_hint(content) if not msg_id else ""
+            return msg_id, pkt.status, (pkt.status != 0), tags, hint
+
+        msg_type = 2 if has_markdown else 4
+        msg_id, status, rejected, tags, hint = build_and_post(msg_type, blocks, inner_text)
+        if msg_id:
+            return msg_id
+        print("larkx: send rejected: type=%d status=%s tags=%s %s" % (msg_type, status, tags, hint), file=sys.stderr, flush=True)
+        # If Feishu explicitly rejected the POST rich-text payload, nothing was delivered:
+        # 1) try full rich-text blocks as TEXT (type=4),
+        # 2) then inline-only TEXT (type=4 with bold/italic/links/@mentions),
+        # 3) finally plain TEXT (preserving @mentions).
+        if has_markdown and rejected:
+            t4_id, t4_status, t4_rejected, t4_tags, t4_hint = build_and_post(4, blocks, inner_text)
+            if t4_id:
+                return t4_id
+            print("larkx: text-blocks fallback rejected: type=4 status=%s tags=%s %s" % (t4_status, t4_tags, t4_hint), file=sys.stderr, flush=True)
+            if not t4_rejected:
+                return t4_id
+            inline_blocks = _flatten_to_inline_blocks(blocks)
+            fb_id, fb_status, fb_rejected, fb_tags, fb_hint = build_and_post(4, inline_blocks, inner_text)
+            if fb_id:
+                return fb_id
+            print("larkx: inline fallback rejected: type=4 status=%s tags=%s %s" % (fb_status, fb_tags, fb_hint), file=sys.stderr, flush=True)
+            if fb_rejected:
+                if not mentions:
+                    return self._client.send_msg(text, chat, root_id=root)
+                plain_blocks = [("line", mention_parts(text, mentions))]
+                p_id, p_status, _, p_tags, p_hint = build_and_post(4, plain_blocks, text)
+                if not p_id:
+                    print("larkx: plain fallback rejected: type=4 status=%s tags=%s %s" % (p_status, p_tags, p_hint), file=sys.stderr, flush=True)
+                return p_id
+        return msg_id
 
 
     def create_chat(self, user):
@@ -920,8 +978,7 @@ def mute_state(info):
     return states[0] if states and len(set(states)) == 1 else "unknown"
 
 
-def mention_parts(text, mentions):
-    """Split only exact @name occurrences of explicit, numeric user ids; longest names win at the same position."""
+def _validate_mentions(mentions):
     if not isinstance(mentions, (list, tuple)) or len(mentions) > 100:
         raise ValueError("mentions must be a list of at most 100 people")
     targets = []
@@ -941,7 +998,12 @@ def mention_parts(text, mentions):
     if len({name for _, name in targets}) != len(targets):
         raise ValueError("two mentioned people cannot have the same name")
     targets.sort(key=lambda target: len(target[1]), reverse=True)
-    import re
+    return targets
+
+
+def mention_parts(text, mentions):
+    """Split only exact @name occurrences of explicit, numeric user ids; longest names win at the same position."""
+    targets = _validate_mentions(mentions)
     pattern = re.compile("(" + "|".join("@" + re.escape(name) for _, name in targets) + r")(?![\w-])") if targets else None
     by_name = {name: {"id": user_id, "name": name} for user_id, name in targets}
     out = []
@@ -949,7 +1011,340 @@ def mention_parts(text, mentions):
         if not part:
             continue
         out.append(("at", by_name[part[1:]]) if part.startswith("@") and part[1:] in by_name else ("text", part))
-    if not any(kind == "at" for kind, _ in out):
+    if targets and not any(kind == "at" for kind, _ in out):
         raise ValueError("write @name in text for every person to mention")
     return out
+
+
+_FENCE_RE = re.compile(r"^```([a-zA-Z0-9_+#-]*)\s*$")
+_QUOTE_RE = re.compile(r"^>\s?(.*)$")
+_UL_RE = re.compile(r"^[-*]\s+(.+)$")
+_OL_RE = re.compile(r"^(\d+)\.\s+(.+)$")
+_HEADING_RE = re.compile(r"^#{1,6}\s+(.+)$")
+_INLINE_RE = re.compile(
+    r"`([^`\n]+)`"
+    r"|\[([^\]\n]+)\]\((https?://[^\s<>()]+)\)"
+    r"|\*\*([^*\n]+(?:\*(?!\*)[^*\n]*)*)\*\*"
+    r"|(?<!\*)\*([^\s*\n](?:[^*\n]*[^\s*\n])?)\*(?!\*)"
+)
+_CODE_LANG_ALIASES = {
+    "plain": "PLAIN_TEXT", "text": "PLAIN_TEXT", "txt": "PLAIN_TEXT",
+    "abap": "ABAP", "ada": "ADA", "apache": "APACHE", "apex": "APEX", "asm": "ASSEMBLY", "assembly": "ASSEMBLY",
+    "bash": "BASH", "sh": "SHELL", "shell": "SHELL", "zsh": "SHELL",
+    "cs": "C_SHARP", "csharp": "C_SHARP", "c#": "C_SHARP",
+    "cpp": "CPP", "c++": "CPP", "cc": "CPP", "cxx": "CPP", "c": "C",
+    "cmake": "CMAKE", "css": "CSS", "scss": "SCSS", "coffeescript": "COFFEE_SCRIPT",
+    "dart": "DART", "diff": "DIFF", "django": "DJANGO", "docker": "DOCKER_FILE", "dockerfile": "DOCKER_FILE",
+    "erlang": "ERLANG", "go": "GO", "golang": "GO", "graphql": "GRAPHQL", "gql": "GRAPHQL", "groovy": "GROOVY",
+    "html": "HTML", "http": "HTTP", "haskell": "HASKELL", "json": "JSON", "java": "JAVA",
+    "js": "JAVASCRIPT", "javascript": "JAVASCRIPT", "ts": "TYPESCRIPT", "typescript": "TYPESCRIPT",
+    "julia": "JULIA", "kt": "KOTLIN", "kotlin": "KOTLIN", "latex": "LATEX", "tex": "LATEX",
+    "lisp": "LISP", "lua": "LUA", "matlab": "MATLAB", "makefile": "MAKEFILE", "make": "MAKEFILE",
+    "md": "MARKDOWN", "markdown": "MARKDOWN", "nginx": "NGINX", "objc": "OBJECTIVE_C", "objective-c": "OBJECTIVE_C",
+    "php": "PHP", "perl": "PERL", "pl": "PERL", "powershell": "POWERSHELL", "ps1": "POWERSHELL",
+    "properties": "PROPERTIES", "proto": "PROTOBUF", "protobuf": "PROTOBUF",
+    "py": "PYTHON", "python": "PYTHON", "r": "R", "rb": "RUBY", "ruby": "RUBY",
+    "rs": "RUST", "rust": "RUST", "sql": "SQL", "scala": "SCALA", "scheme": "SCHEME",
+    "solidity": "SOLIDITY", "swift": "SWIFT", "toml": "TOML", "thrift": "THRIFT",
+    "xml": "XML", "yaml": "YAML", "yml": "YAML",
+}
+
+
+def _safe_http_url(url):
+    try:
+        parsed = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    return parsed.scheme.lower() in ("http", "https") and bool(parsed.netloc) and not any(
+        ch.isspace() or ord(ch) < 32 or ord(ch) == 127 for ch in url
+    )
+
+
+def parse_markdown_rich_text(text, mentions=()):
+    """Parse common Markdown plus explicit mentions into an intermediate Feishu rich-text tree.
+
+    Returns (blocks, inner_text, has_rich, has_markdown). Plain text without mentions or Markdown formatting keeps
+    has_rich=False so callers stay on the original single-TEXT fast path; has_markdown distinguishes messages that
+    carry Markdown formatting (sent as Feishu POST type=2 with empty title) from mentions-only TEXT (type=4).
+    """
+    targets = _validate_mentions(mentions) if mentions else []
+    mention_re = re.compile("(" + "|".join("@" + re.escape(name) for _, name in targets) + r")(?![\w-])") if targets else None
+    by_name = {name: {"id": user_id, "name": name} for user_id, name in targets}
+    state = {"matched_at": False, "has_rich": False, "has_markdown": False}
+
+    def split_mentions(segment, style="text"):
+        if not segment:
+            return []
+        if style != "text":
+            state["has_rich"] = True
+            state["has_markdown"] = True
+        if not mention_re:
+            return [(style, segment)]
+        nodes = []
+        for part in mention_re.split(segment):
+            if not part:
+                continue
+            if part.startswith("@") and part[1:] in by_name:
+                state["matched_at"] = True
+                state["has_rich"] = True
+                nodes.append(("at", by_name[part[1:]]))
+            else:
+                nodes.append((style, part))
+        return nodes
+
+    def parse_inline(line, default_style="text"):
+        nodes = []
+        pos = 0
+        for m in _INLINE_RE.finditer(line):
+            if m.start() > pos:
+                nodes.extend(split_mentions(line[pos:m.start()], default_style))
+            code, label, url, bold, italic = m.groups()
+            if code is not None:
+                state["has_rich"] = True
+                state["has_markdown"] = True
+                nodes.append(("code", code))
+            elif label is not None and url is not None:
+                if _safe_http_url(url):
+                    state["has_rich"] = True
+                    state["has_markdown"] = True
+                    nodes.append(("link", label, url))
+                else:
+                    nodes.extend(split_mentions(m.group(0), default_style))
+            elif bold is not None:
+                nodes.extend(split_mentions(bold, "bold"))
+            elif italic is not None:
+                nodes.extend(split_mentions(italic, "italic"))
+            pos = m.end()
+        if pos < len(line):
+            nodes.extend(split_mentions(line[pos:], default_style))
+        return nodes
+
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    blocks = []
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        fence = _FENCE_RE.match(line)
+        if fence:
+            j = i + 1
+            while j < n and not _FENCE_RE.match(lines[j]):
+                j += 1
+            if j < n:
+                state["has_rich"] = True
+                state["has_markdown"] = True
+                blocks.append(("code_block", fence.group(1).lower(), "\n".join(lines[i + 1:j])))
+                i = j + 1
+                continue
+        if _QUOTE_RE.match(line):
+            q_children = []
+            while i < n:
+                qm = _QUOTE_RE.match(lines[i])
+                if not qm:
+                    break
+                if q_children:
+                    q_children.append(("text", "\n"))
+                q_children.extend(parse_inline(qm.group(1)))
+                i += 1
+            state["has_rich"] = True
+            state["has_markdown"] = True
+            blocks.append(("quote", q_children or [("text", "")]))
+            continue
+        if _UL_RE.match(line):
+            items = []
+            while i < n:
+                um = _UL_RE.match(lines[i])
+                if not um:
+                    break
+                items.append(parse_inline(um.group(1)))
+                i += 1
+            state["has_rich"] = True
+            state["has_markdown"] = True
+            blocks.append(("ul", items))
+            continue
+        om = _OL_RE.match(line)
+        if om:
+            start = int(om.group(1))
+            items = []
+            while i < n:
+                cur = _OL_RE.match(lines[i])
+                if not cur:
+                    break
+                items.append(parse_inline(cur.group(2)))
+                i += 1
+            state["has_rich"] = True
+            state["has_markdown"] = True
+            blocks.append(("ol", start, items))
+            continue
+        hm = _HEADING_RE.match(line)
+        if hm:
+            state["has_rich"] = True
+            state["has_markdown"] = True
+            blocks.append(("line", parse_inline(hm.group(1), default_style="bold")))
+            i += 1
+            continue
+        blocks.append(("line", parse_inline(line)))
+        i += 1
+
+    if targets and not state["matched_at"]:
+        raise ValueError("write @name in text for every person to mention")
+
+    def inline_plain(nodes):
+        out = []
+        for node in nodes:
+            kind = node[0]
+            if kind == "at":
+                out.append("@" + node[1]["name"])
+            elif kind == "link":
+                out.append(node[1])
+            else:
+                out.append(node[1])
+        return "".join(out)
+
+    plain_lines = []
+    for block in blocks:
+        kind = block[0]
+        if kind == "line":
+            plain_lines.append(inline_plain(block[1]))
+        elif kind == "code_block":
+            plain_lines.append(block[2])
+        elif kind == "quote":
+            plain_lines.append(inline_plain(block[1]))
+        elif kind == "ul":
+            for item in block[1]:
+                plain_lines.append("- " + inline_plain(item))
+        elif kind == "ol":
+            for idx, item in enumerate(block[2], start=block[1]):
+                plain_lines.append("%d. %s" % (idx, inline_plain(item)))
+    return blocks, "\n".join(plain_lines), state["has_rich"], state["has_markdown"]
+
+
+def _flatten_to_inline_blocks(blocks):
+    """Degrade block-only tags (code_block/ul/ol/quote/code) to readable lines while keeping B/I/A/AT inline tags."""
+    def clean_inline(nodes):
+        out = []
+        for node in nodes:
+            if node[0] == "code":
+                out.append(("text", "`%s`" % node[1]))
+            else:
+                out.append(node)
+        return out
+
+    lines = []
+    for block in blocks:
+        kind = block[0]
+        if kind == "line":
+            lines.append(("line", clean_inline(block[1])))
+        elif kind == "code_block":
+            for code_line in block[2].split("\n"):
+                lines.append(("line", [("text", code_line)]))
+        elif kind == "quote":
+            lines.append(("line", [("text", "> ")] + clean_inline(block[1])))
+        elif kind == "ul":
+            for item in block[1]:
+                lines.append(("line", [("text", "• ")] + clean_inline(item)))
+        elif kind == "ol":
+            for idx, item in enumerate(block[2], start=block[1]):
+                lines.append(("line", [("text", "%d. " % idx)] + clean_inline(item)))
+    return lines
+
+
+def _populate_rich_text(req, blocks, inner_text, L, P, ids, as_post=False):
+    rte = L.entities.RichTextElement
+    rich = req.content.richText
+    if as_post:
+        rich.version = 1
+    notified = set()
+    used_tags = []
+
+    def add_element(tag, prop_bytes, child_ids=None, style=None, top=True):
+        element_id = ids.generate_request_cid()
+        element = rich.elements.dictionary[element_id]
+        element.tag = tag
+        # Feishu's server-side proto2 schema requires RichTextElement.property to be present on the wire even when
+        # the serialized property message is empty (e.g. ParagraphProperty, LIProperty, QuoteProperty, CodeProperty).
+        if prop_bytes is not None:
+            element.property = prop_bytes
+        if style:
+            for k, v in style.items():
+                element.style[k] = v
+        if child_ids:
+            element.childIds.extend(child_ids)
+        if top:
+            rich.elementIds.append(element_id)
+        if tag not in used_tags:
+            used_tags.append(tag)
+        return element_id
+
+    def emit_inline(node, top=True):
+        kind = node[0]
+        if kind == "at":
+            m = node[1]
+            eid = add_element(5, rte.AtProperty(userId=m["id"], content="@" + m["name"]).SerializeToString(), top=top)
+            rich.atIds.append(eid)
+            user_id = int(m["id"])
+            if user_id not in notified:
+                req.atUserIdList.append(user_id)
+                notified.add(user_id)
+            return eid
+        if kind == "bold":
+            return add_element(1, rte.TextProperty(content=node[1]).SerializeToString(), style={"fontWeight": "bold"}, top=top)
+        if kind == "italic":
+            return add_element(1, rte.TextProperty(content=node[1]).SerializeToString(), style={"fontStyle": "italic"}, top=top)
+        if kind == "code":
+            child_id = add_element(1, rte.TextProperty(content=node[1]).SerializeToString(), top=False)
+            return add_element(30, rte.CodeProperty().SerializeToString(), child_ids=[child_id], top=top)
+        if kind == "link":
+            label, url = node[1], node[2]
+            eid = add_element(6, rte.AnchorProperty(href=url, content=label, textContent=label).SerializeToString(), top=top)
+            rich.anchorIds.append(eid)
+            return eid
+        return add_element(1, rte.TextProperty(content=node[1]).SerializeToString(), top=top)
+
+    def wrap_paragraph(nodes, top=True):
+        child_ids = [emit_inline(node, top=False) for node in (nodes or [("text", "")])]
+        return add_element(3, rte.ParagraphProperty().SerializeToString(), child_ids=child_ids, top=top)
+
+    for idx, block in enumerate(blocks):
+        if not as_post and idx > 0 and block[0] == "line" and blocks[idx - 1][0] == "line":
+            add_element(1, rte.TextProperty(content="\n").SerializeToString(), top=True)
+        kind = block[0]
+        if kind == "line":
+            if as_post:
+                wrap_paragraph(block[1], top=True)
+            else:
+                for node in block[1]:
+                    emit_inline(node, top=True)
+        elif kind == "code_block":
+            lang_name, code = block[1], block[2]
+            enum_name = _CODE_LANG_ALIASES.get(lang_name, "PLAIN_TEXT")
+            enum_val = rte.CodeBlockV2Property.Language.DESCRIPTOR.values_by_name.get(enum_name)
+            prop = rte.CodeBlockV2Property(
+                language=enum_val.number if enum_val is not None else 0,
+                wordWrap=True,
+                version=1,
+            )
+            for code_line in code.split("\n"):
+                line_content = prop.contents.add()
+                item = line_content.contents.add()
+                item.content = code_line
+                item.type = 0  # ContentType.TEXT
+            add_element(37, prop.SerializeToString(), top=True)
+        elif kind == "quote":
+            p_id = wrap_paragraph(block[1], top=False)
+            add_element(29, rte.QuoteProperty().SerializeToString(), child_ids=[p_id], top=True)
+        elif kind == "ul":
+            li_ids = []
+            for item in block[1]:
+                p_id = wrap_paragraph(item, top=False)
+                li_ids.append(add_element(28, rte.LIProperty().SerializeToString(), child_ids=[p_id], top=False))
+            add_element(26, rte.ULProperty(type=0).SerializeToString(), child_ids=li_ids, top=True)
+        elif kind == "ol":
+            start, items = block[1], block[2]
+            li_ids = []
+            for item in items:
+                p_id = wrap_paragraph(item, top=False)
+                li_ids.append(add_element(28, rte.LIProperty().SerializeToString(), child_ids=[p_id], top=False))
+            add_element(27, rte.OLProperty(type=0, start=start).SerializeToString(), child_ids=li_ids, top=True)
+    rich.innerText = inner_text
+    return used_tags
 

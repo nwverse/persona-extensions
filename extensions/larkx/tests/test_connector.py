@@ -623,6 +623,17 @@ class ConnectorTest(unittest.TestCase):
             self.assertEqual(self.c.inbox_reply({"thread": "c1", "text": "好", "client_id": "k1"}), {})
         self.assertEqual(self.backend.sent, [("c1", "好", None)])
 
+    def test_inbox_reply_forwards_explicit_mentions_and_refuses_invalid(self):
+        self.sign_in()
+        mentions = [{"id": "7001", "name": "Alice"}, {"id": "7002", "name": "Bob"}]
+        self.assertEqual(self.c.inbox_reply({"thread": "c1", "text": "@Alice done, @Bob sync", "mentions": mentions, "client_id": "k_m1"}), {})
+        self.assertEqual(self.backend.sent, [("c1", "@Alice done, @Bob sync", None, mentions)])
+        for bad in ([{"id": "ou_wrong", "name": "Alice"}], [{"id": "7001", "name": "Charlie"}]):
+            with self.assertRaises(RpcError) as e:
+                self.c.inbox_reply({"thread": "c1", "text": "@Alice done", "mentions": bad, "client_id": "k_bad"})
+            self.assertEqual(e.exception.code, "invalid_params")
+        self.assertEqual(len(self.backend.sent), 1)
+
     def test_a_reply_to_a_topic_stays_in_it(self):
         self.sign_in()
         self.c.on_message(message("m2", "g1", 2, kind="group", root="m1"))
