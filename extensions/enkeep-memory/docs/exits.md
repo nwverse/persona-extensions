@@ -85,6 +85,11 @@ Since beta.52 the extension picks the standing set itself, by leverage, to fit:
   exactly 90, and with over a hundred of them the tie, broken by days of evidence and id, decided which stood). Times
   seen add at most 25 (15 before 0.2.5), so a rule distilled from dozens of observations ranks above one seen seven
   times. Alike scores go by days of evidence, then the latest.
+- **Exceptions and classes (0.2.6).** A rule's line ends with `（例外：…）` when its exception is not in its words;
+  the line's other words are cut first. No class (a facet and its type) takes more than 20% of the room. Rules the
+  rule merge found to say what a stronger one says are merged into it, or marked covered by it (`covered_by:`) and kept
+  out of the set while it stands. A rule's subjects carry its occasion's words (派活, 汇报, 提问, 开工…) for
+  decisions_query tags.
 - **The room** is the `resident_bytes` setting (1400 by default), one more line per 120 bytes beyond it.
 - **Fast path.** Every `fast_minutes`, today's assistant conversations with a new correction are read at once and
   the set is chosen again, without waiting for the night.

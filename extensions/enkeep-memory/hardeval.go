@@ -43,11 +43,13 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	exits "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/memsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
@@ -102,10 +104,14 @@ func hardevalCmd(args []string) error {
 		return collabBuild(args[1:])
 	case "collab-run":
 		return collabRun(args[1:])
+	case "merge-rules":
+		return hardevalMergeRules(args[1:])
 	case "collab-why":
 		return collabWhy(args[1:])
 	case "standing":
 		return hardevalStanding(args[1:])
+	case "l1-rebuild":
+		return hardevalL1Rebuild(args[1:])
 	}
 	return fmt.Errorf("unknown hardeval step %q", args[0])
 }
@@ -443,6 +449,9 @@ func heMemories(st *store.State, ov *overview.State, cog []string, f heFilter, c
 	mem["scatter"] = heFit(lines, budget)
 	// overview: the backtest's used patterns.
 	var ovCands []memsrc.Candidate
+	absorbed := map[string]bool{}
+	var contractTexts []string
+	l1LatestDay := ""
 	lines = lines[:0]
 	if ov != nil {
 		for _, p := range ov.Sorted(func(p *overview.Pattern) bool {
@@ -450,8 +459,53 @@ func heMemories(st *store.State, ov *overview.State, cog []string, f heFilter, c
 		}) {
 			lines = append(lines, "- "+overview.Text(p))
 			if k := entry.KindOfFacet(p.Facet); k != "" && !entry.TemplateBacked(st.Entries, p.EvidenceIDs, tpl) {
-				ovCands = append(ovCands, memsrc.Candidate{ID: p.ID, Text: overview.Text(p), Kind: k, Score: overview.Score(p),
-					Days: len(p.EvidenceIDs), Last: p.LastEvidence, Pattern: true})
+				if p.LastEvidence > l1LatestDay {
+					l1LatestDay = p.LastEvidence
+				}
+				bucket := memsrc.BucketPrinciple
+				maxBytes := memsrc.PrincipleTextMost
+				if p.IsContract() {
+					bucket = memsrc.BucketContract
+					maxBytes = memsrc.ContractTextMost
+				}
+				suffix := ""
+				if len(p.Poles) >= 2 {
+					w0 := strings.TrimSuffix(strings.TrimSpace(p.Poles[0].When), "时")
+					w1 := strings.TrimSuffix(strings.TrimSpace(p.Poles[1].When), "时")
+					suffix = "（两端：" + w0 + "时，" + strings.TrimSpace(p.Poles[0].Choice) + "；" +
+						w1 + "时，" + strings.TrimSpace(p.Poles[1].Choice) + "）"
+				} else if x := strings.TrimSpace(p.Exception); x != "" && !strings.Contains(p.Text, x) {
+					suffix = "（例外：" + x + "）"
+				}
+				quotes := p.UniqueQuotes
+				if quotes <= 0 {
+					quotes = p.SourcesCount
+				}
+				prefix := memsrc.StandingPrefix(bucket, p.Hard, p.Polarity)
+				txt := memsrc.FormatResidentLine(prefix+strings.TrimSpace(p.Text), suffix, maxBytes)
+				ovCands = append(ovCands, memsrc.Candidate{
+					ID:        p.ID,
+					Text:      txt,
+					Kind:      k,
+					Bucket:    bucket,
+					Facet:     p.Facet,
+					L1:        true,
+					Hard:      p.Hard,
+					Score:     overview.Score(p),
+					Days:      quotes,
+					Last:      p.LastEvidence,
+					Polarity:  p.Polarity,
+					Dimension: p.Dimension,
+				})
+				if bucket == memsrc.BucketContract {
+					for _, id := range p.EvidenceIDs {
+						absorbed[id] = true
+					}
+					for _, id := range p.CoveredIDs {
+						absorbed[id] = true
+					}
+					contractTexts = append(contractTexts, txt)
+				}
 			}
 		}
 	}
@@ -465,9 +519,20 @@ func heMemories(st *store.State, ov *overview.State, cog []string, f heFilter, c
 		lines = append(lines, l)
 	}
 	mem["cogpipe"] = heFit(lines, budget)
-	// l0 and resident: the new outlet's choice.
-	var l0Cands []memsrc.Candidate
+	// l0 and resident: the new outlet's choice (mirroring memsrc.standingSet, including Bucket 0 hot-slot and
+	// post-L1 unabsorbed high-certainty rules strictly before cutoff).
+	var l0Cands, hotCands []memsrc.Candidate
+	cutoffTime, _ := time.Parse("2006-01-02", cutoff)
 	for _, e := range pool {
+		if !cutoffTime.IsZero() {
+			hc, ok := memsrc.HotSlotCandidate(st, e, tpl, cutoffTime)
+			if !ok && l1LatestDay != "" {
+				hc, ok = memsrc.UnabsorbedRuleHotCandidate(st, e, tpl, l1LatestDay, cutoffTime)
+			}
+			if ok && (hc.Pinned || (!absorbed[e.ID] && !slices.ContainsFunc(contractTexts, func(t string) bool { return norm.Jaccard(t, hc.Text) >= 0.45 }))) {
+				hotCands = append(hotCands, hc)
+			}
+		}
 		if c, ok := memsrc.CuratedCandidate(st, e, tpl); ok {
 			l0Cands = append(l0Cands, c)
 		}
@@ -481,7 +546,9 @@ func heMemories(st *store.State, ov *overview.State, cog []string, f heFilter, c
 		return heFit(ls, budget)
 	}
 	mem["l0"] = join(memsrc.ResidentWithin(l0Cands, budget, most))
-	mem["resident"] = join(memsrc.ResidentWithin(append(slices.Clone(l0Cands), ovCands...), budget, most))
+	resCands := append(slices.Clone(l0Cands), ovCands...)
+	resCands = append(resCands, hotCands...)
+	mem["resident"] = join(memsrc.ResidentWithin(resCands, budget, most))
 	return mem
 }
 

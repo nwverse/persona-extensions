@@ -204,9 +204,7 @@ func (e *Entry) Principle() string {
 // evidence (independent sightings, source kinds, scopes; at most 30) and the user's own signals (said it holds from
 // now on, corrected the assistant, more each day it had to again, wrote or confirmed it, a principle; at most 28), less for a candidate, a dormant or
 // a low-confidence entry. Every part is a field of the entry: no learnt weights.
-// countMost caps what the times seen add to Score: 15 up to 0.2.4, 25 from 0.2.5, so a rule distilled from dozens of
-// observations (an abstract one) is not ranked like one seen seven times.
-var countMost = 25.0
+const countMost = 15.0
 
 func Score(e *Entry) int {
 	if e.Pinned {
@@ -243,10 +241,6 @@ func Score(e *Entry) int {
 		s *= 0.8
 	case Dormant:
 		s *= 0.5
-	}
-	if Hard(e) && e.Status != Dormant {
-		// 0.2.5: above 90 by its own leverage, so the hard rules are not a tie broken by evidence days or id.
-		s = 90 + 9*math.Max(0, math.Min(99, s))/99
 	}
 	return int(math.Round(math.Max(0, math.Min(99, s))))
 }
@@ -337,4 +331,85 @@ func Hard(e *Entry) bool {
 		}
 	}
 	return false
+}
+
+// FlagCoveredBy marks a rule the weekly or daily rule merge found to say what another one says, when it could not be
+// merged away (the assistant's hand-written memory, or the user's own): it stays and is recalled, but does not stand
+// beside the one that covers it (0.2.6). The covering entry's id follows the colon.
+const FlagCoveredBy = "covered_by:"
+
+// CoveredBy is the id of the rule that covers e, "" when none does.
+func CoveredBy(e *Entry) string {
+	for _, f := range e.Flags {
+		if strings.HasPrefix(f, FlagCoveredBy) {
+			return strings.TrimPrefix(f, FlagCoveredBy)
+		}
+	}
+	return ""
+}
+
+// FlagFastHot marks a temporary hard contract extracted by the correction fast path (unified design §2.1):
+// "fast_hot:YYYY-MM-DD". It enters the standing hot slot (TTL 7 days) until L1 contract aggregation absorbs it.
+const FlagFastHot = "fast_hot:"
+
+// FastHotDay returns the latest YYYY-MM-DD day marked by FlagFastHot on e, or "" if none.
+func FastHotDay(e *Entry) string {
+	if e == nil {
+		return ""
+	}
+	best := ""
+	for _, f := range e.Flags {
+		if d, ok := strings.CutPrefix(f, FlagFastHot); ok && d > best {
+			best = d
+		}
+	}
+	return best
+}
+
+// SetFastHot records (or updates) FlagFastHot on e to day (YYYY-MM-DD), removing any older fast_hot flag.
+func SetFastHot(e *Entry, day string) {
+	if e == nil || day == "" {
+		return
+	}
+	e.Flags = slices.DeleteFunc(e.Flags, func(f string) bool { return strings.HasPrefix(f, FlagFastHot) })
+	e.Flags = append(e.Flags, FlagFastHot+day)
+}
+
+// IsFastHot reports whether e is an active (unexpired) fast-path temporary hard contract within ttlDays of now.
+func IsFastHot(e *Entry, now time.Time, ttlDays int) bool {
+	if e == nil || !e.Live() || KindOf(e) != KindRules {
+		return false
+	}
+	day := FastHotDay(e)
+	if day == "" {
+		return false
+	}
+	t, err := time.Parse("2006-01-02", day)
+	if err != nil {
+		return false
+	}
+	if ttlDays <= 0 {
+		ttlDays = 7
+	}
+	return now.Sub(t) <= time.Duration(ttlDays)*24*time.Hour
+}
+
+// ColdStartEligible reports whether e qualifies for L0 cold-start fallback when its standing bucket has no L1 entries
+// yet (unified design §2.1): reach >= cross_project and horizon == lasting with a principle (understanding) or hard/lasting
+// cross-project rule (rules).
+func ColdStartEligible(e *Entry) bool {
+	if e == nil {
+		return false
+	}
+	k := KindOf(e)
+	if k == "" {
+		return false
+	}
+	wideLasting := e.Leverage != nil &&
+		(e.Leverage.Reach == ReachCrossProject || e.Leverage.Reach == ReachEveryTurn) &&
+		e.Leverage.Horizon == HorizonLasting
+	if k == KindRules {
+		return Hard(e) || wideLasting
+	}
+	return wideLasting && e.Principle() != ""
 }

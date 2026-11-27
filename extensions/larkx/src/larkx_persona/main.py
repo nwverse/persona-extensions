@@ -73,6 +73,7 @@ class Plugin:
             hub = Hub(self.peer)
             self.connector = Connector(backend, Store(os.path.join(data_dir, "larkx.db")), hub,
                                        config.get("triage_rules") or "", config.get("agent_reply_suffix") or "")
+            self.connector.inbox_triage_chats = frozenset(config.get("inbox_triage_chats") or ())
             self.connector.mention = config.get("agent_mention", True) is not False
             self.connector.topics = config.get("agent_group_topics", True) is not False
             self.connector.hooks = Hooks.from_config(config, params.get("secrets"), hub.log)

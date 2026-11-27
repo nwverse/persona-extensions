@@ -101,6 +101,13 @@
         "maxLength": 4000,
         "default": ""
       },
+      "inbox_triage_chats": {
+        "type": "array",
+        "title": "分拣普通群消息",
+        "description": "填写 larkx_chats 返回的群 ID。这些群里没有 @ 你的消息也按收件箱规则分拣，即使群已静音。模型不可用时归为噪声。",
+        "items": {"type": "string"},
+        "default": []
+      },
       "agent_reply_suffix": {
         "type": "string",
         "title": "/agent 回复末尾",
