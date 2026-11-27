@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -405,6 +406,116 @@ func TestNodeRPCNamesItsMethods(t *testing.T) {
 	}
 	if _, err := w.rpc(t.Context(), "run_anything", []byte(`{}`)); err == nil {
 		t.Fatal("an unknown method was answered")
+	}
+}
+
+func listenProbeGateway(t *testing.T) net.Listener {
+	t.Helper()
+	l, err := net.Listen("tcp4", "localhost:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return l
+}
+
+func closedProbeGateway(t *testing.T) string {
+	t.Helper()
+	l := listenProbeGateway(t)
+	addr := l.Addr().String()
+	if err := l.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return addr
+}
+
+func writeLauncherSettings(t *testing.T, dir, filename, content string) {
+	t.Helper()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, filename), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProbeLauncherGatewaySettings(t *testing.T) {
+	live := listenProbeGateway(t)
+	defer live.Close()
+	up, down := live.Addr().String(), closedProbeGateway(t)
+	for _, tc := range []struct {
+		name, launcher, env, settings, endpoint string
+		reachable, skipped, canceled            bool
+	}{
+		{name: "anthropic first", launcher: "primary", env: `{"env":{"ANTHROPIC_BASE_URL":"http://` + up + `/v1","OPENAI_BASE_URL":"http://` + down + `"}}`, settings: `{"base_url":"http://` + down + `"}`, reachable: true, endpoint: up},
+		{name: "openai before base_url", launcher: "primary", env: `{"env":{"OPENAI_BASE_URL":"http://` + up + `"},"base_url":"http://` + down + `"}`, reachable: true, endpoint: up},
+		{name: "legacy settings", launcher: "primary", settings: `{"base_url":"http://` + up + `"}`, reachable: true, endpoint: up},
+		{name: "connection refused", launcher: "primary", env: `{"base_url":"http://` + down + `"}`, endpoint: down},
+		{name: "http default port", launcher: "primary", env: `{"base_url":"http://localhost/v1"}`, endpoint: "localhost:80", canceled: true},
+		{name: "https default port", launcher: "primary", env: `{"base_url":"https://localhost/v1"}`, endpoint: "localhost:443", canceled: true},
+		{name: "no custom URL", launcher: "primary", env: `{"env":{"OPENAI_BASE_URL":" "}}`, reachable: true, skipped: true},
+		{name: "missing host", launcher: "primary", env: `{"base_url":"/v1"}`, reachable: true, skipped: true},
+		{name: "missing files", launcher: "primary", reachable: true, skipped: true},
+		{name: "blank launcher", launcher: "  ", reachable: true, skipped: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			dir := filepath.Join(root, "launcher-settings")
+			if tc.env != "" {
+				writeLauncherSettings(t, dir, "primary-env-settings.json", tc.env)
+			}
+			if tc.settings != "" {
+				writeLauncherSettings(t, dir, "primary-settings.json", tc.settings)
+			}
+			nodes := &localNodes{worker: newNodeWorker(filepath.Join(root, "node-plugins", "ats", "data"), nil, nil)}
+			ctx := t.Context()
+			if tc.canceled {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				cancel()
+			}
+			var got probeLauncherResult
+			if err := nodes.Call(ctx, testMachine, "ats.probe_launcher", probeLauncherParams{Launcher: tc.launcher}, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.Reachable != tc.reachable || got.Skipped != tc.skipped || got.Endpoint != tc.endpoint || (got.Error != "") != !tc.reachable {
+				t.Fatalf("probe = %+v, want reachable=%t skipped=%t endpoint=%q", got, tc.reachable, tc.skipped, tc.endpoint)
+			}
+		})
+	}
+}
+
+func TestProbeLauncherSettingsSearchIsBoundedAndCanBeOverridden(t *testing.T) {
+	live := listenProbeGateway(t)
+	defer live.Close()
+	root := t.TempDir()
+	dir := filepath.Join(root, "launcher-settings")
+	addr := live.Addr().String()
+	writeLauncherSettings(t, dir, "primary-settings.json", `{"base_url":"http://`+addr+`"}`)
+	w := newNodeWorker(filepath.Join(root, "a", "b", "c", "data"), nil, nil)
+	check := func(want probeLauncherResult) {
+		t.Helper()
+		got, err := w.probeLauncher(t.Context(), probeLauncherParams{Launcher: "primary"})
+		if err != nil || got != want {
+			t.Fatalf("probe = %+v, %v, want %+v", got, err, want)
+		}
+	}
+	check(probeLauncherResult{Reachable: true, Endpoint: addr})
+	w.data = filepath.Join(w.data, "deeper")
+	check(probeLauncherResult{Reachable: true, Skipped: true})
+	w.launcherSettingsDir = dir
+	check(probeLauncherResult{Reachable: true, Endpoint: addr})
+}
+
+func TestProbeLauncherRejectsUnsafeIDs(t *testing.T) {
+	w, _ := newTestWorker(t)
+	for _, launcher := range []string{"../primary", "primary/backup", `primary\backup`, "a..b", "bad name", " primary", strings.Repeat("a", 81)} {
+		params, err := json.Marshal(map[string]string{"launcher": launcher})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.rpc(t.Context(), "probe_launcher", params); err == nil || !strings.Contains(err.Error(), "invalid launcher") {
+			t.Errorf("launcher %q: expected validation error, got %v", launcher, err)
+		}
 	}
 }
 

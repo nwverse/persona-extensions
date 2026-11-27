@@ -7,7 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -24,7 +24,7 @@ from test_connector import ME, Backend, message
 class FakeAPI(HubAPI):
     """Keep the real public request paths and bodies; replace only the transport."""
     def __init__(self):
-        super().__init__("https://hub.example", "test")
+        super().__init__("https://example.com/hub", "test")
         self.posts = []
         self.rows = []
         self.state = "done"
@@ -47,7 +47,7 @@ class FakeAPI(HubAPI):
 class UnmarkedAPI(HubAPI):
     """A session whose latest page is a partial tail and whose user prompts are not echoed."""
     def __init__(self):
-        super().__init__("https://hub.example", "test")
+        super().__init__("https://example.com/hub", "test")
         self.rows, self.pending, self.calls = [], [], []
         self.state = "running"
 
@@ -276,9 +276,10 @@ class EngineTest(unittest.TestCase):
             self.assertTrue(blocked.wait(2))
             self.assertEqual(len(self.api.posts), 1)
             self.api.state, self.api.answer = "done", "second"
-            self.until(lambda: self.count("replied") == 2)
-        self.assertEqual(self.backend.sent, [("direct", "first\n\ntest suffix", None),
-                                            ("direct", "second\n\ntest suffix", "r2")])
+            self.until(lambda: len(self.api.posts) == 2 and self.count("replied") == 1)
+        self.assertEqual(self.backend.sent, [("direct", "second\n\ntest suffix", "r2")])
+        self.assertEqual(self.c.status({})["auto"]["owner_replied"], 1)
+        self.assertEqual(self.count("errors"), 0)
 
     def test_restart_after_send_before_run_removal_cannot_resend(self):
         with mock.patch.object(self.c.store, "finish_agent_run"):
@@ -289,6 +290,59 @@ class EngineTest(unittest.TestCase):
         self.until(lambda: not self.c.store.agent_runs(ME))
         self.assertEqual(len(self.api.posts), 1)
         self.assertEqual(len(self.backend.sent), 1)
+
+    def test_restart_releases_legacy_busy_thread_without_answering_old_items(self):
+        run = dict(account=ME, thread="dm:direct", request="legacy", machine="m", session="old",
+                   sent=time.time(), auto=False, cursor=0, baseline=None)
+        self.c.store.bind_agent_run(run, "direct", "legacy")
+        self.c.close()
+        self.connect()
+        self.assertFalse(self.c.store.agent_busy(ME, "dm:direct"))
+        self.assertFalse(self.api.read.is_set())
+        self.live(1, "/agent next", sender=ME)
+        self.until(lambda: self.count("replied") == 1)
+        self.assertEqual([path for path, _ in self.api.posts], ["/api/v1/assistant/conversations"])
+        self.assertEqual(self.backend.sent, [("direct", "final\n\ntest suffix", "r1")])
+
+    def test_recovery_retries_item_reads_without_another_post(self):
+        self.api.state = "running"
+        self.live(1, "/agent check", sender=ME)
+        self.assertTrue(self.api.read.wait(2))
+        self.c.close()
+        self.api.state = "done"
+        read = self.api.items
+        failures = iter([TimeoutError, ValueError, TypeError, KeyError, HubUnavailable, OSError])
+        def flaky(*args, **kwargs):
+            failure = next(failures, None)
+            if failure:
+                raise failure
+            return read(*args, **kwargs)
+        with mock.patch.object(self.api, "items", side_effect=flaky) as reads:
+            self.connect()
+            self.until(lambda: self.count("replied") == 1)
+            self.assertEqual(reads.call_count, 7)
+        self.assertEqual(len(self.api.posts), 1)
+        self.assertEqual(self.backend.sent, [("direct", "final\n\ntest suffix", "r1")])
+
+    def test_bound_batch_fallback_is_not_resumed_after_restart(self):
+        store = self.c.store
+        for root in ("topic", "other"):
+            batch = [dict(id=n) for n in ((11, 12) if root == "topic" else (21, 22))]
+            store.begin_bot_wait(ME, "group", root, "8001", "review", batch, 180, time.time())
+            store.arm_bot_wait(ME, "group", root, time.time())
+            self.assertTrue(store.claim_bot_fallback(dict(account=ME, chat="group", root=root)))
+        run = dict(account=ME, thread="group:topic", request="12", machine="m", session="s",
+                   sent=time.time(), auto=True, cursor=0, baseline=0)
+        store.bind_agent_run(run, "group", "topic")
+        self.c.close()
+        reopened = Store(self.db)
+        self.addCleanup(reopened.close)
+        reopened.resume_bot_waits(ME)
+        other = reopened.next_bot_wait(ME)
+        self.assertEqual(other["root"], "other")
+        reopened.forget_bot_wait(other)
+        self.assertIsNone(reopened.next_bot_wait(ME))
+        self.assertEqual([r["request"] for r in reopened.agent_runs(ME)], ["12"])
 
     def test_expired_run_is_not_polled_or_reposted(self):
         self.api.state = "running"
@@ -310,7 +364,7 @@ class EngineTest(unittest.TestCase):
         self.c.hub_api = self.api
         self.hub.got.clear()
         with mock.patch.object(self.api, "start", side_effect=HubUnavailable):
-            self.live(2, "automatic")
+            self.live(2, "automatic", chat="another")
             self.assertTrue(self.hub.got.wait(2))
         self.assertEqual([v["message"]["id"] for v in self.hub.received], ["r1", "r2"])
         self.assertEqual(self.c.store.agent_runs(ME), [])
@@ -335,7 +389,7 @@ class EngineTest(unittest.TestCase):
         self.assertIsNone(observe([user, answer, tool], quiet, 40)[2])
 
     def test_http_paths_bearer_and_multi_page_items(self):
-        api = HubAPI("https://hub.example/", "synthetic")
+        api = HubAPI("https://example.com/hub/", "synthetic")
         pages = [{"items": [{"seq": 1, "role": "user"}], "more_after": True},
                  {"items": [{"seq": 2, "role": "assistant"}], "state": "done"}]
         def response(_request, timeout):
@@ -346,7 +400,7 @@ class EngineTest(unittest.TestCase):
             page = api.items("machine/one", "s 1")
         self.assertEqual([x["role"] for x in page["items"]], ["user", "assistant"])
         self.assertEqual(page["state"], "done")
-        base = "https://hub.example/api/v1/sessions/machine%2Fone/s%201/items"
+        base = "https://example.com/hub/api/v1/sessions/machine%2Fone/s%201/items"
         requests = [call.args[0] for call in send.call_args_list]
         self.assertEqual([req.full_url for req in requests], [base, base + "?after_seq=1"])
         self.assertTrue(all(req.get_header("Authorization") == "Bearer synthetic" for req in requests))
@@ -354,12 +408,63 @@ class EngineTest(unittest.TestCase):
             with self.assertRaises(HubUnavailable):
                 api.start("example")
 
-    def test_uncertain_submission_is_not_replayed_on_the_channel(self):
-        with mock.patch.object(self.api, "start", side_effect=TimeoutError):
-            self.live(1, "/agent check", sender=ME)
-            self.until(lambda: self.count("errors") == 1)
+    def test_owner_reply_during_context_stops_either_engine_before_submission(self):
+        for n, engine in enumerate(("channel", "lark_agent"), 1):
+            with self.subTest(engine=engine):
+                self.c.agent_engine = engine
+                def context(m, label):
+                    self.live(n + 10, "already handled", m["chat"], sender=ME)
+                    return "example context"
+                with mock.patch.object(self.c, "_agent_context", side_effect=context):
+                    self.live(n, "check", engine)
+                    self.assertIn("path=none ", self.hub.finished.get(timeout=2))
+                self.assertEqual(self.c.status({})["auto"]["owner_replied"], n)
+                self.assertFalse(self.c.store.message("r%d" % n)["auto_account"])
+        self.assertFalse(self.api.posts)
         self.assertFalse(self.hub.received)
-        self.assertFalse(self.backend.sent)
+
+    def test_owner_reply_during_agent_failure_stops_channel_fallback(self):
+        def reject(prompt):
+            self.live(2, "handled", sender=ME)
+            raise HubUnavailable()
+        with mock.patch.object(self.api, "start", side_effect=reject) as start:
+            self.live(1, "check")
+            self.assertIn("path=none ", self.hub.finished.get(timeout=2))
+            start.assert_called_once()
+        self.assertEqual(self.c.status({})["auto"]["owner_replied"], 1)
+        self.assertFalse(self.hub.received)
+
+    def test_start_timeout_hands_request_to_channel_once(self):
+        with mock.patch.object(self.api, "start", side_effect=TimeoutError) as post:
+            self.live(1, "check")
+            self.assertTrue(self.hub.got.wait(2))
+            self.assertEqual(post.call_count, 1)
+        msg, = self.hub.received
+        self.assertEqual(msg["message"]["id"], "r1")
+        self.assertEqual(self.count("timeouts"), 1)
+        self.assertFalse(self.c.store.agent_runs(ME))
+        for _ in range(2):
+            self.c.channel_send({"ref": "one", "reply_to": "r1", "text": "final"})
+        self.assertEqual(self.backend.sent, [("direct", "final\n\ntest suffix", None)])
+
+    def test_uncertain_submission_is_not_replayed_on_the_channel(self):
+        self.live(1, "/agent first", sender=ME)
+        self.until(lambda: self.count("replied") == 1)
+        with mock.patch.object(self.api, "message", side_effect=TimeoutError) as post:
+            self.live(2, "/agent next", sender=ME)
+            self.until(lambda: self.count("errors") == 1)
+            self.assertEqual(post.call_count, 1)
+        self.assertFalse(self.hub.received)
+        self.assertEqual(len(self.backend.sent), 1)
+
+    def test_http_deadlines_and_wrapped_socket_timeout(self):
+        api = HubAPI("https://example.com/hub", "synthetic")
+        with mock.patch("larkx_persona.hub_api.urlopen", side_effect=URLError(TimeoutError())) as send:
+            for method, args, seconds in ((api.start, ("prompt",), 120), (api.message, ("m", "s", "next", "id"), 120),
+                                          (api.items, ("m", "s"), 30)):
+                with self.assertRaises(TimeoutError):
+                    method(*args)
+                self.assertEqual(send.call_args.kwargs, {"timeout": seconds})
 
     def test_configuration_permissions_and_hub_credentials(self):
         with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
@@ -368,9 +473,9 @@ class EngineTest(unittest.TestCase):
         self.assertEqual(setting["default"], "channel")
         self.assertEqual([v["const"] for v in setting["oneOf"]], ["channel", "lark_agent"])
         self.assertTrue({"agents.control", "agents.read", "assistant.ask"} <= set(manifest["permissions"]["hub"]))
-        for hub, url in (({}, "https://environment.example"), ({"url": "https://init.example"}, "https://init.example")):
+        for hub, url in (({}, "https://example.com/environment"), ({"url": "https://example.com/init"}, "https://example.com/init")):
             plugin = main.Plugin(manifest, lambda *_: self.backend)
-            with mock.patch.object(Connector, "start"), mock.patch.dict(os.environ, PERSONA_HUB_URL="https://environment.example",
+            with mock.patch.object(Connector, "start"), mock.patch.dict(os.environ, PERSONA_HUB_URL="https://example.com/environment",
                                                                          PERSONA_HUB_TOKEN="example"):
                 plugin.initialize({"protocol": 1, "extension": {"data_dir": os.path.dirname(self.db)}, "hub": hub,
                                    "config": {"agent_engine": "lark_agent"}})

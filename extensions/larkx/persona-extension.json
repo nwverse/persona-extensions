@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "larkx",
   "name": "飞书（LarkAgentX）",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "用 LarkAgentX 以你本人的身份接飞书：扫码登录，全部消息进收件箱和知识库，经手机确认后以你的身份发送；在任意会话里以配置的触发前缀（默认 /agent）或 @自己交给助手。走逆向的网页版协议，不是官方接口。",
   "publisher": "nwverse",
   "homepage": "https://github.com/cv-cat/LarkAgentX",
@@ -128,14 +128,8 @@
         "description": "选「专用模型会话」后，本人的 /agent 和自动处理都用 hub 模型设置里「Lark /agent」的模型开会话；默认走频道",
         "default": "channel",
         "oneOf": [
-          {
-            "const": "channel",
-            "title": "频道"
-          },
-          {
-            "const": "lark_agent",
-            "title": "专用模型会话"
-          }
+          {"const": "channel", "title": "频道"},
+          {"const": "lark_agent", "title": "专用模型会话"}
         ]
       },
       "agent_mention": {
@@ -147,7 +141,40 @@
       "agent_group_topics": {
         "type": "boolean",
         "title": "群话题各开对话",
-        "description": "默认开启。群里不在话题里的助手请求（配置的触发前缀，默认 /agent，或 @自己）开一段新的助手对话，之后在它的话题里发的请求接着这段对话。私聊里的请求仍进这个频道的对话（默认主对话）。关闭后群里的也都进那段对话。需要支持按话题分对话的 hub。",
+        "description": "默认开启。在旧版路由下，群里不在话题里的助手请求（配置的触发前缀，默认 /agent，或 @自己）开一段新的助手对话，之后在它的话题里发的请求接着这段对话；开启实验性功能 integrations_v2 后，由频道的对话路由模式（thread_mode）决定（例如「按群与话题」会把群内非话题消息归并到同一群对话，在回复开启的话题里追问则单独建话题对话；默认模式全部进频道目标），此开关仅用于关闭群与话题分对话。私聊里的请求仍进这个频道的对话（默认主对话）。关闭后群里的也都进那段对话。",
+        "default": true
+      },
+      "command_hooks": {
+        "type": "array",
+        "title": "/命令 Hook",
+        "description": "每项一个命令，比如 /todo、/note。本人发的、以这些命令开头的新鲜消息不交给助手，改为签名 POST 到下面的 Hook 地址；规则和 /agent 一致，别人发的、历史消息、AI 代答都不算，每条消息只发一次。/agent 留给助手，不能用。留空就不开。",
+        "items": {
+          "type": "string",
+          "pattern": "^/[A-Za-z0-9][A-Za-z0-9_-]{0,31}$"
+        },
+        "maxItems": 20,
+        "uniqueItems": true,
+        "default": []
+      },
+      "command_hook_url": {
+        "type": "string",
+        "title": "Hook 地址",
+        "description": "接收 /命令 的 https 地址；同一台机器上的服务可以写 http://127.0.0.1:端口、http://localhost:端口 或 http://[::1]:端口（沙盒里会自动改成 host.persona.internal）。不跟随重定向。没填时 /命令 Hook 不生效。",
+        "format": "uri",
+        "maxLength": 2000
+      },
+      "command_hook_context": {
+        "type": "integer",
+        "title": "Hook 附带上文",
+        "description": "随 Hook 一起发出这个会话里命令之前的几条消息，0 到 20，默认 0 不带。上文里可能有别人的消息，只会发到你自己填的 Hook 地址。",
+        "default": 0,
+        "minimum": 0,
+        "maximum": 20
+      },
+      "command_hook_quote": {
+        "type": "boolean",
+        "title": "Hook 附带引用",
+        "description": "默认开启。命令是回复某条消息时，随 Hook 一起发出被回复的那条消息。",
         "default": true
       },
       "auto_handle": {
@@ -156,22 +183,40 @@
         "description": "别人私聊我、或在群里 @我，且是运维 / 查 case、代码 review、审批工单时，自动交给助手处理。",
         "default": false
       },
+      "alarm_sources": {
+        "type": "array", "items": {"type": "string"}, "default": [],
+        "title": "电话报警来源", "description": "这些会话里出现新的报警卡片时自动处理（不需要有人 @你）"
+      },
+      "alarm_skip_markers": {
+        "type": "array", "items": {"type": "string"}, "default": [],
+        "title": "跳过的报警标题标记"
+      },
+      "alarm_join_button": {
+        "type": "string", "default": "", "title": "进入报警群的按钮文字",
+        "description": "留空不点按钮。当前协议版本不支持自动点击。"
+      },
+      "alarm_dedup_minutes": {
+        "type": "integer", "minimum": 0, "default": 30, "title": "相同报警去重分钟数"
+      },
+      "alarm_poll_seconds": {
+        "type": "integer", "minimum": 20, "maximum": 600, "default": 60, "title": "电话报警轮询秒数"
+      },
       "auto_bot_name": {
         "type": "string",
         "title": "群内机器人",
-        "description": "群里交给哪个机器人（填它在群里显示的名字）。留空或找不到数字 id 时，直接交给助手。",
+        "description": "群里交给哪个机器人（填它在群里显示的名字）。机器人不在群里时会先尝试添加。留空、找不到数字 id 或无法确认入群时，直接交给助手。",
         "default": ""
       },
       "auto_bot_id": {
         "type": "string",
         "title": "群内机器人 id",
-        "description": "群内机器人的 id（可选）。不填时按名字从见过的消息里自动找",
+        "description": "群内机器人的 id（可选）。不填时先按群成员名单精确匹配；没有匹配时再查历史消息，同名有歧义时交给助手",
         "default": ""
       },
       "auto_bot_timeout_seconds": {
         "type": "integer",
         "title": "等待机器人响应的秒数",
-        "description": "超过此时间未收到群内机器人的实时回复时，先检查话题回复，再检查群消息记录；仍未发现回复才交给助手。读取失败时每隔 30 秒重试，最多三次。",
+        "description": "超过此时间未收到群内机器人的实时回复时，先检查话题回复，再检查群消息记录；机器人和你本人都未回复时才交给助手。读取失败时每隔 30 秒重试，最多三次。",
         "default": 180,
         "minimum": 30,
         "maximum": 1800
@@ -214,6 +259,10 @@
         "default": [],
         "description": "消息里出现这些正则能匹配的内容（比如你们代码托管平台的合并请求链接）时，直接当作代码 review，不再问模型。"
       },
+      "auto_active_minutes": {
+        "type": "integer", "minimum": 0, "default": 10, "title": "本人活跃窗口（分钟）",
+        "description": "本人最近在同一私聊或群话题发过消息就跳过自动处理。设为 0 只检查请求之后的回复。"
+      },
       "auto_dm_idle_hours": {
         "type": "integer",
         "title": "私聊闲置时长",
@@ -221,39 +270,6 @@
         "default": 24,
         "minimum": 1,
         "maximum": 168
-      },
-      "command_hooks": {
-        "type": "array",
-        "title": "/命令 Hook",
-        "description": "每项一个命令，比如 /todo、/note。本人发的、以这些命令开头的新鲜消息不交给助手，改为签名 POST 到下面的 Hook 地址；规则和 /agent 一致，别人发的、历史消息、AI 代答都不算，每条消息只发一次。/agent 留给助手，不能用。留空就不开。",
-        "items": {
-          "type": "string",
-          "pattern": "^/[A-Za-z0-9][A-Za-z0-9_-]{0,31}$"
-        },
-        "maxItems": 20,
-        "uniqueItems": true,
-        "default": []
-      },
-      "command_hook_url": {
-        "type": "string",
-        "title": "Hook 地址",
-        "description": "接收 /命令 的 https 地址；同一台机器上的服务可以写 http://127.0.0.1:端口、http://localhost:端口 或 http://[::1]:端口（沙盒里会自动改成 host.persona.internal）。不跟随重定向。没填时 /命令 Hook 不生效。",
-        "format": "uri",
-        "maxLength": 2000
-      },
-      "command_hook_context": {
-        "type": "integer",
-        "title": "Hook 附带上文",
-        "description": "随 Hook 一起发出这个会话里命令之前的几条消息，0 到 20，默认 0 不带。上文里可能有别人的消息，只会发到你自己填的 Hook 地址。",
-        "default": 0,
-        "minimum": 0,
-        "maximum": 20
-      },
-      "command_hook_quote": {
-        "type": "boolean",
-        "title": "Hook 附带引用",
-        "description": "默认开启。命令是回复某条消息时，随 Hook 一起发出被回复的那条消息。",
-        "default": true
       }
     }
   },

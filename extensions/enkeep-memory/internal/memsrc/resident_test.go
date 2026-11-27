@@ -381,3 +381,87 @@ func TestResidentTextKeepsExceptionAndPoles(t *testing.T) {
 		t.Errorf("poles line %q (%d bytes, max %d)", pl, len(pl), PrincipleTextMost)
 	}
 }
+
+// Unified design §2.1: user-confirmed (S6 handwritten / self_report / user-edited) rules pass through verbatim into
+// standing and Page 1 recall without L1 rewriting; L1 paraphrases covering those IDs transfer Hard/Polarity signals
+// and exit standing, while pure behavior-synthesized L1 patterns stand alongside verbatim rules.
+func TestUserOwnedVerbatimPassThrough(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"hw-1": {
+			ID: "hw-1", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
+			Text: "用户已下令的任务被拦截时，直接安排 Agent 处理，严禁把命令抛回给用户操作。", Exception: "需本人登录除外",
+			Count: 10, Kinds: []string{"S1", "S6"}, Last: "2026-11-22", Tagged: true,
+		},
+		"hw-sens": {
+			ID: "hw-sens", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
+			Text: "私密财务手写规则不可进常驻", Count: 10, Kinds: []string{"S6"}, Last: "2026-11-22", Tagged: true,
+			Categories: []entry.Category{{Name: entry.CatFinance, By: entry.ByModel}},
+		},
+		"hw-world": {
+			ID: "hw-world", Facet: entry.World, Origin: entry.Handwritten, Status: entry.Stable,
+			Text: "实体事实永不进常驻", Count: 10, Kinds: []string{"S6"}, Last: "2026-11-22", Tagged: true,
+		},
+		"beh-l0": {
+			ID: "beh-l0", Facet: entry.Interaction, Origin: entry.Behavior, Status: entry.Stable,
+			Text: "普通自动抽取行为碎片不可绕过 L1 进常驻", Count: 10, Kinds: []string{"S1"}, Last: "2026-11-22", Tagged: true,
+			Leverage: &entry.Leverage{Reach: entry.ReachCrossProject, Horizon: entry.HorizonLasting},
+		},
+	}}
+	extras := []Extra{
+		{
+			Entry:      Entry{ID: "ov:pattern:rewritten", Facet: "interaction", Text: "被 L1 改写洗淡的抽象口号", Rank: 980},
+			Kind:       entry.KindRules,
+			L1Kind:     BucketContract,
+			Score:      140,
+			Hard:       true,
+			Polarity:   "check",
+			Body:       "被 L1 改写洗淡的抽象口号",
+			CoveredIDs: []string{"hw-1"},
+			Last:       "2026-11-22",
+		},
+		{
+			Entry:    Entry{ID: "ov:pattern:pure-l1", Facet: "tools", Text: "纯行为归纳的新工具契约", Rank: 965},
+			Kind:     entry.KindRules,
+			L1Kind:   BucketContract,
+			Score:    120,
+			Hard:     true,
+			Polarity: "route",
+			Body:     "纯行为归纳的新工具契约：消息投递必须调用 send_message 工具。",
+			Last:     "2026-11-22",
+		},
+	}
+	res, _, err := PageWith(st, nil, extras, Params{Contribution: "memory", Limit: 50, ResidentBytes: 4096})
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]Entry{}
+	for _, e := range res.Entries {
+		byID[e.ID] = e
+	}
+	hw := byID["hw-1"]
+	if !hw.Standing {
+		t.Fatalf("handwritten rule hw-1 must pass through into standing verbatim: %+v", hw)
+	}
+	if !strings.Contains(hw.Text, "严禁把命令抛回给用户操作") || !strings.Contains(hw.Text, "（例外：需本人登录除外）") {
+		t.Errorf("hw-1 lost verbatim text or exception: %q", hw.Text)
+	}
+	if Rank(st.Entries["hw-1"]) < 820 {
+		t.Errorf("active UserOwned rule rank = %d, want >= 820", Rank(st.Entries["hw-1"]))
+	}
+	if rew := byID["ov:pattern:rewritten"]; rew.Standing || rew.Rank > 740 {
+		t.Errorf("L1 paraphrase covering live handwritten rule must not stand or outrank verbatim rules: %+v", rew)
+	}
+	if pure := byID["ov:pattern:pure-l1"]; !pure.Standing {
+		t.Errorf("pure behavior-synthesized L1 contract must stand alongside verbatim handwritten rules: %+v", pure)
+	}
+	for _, forbidden := range []string{"hw-sens", "hw-world", "beh-l0"} {
+		if byID[forbidden].Standing {
+			t.Errorf("%s must never stand: %+v", forbidden, byID[forbidden])
+		}
+	}
+	// Enriched occasion/tool subjects allow decisions_query(tag) to find non-standing handwritten rules.
+	subjs := Subjects(st, st.Entries["hw-1"])
+	if !slices.Contains(subjs, "派活") {
+		t.Errorf("expected enriched occasion subject for handwritten rule, got %v", subjs)
+	}
+}

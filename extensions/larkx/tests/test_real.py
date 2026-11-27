@@ -65,6 +65,25 @@ class ThreadAndChatterTest(unittest.TestCase):
         self.api = self.backend._client.api
         self.backend._extract_key = lambda *_: ""
 
+    def test_an_unwritten_or_unknown_mention_never_posts(self):
+        backend = self.backend
+        mock_client = backend._client
+        with self.assertRaises(ValueError):
+            backend.send("6001", "hello", None, mentions=[{"id": "7001", "name": "Example"}])
+        with self.assertRaises(ValueError):
+            backend.send("6001", "@Example hi", None, mentions=[{"id": "ou_not_numeric", "name": "Example"}])
+        mock_client.send_msg.assert_not_called()
+        mock_client._gateway_post.assert_not_called()
+
+    def test_no_mentions_keeps_the_original_send_path(self):
+        backend = self.backend
+        mock_client = backend._client
+        mock_client.send_msg.return_value = "m1"
+        self.assertEqual(backend.send("6001", "@Example hi", None), "m1")
+        mock_client.send_msg.assert_called_once_with("@Example hi", "6001", root_id=None)
+        for method in ("create_chat", "search", "history", "chat_info", "user_name", "chat_members", "download"):
+            self.assertTrue(callable(getattr(backend, method)), method)
+
     def test_distinct_thread_id_positions_order_scope_and_decoding(self):
         card = {"id": "reply", "type": 14, "fromId": "bot", "createTime": 123, "content": b"card"}
         self.api.side_effect = [
@@ -85,6 +104,44 @@ class ThreadAndChatterTest(unittest.TestCase):
         self.assertEqual([rows[-1][k] for k in ("root", "thread_id", "chat", "sender", "at", "type", "text")],
                          ["root", "thread", "group", "bot", 123, "CARD", "card text"])
         self.assertEqual(decode.call_args_list, [mock.call(14, b"card")] * 2)
+
+    def test_integer_response_keys_and_mixed_scope_ids_preserve_bot_reply(self):
+        self.api.side_effect = [
+            {"messages": {10: {"threadId": 20, "chatId": 30}}},
+            {"threads": {20: {"rootMessageId": 10, "channelId": "30", "lastMessagePosition": 2}}},
+            {"threadId": 20, "channelId": 30, "messages": {
+                0: {"id": 10}, 1: {"id": 11, "chatId": 31},
+                2: {"id": 12, "chatId": 30, "rootId": 10, "threadId": 20, "fromId": 40}}}]
+        decoders = SimpleNamespace(MSG_TYPE_NAMES={}, enum_to_int=int, decode_message_content=lambda *_: ("reply", {}))
+        with mock.patch.dict(sys.modules, {"larkx.proto": SimpleNamespace(decoders=decoders)}):
+            rows = self.backend.thread_replies(30, "10")
+        self.assertEqual([(r["id"], r["root"], r["sender"]) for r in rows], [("12", "10", "40")])
+        self.assertEqual(self.api.call_args.args[1]["threadId"], "20")
+
+    def test_context_lookup_checks_chat_and_preserves_unknown_reply_count(self):
+        raw = {"id": "root", "type": 14, "chatId": "g", "replyCount": "12", "content": b"card"}
+        self.api.return_value = {"messages": {"root": raw, "quote": dict(raw, id="quote", chatId="other"),
+                                              "no-scope": dict(raw, id="no-scope", chatId=""),
+                                              "unknown": {k: v for k, v in dict(raw, id="unknown").items() if k != "replyCount"}}}
+        decoders = SimpleNamespace(MSG_TYPE_NAMES={14: "CARD"}, enum_to_int=int,
+                                   decode_message_content=lambda *_: ("preview", {"cardHeader": {"title": "Sample"}}))
+        ids = ["root", "quote", "no-scope", "unknown"]
+        with mock.patch.dict(sys.modules, {"larkx.proto": SimpleNamespace(decoders=decoders)}):
+            root, unknown = self.backend.messages_by_id("g", ids)
+        self.api.assert_called_once_with("messages.PullMessagesByIdsRequest", {"messageIds": ids})
+        self.assertEqual((root["id"], root["card_title"], root["reply_count"]), ("root", "Sample", 12))
+        self.assertEqual(unknown["id"], "unknown")
+        self.assertNotIn("reply_count", unknown)
+
+    def test_context_topic_discovery_batches_roots_and_checks_scope(self):
+        self.store.remember_thread("g", "known", "saved-thread")
+        self.api.return_value = {"threads": {
+            "saved-thread": {"rootMessageId": "known", "lastMessagePosition": 0},
+            "foreign": {"channelId": "elsewhere", "lastMessagePosition": 5},
+            "empty": {"messageStartPosition": 10, "lastVisibleMessagePosition": 9}}}
+        self.assertEqual(self.backend.topic_roots("g", dict(known=None, foreign=None, empty=None, missing=None)), {"known"})
+        self.api.assert_called_once_with("thread.PullThreadsByIDsRequest",
+                                         {"threadIds": ["saved-thread", "foreign", "empty", "missing"]})
 
     def test_live_anchor_remembers_thread_and_does_not_relabel_another_chat(self):
         row = normalize({"msg_id": "reply", "root_id": "root", "scope": "topic", "anchor": "thread",
@@ -354,27 +411,6 @@ class RealTest(unittest.TestCase):
             at.ParseFromString(element.property)
             self.assertEqual((at.userId, at.content), ("7001", "@Example"))
         self.assertEqual(req.content.richText.elements.dictionary[req.content.richText.elementIds[-1]].tag, 1)
-
-    def test_an_unwritten_or_unknown_mention_never_posts(self):
-        from larkx_persona.real import RealBackend
-        backend = RealBackend(ROOT, self.home.name, "feishu")
-        backend._client = mock_client = unittest.mock.Mock()
-        with self.assertRaises(ValueError):
-            backend.send("6001", "hello", None, mentions=[{"id": "7001", "name": "Example"}])
-        with self.assertRaises(ValueError):
-            backend.send("6001", "@Example hi", None, mentions=[{"id": "ou_not_numeric", "name": "Example"}])
-        mock_client.send_msg.assert_not_called()
-        mock_client._gateway_post.assert_not_called()
-
-    def test_no_mentions_keeps_the_original_send_path(self):
-        from larkx_persona.real import RealBackend
-        backend = RealBackend(ROOT, self.home.name, "feishu")
-        backend._client = mock_client = unittest.mock.Mock()
-        mock_client.send_msg.return_value = "m1"
-        self.assertEqual(backend.send("6001", "@Example hi", None), "m1")
-        mock_client.send_msg.assert_called_once_with("@Example hi", "6001", root_id=None)
-        for method in ("create_chat", "search", "history", "chat_info", "user_name", "chat_members", "download"):
-            self.assertTrue(callable(getattr(backend, method)), method)
 
     def test_chat_members_parses_humans_bots_nicknames_and_pagination(self):
         from larkx_persona.real import RealBackend

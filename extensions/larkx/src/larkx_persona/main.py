@@ -6,8 +6,8 @@ import sys
 import tempfile
 
 from .connector import ID, Connector
-from .hub_api import HubAPI
 from .hooks import Hooks
+from .hub_api import HubAPI
 from .store import Store
 from .wire import Peer, RpcError
 
@@ -79,13 +79,14 @@ class Plugin:
             self.connector = Connector(backend, store, hub,
                                        config.get("triage_rules") or "", config.get("agent_reply_suffix") or "",
                                        config.get("agent_prefix") or "")
+            self.connector.inbox_triage_chats = frozenset(config.get("inbox_triage_chats") or ())
+            self.connector.mention = config.get("agent_mention", True) is not False
+            self.connector.topics = config.get("agent_group_topics", True) is not False
+            self.connector.hooks = Hooks.from_config(config, params.get("secrets"), hub.log)
             hub_info = params.get("hub") or {}
             self.connector.hub_api = HubAPI(hub_info.get("url") or os.environ.get("PERSONA_HUB_URL", ""),
                                             hub_info.get("token") or os.environ.get("PERSONA_HUB_TOKEN", ""))
             self.connector.agent_engine = config.get("agent_engine", "channel")
-            self.connector.inbox_triage_chats = frozenset(config.get("inbox_triage_chats") or ())
-            self.connector.mention = config.get("agent_mention", True) is not False
-            self.connector.topics = config.get("agent_group_topics", True) is not False
             self.connector.auto_handle = config.get("auto_handle") is True
             self.connector.auto_route_hint = (config.get("auto_route_hint") or "").strip()[:2000].rstrip()
             self.connector.auto_bot_name = (config.get("auto_bot_name") or "").strip()
@@ -96,8 +97,15 @@ class Plugin:
             self.connector.auto_test_senders = {s.strip() for s in senders if isinstance(s, str) and s.strip()} if isinstance(senders, list) else set()
             self.connector.auto_review_patterns = _patterns(config.get("auto_review_patterns"))
             self.connector.auto_reply_style = (config.get("auto_reply_style") or "").strip()[:1000]
+            self.connector.auto_active_minutes = max(0, config.get("auto_active_minutes", 10))
             self.connector.auto_dm_idle_hours = max(1, min(168, config.get("auto_dm_idle_hours", 24)))
-            self.connector.hooks = Hooks.from_config(config, params.get("secrets"), hub.log)
+            for key in ("alarm_sources", "alarm_skip_markers"):
+                values = config.get(key)
+                if isinstance(values, list):
+                    setattr(self.connector, key, tuple(dict.fromkeys(s.strip() for s in values if isinstance(s, str) and s.strip())))
+            self.connector.alarm_join_button = (config.get("alarm_join_button") or "").strip()
+            self.connector.alarm_dedup_minutes = max(0, config.get("alarm_dedup_minutes", 30))
+            self.connector.alarm_poll_seconds = max(20, min(600, config.get("alarm_poll_seconds", 60)))
             self.connector.start()
         return {"protocol": PROTOCOL, "id": self.manifest["id"], "version": self.manifest["version"], "contributes": self.manifest["contributes"]}
 

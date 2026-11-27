@@ -31,7 +31,7 @@ class HubAPI:
         req = Request(self.url + path, data=json.dumps(body).encode() if body is not None else None,
                       headers={"Authorization": "Bearer " + self.token, "Content-Type": "application/json"})
         try:
-            with urlopen(req, timeout=30) as response:
+            with urlopen(req, timeout=120 if body is not None else 30) as response:
                 raw = response.read()
         except HTTPError as exc:
             exc.close()
@@ -40,6 +40,8 @@ class HubAPI:
             raise
         except URLError as exc:
             # A timeout/reset after submitting a POST has an unknown outcome. Do not submit it again.
+            if isinstance(exc.reason, TimeoutError):
+                raise exc.reason from exc
             if isinstance(exc.reason, (ConnectionRefusedError, socket.gaierror)):
                 raise HubUnavailable from exc
             raise
@@ -56,7 +58,7 @@ class HubAPI:
         return "/api/v1/sessions/%s/%s" % (quote(machine, safe=""), quote(session, safe=""))
 
     def message(self, machine, session, prompt, client_msg_id):
-        # The hub refuses a message to some sessions without an id (codex_send_guard): it keeps a retried POST from
+        # The hub refuses a message to some sessions without an id: it keeps a retried POST from
         # being delivered twice, so the id is stable per request.
         self._call(self._session(machine, session) + "/messages", {"text": prompt, "client_msg_id": client_msg_id})
 

@@ -17,10 +17,17 @@ CREATE TABLE IF NOT EXISTS messages (
   media TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]', markdown TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS messages_chat ON messages (chat, position);
 CREATE INDEX IF NOT EXISTS messages_topic ON messages (chat, root) WHERE root NOT IN ('', '0');
+CREATE INDEX IF NOT EXISTS messages_chat_at ON messages (chat, at);
 CREATE TABLE IF NOT EXISTS names (id TEXT PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS chatter_types (id TEXT PRIMARY KEY, bot INTEGER NOT NULL, expires REAL NOT NULL);
 CREATE TABLE IF NOT EXISTS thread_ids (chat TEXT NOT NULL, root TEXT NOT NULL, thread TEXT NOT NULL, PRIMARY KEY (chat, root));
 CREATE TABLE IF NOT EXISTS sends (key TEXT PRIMARY KEY, result TEXT);
+CREATE TABLE IF NOT EXISTS alarm_positions (
+  account TEXT NOT NULL, chat TEXT NOT NULL, position INTEGER NOT NULL, PRIMARY KEY (account, chat));
+CREATE TABLE IF NOT EXISTS alarm_keys (
+  account TEXT NOT NULL, key TEXT NOT NULL, handled REAL NOT NULL, PRIMARY KEY (account, key));
+CREATE TABLE IF NOT EXISTS alarm_replies (
+  account TEXT NOT NULL, request TEXT NOT NULL, chat TEXT NOT NULL, root TEXT NOT NULL, PRIMARY KEY (account, request));
 CREATE TABLE IF NOT EXISTS auto_topics (
   account TEXT NOT NULL, scope TEXT NOT NULL, scenario TEXT NOT NULL DEFAULT '', handled REAL NOT NULL DEFAULT 0,
   thread TEXT NOT NULL DEFAULT '', active REAL NOT NULL DEFAULT 0, PRIMARY KEY (account, scope));
@@ -47,6 +54,8 @@ class Store:
         self._db.executescript(SCHEMA)
         # Databases from before self-mentions have no mention metadata column. Keep those messages inert.
         columns = {r["name"] for r in self._db.execute("PRAGMA table_info(messages)")}
+        if "card_title" not in columns:
+            self._db.execute("ALTER TABLE messages ADD COLUMN card_title TEXT NOT NULL DEFAULT ''")
         if "auto_account" not in columns:
             self._db.execute("ALTER TABLE messages ADD COLUMN auto_account TEXT NOT NULL DEFAULT ''")
         if "mentions" not in columns:
@@ -94,12 +103,12 @@ class Store:
         if m.get("thread_id"):
             self.remember_thread(m["chat"], m.get("root") or m["id"], m["thread_id"])
         return self._do(
-            "INSERT OR IGNORE INTO messages (id, chat, position, sender, sender_name, mine, type, text, at, root, parent, at_me, media, mentions, markdown)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO messages (id, chat, position, sender, sender_name, mine, type, text, at, root, parent, at_me, media, mentions, markdown, card_title)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             m["id"], m["chat"], m.get("position") or 0, m.get("sender") or "", sender_name, 1 if mine else 0,
             m.get("type") or "", m.get("text") or "", m.get("at") or 0, m.get("root") or "", m.get("parent") or "",
             1 if m.get("at_me") else 0, json.dumps(m.get("media") or [], ensure_ascii=False),
-            json.dumps(m.get("mentions") or [], ensure_ascii=False), m.get("markdown") or "") > 0
+            json.dumps(m.get("mentions") or [], ensure_ascii=False), m.get("markdown") or "", m.get("card_title") or "") > 0
 
     def touch_chat(self, chat, kind, at):
         self._do("INSERT INTO chats (id, kind, last_at) VALUES (?, ?, ?)"
@@ -167,6 +176,35 @@ class Store:
             chat, root, root, before, before, limit)
         return [_message(row) for row in reversed(rows)]
 
+    def owner_active(self, me, request, topic, minutes, suffix, chat=None):
+        # Equal server timestamps are common. Position and then insertion order break ties.
+        return bool(self._one(
+            "SELECT 1 FROM messages m JOIN messages r ON r.id = ? WHERE m.chat = coalesce(?, r.chat) AND m.sender = ?"
+            " AND (? = '' OR m.id = ? OR m.root = ?) AND substr(rtrim(m.text, char(9,10,13,32)), -length(?)) != ?"
+            " AND (m.at > r.at OR (m.at = r.at AND CASE"
+            " WHEN m.id = r.root THEN 0 WHEN m.root = r.id THEN 1"
+            " WHEN m.position > 0 AND r.position > 0 AND m.position != r.position THEN m.position > r.position"
+            " ELSE m.seq > r.seq END) OR (? > 0 AND m.at >= r.at - ?)) LIMIT 1",
+            request, chat, me, topic, topic, topic, suffix, suffix, minutes, minutes * 60))
+
+    def classification_history(self, request, me, topic):
+        return self._all(
+            "SELECT m.sender, m.text FROM messages m JOIN messages r ON r.id = ? WHERE m.chat = r.chat"
+            " AND m.sender IN (?, r.sender) AND (? = '' OR m.id = ? OR m.root = ?)"
+            " AND (m.at, m.position, m.seq) < (r.at, r.position, r.seq)"
+            " ORDER BY m.at DESC, m.position DESC, m.seq DESC LIMIT 8", request, me, topic, topic, topic)[::-1]
+
+    def context_rows(self, chat, since, until, limit, *, top=False, topic="", exclude=""):
+        where = "chat = ? AND at BETWEEN ? AND ? AND id != ?"
+        args = [chat, since, until, exclude]
+        if top:
+            where += " AND (root = '' OR root = id)"
+        if topic:
+            where += " AND root = ? AND id != root"
+            args.append(topic)
+        return self._all("SELECT * FROM messages WHERE " + where + " ORDER BY at DESC, position DESC, seq DESC LIMIT ?",
+                         *args, limit)
+
     def oldest_position(self, chat):
         row = self._one("SELECT MIN(position) AS p FROM messages WHERE chat = ? AND position > 0", chat)
         return (row or {}).get("p") or 0
@@ -205,6 +243,25 @@ class Store:
         """True when key was taken for a send, whatever that send ended with."""
         return self._one("SELECT 1 AS one FROM sends WHERE key = ?", key) is not None
 
+    def alarm_position(self, account, chat):
+        row = self._one("SELECT position FROM alarm_positions WHERE account = ? AND chat = ?", account, chat)
+        return row["position"] if row else None
+
+    def set_alarm_position(self, account, chat, position):
+        self._do("INSERT OR REPLACE INTO alarm_positions VALUES (?, ?, ?)", account, chat, position)
+
+    def alarm_recent(self, account, key, since):
+        return self._one("SELECT 1 FROM alarm_keys WHERE account = ? AND key = ? AND handled > ?", account, key, since)
+
+    def alarm_handled(self, account, key, at):
+        self._do("INSERT OR REPLACE INTO alarm_keys VALUES (?, ?, ?)", account, key, at)
+
+    def alarm_reply(self, account, request):
+        return self._one("SELECT chat, root FROM alarm_replies WHERE account = ? AND request = ?", account, request)
+
+    def set_alarm_reply(self, account, request, chat, root):
+        self._do("INSERT OR REPLACE INTO alarm_replies VALUES (?, ?, ?, ?)", account, request, chat, root)
+
     def mark_auto_request(self, msg_id, account):
         self._do("UPDATE messages SET auto_account = ? WHERE id = ?", account, msg_id)
 
@@ -238,9 +295,16 @@ class Store:
             self._db.execute("INSERT OR REPLACE INTO agent_sessions VALUES (:account, :thread, :machine, :session, :sent)", run)
             self._db.execute("INSERT INTO agent_runs (account, request, thread, machine, session, sent, auto, cursor, baseline)"
                              " VALUES (:account, :request, :thread, :machine, :session, :sent, :auto, :cursor, :baseline)", run)
-            # A crash before the bot worker clears its wait must not submit the same fallback a second time.
+            # The last message authorizes the whole batch. Retire its wait in this same transaction.
             self._db.execute("DELETE FROM auto_bot_waits WHERE account = ? AND chat = ? AND root = ? AND sending = 2"
-                             " AND json_extract(batch, '$[#-1].id') = ?", (run["account"], chat, root, run["request"]))
+                             " AND CAST(json_extract(batch, '$[#-1].id') AS TEXT) = ?", (run["account"], chat, root, run["request"]))
+
+    def discard_legacy_run(self, run):
+        # Its answer cannot be attributed safely. The next request must start a fresh session.
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM agent_sessions WHERE account = :account AND thread = :thread"
+                             " AND machine = :machine AND session = :session", run)
+            self._db.execute("DELETE FROM agent_runs WHERE account = :account AND request = :request", run)
 
     def agent_busy(self, account, thread):
         return self._one("SELECT 1 FROM agent_runs WHERE account = ? AND thread = ? LIMIT 1", account, thread)
@@ -276,7 +340,7 @@ class Store:
         row = self._one("SELECT id FROM (SELECT sender AS id, at, seq FROM messages WHERE sender_name = ?"
                         " UNION ALL SELECT CAST(json_extract(j.value, '$.id') AS TEXT), m.at, m.seq"
                         " FROM messages m, json_each(m.mentions) j WHERE json_extract(j.value, '$.label') = ?)"
-                        " WHERE id != '' AND id NOT GLOB '*[^0-9]*' ORDER BY at DESC, seq DESC LIMIT 1", name, "@" + name)
+                        " WHERE length(id) > 0 AND id NOT GLOB '*[^0-9]*' ORDER BY at DESC, seq DESC LIMIT 1", name, "@" + name)
         return row["id"] if row else ""
 
     def begin_bot_wait(self, account, chat, root, bot, scenario, batch, timeout, now):

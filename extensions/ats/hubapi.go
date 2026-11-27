@@ -80,6 +80,7 @@ type hubAPI interface {
 	// Session returns nil when the hub no longer lists the session.
 	Session(ctx context.Context, machineID, sessionID string) (*hubSession, error)
 	LastReply(ctx context.Context, machineID, sessionID string) (string, error)
+	SendMessage(ctx context.Context, machineID, sessionID, text string) error
 	Interrupt(ctx context.Context, machineID, sessionID string) error
 	AttachTodo(ctx context.Context, todoID, machineID, sessionID string) error
 	// Interactions lists the cards sessions wait for the user with.
@@ -262,6 +263,10 @@ func (c *hubClient) LastReply(ctx context.Context, machineID, sessionID string) 
 		return txt, nil
 	}
 	return fallback, nil
+}
+
+func (c *hubClient) SendMessage(ctx context.Context, machineID, sessionID, text string) error {
+	return c.do(ctx, http.MethodPost, sessionPath(machineID, sessionID)+"/messages", map[string]string{"text": text}, nil)
 }
 
 func (c *hubClient) Interrupt(ctx context.Context, machineID, sessionID string) error {

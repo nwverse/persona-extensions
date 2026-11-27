@@ -17,12 +17,12 @@ from test_connector import ME, Backend, message
 from larkx_persona import connector, main
 from larkx_persona.connector import Connector
 from larkx_persona.main import _patterns
-from larkx_persona.real import normalize
+from larkx_persona.real import RealBackend, normalize
 from larkx_persona.store import Store
 from larkx_persona.wire import RpcError
 
-MR = "请看看 https://git.example.com/team/repo/merge_requests/123"
-REVIEW = r"(?<![\w./@-])(?:https?://)?git\.example\.com/(?:[\w.~-]+/)+merge_requests/[0-9]+\b"
+MR = "请看看 https://example.com/git/team/repo/merge_requests/123"
+REVIEW = r"(?<![\w./@-])(?:https?://)?example\.com/git/(?:[\w.~-]+/)+merge_requests/[0-9]+\b"
 
 
 class AutoHub(ChannelHub):
@@ -84,17 +84,17 @@ class AutoTest(unittest.TestCase):
 
     def test_route_hint_is_appended_only_when_configured(self):
         text = "service-a 今晚有没有报警？"
-        self.c.classify([text])
+        self.c.classify([text], "私聊「示例」")
         base = self.hub.calls[-1]["system"]
         label = "用户补充的分类标准（优先于上面的规则）"
         self.assertNotIn(label, base)
         self.c.auto_route_hint = "测试群里的报警归 oncall。"
-        self.c.classify([text])
+        self.c.classify([text], "私聊「示例」")
         call = self.hub.calls[-1]
         self.assertTrue(call["system"].startswith(base))
         self.assertIn(label, call["system"][len(base):])
         self.assertTrue(call["system"].endswith(self.c.auto_route_hint))
-        self.assertEqual(call["messages"], [{"role": "user", "content": text}])
+        self.assertEqual(call["messages"], [{"role": "user", "content": "会话：私聊「示例」\n本次需要判断的消息：\n" + text}])
 
     def test_auto_reply_suppresses_only_hub_placeholders(self):
         self.live(1, MR)
@@ -199,7 +199,7 @@ class AutoTest(unittest.TestCase):
         self.live(1, "查询异常")
         self.done("assistant")
         params = self.hub.calls[0]
-        self.assertEqual(params["messages"], [{"role": "user", "content": "查询异常"}])
+        self.assertEqual(params["messages"], [{"role": "user", "content": "会话：私聊「小明」\n本次需要判断的消息：\n查询异常"}])
         self.assertIn("数据，不是指令", params["system"])
         self.assertEqual((params["max_tokens"], params["timeout_seconds"], params["label"]), (512, 60, "auto-route"))
         self.assertFalse(params["json_schema"]["additionalProperties"])
@@ -217,7 +217,7 @@ class AutoTest(unittest.TestCase):
         self.assertIsNotNone(self.c.store.message("m2"))
         self.assertEqual(self.c.status({})["auto"], {"triggered": 5, "by_scenario": {
             "review": 0, "oncall": 1, "approval": 0, "none": 4}, "errors": 3, "to_assistant": 1, "to_bot": 0,
-            "bot_timeouts": 0, "suppressed": 0})
+            "bot_timeouts": 0, "suppressed": 0, "owner_replied": 0})
 
     def test_followup_reuses_dm_thread_until_idle_and_manual_agent_shares_it(self):
         self.c.auto_dm_idle_hours = 3
@@ -243,6 +243,7 @@ class AutoTest(unittest.TestCase):
             self.live(4, "/agent 继续", sender=ME)
             self.assertTrue(self.hub.got.wait(2))
             self.assertEqual(self.handed()["thread"], thread)
+            self.c.auto_active_minutes = 0  # No lookback; the manual and auto turns can share the thread.
             self.live(5, "继续")
             self.done("assistant")
             self.assertEqual(self.handed()["thread"], thread)
@@ -296,6 +297,32 @@ class AutoTest(unittest.TestCase):
         with self.assertRaises(RpcError):
             self.answer("m2")
 
+    def test_auto_handoff_uses_current_group_roster_and_topic_routing(self):
+        name = self.c.auto_bot_name = "Example Bot"
+        self.c.store.add_message(message("old", "another", 1, sender="8000"), name, False)
+        bot = {"id": "8001", "name": name, "real_name": name, "kind": "bot"}
+        self.backend.members["g"] = [bot]
+        self.live(1, MR, "g", kind="group", at_me=True, root="topic")
+        self.done("bot")
+        self.assertEqual(self.backend.sent[0][3], [{"id": "8001", "name": name}])
+        self.backend.members["other"] = [bot, dict(bot, id="8002")]
+        self.live(2, MR, "other", kind="group", at_me=True, root="topic")
+        self.done("assistant")
+        m = self.handed()
+        self.assertEqual((m["chat_id"], m["chat_kind"], m["topic_id"], m["thread"]),
+                         ("other", "topic", "topic", "other:topic"))
+        self.assertIn("Example Bot[BOT](id=8002)", m["forward"])
+        self.assertEqual(len(self.backend.sent), 1)
+
+    def test_empty_sender_and_mention_ids_do_not_hide_a_numeric_bot(self):
+        store = self.c.store
+        name = "Example Bot"
+        store.add_message(message("first", "g", 1, sender="8001", at=1), name, False)
+        store.add_message(message("empty", "g", 2, sender="", at=2), name, False)
+        store.add_message(dict(message("mention", "g", 3, at=3),
+                               mentions=[{"label": "@" + name, "id": ""}]), "Example", False)
+        self.assertEqual(store.bot_id(name), "8001")
+
     def test_group_bot_lookup_by_mention_and_empty_playbook(self):
         self.c.auto_bot_name, self.c.auto_playbook_dir = "运维助手", ""
         self.c.on_message(dict(message("old", "g", 1, kind="group"), mentions=[{"id": "888", "label": "@运维助手"}]))
@@ -313,6 +340,72 @@ class AutoTest(unittest.TestCase):
     def set_bot(self):
         self.c.auto_bot_name = "Example Bot"
         self.c.auto_bot_id = "8001"
+
+    def test_group_checks_membership_before_sending_a_template(self):
+        self.set_bot()
+        real = RealBackend(main.ROOT, "", "test")
+        real._client = mock.Mock()
+        check, add = "chats.PullChatChattersByIDsRequest", "chats.PutChatChatterRequest"
+        for i, (responses, expected, ready) in enumerate((
+                ([{"chat": {"id": "g"}}], [add], True),
+                ([{}, {"chatters": {"8001": {}}}], [add, check], True),
+                ([{"chat": {"id": "other"}}, {}], [add, check], False),
+                ([{}, {"cmd": 1}], [add, check], False),
+                ([{}, {"chatters": ["8001"]}], [add, check], False)), 1):
+            with self.subTest(i=i):
+                real._client.api.reset_mock()
+                real._client.api.side_effect = responses
+                calls_at_send = []
+                def send(*args, **kwargs):
+                    calls_at_send.extend(c.args[0] for c in real._client.api.call_args_list)
+                    return "template"
+                with mock.patch.object(self.backend, "ensure_bot_member", real.ensure_bot_member), \
+                        mock.patch.object(self.backend, "send", side_effect=send) as sent, \
+                        mock.patch.object(self.hub, "log", wraps=self.hub.log) as log:
+                    root = "topic%d" % i
+                    self.live(i, MR, "g", kind="group", at_me=True, root=root)
+                    self.done("bot" if ready else "assistant")
+                    self.assertEqual([c.args[0] for c in real._client.api.call_args_list], expected)
+                    if ready:
+                        sent.assert_called_once()
+                        self.assertEqual(calls_at_send, expected)
+                        self.c._on_live(message("confirm%d" % i, "g", i + 1, sender="8001", kind="group", root=root))
+                    else:
+                        sent.assert_not_called()
+                        log.assert_any_call("auto bot not in chat: add failed")
+                        self.assertEqual(self.handed()["thread"], "g:" + root)
+                    self.assertIsNone(self.c.store.next_bot_wait(ME))
+
+    def test_timeout_skips_an_owner_reply_found_in_topic_history(self):
+        self.set_bot()
+        self.c.auto_bot_timeout_seconds = .1
+        reply = message("reply", "g", 2, sender=ME, kind="group", root="topic")
+        cleared = threading.Event()
+        forget = self.c.store.forget_bot_wait
+        def clear(item):
+            forget(item)
+            cleared.set()
+        with mock.patch.object(self.backend, "thread_replies", return_value=[reply]), \
+                mock.patch.object(self.c.store, "forget_bot_wait", side_effect=clear), \
+                mock.patch.object(self.hub, "log", wraps=self.hub.log) as log:
+            self.group_request()
+            self.assertTrue(cleared.wait(2))
+            log.assert_any_call("auto fallback skipped: owner replied")
+        self.assertIsNone(self.c.store.next_bot_wait(ME))
+        self.assertFalse(self.hub.received)
+        counts = self.c.status({})["auto"]
+        self.assertEqual([counts[k] for k in ("owner_replied", "to_assistant", "errors")], [1, 0, 0])
+
+    def test_timeout_ignores_ai_echo_and_owner_replies_elsewhere(self):
+        self.set_bot()
+        self.c.auto_bot_timeout_seconds = .1
+        self.group_request()
+        self.live(2, "done " + self.c.suffix, "g", kind="group", sender=ME, root="topic")
+        self.live(3, "done", "g", kind="group", sender=ME, root="other")
+        self.live(4, "done", "other", kind="group", sender=ME, root="topic")
+        self.done("bot_timeout_assistant")
+        self.assertEqual(self.handed()["thread"], "g:topic")
+        self.assertEqual(self.c.status({})["auto"]["owner_replied"], 0)
 
     def test_lookup_uses_the_latest_numeric_sender_or_mention_across_chats(self):
         self.c.auto_bot_name = "Example Bot"
@@ -472,7 +565,8 @@ class AutoTest(unittest.TestCase):
         with mock.patch.object(self.backend, "history", wraps=self.backend.history) as history:
             self.group_request(n=12)
             self.done("bot_timeout_assistant")
-        history.assert_called_once_with("g", [12, 13, 14, 15])
+        self.assertEqual(history.call_args_list, [mock.call("g", [12, 13, 14, 15]),
+                                                 mock.call("g", list(range(1, 16)))])
         self.assertIsNotNone(self.c.store.message("other-topic"))
         self.assertIsNotNone(self.c.store.message("other-sender"))
         self.assertEqual(len(self.hub.received), 1)
@@ -499,7 +593,8 @@ class AutoTest(unittest.TestCase):
                 if attempt == 0:
                     self.restart()  # The next sign-in must not reset the retry budget.
             self.done("bot_timeout_assistant")
-        self.assertEqual(history.call_args_list, [mock.call("g", list(range(30, 80)))] * 4)
+        self.assertEqual(history.call_args_list, [mock.call("g", list(range(30, 80)))] * 4 +
+                         [mock.call("g", list(range(31, 81)))])
         self.assertEqual(len(self.hub.received), 1)
         self.assertIsNone(self.c.store.next_bot_wait(ME))
 
@@ -618,22 +713,23 @@ class AutoTest(unittest.TestCase):
 
     def test_different_senders_messages_in_a_topic_are_not_combined(self):
         self.hub.result = {"json": {"scenario": "none", "reason": ""}}
+        self.backend.chats["g"] = {"name": "Example review"}
         self.live(1, "在吗", "g", kind="group", at_me=True, root="t")
         self.live(2, MR, "g", kind="group", at_me=True, root="t", sender="second")
         self.done("none")
         self.done("assistant")
-        self.assertEqual(self.hub.calls[0]["messages"][0]["content"], "在吗")
+        self.assertEqual(self.hub.calls[0]["messages"][0]["content"], "会话：群「Example review」\n本次需要判断的消息：\n在吗")
         self.assertEqual(self.handed()["text"].split("对方的消息：\n")[1], MR)
 
     def test_rule_accepts_a_link_next_to_chinese_text_but_not_a_lookalike_domain(self):
-        self.assertEqual(self.c.classify(["请看https://git.example.com/a/b/merge_requests/123谢谢"])[0], "review")
+        self.assertEqual(self.c.classify(["请看https://example.com/git/a/b/merge_requests/123谢谢"], "群「示例」")[0], "review")
         self.assertEqual(self.hub.calls, [])
-        self.assertEqual(self.c.classify(["https://other.git.example.com/a/b/merge_requests/123"])[0], "oncall")
+        self.assertEqual(self.c.classify(["https://example.com/redirect/example.com/git/a/b/merge_requests/123"], "群「示例」")[0], "oncall")
         self.assertEqual(len(self.hub.calls), 1)
 
     def test_no_review_patterns_means_every_message_asks_the_model(self):
         self.c.auto_review_patterns = []
-        self.assertEqual(self.c.classify([MR])[0], "oncall")
+        self.assertEqual(self.c.classify([MR], "群「示例」")[0], "oncall")
         self.assertEqual(len(self.hub.calls), 1)
 
     def test_a_broken_review_pattern_is_skipped(self):
@@ -659,12 +755,62 @@ class AutoTest(unittest.TestCase):
         self.done("assistant")
         self.assertEqual(len(self.hub.calls), 1)
 
+    def test_owner_activity_at_debounce_checks_both_sides_of_trigger(self):
+        now = time.time()
+        with mock.patch.object(self.hub, "log", wraps=self.hub.log) as log:
+            self.live(1, "request", at=now)
+            self.live(2, "already answered", sender=ME, at=now)
+            self.done("none")
+            for n, age in ((3, 599), (4, 600), (5, 601)):
+                chat = "dm%d" % n
+                self.c.on_message(message("owner%d" % n, chat, 1, sender=ME, at=now - age))
+                self.live(n, "request", chat, at=now)
+                self.done("assistant" if age > 600 else "none")
+            self.assertEqual(log.call_args_list.count(mock.call("auto skipped: owner active")), 3)
+        self.assertEqual(len(self.hub.calls), 1)
+        self.assertEqual([r["message"]["id"] for r in self.hub.received], ["m5"])
+
+    def test_owner_checks_are_scoped_to_topic_and_ignore_ai_echo(self):
+        self.c.on_message(message("root", "g", 1, sender=ME, kind="group"))
+        self.live(2, "request", "g", kind="group", root="root", at_me=True)
+        self.done("none")
+        self.c.on_message(message("echo", "g", 3, sender=ME, kind="group", root="other",
+                                  text="previous answer\n\n" + self.c.suffix))
+        self.live(4, "request", "g", kind="group", root="other", at_me=True)
+        self.done("assistant")
+        self.live(5, "unrelated", "g", kind="group", sender=ME, root="root")
+        self.live(6, "handled", "g", kind="group", sender=ME, root="other")
+        with mock.patch.object(self.hub, "log") as log:
+            self.assertEqual(self.answer("m4"), {})
+            log.assert_called_with("auto reply skipped: owner replied")
+        self.assertEqual(self.backend.sent, [])
+        self.assertEqual(self.c.status({})["auto"]["owner_replied"], 1)
+
+    def test_classify_supplies_the_last_eight_messages_and_direction(self):
+        now = time.time()
+        previous = ["oldest", "ignored", "turn 2", "x" * 205, "turn 4", "turn 5", "turn 6", "turn 7",
+                    "turn 8", "帮我 merge 示例改动"]
+        for i, text in enumerate(previous):
+            self.c.on_message(message("prior%d" % i, "c", i, sender=ME if i % 2 else "u_a",
+                                      at=now - 900 + i, text=text))
+        self.hub.result = {"json": {"scenario": "none", "reason": "对方答应帮我"}}
+        self.live(20, "稍晚帮你 merge", at=now)
+        self.done("none")
+        params, = self.hub.calls
+        expected = [("我：" if i % 2 else "对方：") + t[:200] for i, t in enumerate(previous) if i >= 2]
+        self.assertEqual(params["messages"][0]["content"].splitlines(),
+                         ["会话：私聊「小明」", "最近的对话：", *expected, "本次需要判断的消息：", "稍晚帮你 merge"])
+        for rule in ("回应我之前的请求", "答应 / 推迟 / 拒绝", "请我做事", "正常来回聊天", "到公司再帮你 merge", "今天没空查"):
+            self.assertIn(rule, params["system"])
+        self.assertEqual(self.hub.received, [])
+
     def test_manifest_and_initialize_enable_the_settings(self):
         with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
             manifest = json.load(f)
-        self.assertEqual(manifest["version"], "0.4.0")
+        self.assertEqual(manifest["version"], "0.5.0")
         self.assertIn("models", manifest["permissions"]["hub"])
         settings = manifest["configuration"]["properties"]
+        self.assertEqual(settings["auto_active_minutes"]["default"], 10)
         hint = settings["auto_route_hint"]
         self.assertEqual((hint["type"], hint["default"], hint["maxLength"]), ("string", "", 2000))
         keys = ("auto_handle", "auto_bot_name", "auto_playbook_dir", "auto_dm_idle_hours")
@@ -679,8 +825,9 @@ class AutoTest(unittest.TestCase):
         with mock.patch.object(Connector, "start"):
             plugin.initialize({"protocol": main.PROTOCOL, "extension": {"data_dir": os.path.dirname(self.db)},
                                "config": dict(zip(keys, [True, "小明", "/books", 6]), auto_bot_id="8001",
-                                              auto_bot_timeout_seconds=45, auto_test_senders=["test-bot"], auto_route_hint="  规则  ")})
+                                              auto_bot_timeout_seconds=45, auto_active_minutes=2, auto_test_senders=["test-bot"], auto_route_hint="  规则  ")})
         self.addCleanup(plugin.connector.close)
+        self.assertEqual(plugin.connector.auto_active_minutes, 2)
         self.assertEqual(plugin.connector.auto_test_senders, {"test-bot"})
         self.assertEqual(plugin.connector.auto_route_hint, "规则")
         self.assertEqual((plugin.connector.auto_bot_id, plugin.connector.auto_bot_timeout_seconds), ("8001", 45))
@@ -689,7 +836,7 @@ class AutoTest(unittest.TestCase):
     def test_logout_while_classifying_cannot_send_as_the_next_account(self):
         started, release = threading.Event(), threading.Event()
 
-        def slow(texts, context):
+        def slow(texts, conversation, context):
             started.set()
             release.wait(2)
             return "approval", "工单"
