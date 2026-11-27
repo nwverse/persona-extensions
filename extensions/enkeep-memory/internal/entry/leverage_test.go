@@ -72,22 +72,37 @@ func TestRooted(t *testing.T) {
 	}
 }
 
-// Unified design §4.2: the legacy L0 90-99 hard-rule floor is removed; hard rules still score by their own leverage
-// (wider/longer outranks narrow one-off) without being artificially bumped to 90+.
+// 0.4.0 §2: single-day anger/ban cue L0 auto-promotion is removed; Hard requires either an explicit user Pin
+// or multi-day user corrections within 7 days, and hard rules still score by their own leverage without a 90+ floor.
 func TestHardRulesScoreByLeverageWithoutFloor(t *testing.T) {
-	ev := func(day string) Evidence { return Evidence{Who: WhoSelf, Day: day, Quote: "以后别再这样"} }
-	narrow := &Entry{Facet: Interaction, Type: "correction", Status: Stable, Grain: Action, Count: 1,
-		Evidence: []Evidence{ev("2026-07-14")}, Leverage: &Leverage{Reach: ReachOneOff, Horizon: HorizonDays}}
+	ev := func(day, quote string) Evidence { return Evidence{Who: WhoSelf, Day: day, Quote: quote} }
+	singleAnger := &Entry{Facet: Interaction, Type: "correction", Status: Stable, Grain: Action, Count: 1,
+		Evidence: []Evidence{ev("2026-07-14", "以后别再这样，真烦人")}, Leverage: &Leverage{Reach: ReachOneOff, Horizon: HorizonDays}}
+	if Hard(singleAnger) {
+		t.Fatalf("single-day anger/ban cue must NOT auto-promote to Hard in 0.4.0")
+	}
+	narrow := &Entry{Facet: Interaction, Type: "correction", Status: Stable, Grain: Action, Count: 2,
+		Evidence: []Evidence{ev("2026-07-14", "别这样"), ev("2026-07-16", "又这样了")}, Leverage: &Leverage{Reach: ReachOneOff, Horizon: HorizonDays}}
 	wide := &Entry{Facet: Interaction, Type: "correction", Status: Stable, Grain: Action, Count: 6,
-		Evidence: []Evidence{ev("2026-11-01"), ev("2026-11-10"), ev("2026-11-20")}, Leverage: &Leverage{Reach: ReachCrossProject, Horizon: HorizonMonths}}
+		Evidence: []Evidence{ev("2026-11-01", "先核验"), ev("2026-11-05", "再说一遍先核验"), ev("2026-11-20", "先查再答")}, Leverage: &Leverage{Reach: ReachCrossProject, Horizon: HorizonMonths}}
 	if !Hard(narrow) || !Hard(wide) {
-		t.Fatal("expected both to be Hard")
+		t.Fatal("expected multi-day corrections within 7 days to be Hard")
+	}
+	if !Hard(&Entry{Facet: Interaction, Pinned: true}) {
+		t.Fatal("expected Pinned entry to be Hard")
 	}
 	if Score(narrow) >= 90 {
 		t.Errorf("narrow hard rule should not be bumped to 90+: got %d", Score(narrow))
 	}
 	if Score(wide) <= Score(narrow) {
 		t.Errorf("hard scores: narrow %d, wide %d", Score(narrow), Score(wide))
+	}
+	// S6 assistant_note / legacy handwritten must not receive the +10 user-owned score bonus.
+	s6 := &Entry{Facet: Interaction, Origin: OriginAssistantNote, Status: Stable, Count: 2}
+	beh := &Entry{Facet: Interaction, Origin: Behavior, Status: Stable, Count: 2}
+	selfRep := &Entry{Facet: Interaction, Origin: SelfReport, Status: Stable, Count: 2}
+	if Score(s6) != Score(beh) || Score(selfRep) <= Score(s6) {
+		t.Errorf("score authority: s6=%d beh=%d selfReport=%d", Score(s6), Score(beh), Score(selfRep))
 	}
 }
 
@@ -111,7 +126,10 @@ func TestFastHotAndColdStart(t *testing.T) {
 	if !ColdStartEligible(pOK) || ColdStartEligible(pNoPrin) {
 		t.Fatalf("cold start understanding: ok=%v noPrin=%v", ColdStartEligible(pOK), ColdStartEligible(pNoPrin))
 	}
-	rHard := &Entry{Facet: Interaction, Type: "correction", Evidence: []Evidence{{Who: WhoSelf, Day: "2026-11-20", Quote: "以后一律先检查"}}}
+	rHard := &Entry{Facet: Interaction, Type: "correction", Evidence: []Evidence{
+		{Who: WhoSelf, Day: "2026-11-20", Quote: "先检查"},
+		{Who: WhoSelf, Day: "2026-11-22", Quote: "记得先检查"},
+	}}
 	rPlain := &Entry{Facet: Interaction, Type: "correction"}
 	if !ColdStartEligible(rHard) || ColdStartEligible(rPlain) {
 		t.Fatalf("cold start rules: hard=%v plain=%v", ColdStartEligible(rHard), ColdStartEligible(rPlain))

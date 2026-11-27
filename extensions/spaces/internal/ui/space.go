@@ -67,21 +67,34 @@ func picker() *wire.View {
 	}}
 }
 
-// templateRows is a row per template: its icon, name and about, and the number of its types. A row opens the
+// templateRows is a row per template: its icon, name and about, and the names of its types. A row opens the
 // template's form.
 func templateRows() []wire.Component {
 	out := []wire.Component{}
 	for _, t := range templates.All() {
-		value := ""
-		if len(t.Types) > 0 {
-			value = fmt.Sprintf("%d 个分类", len(t.Types))
-		}
 		out = append(out, wire.Component{
 			Type: wire.ComponentRow, Icon: iconName(t.Icon), Title: t.Name, Subtitle: cut(t.About, maxText),
-			Value: value, Action: &wire.Action{ID: "new:" + t.Key},
+			Value: templateTypeNames(t), Action: &wire.Action{ID: "new:" + t.Key},
 		})
 	}
 	return out
+}
+
+// rowTypeNames is how many type names a template row shows; a template with more shows the first ones and how many
+// there are in all.
+const rowTypeNames = 4
+
+// templateTypeNames is the names of the template's types for its row, such as 「书 · 笔记 · 剪藏 · 主题」, or
+// 「a · b · c 等 6 个」 for a template with more than rowTypeNames types; "" for a template without types.
+func templateTypeNames(t templates.Template) string {
+	var names []string
+	for _, ty := range t.Types {
+		names = append(names, ty.Name)
+	}
+	if len(names) > rowTypeNames {
+		return strings.Join(names[:rowTypeNames-1], " · ") + fmt.Sprintf(" 等 %d 个", len(names))
+	}
+	return strings.Join(names, " · ")
 }
 
 // createForm is the form of a new space from a template: what the template brings, the name (a free default), the

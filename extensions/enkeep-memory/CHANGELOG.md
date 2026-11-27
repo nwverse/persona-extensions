@@ -1,5 +1,35 @@
 # enkeep-memory changelog
 
+## 0.3.0
+
+- **Unified principle & contract aggregation architecture (L1).**
+  - Refactored `internal/overview` into unified L1 cognitive principles (`judgement`/`workflow`/`persona`) and
+    collaboration contracts (`interaction`/`tools` via `SyncContracts`), grounded in deduplicated first-person user
+    quotes (`overview/3`), fixed cross-scene and quote-dedup evidence gates, counter-example search without `Choice`
+    bias (capturing `Exception` and `Poles`), `Rooted` protection, and subject-ownership privacy tagging.
+  - Added online per-contract violation recurrence counts and per-100-decision-cards recurrence rates to
+    `enkeep_overview_status(from, to, query)` with no hardcoded rule names or new manifest permissions.
+- **Verbatim pass-through for user-confirmed rules and three-bucket standing selection.**
+  - User-owned rules (`handwritten`, `self_report`, user-edited) pass through verbatim with intact exceptions into
+    standing (`4096 B`) and `memory.entries` Page 1 (`rank >= 820`, enriched occasion/tool subjects) rather than being
+    rewritten by L1; L1 focuses on synthesizing new principles and contracts from scattered behavioral events and
+    transferring cross-event `Hard`/`Polarity` signals.
+  - Three-bucket standing outlet: Bucket 0 Hot Slot (`Pinned`, Fast-Path `fast_hot:<day>` TTL 7d, and post-L1
+    unabsorbed high-certainty rules), Bucket 1 Contracts (80%, two-pass anti-monopoly polarity/group caps), and
+    Bucket 2 Principles (20%, unified leverage score). Removed legacy `PatternShare=0.25`, `spillFloor=50`, and
+    single-entry L0 90–99 hard-rule bidding.
+- **Deterministic L0 pre-cleaning and high-purity 1-hop entity skeleton expansion.**
+  - Added deterministic boilerplate/template stripping (`internal/relay`, `internal/curate/preclean.go`) and S3 agent
+    facet scoping before L0 extraction.
+  - Added high-purity 1-hop structural entity skeleton expansion (`internal/recall/expand.go`: whole-word ASCII
+    matching `>= 3` chars, generic noun stoplist, shared-hub `depends_on` fan-in pruning), entity-anchored rule
+    recall floor (`rank 750–891`), Chinese slug / T2 project block fixes, and enriched subjects on non-standing L1
+    patterns for `decisions_query`.
+- **Anti-overfit evaluation suite (`hardeval`).**
+  - Added time-clean multi-checkpoint `hardeval l1-rebuild`, `-overview-dir`, `decisions-query-sim` real hub Page-1
+    tag simulation, cross-pass semantic deduplication and entity-fact priority in two-layer recall, and multi-window
+    non-overlapping holdout / entity-ablation extraction.
+
 ## 0.2.7
 
 - **Read assistant structured ledger (`S12/ledger`) and sent-as-user provenance (`S13/sent`).** The manifest now requests

@@ -1,0 +1,22 @@
+{
+  "name": "Steam",
+  "description": "See Steam player status, two weeks of playtime, your game library, achievement progress and regional prices for your public wishlist in Persona. Access is read-only. The Hub encrypts your Steam Web API key.",
+  "configuration": {
+    "steam_id": {
+      "title": "Steam player ID",
+      "description": "Enter your 17-digit SteamID64 or the vanity name from your Steam profile URL."
+    },
+    "country_code": {
+      "title": "Store country or region",
+      "description": "Two-letter ISO 3166-1 country or region code for wishlist prices and currency. Defaults to US."
+    }
+  },
+  "secrets": {
+    "steam_api_key": {
+      "title": "Steam Web API key",
+      "description": "Get a key from your Steam Web API settings. The Hub encrypts it and sends it only to api.steampowered.com."
+    }
+  },
+  "ui": {"steam": "Steam", "steam-summary": "Steam overview"},
+  "groups": {"personal": "Personal"}
+}

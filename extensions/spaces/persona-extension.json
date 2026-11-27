@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "spaces",
   "name": "空间",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "icon": "assets/icon.png",
   "description": "自己搭几个小本子，把想记的事分门别类记下来：读书清单、订阅和续费日期、家里的东西放在哪……选个模板就能用，也可以让助手帮你记。",
   "publisher": "nwverse",
@@ -18,7 +18,7 @@
   "contributes": {
     "ui": [
       {"id": "spaces", "title": "空间", "placement": "nav_page", "icon": "doc"},
-      {"id": "spaces-card", "title": "空间", "placement": "overview_card", "opens": "spaces"}
+      {"id": "spaces-card", "title": "空间 · 概况", "placement": "overview_card", "opens": "spaces"}
     ],
     "skills": [{"id": "spaces", "dir": "skills/spaces"}],
     "mcp_servers": [{

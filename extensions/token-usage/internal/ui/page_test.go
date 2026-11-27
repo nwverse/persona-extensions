@@ -244,6 +244,9 @@ func TestCardShowsTodayAgainstTheWeek(t *testing.T) {
 	if err := wire.CheckView(v); err != nil {
 		t.Fatalf("card rejected: %v", err)
 	}
+	if v.Title != CardTitle || v.Title == PageTitle {
+		t.Errorf("card header %q, want %q", v.Title, CardTitle)
+	}
 	text := flatten(v)
 	if !strings.Contains(text, "1.7K") || !strings.Contains(text, "alpha") {
 		t.Fatalf("card:\n%s", text)

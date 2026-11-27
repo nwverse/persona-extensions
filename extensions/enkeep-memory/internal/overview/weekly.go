@@ -184,6 +184,12 @@ func candidates(st *store.State, f entry.Facet, from, cutoff string, keep func(*
 		if !usable(st, e) || facetOf(e) != f || (keep != nil && !keep(e)) {
 			continue
 		}
+		if entry.IsAssistantNote(e.Origin) || entry.IsEphemeral(e) {
+			continue
+		}
+		if f == entry.Persona && isS3S4Only(e) {
+			continue
+		}
 		if cutoff != "" && e.First >= cutoff {
 			continue
 		}
@@ -193,7 +199,7 @@ func candidates(st *store.State, f entry.Facet, from, cutoff string, keep func(*
 			}
 		}
 		t := count(st, []string{e.ID}, cutoff)
-		if len(t.sources) == 0 || t.last < from {
+		if len(t.sources) == 0 || (t.last < from && !isUserOwned(e)) {
 			continue
 		}
 		out = append(out, candidate{e, t})
@@ -220,13 +226,16 @@ type candCluster struct {
 }
 
 // clusterCandidates projects a facet's candidates into compact 3–15 item clusters by cognitive clues
-// (Leverage.Dimension first, then cross-project Principle clues, then remaining spread-ordered items) and packs them
-// into synthesis batches of at most synthBatchItems items (at most synthBatches calls per facet).
+// (Leverage.Dimension buckets, cross-project Principle clues, and spread-ordered general history) and packs them
+// round-robin across buckets into synthesis batches of at most synthBatchItems items (at most synthBatches calls per
+// facet), so no single dimension starves other dimensions or long-lived high-spread entries.
 func clusterCandidates(cands []candidate) [][]candCluster {
 	byDim := map[string][]candidate{}
-	var princCross, rest []candidate
+	var coreOwned, princCross, rest []candidate
 	for _, c := range cands {
-		if c.e.Leverage != nil && c.e.Leverage.Dimension != "" {
+		if isUserOwned(c.e) || c.e.Grain == entry.Abstract {
+			coreOwned = append(coreOwned, c)
+		} else if c.e.Leverage != nil && c.e.Leverage.Dimension != "" {
 			byDim[c.e.Leverage.Dimension] = append(byDim[c.e.Leverage.Dimension], c)
 		} else if c.e.Principle() != "" && len(c.t.projects) >= MinScenes {
 			princCross = append(princCross, c)
@@ -234,31 +243,65 @@ func clusterCandidates(cands []candidate) [][]candCluster {
 			rest = append(rest, c)
 		}
 	}
-	var clusters []candCluster
-	appendChunks := func(label string, items []candidate) {
+	toChunks := func(label string, items []candidate) []candCluster {
+		var out []candCluster
 		for len(items) > 0 {
 			n := min(len(items), synthClusterMax)
 			if len(items)-n > 0 && len(items)-n < synthClusterMin {
 				n = len(items)
 			}
-			clusters = append(clusters, candCluster{label: label, items: items[:n]})
+			out = append(out, candCluster{label: label, items: items[:n]})
 			items = items[n:]
 		}
+		return out
+	}
+	var queues [][]candCluster
+	if len(coreOwned) > 0 {
+		queues = append(queues, toChunks("core_owned", coreOwned))
 	}
 	for _, dim := range entry.Dimensions {
 		if len(byDim[dim]) >= synthClusterMin {
-			appendChunks("dim:"+dim, byDim[dim])
+			queues = append(queues, toChunks("dim:"+dim, byDim[dim]))
 		} else {
 			rest = append(rest, byDim[dim]...)
 		}
 	}
 	if len(princCross) >= synthClusterMin {
-		appendChunks("principle", princCross)
+		queues = append(queues, toChunks("principle", princCross))
 	} else {
 		rest = append(rest, princCross...)
 	}
 	if len(rest) > 0 {
-		appendChunks("general", rest)
+		// Re-sort rest by spread so high-spread historical/handwritten entries surface first in general chunks.
+		sort.SliceStable(rest, func(i, j int) bool {
+			a, b := rest[i], rest[j]
+			if sa, sb := a.t.sceneCount(), b.t.sceneCount(); sa != sb {
+				return sa > sb
+			}
+			if len(a.t.sources) != len(b.t.sources) {
+				return len(a.t.sources) > len(b.t.sources)
+			}
+			if a.t.last != b.t.last {
+				return a.t.last > b.t.last
+			}
+			return a.e.ID < b.e.ID
+		})
+		queues = append(queues, toChunks("general", rest))
+	}
+	// Round-robin across bucket queues so every dimension and general history gets representation in the first batches.
+	var clusters []candCluster
+	for {
+		took := false
+		for i := range queues {
+			if len(queues[i]) > 0 {
+				clusters = append(clusters, queues[i][0])
+				queues[i] = queues[i][1:]
+				took = true
+			}
+		}
+		if !took {
+			break
+		}
 	}
 	// Pack clusters into calls of at most synthBatchItems items, capped at synthBatches calls.
 	var batches [][]candCluster
@@ -302,6 +345,12 @@ func (r *Runner) Weekly(ctx context.Context, st *store.State, s *State, week, cu
 	run := &Run{Period: week, At: stamp(r.now()), Cutoff: cutoff, Counts: map[string]int{"window_days": window}}
 	now := stamp(r.now())
 	var touched []string
+	// 0. A1 Core Profile & Anti-Misread Boundaries (T0 + multi-week cross-scene T1 Persona).
+	pcIDs, err := r.SyncProfileCore(ctx, st, s, run, cutoff, now)
+	if err != nil {
+		return run, err
+	}
+	touched = union(touched, pcIDs...)
 	// 1. L1 Principles (③ Judgement, ④ Workflow, ⑤ World, ⑥ Persona).
 	for _, f := range PrincipleFacets {
 		cands := candidates(st, f, from, cutoff, nil)
@@ -315,18 +364,27 @@ func (r *Runner) Weekly(ctx context.Context, st *store.State, s *State, week, cu
 		}
 		touched = union(touched, ids...)
 	}
-	// 2. L1 Collaboration Contracts (① Interaction, ② Tools): folded rules_merge channel.
+	// 2. L1 Collaboration Contracts & Ops Runbooks (① Interaction, ② Tools).
 	cIDs, err := r.SyncContracts(ctx, st, s, run, cutoff, now)
 	if err != nil {
 		return run, err
 	}
 	touched = union(touched, cIDs...)
-	// 3. Counter-example search for all passing principles and contracts.
+	// 3. Counter-example search for all passing principles and universal contracts.
 	if err := r.counterSearch(ctx, st, s, run, touched, end, cutoff, now); err != nil {
 		return run, err
 	}
+	// 4. Global Reconciliation Pass (synonym merge, tension resolution into Poles, ops diversion).
+	recIDs, err := r.Reconcile(ctx, st, s, run, cutoff, now)
+	if err != nil {
+		return run, err
+	}
+	touched = union(touched, recIDs...)
 	for _, id := range touched {
 		p := s.Patterns[id]
+		if p == nil {
+			continue
+		}
 		run.Counts["lifecycle_"+p.Lifecycle]++
 		if p.Gate != "" {
 			run.Counts["gate_"+p.Gate]++
@@ -433,8 +491,19 @@ func (r *Runner) synthesize(ctx context.Context, st *store.State, s *State, run 
 				p.Exception = x
 			}
 			p.EvidenceIDs = union(p.EvidenceIDs, members...)
+			for _, mid := range members {
+				if e := st.Entries[mid]; isUserOwned(e) {
+					p.CoveredIDs = union(p.CoveredIDs, mid)
+				}
+			}
+			sort.Strings(p.CoveredIDs)
 			p.Reason = strings.TrimSpace(prop.Reason)
 			p.UpdatedAt = now
+			if patternIsOpsRunbook(p) {
+				p.Kind = KindOpsRunbook
+				p.Hard = false
+				run.Counts["principle_diverted_ops"]++
+			}
 			recount(st, p, cutoff)
 			touched = union(touched, p.ID)
 		}
@@ -450,20 +519,32 @@ func recount(st *store.State, p *Pattern, cutoff string) {
 	p.CounterIDs = followMerges(st, p.CounterIDs)
 	sort.Strings(p.EvidenceIDs)
 	live := liveIDs(st, p.EvidenceIDs)
-	if p.IsContract() {
-		// Also include live user-owned entries that may not pass memsrc.Pool filters (e.g. handwritten).
+	if p.IsProfileCore() || p.IsOpsRunbook() || p.IsContract() {
+		// Also include live user-owned entries (T0) that may not pass memsrc.Pool filters.
 		for _, id := range p.EvidenceIDs {
 			if e := st.Entries[id]; e != nil && e.Live() && isUserOwned(e) && !slices.Contains(live, id) {
 				live = append(live, id)
 			}
 		}
-		p.Hard, p.ViolationCount = contractHard(st, live, cutoff)
-	} else if evDim := inferDimension(st, live); evDim != "" {
-		// Evidence majority dimension takes precedence over a model guess (prevents defaulting everything to decision).
-		p.Dimension = evDim
+	}
+	switch {
+	case p.IsProfileCore(), p.IsOpsRunbook():
+		p.Hard = false
+	case p.IsContract():
+		if patternIsOpsRunbook(p) {
+			p.Kind = KindOpsRunbook
+			p.Hard = false
+		} else {
+			p.Hard, p.ViolationCount = contractHard(st, live, cutoff)
+		}
+	default:
+		if evDim := inferDimension(st, live); evDim != "" {
+			// Evidence majority dimension takes precedence over a model guess (prevents defaulting everything to decision).
+			p.Dimension = evDim
+		}
 	}
 	apply(p, count(st, live, cutoff))
-	p.Categories, p.OriginSpace = tags(st, append(live, liveIDs(st, p.CounterIDs)...))
+	p.Categories, p.OriginSpace = tags(st, p, append(live, liveIDs(st, p.CounterIDs)...))
 	p.Subjects = subjects(st, live)
 }
 
@@ -635,7 +716,7 @@ func (r *Runner) counterSearch(ctx context.Context, st *store.State, s *State, r
 	byFacet := map[string][]*Pattern{}
 	for _, id := range ids {
 		p := s.Patterns[id]
-		if p == nil {
+		if p == nil || p.IsProfileCore() || p.IsOpsRunbook() {
 			continue
 		}
 		if p.Gate != "" {

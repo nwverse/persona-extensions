@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -18,14 +19,52 @@ var jargon = []string{"路由", "实例", "条目", "订阅源", "ETag", "If-Mod
 // fixtureWords are the synthetic feeds' own titles, which are not the page's words.
 var fixtureWords = []string{"Example Atom", "Example JSON"}
 
-func speaksPlainly(t *testing.T, where, s string) {
-	t.Helper()
+// loopbackAddrRE matches synthetic httptest loopback host:port values whose ephemeral ports may contain substrings
+// such as "404", "403", or "429".
+var loopbackAddrRE = regexp.MustCompile(`(?:127\.0\.0\.1|\[::1\]):\d+`)
+
+func findJargon(s string) []string {
 	for _, w := range fixtureWords {
 		s = strings.ReplaceAll(s, w, "")
 	}
+	s = loopbackAddrRE.ReplaceAllString(s, "")
+	var hits []string
 	for _, w := range jargon {
 		if strings.Contains(s, w) {
-			t.Errorf("%s says %q: %s", where, w, s)
+			hits = append(hits, w)
+		}
+	}
+	return hits
+}
+
+func speaksPlainly(t *testing.T, where, s string) {
+	t.Helper()
+	for _, w := range findJargon(s) {
+		t.Errorf("%s says %q: %s", where, w, s)
+	}
+}
+
+func TestFindJargonIgnoresLoopbackPorts(t *testing.T) {
+	for _, s := range []string{
+		"RSSHub 服务 连不上 127.0.0.1:40485",
+		"RSSHub 服务 连不上 127.0.0.1:54032",
+		"RSSHub 服务 连不上 127.0.0.1:34291",
+		"RSSHub 服务 连不上 [::1]:40404",
+	} {
+		if hits := findJargon(s); len(hits) != 0 {
+			t.Errorf("findJargon(%q) = %v, want none", s, hits)
+		}
+	}
+	for _, tc := range []struct {
+		s, want string
+	}{
+		{"没有这条内容（404）", "404"},
+		{"被拒绝 403", "403"},
+		{"限流 429", "429"},
+		{"连不上 127.0.0.1:40485（404）", "404"},
+	} {
+		if hits := findJargon(tc.s); !slices.Equal(hits, []string{tc.want}) {
+			t.Errorf("findJargon(%q) = %v, want [%q]", tc.s, hits, tc.want)
 		}
 	}
 }
@@ -71,6 +110,18 @@ func TestPagesSpeakPlainChinese(t *testing.T) {
 	for _, want := range []string{introText, "RSS 是", "RSSHub 是", "还没有订阅任何网站", "preview:" + exampleRoute, "先看看", routesDocs} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("the empty page does not say %q", want)
+		}
+	}
+	// Before anything is subscribed the service has not been asked yet; the page says nothing needs doing.
+	for _, name := range []string{"01-empty-v4", "01-empty-v1"} {
+		raw, _ := json.Marshal(states[name].view)
+		if !strings.Contains(string(raw), "还没用到") || !strings.Contains(string(raw), serviceIdleNote) || strings.Contains(string(raw), "还没试过") {
+			t.Errorf("%s does not say the RSSHub service needs nothing yet: %s", name, raw)
+		}
+	}
+	for _, name := range []string{"05-several-sources", "12-instance-address-wrong", "15-instance-unreachable-ping"} {
+		if raw, _ := json.Marshal(states[name].view); strings.Contains(string(raw), serviceIdleNote) {
+			t.Errorf("%s says nothing needs doing", name)
 		}
 	}
 	old, _ := json.Marshal(states["01-empty-v1"].view)
@@ -137,6 +188,13 @@ func TestSettingsSpeakPlainChinese(t *testing.T) {
 		}
 		if k != "refresh_minutes" && !strings.HasPrefix(p.Description, "一般不用改") {
 			t.Errorf("%s does not start with 一般不用改: %s", k, p.Description)
+		}
+	}
+	// The form cannot fold settings away, so the two that almost nobody needs say so first thing in their titles.
+	for k, p := range m.Configuration.Properties {
+		rare := k == "access_auth" || k == "prefer_json"
+		if strings.HasPrefix(p.Title, "高级：") != rare {
+			t.Errorf("%s title %q: 「高级：」 belongs at the start of access_auth and prefer_json only", k, p.Title)
 		}
 	}
 	slices.Sort(keys)

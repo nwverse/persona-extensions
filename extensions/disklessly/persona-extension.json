@@ -2,9 +2,9 @@
   "manifest_version": 1,
   "id": "disklessly",
   "name": "Disklessly 硬盘空间",
-  "version": "0.4.2",
+  "version": "0.5.4",
   "icon": "assets/icon.png",
-  "description": "看每台电脑的硬盘用了多少，把能自动重新生成的缓存删掉腾地方，把一周没动的 AI 对话（Claude Code、Codex 等）搬到你自己的网盘，要用时再拿回来。「检查」只读取大小，不会删任何东西；真要删之前都会先说清楚删什么、再让你确认；对话要先放进网盘、读回核对无误才删电脑上的那份。能看运行 Persona 的这台电脑，也能看通过远程登录（SSH）连得上的其他电脑。还可以在 Persona 的磁盘占用图里把文件、文件夹和 App 搬到网盘或拿回来，并附带给 AI 助手用的查询和操作工具（disklessly mcp）：只看的直接运行，删除、搬走和改电脑设置都要你在对话里确认。",
+  "description": "看每台电脑的硬盘用了多少，把能自动重新生成的缓存删掉腾地方，把一周没动的 AI 对话（Claude Code、Codex 等）搬到你自己的网盘，要用时再拿回来。「检查」只读取大小，不会删任何东西；真要删之前都会先说清楚删什么、再让你确认；对话要先放进网盘、读回核对无误才删电脑上的那份。能看运行 Persona 的这台电脑，也能看通过远程登录（SSH）连得上的其他电脑。还可以在 Persona 的磁盘占用图里把文件、文件夹和 App 搬到网盘或拿回来，并附带给 AI 助手用的查询和操作工具（disklessly mcp）：只看的直接运行，删除、搬走和改电脑设置都要你在对话里确认。对 Persona 助手说一句「帮我腾点空间」，它会按先后列出能删什么、能腾出多少、有什么风险，问你做哪一步；说一句「帮我找回上周聊购物车结算的那段对话」，它会按描述找出最像的几个对话，你选定后再拿回来。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/docs/extensions/disklessly.md",
   "tags": ["disklessly", "硬盘清理", "AI 对话", "网盘"],
@@ -22,13 +22,16 @@
     "ui": [
       {"id": "disklessly", "title": "硬盘空间", "placement": "nav_page", "icon": "gauge"},
       {"id": "disklessly-sessions", "title": "AI 对话", "placement": "nav_page", "icon": "chat"},
-      {"id": "disklessly-card", "title": "硬盘空间", "placement": "overview_card", "opens": "disklessly"}
+      {"id": "disklessly-card", "title": "硬盘空间 · 概况", "placement": "overview_card", "opens": "disklessly"}
     ],
     "disk_offload": [
       {"id": "disklessly", "name": "Disklessly", "kinds": ["file", "dir", "app"], "restore": true}
     ],
     "skills": [
       {"id": "disklessly", "dir": "skills/disklessly"}
+    ],
+    "prompts": [
+      {"id": "free-space", "kind": "quick", "title": "帮我腾点空间", "text": "帮我腾点空间：看看哪台电脑的硬盘快满了，按先后列出能删什么、能腾出多少、有什么风险，问我做哪一步。"}
     ],
     "mcp_servers": [
       {
@@ -37,7 +40,7 @@
         "env": "PERSONA_DISKLESSLY_BIN",
         "args": ["mcp"],
         "requires": ["mcp"],
-        "allow": ["disklessly_machines_status", "disklessly_scan", "disklessly_history", "disklessly_sessions_search", "disklessly_sessions_status"]
+        "allow": ["disklessly_machines_status", "disklessly_scan", "disklessly_history", "disklessly_sessions_search", "disklessly_sessions_status", "disklessly_sessions_find", "disklessly_advise"]
       }
     ]
   }

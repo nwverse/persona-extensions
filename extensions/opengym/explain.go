@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/nwverse/persona/sdk/go/wire"
 )
@@ -16,7 +17,37 @@ const (
 	displayName  = "openGym 健身记录"
 	settingsPath = "「设置 › 扩展 › " + displayName + "」"
 	tokenWhere   = "在 openGym App 的「设置 › 集成 › API 令牌」里"
+	// The two things to fill in, by the titles the settings form shows (TestSetupPageSaysWhatToFillInAndWhere).
+	serverTitle = "openGym 服务器地址"
+	tokenTitle  = "访问密钥（API 令牌）"
 )
+
+// setupNeeded is the one sentence the status, the tools, the writes and the card say while the address or the key
+// is missing or the address cannot be used: what to fill in, and where. The key is not required by the manifest, so
+// the program runs before it is filled in and this is the only guidance the user gets.
+func setupNeeded(h health) string {
+	server, token := "「"+serverTitle+"」", "「"+tokenTitle+"」"
+	var steps []string
+	why := ""
+	switch {
+	case errors.Is(h.Config, errNoServer) && !h.HasToken:
+		steps = append(steps, "填好"+server+"和"+token)
+	case errors.Is(h.Config, errNoServer):
+		steps = append(steps, "填好"+server)
+	case h.Config != nil && !errors.Is(h.Config, errNoToken):
+		why = "填的服务器地址用不了（" + clip(oneLine(h.Config.Error()), 200) + "）。"
+		steps = append(steps, "改好"+server)
+		if !h.HasToken {
+			steps = append(steps, "再填好"+token)
+		}
+	case !h.HasToken:
+		steps = append(steps, "填好"+token)
+	}
+	if len(steps) == 0 {
+		return "还没连上 openGym：到" + settingsPath + "看看服务器地址和访问密钥。"
+	}
+	return "还没连上 openGym：" + why + "到" + settingsPath + strings.Join(steps, "，") + "。"
+}
 
 // problem is a cause in plain words and what to do about it.
 type problem struct {
@@ -88,11 +119,11 @@ func setupSections(version int, h health) []wire.Section {
 	}
 	how := wire.Section{Title: "怎么连上", Footer: "填好保存后，回到这一页就能看到你的训练。", Items: append([]wire.Component{
 		text("打开" + settingsPath + "，填好这两项："),
-		{Type: wire.ComponentRow, Title: "openGym 服务器地址", Icon: wire.NavIconLink,
-			Subtitle: "你自己搭的 openGym 的网址，例如 https://gym.example.com；家里网络里的也可以是 http://192.168.1.20:8080",
+		{Type: wire.ComponentRow, Title: serverTitle, Icon: wire.NavIconLink,
+			Subtitle: "你自己搭的 openGym 的网址，例如 https://gym.example.com；装在网址下面某个路径里的话把路径也带上，例如 https://example.com/gym；家里网络里的也可以是 http://192.168.1.20:8080",
 			Badge:    &wire.Badge{Text: server, Tone: serverTone}},
-		{Type: wire.ComponentRow, Title: "访问密钥（API 令牌）", Icon: wire.NavIconLock,
-			Subtitle: tokenWhere + "新建一个，复制过来填上。它以 ogt_ 开头，只显示一次。",
+		{Type: wire.ComponentRow, Title: tokenTitle, Icon: wire.NavIconLock,
+			Subtitle: tokenWhere + "新建一个，复制过来填上。它以 ogt_ 开头，只显示一次。只想看数据：训练、计划、体重选「查看」；想让助手帮你记训练、建计划：选「应用」。",
 			Badge:    &wire.Badge{Text: token, Tone: tokenTone}},
 	}, bad...)}
 	return []wire.Section{{Items: []wire.Component{intro}}, how}

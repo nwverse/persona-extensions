@@ -101,25 +101,21 @@ func (d draw) setupSections(res *ExecutionResult, r readiness) []wire.Section {
 	var sec wire.Section
 	switch r {
 	case noComputerPicked:
+		// A first-time user reads this, so it is four short lines in the order they act on: what is missing,
+		// where to set it, what to press afterwards, and that nothing is broken. The rest is one footer line.
 		sec = wire.Section{Title: "还没设置好", Items: []wire.Component{
 			{
 				Type:   wire.ComponentEmpty,
 				Key:    "setup-empty",
 				Icon:   "settings",
 				Title:  "还没选要搜哪台电脑",
-				Detail: "运行 Persona 的这台电脑上没有 Claude Code 或 Codex 的聊天记录（~/.claude/projects、~/.codex/sessions 和你另外填的文件夹里都没有），也还没选别的电脑，所以现在没有东西可搜。这不是出错了。",
+				Detail: "运行 Persona 的这台电脑上没有聊天记录，要选一台你平时用 Claude Code 或 Codex 的电脑。",
 			},
-			text("setup-where", "去哪里选：打开「"+settingsPlace+"」，在「"+machinesSetting+"」里选上你平时用 Claude Code 或 Codex 的电脑，然后保存。那台电脑要开着，并且连着 Persona。"),
-			text("setup-after", afterSearchText("选好以后，")),
-			text("setup-sync", syncText()),
-			{
-				Type:  wire.ComponentText,
-				Key:   "setup-folders",
-				Style: wire.TextStyleSecondary,
-				Text:  "聊天记录其实就在这台电脑上、只是放在别的文件夹的话，不用选电脑：到「搜哪些地方」把文件夹填上。",
-			},
+			text("setup-where", "去「"+settingsPlace+"」的「"+machinesSetting+"」里选上，然后保存。"),
+			text("setup-after", "选好后回到这里，点「再找一次」。"),
+			text("setup-ok", "这不是出错了，只是还没设置。"),
 			{Type: wire.ComponentButton, Key: "setup-again", Title: "再找一次", Action: &wire.Action{ID: "reset"}},
-		}}
+		}, Footer: fmt.Sprintf("选的电脑要开着并连着 Persona；之后每 %d 分钟会自动同步一份精简副本，它关机后也能搜。聊天记录其实在这台电脑的别的文件夹里的话，不用选电脑，到「搜哪些地方」填上文件夹。", int(nodeSyncInterval.Minutes()))}
 	case picksNotSearched:
 		n := 0
 		if d.fleet != nil {

@@ -167,8 +167,8 @@ func TestSyncContracts(t *testing.T) {
 	// but merged into one L1 contract they span 2 days within 7 days -> Hard=true, ViolationCount=2.
 	r1 := makeRule("r-act-1", "correction", "已放行的事直接做", "", "2026-11-18", "放行了就直接做", entry.Behavior, 3)
 	r2 := makeRule("r-act-2", "correction", "不要反复弹确认卡", "涉及线上或删数据时停下问", "2026-11-20", "别再弹确认卡了", entry.Behavior, 2)
-	// Handwritten entry saying the same thing: must be recorded in CoveredIDs, never deleted.
-	rHand := makeRule("r-hand", "correction", "已授权任务直接推进", "", "2026-11-19", "授权过的直接推进", entry.Handwritten, 2)
+	// User-owned (SelfReport) entry saying the same thing: must be recorded in CoveredIDs, never deleted.
+	rHand := makeRule("r-hand", "correction", "已授权任务直接推进", "", "2026-11-19", "授权过的直接推进", entry.SelfReport, 2)
 	// Conflicting rule: must not be merged into the act contract.
 	rConf := makeRule("r-conf", "correction", "每次行动前都要先问", "", "2026-11-20", "动手前先问我", entry.Behavior, 2)
 	// Standalone hard rule (explicit ban cue + user confirmation, single source, single week): must still become a used hard contract.
@@ -348,8 +348,8 @@ func TestPatternKindBackwardCompat(t *testing.T) {
 	if got := (&Pattern{Facet: string(entry.Interaction)}).KindOf(); got != KindContract {
 		t.Fatalf("interaction inferred %q", got)
 	}
-	if got := (&Pattern{Facet: string(entry.Tools)}).KindOf(); got != KindContract {
-		t.Fatalf("tools inferred %q", got)
+	if got := (&Pattern{Facet: string(entry.Tools)}).KindOf(); got != KindOpsRunbook {
+		t.Fatalf("tools inferred %q, want %q", got, KindOpsRunbook)
 	}
 	if got := (&Pattern{Facet: string(entry.Judgement)}).KindOf(); got != KindPrinciple {
 		t.Fatalf("judgement inferred %q", got)
@@ -430,5 +430,116 @@ func TestEvidenceDimensionWinsOverModelGuess(t *testing.T) {
 	recount(state(e1, e2, e3), p, "")
 	if p.Dimension != "thinking" {
 		t.Fatalf("expected evidence majority dimension 'thinking', got %q", p.Dimension)
+	}
+}
+
+// Tags follow v0.4.0 §1.6 Payload-First: work-methodology facets ignore non-payload ByModel/OriginSpace contagion
+// while honoring explicit ByUser labels and genuine payload disclosures; non-work facets (persona/world) still confine
+// restricted OriginSpace strictly.
+func TestTagsSubjectOwnership(t *testing.T) {
+	e1 := action("ts1", entry.Interaction, "alpha", entry.SrcAssistant, "2026-11-05", "stay within asked scope")
+	e2 := action("ts2", entry.Interaction, "beta", entry.SrcAsk, "2026-11-10", "do not expand scope unasked")
+	e3 := action("ts3", entry.Interaction, "gamma", entry.SrcAgent, "2026-11-15", "keep to the user's question")
+	e3.Categories = []entry.Category{{Name: entry.CatEmotion, By: entry.ByModel}}
+	p := &Pattern{ID: "ov:gen", Facet: string(entry.Interaction), Kind: KindContract, Text: "只做用户所问范围",
+		EvidenceIDs: []string{"ts1", "ts2", "ts3"}}
+	cats, space := tags(state(e1, e2, e3), p, p.EvidenceIDs)
+	if len(cats) != 0 || space != "" {
+		t.Fatalf("model emotion tag on work rule must not taint general contract: cats=%v space=%q", cats, space)
+	}
+
+	// Majority (2/3) explicit ByUser sensitive categories must taint even on work-methodology facets.
+	e2.Categories = []entry.Category{{Name: entry.CatFinance, By: entry.ByUser}}
+	e3.Categories = []entry.Category{{Name: entry.CatFinance, By: entry.ByUser}}
+	cats, _ = tags(state(e1, e2, e3), p, p.EvidenceIDs)
+	if !slices.Contains(cats, entry.CatFinance) {
+		t.Fatalf("majority ByUser sensitive evidence must taint: cats=%v", cats)
+	}
+
+	// De-shelled general work contract does NOT inherit OriginSpace confinement; non-work persona pattern DOES.
+	e1.OriginSpace = "private-space"
+	e2.Categories, e3.Categories = nil, nil
+	_, space = tags(state(e1, e2, e3), p, p.EvidenceIDs)
+	if space != "" {
+		t.Fatalf("work-methodology contract should not inherit OriginSpace, got %q", space)
+	}
+	pe1 := action("ps1", entry.Persona, "alpha", entry.SrcAssistant, "2026-11-05", "personal reflection")
+	pe1.OriginSpace = "private-space"
+	pp := &Pattern{ID: "ov:pers", Facet: string(entry.Persona), Kind: KindPrinciple, Text: "个人阶段反思",
+		EvidenceIDs: []string{"ps1"}}
+	_, space = tags(state(pe1), pp, pp.EvidenceIDs)
+	if space != "private-space" {
+		t.Fatalf("persona pattern must inherit OriginSpace, got %q", space)
+	}
+}
+
+// Single-day repeated ban/anger cues without user confirmation must not promote a contract to Hard.
+func TestContractHardSingleDayMultiCueNotHard(t *testing.T) {
+	e := &entry.Entry{
+		ID: "c-1day", Facet: entry.Interaction, Grain: entry.Action, Type: "correction",
+		Text: "接受用户已给出的验证前提", Rejected: "反复质疑", Status: entry.Stable, Origin: entry.Behavior,
+		First: "2026-11-17", Last: "2026-11-17", Count: 2, Tagged: true,
+		Evidence: []entry.Evidence{
+			{Source: entry.SrcAssistant, Ref: "u1", Day: "2026-11-17", Who: entry.WhoSelf, Quote: "以后不要再说没人验证过"},
+			{Source: entry.SrcAssistant, Ref: "u2", Day: "2026-11-17", Who: entry.WhoSelf, Quote: "别再重复质疑这个前提"},
+		},
+	}
+	hard, viol := contractHard(state(e), []string{"c-1day"}, "")
+	if hard || viol != 1 {
+		t.Fatalf("single-day multi-cue should stay non-hard with viol=1, got hard=%v viol=%d", hard, viol)
+	}
+}
+
+// clusterCandidates must round-robin across dimension and general buckets so a large decision bucket cannot starve
+// other dimensions or high-spread general history out of the first 3 batches.
+func TestClusterCandidatesRoundRobin(t *testing.T) {
+	var cands []candidate
+	for i := 0; i < 100; i++ {
+		e := action("dec-"+strings.Repeat("a", i%5+1)+string(rune('0'+i%10)), entry.Judgement, "alpha", entry.SrcAssistant, "2026-11-10", "dec")
+		e.ID = "dec-" + string(rune('a'+i/26)) + string(rune('a'+i%26))
+		e.Leverage = &entry.Leverage{Dimension: "decision"}
+		cands = append(cands, candidate{e: e, t: tally{projects: []string{"alpha", "beta"}, sources: []string{"1", "2", "3"}}})
+	}
+	for i := 0; i < 6; i++ {
+		e := action("gen", entry.Judgement, "alpha", entry.SrcAssistant, "2026-11-10", "gen")
+		e.ID = "gen-" + string(rune('a'+i))
+		cands = append(cands, candidate{e: e, t: tally{projects: []string{"alpha", "beta"}, sources: []string{"1", "2", "3"}}})
+	}
+	batches := clusterCandidates(cands)
+	foundGeneral := false
+	for _, b := range batches {
+		for _, cl := range b {
+			if cl.label == "general" {
+				foundGeneral = true
+			}
+		}
+	}
+	if !foundGeneral {
+		t.Fatalf("general bucket was starved out of batches by large decision bucket")
+	}
+}
+
+// Abstract tools rules and user-owned rules must enter contractCandidates, and user-owned judgement entries must enter
+// the core_owned priority cluster in clusterCandidates.
+func TestAbstractAndOwnedCandidatesIncluded(t *testing.T) {
+	tAbs := &entry.Entry{
+		ID: "t-abs", Facet: entry.Tools, Grain: entry.Abstract, Text: "offload heavy builds to dedicated gate host",
+		Status: entry.Stable, Origin: entry.Behavior, First: "2026-08-01", Last: "2026-11-20", Count: 50, Tagged: true,
+		Evidence: []entry.Evidence{{Source: entry.SrcAgent, Ref: "a/1", Day: "2026-11-10", Who: entry.WhoSelf, Quote: "重活上专用门禁机"}},
+	}
+	jOwned := action("j-owned", entry.Judgement, "alpha", entry.SrcAbout, "2026-10-01", "design from first principles")
+	jOwned.Origin = entry.SelfReport
+	if isUserOwned(&entry.Entry{Origin: entry.OriginAssistantNote}) || isUserOwned(&entry.Entry{Origin: entry.Handwritten}) {
+		t.Fatalf("S6 assistant_note/handwritten must not satisfy isUserOwned")
+	}
+	st := state(tAbs, jOwned)
+
+	picked := contractCandidates(st, "")
+	if len(picked) != 1 || picked[0].ID != "t-abs" {
+		t.Fatalf("expected abstract tools rule in contractCandidates, got %+v", picked)
+	}
+	batches := clusterCandidates([]candidate{{e: jOwned, t: tally{sources: []string{"a", "b"}}}})
+	if len(batches) == 0 || batches[0][0].label != "core_owned" {
+		t.Fatalf("expected user-owned principle in core_owned cluster, got %+v", batches)
 	}
 }

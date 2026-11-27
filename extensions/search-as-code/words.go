@@ -9,8 +9,13 @@ import (
 // Plain words for the page. The values behind them (roles, harness ids, error kinds, locations, group fields) are
 // part of the MCP and API output and stay as they are; only what the page shows is translated here.
 
-// pageTitle is the page's and the card's title; it matches the manifest's display name.
-const pageTitle = "AI 聊天记录搜索"
+// pageTitle is the page's title; it matches the manifest's display name. cardTitle is the overview card's: the
+// hub lists every UI contribution by its title among the extension's switches, so the card's must differ from
+// the page's, and it is also the card's header on Overview.
+const (
+	pageTitle = "AI 聊天记录搜索"
+	cardTitle = pageTitle + " · 概况"
+)
 
 // roleLabel names who said a snippet.
 func roleLabel(role string) string {

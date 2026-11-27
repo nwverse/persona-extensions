@@ -118,10 +118,11 @@ func hardevalStanding(args []string) error {
 		fmt.Printf("  %4d  score %3d  %-10s %-18s %3dB  %-22s %s\n", e.Rank, sc, bucket, tag, sz, e.ID, clipRunes(strings.ReplaceAll(e.Text, "\n", " "), 70))
 	}
 	fmt.Printf("  total: %d lines, %d/%d bytes (unused %d B), lowest score %d, clipped %d\n", len(standing), bytes, *room, *room-bytes, low, clippedCount)
-	fmt.Printf("  buckets: hot=%d (%d B), contract=%d (%d B), principle=%d (%d B)\n",
+	fmt.Printf("  buckets: hot=%d (%d B), profile=%d (%d B), principle=%d (%d B), contract=%d (%d B)\n",
 		bucketCount[memsrc.BucketHot], bucketBytes[memsrc.BucketHot],
-		bucketCount[memsrc.BucketContract], bucketBytes[memsrc.BucketContract],
-		bucketCount[memsrc.BucketPrinciple], bucketBytes[memsrc.BucketPrinciple])
+		bucketCount[memsrc.BucketProfile], bucketBytes[memsrc.BucketProfile],
+		bucketCount[memsrc.BucketPrinciple], bucketBytes[memsrc.BucketPrinciple],
+		bucketCount[memsrc.BucketContract], bucketBytes[memsrc.BucketContract])
 	fmt.Printf("  contract polarities: %v | principle dimensions: %v\n\npatterns:\n", polCount, dimCount)
 	tpl := entry.TemplateQuotes(st.Entries)
 	sort.Slice(extras, func(i, j int) bool { return extras[i].Score > extras[j].Score })

@@ -55,10 +55,13 @@ const (
 	PerspCrossSource = "cross_source"
 )
 
-// Kinds of L1 patterns (unified design §1.2): cognitive principles (③④⑥⑤) and collaboration contracts (①②).
+// Kinds of L1 patterns (v0.4.0 §1.3): profile core (A1), cognitive principles (A2), universal collaboration
+// contracts (B), and environment/tool ops runbooks (C).
 const (
-	KindPrinciple = "principle"
-	KindContract  = "contract"
+	KindProfileCore = "profile_core"
+	KindPrinciple   = "principle"
+	KindContract    = "contract"
+	KindOpsRunbook  = "ops_runbook"
 )
 
 // Contract polarities (unified design §1.3 step C): action direction of a collaboration contract so downstream
@@ -124,22 +127,33 @@ type Pattern struct {
 	UpdatedAt       string   `json:"updated_at"`
 }
 
-// KindOf returns the pattern's L1 kind (principle or contract), inferring from Facet for states written before Kind.
+// KindOf returns the pattern's L1 kind (profile_core, principle, contract, or ops_runbook), inferring from Facet for
+// states written before Kind.
 func (p *Pattern) KindOf() string {
-	if p.Kind == KindContract || p.Kind == KindPrinciple {
+	switch p.Kind {
+	case KindProfileCore, KindPrinciple, KindContract, KindOpsRunbook:
 		return p.Kind
 	}
-	if p.Facet == string(entry.Interaction) || p.Facet == string(entry.Tools) {
+	if p.Facet == string(entry.Tools) {
+		return KindOpsRunbook
+	}
+	if p.Facet == string(entry.Interaction) {
 		return KindContract
 	}
 	return KindPrinciple
 }
 
-// IsContract reports whether p is an L1 collaboration contract (① interaction or ② tools).
+// IsProfileCore reports whether p is an A1 user profile & anti-misread boundary entry.
+func (p *Pattern) IsProfileCore() bool { return p.KindOf() == KindProfileCore }
+
+// IsContract reports whether p is a B universal collaboration contract.
 func (p *Pattern) IsContract() bool { return p.KindOf() == KindContract }
 
-// IsPrinciple reports whether p is an L1 cognitive principle (③④⑥⑤).
+// IsPrinciple reports whether p is an A2 cognitive principle.
 func (p *Pattern) IsPrinciple() bool { return p.KindOf() == KindPrinciple }
+
+// IsOpsRunbook reports whether p is a C environment/tool operational runbook (never global 4 KB standing).
+func (p *Pattern) IsOpsRunbook() bool { return p.KindOf() == KindOpsRunbook }
 
 // Pole is one end of a pattern the user goes both ways on: in which situation, and what they do then.
 type Pole struct {
@@ -207,9 +221,10 @@ type State struct {
 	Audits   []Audit             `json:"audits,omitempty"`
 	// Refreshed is the last light refresh that changed anything, and Dead the evidence ids it found gone (so a
 	// snapshot with nothing new is not counted again).
-	Refreshed    string   `json:"refreshed,omitempty"`
-	Dead         []string `json:"dead,omitempty"`
-	ContractsSig string   `json:"contracts_sig,omitempty"` // signature of the last aggregated contract rule set
+	Refreshed      string   `json:"refreshed,omitempty"`
+	Dead           []string `json:"dead,omitempty"`
+	ContractsSig   string   `json:"contracts_sig,omitempty"`    // signature of the last aggregated contract rule set
+	ProfileCoreSig string   `json:"profile_core_sig,omitempty"` // signature of the last profile-core input set
 }
 
 func newState() *State {
@@ -432,4 +447,4 @@ func SaveScratch(dir, name string, s *State) error {
 }
 
 // Prompt is the version of the overview's prompts, recorded in the run log.
-const Prompt = "overview/3"
+const Prompt = "overview/4"

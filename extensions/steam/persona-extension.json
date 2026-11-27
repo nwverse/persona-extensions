@@ -1,0 +1,73 @@
+{
+  "manifest_version": 1,
+  "id": "steam",
+  "name": "Steam",
+  "version": "0.1.0",
+  "icon": "assets/icon.png",
+  "description": "在 Persona 查看 Steam 玩家状态、近两周游玩记录、游戏库、成就进度和公开愿望单的地区价格。只读访问，Steam Web API 密钥加密保存在 Hub。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/docs/extensions/steam.md",
+  "tags": ["Steam", "游戏", "成就", "愿望单"],
+  "engines": {"plugin_protocol": 1},
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/steam-linux-amd64",
+      "linux-arm64": "bin/steam-linux-arm64",
+      "darwin-amd64": "bin/steam-darwin-amd64",
+      "darwin-arm64": "bin/steam-darwin-arm64"
+    }
+  },
+  "contributes": {
+    "connectors": [{
+      "id": "steam",
+      "name": "Steam",
+      "capabilities": ["status", "tools"],
+      "hosts": ["store.steampowered.com", "steamcommunity.com"],
+      "agent_tools": ["steam_*"]
+    }],
+    "ui": [
+      {
+        "id": "steam",
+        "title": "Steam",
+        "placement": "nav_page",
+        "icon": "chart",
+        "group": {"id": "personal", "title": "个人"}
+      },
+      {
+        "id": "steam-summary",
+        "title": "Steam 概况",
+        "placement": "overview_card",
+        "opens": "steam"
+      }
+    ]
+  },
+  "configuration": {
+    "type": "object",
+    "required": ["steam_id"],
+    "properties": {
+      "steam_id": {
+        "type": "string",
+        "title": "Steam 玩家标识",
+        "description": "填写 17 位 SteamID64，或 Steam 个人资料自定义链接中的名称。",
+        "minLength": 1,
+        "maxLength": 32
+      },
+      "country_code": {
+        "type": "string",
+        "title": "商店国家或地区",
+        "description": "用于愿望单价格和货币的两位 ISO 3166-1 国家或地区代码，默认为 US。",
+        "default": "US",
+        "pattern": "^[A-Za-z]{2}$"
+      }
+    }
+  },
+  "secrets": [{
+    "name": "steam_api_key",
+    "title": "Steam Web API 密钥",
+    "description": "从 Steam Web API 设置获取密钥。Hub 会加密保存密钥，仅发送给 api.steampowered.com。",
+    "required": true
+  }],
+  "permissions": {
+    "network": ["api.steampowered.com", "store.steampowered.com"]
+  }
+}

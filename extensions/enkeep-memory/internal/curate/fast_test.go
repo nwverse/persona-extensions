@@ -73,19 +73,20 @@ func TestRunFast(t *testing.T) {
 	}
 }
 
-// A correction made on two days within a week, or with a ban in the user's words, is a hard rule: it stands at once
-// (exits count it stable) and scores at least 90; a single plain one is not.
+// A correction made on two days within a week, or explicitly Pinned, is Hard (0.4.0 §2: single-day anger/ban cue
+// no longer auto-promotes to Hard).
 func TestHardRule(t *testing.T) {
 	ev := func(day, q string) entry.Evidence { return entry.Evidence{Who: entry.WhoSelf, Day: day, Quote: q} }
 	one := &entry.Entry{Facet: entry.Interaction, Type: "correction", Status: entry.Candidate, Evidence: []entry.Evidence{ev("2026-11-20", "please answer in Chinese")}}
 	twice := &entry.Entry{Facet: entry.Interaction, Type: "correction", Status: entry.Candidate,
 		Evidence: []entry.Evidence{ev("2026-11-20", "please answer in Chinese"), ev("2026-11-23", "answer in Chinese")}}
 	ban := &entry.Entry{Facet: entry.Interaction, Type: "correction", Status: entry.Candidate, Evidence: []entry.Evidence{ev("2026-11-20", "以后一律用中文回我")}}
-	if entry.Hard(one) || !entry.Hard(twice) || !entry.Hard(ban) {
-		t.Fatalf("hard: one %v twice %v ban %v", entry.Hard(one), entry.Hard(twice), entry.Hard(ban))
+	pinned := &entry.Entry{Facet: entry.Interaction, Type: "correction", Status: entry.Candidate, Pinned: true, Evidence: []entry.Evidence{ev("2026-11-20", "answer in Chinese")}}
+	if entry.Hard(one) || !entry.Hard(twice) || entry.Hard(ban) || !entry.Hard(pinned) {
+		t.Fatalf("hard: one %v twice %v ban %v pinned %v", entry.Hard(one), entry.Hard(twice), entry.Hard(ban), entry.Hard(pinned))
 	}
-	if !export.Stable(ban) || export.Stable(one) {
-		t.Error("a hard rule stands at once; a plain candidate does not")
+	if !export.Stable(twice) || export.Stable(one) || export.Stable(ban) {
+		t.Error("multi-day hard rule stands at once; single-day candidate (even with ban cue) does not")
 	}
 	if entry.Score(twice) <= entry.Score(one) {
 		t.Errorf("scores %d <= %d", entry.Score(twice), entry.Score(one))

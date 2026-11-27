@@ -149,7 +149,7 @@ func (a *app) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]
 	every, cfgErr := a.every, a.cfgErr
 	a.mu.Unlock()
 	if cfgErr != nil {
-		a.logf("opengym: %v", cfgErr)
+		a.logf("opengym: not set up yet (%v); the page shows what to fill in", cfgErr)
 		return nil, nil
 	}
 	a.logf("opengym: server %s, checking every %s", a.serverName(), every)
@@ -200,16 +200,25 @@ func (a *app) poll(ctx context.Context, every time.Duration) {
 			return
 		case <-t.C:
 		}
-		if time.Since(namesAt) > 24*time.Hour {
-			namesAt = time.Now()
-			if err := a.loadNames(ctx); err != nil {
-				a.logf("opengym: exercise names: %v", err)
-			}
-		}
-		if err := a.sync(ctx, true); err != nil {
-			a.logf("opengym: %v", err)
-		}
+		a.tick(ctx, &namesAt)
 		t.Reset(every)
+	}
+}
+
+// tick is one round of the loop. Before the address and the key are filled in it does nothing: no request, no log
+// line (init said once that the settings are missing; a change of the settings starts the program again).
+func (a *app) tick(ctx context.Context, namesAt *time.Time) {
+	if a.health().Config != nil {
+		return
+	}
+	if time.Since(*namesAt) > 24*time.Hour {
+		*namesAt = time.Now()
+		if err := a.loadNames(ctx); err != nil {
+			a.logf("opengym: exercise names: %v", err)
+		}
+	}
+	if err := a.sync(ctx, true); err != nil {
+		a.logf("opengym: %v", err)
 	}
 }
 

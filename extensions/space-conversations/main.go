@@ -35,7 +35,7 @@ type App struct {
 func program() ext.Program {
 	a := &App{}
 	return ext.Program{
-		ID: "space-conversations", Version: "0.2.0", Manifest: manifest,
+		ID: "space-conversations", Version: "0.3.0", Manifest: manifest,
 		Init: func(_ context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
 			a.mu.Lock()
 			a.client = NewClient(in.Hub.URL, in.Hub.Token)
@@ -198,6 +198,9 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	case "edit":
 		return &wire.ActionResult{Push: &wire.Push{UI: "edit", State: slug}}, nil
 	case "pick":
+		if strings.TrimSpace(r.Values["space"]) == newValue {
+			return &wire.ActionResult{Push: &wire.Push{UI: "new"}}, nil
+		}
 		v, err := pageView(ctx, c, envOf(r), r.Values["space"])
 		if err != nil {
 			return nil, err
@@ -265,7 +268,12 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if slug == "" {
 			return notice("先选择一个空间")
 		}
-		if _, _, err := c.Start(ctx, slug, prompt); err != nil {
+		opts := StartOptions{
+			Launcher: strings.TrimSpace(r.Values["launcher"]),
+			Model:    strings.TrimSpace(r.Values["model"]),
+			Effort:   strings.TrimSpace(r.Values["effort"]),
+		}
+		if _, _, err := c.Start(ctx, slug, prompt, opts); err != nil {
 			return nil, err
 		}
 		// The refreshed page lists the new conversation; its row opens it. No persona://tracks link here: hubs before
@@ -278,6 +286,9 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	default:
 		// Apps before UI version 4 send no action values: a switcher row there names its space in its id.
 		if sel, ok := strings.CutPrefix(r.Action, pickPrefix); ok {
+			if sel == newValue {
+				return &wire.ActionResult{Push: &wire.Push{UI: "new"}}, nil
+			}
 			v, err := pageView(ctx, c, envOf(r), sel)
 			if err != nil {
 				return nil, err
