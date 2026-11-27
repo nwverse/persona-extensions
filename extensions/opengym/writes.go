@@ -54,8 +54,8 @@ func (a *app) readWrite(name string, raw json.RawMessage) (write, error) {
 
 // cached is the document a write is checked against, and the scope check.
 func (a *app) cached(scope string) (*snapshot, error) {
-	if err := a.health().Config; err != nil {
-		return nil, bad(err.Error())
+	if h := a.health(); h.Config != nil {
+		return nil, bad(setupNeeded(h))
 	}
 	s := a.snapshot()
 	switch {

@@ -353,7 +353,7 @@ func TestRestartPicksTheAttemptUpWhereItWas(t *testing.T) {
 	if got.State != StateRunning || got.AttemptNo != 1 || got.Exec.SessionID != "session-1" {
 		t.Fatalf("after the restart: %s attempt %d exec %+v", got.State, got.AttemptNo, got.Exec)
 	}
-	if got.AgentType != "" || got.Attempts[0].Harness != "" || viewTask(got, false).AgentType != AgentClaude {
+	if got.AgentType != "" || got.Attempts[0].Harness != "" || viewTask(got, promptNone).AgentType != AgentClaude {
 		t.Fatalf("legacy engine fields changed after the restart: %+v", got)
 	}
 	if len(r.hub.created) != 1 {

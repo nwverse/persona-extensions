@@ -23,6 +23,9 @@ type hubMachine struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Online bool   `json:"online"`
+	// OS is darwin, linux or windows ("" not known yet); Trust is "pending" until the owner confirms the computer.
+	OS    string `json:"os,omitempty"`
+	Trust string `json:"trust,omitempty"`
 }
 
 // hubSession is what the dispatcher reads of a session in the hub's list.

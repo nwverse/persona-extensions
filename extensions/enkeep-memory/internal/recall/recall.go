@@ -49,12 +49,16 @@ type Hit struct {
 	Text   string
 	Score  float64
 	Cats   []string // the entry's categories (shown, so the asker knows what it was given)
+	Hop    int      // 0: direct match; 1: 1-hop expanded via entity skeleton
+	Via    string   // non-empty for 1-hop hits ("<entity>→<neighbor>")
+	Quotes []string // up to 2 deduplicated L0 user original quote slices (<=80 runes, with date)
 }
 
 // Result is an answer, with what it counted (for the curator's per-day counts; the query itself is not kept).
 type Result struct {
-	Hits []Hit
-	Pool int // entries searched
+	Hits     []Hit
+	Entities []EntityContext // 1-hop structural skeleton & anchored rules for matched entities
+	Pool     int             // entries searched
 }
 
 var statusWeight = map[entry.Status]float64{entry.Stable: 1, entry.Shifting: 0.8, entry.Candidate: 0.7, entry.Dormant: 0.5}
@@ -77,8 +81,12 @@ func usable(st *store.State, e *entry.Entry, cats []string) bool {
 	return true
 }
 
-// Line is what an entry says in an answer: the user's own wording, else its exit wording, else its text.
-func Line(e *entry.Entry) string {
+// Line is what an entry says in an answer: the user's own wording, else its exit wording, else its text; with when
+// its rule does not hold (Exception) when that is not in it already.
+func Line(e *entry.Entry) string { return Head(e) + Exception(e) }
+
+// Head is Line without the exception.
+func Head(e *entry.Entry) string {
 	if e.Export != nil {
 		if e.Export.User != "" {
 			return e.Export.User
@@ -88,6 +96,33 @@ func Line(e *entry.Entry) string {
 		}
 	}
 	return e.Shown()
+}
+
+// exceptionMost is the longest exception a line carries, in characters.
+const exceptionMost = 60
+
+// Exception is "（例外：<when the rule does not hold>）" for a rule, a way of working or a choice that has one and whose
+// line does not say it already; "" otherwise, and for what the user worded themselves. 0.2.6: the exception was read
+// into its own field and dropped at every exit, so "do not stop to ask" stood without "only when it is live, public
+// or deletes data".
+func Exception(e *entry.Entry) string {
+	x := strings.TrimSpace(e.Exception)
+	if x == "" || e.User != nil || (e.Export != nil && e.Export.User != "") {
+		return ""
+	}
+	switch e.Facet {
+	case entry.Interaction, entry.Tools, entry.Workflow, entry.Judgement:
+	default:
+		return ""
+	}
+	x = strings.TrimRight(x, "。.；;")
+	if strings.Contains(Head(e), x) {
+		return ""
+	}
+	if r := []rune(x); len(r) > exceptionMost {
+		x = string(r[:exceptionMost]) + "…"
+	}
+	return "（例外：" + x + "）"
 }
 
 // names are the names an entry is about: its object, subject, target, scopes and card's person.
@@ -175,8 +210,11 @@ func Search(st *store.State, q Query) Result {
 	type cand struct {
 		e     *entry.Entry
 		score float64
+		hop   int
+		via   string
 	}
 	var cs []cand
+	directIDs := map[string]bool{}
 	for _, e := range st.Entries {
 		if len(q.Facets) > 0 && !slices.Contains(q.Facets, e.Facet) {
 			continue
@@ -186,6 +224,9 @@ func Search(st *store.State, q Query) Result {
 		}
 		res.Pool++
 		ns := names(st, e)
+		if o := strings.TrimSpace(e.Impact.Object); o != "" {
+			ns = append(ns, o)
+		}
 		body := norm.Q(Line(e) + " " + e.Situation + " " + e.Choice + " " + strings.Join(ns, " "))
 		s := cover(qb, bigrams(body))
 		if strings.Contains(body, qq) {
@@ -208,7 +249,16 @@ func Search(st *store.State, q Query) Result {
 		if e.Pinned {
 			w = 1
 		}
-		cs = append(cs, cand{e, s * w})
+		directIDs[e.ID] = true
+		cs = append(cs, cand{e: e, score: s * w})
+	}
+	entities, hopCands := expandEntities(st, q, qq, words)
+	res.Entities = entities
+	for id, hc := range hopCands {
+		if directIDs[id] {
+			continue
+		}
+		cs = append(cs, cand{e: hc.e, score: hc.score, hop: 1, via: hc.via})
 	}
 	sort.SliceStable(cs, func(i, j int) bool {
 		if cs[i].score != cs[j].score {
@@ -233,7 +283,8 @@ func Search(st *store.State, q Query) Result {
 		if seen[t] {
 			continue
 		}
-		h := Hit{ID: c.e.ID, Facet: c.e.Facet, Status: c.e.Status, Last: c.e.Last, Kinds: c.e.Kinds, Text: t, Score: c.score, Cats: c.e.Cats()}
+		h := Hit{ID: c.e.ID, Facet: c.e.Facet, Status: c.e.Status, Last: c.e.Last, Kinds: c.e.Kinds, Text: t, Score: c.score,
+			Cats: c.e.Cats(), Hop: c.hop, Via: c.via, Quotes: UserQuotes(c.e, quotesPerEntity)}
 		if size+len(Format(h)) > MostBytes {
 			continue
 		}
@@ -264,7 +315,11 @@ func Format(h Hit) string {
 	if len(h.Cats) > 0 {
 		cats = "；分类 " + strings.Join(h.Cats, "/")
 	}
-	return fmt.Sprintf("- [%s·%s] %s（最后 %s%s%s）id:%s\n", facetName[h.Facet], st, h.Text, h.Last, kinds, cats, h.ID)
+	via := ""
+	if h.Hop > 0 && h.Via != "" {
+		via = "；1跳 " + h.Via
+	}
+	return fmt.Sprintf("- [%s·%s] %s（最后 %s%s%s%s）id:%s\n", facetName[h.Facet], st, h.Text, h.Last, kinds, cats, via, h.ID)
 }
 
 // FacetOf parses a facet name as the tool takes it (the internal names).

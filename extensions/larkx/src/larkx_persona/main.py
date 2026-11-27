@@ -72,6 +72,7 @@ class Plugin:
             self.connector = Connector(backend, Store(os.path.join(data_dir, "larkx.db")), Hub(self.peer),
                                        config.get("triage_rules") or "", config.get("agent_reply_suffix") or "",
                                        config.get("agent_prefix") or "")
+            self.connector.inbox_triage_chats = frozenset(config.get("inbox_triage_chats") or ())
             self.connector.mention = config.get("agent_mention", True) is not False
             self.connector.topics = config.get("agent_group_topics", True) is not False
             self.connector.start()
