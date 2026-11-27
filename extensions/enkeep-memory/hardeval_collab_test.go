@@ -712,3 +712,97 @@ func TestTwoLayerRecallAndHubPage1(t *testing.T) {
 		t.Error("ephemeral PR ticket fact should be filtered")
 	}
 }
+
+// sliceStateBefore must downgrade Stable->Candidate only when post-cutoff evidence was actually stripped,
+// never falsely downgrading pre-cutoff single-evidence Stable entries (which would evict entity-anchored rules
+// from collabHubPage1).
+func TestSliceStateBeforeStatusDowngradePrecision(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"pre-stable": {
+			ID: "pre-stable", Facet: entry.Tools, Origin: entry.Behavior, Status: entry.Stable,
+			Text: "task_plan 必须带 role 字段", Count: 1, First: "2026-11-10", Last: "2026-11-10",
+			Tagged: true, Object: "task_plan",
+			Evidence: []entry.Evidence{{Day: "2026-11-10", Source: "S3", Quote: "role required"}},
+		},
+		"post-promoted": {
+			ID: "post-promoted", Facet: entry.Tools, Origin: entry.Behavior, Status: entry.Stable,
+			Text: "事后新证据才升格的条目", Count: 2, First: "2026-11-10", Last: "2026-11-25",
+			Tagged: true, Object: "task_plan",
+			Evidence: []entry.Evidence{
+				{Day: "2026-11-10", Source: "S3", Quote: "first"},
+				{Day: "2026-11-25", Source: "S3", Quote: "second"},
+			},
+		},
+		"hw-post-ev": {
+			ID: "hw-post-ev", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
+			Text: "手写规矩不被降级", Count: 2, First: "2026-11-10", Last: "2026-11-25",
+			Tagged: true,
+			Evidence: []entry.Evidence{
+				{Day: "2026-11-10", Source: "S6", Quote: "first"},
+				{Day: "2026-11-25", Source: "S6", Quote: "second"},
+			},
+		},
+	}}
+	sliced := sliceStateBefore(st, "2026-11-20")
+	if got := sliced.Entries["pre-stable"].Status; got != entry.Stable {
+		t.Errorf("pre-cutoff Stable entry with no stripped evidence falsely downgraded to %q", got)
+	}
+	if got := sliced.Entries["post-promoted"].Status; got != entry.Candidate {
+		t.Errorf("post-cutoff promoted non-owned entry should downgrade to Candidate, got %q", got)
+	}
+	if got := sliced.Entries["hw-post-ev"].Status; got != entry.Stable {
+		t.Errorf("handwritten entry must stay Stable, got %q", got)
+	}
+	// Verify pre-stable keeps its active rank >= 750 in collabHubPage1.
+	page := collabHubPage1(sliced, nil, heFilter{leak: map[string]bool{}, units: map[string]bool{}}, "2026-11-20", 4096)
+	dq := hubDecisionsQuery(page, []string{"task_plan"}, decisionsQueryMaxBytes)
+	if !strings.Contains(dq, "pre-stable") {
+		t.Errorf("pre-stable entity-anchored rule missing from collabHubPage1 decisions_query: %q", dq)
+	}
+}
+
+// Verify heMemories and recallNonStandingL1 enforce verbatim UserOwned pass-through alongside pure-behavior L1.
+func TestHeMemoriesAndRecallUserOwnedVerbatim(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"hw-stand": {
+			ID: "hw-stand", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
+			Text: "已放行运维活直接自主执行，严禁弹确认卡。", Count: 20, Kinds: []string{"S1", "S6"},
+			First: "2026-10-01", Last: "2026-11-15", Tagged: true,
+		},
+		"hw-recall": {
+			ID: "hw-recall", Facet: entry.Tools, Origin: entry.Handwritten, Status: entry.Stable,
+			Text: "用 task_plan 派活时按要求填全 cwd 与 model 字段。", Count: 1, Kinds: []string{"S6"},
+			First: "2026-10-05", Last: "2026-10-05", Tagged: true,
+		},
+	}}
+	ov := &overview.State{Patterns: map[string]*overview.Pattern{
+		"ov:wrap": {
+			ID: "ov:wrap", Facet: string(entry.Interaction), Kind: overview.KindContract, Lifecycle: overview.Core,
+			Text: "抽象改写版自主执行口号", CoveredIDs: []string{"hw-stand"}, EvidenceIDs: []string{"hw-stand"},
+			Hard: true, Polarity: overview.PolarityAct, ScenesCount: 3, SourcesCount: 5, LastEvidence: "2026-11-15",
+		},
+		"ov:pure": {
+			ID: "ov:pure", Facet: string(entry.Tools), Kind: overview.KindContract, Lifecycle: overview.Core,
+			Text:        "发消息给用户必须调用 send_message 工具。",
+			ScenesCount: 3, SourcesCount: 10, LastEvidence: "2026-11-15",
+		},
+	}}
+	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}}
+	mems := heMemories(st, ov, nil, f, "2026-11-20", 4096)
+	res := mems["resident"]
+	if !strings.Contains(res, "已放行运维活直接自主执行，严禁弹确认卡") {
+		t.Errorf("resident missing verbatim handwritten rule: %s", res)
+	}
+	if strings.Contains(res, "抽象改写版自主执行口号") {
+		t.Errorf("resident should suppress L1 paraphrase covering live handwritten rule: %s", res)
+	}
+	if !strings.Contains(res, "send_message") {
+		t.Errorf("resident missing pure behavior-synthesized L1 contract: %s", res)
+	}
+	// Non-standing handwritten rule is retrieved verbatim by recallNonStandingL1.
+	lines := recallNonStandingL1(st, ov, f, "2026-11-20", "准备用 task_plan 派一个开发任务", "- 已放行运维活直接自主执行", 850)
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "填全 cwd 与 model 字段") {
+		t.Errorf("recallNonStandingL1 missing verbatim non-standing handwritten rule: %q", joined)
+	}
+}

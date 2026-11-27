@@ -1,10 +1,13 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,9 +22,10 @@ import (
 	"github.com/nwverse/persona/sdk/go/ext"
 )
 
-// The program on a computer (the manifest's node section). It does the three things an attempt needs on the
+// The program on a computer (the manifest's node section). It does what an attempt needs on the
 // computer where it runs, and nothing else:
 //
+//	ats.probe_launcher  check whether a configured launcher gateway accepts TCP connections
 //	ats.prepare  check the repository out into a worktree of its own, at the commit the ref names now
 //	ats.accept   run the task's acceptance command there (started here, reported with the event ats.accepted)
 //	ats.release  remove the worktree again, unless it holds work that is not committed
@@ -40,12 +44,24 @@ var safeIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]{1,80}$`)
 var errInvalidRef = errors.New("invalid_ref: " + invalidRefMessage)
 
 type nodeWorker struct {
-	data   string
-	notify func(event string, params any)
+	data                string
+	launcherSettingsDir string
+	notify              func(event string, params any)
 
 	mu      sync.Mutex
 	repos   []string
 	running map[string]context.CancelFunc
+}
+
+type probeLauncherParams struct {
+	Launcher string `json:"launcher"`
+}
+
+type probeLauncherResult struct {
+	Reachable bool   `json:"reachable"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	Error     string `json:"error,omitempty"`
+	Skipped   bool   `json:"skipped,omitempty"`
 }
 
 type prepareParams struct {
@@ -104,6 +120,89 @@ type releaseResult struct {
 
 func newNodeWorker(data string, repos []string, notify func(string, any)) *nodeWorker {
 	return &nodeWorker{data: data, repos: repos, notify: notify, running: map[string]context.CancelFunc{}}
+}
+
+func (n *nodeWorker) findLauncherSettingsDir() string {
+	if n.launcherSettingsDir != "" {
+		return n.launcherSettingsDir
+	}
+	dir := filepath.Clean(n.data)
+	for range 4 {
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break
+		}
+		dir = parent
+		settings := filepath.Join(dir, "launcher-settings")
+		if info, err := os.Stat(settings); err == nil && info.IsDir() {
+			return settings
+		}
+	}
+	return ""
+}
+
+func (n *nodeWorker) probeLauncher(ctx context.Context, p probeLauncherParams) (probeLauncherResult, error) {
+	skipped := probeLauncherResult{Reachable: true, Skipped: true}
+	if strings.TrimSpace(p.Launcher) == "" {
+		return skipped, nil
+	}
+	if !safeIDPattern.MatchString(p.Launcher) || strings.Contains(p.Launcher, "..") {
+		return probeLauncherResult{}, errors.New("invalid launcher name")
+	}
+	dir := n.findLauncherSettingsDir()
+	if dir == "" {
+		return skipped, nil
+	}
+	raw, err := os.ReadFile(filepath.Join(dir, p.Launcher+"-env-settings.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		raw, err = os.ReadFile(filepath.Join(dir, p.Launcher+"-settings.json"))
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return skipped, nil
+	}
+	if err != nil {
+		return probeLauncherResult{}, fmt.Errorf("read launcher settings: %w", err)
+	}
+	var settings struct {
+		Env struct {
+			AnthropicBaseURL string `json:"ANTHROPIC_BASE_URL"`
+			OpenAIBaseURL    string `json:"OPENAI_BASE_URL"`
+		} `json:"env"`
+		BaseURL string `json:"base_url"`
+	}
+	if err := json.Unmarshal(raw, &settings); err != nil {
+		return probeLauncherResult{}, fmt.Errorf("decode launcher settings: %w", err)
+	}
+	baseURL := cmp.Or(strings.TrimSpace(settings.Env.AnthropicBaseURL), strings.TrimSpace(settings.Env.OpenAIBaseURL), strings.TrimSpace(settings.BaseURL))
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return probeLauncherResult{}, errors.New("invalid launcher base URL")
+	}
+	host, port := u.Hostname(), u.Port()
+	if host == "" {
+		return skipped, nil
+	}
+	if port == "" {
+		switch u.Scheme {
+		case "http":
+			port = "80"
+		case "https":
+			port = "443"
+		default:
+			return skipped, nil
+		}
+	}
+	addr := net.JoinHostPort(host, port)
+	const timeout = 2 * time.Second
+	pctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	dialer := net.Dialer{Timeout: timeout}
+	conn, err := dialer.DialContext(pctx, "tcp", addr)
+	if err != nil {
+		return probeLauncherResult{Endpoint: addr, Error: err.Error()}, nil
+	}
+	_ = conn.Close()
+	return probeLauncherResult{Reachable: true, Endpoint: addr}, nil
 }
 
 func attemptKey(taskID string, attempt int) (string, error) {
@@ -588,6 +687,12 @@ func nodeProgram(id, version string) ext.Program {
 // rpc answers the hub program's calls (ats.<method> over nodes.call).
 func (n *nodeWorker) rpc(ctx context.Context, method string, params json.RawMessage) (any, error) {
 	switch method {
+	case "probe_launcher":
+		var p probeLauncherParams
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, err
+		}
+		return n.probeLauncher(ctx, p)
 	case "prepare":
 		p := prepareParams{Ref: "HEAD"}
 		if err := json.Unmarshal(params, &p); err != nil {

@@ -274,6 +274,10 @@ type Execution struct {
 	LastReply    string `json:"last_reply,omitempty"`
 	Waiting      string `json:"waiting,omitempty"` // why the task needs the user, when it does
 
+	ContinueCount    int        `json:"continue_count,omitempty"`
+	ContinuedAt      *time.Time `json:"continued_at,omitempty"`
+	ContinuedErrorAt string     `json:"continued_error_at,omitempty"`
+
 	TodoAttachError string `json:"todo_attach_error,omitempty"`
 }
 
@@ -613,7 +617,7 @@ type CompleteAttemptInput struct {
 	ReportID   string
 	Outcome    string // succeeded | failed | canceled | rate_limited
 	Verdict    string // pass | fail | unverified
-	ErrorClass string // infra_error | timeout | task_failed | rate_limited | lost | auth_expired | config_error | rejected
+	ErrorClass string // See isRetryableErrorClass for errors eligible for retry.
 	ExitCode   *int
 	Message    string
 	Summary    string // the end of the agent's last reply
@@ -871,6 +875,10 @@ func cloneTask(t *Task) *Task {
 	if t.Exec != nil {
 		e := *t.Exec
 		e.Dirty = cloneBoolPtr(e.Dirty)
+		if e.ContinuedAt != nil {
+			ca := *e.ContinuedAt
+			e.ContinuedAt = &ca
+		}
 		out.Exec = &e
 	}
 	if t.Attempts != nil {
@@ -1271,23 +1279,23 @@ func (q *Queue) CompleteAttempt(in CompleteAttemptInput) (*Task, error) {
 		if errClass == "" {
 			errClass = "task_failed"
 		}
-		shouldRetry := t.RetriesLeft > 0 && isRetryableErrorClass(errClass)
-		if errClass == "rate_limited" && t.AttemptNo <= t.MaxRetries+3 {
-			shouldRetry = true
-		}
+		reroute := errClass == "gateway_unreachable" && t.AttemptNo <= t.MaxRetries+3 && q.hasHealthyAlternateLocked(t.Machine, att.Machine)
+		extraRetry := reroute || (errClass == "rate_limited" && t.AttemptNo <= t.MaxRetries+3)
+		shouldRetry := extraRetry || (t.RetriesLeft > 0 && isRetryableErrorClass(errClass))
 		if in.Retryable != nil {
-			shouldRetry = *in.Retryable && (t.RetriesLeft > 0 || (errClass == "rate_limited" && t.AttemptNo <= t.MaxRetries+3))
+			shouldRetry = *in.Retryable && (t.RetriesLeft > 0 || extraRetry)
 		}
 		if shouldRetry {
-			if errClass != "rate_limited" || t.AttemptNo > t.MaxRetries {
-				if t.RetriesLeft > 0 {
+			t.NotBefore = nil
+			if !reroute {
+				if t.RetriesLeft > 0 && (errClass != "rate_limited" || t.AttemptNo > t.MaxRetries) {
 					t.RetriesLeft--
 				}
+				delay := ComputeRetryDelay(t.ID, t.AttemptNo, q.cfg.RetryBaseDelay, q.cfg.RetryMaxDelay)
+				readyAt := now.Add(delay)
+				t.NotBefore = &readyAt
 			}
-			delay := ComputeRetryDelay(t.ID, t.AttemptNo, q.cfg.RetryBaseDelay, q.cfg.RetryMaxDelay)
-			readyAt := now.Add(delay)
 			t.State = StateQueued
-			t.NotBefore = &readyAt
 			t.FailureReason = errClass
 		} else {
 			t.State = StateFailed
@@ -1304,12 +1312,21 @@ func (q *Queue) CompleteAttempt(in CompleteAttemptInput) (*Task, error) {
 	return cloneTask(t), nil
 }
 
+func (q *Queue) hasHealthyAlternateLocked(requiredMachine, failedMachine string) bool {
+	for _, m := range q.machines {
+		if m.Name != failedMachine && m.Online && !m.Degraded && m.MaxSlots > 0 && m.matches(requiredMachine) {
+			return true
+		}
+	}
+	return false
+}
+
 // isRetryableErrorClass: the classes another attempt can get past. Not among them: rejected (the task asks for
 // something that is not there), config_error (the configured model is unavailable) and auth_expired (the agent
 // is signed out): they fail the same way until the user changes something.
 func isRetryableErrorClass(errClass string) bool {
 	switch errClass {
-	case "infra_error", "timeout", "task_failed", "rate_limited", "lost":
+	case "infra_error", "timeout", "task_failed", "rate_limited", "lost", "gateway_unreachable", "gateway_error", "stream_interrupted":
 		return true
 	default:
 		return false

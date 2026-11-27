@@ -74,8 +74,10 @@ type fakeHub struct {
 	created         []sessionRequest
 	requests        []sessionRequest
 	interrupts      []string
+	messages        []sentMessage
 	attached        []string
 	createErr       error
+	sendErr         error
 	onCreateSession func(sessionRequest)
 	// interactions are the pending cards; interactionsErr makes the list fail; interactionCalls counts the asks.
 	interactions     []hubInteraction
@@ -88,6 +90,10 @@ type fakeHub struct {
 type resolvedInteraction struct {
 	ID  string
 	Res interactionResolution
+}
+
+type sentMessage struct {
+	MachineID, SessionID, Text string
 }
 
 func newFakeHub() *fakeHub {
@@ -145,6 +151,13 @@ func (f *fakeHub) Interrupt(_ context.Context, _ string, sessionID string) error
 	return nil
 }
 
+func (f *fakeHub) SendMessage(_ context.Context, machineID, sessionID, text string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.messages = append(f.messages, sentMessage{machineID, sessionID, text})
+	return f.sendErr
+}
+
 func (f *fakeHub) AttachTodo(_ context.Context, todoID, _ string, sessionID string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -190,6 +203,13 @@ func (f *fakeHub) set(id string, change func(s *hubSession)) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	change(f.sessions[id])
+}
+
+func (f *fakeHub) turnFails(id, updatedAt, text string) {
+	f.set(id, func(s *hubSession) {
+		s.State, s.UpdatedAt, s.TurnError, s.TurnErrorKind = "idle", updatedAt, text, "transient"
+		s.BackgroundWorking = false
+	})
 }
 
 // turnEnds makes the session's turn end with reply.
