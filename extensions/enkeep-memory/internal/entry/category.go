@@ -138,7 +138,7 @@ var (
 	payloadLegalIDRe = regexp.MustCompile(`(?i)` +
 		`身份证号?|护照号?|签证|驾驶证|驾照|户口本|户口簿|迁户口|落户|户籍证明|户籍信息|居住证|绿卡|社保号|医保卡号|税号|美国工卡|EAD工卡|实体工卡|工卡审批|工卡办理|\bEAD\b|居留许可|` +
 		`私人合同|购房合同|租房合同|劳动仲裁|诉讼|起诉|成为被告|列为被告|起诉被告|原告方|被告方|民事诉讼|刑事诉讼|官司|律师函|仲裁|判决书|离婚协议|遗嘱|` +
-		`\b(us|chinese|my|renew|renewal|expired?|number|photo)\s+passport\b|\bpassport\s+(number|renewal|expir\w*|stamp|photo|application)\b|` +
+		`\b(us|chinese|my|renew|renewal|expired?|number|photo)\s+(?:the\s+|my\s+)?passport\b|\bpassport\s+(number|renewal|expir\w*|stamp|photo|application)\b|` +
 		`\b(h1b|h-1b|f1|f-1|b1/b2|o1|l1|eb[123]|work|student|tourist|schengen|us)\s+visa\b|\bvisa\s+(status|stamp|interview|renewal|expir\w*|approv\w*|application|extension)\b|` +
 		`\b(green card|driver'?s? licen[cs]e|social security( number)?|ssn|national id|id card|` +
 		`tax id|lawsuit|litigation|sued|arbitration|court order|subpoena|legal dispute|prenup)\b`)

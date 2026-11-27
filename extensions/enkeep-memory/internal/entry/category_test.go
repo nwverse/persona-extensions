@@ -207,6 +207,7 @@ func TestPayloadCategories(t *testing.T) {
 		{"fund_dca_finance", Persona, "每月定投指数基金并等工资入账后自动分账", CatFinance},
 		{"lawsuit_defendant_legal", Persona, "因私人纠纷成为被告，正在准备应诉材料", CatLegalID},
 		{"us_visa_renewal_legal", Persona, "Preparing H1B visa renewal and US passport photo", CatLegalID},
+		{"renew_the_passport_legal", Workflow, "renew the passport before the trip", CatLegalID},
 	}
 	for _, tc := range rehearsalRound2TP {
 		if got := PayloadCategories(tc.facet, tc.text); !slices.Contains(got, tc.want) {
