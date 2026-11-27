@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "relingo",
   "name": "Relingo",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "replaces": "termwise",
   "icon": "assets/icon.png",
   "description": "帮你读英文：扩展里多一页「英文阅读」，有两种看法。「翻译模式」在每段原文下面附上中文；「生词模式」把较难的词挑出来，点一下看意思，有用就记下来。Persona 版本支持的话，在 App 里点英文单词也能直接查意思、记下或删掉。记下的词保存在你的 Persona 里，不用装别的程序，也不用打开终端。以前装过 termwise 的，升级后记下的词和设置都还在。",

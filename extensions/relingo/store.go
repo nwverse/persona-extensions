@@ -5,11 +5,15 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 )
 
-const stateFile = "reading.json"
+const (
+	stateFile             = "reading.json"
+	maxCachedTranslations = 200
+)
 
 // readingState is the extension's on-disk state: the selected mode, whether the
 // extra paragraph is shown, remembered words, and translations that already came
@@ -70,9 +74,22 @@ func normalize(in readingState) readingState {
 	if in.Words == nil {
 		in.Words = map[string]savedWord{}
 	}
-	clean := map[string]savedWord{}
+	lemmas := make([]string, 0, len(in.Words))
 	for lemma, word := range in.Words {
 		if !surfaceOK(lemma) || word.Lemma != lemma || word.Gloss == "" {
+			continue
+		}
+		lemmas = append(lemmas, lemma)
+	}
+	sort.Strings(lemmas)
+	if len(lemmas) > maxSavedWords {
+		lemmas = lemmas[:maxSavedWords]
+	}
+	clean := make(map[string]savedWord, len(lemmas))
+	for _, lemma := range lemmas {
+		word := in.Words[lemma]
+		word.Gloss = clipBytes(word.Gloss, 1800)
+		if word.Gloss == "" {
 			continue
 		}
 		clean[lemma] = word
@@ -81,6 +98,24 @@ func normalize(in readingState) readingState {
 	if in.Translations == nil {
 		in.Translations = map[string]string{}
 	}
+	tkeys := make([]string, 0, len(in.Translations))
+	for k, v := range in.Translations {
+		if k == "" || v == "" {
+			continue
+		}
+		tkeys = append(tkeys, k)
+	}
+	sort.Strings(tkeys)
+	if len(tkeys) > maxCachedTranslations {
+		tkeys = tkeys[:maxCachedTranslations]
+	}
+	cleanTr := make(map[string]string, len(tkeys))
+	for _, k := range tkeys {
+		if clipped := clipBytes(in.Translations[k], 1800); clipped != "" {
+			cleanTr[k] = clipped
+		}
+	}
+	in.Translations = cleanTr
 	return in
 }
 
@@ -123,6 +158,7 @@ func (s *store) toggleMore() bool {
 
 // save remembers lemma. A second save keeps the first record and reports already.
 func (s *store) save(lemma, gloss string) (already bool) {
+	gloss = clipBytes(gloss, 1800)
 	if !surfaceOK(lemma) || gloss == "" {
 		return false
 	}
@@ -130,6 +166,9 @@ func (s *store) save(lemma, gloss string) (already bool) {
 	defer s.mu.Unlock()
 	if _, ok := s.Words[lemma]; ok {
 		return true
+	}
+	if len(s.Words) >= maxSavedWords {
+		return false
 	}
 	s.Words[lemma] = savedWord{Lemma: lemma, Gloss: gloss, At: time.Now().UTC().Format(time.RFC3339)}
 	s.flush()
@@ -159,6 +198,7 @@ func (s *store) translation(key string) (string, bool) {
 }
 
 func (s *store) rememberTranslation(key, text string) {
+	text = clipBytes(text, 1800)
 	if key == "" || text == "" {
 		return
 	}
@@ -169,6 +209,19 @@ func (s *store) rememberTranslation(key, text string) {
 	}
 	if s.Translations[key] == text {
 		return
+	}
+	if _, exists := s.Translations[key]; !exists && len(s.Translations) >= maxCachedTranslations {
+		keys := make([]string, 0, len(s.Translations))
+		for k := range s.Translations {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			delete(s.Translations, k)
+			if len(s.Translations) < maxCachedTranslations {
+				break
+			}
+		}
 	}
 	s.Translations[key] = text
 	s.flush()
@@ -184,12 +237,31 @@ func (s *store) flush() {
 		return
 	}
 	raw = append(raw, '\n')
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
+	f, err := os.CreateTemp(filepath.Dir(s.path), stateFile+".tmp-*")
+	if err != nil {
+		s.logf("state: %v", err)
+		return
+	}
+	tmp := f.Name()
+	if err := f.Chmod(0o600); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		s.logf("state: %v", err)
+		return
+	}
+	if _, err := f.Write(raw); err != nil {
+		_ = f.Close()
+		_ = os.Remove(tmp)
+		s.logf("state: %v", err)
+		return
+	}
+	if err := f.Close(); err != nil {
+		_ = os.Remove(tmp)
 		s.logf("state: %v", err)
 		return
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
+		_ = os.Remove(tmp)
 		s.logf("state: %v", err)
 	}
 }

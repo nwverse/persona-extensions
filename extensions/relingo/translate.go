@@ -14,7 +14,10 @@ import (
 
 // translateHost is the only translation service this extension calls.
 // A failed response is shown as a failure; it is never replaced with a made-up translation.
-const translateHost = "api.mymemory.translated.net"
+const (
+	translateHost            = "api.mymemory.translated.net"
+	maxTranslatorResponseLen = 1 << 20
+)
 
 type translator interface {
 	Translate(ctx context.Context, text, target string) (string, error)
@@ -47,9 +50,12 @@ func (m myMemory) Translate(ctx context.Context, text, target string) (string, e
 		return "", err
 	}
 	defer res.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(res.Body, 1<<20))
+	body, err := io.ReadAll(io.LimitReader(res.Body, maxTranslatorResponseLen+1))
 	if err != nil {
 		return "", err
+	}
+	if len(body) > maxTranslatorResponseLen {
+		return "", fmt.Errorf("translator response too large")
 	}
 	return m.parseTranslation(body, res.StatusCode)
 }
@@ -80,7 +86,8 @@ func (myMemory) parseTranslation(body []byte, status int) (string, error) {
 // translateCached returns a stored translation or asks the translator and stores a success.
 func (a *app) translateCached(ctx context.Context, text, target string) (string, error) {
 	key := target + "\n" + text
-	if got, ok := a.store.translation(key); ok {
+	st := a.currentStore()
+	if got, ok := st.translation(key); ok {
 		return got, nil
 	}
 	out, err := a.tr.Translate(ctx, text, target)
@@ -91,7 +98,7 @@ func (a *app) translateCached(ctx context.Context, text, target string) (string,
 	if out == "" {
 		return "", fmt.Errorf("translator returned no usable text")
 	}
-	a.store.rememberTranslation(key, out)
+	st.rememberTranslation(key, out)
 	return out, nil
 }
 

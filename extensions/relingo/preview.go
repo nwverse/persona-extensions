@@ -33,12 +33,12 @@ func (a *app) postMode(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	a.store.setMode(r.PostForm.Get("mode"))
+	a.currentStore().setMode(r.PostForm.Get("mode"))
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
 func (a *app) postMore(w http.ResponseWriter, r *http.Request) {
-	a.store.toggleMore()
+	a.currentStore().toggleMore()
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -53,13 +53,13 @@ func (a *app) postSave(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown word", http.StatusBadRequest)
 		return
 	}
-	a.store.save(lem, g.text("zh-Hans"))
+	a.currentStore().save(lem, g.text("zh-Hans"))
 	http.Redirect(w, r, queryWord(lem), http.StatusSeeOther)
 }
 
 func (a *app) getPreview(w http.ResponseWriter, r *http.Request) {
 	t := textsFor("zh-Hans")
-	snap := a.store.snapshot()
+	snap := a.currentStore().snapshot()
 	mode := snap.Mode
 	if mode != modeVocabulary {
 		mode = modeTranslation

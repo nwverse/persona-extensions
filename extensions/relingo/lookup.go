@@ -60,11 +60,11 @@ func (a *app) lookupMethods() ext.Handler {
 }
 
 func (a *app) lookupState(_ context.Context, _ lookupParams) (stateResult, error) {
-	return stateResult{UnderlineSaved: a.underlineSaved, Words: a.savedLemmas()}, nil
+	return stateResult{UnderlineSaved: a.currentUnderlineSaved(), Words: a.savedLemmas()}, nil
 }
 
 func (a *app) savedLemmas() []string {
-	snap := a.store.snapshot()
+	snap := a.currentStore().snapshot()
 	words := make([]string, 0, len(snap.Words))
 	for lemma := range snap.Words {
 		words = append(words, lemma)
@@ -78,7 +78,7 @@ func (a *app) savedLemmas() []string {
 
 func (a *app) lookupWord(_ context.Context, p lookupParams) (lookupResult, error) {
 	out := lookupResult{Word: strings.TrimSpace(p.Word), Senses: []sense{}}
-	snap := a.store.snapshot()
+	snap := a.currentStore().snapshot()
 	lemma, g, ok := lexicon.lookup(out.Word, false)
 	if !ok {
 		// The candidate rules (developer words, function words, short acronyms) keep a word from being offered, not
@@ -117,9 +117,10 @@ func (a *app) lookupSave(_ context.Context, p lookupParams) (savedResult, error)
 	if !ok {
 		return savedResult{}, nil
 	}
-	a.store.save(lemma, g.text(p.UILang))
+	st := a.currentStore()
+	st.save(lemma, g.text(p.UILang))
 	// store.save turns away an empty gloss without saying so, so report what the store now holds.
-	_, saved := a.store.snapshot().Words[lemma]
+	_, saved := st.snapshot().Words[lemma]
 	return savedResult{Saved: saved}, nil
 }
 
@@ -131,8 +132,9 @@ func (a *app) lookupRemove(_ context.Context, p lookupParams) (savedResult, erro
 	} else {
 		word = foldWord(word)
 	}
-	a.store.remove(word)
+	st := a.currentStore()
+	st.remove(word)
 	// Membership, not the entry's lemma: a blank or unknown word reads the zero entry, whose empty lemma equals "".
-	_, saved := a.store.snapshot().Words[word]
+	_, saved := st.snapshot().Words[word]
 	return savedResult{Saved: saved}, nil
 }
