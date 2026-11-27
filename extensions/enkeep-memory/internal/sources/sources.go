@@ -536,7 +536,7 @@ func (s *Source) Get(ctx context.Context, kind, id string) (wire.KBDetail, error
 	case KindAbout:
 		meta["code"], meta["origin"], meta["name"] = entry.SrcAbout, string(entry.SelfReport), "关于我"
 	case KindMemory:
-		meta["code"], meta["origin"], meta["name"] = entry.SrcMemory, string(entry.Handwritten), "助手记忆 · "+id
+		meta["code"], meta["origin"], meta["name"] = entry.SrcMemory, string(entry.OriginAssistantNote), "助手记忆 · "+id
 		s.mu.Lock()
 		if m, ok := s.memories[id]; ok && m.Description != "" {
 			meta["note"] = m.Description

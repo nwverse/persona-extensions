@@ -734,12 +734,12 @@ func TestSliceStateBeforeStatusDowngradePrecision(t *testing.T) {
 			},
 		},
 		"hw-post-ev": {
-			ID: "hw-post-ev", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
-			Text: "手写规矩不被降级", Count: 2, First: "2026-11-10", Last: "2026-11-25",
+			ID: "hw-post-ev", Facet: entry.Interaction, Origin: entry.SelfReport, Status: entry.Stable,
+			Text: "用户自述规矩不被降级", Count: 2, First: "2026-11-10", Last: "2026-11-25",
 			Tagged: true,
 			Evidence: []entry.Evidence{
-				{Day: "2026-11-10", Source: "S6", Quote: "first"},
-				{Day: "2026-11-25", Source: "S6", Quote: "second"},
+				{Day: "2026-11-10", Source: "S7", Quote: "first"},
+				{Day: "2026-11-25", Source: "S7", Quote: "second"},
 			},
 		},
 	}}
@@ -765,13 +765,13 @@ func TestSliceStateBeforeStatusDowngradePrecision(t *testing.T) {
 func TestHeMemoriesAndRecallUserOwnedVerbatim(t *testing.T) {
 	st := &store.State{Entries: map[string]*entry.Entry{
 		"hw-stand": {
-			ID: "hw-stand", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
-			Text: "已放行运维活直接自主执行，严禁弹确认卡。", Count: 20, Kinds: []string{"S1", "S6"},
+			ID: "hw-stand", Facet: entry.Interaction, Origin: entry.SelfReport, Status: entry.Stable,
+			Text: "已放行运维活直接自主执行，严禁弹确认卡。", Count: 20, Kinds: []string{"S1", "S7"},
 			First: "2026-10-01", Last: "2026-11-15", Tagged: true,
 		},
 		"hw-recall": {
-			ID: "hw-recall", Facet: entry.Tools, Origin: entry.Handwritten, Status: entry.Stable,
-			Text: "用 task_plan 派活时按要求填全 cwd 与 model 字段。", Count: 1, Kinds: []string{"S6"},
+			ID: "hw-recall", Facet: entry.Tools, Origin: entry.SelfReport, Status: entry.Stable,
+			Text: "用 task_plan 派活时按要求填全 cwd 与 model 字段。", Count: 1, Kinds: []string{"S7"},
 			First: "2026-10-05", Last: "2026-10-05", Tagged: true,
 		},
 	}}

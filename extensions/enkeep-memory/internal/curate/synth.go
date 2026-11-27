@@ -76,9 +76,6 @@ func (c *Curator) weeklyEntries(ctx context.Context, m model.Model, today string
 	if err := c.mergeClasses(ctx, m, run); err != nil {
 		run.Notes = append(run.Notes, "类的合并没做完："+err.Error())
 	}
-	if err := c.mergeRules(ctx, m, run); err != nil {
-		run.Notes = append(run.Notes, "规矩合并没做完："+err.Error())
-	}
 	c.settleAll(today, run)
 	if err := c.liftAbstracts(ctx, m, run); err != nil {
 		run.Notes = append(run.Notes, "抽象层没做完："+err.Error())

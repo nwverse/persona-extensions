@@ -3,7 +3,6 @@ package entry
 import (
 	"fmt"
 	"math"
-	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -222,8 +221,7 @@ func Score(e *Entry) int {
 		// Each day the user had to correct it again is a violation (cogpipe's violation_count): 6 the first, up to 20.
 		u += math.Min(20, 6+4*float64(max(correctionDays(e)-1, 0)))
 	}
-	if (e.User != nil && strings.TrimSpace(e.User.Text) != "") || lastUserMark(e) == "right" ||
-		(e.Origin != Behavior && e.Origin != "" && e.Origin != Seed) {
+	if IsTrueUserOwned(e) || lastUserMark(e) == "right" {
 		u += 10
 	}
 	if e.Principle() != "" && KindOf(e) == KindUnderstanding {
@@ -296,14 +294,16 @@ func isoWeek(day string) string {
 	return fmt.Sprintf("%d-W%02d", y, w)
 }
 
-// hardCue is a ban or plain anger in the user's own correction: from now on, never again, swearing, a row of
-// question marks.
-var hardCue = regexp.MustCompile(`以后(都|一律|别|不要|不许)|一律|永远不|绝不|再也不|别再|不要再|不许|他妈|我操|傻逼|[？?]{3,}|(?i)\bnever (do|ask)|\bstop (doing|asking)`)
-
-// Hard says whether e is a hard rule (0.2.0-beta.52, after cogpipe's 【硬】 and violation_count): a correction of the
-// assistant the user made on two days within a week, or with a ban or anger in their own words. A hard rule stands
-// as soon as it is read (export counts it stable) and scores at least 90.
+// Hard reports whether e carries a multi-day correction signal or explicit user pin for L1 reference (0.4.0 §2).
+// Single-day L0 anger/ban cue auto-promotion has been removed: an entry qualifies here only if explicitly Pinned or
+// corrected by the user's own lines on at least two distinct days within 7 days.
 func Hard(e *Entry) bool {
+	if e == nil {
+		return false
+	}
+	if e.Pinned {
+		return true
+	}
 	if e.Facet != Interaction && e.Facet != Tools {
 		return false
 	}
@@ -314,9 +314,6 @@ func Hard(e *Entry) bool {
 	for _, ev := range e.Evidence {
 		if !selfLine(ev) {
 			continue
-		}
-		if hardCue.MatchString(ev.Quote) {
-			return true
 		}
 		if ev.Day != "" && !slices.Contains(days, ev.Day) {
 			days = append(days, ev.Day)

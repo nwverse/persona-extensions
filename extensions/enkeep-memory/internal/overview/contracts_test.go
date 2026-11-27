@@ -167,8 +167,8 @@ func TestSyncContracts(t *testing.T) {
 	// but merged into one L1 contract they span 2 days within 7 days -> Hard=true, ViolationCount=2.
 	r1 := makeRule("r-act-1", "correction", "已放行的事直接做", "", "2026-11-18", "放行了就直接做", entry.Behavior, 3)
 	r2 := makeRule("r-act-2", "correction", "不要反复弹确认卡", "涉及线上或删数据时停下问", "2026-11-20", "别再弹确认卡了", entry.Behavior, 2)
-	// Handwritten entry saying the same thing: must be recorded in CoveredIDs, never deleted.
-	rHand := makeRule("r-hand", "correction", "已授权任务直接推进", "", "2026-11-19", "授权过的直接推进", entry.Handwritten, 2)
+	// User-owned (SelfReport) entry saying the same thing: must be recorded in CoveredIDs, never deleted.
+	rHand := makeRule("r-hand", "correction", "已授权任务直接推进", "", "2026-11-19", "授权过的直接推进", entry.SelfReport, 2)
 	// Conflicting rule: must not be merged into the act contract.
 	rConf := makeRule("r-conf", "correction", "每次行动前都要先问", "", "2026-11-20", "动手前先问我", entry.Behavior, 2)
 	// Standalone hard rule (explicit ban cue + user confirmation, single source, single week): must still become a used hard contract.
@@ -518,8 +518,11 @@ func TestAbstractAndOwnedCandidatesIncluded(t *testing.T) {
 		Status: entry.Stable, Origin: entry.Behavior, First: "2026-08-01", Last: "2026-11-20", Count: 50, Tagged: true,
 		Evidence: []entry.Evidence{{Source: entry.SrcAgent, Ref: "a/1", Day: "2026-11-10", Who: entry.WhoSelf, Quote: "重活上专用门禁机"}},
 	}
-	jOwned := action("j-owned", entry.Judgement, "alpha", entry.SrcMemory, "2026-10-01", "design from first principles")
-	jOwned.Origin = entry.Handwritten
+	jOwned := action("j-owned", entry.Judgement, "alpha", entry.SrcAbout, "2026-10-01", "design from first principles")
+	jOwned.Origin = entry.SelfReport
+	if isUserOwned(&entry.Entry{Origin: entry.OriginAssistantNote}) || isUserOwned(&entry.Entry{Origin: entry.Handwritten}) {
+		t.Fatalf("S6 assistant_note/handwritten must not satisfy isUserOwned")
+	}
 	st := state(tAbs, jOwned)
 
 	picked := contractCandidates(st, "")

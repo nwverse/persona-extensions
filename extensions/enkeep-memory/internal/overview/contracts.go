@@ -79,13 +79,10 @@ type (
 	}
 )
 
-// isUserOwned says whether e was written, edited or pinned by the user, or came from the assistant's handwritten
-// memory: such entries are never silently merged away; a covering contract records them in CoveredIDs.
+// isUserOwned delegates to entry.IsTrueUserOwned (0.4.0 §1.2 single source of truth): only genuinely user-sovereign
+// entries (SelfReport, FromOnboarding, Pinned, or non-empty User edit) qualify; S6 assistant notes never do.
 func isUserOwned(e *entry.Entry) bool {
-	if e == nil {
-		return false
-	}
-	return e.User != nil || e.Pinned || e.Origin == entry.Handwritten
+	return entry.IsTrueUserOwned(e)
 }
 
 // contractCandidates returns the live interaction/tools rules eligible for L1 contract aggregation, before cutoff

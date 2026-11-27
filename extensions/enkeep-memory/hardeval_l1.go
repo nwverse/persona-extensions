@@ -66,7 +66,7 @@ func sliceStateBefore(st *store.State, cutoff string) *store.State {
 				if cp.Count <= 0 {
 					cp.Count = len(evs)
 				}
-				isOwned := cp.Origin == entry.Handwritten || cp.Origin == entry.SelfReport || cp.Pinned || cp.User != nil
+				isOwned := entry.IsTrueUserOwned(&cp)
 				if stripped && cp.Count <= 1 && cp.Status == entry.Stable && !isOwned {
 					cp.Status = entry.Candidate
 				}

@@ -571,7 +571,7 @@ func UnabsorbedRuleHotCandidate(st *store.State, e *entry.Entry, tpl map[string]
 	if cats, space, _ := Tags(st, e); len(cats) > 0 || space != "" {
 		return Candidate{}, false
 	}
-	isUserOwned := e.Origin == entry.Handwritten || e.Origin == entry.SelfReport || e.Pinned || e.User != nil
+	isUserOwned := entry.IsTrueUserOwned(e)
 	highAbstract := e.Grain == entry.Abstract && e.Count >= 3 && (e.Facet == entry.Interaction || e.Facet == entry.Tools)
 	if !isUserOwned && !entry.Hard(e) && !highAbstract {
 		return Candidate{}, false
@@ -594,15 +594,10 @@ func UnabsorbedRuleHotCandidate(st *store.State, e *entry.Entry, tpl map[string]
 	}, true
 }
 
-// IsUserOwned reports whether e is a rule or principle explicitly authored or confirmed by the user or assistant
-// handwritten memory (S6 handwritten, self_report, or non-empty user edit), eligible for verbatim pass-through under
-// unified design §2.1 rather than being rewritten by L1 synthesis.
+// IsUserOwned delegates to entry.IsTrueUserOwned (0.4.0 §1.2 single source of truth): only genuinely user-sovereign
+// entries (SelfReport, FromOnboarding, Pinned, or non-empty User edit) qualify; S6 assistant notes never do.
 func IsUserOwned(e *entry.Entry) bool {
-	if e == nil {
-		return false
-	}
-	return e.Origin == entry.Handwritten || e.Origin == entry.SelfReport ||
-		(e.User != nil && strings.TrimSpace(e.User.Text) != "")
+	return entry.IsTrueUserOwned(e)
 }
 
 // UserOwnedStandingCandidate converts a live, non-sensitive, non-pinned user-owned rule/principle into a verbatim

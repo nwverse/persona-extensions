@@ -382,24 +382,32 @@ func TestResidentTextKeepsExceptionAndPoles(t *testing.T) {
 	}
 }
 
-// Unified design §2.1: user-confirmed (S6 handwritten / self_report / user-edited) rules pass through verbatim into
-// standing and Page 1 recall without L1 rewriting; L1 paraphrases covering those IDs transfer Hard/Polarity signals
-// and exit standing, while pure behavior-synthesized L1 patterns stand alongside verbatim rules.
+// 0.4.0 §1.2: genuinely user-owned rules (SelfReport / FromOnboarding / User edit) pass through verbatim into
+// standing and Page 1 recall; S6 assistant notes (OriginAssistantNote / legacy Handwritten) no longer receive
+// UserOwned pass-through privilege.
 func TestUserOwnedVerbatimPassThrough(t *testing.T) {
 	st := &store.State{Entries: map[string]*entry.Entry{
 		"hw-1": {
-			ID: "hw-1", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
+			ID: "hw-1", Facet: entry.Interaction, Origin: entry.SelfReport, Status: entry.Stable,
 			Text: "用户已下令的任务被拦截时，直接安排 Agent 处理，严禁把命令抛回给用户操作。", Exception: "需本人登录除外",
-			Count: 10, Kinds: []string{"S1", "S6"}, Last: "2026-11-22", Tagged: true,
+			Count: 10, Kinds: []string{"S1", "S7"}, Last: "2026-11-22", Tagged: true,
+		},
+		"s6-note": {
+			ID: "s6-note", Facet: entry.Interaction, Origin: entry.OriginAssistantNote, Status: entry.Stable,
+			Text: "助手自记反思笔记不可直通常驻", Count: 10, Kinds: []string{"S6"}, Last: "2026-11-22", Tagged: true,
+		},
+		"hw-legacy": {
+			ID: "hw-legacy", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
+			Text: "旧版手写助手笔记同样不可直通常驻", Count: 10, Kinds: []string{"S6"}, Last: "2026-11-22", Tagged: true,
 		},
 		"hw-sens": {
-			ID: "hw-sens", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
-			Text: "私密财务手写规则不可进常驻", Count: 10, Kinds: []string{"S6"}, Last: "2026-11-22", Tagged: true,
+			ID: "hw-sens", Facet: entry.Interaction, Origin: entry.SelfReport, Status: entry.Stable,
+			Text: "私密财务自述规则不可进常驻", Count: 10, Kinds: []string{"S7"}, Last: "2026-11-22", Tagged: true,
 			Categories: []entry.Category{{Name: entry.CatFinance, By: entry.ByModel}},
 		},
 		"hw-world": {
-			ID: "hw-world", Facet: entry.World, Origin: entry.Handwritten, Status: entry.Stable,
-			Text: "实体事实永不进常驻", Count: 10, Kinds: []string{"S6"}, Last: "2026-11-22", Tagged: true,
+			ID: "hw-world", Facet: entry.World, Origin: entry.SelfReport, Status: entry.Stable,
+			Text: "实体事实永不进常驻", Count: 10, Kinds: []string{"S7"}, Last: "2026-11-22", Tagged: true,
 		},
 		"beh-l0": {
 			ID: "beh-l0", Facet: entry.Interaction, Origin: entry.Behavior, Status: entry.Stable,
@@ -454,7 +462,7 @@ func TestUserOwnedVerbatimPassThrough(t *testing.T) {
 	if pure := byID["ov:pattern:pure-l1"]; !pure.Standing {
 		t.Errorf("pure behavior-synthesized L1 contract must stand alongside verbatim handwritten rules: %+v", pure)
 	}
-	for _, forbidden := range []string{"hw-sens", "hw-world", "beh-l0"} {
+	for _, forbidden := range []string{"s6-note", "hw-legacy", "hw-sens", "hw-world", "beh-l0"} {
 		if byID[forbidden].Standing {
 			t.Errorf("%s must never stand: %+v", forbidden, byID[forbidden])
 		}
