@@ -139,9 +139,10 @@ type MigrateV04Phase3Report struct {
 	WeekPeriod       string `json:"week_period,omitempty"`
 	VerdictsKept     int    `json:"verdicts_kept,omitempty"`
 	PatternsTotal    int    `json:"patterns_total"`
+	ProfileCoreUsed  int    `json:"profile_core_used"`
 	PrinciplesUsed   int    `json:"principles_used"`
 	ContractsUsed    int    `json:"contracts_used"`
-	ProfileCoreUsed  int    `json:"profile_core_used,omitempty"`
+	OpsRunbooksUsed  int    `json:"ops_runbooks_used"`
 	ProfileMode      string `json:"profile_mode,omitempty"`
 	ProfileSections  int    `json:"profile_sections,omitempty"`
 	ExitFilesWritten int    `json:"exit_files_written,omitempty"`
@@ -303,10 +304,10 @@ func printMigrateV04Summary(rep *MigrateV04Report) {
 			rep.Phase2.BoundaryRulesChecked, rep.Phase2.BoundaryTaggedOps, rep.Phase2.BoundaryTaggedUniversal)
 	}
 	if !rep.Phase3.Skipped {
-		fmt.Printf("  Phase 3 (Haiku=%d Sonnet=%d): patterns=%d principles_used=%d contracts_used=%d profile=%s(%d secs) exits=%d\n",
+		fmt.Printf("  Phase 3 (Haiku=%d Sonnet=%d): patterns=%d profile_core=%d principles=%d contracts=%d ops_runbooks=%d profile=%s(%d secs) exits=%d\n",
 			rep.Phase3.HaikuCalls, rep.Phase3.SonnetCalls, rep.Phase3.PatternsTotal,
-			rep.Phase3.PrinciplesUsed, rep.Phase3.ContractsUsed, rep.Phase3.ProfileMode,
-			rep.Phase3.ProfileSections, rep.Phase3.ExitFilesWritten)
+			rep.Phase3.ProfileCoreUsed, rep.Phase3.PrinciplesUsed, rep.Phase3.ContractsUsed, rep.Phase3.OpsRunbooksUsed,
+			rep.Phase3.ProfileMode, rep.Phase3.ProfileSections, rep.Phase3.ExitFilesWritten)
 	}
 	fmt.Printf("  Total model calls: haiku=%d sonnet=%d\n", rep.HaikuCalls, rep.SonnetCalls)
 }
@@ -1195,6 +1196,7 @@ func RunMigrateV04Phase3(
 		s.Weeks = map[string]*overview.Run{}
 		s.Months = map[string]*overview.Run{}
 		s.ContractsSig = ""
+		s.ProfileCoreSig = ""
 		s.Refreshed = ""
 		s.Dead = nil
 		return true, nil
@@ -1221,10 +1223,16 @@ func RunMigrateV04Phase3(
 		}
 		var runErr error
 		if err := ovHolder.Update(func(s *overview.State) (bool, error) {
-			_, werr := runner.Weekly(ctx, st, s, week, "")
+			run, werr := runner.Weekly(ctx, st, s, week, "")
 			if werr != nil {
 				runErr = werr
 				return false, nil
+			}
+			if run != nil {
+				if s.Weeks == nil {
+					s.Weeks = map[string]*overview.Run{}
+				}
+				s.Weeks[week] = run
 			}
 			overview.Refresh(st, s, refTime)
 			return true, nil
@@ -1244,10 +1252,15 @@ func RunMigrateV04Phase3(
 		if p == nil || !p.Used() {
 			continue
 		}
-		if p.IsContract() {
-			rep.ContractsUsed++
-		} else {
+		switch p.KindOf() {
+		case overview.KindProfileCore:
+			rep.ProfileCoreUsed++
+		case overview.KindPrinciple:
 			rep.PrinciplesUsed++
+		case overview.KindContract:
+			rep.ContractsUsed++
+		case overview.KindOpsRunbook:
+			rep.OpsRunbooksUsed++
 		}
 	}
 

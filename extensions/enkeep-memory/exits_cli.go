@@ -130,37 +130,46 @@ func recallCmd(args []string) error {
 
 // ReviewBundleSummary captures machine-checkable acceptance metrics for the 6 v0.4.0 review artifacts (§4.3).
 type ReviewBundleSummary struct {
-	StateDir              string         `json:"state_dir"`
-	OutDir                string         `json:"out_dir"`
-	Today                 string         `json:"today"`
-	ResidentBytesLimit    int            `json:"resident_bytes_limit"`
-	ResidentBytesActual   int            `json:"resident_bytes_actual"`
-	ResidentLines         int            `json:"resident_lines"`
-	ResidentOpsHits       int            `json:"resident_ops_hits"`
-	ResidentS6Hits        int            `json:"resident_s6_hits"`
-	ResidentOWCHits       int            `json:"resident_owc_hits"`
-	ResidentSensitiveHits int            `json:"resident_sensitive_hits"`
-	ResidentDuplicates    int            `json:"resident_duplicates"`
-	PrinciplesUsed        int            `json:"principles_used"`
-	PrinciplesTotal       int            `json:"principles_total"`
-	PrinciplesWithPoles   int            `json:"principles_with_poles"`
-	ContractsUsed         int            `json:"contracts_used"`
-	ProfileSupervisorHits int            `json:"profile_supervisor_hits"`
-	ProfileEmoWorkHits    int            `json:"profile_emotion_work_hits"`
-	ProfileHealthWorkHits int            `json:"profile_health_work_hits"`
-	GraphNodesTotal       int            `json:"graph_nodes_total"`
-	GraphNodesActive      int            `json:"graph_nodes_active"`
-	GraphTasksArchived    int            `json:"graph_tasks_archived"`
-	GraphTasksActive      int            `json:"graph_tasks_active"`
-	GraphAboutArchived    int            `json:"graph_about_archived"`
-	GraphAboutActive      int            `json:"graph_about_active"`
-	GraphMerges           int            `json:"graph_merges"`
-	GraphCollabMirrors    int            `json:"graph_collab_mirrors"`
-	ContactsShown         int            `json:"contacts_shown"`
-	SensitiveByCat        map[string]int `json:"sensitive_by_cat"`
-	ColdstartLines        int            `json:"coldstart_lines"`
-	ColdstartBytes        int            `json:"coldstart_bytes"`
-	Files                 []string       `json:"files"`
+	StateDir                string         `json:"state_dir"`
+	OutDir                  string         `json:"out_dir"`
+	Today                   string         `json:"today"`
+	ResidentBytesLimit      int            `json:"resident_bytes_limit"`
+	ResidentBytesActual     int            `json:"resident_bytes_actual"`
+	ResidentLines           int            `json:"resident_lines"`
+	ResidentHotLines        int            `json:"resident_hot_lines"`
+	ResidentProfileLines    int            `json:"resident_profile_lines"`
+	ResidentPrincipleLines  int            `json:"resident_principle_lines"`
+	ResidentContractLines   int            `json:"resident_contract_lines"`
+	ResidentOpsHits         int            `json:"resident_ops_hits"`
+	ResidentS6Hits          int            `json:"resident_s6_hits"`
+	ResidentOWCHits         int            `json:"resident_owc_hits"`
+	ResidentSensitiveHits   int            `json:"resident_sensitive_hits"`
+	ResidentDuplicates      int            `json:"resident_duplicates"`
+	ProfileCoreUsed         int            `json:"profile_core_used"`
+	PrinciplesUsed          int            `json:"principles_used"`
+	PrinciplesTotal         int            `json:"principles_total"`
+	PrinciplesWithPoles     int            `json:"principles_with_poles"`
+	ContractsUsed           int            `json:"contracts_used"`
+	OpsRunbooksUsed         int            `json:"ops_runbooks_used"`
+	ProfileSupervisorHits   int            `json:"profile_supervisor_hits"`
+	ProfileEmoWorkHits      int            `json:"profile_emotion_work_hits"`
+	ProfileHealthWorkHits   int            `json:"profile_health_work_hits"`
+	GraphNodesTotal         int            `json:"graph_nodes_total"`
+	GraphNodesActive        int            `json:"graph_nodes_active"`
+	GraphTasksArchived      int            `json:"graph_tasks_archived"`
+	GraphTasksActive        int            `json:"graph_tasks_active"`
+	GraphAboutArchived      int            `json:"graph_about_archived"`
+	GraphAboutActive        int            `json:"graph_about_active"`
+	GraphMerges             int            `json:"graph_merges"`
+	GraphCollabMirrors      int            `json:"graph_collab_mirrors"`
+	ContactsShown           int            `json:"contacts_shown"`
+	SensitiveByCat          map[string]int `json:"sensitive_by_cat"`
+	ColdstartLines          int            `json:"coldstart_lines"`
+	ColdstartBytes          int            `json:"coldstart_bytes"`
+	ColdstartProfileLines   int            `json:"coldstart_profile_lines"`
+	ColdstartPrincipleLines int            `json:"coldstart_principle_lines"`
+	ColdstartContractLines  int            `json:"coldstart_contract_lines"`
+	Files                   []string       `json:"files"`
 }
 
 // reviewBundleCmd: enkeep-memory review-bundle -state <dir> -out <dir> [-lang zh-Hans] [-resident-bytes 4096] [-today YYYY-MM-DD]
@@ -318,6 +327,32 @@ func collectStandingEntries(st *store.State, ov *overview.State, prof *profile.S
 	return standing, nil
 }
 
+func classifyStandingSection(e memsrc.Entry, ov *overview.State) string {
+	if e.Rank >= 994 {
+		return memsrc.BucketHot
+	}
+	if pid, ok := strings.CutPrefix(e.ID, "ov:pattern:"); ok && ov != nil {
+		if p := ov.Patterns[pid]; p != nil {
+			switch p.KindOf() {
+			case overview.KindProfileCore:
+				return memsrc.BucketProfile
+			case overview.KindPrinciple:
+				return memsrc.BucketPrinciple
+			case overview.KindContract:
+				return memsrc.BucketContract
+			}
+		}
+	}
+	switch e.Facet {
+	case string(entry.Persona):
+		return memsrc.BucketProfile
+	case string(entry.Interaction), string(entry.Tools):
+		return memsrc.BucketContract
+	default:
+		return memsrc.BucketPrinciple
+	}
+}
+
 func renderResidentV04(st *store.State, ov *overview.State, prof *profile.Summary, residentBytes int, sum *ReviewBundleSummary) (string, error) {
 	standing, err := collectStandingEntries(st, ov, prof, residentBytes)
 	if err != nil {
@@ -328,8 +363,15 @@ func renderResidentV04(st *store.State, ov *overview.State, prof *profile.Summar
 
 	totalBytes := 0
 	seenText := map[string]bool{}
+	grouped := map[string][]memsrc.Entry{}
+	secBytes := map[string]int{}
 	for _, e := range standing {
-		totalBytes += len(e.Text) + 3 // "- " + "\n"
+		sz := len(e.Text) + 3 // "- " + "\n"
+		totalBytes += sz
+		sec := classifyStandingSection(e, ov)
+		grouped[sec] = append(grouped[sec], e)
+		secBytes[sec] += sz
+
 		if auditOpsResidentRe.MatchString(e.Text) {
 			sum.ResidentOpsHits++
 		}
@@ -350,19 +392,40 @@ func renderResidentV04(st *store.State, ov *overview.State, prof *profile.Summar
 	}
 	sum.ResidentLines = len(standing)
 	sum.ResidentBytesActual = totalBytes
+	sum.ResidentHotLines = len(grouped[memsrc.BucketHot])
+	sum.ResidentProfileLines = len(grouped[memsrc.BucketProfile])
+	sum.ResidentPrincipleLines = len(grouped[memsrc.BucketPrinciple])
+	sum.ResidentContractLines = len(grouped[memsrc.BucketContract])
 
-	fmt.Fprintf(&b, "- 总条数：%d\n", len(standing))
-	fmt.Fprintf(&b, "- 总字节数：%d / %d B（超限：%t）\n", totalBytes, residentBytes, totalBytes > residentBytes)
+	fmt.Fprintf(&b, "- 总条数：%d（热槽 %d | 画像与防误读 %d | 核心认知原则 %d | 通用协作契约 %d）\n",
+		len(standing), sum.ResidentHotLines, sum.ResidentProfileLines, sum.ResidentPrincipleLines, sum.ResidentContractLines)
+	fmt.Fprintf(&b, "- 总字节数：%d / %d B（超限：%t；热槽 %dB | 画像 %dB | 原则 %dB | 契约 %dB）\n",
+		totalBytes, residentBytes, totalBytes > residentBytes,
+		secBytes[memsrc.BucketHot], secBytes[memsrc.BucketProfile], secBytes[memsrc.BucketPrinciple], secBytes[memsrc.BucketContract])
 	fmt.Fprintf(&b, "- 红线审计：ops_runbook=%d | S6直通=%d | OWC外壳=%d | 敏感条目=%d | 重复=%d\n\n",
 		sum.ResidentOpsHits, sum.ResidentS6Hits, sum.ResidentOWCHits, sum.ResidentSensitiveHits, sum.ResidentDuplicates)
 
-	b.WriteString("## 常驻条目全文\n\n")
-	if len(standing) == 0 {
-		b.WriteString("_（空）_\n")
+	sections := []struct {
+		key   string
+		title string
+	}{
+		{memsrc.BucketHot, "热槽（Hot Slot，0–10%）"},
+		{memsrc.BucketProfile, "第 1 段 · 关于你与防误读边界（~20%）"},
+		{memsrc.BucketPrinciple, "第 2 段 · 核心认知与决策原则（~28%）"},
+		{memsrc.BucketContract, "第 3 段 · 通用协作契约（~52%）"},
 	}
-	for i, e := range standing {
-		fmt.Fprintf(&b, "%d. `[%s]` (facet=%s, rank=%d, %dB) %s\n",
-			i+1, e.ID, e.Facet, e.Rank, len(e.Text), e.Text)
+	for _, s := range sections {
+		items := grouped[s.key]
+		fmt.Fprintf(&b, "## %s（%d 条 / %dB）\n\n", s.title, len(items), secBytes[s.key])
+		if len(items) == 0 {
+			b.WriteString("_（空）_\n\n")
+			continue
+		}
+		for i, e := range items {
+			fmt.Fprintf(&b, "%d. `[%s]` (facet=%s, rank=%d, %dB) %s\n",
+				i+1, e.ID, e.Facet, e.Rank, len(e.Text), e.Text)
+		}
+		b.WriteString("\n")
 	}
 	return b.String(), nil
 }
@@ -376,9 +439,20 @@ func renderPrinciplesV04(ov *overview.State, sum *ReviewBundleSummary) string {
 		if p == nil {
 			continue
 		}
-		if p.IsContract() {
+		switch p.KindOf() {
+		case overview.KindProfileCore:
+			if p.Used() {
+				sum.ProfileCoreUsed++
+			}
+			continue
+		case overview.KindContract:
 			if p.Used() {
 				sum.ContractsUsed++
+			}
+			continue
+		case overview.KindOpsRunbook:
+			if p.Used() {
+				sum.OpsRunbooksUsed++
 			}
 			continue
 		}
@@ -394,9 +468,10 @@ func renderPrinciplesV04(ov *overview.State, sum *ReviewBundleSummary) string {
 	}
 	sum.PrinciplesUsed = len(used)
 
-	fmt.Fprintf(&b, "- 活跃原理（Used）：%d 条（带张力 Poles：%d 条）\n", len(used), sum.PrinciplesWithPoles)
+	fmt.Fprintf(&b, "- 活跃核心原理（A2 Principle）：%d 条（带张力 Poles：%d 条）\n", len(used), sum.PrinciplesWithPoles)
 	fmt.Fprintf(&b, "- 其余原理（Candidate/Drifting/Retired）：%d 条\n", len(other))
-	fmt.Fprintf(&b, "- 活跃通用契约（参考）：%d 条\n\n", sum.ContractsUsed)
+	fmt.Fprintf(&b, "- 同批 L1 参考计数：画像核（A1）=%d 条 | 通用契约（B）=%d 条 | 运维手册（C，仅按需召回）=%d 条\n\n",
+		sum.ProfileCoreUsed, sum.ContractsUsed, sum.OpsRunbooksUsed)
 
 	b.WriteString("## 活跃核心原理\n\n")
 	if len(used) == 0 {
@@ -733,23 +808,32 @@ func renderColdstartV04(st *store.State, ov *overview.State, residentBytes int, 
 	}
 
 	totalBytes := 0
+	coldGrouped := map[string][]memsrc.Entry{}
 	for _, e := range standing {
 		totalBytes += len(e.Text) + 3
+		sec := classifyStandingSection(e, ovClone)
+		coldGrouped[sec] = append(coldGrouped[sec], e)
 	}
 	sum.ColdstartLines = len(standing)
 	sum.ColdstartBytes = totalBytes
+	sum.ColdstartProfileLines = len(coldGrouped[memsrc.BucketProfile])
+	sum.ColdstartPrincipleLines = len(coldGrouped[memsrc.BucketPrinciple])
+	sum.ColdstartContractLines = len(coldGrouped[memsrc.BucketContract])
 
 	var b strings.Builder
 	b.WriteString("# 空白新用户冷启动仿真产物（coldstart-v04）\n\n")
 	fmt.Fprintf(&b, "- 仿真条件：剔除全部 S6 笔记（共移除 %d 条），清空 `profile-summary`，仅凭 T0/T1 行为数据编译常驻\n", strippedS6)
-	fmt.Fprintf(&b, "- 产出条数：%d 条 | 总字节数：%d / %d B | 语言：%s\n\n", len(standing), totalBytes, residentBytes, lang)
+	fmt.Fprintf(&b, "- 产出条数：%d 条（画像 %d | 原则 %d | 契约 %d | 热槽 %d）| 总字节数：%d / %d B | 语言：%s\n\n",
+		len(standing), sum.ColdstartProfileLines, sum.ColdstartPrincipleLines, sum.ColdstartContractLines,
+		len(coldGrouped[memsrc.BucketHot]), totalBytes, residentBytes, lang)
 
 	b.WriteString("## 冷启动常驻全文\n\n")
 	if len(standing) == 0 {
 		b.WriteString("_（空）_\n")
 	}
 	for i, e := range standing {
-		fmt.Fprintf(&b, "%d. `[%s]` (facet=%s, rank=%d) %s\n", i+1, e.ID, e.Facet, e.Rank, e.Text)
+		sec := classifyStandingSection(e, ovClone)
+		fmt.Fprintf(&b, "%d. `[%s]` (section=%s, facet=%s, rank=%d) %s\n", i+1, e.ID, sec, e.Facet, e.Rank, e.Text)
 	}
 	return b.String(), nil
 }

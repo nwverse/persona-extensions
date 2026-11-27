@@ -424,6 +424,16 @@ func TestReviewBundleGeneratesAll6ArtifactsAndColdstart(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := ovH.Update(func(s *overview.State) (bool, error) {
+		s.Patterns["ov:pc1"] = &overview.Pattern{
+			ID: "ov:pc1", Facet: string(entry.Persona), Kind: overview.KindProfileCore,
+			Lifecycle: overview.Core, Rooted: true,
+			Text:         "不要把研究管理方法论等同于已经是全职管理者",
+			EvidenceIDs:  []string{"i-t1-1"},
+			ScenesCount:  3,
+			SourcesCount: 4,
+			UniqueQuotes: 4,
+			ActiveWeeks:  []string{"2026-W46", "2026-W47"},
+		}
 		s.Patterns["ov:p1"] = &overview.Pattern{
 			ID: "ov:p1", Facet: string(entry.Judgement), Kind: overview.KindPrinciple,
 			Lifecycle: overview.Core, Rooted: true,
@@ -446,6 +456,16 @@ func TestReviewBundleGeneratesAll6ArtifactsAndColdstart(t *testing.T) {
 			ScenesCount:  3,
 			SourcesCount: 6,
 			UniqueQuotes: 5,
+			ActiveWeeks:  []string{"2026-W46", "2026-W47"},
+		}
+		s.Patterns["ov:ops1"] = &overview.Pattern{
+			ID: "ov:ops1", Facet: string(entry.Tools), Kind: overview.KindOpsRunbook,
+			Lifecycle:    overview.Core,
+			Text:         "在 sj-wsl 上运行 fast 门禁",
+			EvidenceIDs:  []string{"i-t1-1"},
+			ScenesCount:  2,
+			SourcesCount: 3,
+			UniqueQuotes: 3,
 			ActiveWeeks:  []string{"2026-W46", "2026-W47"},
 		}
 		return true, nil
@@ -472,11 +492,15 @@ func TestReviewBundleGeneratesAll6ArtifactsAndColdstart(t *testing.T) {
 			t.Fatalf("missing or empty artifact %s: err=%v len=%d", f, err, len(b))
 		}
 	}
-	if sum.ResidentLines == 0 || sum.ResidentSensitiveHits != 0 {
+	if sum.ResidentLines == 0 || sum.ResidentSensitiveHits != 0 || sum.ResidentOpsHits != 0 || sum.ResidentS6Hits != 0 {
 		t.Fatalf("unexpected resident summary: %+v", sum)
 	}
-	if sum.PrinciplesUsed != 1 || sum.PrinciplesWithPoles != 1 {
-		t.Fatalf("unexpected principles summary: %+v", sum)
+	if sum.ResidentProfileLines == 0 || sum.ResidentPrincipleLines == 0 || sum.ResidentContractLines == 0 {
+		t.Fatalf("expected all three resident sections non-empty: profile=%d principle=%d contract=%d",
+			sum.ResidentProfileLines, sum.ResidentPrincipleLines, sum.ResidentContractLines)
+	}
+	if sum.ProfileCoreUsed != 1 || sum.PrinciplesUsed != 1 || sum.PrinciplesWithPoles != 1 || sum.ContractsUsed != 1 || sum.OpsRunbooksUsed != 1 {
+		t.Fatalf("unexpected L1 kind counts: %+v", sum)
 	}
 	if sum.GraphMerges != 1 || sum.GraphTasksArchived != 1 || sum.GraphAboutArchived != 1 {
 		t.Fatalf("unexpected graph summary: %+v", sum)
@@ -484,8 +508,8 @@ func TestReviewBundleGeneratesAll6ArtifactsAndColdstart(t *testing.T) {
 	if sum.SensitiveByCat[entry.CatHealth] != 1 {
 		t.Fatalf("expected 1 health sensitive entry, got %+v", sum.SensitiveByCat)
 	}
-	if sum.ColdstartLines == 0 {
-		t.Fatalf("expected non-empty coldstart standing output, got 0 lines")
+	if sum.ColdstartLines == 0 || sum.ColdstartProfileLines == 0 || sum.ColdstartPrincipleLines == 0 || sum.ColdstartContractLines == 0 {
+		t.Fatalf("expected non-empty 3-section coldstart standing output, got %+v", sum)
 	}
 	coldRaw, _ := os.ReadFile(filepath.Join(outDir, "coldstart-v04.md"))
 	if !strings.Contains(string(coldRaw), "剔除全部 S6 笔记（共移除 1 条）") {
