@@ -136,6 +136,13 @@ class AgentTest(unittest.TestCase):
                          {"message_id": "m_new"})
         self.assertEqual(len(self.backend.sent), 1)
 
+    def test_a_no_answer_placeholder_goes_only_to_my_own_chat(self):
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/agent 总结"))
+        self.handed()
+        out = self.c.channel_send({"ref": "r1", "text": "(No text answer this turn)", "kind": "answer", "reply_to": "m1"})
+        self.assertEqual(out, {"message_id": "m_new"})
+        self.assertEqual(self.backend.sent, [("c_me", "(No text answer this turn)\n\n" + AGENT_SUFFIX, None)])
+
     def test_an_answer_in_a_topic_stays_in_the_topic(self):
         self.c._on_live(message("m2", "g1", 2, kind="group", sender=ME, text="/agent 看看", root="m_root"))
         self.handed()

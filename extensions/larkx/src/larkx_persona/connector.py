@@ -107,6 +107,12 @@ AUTO_PLACEHOLDERS = (
                                     "今回は回答が出ませんでした。理由：", "このコンピューターは Persona から削除された",
                                     "このチャットは見つかりません（閉じられたか削除されました）。")),
 )
+
+
+def _placeholder(text):
+    return any(text == exact or text.startswith(prefixes) for exact, prefixes in AUTO_PLACEHOLDERS)
+
+
 AUTO_BOT = {"review": ("请 review 这个话题里的 MR", "处理", "结论"),
             "oncall": ("请看一下这个话题里 @我 的问题", "排查", "结论"),
             "approval": ("请处理这个话题里的审批", "处理", "结果")}
@@ -1300,7 +1306,7 @@ class Connector:
                 route = self.store.alarm_reply(me, request["id"])
                 chat = self.store.chat(request["chat"])
                 candidate = body.removesuffix("\n" + self.suffix).strip()
-                if any(candidate == exact or candidate.startswith(prefixes) for exact, prefixes in AUTO_PLACEHOLDERS):
+                if _placeholder(candidate):
                     with self._lock:
                         self._auto_counts["suppressed"] += 1
                     self._log("auto reply suppressed: placeholder")
@@ -1327,6 +1333,12 @@ class Connector:
                     self._log("auto reply skipped: owner replied")
                     return None
                 return self._channel_out(key, target, text, root, lambda: mentions)
+        if _placeholder(body.strip()):
+            own = self._own_chat(me)
+            if request["chat"] != own:
+                # The owner's /agent in someone else's chat ended without an answer: tell only the owner.
+                self._log("agent reply placeholder sent to own chat")
+                return self._channel_out(key, own, text, None)
         return self._channel_out(key, request["chat"], text, root, lambda: self._context_mentions(request, text))
 
     def _channel_out(self, key, chat, text, root, mentions=None):

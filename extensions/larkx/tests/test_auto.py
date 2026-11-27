@@ -145,13 +145,13 @@ class AutoTest(unittest.TestCase):
         self.assertIn("一句话回答。", self.handed()["text"])
         self.assertNotIn("不超过 400 字", self.handed()["text"])
 
-    def test_manual_agent_still_receives_a_placeholder(self):
+    def test_manual_agent_still_receives_a_placeholder_in_its_own_chat(self):
         self.live(1, "/agent 看一下", sender=ME)
         self.assertTrue(self.hub.got.wait(2))
         text = "（这一轮没有文字回答）"
         result = self.c.channel_send({"ref": "r1", "reply_to": "m1", "text": text})
         self.assertEqual(result, {"message_id": "m_new"})
-        self.assertEqual(self.backend.sent, [("c", text + "\n\nagent生成", "m1")])
+        self.assertEqual(self.backend.sent, [("c_me", text + "\n\nagent生成", None)])
         self.assertEqual(self.c.status({})["auto"]["suppressed"], 0)
 
     def test_disabled_keeps_the_manual_dm_and_reply_boundary(self):
@@ -809,7 +809,7 @@ class AutoTest(unittest.TestCase):
     def test_manifest_and_initialize_enable_the_settings(self):
         with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
             manifest = json.load(f)
-        self.assertEqual(manifest["version"], "0.5.2")
+        self.assertEqual(manifest["version"], "0.5.3")
         self.assertIn("models", manifest["permissions"]["hub"])
         settings = manifest["configuration"]["properties"]
         self.assertEqual(settings["auto_active_minutes"]["default"], 10)
