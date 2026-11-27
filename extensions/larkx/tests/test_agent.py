@@ -353,6 +353,10 @@ class AgentTopicTest(unittest.TestCase):
                 "command_hook_url",
                 "command_hook_context",
                 "command_hook_quote",
+                "agent_engine", "auto_handle", "auto_bot_name", "auto_bot_id", "auto_bot_timeout_seconds",
+                "auto_test_senders", "auto_playbook_dir", "auto_reply_style", "auto_review_patterns",
+                "auto_active_minutes", "auto_route_hint", "auto_dm_idle_hours", "alarm_sources",
+                "alarm_skip_markers", "alarm_join_button", "alarm_dedup_minutes", "alarm_poll_seconds",
             },
         )
         # Configuration section hints are deferred to a follow-up PR so pre-#14833 hubs keep installing larkx.

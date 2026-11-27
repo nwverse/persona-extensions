@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "larkx",
   "name": "飞书（LarkAgentX）",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "用 LarkAgentX 以你本人的身份接飞书：扫码登录，全部消息进收件箱和知识库，经手机确认后以你的身份发送；在任意会话里以配置的触发前缀（默认 /agent）或 @自己交给助手。走逆向的网页版协议，不是官方接口。",
   "publisher": "nwverse",
   "homepage": "https://github.com/cv-cat/LarkAgentX",
@@ -122,6 +122,16 @@
         "maxLength": 100,
         "default": "🤖 AI 代答，仅供参考"
       },
+      "agent_engine": {
+        "type": "string",
+        "title": "/agent 会话方式",
+        "description": "选「专用模型会话」后，本人的 /agent 和自动处理都用 hub 模型设置里「Lark /agent」的模型开会话；默认走频道",
+        "default": "channel",
+        "oneOf": [
+          {"const": "channel", "title": "频道"},
+          {"const": "lark_agent", "title": "专用模型会话"}
+        ]
+      },
       "agent_mention": {
         "type": "boolean",
         "title": "@自己唤起助手",
@@ -166,6 +176,100 @@
         "title": "Hook 附带引用",
         "description": "默认开启。命令是回复某条消息时，随 Hook 一起发出被回复的那条消息。",
         "default": true
+      },
+      "auto_handle": {
+        "type": "boolean",
+        "title": "自动处理别人找我的事",
+        "description": "别人私聊我、或在群里 @我，且是运维 / 查 case、代码 review、审批工单时，自动交给助手处理。",
+        "default": false
+      },
+      "alarm_sources": {
+        "type": "array", "items": {"type": "string"}, "default": [],
+        "title": "电话报警来源", "description": "这些会话里出现新的报警卡片时自动处理（不需要有人 @你）"
+      },
+      "alarm_skip_markers": {
+        "type": "array", "items": {"type": "string"}, "default": [],
+        "title": "跳过的报警标题标记"
+      },
+      "alarm_join_button": {
+        "type": "string", "default": "", "title": "进入报警群的按钮文字",
+        "description": "留空不点按钮。当前协议版本不支持自动点击。"
+      },
+      "alarm_dedup_minutes": {
+        "type": "integer", "minimum": 0, "default": 30, "title": "相同报警去重分钟数"
+      },
+      "alarm_poll_seconds": {
+        "type": "integer", "minimum": 20, "maximum": 600, "default": 60, "title": "电话报警轮询秒数"
+      },
+      "auto_bot_name": {
+        "type": "string",
+        "title": "群内机器人",
+        "description": "群里交给哪个机器人（填它在群里显示的名字）。机器人不在群里时会先尝试添加。留空、找不到数字 id 或无法确认入群时，直接交给助手。",
+        "default": ""
+      },
+      "auto_bot_id": {
+        "type": "string",
+        "title": "群内机器人 id",
+        "description": "群内机器人的 id（可选）。不填时先按群成员名单精确匹配；没有匹配时再查历史消息，同名有歧义时交给助手",
+        "default": ""
+      },
+      "auto_bot_timeout_seconds": {
+        "type": "integer",
+        "title": "等待机器人响应的秒数",
+        "description": "超过此时间未收到群内机器人的实时回复时，先检查话题回复，再检查群消息记录；机器人和你本人都未回复时才交给助手。读取失败时每隔 30 秒重试，最多三次。",
+        "default": 180,
+        "minimum": 30,
+        "maximum": 1800
+      },
+      "auto_playbook_dir": {
+        "type": "string",
+        "title": "操作手册目录",
+        "description": "三个场景操作手册所在目录（在跑助手的那台电脑上），写进交给助手和机器人的任务里。",
+        "default": ""
+      },
+      "auto_route_hint": {
+        "type": "string",
+        "title": "分类补充说明",
+        "description": "用你自己的话补充分类标准，例如你负责哪些服务、哪些群里的消息一般是报警",
+        "default": "",
+        "maxLength": 2000
+      },
+      "auto_reply_style": {
+        "type": "string",
+        "title": "自动回复的写法",
+        "default": "",
+        "maxLength": 1000,
+        "description": "交给助手时附上的回复要求。空着用默认：直接写给对方、口语、400 字以内、先给结论、只列关键的 1~3 点。"
+      },
+      "auto_test_senders": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "title": "测试用发送者 id",
+        "description": "这些发送者即使是机器人也按同事处理，只用于自测"
+      },
+      "auto_review_patterns": {
+        "type": "array",
+        "title": "代码 review 链接",
+        "items": {
+          "type": "string"
+        },
+        "default": [],
+        "description": "消息里出现这些正则能匹配的内容（比如你们代码托管平台的合并请求链接）时，直接当作代码 review，不再问模型。"
+      },
+      "auto_active_minutes": {
+        "type": "integer", "minimum": 0, "default": 10, "title": "本人活跃窗口（分钟）",
+        "description": "本人最近在同一私聊或群话题发过消息就跳过自动处理。设为 0 只检查请求之后的回复。"
+      },
+      "auto_dm_idle_hours": {
+        "type": "integer",
+        "title": "私聊闲置时长",
+        "description": "私聊会话闲置多久后换新会话（1~168 小时）。",
+        "default": 24,
+        "minimum": 1,
+        "maximum": 168
       }
     }
   },
@@ -187,6 +291,12 @@
       "files.pythonhosted.org",
       "config:command_hook_url",
       "host.persona.internal"
+    ],
+    "hub": [
+      "models",
+      "agents.control",
+      "agents.read",
+      "assistant.ask"
     ]
   }
 }

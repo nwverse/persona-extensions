@@ -118,6 +118,14 @@ class SelfMentionTest(unittest.TestCase):
         self.live("m1", "@Example 请总结一下", "u_other")
         self.nothing_handed()
 
+    def test_custom_prefix_requires_the_independent_prefix_change(self):
+        self.c.auto_handle = True
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/ai request"))
+        self.nothing_handed()
+        self.c.prefix = "/ai"
+        self.c._on_live(message("m2", "c1", 2, sender=ME, text="/ai request"))
+        self.assertEqual(self.handed()["message"]["text"], "request")
+
     def test_custom_prefix_works_alongside_self_mention(self):
         self.c.prefix = "/ai"
         self.c._on_live(message("m1", "c1", 1, sender=ME, text="/ai 自定义前缀触发"))
@@ -180,7 +188,7 @@ class MentionSettingsTest(unittest.TestCase):
         with open(os.path.join(root, "persona-extension.json"), encoding="utf-8") as f:
             manifest = json.load(f)
         self.assertIs(manifest["configuration"]["properties"]["agent_mention"]["default"], True)
-        self.assertEqual(manifest["version"], "0.4.1")
+        self.assertEqual(manifest["version"], "0.5.0")
         self.assertEqual(manifest["configuration"]["properties"]["inbox_triage_chats"]["default"], [])
 
 

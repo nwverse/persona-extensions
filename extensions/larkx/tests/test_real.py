@@ -6,6 +6,7 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
 ROOT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -14,7 +15,8 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 UPSTREAM = os.environ.get("LARKX_UPSTREAM", "")
 DEPS = os.environ.get("LARKX_DEPS", "")
 
-from larkx_persona.real import RealBackend, mute_state
+from larkx_persona.real import RealBackend, mute_state, normalize
+from larkx_persona.store import Store
 
 
 class MuteStateTest(unittest.TestCase):
@@ -49,6 +51,135 @@ class MuteStateTest(unittest.TestCase):
             with self.subTest(empty=empty):
                 backend._client.get_chat_info.return_value = empty
                 self.assertEqual(backend.chat_info("6001"), {"name": "", "last_position": 0, "mute": "unknown"})
+
+
+class ThreadAndChatterTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.path = os.path.join(tmp.name, "test.db")
+        self.store = Store(self.path)
+        self.addCleanup(self.store.close)
+        self.backend = RealBackend(ROOT, tmp.name, "test", self.store)
+        self.backend._client = mock.Mock()
+        self.api = self.backend._client.api
+        self.backend._extract_key = lambda *_: ""
+
+    def test_an_unwritten_or_unknown_mention_never_posts(self):
+        backend = self.backend
+        mock_client = backend._client
+        with self.assertRaises(ValueError):
+            backend.send("6001", "hello", None, mentions=[{"id": "7001", "name": "Example"}])
+        with self.assertRaises(ValueError):
+            backend.send("6001", "@Example hi", None, mentions=[{"id": "ou_not_numeric", "name": "Example"}])
+        mock_client.send_msg.assert_not_called()
+        mock_client._gateway_post.assert_not_called()
+
+    def test_no_mentions_keeps_the_original_send_path(self):
+        backend = self.backend
+        mock_client = backend._client
+        mock_client.send_msg.return_value = "m1"
+        self.assertEqual(backend.send("6001", "@Example hi", None), "m1")
+        mock_client.send_msg.assert_called_once_with("@Example hi", "6001", root_id=None)
+        for method in ("create_chat", "search", "history", "chat_info", "user_name", "chat_members", "download"):
+            self.assertTrue(callable(getattr(backend, method)), method)
+
+    def test_distinct_thread_id_positions_order_scope_and_decoding(self):
+        card = {"id": "reply", "type": 14, "fromId": "bot", "createTime": 123, "content": b"card"}
+        self.api.side_effect = [
+            {"messages": {"root": {"threadId": "thread", "chatId": "group"}}},
+            {"threads": {"thread": {"channelId": "group", "rootMessageId": "root", "lastMessagePosition": 104,
+                                    "lastVisibleMessagePosition": 100, "messageStartPosition": 10}}},
+            {"messages": {100: card, 99: dict(card, id="other", rootId="wrong"),
+                          98: dict(card, id="root"), 97: dict(card, id="first", position=7)}}]
+        decode = mock.Mock(return_value=("card text", {}))
+        decoders = SimpleNamespace(MSG_TYPE_NAMES={14: "CARD"}, enum_to_int=int, decode_message_content=decode)
+        with mock.patch.dict(sys.modules, {"larkx.proto": SimpleNamespace(decoders=decoders)}):
+            rows = self.backend.thread_replies("group", "root", limit=4)
+        self.assertEqual(self.api.call_args_list, [
+            mock.call("messages.PullMessagesByIdsRequest", {"messageIds": ["root"]}),
+            mock.call("thread.PullThreadsByIDsRequest", {"threadIds": ["thread"]}),
+            mock.call("thread.PullThreadMessagesByPositionsRequest", {"threadId": "thread", "positions": [97, 98, 99, 100]})])
+        self.assertEqual([(m["id"], m["position"]) for m in rows], [("first", 7), ("reply", 0)])
+        self.assertEqual([rows[-1][k] for k in ("root", "thread_id", "chat", "sender", "at", "type", "text")],
+                         ["root", "thread", "group", "bot", 123, "CARD", "card text"])
+        self.assertEqual(decode.call_args_list, [mock.call(14, b"card")] * 2)
+
+    def test_integer_response_keys_and_mixed_scope_ids_preserve_bot_reply(self):
+        self.api.side_effect = [
+            {"messages": {10: {"threadId": 20, "chatId": 30}}},
+            {"threads": {20: {"rootMessageId": 10, "channelId": "30", "lastMessagePosition": 2}}},
+            {"threadId": 20, "channelId": 30, "messages": {
+                0: {"id": 10}, 1: {"id": 11, "chatId": 31},
+                2: {"id": 12, "chatId": 30, "rootId": 10, "threadId": 20, "fromId": 40}}}]
+        decoders = SimpleNamespace(MSG_TYPE_NAMES={}, enum_to_int=int, decode_message_content=lambda *_: ("reply", {}))
+        with mock.patch.dict(sys.modules, {"larkx.proto": SimpleNamespace(decoders=decoders)}):
+            rows = self.backend.thread_replies(30, "10")
+        self.assertEqual([(r["id"], r["root"], r["sender"]) for r in rows], [("12", "10", "40")])
+        self.assertEqual(self.api.call_args.args[1]["threadId"], "20")
+
+    def test_context_lookup_checks_chat_and_preserves_unknown_reply_count(self):
+        raw = {"id": "root", "type": 14, "chatId": "g", "replyCount": "12", "content": b"card"}
+        self.api.return_value = {"messages": {"root": raw, "quote": dict(raw, id="quote", chatId="other"),
+                                              "no-scope": dict(raw, id="no-scope", chatId=""),
+                                              "unknown": {k: v for k, v in dict(raw, id="unknown").items() if k != "replyCount"}}}
+        decoders = SimpleNamespace(MSG_TYPE_NAMES={14: "CARD"}, enum_to_int=int,
+                                   decode_message_content=lambda *_: ("preview", {"cardHeader": {"title": "Sample"}}))
+        ids = ["root", "quote", "no-scope", "unknown"]
+        with mock.patch.dict(sys.modules, {"larkx.proto": SimpleNamespace(decoders=decoders)}):
+            root, unknown = self.backend.messages_by_id("g", ids)
+        self.api.assert_called_once_with("messages.PullMessagesByIdsRequest", {"messageIds": ids})
+        self.assertEqual((root["id"], root["card_title"], root["reply_count"]), ("root", "Sample", 12))
+        self.assertEqual(unknown["id"], "unknown")
+        self.assertNotIn("reply_count", unknown)
+
+    def test_context_topic_discovery_batches_roots_and_checks_scope(self):
+        self.store.remember_thread("g", "known", "saved-thread")
+        self.api.return_value = {"threads": {
+            "saved-thread": {"rootMessageId": "known", "lastMessagePosition": 0},
+            "foreign": {"channelId": "elsewhere", "lastMessagePosition": 5},
+            "empty": {"messageStartPosition": 10, "lastVisibleMessagePosition": 9}}}
+        self.assertEqual(self.backend.topic_roots("g", dict(known=None, foreign=None, empty=None, missing=None)), {"known"})
+        self.api.assert_called_once_with("thread.PullThreadsByIDsRequest",
+                                         {"threadIds": ["saved-thread", "foreign", "empty", "missing"]})
+
+    def test_live_anchor_remembers_thread_and_does_not_relabel_another_chat(self):
+        row = normalize({"msg_id": "reply", "root_id": "root", "scope": "topic", "anchor": "thread",
+                         "chat_id": "group"}, self.backend._extract_key)
+        self.store.add_message(row, "", False)
+        self.api.return_value = {"threads": {"thread": {"channelId": "different", "lastMessagePosition": 2}}}
+        self.assertEqual(self.backend.thread_replies("group", "root"), [])
+        self.api.assert_called_once_with("thread.PullThreadsByIDsRequest", {"threadIds": ["thread"]})
+
+    def test_bot_cache_survives_restart_and_expires_without_extending_on_hits(self):
+        with mock.patch("larkx_persona.real.time.time", return_value=100) as clock:
+            self.api.return_value = {"chatters": {"sender": {"type": 2}}}
+            self.assertTrue(self.backend.is_bot("sender"))
+            self.api.assert_called_once_with("chatters.PullChattersByIdsRequest",
+                                             {"chatterIds": ["sender"], "notSubscribeChatters": True})
+            with mock.patch.object(self.store, "chatter_type", side_effect=AssertionError):
+                self.assertTrue(self.backend.is_bot("sender"))
+            reopened = Store(self.path)
+            self.addCleanup(reopened.close)
+            fresh = RealBackend(ROOT, "", "test", reopened)
+            fresh._client = mock.Mock()
+            clock.return_value += 86399
+            self.assertTrue(fresh.is_bot("sender"))
+            fresh._client.api.assert_not_called()
+            clock.return_value += 1
+            fresh._client.api.return_value = {"chatters": {"sender": {"type": 1}}}
+            self.assertFalse(fresh.is_bot("sender"))
+            fresh._client.api.assert_called_once()
+            self.assertFalse(self.backend.is_bot("sender"))
+            self.assertEqual(self.api.call_count, 1)
+
+    def test_unknown_sender_type_and_failed_packets_are_not_cached(self):
+        self.api.side_effect = [{"chatters": {"other": {"type": 1}}}, {"chatters": {"s": {"type": 0}}},
+                                {"cmd": 46, "status": 3}, {"chatters": {"s": {"type": 3}}}]
+        for _ in range(3):
+            with self.assertRaises(ValueError):
+                self.backend.is_bot("s")
+        self.assertTrue(self.backend.is_bot("s"))
 
 
 @unittest.skipUnless(UPSTREAM and DEPS, "needs LARKX_UPSTREAM and LARKX_DEPS")
@@ -280,27 +411,6 @@ class RealTest(unittest.TestCase):
             at.ParseFromString(element.property)
             self.assertEqual((at.userId, at.content), ("7001", "@Example"))
         self.assertEqual(req.content.richText.elements.dictionary[req.content.richText.elementIds[-1]].tag, 1)
-
-    def test_an_unwritten_or_unknown_mention_never_posts(self):
-        from larkx_persona.real import RealBackend
-        backend = RealBackend(ROOT, self.home.name, "feishu")
-        backend._client = mock_client = unittest.mock.Mock()
-        with self.assertRaises(ValueError):
-            backend.send("6001", "hello", None, mentions=[{"id": "7001", "name": "Example"}])
-        with self.assertRaises(ValueError):
-            backend.send("6001", "@Example hi", None, mentions=[{"id": "ou_not_numeric", "name": "Example"}])
-        mock_client.send_msg.assert_not_called()
-        mock_client._gateway_post.assert_not_called()
-
-    def test_no_mentions_keeps_the_original_send_path(self):
-        from larkx_persona.real import RealBackend
-        backend = RealBackend(ROOT, self.home.name, "feishu")
-        backend._client = mock_client = unittest.mock.Mock()
-        mock_client.send_msg.return_value = "m1"
-        self.assertEqual(backend.send("6001", "@Example hi", None), "m1")
-        mock_client.send_msg.assert_called_once_with("@Example hi", "6001", root_id=None)
-        for method in ("create_chat", "search", "history", "chat_info", "user_name", "chat_members", "download"):
-            self.assertTrue(callable(getattr(backend, method)), method)
 
     def test_chat_members_parses_humans_bots_nicknames_and_pagination(self):
         from larkx_persona.real import RealBackend
