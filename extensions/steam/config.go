@@ -23,6 +23,7 @@ type config struct {
 	AuthMode                  string   `json:"auth_mode"`
 	SteamID                   string   `json:"steam_id"`
 	CountryCode               string   `json:"country_code"`
+	FriendsRadarEnabled       bool     `json:"friends_radar_enabled"`
 	WishlistDiscountThreshold int      `json:"wishlist_discount_threshold"`
 	WishlistTargetPrices      string   `json:"wishlist_target_prices"`
 	WishlistEventTriggers     []string `json:"wishlist_event_triggers"`

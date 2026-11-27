@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -90,7 +91,7 @@ func describeReading[T any](out map[string]any, dataset string, reading reading[
 	}
 }
 
-func setPage[T any](out map[string]any, key string, items []T, p listArgs) {
+func setPage[T any](out map[string]any, key string, items []T, p listArgs) []T {
 	start := min(len(items), p.Offset)
 	end := min(len(items), start+p.limit())
 	out[key] = items[start:end]
@@ -98,6 +99,7 @@ func setPage[T any](out map[string]any, key string, items []T, p listArgs) {
 	if end < len(items) {
 		out["next_offset"] = end
 	}
+	return items[start:end]
 }
 
 func (a *app) connector(ctx context.Context, method string, params json.RawMessage) (any, error) {
@@ -112,7 +114,14 @@ func (a *app) connector(ctx context.Context, method string, params json.RawMessa
 	case "status":
 		return a.status(ctx), nil
 	case "tools.list":
-		return wire.ConnectorTools{Tools: tools}, nil
+		listed := tools
+		if a.config.AllowsDiscoveryTools() {
+			listed = slices.Concat(listed, discoveryTools(a.config.DiscoveryResultLimit()))
+		}
+		if a.config.FriendsRadarEnabled {
+			listed = slices.Concat(listed, friendsTools)
+		}
+		return wire.ConnectorTools{Tools: listed}, nil
 	case "tools.call":
 		return a.callTool(ctx, call.Name, call.Args)
 	case "inbox.collect":
@@ -177,6 +186,7 @@ func (d *steamData) toolAccount(ctx context.Context, out map[string]any, t *text
 }
 
 func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (wire.ConnectorCallResult, error) {
+	const badPaging = "Use an offset from 0 to 20000 and a limit from 1 to 50."
 	switch name {
 	case achievementHunterName:
 		return encodeSteamTool(a.achievementHunter(ctx, raw))
@@ -184,13 +194,37 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 		return encodeSteamTool(a.gameNews(ctx, raw))
 	case wishlistDealsName:
 		return encodeSteamTool(a.wishlistDeals(ctx, raw))
+	case storeTagsTool, storeSearchTool, gameDetailsTool:
+		if !a.config.AllowsDiscoveryTools() {
+			return wire.ConnectorCallResult{}, &ext.Error{
+				Code: string(problemDiscoveryDisabled), Message: textFor(a.locale).message(problemDiscoveryDisabled, false),
+			}
+		}
+		return a.callDiscoveryTool(ctx, name, raw)
 	}
-	const badPaging = "Use an offset from 0 to 20000 and a limit from 1 to 50."
+	t := textFor(a.locale)
+	if (name == friendsRadarTool || name == coopOverlapTool) && !a.config.FriendsRadarEnabled {
+		return wire.ConnectorCallResult{}, &ext.Error{Code: string(problemFriendsDisabled), Message: t.message(problemFriendsDisabled, false)}
+	}
 	d, ctx, cancel := a.readContext(ctx)
 	defer cancel()
 	out := map[string]any{"available": false}
-	t := textFor(a.locale)
 	switch name {
+	case friendsRadarTool:
+		var args friendsRadarArgs
+		if !decodeArgs(raw, &args) || !args.valid() {
+			return wire.ConnectorCallResult{}, invalid(badPaging)
+		}
+		d.friendsRadar(ctx, out, t, args)
+	case coopOverlapTool:
+		var args coopOverlapArgs
+		if !decodeArgs(raw, &args) || !args.normalizeSelection() {
+			return wire.ConnectorCallResult{}, invalid(t.invalidFriendSelection)
+		}
+		if !args.valid() {
+			return wire.ConnectorCallResult{}, invalid(badPaging)
+		}
+		d.coopOverlap(ctx, out, t, args)
 	case "steam_profile":
 		var args struct{}
 		if !decodeArgs(raw, &args) {

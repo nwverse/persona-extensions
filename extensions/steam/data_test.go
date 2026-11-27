@@ -89,12 +89,15 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 		case globalAchievementsPath, gameAchievementsPath, newsForAppPath:
 		case authBasePath + beginQRPath + "/v1/", authBasePath + pollQRPath + "/v1/":
 			method = http.MethodPost
-		case storeNamesPath:
-		case storePricesPath:
+		case storeNamesPath, reviewsAPIPath:
+		case storePricesPath, storeSearchPath:
 			wantHost = storeHost
 		default:
-			t.Error("attempted an unexpected outbound request or followed a redirect")
-			return nil, fmt.Errorf("unexpected outbound request")
+			if !strings.HasPrefix(req.URL.Path, tagCatalogPath) && !strings.HasPrefix(req.URL.Path, appReviewsPath) {
+				t.Error("attempted an unexpected outbound request or followed a redirect")
+				return nil, fmt.Errorf("unexpected outbound request")
+			}
+			wantHost = storeHost
 		}
 		if req.Method != method || req.URL.Scheme != "https" || req.URL.Host != wantHost {
 			t.Error("wrong method or origin for a Steam read")

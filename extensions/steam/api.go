@@ -58,6 +58,10 @@ func (c steamClient) get(ctx context.Context, target string, params url.Values, 
 }
 
 func (c steamClient) readJSON(ctx context.Context, target string, params, form url.Values, authenticated bool, out any) problem {
+	return c.readBoundedJSON(ctx, target, params, form, authenticated, maxAPIBytes, out)
+}
+
+func (c steamClient) readBoundedJSON(ctx context.Context, target string, params, form url.Values, authenticated bool, maxBytes int64, out any) problem {
 	method := http.MethodGet
 	var body io.Reader
 	if form != nil {
@@ -114,11 +118,14 @@ func (c steamClient) readJSON(ctx context.Context, target string, params, form u
 			}
 		}
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIBytes+1))
+	if resp.ContentLength > maxBytes {
+		return problemResponse
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return sanitizeError(err)
 	}
-	if len(raw) > maxAPIBytes || json.Unmarshal(raw, out) != nil {
+	if int64(len(raw)) > maxBytes || json.Unmarshal(raw, out) != nil {
 		return problemResponse
 	}
 	return ""

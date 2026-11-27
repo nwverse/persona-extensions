@@ -2,11 +2,11 @@
 
 [Documentation](../README.md) · [Source](../../extensions/steam/README.md)
 
-Steam reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search the library, sort it by lifetime playtime or name and review your backlog. Game details show achievement progress, local annotations and a link to the Steam Store. **Recent official updates** loads up to five headlines with links to their Steam announcements when you open it. The Overview card opens the main Steam page.
+Steam researches games in the Store and reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search the library, sort it by lifetime playtime or name and review your backlog. Game details show achievement progress, local annotations and a link to the Steam Store. **Recent official updates** loads up to five dated headlines with links to their Steam announcements when you open it. The Overview card opens the main Steam page.
 
 ## Sign in with Steam Mobile QR
 
-1. Install Steam on a Persona Hub that supports extension sign-in. For a locally built archive, follow [Install a local package](../installation.md#install-a-local-package).
+1. Install Steam on Persona Hub build `202611130452` or later for game research skill delivery. Follow the local installation guide to install a locally built archive. [Install a local package](../installation.md#install-a-local-package) · [Persona v0.4.0](https://github.com/nwverse/persona/releases/tag/v0.4.0)
 2. Open **Settings › Extensions › Steam** and select **Sign In**. New installations use QR by default. If you already have a Steam player ID and Web API key, select **Steam Mobile QR** as the sign-in method and save before signing in.
 3. Open Steam Guard in the Steam Mobile App, scan the QR code and approve the sign-in on your phone. The extension reads the SteamID of the account you approved. A pending scan expires after five minutes. Start again if the code expires or Steam ends the request. [Steam Guard Mobile Authenticator](https://help.steampowered.com/faqs/view/7EFD-3CAE-64D3-1C31)
 
@@ -18,7 +18,7 @@ In **Settings › Extensions › Steam**, choose **Web API key** as the sign-in 
 
 Web API key mode uses read-only calls for publicly visible data. Set the profile and **Game details** to **Public** for the activity, library and achievements you want Persona to see. [Steam profile privacy](https://help.steampowered.com/en/faqs/view/588C-C67D-0251-C276)
 
-In either mode, set **Store country or region** to a two-letter ISO 3166-1 alpha-2 code for wishlist prices and currency. The default is `US`. [ISO 3166 country codes](https://www.iso.org/iso-3166-country-codes.html)
+In either mode, set **Store country or region** to a two-letter ISO 3166-1 alpha-2 code for Store prices, currency and research budgets. The default is `US`. [ISO 3166 country codes](https://www.iso.org/iso-3166-country-codes.html)
 
 ## Assistant tools
 
@@ -64,6 +64,43 @@ The recent games, library, wishlist and backlog list results accept an `offset` 
 
 Filter tonight's candidates by an exact local `tag` or a title substring in `query`. Both ignore case and surrounding whitespace. The result defaults to five candidates, with a `limit` of 1 to 20. Set `include_completed: true` to consider completed games. Dropped games stay excluded.
 
+## Game research
+
+| Tool | Arguments and result |
+| --- | --- |
+| `steam_store_tags` | Find Store tag IDs by name or ID with `query`. Set `language` for localized labels and use `limit` for a shorter list. |
+| `steam_store_search` | Combine `query` and up to eight `tags` given as IDs or exact localized or English names. Set `max_price` in the configured currency, `discounted_only`, or `platforms` as needed. All listed platforms are required. `steam_deck` includes Verified and Playable games. Set `language` to require the listed game language and localize results. Sort by `relevance`, `reviews`, `price_asc`, or `release_date`. Use `exclude_owned` to remove titles confirmed in the current library. |
+| `steam_game_details` | Pass one `appid` or an `appids` array, with optional `language`. Returns a short Store description, tags, genres, categories, release information, OS and Deck compatibility, controller and play modes, regional prices and discounts, and compact review summaries. |
+
+The Store's display language defaults to the Hub locale where supported. Prices use the configured Store country. A budget of `19.99` means 19.99 in that currency, and `0` finds free offers. Use the formatted price in the answer. Numeric `final` values are in Steam's hundredths of the currency unit. Price may be absent for an unreleased or unpriced title. [Steam language codes](https://partner.steamgames.com/doc/store/localization/languages) · [Steam Deck compatibility](https://partner.steamgames.com/doc/steamhardware/compat)
+
+Search uses a bounded first page from the Steam storefront and verifies its returned prices against the exact budget. A result marked `truncated` is a shortlist from a larger set. When the library or wishlist is unavailable, the corresponding `owned` or `in_wishlist` flag is null. With `exclude_owned` enabled the tool filters confirmed owned titles and preserves candidates whose status is unknown. [Steam storefront search](https://store.steampowered.com/search/?category1=998&deck_compatibility=3%2C2)
+
+The tag directory has an eight-hour fresh cache and built-in common labels in English and Simplified Chinese for outages. Search has a three-second Store request budget and a 512 KiB response cap. Search results are fresh for five minutes. A temporary failure can reuse the same filters' results up to 30 minutes old with a warning and an `as_of` timestamp. An uncached failure reports that search is unavailable. [Steam tag directory](https://store.steampowered.com/tagdata/populartags/english)
+
+Details use Valve's public app metadata and review counts. The review fields contain only all-language Steam-purchase counts and percentages for the overall and rolling 30-day windows, with the Store's sentiment label when available. Percentages are absent for zero reviews. A failed data source can leave partial results with a warning. [Legacy Steam review route](https://partner.steamgames.com/doc/store/getreviews) · [Current Valve reviews API](https://partner.steamgames.com/doc/webapi/IUserReviewsService)
+
+**Steam game discovery** is an optional skill under **Settings › Extensions › Steam › Contributions**. It helps the assistant translate natural language into tags, a search and a comparison of a few games. It starts switched off. Turning off `discovery_tools_enabled` hides the tools, returns a disabled error for direct calls, and withdraws the skill on the Hub's next skill refresh. [Persona skill delivery](https://github.com/nwverse/persona/blob/main/docs/extensions/extensions.md#assistant-content-from-the-data-directory-5770)
+
+## Friends Radar
+
+**Friends Radar** (`friends_radar_enabled`) is off by default. Enable it in **Settings › Extensions › Steam** to read friends' online status and public game libraries. **Personal › Steam** shows up to five friends with visible in-game activity. Only the navigation page and the two opt-in tools request friend data. The disabled setting hides the page section and both tool definitions, so the feature adds zero requests and zero tool definition tokens to assistant context.
+
+| Tool | Inputs and results |
+| --- | --- |
+| `steam_friends_radar` | `online_only` defaults to `true` and includes friends who are playing, online, away or busy. Set `in_game_only` to `true` to see only friends whose current game is visible. Results rank playing friends first, followed by online friends, away or busy friends, then offline friends and unknown states. `in_game_count` counts visible playing friends across the scanned list. `in_game_now` groups the returned page by game. |
+| `steam_coop_overlap` | Provide one `friend_steam_id` (a 17-digit SteamID64), `friend_steam_ids` (1–5 distinct SteamID64 strings), or `friend_query` (the full nickname, case insensitive). IDs must appear in the account's visible friends list. If multiple visible friends share a nickname, use a SteamID64. Games must be shared by you and every selected friend whose library Steam makes visible. The tool sorts by total lifetime minutes across those accounts and reports whether everyone included has played each title. |
+
+Both tools accept `offset` and `limit`, with a default of 20 and a maximum of 50 results. Use `next_offset` with the same filters and friend selection. Friends Radar scans up to 2,000 friends and calls Steam for presence in batches of at most 100.
+
+The overlap tool shows each selected friend's `library_visibility`. A private or unavailable library is omitted from the intersection, with a warning and a `partial` result when other libraries are visible. The tool needs at least one visible friend library and your own library to compute an intersection. Each library read uses up to 20,000 titles.
+
+With `coop_only` enabled by default, the tool keeps Steam Store multiplayer and co-op categories such as **Online Co-op** and **Shared/Split Screen**. Check `multiplayer_categories` for the specific mode. Games with missing or inconclusive categories are included with `coop_support: unknown`. Setting `coop_only` to `false` also includes games that Steam categorizes as single-player only. `shared_count` is the intersection size before filtering. `next_offset` advances through that sorted intersection, so a page may have fewer games than requested or be empty and still have a next page. Each call checks up to 150 candidates in up to three anonymous Store batches.
+
+Steam controls whether the selected sign-in method can see the account's **Friends List**, friends' presence and their **Game details**. Web API key mode uses public data. Mobile QR tries the friend endpoints with the session's access token and explains when Steam restricts access. A visible friends list is required to verify SteamIDs in either mode. A verified SteamID can be used for overlap if QR presence is restricted and Steam still shares the selected libraries. [Steam profile privacy](https://help.steampowered.com/en/faqs/view/588C-C67D-0251-C276) · [Steamworks friend list and player summaries](https://partner.steamgames.com/doc/webapi/ISteamUser#GetFriendList) · [Steamworks owned games](https://partner.steamgames.com/doc/webapi/IPlayerService#GetOwnedGames)
+
+The extension caches friends lists and presence in memory for a 90-second freshness window. QR sign-out clears the session's friend cache. The overlap tool keeps libraries in memory for the current request only. The extension writes zero friend data to its local cache or snapshot files.
+
 ## Wishlist Inbox alerts
 
 Set **Steam Inbox events** in **Settings › Extensions › Steam** to opt in. Steam scans once at startup or QR sign-in and every six hours while signed in. It reads only the configured account's visible wishlist and regional Store data. The disabled setting runs zero background scans, produces zero events or Inbox notifications and uses zero extra LLM tokens. The page and assistant tools remain available for on-demand reads.
@@ -85,21 +122,23 @@ The extension hands recent results to Persona through the memory-only `connector
 
 ## Token settings
 
-These settings control update excerpts and the planned memory export and high-context discovery features. Each disabled feature uses zero extra LLM tokens. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
+Under **Settings › Extensions › Steam**, these settings control game research, update excerpts and planned memory export. Each disabled feature uses zero extra LLM tokens. Its effective item budget is zero where applicable. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
 
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `patch_notes_summary_enabled` | Off | Allows `steam_game_news` to share a plain-text excerpt of up to 700 characters per update for assistant summaries. When off, the tool reports `summary_enabled: false` and returns only the AppID, game name, announcement ID, title, date, source and link per update. |
 | `memory_export_enabled` | Off | Allows `memory_sources` to share a personal gaming profile. Turning this off keeps the profile out of assistant context. |
 | `memory_max_items` | 10 (1–30) | Caps the number of gaming preference items in the exported profile. |
-| `discovery_tools_enabled` | On | Allows high-context game research tools and their skill. Turning this off disables those features before they can add research context. |
-| `discovery_max_results` | 15 (1–50) | Caps the candidates that a game search or research request can add to context. |
+| `discovery_tools_enabled` | On | Allows game research tools to add context and makes the optional skill available when its contribution is enabled. |
+| `discovery_max_results` | 15 (1–50) | Caps tags and search candidates per call. Details batches use the lower of this setting and 10. |
 
 Token settings use the documented default when a numeric limit is missing or outside its range. The Steam page shows news headlines, dates and links. The backlog tools compute counts and rankings locally on demand and bound their output. Steam collects local observations during normal reads.
 
 ## Refresh and storage
 
-Profile metadata, vanity resolution and the owned library are cached for eight hours. Presence, recent games and wishlist prices use ten-minute freshness windows. Select **Refresh** to request new Steam data and reload local annotations. Game details fetch achievement progress when opened. The global unlock rates, achievement schema and news are cached in memory by AppID, with freshness windows of one hour, eight hours and ten minutes respectively. The news page and tool share cached headline results when summary mode is off.
+Profile metadata, vanity resolution and the owned library are cached for eight hours. The account's presence, recent games and wishlist prices use ten-minute freshness windows. Select **Refresh** to request new Steam data and reload local annotations. The optional friends section uses its own freshness window. Game details fetch achievement progress when opened.
+
+The global unlock rates, achievement schema and news are cached in memory by AppID, with freshness windows of one hour, eight hours and ten minutes respectively. The news page and tool share cached headline results when summary mode is off.
 
 In QR mode, the extension keeps its data cache in memory for the active signed-in account. Web API key mode keeps one bounded record per dataset in memory and in `steam-cache-v1` under the extension data directory (`PERSONA_EXTENSION_DATA_DIR`, or the data directory sent by the Hub). A temporary request failure can reuse a labeled snapshot up to 24 hours old. A definitive denial for a dataset discards its cached record. Automatic retries for a failing dataset wait 30 seconds, and Refresh can retry immediately.
 
@@ -122,7 +161,7 @@ Both modes use `PERSONA_EXTENSION_DATA_DIR/steam-store-v1/backlog.json` for expl
 
 QR sign-in uses Valve's first-party `IAuthenticationService` over HTTPS. The extension begins a `MobileApp` session with `BeginAuthSessionViaQR`, follows Valve's poll interval with `PollAuthSessionStatus`, and renews access with `GenerateAccessTokenForApp`. The extension hands the `s.team` challenge URL to the Hub for local QR rendering. The extension's only network permissions are `api.steampowered.com` and `store.steampowered.com`. [Valve authentication message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/service_authentication.proto) · [Persona extension sign-in protocol](https://github.com/nwverse/persona/blob/main/docs/extensions/extensions.md#sign-in-auth)
 
-The QR grant is a Steam mobile-client session with account privileges determined by Valve. The extension uses it for the account reads below and sends the access token only in HTTPS requests to `api.steampowered.com`. Backlog analysis and tonight's picks reuse the owned library and recent playtime reads. Web API key mode uses `X-WebAPI-Key` for the authenticated legacy calls at that host and reads the public wishlist anonymously. Store names and prices are fetched anonymously in both modes. The client refuses redirects and reports fixed diagnostic messages. [Steam Web API overview](https://partner.steamgames.com/doc/webapi_overview)
+The QR grant is a Steam mobile-client session with account privileges determined by Valve. The extension uses it for the read operations below, with friend reads available after opt-in. It sends the access token only in HTTPS requests to `api.steampowered.com`. Backlog analysis and tonight's picks reuse the owned library and recent playtime reads. Web API key mode uses `X-WebAPI-Key` for the authenticated legacy calls at that host and reads the public wishlist anonymously. Store names, prices and categories are fetched anonymously in both modes. The client refuses redirects and reports fixed diagnostic messages. [Steam Web API overview](https://partner.steamgames.com/doc/webapi_overview)
 
 | Read | Steam Mobile QR | Web API key |
 | --- | --- | --- |
@@ -135,8 +174,12 @@ The QR grant is a Steam mobile-client session with account privileges determined
 | Global achievement percentages | Public `ISteamUserStats/GetGlobalAchievementPercentagesForApp` | Same public endpoint |
 | Game news | Public `ISteamNews/GetNewsForApp` | Same public endpoint |
 | Wishlist | `IWishlistService/GetWishlist` | Public `IWishlistService/GetWishlist` |
+| Friends list and presence (opt-in) | `ISteamUser/GetFriendList` and batched `IPlayerService/GetPlayerLinkDetails`, subject to QR permission | `ISteamUser/GetFriendList` and batched `ISteamUser/GetPlayerSummaries` |
+| Shared game libraries (opt-in) | `IPlayerService/GetOwnedGames` for each selected account, subject to QR permission | `IPlayerService/GetOwnedGames` for each selected account |
 
-Wishlist names use `IStoreBrowseService/GetItems` in Simplified Chinese or English. The alert scan and the deals tool also request release, demo and purchase metadata in those batches. Prices come from `store.steampowered.com/api/appdetails` for the selected country. [Valve Store Browse message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/common.proto) · [Steamworks IPlayerService](https://partner.steamgames.com/doc/webapi/IPlayerService)
+Wishlist names and multiplayer categories use `IStoreBrowseService/GetItems` with the selected Store country and language. The alert scan and the deals tool also request release, demo and purchase metadata in those batches. Prices come from `store.steampowered.com/api/appdetails` for the selected country. [Player message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/service_player.proto) · [Store category message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/common.proto) · [Steamworks IPlayerService](https://partner.steamgames.com/doc/webapi/IPlayerService)
+
+Game research uses anonymous HTTPS GET requests for Store tags, filtered search, app details, tag and Deck metadata, and reviews. Overall reviews try the legacy `/appreviews` route and fall back to `IUserReviewsService/GetAppReviews` when needed. The recent review call uses the current API's explicit date range. Only the ownership and wishlist checks use the account's existing read paths. Public search responses are cached separately from account data, and the wishlist check reads IDs without pulling names or prices.
 
 The Hub encrypts the versioned QR sign-in record through `connector.secrets.*`. It holds the refresh token, SteamID, account name and timestamps. The access token stays in the extension process. The extension makes a rotated refresh token usable after the Hub has saved it.
 

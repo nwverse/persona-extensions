@@ -29,6 +29,9 @@ type steamData struct {
 	library     *cacheSlot[gameList]
 	recent      *cacheSlot[gameList]
 	wishes      *cacheSlot[wishList]
+	wishIDs     *cacheSlot[map[uint32]struct{}]
+	friendList  *cacheSlot[friendRoster]
+	friendState *cacheSlot[[]player]
 	stores      steamStores
 	lastAccount atomic.Pointer[reading[player]]
 	inbox       atomic.Pointer[[]wishlistDelivery]
@@ -54,7 +57,7 @@ func newAccountData(cfg config, client steamClient, dataDir string, now func() t
 	if dataDir != "" {
 		cacheDir = filepath.Join(dataDir, "steam-cache-v1")
 	}
-	return &steamData{
+	d := &steamData{
 		client:  client,
 		config:  cfg,
 		session: session,
@@ -63,8 +66,15 @@ func newAccountData(cfg config, client steamClient, dataDir string, now func() t
 		library: newSlot[gameList](cacheDir, "library", now, session),
 		recent:  newSlot[gameList](cacheDir, "recent", now, session),
 		wishes:  newSlot[wishList](cacheDir, "wishlist", now, session),
+		wishIDs: newSlot[map[uint32]struct{}]("", "", now, session),
 		stores:  newSteamStores(dataDir),
 	}
+	if cfg.FriendsRadarEnabled {
+		d.friendList = newSlot[friendRoster]("", "", now, session)
+		d.friendState = newSlot[[]player]("", "", now, session)
+		d.friendList.freshOnly, d.friendState.freshOnly = true, true
+	}
+	return d
 }
 
 // A UI or tool call uses one credential generation from its first read to its
@@ -133,6 +143,11 @@ func (d *steamData) clearLocked() {
 	d.library.clear()
 	d.recent.clear()
 	d.wishes.clear()
+	d.wishIDs.clear()
+	if d.friendList != nil {
+		d.friendList.clear()
+		d.friendState.clear()
+	}
 	d.stores.clearMemory()
 	d.inbox.Store(nil)
 }

@@ -4,6 +4,7 @@ package main
 import (
 	"context"
 	_ "embed"
+	"log"
 	"net/http"
 	"os"
 	"slices"
@@ -29,6 +30,7 @@ type app struct {
 	publicData *steamPublicData
 	qr         *qrAuth
 	backlog    *BacklogStore
+	discovery  *steamDiscovery
 	locale     string
 }
 
@@ -67,6 +69,13 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 			a.publicData = &steamPublicData{client: steamClient{http: client, key: a.client.key}, now: now}
 			a.backlog = NewBacklogStore(dir)
 			a.locale = in.Hub.Locale
+			a.discovery = nil
+			if cfg.AllowsDiscoveryTools() {
+				a.discovery = newSteamDiscovery(client, now)
+			}
+			if err := syncDiscoverySkill(dir, cfg.AllowsDiscoveryTools() && slices.Contains(in.Active["skills"], discoverySkillID)); err != nil {
+				log.Print("steam: could not update the game discovery skill")
+			}
 			if a.config.AuthMode == modeQR {
 				a.qr = newQRAuth(ctx, hub, client, now, a.config, a.locale)
 			} else {

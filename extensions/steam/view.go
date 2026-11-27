@@ -178,6 +178,13 @@ func (a *app) accountPage(ctx context.Context, d *steamData, t *text, st pageSta
 		view = a.gameNewsPage(ctx, d, t, st)
 	case st.AppID != 0:
 		view = a.gameDetail(ctx, d, t, st)
+	case d.config.FriendsRadarEnabled && d.setup == "":
+		var friends wire.Section
+		var reads sync.WaitGroup
+		reads.Go(func() { friends = d.friendsSection(ctx, t) })
+		view = a.overview(ctx, d, t, st, refresh)
+		reads.Wait()
+		view.Sections = append(view.Sections, friends)
 	default:
 		view = a.overview(ctx, d, t, st, refresh)
 	}

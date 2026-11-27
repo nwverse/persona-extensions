@@ -16,11 +16,7 @@ const (
 	storeBatchSize   = 50
 )
 
-func (c steamClient) wishlist(ctx context.Context, id, country, language string) (*wishList, problem) {
-	return c.loadWishlist(ctx, id, country, language, false)
-}
-
-func (c steamClient) loadWishlist(ctx context.Context, id, country, language string, includeSignals bool) (*wishList, problem) {
+func (c steamClient) wishlistItems(ctx context.Context, id string) ([]wishItem, problem) {
 	var reply struct {
 		Response *struct {
 			Items []wishItem `json:"items"`
@@ -46,6 +42,18 @@ func (c steamClient) loadWishlist(ctx context.Context, id, country, language str
 		}
 		seen[item.AppID] = struct{}{}
 		items = append(items, wishItem{AppID: item.AppID, Priority: item.Priority})
+	}
+	return items, ""
+}
+
+func (c steamClient) wishlist(ctx context.Context, id, country, language string) (*wishList, problem) {
+	return c.loadWishlist(ctx, id, country, language, false)
+}
+
+func (c steamClient) loadWishlist(ctx context.Context, id, country, language string, includeSignals bool) (*wishList, problem) {
+	items, issue := c.wishlistItems(ctx, id)
+	if issue != "" {
+		return nil, issue
 	}
 	slices.SortFunc(items, func(a, b wishItem) int {
 		if order := cmp.Compare(a.Priority, b.Priority); order != 0 {

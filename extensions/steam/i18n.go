@@ -16,6 +16,8 @@ type text struct {
 	achievements, noAchievements, unlocked, game, playing, unknown      string
 	minutes, hoursMinutes, discount, atLeast, stale                     string
 	qrHint, keyMode, keySignOut                                         string
+	friendsPlaying, noFriendsPlaying, moreFriendsPlaying, unknownFriend string
+	invalidFriendSelection                                              string
 	states                                                              map[string]string
 	problems                                                            map[problem]string
 
@@ -64,9 +66,12 @@ var english = text{
 	inboxThreshold: "At least %d%% off", inboxTarget: "Target price reached", inboxNewLow: "New locally observed low",
 	inboxUnits: "%d Steam price units in %s", inboxTop: "%d wishlist games on sale in %s. Top %d offers.",
 	minutes: "%d min", hoursMinutes: "%d h %d min", discount: "%d%% off", atLeast: "%d+", stale: "Showing cached data.",
-	qrHint:     "Open Steam Guard in the Steam Mobile App, scan the QR code, and approve the sign-in on your phone.",
-	keyMode:    "Web API key mode is managed in Steam's extension settings. Select Steam Mobile QR there to sign in by scanning.",
-	keySignOut: "To disconnect Web API key mode, clear the saved key in Steam's extension settings.",
+	qrHint:         "Open Steam Guard in the Steam Mobile App, scan the QR code, and approve the sign-in on your phone.",
+	keyMode:        "Web API key mode is managed in Steam's extension settings. Select Steam Mobile QR there to sign in by scanning.",
+	keySignOut:     "To disconnect Web API key mode, clear the saved key in Steam's extension settings.",
+	friendsPlaying: "Friends in game", noFriendsPlaying: "No friends with visible in-game activity.",
+	moreFriendsPlaying: "More friends are playing.", unknownFriend: "Steam friend",
+	invalidFriendSelection: "Select a friend by 17-digit SteamID64 or exact nickname, or provide 1–5 distinct SteamID64s.",
 	states: map[string]string{
 		"offline": "Offline", "online": "Online", "busy": "Busy", "away": "Away",
 		"snooze": "Snoozing", "looking_to_trade": "Looking to trade", "looking_to_play": "Looking to play", "invisible": "Invisible",
@@ -82,6 +87,7 @@ var english = text{
 		problemGameDetails:        "Steam did not share these games. Availability depends on the sign-in method and Steam privacy settings.",
 		problemAchievements:       "Steam did not share achievement progress. Availability depends on Steam privacy settings and whether the game supports achievements.",
 		problemWishlist:           "Steam did not share a wishlist. It may be private, empty or unavailable.",
+		problemMissing:            "Steam did not return this item for the selected Store country.",
 		problemRateLimited:        "Steam is rate limiting requests. Try again in a moment.",
 		problemTimeout:            "Steam took too long to respond. Try again in a moment.",
 		problemNetwork:            "Steam is temporarily unavailable. Try again in a moment.",
@@ -103,6 +109,29 @@ var english = text{
 		problemAchievementDetails:     "Steam did not share complete personal achievement details. Any global rankings are for all players.",
 		problemAchievementUnlockTimes: "Steam did not share timestamps for some unlocked achievements.",
 		problemGameNews:               "Steam did not share news for this game.",
+
+		problemDiscoveryDisabled: "Steam game research is off (discovery_tools_enabled). You can enable it in Settings › Extensions › Steam.",
+		problemDiscoveryTagArgs:  "Use a Steam language code, a tag query of up to 100 characters and a limit from 1 to 50.",
+		problemDiscoverySearch:   "Use a valid search sort and language, up to eight tags, supported platforms and a nonnegative regional budget with up to two decimal places.",
+		problemDiscoveryDetails:  "Provide one appid or a list of up to %d positive appids, with an optional Steam language code.",
+		problemUnknownStoreTag:   "One or more Steam tags could not be resolved. Look up the exact names with steam_store_tags or use numeric tag IDs.",
+		problemBuiltInTags:       "Using the built-in list of common Steam tags.",
+		problemStoreSearchFailed: "Steam Store search is unavailable and there is no usable cached result for these filters. Try again shortly.",
+		problemPartialLibrary:    "Steam returned only part of the library. Ownership is unknown for titles outside that snapshot.",
+
+		problemFriendsDisabled:  "Friends Radar is off by default. Enable it in the Steam extension settings.",
+		problemFriendList:       "Steam did not share the friends list. Check Friends List visibility in Steam and the saved Web API key in the extension settings.",
+		problemFriendListQR:     "Steam did not share the friends list with this Mobile QR session. Check Friends List visibility in Steam. Web API key mode can read a public list.",
+		problemFriendState:      "Steam did not share friend presence in Web API key mode. Check the key and profile visibility in Steam.",
+		problemFriendStateQR:    "Steam did not grant this Mobile QR session access to friend presence. Web API key mode can read public presence.",
+		problemFriendListCap:    "The friends radar checked up to 2,000 friends.",
+		problemFriendUnverified: "The visible friends list did not verify one or more selected SteamIDs. Their libraries were skipped.",
+		problemFriendName:       "No visible friend has that exact nickname. Check the name or use their SteamID64.",
+		problemFriendNameDup:    "More than one visible friend uses that nickname. Select a friend by SteamID64.",
+		problemFriendLibrary:    "Steam did not share one or more selected friends' game libraries. Check their Game details visibility. The intersection uses the libraries Steam shared.",
+		problemFriendLibraryQR:  "Steam did not share a game library with this Mobile QR session. Its Game details may be private or restricted for this session.",
+		problemFriendLibraryCap: "The intersection uses up to 20,000 visible games per account. One or more libraries are incomplete.",
+		problemCoopStore:        "Some Store categories could not be checked. Games with unknown multiplayer support are included.",
 	},
 	backlog: backlogText{
 		title: "Backlog & local progress", annotation: "Local backlog annotation", status: "Status",
@@ -147,9 +176,12 @@ var chinese = text{
 	inboxThreshold: "折扣达到 %d%%", inboxTarget: "已达到目标价", inboxNewLow: "本机观测新低",
 	inboxUnits: "%d Steam 价格单位（%s）", inboxTop: "%d 款愿望单游戏在 %s 区打折，精选 %d 款。",
 	minutes: "%d 分钟", hoursMinutes: "%d 小时 %d 分钟", discount: "优惠 %d%%", atLeast: "%d+", stale: "当前显示缓存数据。",
-	qrHint:     "在 Steam 手机 App 中打开 Steam 令牌，扫描二维码，并在手机上批准登录。",
-	keyMode:    "Web API 密钥在 Steam 扩展设置中管理。如需扫码，请在设置中选择 Steam 手机 App 扫码。",
-	keySignOut: "如需断开 Web API 密钥模式，请在 Steam 扩展设置中清除已保存的密钥。",
+	qrHint:         "在 Steam 手机 App 中打开 Steam 令牌，扫描二维码，并在手机上批准登录。",
+	keyMode:        "Web API 密钥在 Steam 扩展设置中管理。如需扫码，请在设置中选择 Steam 手机 App 扫码。",
+	keySignOut:     "如需断开 Web API 密钥模式，请在 Steam 扩展设置中清除已保存的密钥。",
+	friendsPlaying: "好友在玩", noFriendsPlaying: "当前没有好友公开显示正在游玩。",
+	moreFriendsPlaying: "还有其他好友正在游玩。", unknownFriend: "Steam 好友",
+	invalidFriendSelection: "请用单个 17 位 SteamID64 或完整昵称指定好友，也可提供 1–5 个不重复的 SteamID64。",
 	states: map[string]string{
 		"offline": "离线", "online": "在线", "busy": "忙碌", "away": "离开",
 		"snooze": "暂离", "looking_to_trade": "想交易", "looking_to_play": "想玩游戏", "invisible": "隐身",
@@ -165,6 +197,7 @@ var chinese = text{
 		problemGameDetails:        "Steam 未共享这些游戏。可见范围取决于登录方式和 Steam 隐私设置。",
 		problemAchievements:       "Steam 未共享成就进度。可见范围取决于 Steam 隐私设置及游戏是否支持成就。",
 		problemWishlist:           "Steam 未共享愿望单。愿望单可能为私密、为空或暂不可访问。",
+		problemMissing:            "Steam 未返回所选商店地区的此项目。",
 		problemRateLimited:        "Steam 正在限制请求频率，请稍后重试。",
 		problemTimeout:            "Steam 响应超时，请稍后重试。",
 		problemNetwork:            "Steam 暂时不可用，请稍后重试。",
@@ -186,6 +219,29 @@ var chinese = text{
 		problemAchievementDetails:     "Steam 未共享完整的个人成就明细。全球榜单适用于所有玩家。",
 		problemAchievementUnlockTimes: "Steam 未共享部分已解锁成就的解锁时间。",
 		problemGameNews:               "Steam 未共享这款游戏的更新消息。",
+
+		problemDiscoveryDisabled: "Steam 游戏调研已关闭（discovery_tools_enabled）。可在「设置 › 扩展 › Steam」开启。",
+		problemDiscoveryTagArgs:  "请使用 Steam 语言代码，输入最多 100 字的标签关键词，并将返回上限设为 1–50。",
+		problemDiscoverySearch:   "请使用有效的排序、语言和平台，提供最多 8 个标签，以及最多两位小数的非负地区预算。",
+		problemDiscoveryDetails:  "请提供一个 appid，或最多 %d 个正整数 appids，可选填 Steam 语言代码。",
+		problemUnknownStoreTag:   "无法识别一个或多个 Steam 标签。请用 steam_store_tags 查询准确名称，或直接提供标签 ID。",
+		problemBuiltInTags:       "当前使用内置的 Steam 常用标签。",
+		problemStoreSearchFailed: "Steam 商店搜索暂不可用，且这组筛选条件没有可用的缓存结果。请稍后重试。",
+		problemPartialLibrary:    "Steam 只返回了部分游戏库，无法确认快照以外游戏的拥有状态。",
+
+		problemFriendsDisabled:  "好友开黑雷达默认关闭，请在 Steam 扩展设置中开启。",
+		problemFriendList:       "Steam 未共享好友列表。请检查 Steam 的好友列表隐私设置和扩展的 Web API 密钥。",
+		problemFriendListQR:     "Steam 未向此次手机扫码会话共享好友列表。请检查 Steam 的好友列表隐私设置。公开列表可通过 Web API 密钥模式读取。",
+		problemFriendState:      "Steam 未通过 Web API 密钥模式共享好友状态。请检查密钥和 Steam 资料的可见性。",
+		problemFriendStateQR:    "Steam 未授权此次手机扫码会话读取好友状态。公开状态可通过 Web API 密钥模式读取。",
+		problemFriendListCap:    "好友开黑雷达最多检查 2,000 位好友。",
+		problemFriendUnverified: "可见的好友列表无法确认部分所选 SteamID 的好友身份，已跳过其游戏库。",
+		problemFriendName:       "可见好友中没有完全匹配的昵称。请检查昵称，或使用好友的 SteamID64。",
+		problemFriendNameDup:    "多位可见好友使用相同的昵称，请使用 SteamID64 指定好友。",
+		problemFriendLibrary:    "Steam 未共享部分所选好友的游戏库。请检查对方的「游戏详情」可见性。交集使用 Steam 已共享的游戏库。",
+		problemFriendLibraryQR:  "Steam 未向此次手机扫码会话共享某个游戏库。其「游戏详情」可能为私密，或此次会话权限受限。",
+		problemFriendLibraryCap: "每个账号最多使用 20,000 款可见游戏计算交集，部分游戏库数据不完整。",
+		problemCoopStore:        "暂时无法确认部分商店类别，结果保留联机支持情况未知的游戏。",
 	},
 	backlog: backlogText{
 		title: "吃灰盘点与标注", annotation: "本机游戏标注", status: "游玩状态",
