@@ -1,6 +1,6 @@
 {
   "name": "Steam",
-  "description": "Sign in with the Steam Mobile App to read player status, playtime, library, achievements, official game updates and regional wishlist prices in Persona, and track game progress locally. A Web API key is also available for public data.",
+  "description": "Research Steam Store games in Persona. Sign in with the Steam Mobile App to read player status, playtime, library, achievements, official game updates and regional wishlist prices. Track game progress locally. A Web API key can read public account data.",
   "configuration": {
     "auth_mode": {
       "title": "Sign-in method",
@@ -13,7 +13,7 @@
     },
     "country_code": {
       "title": "Store country or region",
-      "description": "Two-letter ISO 3166-1 country or region code for wishlist prices and currency. Defaults to US."
+      "description": "Two-letter ISO 3166-1 Store country or region code for wishlist prices and research budgets. Defaults to US."
     },
     "inbox_events_enabled": {
       "title": "Steam Inbox events",
@@ -41,11 +41,11 @@
     },
     "discovery_tools_enabled": {
       "title": "Steam game research tools and skill",
-      "description": "Allow game research tools and their skill to add detailed results to the assistant's context. Turn this off to disable those research features. On by default."
+      "description": "Allow game research tools to add results to the assistant's context. Tools are on by default. The skill can be enabled separately under Contributions. Turning this setting off disables both."
     },
     "discovery_max_results": {
       "title": "Game research result limit",
-      "description": "Maximum number of candidates per search or research request when game research is enabled. Range 1–50, default 15."
+      "description": "Maximum number of results per research call. Range 1–50, default 15. A game details batch is also capped at 10 games."
     }
   },
   "secrets": {

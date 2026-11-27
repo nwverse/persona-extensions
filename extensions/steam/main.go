@@ -4,8 +4,10 @@ package main
 import (
 	"context"
 	_ "embed"
+	"log"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/nwverse/persona-extensions/pluginkit"
@@ -67,6 +69,9 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 			a.discovery = nil
 			if cfg.AllowsDiscoveryTools() {
 				a.discovery = newSteamDiscovery(client, now)
+			}
+			if err := syncDiscoverySkill(dir, cfg.AllowsDiscoveryTools() && slices.Contains(in.Active["skills"], discoverySkillID)); err != nil {
+				log.Print("steam: could not update the game discovery skill")
 			}
 			if a.config.AuthMode == modeQR {
 				a.qr = newQRAuth(ctx, hub, client, now, a.config)

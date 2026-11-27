@@ -2,11 +2,11 @@
 
 [Documentation](../README.md) · [Source](../../extensions/steam/README.md)
 
-Steam reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search the library, sort it by lifetime playtime or name and review your backlog. Game details show achievement progress, local annotations and a link to the Steam Store. **Recent official updates** loads up to five headlines with links to their Steam announcements when you open it. The Overview card opens the main Steam page.
+Steam researches games in the Store and reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search the library, sort it by lifetime playtime or name and review your backlog. Game details show achievement progress, local annotations and a link to the Steam Store. **Recent official updates** loads up to five dated headlines with links to their Steam announcements when you open it. The Overview card opens the main Steam page.
 
 ## Sign in with Steam Mobile QR
 
-1. Install Steam on a Persona Hub that supports extension sign-in. For a locally built archive, follow [Install a local package](../installation.md#install-a-local-package).
+1. Install Steam on Persona Hub build `202611130452` or later for game research skill delivery. Follow the local installation guide to install a locally built archive. [Install a local package](../installation.md#install-a-local-package) · [Persona v0.4.0](https://github.com/nwverse/persona/releases/tag/v0.4.0)
 2. Open **Settings › Extensions › Steam** and select **Sign In**. New installations use QR by default. If you already have a Steam player ID and Web API key, select **Steam Mobile QR** as the sign-in method and save before signing in.
 3. Open Steam Guard in the Steam Mobile App, scan the QR code and approve the sign-in on your phone. The extension reads the SteamID of the account you approved. A pending scan expires after five minutes. Start again if the code expires or Steam ends the request. [Steam Guard Mobile Authenticator](https://help.steampowered.com/faqs/view/7EFD-3CAE-64D3-1C31)
 
@@ -18,7 +18,7 @@ In **Settings › Extensions › Steam**, choose **Web API key** as the sign-in 
 
 Web API key mode uses read-only calls for publicly visible data. Set the profile and **Game details** to **Public** for the activity, library and achievements you want Persona to see. [Steam profile privacy](https://help.steampowered.com/en/faqs/view/588C-C67D-0251-C276)
 
-In either mode, set **Store country or region** to a two-letter ISO 3166-1 alpha-2 code for wishlist prices and currency. The default is `US`. [ISO 3166 country codes](https://www.iso.org/iso-3166-country-codes.html)
+In either mode, set **Store country or region** to a two-letter ISO 3166-1 alpha-2 code for Store prices, currency and research budgets. The default is `US`. [ISO 3166 country codes](https://www.iso.org/iso-3166-country-codes.html)
 
 ## Assistant tools
 
@@ -61,9 +61,27 @@ The recent games, library, wishlist and backlog list results accept an `offset` 
 
 Filter tonight's candidates by an exact local `tag` or a title substring in `query`. Both ignore case and surrounding whitespace. The result defaults to five candidates, with a `limit` of 1 to 20. Set `include_completed: true` to consider completed games. Dropped games stay excluded.
 
+## Game research
+
+| Tool | Arguments and result |
+| --- | --- |
+| `steam_store_tags` | Find Store tag IDs by name or ID with `query`. Set `language` for localized labels and use `limit` for a shorter list. |
+| `steam_store_search` | Combine `query` and up to eight `tags` given as IDs or exact localized or English names. Set `max_price` in the configured currency, `discounted_only`, or `platforms` as needed. All listed platforms are required. `steam_deck` includes Verified and Playable games. Set `language` to require the listed game language and localize results. Sort by `relevance`, `reviews`, `price_asc`, or `release_date`. Use `exclude_owned` to remove titles confirmed in the current library. |
+| `steam_game_details` | Pass one `appid` or an `appids` array, with optional `language`. Returns a short Store description, tags, genres, categories, release information, OS and Deck compatibility, controller and play modes, regional prices and discounts, and compact review summaries. |
+
+The Store's display language defaults to the Hub locale where supported. Prices use the configured Store country. A budget of `19.99` means 19.99 in that currency, and `0` finds free offers. Use the formatted price in the answer. Numeric `final` values are in Steam's hundredths of the currency unit. Price may be absent for an unreleased or unpriced title. [Steam language codes](https://partner.steamgames.com/doc/store/localization/languages) · [Steam Deck compatibility](https://partner.steamgames.com/doc/steamhardware/compat)
+
+Search uses a bounded first page from the Steam storefront and verifies its returned prices against the exact budget. A result marked `truncated` is a shortlist from a larger set. When the library or wishlist is unavailable, the corresponding `owned` or `in_wishlist` flag is null. With `exclude_owned` enabled the tool filters confirmed owned titles and preserves candidates whose status is unknown. [Steam storefront search](https://store.steampowered.com/search/?category1=998&deck_compatibility=3%2C2)
+
+The tag directory has an eight-hour fresh cache and built-in common labels in English and Simplified Chinese for outages. Search has a three-second Store request budget and a 512 KiB response cap. Search results are fresh for five minutes. A temporary failure can reuse the same filters' results up to 30 minutes old with a warning and an `as_of` timestamp. An uncached failure reports that search is unavailable. [Steam tag directory](https://store.steampowered.com/tagdata/populartags/english)
+
+Details use Valve's public app metadata and review counts. The review fields contain only all-language Steam-purchase counts and percentages for the overall and rolling 30-day windows, with the Store's sentiment label when available. Percentages are absent for zero reviews. A failed data source can leave partial results with a warning. [Legacy Steam review route](https://partner.steamgames.com/doc/store/getreviews) · [Current Valve reviews API](https://partner.steamgames.com/doc/webapi/IUserReviewsService)
+
+**Steam game discovery** is an optional skill under **Settings › Extensions › Steam › Contributions**. It helps the assistant translate natural language into tags, a search and a comparison of a few games. It starts switched off. Turning off `discovery_tools_enabled` hides the tools, returns a disabled error for direct calls, and withdraws the skill on the Hub's next skill refresh. [Persona skill delivery](https://github.com/nwverse/persona/blob/main/docs/extensions/extensions.md#assistant-content-from-the-data-directory-5770)
+
 ## Token settings
 
-Under **Settings › Extensions › Steam**, these settings define the defaults and limits for update excerpts and the planned Inbox, memory export and high-context discovery features. A disabled feature uses zero extra LLM tokens. Its gate applies before adding update excerpts, emitting events, exporting context or running discovery. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
+Under **Settings › Extensions › Steam**, these settings define the defaults and limits for update excerpts, game discovery and the planned Inbox and memory features. A disabled feature uses zero extra LLM tokens. Its gate applies before adding update excerpts, emitting events, exporting context or running discovery, and its effective item budget is zero where applicable. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
 
 | Setting | Default | Effect |
 | --- | --- | --- |
@@ -73,8 +91,8 @@ Under **Settings › Extensions › Steam**, these settings define the defaults 
 | `sale_roundup_enabled` | Off | Allows wishlist deal roundups during major sales. This also requires `inbox_events_enabled`. Turning either off skips roundup work and its Inbox delivery. |
 | `memory_export_enabled` | Off | Allows `memory_sources` to share a personal gaming profile. Turning this off keeps the profile out of assistant context. |
 | `memory_max_items` | 10 (1–30) | Caps the number of gaming preference items in the exported profile. |
-| `discovery_tools_enabled` | On | Allows high-context game research tools and their skill. Turning this off disables those features before they can add research context. |
-| `discovery_max_results` | 15 (1–50) | Caps the candidates that a game search or research request can add to context. |
+| `discovery_tools_enabled` | On | Allows game research tools to add context and makes the optional skill available when its contribution is enabled. |
+| `discovery_max_results` | 15 (1–50) | Caps tags and search candidates per call. Details batches use the lower of this setting and 10. |
 
 Token settings use the documented default when a numeric limit is missing or outside its range. The Steam page shows news headlines, dates and links. The backlog tools compute counts and rankings locally on demand and bound their output. Steam collects local observations during normal reads.
 
@@ -118,6 +136,8 @@ The QR grant is a Steam mobile-client session with account privileges determined
 | Wishlist | `IWishlistService/GetWishlist` | Public `IWishlistService/GetWishlist` |
 
 Wishlist names use `IStoreBrowseService/GetItems` in Simplified Chinese or English. Prices come from `store.steampowered.com/api/appdetails` for the selected country. [Player message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/service_player.proto) · [Steamworks IPlayerService](https://partner.steamgames.com/doc/webapi/IPlayerService)
+
+Game research uses anonymous HTTPS GET requests for Store tags, filtered search, app details, tag and Deck metadata, and reviews. Overall reviews try the legacy `/appreviews` route and fall back to `IUserReviewsService/GetAppReviews` when needed. The recent review call uses the current API's explicit date range. Only the ownership and wishlist checks use the account's existing read paths. Public search responses are cached separately from account data, and the wishlist check reads IDs without pulling names or prices.
 
 The Hub encrypts the versioned QR sign-in record through `connector.secrets.*`. It holds the refresh token, SteamID, account name and timestamps. The access token stays in the extension process. The extension makes a rotated refresh token usable after the Hub has saved it.
 

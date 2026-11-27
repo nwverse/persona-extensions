@@ -1,6 +1,6 @@
 {
   "name": "Steam",
-  "description": "用 Steam 手机 App 扫码登录，在 Persona 中只读查看玩家状态、游玩记录、游戏库、成就、游戏官方更新和愿望单地区价格，并在本机标注游戏进度。也可用 Web API 密钥读取公开数据。",
+  "description": "在 Persona 中调研 Steam 商店游戏。用 Steam 手机 App 扫码登录后，只读查看玩家状态、游玩记录、游戏库、成就、官方游戏更新和愿望单地区价格，并在本机标注游戏进度。也可用 Web API 密钥读取公开账号数据。",
   "configuration": {
     "auth_mode": {
       "title": "登录方式",
@@ -13,7 +13,7 @@
     },
     "country_code": {
       "title": "商店国家或地区",
-      "description": "用于愿望单价格和货币的两位 ISO 3166-1 国家或地区代码，默认为 US。"
+      "description": "用于愿望单价格和游戏调研预算的两位 ISO 3166-1 商店国家或地区代码，默认为 US。"
     },
     "inbox_events_enabled": {
       "title": "Steam 收件箱事件",
@@ -41,11 +41,11 @@
     },
     "discovery_tools_enabled": {
       "title": "Steam 游戏调研工具和技能",
-      "description": "允许调用会占用较多助手上下文的游戏调研工具和技能。关闭后停用这些调研功能。默认开启。"
+      "description": "允许游戏调研工具将结果加入助手上下文。工具默认开启，调研技能可在贡献列表单独开启。关闭此设置后同时停用。"
     },
     "discovery_max_results": {
       "title": "单次游戏调研候选上限",
-      "description": "开启游戏调研后，单次游戏检索或调研最多可返回的候选数。范围 1–50，默认 15。"
+      "description": "单次调研工具返回条目数的上限。范围 1–50，默认 15。每批详情还受 10 款上限约束。"
     }
   },
   "secrets": {

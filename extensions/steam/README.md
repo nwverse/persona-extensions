@@ -1,6 +1,6 @@
 # Steam
 
-Steam reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to see these details, review your backlog and annotate games locally. The Overview card opens the same page. Use the `steam_*` assistant tools to work with your library and get picks for tonight.
+Steam researches Store games and reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to see these details, review your backlog and annotate games locally. The Overview card opens the same page. Use the `steam_*` assistant tools to work with your library and get picks for tonight.
 
 New installations use Steam Mobile QR by default. In **Settings › Extensions › Steam**, select **Sign In**, scan with Steam Guard in the Steam Mobile App, and approve the login on the phone. The Hub encrypts the refresh token in its connector secret store. The extension keeps the access token and QR account cache in memory.
 
@@ -21,9 +21,15 @@ Open a game from the library to select and save a local status. The **Backlog & 
 
 Both sign-in modes save explicit annotations by SteamID64 in `PERSONA_EXTENSION_DATA_DIR/steam-store-v1/backlog.json`. Signing out keeps those annotations. Steam account access stays read-only. [Tool arguments and storage details](../../docs/extensions/steam.md#backlog-and-tonights-picks)
 
+## Game research
+
+Use `steam_store_tags` to find localized Store tags, `steam_store_search` to filter by gameplay, price, sale, language and platform, and `steam_game_details` to compare a shortlist. Search marks games in your library or wishlist when Steam shares those datasets. Details include current regional prices, Deck status, player modes, and overall and 30-day review percentages and counts. [Research arguments and data sources](../../docs/extensions/steam.md#game-research)
+
+The **Steam game discovery** skill is an optional contribution. Enable it under **Settings › Extensions › Steam › Contributions**. Turning off **Steam game research tools and skill** hides the three tools and withdraws the skill from the assistant's next refresh.
+
 ## Token settings
 
-These runtime gates and budgets govern update excerpts and the planned Inbox, memory and discovery features. Each disabled feature uses zero extra LLM tokens. Price and playtime observations use existing Steam reads. QR sessions keep their observations in memory until sign-out or restart. Web API key mode stores its observations in `steam-store-v1` under the extension data directory. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
+These runtime gates and budgets cover game research, update excerpts and the planned Inbox and memory features. Each disabled feature uses zero extra LLM tokens. Price and playtime observations use existing Steam reads. QR sessions keep their observations in memory until sign-out or restart. Web API key mode stores its observations in `steam-store-v1` under the extension data directory. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
 
 | Setting | Default | Token impact |
 | --- | --- | --- |
@@ -33,15 +39,16 @@ These runtime gates and budgets govern update excerpts and the planned Inbox, me
 | `sale_roundup_enabled` | Off | Allows sale roundups that can trigger Inbox triage. Also requires Steam Inbox events. |
 | `memory_export_enabled` | Off | Allows the gaming profile to use assistant context via `memory_sources`. |
 | `memory_max_items` | 10 (1–30) | Caps profile items added to context. |
-| `discovery_tools_enabled` | On | Allows high-context game research tools and their skill. |
-| `discovery_max_results` | 15 (1–50) | Caps candidates returned per research request. |
+| `discovery_tools_enabled` | On | Allows game research tools and makes the separately enabled skill available. |
+| `discovery_max_results` | 15 (1–50) | Caps tags and search candidates per call. Details batches also have a ceiling of 10 games. |
 
 ## Development
 
 From the repository root, run the focused race tests and build a package.
 
 ```sh
-go -C extensions/steam test -race -v ./...
+go -C extensions/steam test -race -count=1 ./...
+go -C extensions/steam vet ./...
 ./scripts/package.sh steam
 ```
 

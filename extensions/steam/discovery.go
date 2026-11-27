@@ -1,12 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -18,6 +23,48 @@ import (
 	"golang.org/x/net/html"
 	"golang.org/x/net/html/atom"
 )
+
+const (
+	discoverySkillID  = "steam-game-discovery"
+	discoverySkillDir = "assistant/steam-discovery-skills"
+)
+
+//go:embed skills/steam-game-discovery/SKILL.md
+var discoverySkill []byte
+
+// The Hub reads this data contribution when rendering skills. Publish it only
+// while both the contribution switch and the discovery token gate are on.
+func syncDiscoverySkill(dataDir string, enabled bool) error {
+	if dataDir == "" {
+		return nil
+	}
+	dir := filepath.Join(dataDir, discoverySkillDir, discoverySkillID)
+	path := filepath.Join(dir, "SKILL.md")
+	if !enabled {
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode().IsRegular() && info.Size() == int64(len(discoverySkill)) {
+		if current, err := os.ReadFile(path); err == nil && bytes.Equal(current, discoverySkill) {
+			return nil
+		}
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".skill-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(f.Name())
+	_, writeErr := f.Write(discoverySkill)
+	if err := errors.Join(writeErr, f.Close()); err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), path)
+}
 
 const (
 	storeTagsTool   = "steam_store_tags"

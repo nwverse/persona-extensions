@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -361,6 +365,46 @@ func TestDiscoveryDetailsAbsoluteBatchLimit(t *testing.T) {
 	err := h.Call("connector.tools.call", wire.ConnectorCallParams{Name: gameDetailsTool, Args: args}, nil)
 	if !errors.As(err, &e) || e.Code != "invalid" || !strings.Contains(e.Message, "up to 10") {
 		t.Fatalf("absolute batch limit was bypassed: %v", err)
+	}
+}
+
+func TestDiscoverySkillFollowsBothSwitches(t *testing.T) {
+	var m wire.Manifest
+	if err := json.Unmarshal(manifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(m.ActivationEvents, "on_startup") ||
+		!slices.Contains(m.OffByDefault, "skills/"+discoverySkillID) ||
+		!slices.Contains(m.Contributes.Skills, wire.SkillItem{ID: discoverySkillID, Dir: discoverySkillDir, Source: "data"}) {
+		t.Fatal("the Hub must opt into the data-directory skill and start the runtime to reconcile it")
+	}
+	dir := t.TempDir()
+	t.Setenv("PERSONA_EXTENSION_DATA_DIR", dir)
+	f := newFakeSteam(t, time.Second)
+	path := filepath.Join(dir, discoverySkillDir, discoverySkillID, "SKILL.md")
+	for _, step := range []struct {
+		configEnabled, contributionEnabled, wantVisible bool
+	}{
+		{true, false, false},
+		{true, true, true},
+		{false, true, false},
+		{true, true, true},
+		{true, false, false},
+	} {
+		exttest.StartWith(t, manifest, exttest.Serve(t, program(f.http, time.Now)), func(p *wire.InitializeParams) {
+			p.Config = json.RawMessage(fmt.Sprintf(`{"auth_mode":"web_api_key","discovery_tools_enabled":%t}`, step.configEnabled))
+			if !step.contributionEnabled {
+				delete(p.Active, "skills")
+			}
+		})
+		content, err := os.ReadFile(path)
+		if step.wantVisible {
+			if err != nil || !bytes.Equal(content, discoverySkill) {
+				t.Fatalf("the enabled skill was not published: %v", err)
+			}
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the disabled skill remained available: %v", err)
+		}
 	}
 }
 
