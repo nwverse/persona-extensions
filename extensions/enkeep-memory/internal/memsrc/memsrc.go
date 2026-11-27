@@ -273,6 +273,8 @@ func Rank(e *entry.Entry) int {
 	r := entry.Score(e) * 9
 	if IsWeakRelation(e) {
 		r = min(r, 9)
+	} else if IsUserOwned(e) && Status(e) == "active" && entry.KindOf(e) != "" {
+		r = max(r, 820)
 	} else if entityAnchoredRule(e) && Status(e) == "active" {
 		r = max(r, 750)
 	}
@@ -500,6 +502,11 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 			add(strings.TrimPrefix(g, string(e.Facet)+":"))
 		}
 	}
+	// Enrich user-owned rules/principles with concrete tool/host identifiers and occasion cues (unified design §2.1 & §2.2)
+	// so non-standing verbatim S6 rules remain directly reachable via decisions_query(tag).
+	if IsUserOwned(e) && entry.KindOf(e) != "" && len(out) < MaxSubjects {
+		enrichUserOwnedSubjects(recall.Head(e)+" "+e.Exception, add)
+	}
 	// 1-hop skeleton neighbors (unified design §2.2): for entity-anchored rules, attach up to 4 structural
 	// 1-hop neighbor names from the entity graph so querying a related project/person/repo surfaces the rule.
 	if st != nil && st.Graph != nil && len(entityNames) > 0 && len(out) < MaxSubjects &&
@@ -509,6 +516,64 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 		}
 	}
 	return out
+}
+
+var (
+	uoIdentRe   = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9_.-]{2,}`)
+	uoIdentStop = map[string]bool{
+		"the": true, "and": true, "for": true, "not": true, "all": true, "true": true, "false": true,
+		"ttl": true, "api": true, "cli": true, "url": true, "pdf": true, "json": true, "md": true,
+	}
+	uoOccasions = []struct {
+		cues []string
+		tags []string
+	}{
+		{cues: []string{"派活", "派发", "派 Agent", "安排 Agent", "主管", "task_plan", "agent_start", "agent_send", "conversation_send"}, tags: []string{"派活", "dispatch"}},
+		{cues: []string{"汇报", "交付", "结论", "摘要", "进展", "耗时", "时间戳"}, tags: []string{"汇报", "report"}},
+		{cues: []string{"提问", "追问", "请示", "确认", "待定", "选项", "大白话", "授权卡", "卡片"}, tags: []string{"提问", "ask"}},
+		{cues: []string{"开工", "执行", "plan mode", "大纲", "框架", "方案"}, tags: []string{"开工", "task"}},
+		{cues: []string{"验收", "核实", "核对", "源头", "门禁", "测试", "编译"}, tags: []string{"验收", "门禁"}},
+		{cues: []string{"排期", "估时间", "工期", "估计交付"}, tags: []string{"排期", "估时间"}},
+		{cues: []string{"密钥", "凭据", "token", "1Password", "op CLI", "secret_env"}, tags: []string{"密钥", "凭据"}},
+		{cues: []string{"配置", "升级", "回滚", "镜像", "备份"}, tags: []string{"配置", "升级"}},
+		{cues: []string{"待办", "todo_complete", "STATE.md"}, tags: []string{"待办"}},
+		{cues: []string{"飞书", "云文档", "多维表格"}, tags: []string{"飞书"}},
+		{cues: []string{"评审", "质疑", "分歧", "独立判断"}, tags: []string{"评审", "review"}},
+	}
+)
+
+func enrichUserOwnedSubjects(body string, add func(string)) {
+	for _, m := range uoIdentRe.FindAllString(body, -1) {
+		m = strings.Trim(m, ".-_")
+		if len(m) < 3 {
+			continue
+		}
+		low := strings.ToLower(m)
+		if uoIdentStop[low] {
+			continue
+		}
+		hasLetter := false
+		for i := 0; i < len(low); i++ {
+			if low[i] >= 'a' && low[i] <= 'z' {
+				hasLetter = true
+				break
+			}
+		}
+		if hasLetter {
+			add(m)
+		}
+	}
+	lowBody := strings.ToLower(body)
+	for _, r := range uoOccasions {
+		for _, cue := range r.cues {
+			if strings.Contains(lowBody, strings.ToLower(cue)) {
+				for _, t := range r.tags {
+					add(t)
+				}
+				break
+			}
+		}
+	}
 }
 
 // momentWords are the words a query for an occasion would use, in both languages.
@@ -608,6 +673,12 @@ func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (
 		}
 		e.Subjects = subj
 		e.Rank = min(max(e.Rank, 0), 1000)
+		if slices.ContainsFunc(x.CoveredIDs, func(cid string) bool {
+			ce := st.Entries[cid]
+			return ce != nil && ce.Live() && IsUserOwned(ce)
+		}) {
+			e.Rank = min(e.Rank, 740)
+		}
 		e.Standing = false
 		if c, ok := stand[e.ID]; ok {
 			e.Standing, e.Rank, e.Text = true, c.rank, c.text
@@ -861,14 +932,15 @@ func ResidentMostFor(room int) int {
 }
 
 func workStandingSet(st *store.State, extras []Extra, room int) map[string]standing {
-	var cands []Candidate
+	var l1Cands, uoCands, hotCands, coldCands []Candidate
 	tpl := entry.TemplateQuotes(st.Entries)
 	now := nowFn()
 
-	// Collect L1 candidates and track which L0 entries are already absorbed by a live L1 contract.
+	// Collect L1 candidates and track which L0 entries are covered or absorbed by a live L1 pattern.
 	absorbed := map[string]bool{}
+	coveredByPat := map[string][]string{}
 	var contractTexts []string
-	hasL1Contract, hasL1Principle := false, false
+	hasMainContract, hasMainPrinciple := false, false
 	l1LatestDay := ""
 	for _, x := range extras {
 		e := x.Entry
@@ -899,7 +971,7 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 		if quotes <= 0 {
 			quotes = len(x.Evidence)
 		}
-		cands = append(cands, Candidate{
+		l1Cands = append(l1Cands, Candidate{
 			ID:        e.ID,
 			Text:      text,
 			Kind:      x.Kind,
@@ -914,8 +986,11 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 			Dimension: x.Dimension,
 			Group:     x.Group,
 		})
+		if len(x.CoveredIDs) > 0 {
+			coveredByPat[e.ID] = x.CoveredIDs
+		}
 		if bucket == BucketContract {
-			hasL1Contract = true
+			hasMainContract = true
 			for _, id := range x.Evidence {
 				absorbed[id] = true
 			}
@@ -924,18 +999,18 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 			}
 			contractTexts = append(contractTexts, text)
 		} else {
-			hasL1Principle = true
+			hasMainPrinciple = true
 		}
 	}
 
-	// Collect Bucket 0 (Hot Slot: Pinned + active Fast-Path + unabsorbed post-L1 high-certainty rules) and, only when
-	// a main bucket has zero qualified L1 candidates, cold-start L0 fallback candidates for that bucket.
+	// Collect Bucket 0 (Hot Slot: Pinned + active Fast-Path + unabsorbed post-L1 non-owned high-certainty rules),
+	// verbatim UserOwned pass-through candidates (unified design §2.1), and cold-start L0 fallback candidates.
 	for _, e := range st.Entries {
 		if !idRe.MatchString(e.ID) {
 			continue
 		}
 		hc, ok := HotSlotCandidate(st, e, tpl, now)
-		if !ok && hasL1Contract && l1LatestDay != "" {
+		if !ok && !IsUserOwned(e) && hasMainContract && l1LatestDay != "" {
 			hc, ok = UnabsorbedRuleHotCandidate(st, e, tpl, l1LatestDay, now)
 		}
 		if ok {
@@ -944,23 +1019,34 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 					continue // absorbed by L1 contract
 				}
 			}
-			cands = append(cands, hc)
+			hotCands = append(hotCands, hc)
 			continue
 		}
-		if hasL1Contract && hasL1Principle {
+		if uc, ok := UserOwnedStandingCandidate(st, e, tpl); ok {
+			uoCands = append(uoCands, uc)
+			if uc.Bucket == BucketContract {
+				hasMainContract = true
+			} else {
+				hasMainPrinciple = true
+			}
 			continue
 		}
 		if !entry.ColdStartEligible(e) {
 			continue
 		}
-		c, ok := CuratedCandidate(st, e, tpl)
-		if !ok {
+		if c, ok := CuratedCandidate(st, e, tpl); ok {
+			coldCands = append(coldCands, c)
+		}
+	}
+
+	cands := make([]Candidate, 0, len(hotCands)+len(uoCands)+len(l1Cands)+len(coldCands))
+	cands = append(cands, hotCands...)
+	cands = append(cands, ApplyUserOwnedPassThrough(l1Cands, uoCands, coveredByPat)...)
+	for _, c := range coldCands {
+		if c.Bucket == BucketContract && hasMainContract {
 			continue
 		}
-		if c.Bucket == BucketContract && hasL1Contract {
-			continue
-		}
-		if c.Bucket == BucketPrinciple && hasL1Principle {
+		if c.Bucket == BucketPrinciple && hasMainPrinciple {
 			continue
 		}
 		cands = append(cands, c)
