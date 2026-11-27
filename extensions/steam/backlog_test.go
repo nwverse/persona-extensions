@@ -326,3 +326,56 @@ func TestBacklogRejectsInvalidArgumentsBeforeRequestsOrWrites(t *testing.T) {
 		t.Fatalf("invalid input created local storage: %v", err)
 	}
 }
+
+func TestBacklogViewStatusActions(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	f.handle(newsForAppPath, func(w http.ResponseWriter, r *http.Request) {
+		app := r.URL.Query().Get("appid")
+		_, _ = fmt.Fprintf(w, `{"appnews":{"appid":%s,"newsitems":[
+			{"gid":%q,"date":1720000000,"title":"Fixture Patch","feedname":"steam_community_announcements"}]}}`, app, app)
+	})
+	dir := t.TempDir()
+	h := startTestHost(t, f, fixtureID, "", dir)
+	nav := wire.UIParams{Contribution: extensionID, Size: wire.SizeFull, Placement: wire.PlacementNavPage, UIVersion: 12, Locale: "zh-Hans"}
+	overview := viewAnswer(t, h, nav)
+	markAnswer(t, h, firstApp, `"status":"queued","note":"合成备注","tags":["单人"]`)
+	overview = act(t, h, nav, overview, "refresh", nil)
+	news := act(t, h, nav, overview, gameNewsAction, nil)
+	if news.Title != "近期官方更新" || len(news.Sections[0].Items) < 2 || news.Sections[0].Items[1].Type != wire.ComponentLink {
+		t.Fatalf("the news page did not expose official update links: %+v", news)
+	}
+	overview = act(t, h, nav, news, "back", nil)
+	raw, err := json.Marshal(overview)
+	requireStoreOK(t, err)
+	contains(t, string(raw), "吃灰盘点与标注", "从未打开", "试水不足 2 小时", "游玩至少 20 小时",
+		`{"label":"待玩","value":"1"}`, `"badge":{"text":"待玩"}`)
+
+	detail := act(t, h, nav, overview, "library-game-"+appIDText(firstApp), nil)
+	raw, err = json.Marshal(detail)
+	requireStoreOK(t, err)
+	contains(t, string(raw), "本机游戏标注", "合成备注", "单人", `"id":"backlog-save","submit":true`,
+		`"id":"backlog-clear","confirm":`)
+	detail = act(t, h, nav, detail, "backlog-save", map[string]string{"backlog_status": "completed"})
+	raw, err = json.Marshal(detail)
+	requireStoreOK(t, err)
+	contains(t, string(raw), `"value":"completed"`)
+	if got, ok, err := NewBacklogStore(dir).Get(fixtureID, firstApp); err != nil || !ok ||
+		got.Status != BacklogCompleted || got.Note != "合成备注" || !reflect.DeepEqual(got.Tags, []string{"单人"}) {
+		t.Fatalf("UI status changed or lost the wrong fields: %+v, %t, %v", got, ok, err)
+	}
+
+	other := startTestHost(t, f, fixtureID2, "", dir)
+	staleAction := nav
+	staleAction.Action, staleAction.State = "backlog-clear", detail.State
+	var e *ext.Error
+	if err := other.Call("ui.action", staleAction, nil); !errors.As(err, &e) || e.Code != "invalid" {
+		t.Fatalf("a detail action from the previous SteamID was accepted: %v", err)
+	}
+
+	detail = act(t, h, nav, detail, "backlog-clear", nil)
+	raw, err = json.Marshal(detail)
+	requireStoreOK(t, err)
+	contains(t, string(raw), "暂无本机标注")
+	assertHidden(t, string(raw), "合成备注", "单人", "backlog-clear")
+	contains(t, toolAnswer(t, h, "steam_backlog_summary", `{"status":"completed"}`), `"games":[]`)
+}

@@ -239,7 +239,8 @@ func TestDeclarativeViews(t *testing.T) {
 	v := viewAnswer(t, h, nav)
 	raw, _ := json.Marshal(v)
 	contains(t, string(raw), "Playing Synthetic Adventure", "2 h 10 min", "Fixture Pilot", "40% off", "$3.99")
-	if len(v.Sections) != 4 || v.Search == nil || v.Filter == nil || v.Sections[0].Items[1].Stats[1].Value != "3" {
+	if len(v.Sections) != 5 || v.Sections[4].Title != english.backlog.title ||
+		v.Search == nil || v.Filter == nil || v.Sections[0].Items[1].Stats[1].Value != "3" {
 		t.Fatal("navigation is missing a section or a display control")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "steam-cache-v1", "profile.json")); err != nil {
