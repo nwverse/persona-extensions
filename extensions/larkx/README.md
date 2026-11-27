@@ -50,6 +50,10 @@ Every direct-message batch is classified. The classifier receives the last handl
 
 The connector looks up the sender's chatter type before auto handling and caches known types for 24 hours. Bot and AI senders do not start requests. If the lookup fails, the connector logs the failure and treats the sender as a person for that message. Name history is not a current membership list. Native CARD messages do not trigger requests; review patterns apply to visible TEXT and POST content.
 
+## Command hooks
+
+List your own commands, such as `/todo` and `/note`, in **/命令 Hook** (`command_hooks`) and set **Hook 地址** (`command_hook_url`). Your own fresh message that starts with one of them then goes to that address as a JSON POST instead of to the assistant, once per message, without a model call: an `https://` address anywhere, or `http://` on the hub's machine (reached as `host.persona.internal` in the sandbox). The same guards as `/agent` apply: other people's messages, fetched history and AI answers never fire a hook. Set **Hook 签名密钥** (`command_hook_secret`) to sign every request with `X-Larkx-Signature: sha256=<HMAC-SHA256>`; **Hook 附带上文** and **Hook 附带引用** add the messages before the command and the one it replies to. The payload, the signature and the retries are in the [extension guide](../../docs/extensions/larkx.md#command-hooks).
+
 ## Pushes
 
 Turn on the channel's "Send notifications here too" (推送也发到这里) or "Sync main chat" (同步主对话) switch in the app to get what comes after an answer, such as a background task's report. Pushes go only to your own Feishu chat with yourself, never to a group or anybody else's chat, and end with the AI-answer marker.

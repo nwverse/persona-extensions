@@ -15,7 +15,8 @@ On the home page before setup (see below), or in the extension's settings:
 
 1. **Computers** (`machines`): the computers tasks run on. The extension's program is installed on each. With none selected, tasks queue and do not run.
 2. **Allowed repository directories** (`repos`): tasks run only in git repositories under these directories (absolute paths or `~/…`). Empty, no task can be queued.
-3. Optional: the permission mode of tasks that may write (`write_permission_mode`, `acceptEdits` by default), tasks at a time per computer, timeouts, retry count, the quota reserve line and a model per tier.
+3. Optional settings include `write_permission_mode` (`acceptEdits` by default), tasks at a time per computer, timeouts, retry count, the quota reserve line and a model per Claude tier.
+4. Read-only session permissions (`readonly_permission_mode`) default to `plan`. If a local gateway stalls on approval for read-only Bash commands, select `bypassPermissions` when 「Bypass 自动允许」 is enabled and read-only tasks run in isolated worktrees.
 
 ## How a task runs
 
@@ -65,7 +66,7 @@ The decision's `ref` makes the write idempotent: the same outcome is never writt
 ## Safeguards
 
 - **The user confirms every task.** The assistant reaches the extension through a gated command; `POST /tasks` asks every time, reads pass, everything else is refused. The confirmation says that an agent will run unattended on your computer and shows the command; the skill has the assistant say first what it is about to queue (title, repository, read-only or writing, acceptance command). The credential stays out of the assistant's sight.
-- **Read-only by default.** A task runs in the agent's plan mode unless it asks for `permission_profile: "default"`, which the confirmation shows. Writing tasks work on their own branch and never push.
+- **Read-only by default.** Read-only tasks use a detached checkout and receive strict read-only instructions in either permission mode. A task can request `permission_profile: "default"` to work on its own writable branch, which the confirmation shows. Writing tasks never push.
 - **Repository allowlist.** Checked when the task is queued, and again with real paths (symlinks resolved) by the program on the computer, whose answer counts.
 - **Bounded.** At most `max_queued` queued tasks (`too_many_queued`), 5 unfinished tasks per to-do (`too_many_for_todo`), one task at a time per computer unless set otherwise, a timeout for the agent and for the acceptance command (killed with its process group).
 - **A task always belongs to a to-do.** `todo_id` is required and the caller cannot set the `persona_todo` label itself.
@@ -79,7 +80,11 @@ Served by the hub at `/api/v1/extensions/ats/…`.
 | `GET /tasks?todo_id=&state=&priority=&limit=&after=` | Tasks, newest first, and the scheduler's state (admission mode, remaining quota, counts). A task is listed in short: id, title, state, what it waits for and when, with fields at their default left out (`priority` `p2`, `permission_profile` `readonly`, `agent_type` `claude`, a first attempt, the verdict of a task that has not succeeded, the `todo_id` asked for); `view=full` lists every field. With more tasks than `limit` (20 by default) the answer has `next`, which goes in `after` for the next page |
 | `GET /tasks/{id}` | The task and its attempts. A prompt over 240 characters is cut to its beginning, with `prompt_bytes` the length of the whole, and an attempt shows when it ran, where and how it ended; `?view=full` has the whole prompt and every field of the attempts |
 | `GET /tasks/{id}/evidence` | The conclusion first: `verified`, state, verdict, then the acceptance command, the reference of the decision written to the to-do, and the last report (exit code, the agent's summary, artifacts, the last 600 characters of the output with `message_bytes` the length of the whole). `?attempt=N` has the whole report of that attempt |
-| `POST /tasks` | Queues a task: `todo_id`, `prompt`, `repo` (required); `ref`, `title`, `acceptance`, `agent_type` (`claude` by default; for example `codex`), `permission_profile`, `priority`, `difficulty`, `machine`, `qos`, `pool`, `tags`, `labels`, `idempotency_key` |
+| `POST /tasks` | Queues a task. `todo_id`, `prompt`, and `repo` are required. Optional fields are `ref`, `title`, `acceptance`, `agent_type` (`claude` by default, also `codex` and `agy`), `model`, `launcher`, `permission_profile`, `priority`, `difficulty`, `machine`, `qos`, `pool`, `tags`, `labels`, and `idempotency_key`. |
+
+- `model` overrides the model for the selected engine. Model IDs are at most 128 bytes after trimming and cannot contain whitespace or control characters. When the field is omitted, Claude uses its configured tier model if present, and other engines use their own defaults.
+- `launcher` accepts a launcher name or a `machine=launcher` map separated by commas, semicolons, or newlines, such as `default-launcher,studio=local-launcher`. The first bare name is the map's fallback. When the task specifies no launcher for its machine, Claude uses the extension's launcher setting and other engines use their engine name. The specification is limited to 512 bytes after trimming, with line feeds allowed as map separators.
+- The task API shows the requested overrides while the task is queued. Once a session starts, it shows the resolved session values when available. Replaying an idempotency key returns the original task.
 
 ## Permissions
 
@@ -100,3 +105,9 @@ scripts/package.sh ats
 ```
 
 Version 0.4.0 replaces the stdio MCP server and the external worker interface of 0.3.0, which could queue tasks but had nothing to run them. Version 0.5.0 stops retrying failures that would repeat, lets a retry go on from the previous attempt, adds the task page and rewords the queue page, the to-do decision and the confirmation. Version 0.6.0 lets a new task choose an agent engine such as `codex`, keeps `claude` as the default for omitted values and older queue records, and carries the choice through attempts and retries. Version 0.7.0 rewrites the home page, the task page and the settings in plain Chinese: a setup checklist before anything else, one status line, priorities and outcomes in words, technical details last. Version 0.7.1 adds the Overview card. Version 0.7.2 makes the assistant skill use the page, setting and button names the pages show since 0.7.0. Version 0.7.3 titles the Overview card 「ATS 自动做待办 · 概况」, so its switch in the settings no longer looks like a duplicate of the home page's. Version 0.7.4 sets ATS up on the home page: it lists the online computers to pick from, takes the folder with suggestions, opens the settings to save, and cuts the intro to one line. Version 0.7.5 cuts what the assistant reads to follow a task by about a third: a shorter skill and tool description; `GET /tasks` lists tasks in short and in pages; `GET /tasks/{id}` answers with the beginning of a long prompt; `GET /tasks/{id}/evidence` puts the conclusion first and keeps the end of the output; `view=full` and `attempt=N` have the rest. A retry is now told how the earlier acceptance command exited (the line was cut off after a long output). `go -C extensions/ats test -run TestTokenCost -v .` prints what each of these costs in bytes and estimated tokens and holds each to a budget.
+
+## Version 0.7.6
+
+This release improves scheduling across computers and records more evidence from each attempt. It adds per-task model and launcher overrides, uses each non-Claude engine's own default model, and adds the opt-in `readonly_permission_mode` setting for unattended inspections.
+
+The full task view (`?view=full`) and per-attempt report (`?attempt=N`) carry the stored agent reply and worktree commit SHAs. The compact views include `dirty` when ATS inspected the worktree.

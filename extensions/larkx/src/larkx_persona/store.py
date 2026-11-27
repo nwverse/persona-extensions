@@ -201,6 +201,10 @@ class Store:
             row = self._db.execute("SELECT result FROM sends WHERE key = ?", (key,)).fetchone()
         return False, row["result"] or ""
 
+    def claimed(self, key):
+        """True when key was taken for a send, whatever that send ended with."""
+        return self._one("SELECT 1 AS one FROM sends WHERE key = ?", key) is not None
+
     def mark_auto_request(self, msg_id, account):
         self._do("UPDATE messages SET auto_account = ? WHERE id = ?", account, msg_id)
 

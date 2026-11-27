@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -57,15 +58,16 @@ func TestNormalizeAgentType(t *testing.T) {
 	}
 }
 
-func TestAgentTypePersistsAcrossLeasesAndRetries(t *testing.T) {
+func TestSessionOptionsPersistAcrossLeasesAndRetries(t *testing.T) {
 	dir := t.TempDir()
 	q, err := NewQueue(dir, DefaultQueueConfig())
 	if err != nil {
 		t.Fatal(err)
 	}
-	task := mustEnqueue(t, q, EnqueueInput{AgentType: AgentCodex})
-	if task.AgentType != AgentCodex {
-		t.Fatalf("new task engine: %q", task.AgentType)
+	const model, launcher = "engine-model", testMachine + "=local,other=remote"
+	task := mustEnqueue(t, q, EnqueueInput{AgentType: AgentCodex, Model: " " + model + " ", Launcher: " " + launcher + " "})
+	if task.AgentType != AgentCodex || task.Model != model || task.Launcher != launcher {
+		t.Fatalf("new task: %+v", task)
 	}
 
 	q, err = NewQueue(dir, DefaultQueueConfig())
@@ -73,7 +75,7 @@ func TestAgentTypePersistsAcrossLeasesAndRetries(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := q.GetTask(task.ID)
-	if err != nil || stored.AgentType != AgentCodex {
+	if err != nil || stored.AgentType != AgentCodex || stored.Model != model || stored.Launcher != launcher {
 		t.Fatalf("reloaded task: %+v %v", stored, err)
 	}
 	_, first, err := q.LeaseTask(task.ID, "dispatcher", testMachine, testStart)
@@ -85,13 +87,39 @@ func TestAgentTypePersistsAcrossLeasesAndRetries(t *testing.T) {
 	if err != nil || after.State != StateQueued || after.NotBefore == nil {
 		t.Fatalf("retryable failure: %+v %v", after, err)
 	}
-	_, second, err := q.LeaseTask(task.ID, "dispatcher", testMachine, after.NotBefore.Add(time.Second))
-	if err != nil || second.Harness != AgentCodex {
-		t.Fatalf("second attempt: %+v %v", second, err)
+	leased, second, err := q.LeaseTask(task.ID, "dispatcher", testMachine, after.NotBefore.Add(time.Second))
+	if err != nil || second.Harness != AgentCodex || leased.Model != model || leased.Launcher != launcher {
+		t.Fatalf("second lease: %+v %v", leased, err)
 	}
 	got, _ := q.GetTask(task.ID)
 	if len(got.Attempts) != 2 || got.Attempts[0].Harness != AgentCodex || got.Attempts[1].Harness != AgentCodex {
 		t.Fatalf("stored attempt engines: %+v", got.Attempts)
+	}
+}
+
+func TestConcurrentReplaysKeepOriginalSessionOverrides(t *testing.T) {
+	q := newTestQueue(t, DefaultQueueConfig())
+	task := mustEnqueue(t, q, EnqueueInput{IdempotencyKey: "session-overrides", Model: "first-model", Launcher: "first-launcher"})
+	var replays sync.WaitGroup
+	for range 8 {
+		replays.Go(func() {
+			got, err := q.Enqueue(EnqueueInput{
+				IdempotencyKey: task.IdempotencyKey, Prompt: "Replay", Model: "replayed-model", Launcher: "replayed-launcher",
+			})
+			if err != nil || got.Created || got.Task.ID != task.ID || got.Task.Model != task.Model || got.Task.Launcher != task.Launcher {
+				t.Errorf("replay: %+v, %v", got, err)
+				return
+			}
+			got.Task.Model, got.Task.Launcher = "changed copy", "changed copy"
+		})
+	}
+	replays.Wait()
+	tasks, err := q.ListTasks(TaskFilter{})
+	if err != nil || len(tasks) != 1 {
+		t.Fatalf("after concurrent replays: %d tasks, %v", len(tasks), err)
+	}
+	if tasks[0].Model != "first-model" || tasks[0].Launcher != "first-launcher" {
+		t.Fatalf("stored overrides changed: %+v", tasks[0])
 	}
 }
 
@@ -106,8 +134,13 @@ func TestLegacyTaskWithoutAgentTypeUsesClaude(t *testing.T) {
 		t.Fatal(saveErr)
 	}
 	raw, err := os.ReadFile(q.dataFile)
-	if err != nil || strings.Contains(string(raw), `"agent_type"`) {
-		t.Fatalf("legacy fixture still has agent_type: %v\n%s", err, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{`"agent_type"`, `"model"`, `"launcher"`} {
+		if strings.Contains(string(raw), field) {
+			t.Fatalf("legacy fixture still has %s: %s", field, raw)
+		}
 	}
 
 	legacy, err := NewQueue(filepath.Dir(q.dataFile), DefaultQueueConfig())
@@ -115,8 +148,11 @@ func TestLegacyTaskWithoutAgentTypeUsesClaude(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := legacy.GetTask(task.ID)
-	if err != nil || stored.AgentType != "" || viewTask(stored, promptNone).AgentType != AgentClaude {
-		t.Fatalf("legacy task view: %+v %v", stored, err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := viewTask(stored, promptNone); stored.AgentType != "" || v.AgentType != AgentClaude || v.Model != "" || v.Launcher != "" {
+		t.Fatalf("legacy task view: %+v", v)
 	}
 	_, att, err := legacy.LeaseTask(task.ID, "dispatcher", testMachine, testStart)
 	if err != nil || att.Harness != AgentClaude {
@@ -179,6 +215,92 @@ func TestALateReportOfAnOldAttemptIsRefused(t *testing.T) {
 	}
 	if got, _ := q.GetTask(task.ID); got.State != StateSucceeded {
 		t.Fatalf("a finished task changed state: %s", got.State)
+	}
+}
+
+func TestGetTaskClonesDirtyEvidence(t *testing.T) {
+	q := newTestQueue(t, DefaultQueueConfig())
+	task := mustEnqueue(t, q, EnqueueInput{})
+	_, att, err := q.LeaseTask(task.ID, "dispatcher", testMachine, testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	get := func() *Task {
+		t.Helper()
+		got, err := q.GetTask(task.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	check := func(field string, actual *bool, want bool) {
+		t.Helper()
+		if actual == nil {
+			t.Fatalf("%s dirty is missing", field)
+		}
+		if *actual != want {
+			t.Errorf("%s dirty = %t, want %t", field, *actual, want)
+		}
+	}
+
+	activeDirty := true
+	if _, err := q.UpdateExec(task.ID, att.FenceToken, testStart, func(e *Execution) {
+		e.Dirty = &activeDirty
+	}); err != nil {
+		t.Fatal(err)
+	}
+	activeDirty = false
+	active := get()
+	check("execution", active.Exec.Dirty, true)
+	*active.Exec.Dirty = false
+	check("active attempt", active.Attempts[0].Dirty, true)
+	*active.Attempts[0].Dirty = false
+	stored := get()
+	check("stored execution", stored.Exec.Dirty, true)
+	check("stored active attempt", stored.Attempts[0].Dirty, true)
+
+	completedDirty := false
+	if _, err := q.CompleteAttempt(CompleteAttemptInput{
+		TaskID: task.ID, FenceToken: att.FenceToken, WorkerID: att.WorkerID,
+		Outcome: StateSucceeded, Dirty: &completedDirty, Now: testStart,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	completedDirty = true
+	done := get()
+	check("completed attempt", done.Attempts[0].Dirty, false)
+	*done.Attempts[0].Dirty = true
+	check("report", done.Reports[0].Dirty, false)
+	*done.Reports[0].Dirty = true
+	stored = get()
+	check("stored completed attempt", stored.Attempts[0].Dirty, false)
+	check("stored report", stored.Reports[0].Dirty, false)
+}
+
+func TestQueueLoadsLegacyDirtyEvidence(t *testing.T) {
+	q := newTestQueue(t, DefaultQueueConfig())
+	legacy := `{"version":2,"tasks":[{"id":"task_legacy","exec":{"dirty":true},"attempts":[{"dirty":true},{}],"reports":[{"dirty":true},{}]}]}`
+	if err := os.WriteFile(q.dataFile, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reloaded, err := NewQueue(filepath.Dir(q.dataFile), q.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := reloaded.GetTask("task_legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Exec == nil || len(got.Attempts) != 2 || len(got.Reports) != 2 {
+		t.Fatal("missing records after loading legacy queue")
+	}
+	for field, dirty := range map[string]*bool{"execution": got.Exec.Dirty, "attempt": got.Attempts[0].Dirty, "report": got.Reports[0].Dirty} {
+		if dirty == nil || !*dirty {
+			t.Errorf("legacy %s lost dirty = true", field)
+		}
+	}
+	if got.Attempts[1].Dirty != nil || got.Reports[1].Dirty != nil {
+		t.Error("missing legacy dirty field should remain unknown")
 	}
 }
 

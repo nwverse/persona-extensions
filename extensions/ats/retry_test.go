@@ -507,7 +507,8 @@ func TestWaitingText(t *testing.T) {
 		{hubInteraction{Kind: "permission", Summary: strings.Repeat("x", 200)}, "Agent 等你批准运行：" + strings.Repeat("x", 120) + "…"},
 		{hubInteraction{Kind: "question", Summary: "A or B?"}, "Agent 在问你：A or B?"},
 		{hubInteraction{Kind: "permission"}, ""},
-		{hubInteraction{Kind: "plan", Summary: "a plan"}, ""},
+		{hubInteraction{Kind: "plan", Summary: "a plan"}, "Agent 提交了计划，等你批准"},
+		{hubInteraction{Kind: "unknown", Summary: "other"}, ""},
 	} {
 		if got := waitingText(tc.ix); got != tc.want {
 			t.Errorf("waitingText(%+v) = %q, want %q", tc.ix, got, tc.want)

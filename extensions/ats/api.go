@@ -31,9 +31,9 @@ import (
 var todoIDPattern = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,120}$`)
 
 const (
-	maxPromptBytes     = 32 << 10
+	maxPromptBytes     = 256 << 10
 	maxAcceptanceBytes = 2 << 10
-	maxBodyBytes       = 128 << 10
+	maxBodyBytes       = 512 << 10
 )
 
 type apiError struct {
@@ -114,6 +114,9 @@ type taskView struct {
 	Phase         string     `json:"phase,omitempty"`
 	RunsOn        string     `json:"runs_on,omitempty"`
 	SessionID     string     `json:"session_id,omitempty"`
+	Launcher      string     `json:"launcher,omitempty"`
+	Model         string     `json:"model,omitempty"`
+	Worktree      string     `json:"worktree,omitempty"`
 	Waiting       string     `json:"waiting,omitempty"`
 	NotBefore     *time.Time `json:"not_before,omitempty"`
 	SubmittedAt   time.Time  `json:"submitted_at"`
@@ -121,6 +124,8 @@ type taskView struct {
 	Prompt        string     `json:"prompt,omitempty"`
 	// PromptBytes is the length of the whole prompt, set when Prompt is only its beginning.
 	PromptBytes int `json:"prompt_bytes,omitempty"`
+
+	TodoAttachError string `json:"todo_attach_error,omitempty"`
 }
 
 // How much of the task an answer carries.
@@ -151,9 +156,26 @@ func viewTask(t *Task, prompt int) taskView {
 	if t.Acceptance != nil {
 		v.Acceptance = t.Acceptance.Command
 	}
+	if n := len(t.Attempts); n > 0 {
+		v.TodoAttachError = t.Attempts[n-1].TodoAttachError
+	}
 	if e := t.Exec; e != nil {
 		v.Phase, v.RunsOn, v.SessionID, v.Waiting = e.Phase, e.MachineID, e.SessionID, e.Waiting
+		v.Launcher, v.Model, v.Worktree = e.Launcher, e.Model, e.Worktree
+	} else {
+		if n := len(t.Attempts); n > 0 {
+			att := t.Attempts[n-1]
+			v.Launcher, v.Model, v.SessionID, v.Worktree = att.Launcher, att.Model, att.SessionID, att.Worktree
+		}
+		if n := len(t.Reports); n > 0 {
+			rep := t.Reports[n-1]
+			if len(t.Attempts) == 0 || rep.AttemptNo == t.Attempts[len(t.Attempts)-1].AttemptNo {
+				v.Launcher, v.Model = cmpOr(v.Launcher, rep.Launcher), cmpOr(v.Model, rep.Model)
+				v.SessionID, v.Worktree = cmpOr(v.SessionID, rep.SessionID), cmpOr(v.Worktree, rep.Worktree)
+			}
+		}
 	}
+	v.Launcher, v.Model = cmpOr(v.Launcher, t.Launcher), cmpOr(v.Model, t.Model)
 	switch prompt {
 	case promptFull:
 		v.Prompt = t.Prompt
@@ -175,16 +197,20 @@ type attemptView struct {
 	StartedAt  *time.Time `json:"started_at,omitempty"`
 	FinishedAt *time.Time `json:"finished_at,omitempty"`
 	ExitCode   *int       `json:"exit_code,omitempty"`
+	Dirty      *bool      `json:"dirty,omitempty"`
 	ErrorClass string     `json:"error_class,omitempty"`
 	Verdict    string     `json:"verdict,omitempty"`
 	Summary    string     `json:"summary,omitempty"`
+
+	TodoAttachError string `json:"todo_attach_error,omitempty"`
 }
 
 func viewAttempts(atts []Attempt) []attemptView {
 	out := make([]attemptView, 0, len(atts))
 	for _, a := range atts {
 		out = append(out, attemptView{AttemptNo: a.AttemptNo, State: a.State, Machine: a.Machine, ModelTier: a.ModelTier,
-			StartedAt: a.StartedAt, FinishedAt: a.FinishedAt, ExitCode: a.ExitCode, ErrorClass: a.ErrorClass, Verdict: a.Verdict, Summary: a.Summary})
+			StartedAt: a.StartedAt, FinishedAt: a.FinishedAt, ExitCode: a.ExitCode, Dirty: a.Dirty, ErrorClass: a.ErrorClass,
+			Verdict: a.Verdict, Summary: a.Summary, TodoAttachError: a.TodoAttachError})
 	}
 	return out
 }
@@ -335,6 +361,11 @@ type evidenceView struct {
 	Acceptance      string          `json:"acceptance,omitempty"`
 	DecisionRef     string          `json:"decision_ref,omitempty"`
 	DecisionSkipped string          `json:"decision_skipped,omitempty"`
+	Launcher        string          `json:"launcher,omitempty"`
+	Model           string          `json:"model,omitempty"`
+	SessionID       string          `json:"session_id,omitempty"`
+	Worktree        string          `json:"worktree,omitempty"`
+	TodoAttachError string          `json:"todo_attach_error,omitempty"`
 	LastReport      *reportView     `json:"last_report,omitempty"`
 	Report          *EvidenceReport `json:"report,omitempty"` // attempt=N: that attempt's report as stored
 }
@@ -347,17 +378,20 @@ type reportView struct {
 	Verdict    string     `json:"verdict,omitempty"`
 	ErrorClass string     `json:"error_class,omitempty"`
 	ExitCode   *int       `json:"exit_code,omitempty"`
+	Dirty      *bool      `json:"dirty,omitempty"`
 	Summary    string     `json:"summary,omitempty"`
 	Artifacts  []Artifact `json:"artifacts,omitempty"`
 	Message    string     `json:"message,omitempty"`
 	// MessageBytes is the length of the whole message, set when Message is cut or left out.
 	MessageBytes int       `json:"message_bytes,omitempty"`
 	ReceivedAt   time.Time `json:"received_at"`
+
+	TodoAttachError string `json:"todo_attach_error,omitempty"`
 }
 
 func viewReport(r EvidenceReport) *reportView {
 	v := &reportView{AttemptNo: r.AttemptNo, Outcome: r.Outcome, Verdict: r.Verdict, ErrorClass: r.ErrorClass, ExitCode: r.ExitCode,
-		Summary: r.Summary, Artifacts: r.Artifacts, ReceivedAt: r.ReceivedAt}
+		Dirty: r.Dirty, Summary: r.Summary, Artifacts: r.Artifacts, ReceivedAt: r.ReceivedAt, TodoAttachError: r.TodoAttachError}
 	// With no acceptance command the message of a success is the agent's whole reply, which the summary is taken from.
 	if !(r.Outcome == StateSucceeded && r.ExitCode == nil && strings.TrimSpace(r.Summary) != "") {
 		v.Message = outputEnd(r.Message, evidenceTailRunes)
@@ -401,8 +435,15 @@ func (a *atsApp) getEvidence(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, &apiError{Code: "no_report", Msg: fmt.Sprintf("attempt %d of this task has no report (it has %d attempts)", n, len(t.Attempts))})
 			return
 		}
-	} else if n := len(t.Reports); n > 0 {
-		out.LastReport = viewReport(t.Reports[n-1])
+	} else {
+		if len(t.Attempts) > 0 || len(t.Reports) > 0 {
+			v := viewTask(t, promptNone)
+			out.Launcher, out.Model, out.SessionID, out.Worktree = v.Launcher, v.Model, v.SessionID, v.Worktree
+			out.TodoAttachError = v.TodoAttachError
+		}
+		if n := len(t.Reports); n > 0 {
+			out.LastReport = viewReport(t.Reports[n-1])
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -419,6 +460,8 @@ type enqueueRequest struct {
 	Pool              string            `json:"pool"`
 	Machine           string            `json:"machine"`
 	AgentType         string            `json:"agent_type"`
+	Model             string            `json:"model"`
+	Launcher          string            `json:"launcher"`
 	Acceptance        string            `json:"acceptance"`
 	PermissionProfile string            `json:"permission_profile"`
 	Tags              []string          `json:"tags"`
@@ -435,7 +478,7 @@ func (a *atsApp) postTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, &apiError{Code: "forbidden", Msg: "this caller may not queue tasks"})
 		return
 	}
-	var req enqueueRequest
+	req := enqueueRequest{Ref: "HEAD"}
 	dec := json.NewDecoder(io.LimitReader(r.Body, maxBodyBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&req); err != nil {
@@ -485,9 +528,8 @@ func (a *atsApp) enqueueInput(req enqueueRequest) (EnqueueInput, error) {
 	if err != nil {
 		return EnqueueInput{}, err
 	}
-	ref := strings.TrimSpace(req.Ref)
-	if strings.HasPrefix(ref, "-") || strings.ContainsAny(ref, " \t\n\x00") || len(ref) > 200 {
-		return EnqueueInput{}, badRequest("invalid_ref", "ref must be a branch, tag or commit")
+	if err := validateRef(req.Ref); err != nil {
+		return EnqueueInput{}, badRequest("invalid_ref", invalidRefMessage)
 	}
 	switch strings.TrimSpace(req.QoS) {
 	case "", "expedited", "standard", "bulk":
@@ -506,8 +548,9 @@ func (a *atsApp) enqueueInput(req enqueueRequest) (EnqueueInput, error) {
 	}
 	return EnqueueInput{
 		IdempotencyKey: strings.TrimSpace(req.IdempotencyKey), Title: strings.TrimSpace(req.Title), Prompt: req.Prompt,
-		Repo: repo, BaseSHA: ref, QoS: strings.TrimSpace(req.QoS), Pool: strings.TrimSpace(req.Pool),
+		Repo: repo, BaseSHA: req.Ref, QoS: strings.TrimSpace(req.QoS), Pool: strings.TrimSpace(req.Pool),
 		Priority: req.Priority, Difficulty: req.Difficulty, Machine: req.Machine, AgentType: req.AgentType,
+		Model: req.Model, Launcher: req.Launcher,
 		AcceptanceCommand: req.Acceptance, PermissionProfile: req.PermissionProfile, Labels: req.Labels, Tags: req.Tags,
 		Source:      AssistantSource,
 		ExternalRef: &ExternalRef{System: AssistantSource, ID: PersonaSystemID, Conversation: todo},

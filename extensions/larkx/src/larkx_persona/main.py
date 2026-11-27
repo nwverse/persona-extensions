@@ -7,6 +7,7 @@ import tempfile
 
 from .connector import ID, Connector
 from .hub_api import HubAPI
+from .hooks import Hooks
 from .store import Store
 from .wire import Peer, RpcError
 
@@ -74,11 +75,12 @@ class Plugin:
             config = params.get("config") or {}
             store = Store(os.path.join(data_dir, "larkx.db"))
             backend = self.make_backend(data_dir, config.get("region") or "feishu", store)
-            self.connector = Connector(backend, store, Hub(self.peer),
+            hub = Hub(self.peer)
+            self.connector = Connector(backend, store, hub,
                                        config.get("triage_rules") or "", config.get("agent_reply_suffix") or "")
-            hub = params.get("hub") or {}
-            self.connector.hub_api = HubAPI(hub.get("url") or os.environ.get("PERSONA_HUB_URL", ""),
-                                            hub.get("token") or os.environ.get("PERSONA_HUB_TOKEN", ""))
+            hub_info = params.get("hub") or {}
+            self.connector.hub_api = HubAPI(hub_info.get("url") or os.environ.get("PERSONA_HUB_URL", ""),
+                                            hub_info.get("token") or os.environ.get("PERSONA_HUB_TOKEN", ""))
             self.connector.agent_engine = config.get("agent_engine", "channel")
             self.connector.inbox_triage_chats = frozenset(config.get("inbox_triage_chats") or ())
             self.connector.mention = config.get("agent_mention", True) is not False
@@ -94,6 +96,7 @@ class Plugin:
             self.connector.auto_review_patterns = _patterns(config.get("auto_review_patterns"))
             self.connector.auto_reply_style = (config.get("auto_reply_style") or "").strip()[:1000]
             self.connector.auto_dm_idle_hours = max(1, min(168, config.get("auto_dm_idle_hours", 24)))
+            self.connector.hooks = Hooks.from_config(config, params.get("secrets"), hub.log)
             self.connector.start()
         return {"protocol": PROTOCOL, "id": self.manifest["id"], "version": self.manifest["version"], "contributes": self.manifest["contributes"]}
 
