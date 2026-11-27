@@ -15,6 +15,10 @@
       "title": "商店国家或地区",
       "description": "用于愿望单价格和游戏调研预算的两位 ISO 3166-1 商店国家或地区代码，默认为 US。"
     },
+    "friends_radar_enabled": {
+      "title": "好友开黑雷达",
+      "description": "默认关闭。仅在开启时读取好友在线状态与 Steam 公开分享的游戏库，供 Steam 页面和助手工具使用。"
+    },
     "inbox_events_enabled": {
       "title": "Steam 收件箱事件",
       "description": "向收件箱发送愿望单降价、发售、大促和重大更新等事件。收件箱分拣可能消耗 AI Token。默认关闭。"

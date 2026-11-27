@@ -16,6 +16,7 @@ type text struct {
 	achievements, noAchievements, unlocked, game, playing, unknown      string
 	minutes, hoursMinutes, discount, atLeast, stale                     string
 	qrHint, keyMode, keySignOut                                         string
+	friendsPlaying, noFriendsPlaying, moreFriendsPlaying, unknownFriend string
 	states                                                              map[string]string
 	problems                                                            map[problem]string
 
@@ -55,9 +56,11 @@ var english = text{
 	game: "App %d", playing: "Playing %s", unknown: "Status unavailable",
 	recentNews: "Recent official updates", noRecentNews: "No recent official game updates were found.",
 	minutes: "%d min", hoursMinutes: "%d h %d min", discount: "%d%% off", atLeast: "%d+", stale: "Showing cached data.",
-	qrHint:     "Open Steam Guard in the Steam Mobile App, scan the QR code, and approve the sign-in on your phone.",
-	keyMode:    "Web API key mode is managed in Steam's extension settings. Select Steam Mobile QR there to sign in by scanning.",
-	keySignOut: "To disconnect Web API key mode, clear the saved key in Steam's extension settings.",
+	qrHint:         "Open Steam Guard in the Steam Mobile App, scan the QR code, and approve the sign-in on your phone.",
+	keyMode:        "Web API key mode is managed in Steam's extension settings. Select Steam Mobile QR there to sign in by scanning.",
+	keySignOut:     "To disconnect Web API key mode, clear the saved key in Steam's extension settings.",
+	friendsPlaying: "Friends in game", noFriendsPlaying: "No friends with visible in-game activity.",
+	moreFriendsPlaying: "More friends are playing.", unknownFriend: "Steam friend",
 	states: map[string]string{
 		"offline": "Offline", "online": "Online", "busy": "Busy", "away": "Away",
 		"snooze": "Snoozing", "looking_to_trade": "Looking to trade", "looking_to_play": "Looking to play", "invisible": "Invisible",
@@ -104,6 +107,13 @@ var english = text{
 		problemBuiltInTags:       "Using the built-in list of common Steam tags.",
 		problemStoreSearchFailed: "Steam Store search is unavailable and there is no usable cached result for these filters. Try again shortly.",
 		problemPartialLibrary:    "Steam returned only part of the library. Ownership is unknown for titles outside that snapshot.",
+
+		problemFriendsDisabled: "Friends Radar is off by default. Enable it in the Steam extension settings.",
+		problemFriendList:      "Steam did not share the friends list. Check Friends List visibility and the Web API key in the Steam extension settings.",
+		problemFriendListQR:    "Steam did not share the friends list with this Mobile QR session. Check Friends List visibility in Steam. Web API key mode can read a public list.",
+		problemFriendState:     "Steam did not share friend presence in Web API key mode. Check the key and profile visibility in Steam.",
+		problemFriendStateQR:   "Steam did not grant this Mobile QR session access to friend presence. Web API key mode can read public presence.",
+		problemFriendListCap:   "The friends radar checked up to 2,000 friends.",
 	},
 	backlog: backlogText{
 		title: "Backlog & local progress", annotation: "Local backlog annotation", status: "Status",
@@ -143,9 +153,11 @@ var chinese = text{
 	game: "应用 %d", playing: "游戏中 · %s", unknown: "状态不可用",
 	recentNews: "近期官方更新", noRecentNews: "暂未找到近期官方游戏更新。",
 	minutes: "%d 分钟", hoursMinutes: "%d 小时 %d 分钟", discount: "优惠 %d%%", atLeast: "%d+", stale: "当前显示缓存数据。",
-	qrHint:     "在 Steam 手机 App 中打开 Steam 令牌，扫描二维码，并在手机上批准登录。",
-	keyMode:    "Web API 密钥在 Steam 扩展设置中管理。如需扫码，请在设置中选择 Steam 手机 App 扫码。",
-	keySignOut: "如需断开 Web API 密钥模式，请在 Steam 扩展设置中清除已保存的密钥。",
+	qrHint:         "在 Steam 手机 App 中打开 Steam 令牌，扫描二维码，并在手机上批准登录。",
+	keyMode:        "Web API 密钥在 Steam 扩展设置中管理。如需扫码，请在设置中选择 Steam 手机 App 扫码。",
+	keySignOut:     "如需断开 Web API 密钥模式，请在 Steam 扩展设置中清除已保存的密钥。",
+	friendsPlaying: "好友在玩", noFriendsPlaying: "当前没有好友公开显示正在游玩。",
+	moreFriendsPlaying: "还有其他好友正在游玩。", unknownFriend: "Steam 好友",
 	states: map[string]string{
 		"offline": "离线", "online": "在线", "busy": "忙碌", "away": "离开",
 		"snooze": "暂离", "looking_to_trade": "想交易", "looking_to_play": "想玩游戏", "invisible": "隐身",
@@ -192,6 +204,13 @@ var chinese = text{
 		problemBuiltInTags:       "当前使用内置的 Steam 常用标签。",
 		problemStoreSearchFailed: "Steam 商店搜索暂不可用，且这组筛选条件没有可用的缓存结果。请稍后重试。",
 		problemPartialLibrary:    "Steam 只返回了部分游戏库，无法确认快照以外游戏的拥有状态。",
+
+		problemFriendsDisabled: "好友开黑雷达默认关闭，请在 Steam 扩展设置中开启。",
+		problemFriendList:      "Steam 未共享好友列表。请检查 Steam 的好友列表隐私设置和扩展的 Web API 密钥。",
+		problemFriendListQR:    "Steam 未向此次手机扫码会话共享好友列表。请检查 Steam 的好友列表隐私设置。公开列表可通过 Web API 密钥模式读取。",
+		problemFriendState:     "Steam 未通过 Web API 密钥模式共享好友状态。请检查密钥和 Steam 资料的可见性。",
+		problemFriendStateQR:   "Steam 未授权此次手机扫码会话读取好友状态。公开状态可通过 Web API 密钥模式读取。",
+		problemFriendListCap:   "好友开黑雷达最多检查 2,000 位好友。",
 	},
 	backlog: backlogText{
 		title: "吃灰盘点与标注", annotation: "本机游戏标注", status: "游玩状态",

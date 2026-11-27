@@ -90,7 +90,7 @@ func describeReading[T any](out map[string]any, dataset string, reading reading[
 	}
 }
 
-func setPage[T any](out map[string]any, key string, items []T, p listArgs) {
+func setPage[T any](out map[string]any, key string, items []T, p listArgs) []T {
 	start := min(len(items), p.Offset)
 	end := min(len(items), start+p.limit())
 	out[key] = items[start:end]
@@ -98,6 +98,7 @@ func setPage[T any](out map[string]any, key string, items []T, p listArgs) {
 	if end < len(items) {
 		out["next_offset"] = end
 	}
+	return items[start:end]
 }
 
 func (a *app) connector(ctx context.Context, method string, params json.RawMessage) (any, error) {
@@ -112,10 +113,14 @@ func (a *app) connector(ctx context.Context, method string, params json.RawMessa
 	case "status":
 		return a.status(ctx), nil
 	case "tools.list":
-		if !a.config.AllowsDiscoveryTools() {
-			return wire.ConnectorTools{Tools: tools}, nil
+		listed := tools
+		if a.config.AllowsDiscoveryTools() {
+			listed = slices.Concat(listed, discoveryTools(a.config.DiscoveryResultLimit()))
 		}
-		return wire.ConnectorTools{Tools: slices.Concat(tools, discoveryTools(a.config.DiscoveryResultLimit()))}, nil
+		if a.config.FriendsRadarEnabled {
+			listed = slices.Concat(listed, friendsTools)
+		}
+		return wire.ConnectorTools{Tools: listed}, nil
 	case "tools.call":
 		return a.callTool(ctx, call.Name, call.Args)
 	default:
@@ -192,11 +197,20 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 		}
 		return a.callDiscoveryTool(ctx, name, raw)
 	}
+	t := textFor(a.locale)
+	if name == friendsRadarTool && !a.config.FriendsRadarEnabled {
+		return wire.ConnectorCallResult{}, &ext.Error{Code: string(problemFriendsDisabled), Message: t.message(problemFriendsDisabled, false)}
+	}
 	d, ctx, cancel := a.readContext(ctx)
 	defer cancel()
 	out := map[string]any{"available": false}
-	t := textFor(a.locale)
 	switch name {
+	case friendsRadarTool:
+		var args friendsRadarArgs
+		if !decodeArgs(raw, &args) || !args.valid() {
+			return wire.ConnectorCallResult{}, invalid(badPaging)
+		}
+		d.friendsRadar(ctx, out, t, args)
 	case "steam_profile":
 		var args struct{}
 		if !decodeArgs(raw, &args) {

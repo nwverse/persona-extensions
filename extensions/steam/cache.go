@@ -36,11 +36,12 @@ type cacheRecord[T any] struct {
 
 // Each dataset has one slot. A read waiting for a concurrent fetch can honor its own deadline.
 type cacheSlot[T any] struct {
-	gate   chan struct{}
-	path   string
-	now    func() time.Time
-	loaded bool
-	record cacheRecord[T]
+	gate      chan struct{}
+	path      string
+	now       func() time.Time
+	loaded    bool
+	record    cacheRecord[T]
+	freshOnly bool
 	// QR slots belong to exactly one account and generation. The session lock
 	// guards their records against logout while the gate serializes fetches.
 	session *qrSession
@@ -128,7 +129,7 @@ func (s *cacheSlot[T]) update(scope string, data *T, issue problem) reading[T] {
 	}
 
 	out := reading[T]{Data: data, Issue: issue}
-	if issue.temporary() {
+	if issue.temporary() && !s.freshOnly {
 		if age := s.now().Sub(s.record.At); s.record.Scope == scope && s.record.Data != nil && age >= 0 && age <= maxStaleAge {
 			out = reading[T]{Data: s.record.Data, Issue: issue, Stale: true, At: s.record.At}
 		}

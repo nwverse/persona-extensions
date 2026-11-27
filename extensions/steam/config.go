@@ -20,9 +20,10 @@ var (
 )
 
 type config struct {
-	AuthMode    string `json:"auth_mode"`
-	SteamID     string `json:"steam_id"`
-	CountryCode string `json:"country_code"`
+	AuthMode            string `json:"auth_mode"`
+	SteamID             string `json:"steam_id"`
+	CountryCode         string `json:"country_code"`
+	FriendsRadarEnabled bool   `json:"friends_radar_enabled"`
 	TokenConfig
 }
 

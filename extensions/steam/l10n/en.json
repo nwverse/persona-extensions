@@ -15,6 +15,10 @@
       "title": "Store country or region",
       "description": "Two-letter ISO 3166-1 Store country or region code for wishlist prices and research budgets. Defaults to US."
     },
+    "friends_radar_enabled": {
+      "title": "Friends Radar",
+      "description": "Off by default. Enable it to read friends' online status and public game libraries in the Steam page and assistant tools."
+    },
     "inbox_events_enabled": {
       "title": "Steam Inbox events",
       "description": "Send wishlist price drops, releases, major sales and game updates to the Inbox. Inbox triage may use AI tokens. Off by default."
