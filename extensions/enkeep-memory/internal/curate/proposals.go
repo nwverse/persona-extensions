@@ -58,6 +58,9 @@ func (c *Curator) propose(kind, title, detail, target string, ch Change, items [
 	key := hash(kind, target, string(raw))[:16]
 	for _, p := range c.St.S.Proposals {
 		if p.Key == key {
+			if (p.Status == "accepted" || p.Status == "auto") && c.outgoingChanged(target, ch.Profile) {
+				break // a privacy-release migration needs a new proposal, not the old accepted hash
+			}
 			return p // the same proposal is never made twice, whatever became of the first
 		}
 	}
@@ -70,6 +73,18 @@ func (c *Curator) propose(kind, title, detail, target string, ch Change, items [
 	}
 	c.St.S.Proposals = append(c.St.S.Proposals, p)
 	return p
+}
+
+// outgoingChanged says whether the profile actually left on the hub by an accepted write differs from the payload now
+// allowed. The stored full Change can be identical while the privacy filter changed what may actually be written.
+func (c *Curator) outgoingChanged(target string, now *kbsrc.PersonProfile) bool {
+	last := c.lastProfile(target)
+	if last == nil {
+		return now != nil && !now.Empty()
+	}
+	a, _ := json.Marshal(last)
+	b, _ := json.Marshal(outgoingProfile(now))
+	return string(a) != string(b)
 }
 
 func (c *Curator) proposeMailDowngrade(u *Unit, category string) {
@@ -124,12 +139,38 @@ func (c *Curator) expire() int {
 
 // MarkShown starts the expiry clock of proposals a page displayed.
 func (c *Curator) MarkShown(ids []string) {
+	if len(ids) == 0 {
+		return
+	}
 	c.St.Lock()
 	defer c.St.Unlock()
-	changed := false
+	c.markShownLocked(ids)
+}
+
+// TryMarkShown starts the expiry clock of displayed proposals if the store lock is immediately available,
+// without waiting on a run in progress.
+func (c *Curator) TryMarkShown(ids []string) bool {
+	if len(ids) == 0 {
+		return true
+	}
+	if !c.St.TryLock() {
+		return false
+	}
+	defer c.St.Unlock()
+	c.markShownLocked(ids)
+	return true
+}
+
+func (c *Curator) markShownLocked(ids []string) {
+	want := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
-		if p := c.St.S.Proposal(id); p != nil && p.Shown == "" {
-			p.Shown = c.today()
+		want[id] = struct{}{}
+	}
+	today := c.today()
+	changed := false
+	for _, p := range c.St.S.Proposals {
+		if _, ok := want[p.ID]; ok && p.Shown == "" {
+			p.Shown = today
 			changed = true
 		}
 	}
@@ -1046,6 +1087,16 @@ func (c *Curator) forget(from func(ref string) bool) (removed int) {
 	for k := range c.St.S.Triage {
 		if from(k) {
 			delete(c.St.S.Triage, k)
+		}
+	}
+	// The units a day admitted are kept across reruns (recordAdmitted): a forgotten source's leave with it.
+	for day, refs := range c.St.S.Admitted {
+		if kept := slices.DeleteFunc(slices.Clone(refs), from); len(kept) != len(refs) {
+			if len(kept) == 0 {
+				delete(c.St.S.Admitted, day)
+			} else {
+				c.St.S.Admitted[day] = kept
+			}
 		}
 	}
 	if g := c.St.S.Graph; g != nil {

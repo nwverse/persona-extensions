@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"os"
 	"path/filepath"
 	"time"
@@ -46,7 +47,11 @@ func pageCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	a := &app{c: &curate.Curator{St: st, Cfg: curate.Defaults(), Loc: loc, Live: &curate.Live{}}, exitDir: *dataDir, hubLoc: loc}
+	a := &app{c: &curate.Curator{St: st, Cfg: curate.Defaults(), Loc: loc, Live: &curate.Live{}}, exitDir: *dataDir, hubLoc: loc, readOnly: true}
+	a.openOverview(*stateDir) // the overview's patterns, the profile summary they feed, the saved reports
+	st.Lock()
+	a.c.Publish()
+	st.Unlock()
 	day := *today
 	if day == "" {
 		day = time.Now().In(loc).Format("2006-01-02")
@@ -82,7 +87,7 @@ func writeJSON(path string, v any) error {
 func drawAll(a *app, today string) (map[string]*wire.View, map[string]any) {
 	ctx := context.Background()
 	st, done := a.read()
-	var firstCard, firstSource, firstEntry string
+	var firstCard, firstSource, firstEntry, firstProposal, longestRun string
 	if cards := pickCards(st); len(cards) > 0 {
 		firstCard = cards[0][0]
 	}
@@ -93,6 +98,19 @@ func drawAll(a *app, today string) (map[string]*wire.View, map[string]any) {
 	for _, f := range facetsShown {
 		if es := pickFacet(st, f); len(es) > 0 && firstEntry == "" {
 			firstEntry = es[0].ID
+		}
+	}
+	for _, p := range st.Proposals {
+		if firstProposal == "" {
+			firstProposal = p.ID
+			break
+		}
+	}
+	longestLen := -1
+	for _, run := range st.Runs {
+		if len(run.Report) > longestLen {
+			longestLen = len(run.Report)
+			longestRun = run.ID
 		}
 	}
 	counts := map[string]any{}
@@ -141,9 +159,10 @@ func drawAll(a *app, today string) (map[string]*wire.View, map[string]any) {
 	done()
 
 	pages := map[string]page{
-		"start": {Tab: tabStart}, "people": {Tab: tabPeople}, "switches": {Tab: tabSwitches}, "onboarding": {Tab: tabStart, Open: "onboarding"},
+		"start": {Tab: tabStart}, "profile": {Tab: tabStart, Open: "profile"}, "people": {Tab: tabPeople}, "switches": {Tab: tabSwitches}, "onboarding": {Tab: tabStart, Open: "onboarding"},
+		"review": {Tab: tabReview}, "reports": {Tab: tabReports}, "older": {Tab: tabOlder},
 		"check-u7": {Tab: tabCheck, Check: "u7"}, "check-u8": {Tab: tabCheck, Check: "u8"}, "check-f1": {Tab: tabCheck, Check: "f1"},
-		"types-judgement": {Tab: tabFacets, Open: "types:judgement"}, "k2": {Tab: tabSwitches, Open: "k2"},
+		"types-judgement": {Tab: tabFacets, Open: "types:judgement"}, "types-workflow": {Tab: tabFacets, Open: "types:workflow"}, "k2": {Tab: tabSwitches, Open: "k2"},
 	}
 	for _, f := range facetsShown {
 		pages["facet-"+string(f)] = page{Tab: tabFacets, Facet: string(f)}
@@ -160,6 +179,17 @@ func drawAll(a *app, today string) (map[string]*wire.View, map[string]any) {
 	}
 	if firstEntry != "" {
 		pages["entry"] = page{Tab: tabFacets, Open: "e:" + firstEntry}
+	}
+	if firstProposal != "" {
+		pages["proposal"] = page{Tab: tabReview, Open: firstProposal}
+	}
+	if longestRun != "" {
+		pages["run"] = page{Tab: tabReports, Open: longestRun}
+	}
+	pages["profile"] = page{Tab: tabStart, Open: "profile"}
+	pages["overview"] = page{Tab: tabStart, Open: "overview"}
+	if ws := overview.ReportsIn(a.c.St.Dir, "weekly"); len(ws) > 0 {
+		pages["overview-weekly"] = page{Tab: tabStart, Open: "ovr:weekly:" + ws[0]}
 	}
 	views := map[string]*wire.View{}
 	var bad []string

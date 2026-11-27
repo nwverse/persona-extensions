@@ -11,7 +11,7 @@ import (
 
 // Segment reads one stretch of a session unfolded, from seq through seq: its tool calls and results, thoughts and
 // text, for a dig a friction signal pointed at (3.1, P5). It is the only way tool calls and results are read. The
-// bytes read are counted under S4. A health space session is never read (the hub client drops it).
+// bytes read are counted under S4. Every space's sessions are read (0.2.0-beta.40).
 func (s *Source) Segment(ctx context.Context, ref string, from, through int) ([]hubapi.Item, error) {
 	machine, session, ok := strings.Cut(strings.TrimPrefix(ref, KindAgents+"/"), "/")
 	if !ok || through < from {

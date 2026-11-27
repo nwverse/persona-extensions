@@ -26,7 +26,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Skip < 0 || len(st.IssueID) > 100 || len(st.ProjectID) > 100 || len(st.ProjectName) > 1000 || len(st.DraftID) > 128 || len(st.Summary) > 600 || len(st.Description) > 31000 {
+	if err := r.DecodeState(&st); err != nil || st.Skip < 0 || len(st.IssueID) > 100 || len(st.ProjectID) > 100 || len(st.ProjectName) > 1000 || len(st.DraftID) > 128 || len([]rune(st.Summary)) > maxSummaryChars || len(st.Description) > 31000 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -83,6 +83,31 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const maxViewRecords = 250
+
+// collectIssues reads the batches from the start through the one at skip so that Load more answers the whole list,
+// longer. It stops at maxViewRecords to keep the view within the SDK's component limit, and reports whether another
+// batch can be loaded.
+func (a *app) collectIssues(ctx context.Context, skip int) ([]issue, bool, error) {
+	var out []issue
+	last := 0
+	for pos := 0; pos <= skip && len(out) < maxViewRecords; pos += 50 {
+		batch, err := a.client.issues(ctx, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		last = len(batch)
+		out = append(out, batch...)
+		if last < 50 {
+			break
+		}
+	}
+	if len(out) > maxViewRecords {
+		out = out[:maxViewRecords]
+	}
+	return out, last == 50 && len(out) < maxViewRecords, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -124,7 +149,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Mode != "" {
 		return nil, errors.New("invalid issue view")
 	}
-	items, err := a.client.issues(ctx, st.Skip)
+	items, more, err := a.collectIssues(ctx, st.Skip)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -139,7 +164,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noIssues})
 	}
-	if len(items) == 50 {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v := &wire.View{Title: t.issues, State: ext.EncodeState(st), Sections: []wire.Section{section, {Title: t.issues, Items: []wire.Component{
@@ -186,8 +211,9 @@ func detailView(r *ext.UIRequest, st pageState, item issue, comments []comment) 
 	}
 	v := &wire.View{Title: clipText(item.IDReadable+" "+item.Summary, 1800), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.issues, Items: items}}}
 	if item.Description != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Description, 60000))})
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: capComponents(textComponents(clipText(item.Description, 60000)), maxDescriptionItems)})
 	}
+	budget := maxViewItems - viewItemCount(v)
 	section := wire.Section{Title: t.comments}
 	for _, comment := range comments {
 		if comment.Deleted || comment.Text == "" {
@@ -200,11 +226,37 @@ func detailView(r *ext.UIRequest, st pageState, item issue, comments []comment) 
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: clipText(author, 1800), Style: wire.TextStyleSecondary})
 		section.Items = append(section.Items, textComponents(clipText(comment.Text, 12000))...)
 	}
+	section.Items = capComponents(section.Items, budget)
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.noComments, Style: wire.TextStyleSecondary})
 	}
 	v.Sections = append(v.Sections, section)
 	return v
+}
+
+const (
+	// maxViewItems keeps the issue view within the hub's 300 component limit, whatever the comments hold.
+	maxViewItems = 250
+	// maxDescriptionItems leaves the comments room in it.
+	maxDescriptionItems = 100
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
+}
+
+func viewItemCount(v *wire.View) int {
+	n := 0
+	for _, section := range v.Sections {
+		n += len(section.Items)
+	}
+	return n
 }
 
 func textComponents(text string) []wire.Component {

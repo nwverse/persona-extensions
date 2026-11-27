@@ -22,8 +22,8 @@ delete manifest.replaces;
 delete manifest.icon;
 manifest.runtime = { mode: "deno", source };
 manifest.contributes.ui = [
-  { id: "stories", title: "Hacker News", placement: "nav_page", icon: "list" },
-  { id: "stories-snapshot", title: "Hacker News", placement: "widget", opens: "stories", families: ["small", "medium", "large", "accessory_rectangular", "accessory_circular", "accessory_inline"] },
+  { id: "hackernews", title: "Hacker News", placement: "nav_page", icon: "list" },
+  { id: "hackernews-snapshot", title: "Hacker News", placement: "widget", opens: "hackernews", families: ["small", "medium", "large", "accessory_rectangular", "accessory_circular", "accessory_inline"] },
 ];
 const pkg = new URL("../build/package/", import.meta.url);
 await rm(pkg, { recursive: true, force: true });

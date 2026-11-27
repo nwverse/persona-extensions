@@ -61,8 +61,8 @@ func entrySub(t tr, e *entry.Entry, exits []string) string {
 	if e.SingleSource {
 		parts = append(parts, t.s("单一来源", "single source"))
 	}
-	if e.Sensitive != "" {
-		parts = append(parts, t.f("敏感：%s（不进出口）", "sensitive: %s (never sent out)", t.sensitiveLabel(e.Sensitive)))
+	if cs := e.Cats(); len(cs) > 0 {
+		parts = append(parts, t.s("分类：", "categories: ")+t.categoryLabels(cs))
 	}
 	if len(exits) > 0 {
 		parts = append(parts, t.s("在出口 ", "in exit ")+strings.Join(exits, ","))
@@ -99,7 +99,11 @@ func entryBadge(t tr, e *entry.Entry) *wire.Badge {
 func entryRow(t tr, e *entry.Entry, exits []string, back page) wire.Component {
 	p := back
 	p.Open = "e:" + e.ID
-	return row(short(e.Shown(), 90), entrySub(t, e, exits), entryBadge(t, e), ext.Open("open:"+e.ID, "", p, short(e.Shown(), 20)))
+	title := short(e.Shown(), 90)
+	if title == "" {
+		title = e.ID
+	}
+	return row(title, short(entrySub(t, e, exits), 1900), entryBadge(t, e), ext.Open("open:"+e.ID, "", p, short(title, 20)))
 }
 
 // selfReported: what the user wrote about themself, kept apart from what was learned from behaviour.
@@ -158,22 +162,35 @@ func (a *app) facetPage(t tr, st *store.State, s page) ([]wire.Section, *wire.Fi
 		p.Open = "types:" + string(f)
 		head = append(head, row(t.s("改名、合并", "Rename, merge ")+label, t.f("%d 种", "%d types", len(typesOf(st, f))), nil, ext.Open("open:types", "", p, label)))
 	}
+	const maxFacetItems = 240
+	budget := maxFacetItems
+	from := 0
+	if f == entry.Judgement || f == entry.Workflow {
+		fmt.Sscan(s.Sub, &from)
+		if from < 0 {
+			from = 0
+		}
+	}
 	out = append(out, wire.Section{Items: head})
+	budget -= len(head)
 
 	// Self-report and behaviour disagree: show both, the user picks one.
-	if cs := conflicts(st, f); len(cs) > 0 {
-		var items []wire.Component
-		for i, c := range cs {
-			if i >= 10 {
-				break
+	if from == 0 {
+		if cs := conflicts(st, f); len(cs) > 0 {
+			var items []wire.Component
+			for i, c := range cs {
+				if i >= 10 {
+					break
+				}
+				items = append(items, toned(t.s("你自己说的：", "You said: ")+short(c[0].Shown(), 80), wire.ToneNeutral),
+					toned(t.s("从你的做法里看到的：", "Seen in what you do: ")+short(c[1].Shown(), 80), wire.ToneCaution),
+					button(t.s("以我说的为准", "Keep what I said"), "pick:"+c[0].ID+":"+c[1].ID, ""),
+					button(t.s("以做法为准", "Keep what I do"), "pick:"+c[1].ID+":"+c[0].ID, ""))
 			}
-			items = append(items, toned(t.s("你自己说的：", "You said: ")+short(c[0].Shown(), 80), wire.ToneNeutral),
-				toned(t.s("从你的做法里看到的：", "Seen in what you do: ")+short(c[1].Shown(), 80), wire.ToneCaution),
-				button(t.s("以我说的为准", "Keep what I said"), "pick:"+c[0].ID+":"+c[1].ID, ""),
-				button(t.s("以做法为准", "Keep what I do"), "pick:"+c[1].ID+":"+c[0].ID, ""))
+			out = append(out, wire.Section{Title: t.s("你说的和做的不一致：选一条", "What you said and what you do differ: pick one"),
+				Footer: t.s("两条都留着；选中的钉住，另一条记成不对、撤出出口（可以再改）。不会自动覆盖。", "Both are kept; the one picked is pinned, the other is marked wrong and withdrawn from the exits (you can change it again). Nothing is overwritten by itself."), Items: items})
+			budget -= len(items)
 		}
-		out = append(out, wire.Section{Title: t.s("你说的和做的不一致：选一条", "What you said and what you do differ: pick one"),
-			Footer: t.s("两条都留着；选中的钉住，另一条记成不对、撤出出口（可以再改）。不会自动覆盖。", "Both are kept; the one picked is pinned, the other is marked wrong and withdrawn from the exits (you can change it again). Nothing is overwritten by itself."), Items: items})
 	}
 
 	var self, hand, abs []*entry.Entry
@@ -204,24 +221,32 @@ func (a *app) facetPage(t tr, st *store.State, s page) ([]wire.Section, *wire.Fi
 			byGrain[e.Grain] = append(byGrain[e.Grain], e)
 		}
 	}
-	section := func(title, foot string, es []*entry.Entry) {
-		if len(es) == 0 {
-			return
+	section := func(title, foot string, es []*entry.Entry) bool {
+		if len(es) == 0 || budget <= 0 {
+			return false
 		}
 		sortEntries(es)
+		limit := min(rowsPerSection, budget)
+		if len(es) > limit && limit > 1 {
+			limit-- // reserve one slot for the "N more" caption
+		}
 		var items []wire.Component
 		for i, e := range es {
-			if i >= rowsPerSection {
+			if i >= limit {
 				items = append(items, secondary(t.f("还有 %d 条（按计数 × 来源种数排在后面）", "%d more (lower by count × kinds of source)", len(es)-i)))
 				break
 			}
 			items = append(items, entryRow(t, e, exits[e.ID], back))
 		}
 		out = append(out, wire.Section{Title: fmt.Sprintf("%s（%d）", title, len(es)), Footer: foot, Items: items})
+		budget -= len(items)
+		return true
 	}
-	section(t.s("你自己说的", "What you said yourself"), t.s("首次引导的回答和「关于我」：你说了算，直接生效，和从做法里攒出来的分开放。", "Your first-run answers and \"About me\": your word goes, in effect at once, kept apart from what is learned from what you do."), self)
-	section(t.s("助手的手写记忆", "The assistant's hand-written memory"), t.s("当成你认可过的；插件从不改它的正文。", "Taken as approved by you; the curator never rewrites it."), hand)
-	section(t.s("抽象", "Abstract"), t.s("过了抽象门槛：和一般人做法不同、管得住至少两类情境。", "Passed the abstract gate: differs from what most people do and governs at least two kinds of situation."), abs)
+	if from == 0 {
+		section(t.s("你自己说的", "What you said yourself"), t.s("首次引导的回答和「关于我」：你说了算，直接生效，和从做法里攒出来的分开放。", "Your first-run answers and \"About me\": your word goes, in effect at once, kept apart from what is learned from what you do."), self)
+		section(t.s("助手的手写记忆", "The assistant's hand-written memory"), t.s("当成你认可过的；插件从不改它的正文。", "Taken as approved by you; the curator never rewrites it."), hand)
+		section(t.s("抽象", "Abstract"), t.s("过了抽象门槛：和一般人做法不同、管得住至少两类情境。", "Passed the abstract gate: differs from what most people do and governs at least two kinds of situation."), abs)
+	}
 	if f == entry.Judgement || f == entry.Workflow {
 		kind := t.s("岔口类型：", "Fork type: ")
 		if f == entry.Workflow {
@@ -237,7 +262,15 @@ func (a *app) facetPage(t tr, st *store.State, s page) ([]wire.Section, *wire.Fi
 			}
 			return types[i] < types[j]
 		})
-		for _, k := range types {
+		if from > len(types) {
+			from = len(types)
+		}
+		next := from
+		for i := from; i < len(types); i++ {
+			if budget < 2 {
+				break
+			}
+			k := types[i]
 			name := k
 			if name == "" {
 				name = t.s("（未分类）", "(no type)")
@@ -245,6 +278,24 @@ func (a *app) facetPage(t tr, st *store.State, s page) ([]wire.Section, *wire.Fi
 			es := byType[k]
 			sort.SliceStable(es, func(i, j int) bool { return grainRank(es[i].Grain) < grainRank(es[j].Grain) })
 			section(kind+name, "", es)
+			next = i + 1
+		}
+		if next < len(types) {
+			remEntries := 0
+			for _, k := range types[next:] {
+				remEntries += len(byType[k])
+			}
+			p := back
+			p.Sub = fmt.Sprint(next)
+			out = append(out, wire.Section{Items: []wire.Component{
+				row(t.f("后面还有 %d 个类型（共 %d 条）", "%d more types (%d entries)", len(types)-next, remEntries),
+					t.f("当前显示第 %d–%d 类，共 %d 类", "Showing types %d–%d of %d", from+1, next, len(types)),
+					nil, ext.Open("open:facet:more", "", p, t.facetLabel(f))),
+			}})
+		} else if from > 0 && len(types) > 0 {
+			out = append(out, wire.Section{Items: []wire.Component{
+				secondary(t.f("第 %d–%d 类，共 %d 类（已到末尾）", "Types %d–%d of %d (end)", from+1, next, len(types))),
+			}})
 		}
 	} else {
 		for _, g := range []entry.Grain{entry.Class, entry.Action} {
@@ -258,7 +309,7 @@ func (a *app) facetPage(t tr, st *store.State, s page) ([]wire.Section, *wire.Fi
 	if len(self)+len(hand)+len(abs)+len(byType)+len(byGrain[entry.Class])+len(byGrain[entry.Action]) == 0 {
 		out = append(out, wire.Section{Items: []wire.Component{empty(t.s("这一面还没攒出来", "Nothing collected for this facet yet"))}})
 	}
-	if len(deleted) > 0 {
+	if from == 0 && len(deleted) > 0 {
 		section(t.s("删掉的（可以恢复）", "Deleted (can be restored)"), t.s("删掉的留着记号，同样的内容再抽出来会直接丢掉；恢复后记号也撤掉。", "A deleted entry leaves a mark so the same content is dropped when found again; restoring removes the mark."), deleted)
 	}
 	return out, filter
@@ -347,7 +398,7 @@ func (a *app) entryPage(t tr, st *store.State, id string) *wire.View {
 	}
 	exits := exitIndex(a.exitsDir())[e.ID]
 	info := []wire.Component{
-		{Type: wire.ComponentField, Name: "text", Label: t.facetLabel(e.Facet), Kind: wire.FieldKindMultiline, Value: e.Shown()},
+		{Type: wire.ComponentField, Name: "text", Label: t.facetLabel(e.Facet), Kind: wire.FieldKindMultiline, Value: short(e.Shown(), 1950)},
 	}
 	if e.User != nil {
 		note := t.s("这是你改过的版本，整理不会覆盖它。", "This is your own wording; curation never overwrites it.")
@@ -396,8 +447,11 @@ func (a *app) entryPage(t tr, st *store.State, id string) *wire.View {
 	if e.SingleSource {
 		flags = append(flags, t.s("目前只有一个来源", "one source so far"))
 	}
-	if e.Sensitive != "" {
-		flags = append(flags, t.f("敏感类别「%s」：只进你自己的理解，不进任何出口", "sensitive (%s): kept for your own understanding only, never in an exit", t.sensitiveLabel(e.Sensitive)))
+	if cs := e.Cats(); len(cs) > 0 {
+		flags = append(flags, t.f("分类「%s」：按场景用，查询点名这一类才给；你在开关页 K22 放行之前不进常驻出口", "categories (%s): used by scene, given to a look-up that names them; out of the resident exits until you let them in (K22)", t.categoryLabels(cs)))
+	}
+	if e.OriginSpace != "" {
+		flags = append(flags, t.f("来自空间「%s」", "from the space %s", e.OriginSpace))
 	}
 	if e.Domain == entry.Life {
 		flags = append(flags, t.s("生活类", "personal life"))
@@ -415,10 +469,10 @@ func (a *app) entryPage(t tr, st *store.State, id string) *wire.View {
 		info = append(info, secondary(t.s("不在任何出口里（只在这个页面上）", "In no exit (only on this page)")))
 	}
 	if e.Export != nil && e.Export.Text != "" {
-		info = append(info, secondary(t.s("写给助手的说法：", "As written for the assistant: ")+e.Export.Text))
+		info = append(info, secondary(short(t.s("写给助手的说法：", "As written for the assistant: ")+e.Export.Text, 1950)))
 	}
 	if e.Impact.Action != "" {
-		info = append(info, secondary(t.f("会让助手在「%s」时：%s", "Changes what the assistant does at %s: %s", e.Impact.Moment, e.Impact.Action)))
+		info = append(info, secondary(short(t.f("会让助手在「%s」时：%s", "Changes what the assistant does at %s: %s", e.Impact.Moment, e.Impact.Action), 1950)))
 	}
 	var detail []string
 	add := func(zh, en, v string) {
@@ -456,7 +510,7 @@ func (a *app) entryPage(t tr, st *store.State, id string) *wire.View {
 	if len(detail) > 0 {
 		var items []wire.Component
 		for _, d := range detail {
-			items = append(items, secondary(d))
+			items = append(items, secondary(short(d, 1950)))
 		}
 		v.Sections = append(v.Sections, wire.Section{Items: items})
 	}
@@ -471,18 +525,33 @@ func (a *app) entryPage(t tr, st *store.State, id string) *wire.View {
 	} else {
 		acts = append(acts, button(t.s("删掉", "Delete"), "act:delete:"+e.ID, t.s("删掉后同样的内容不再生成；可以恢复。确定？", "Deleted, the same content is not made again; it can be restored. Sure?")))
 	}
+	var cats []wire.Component
+	for _, n := range entry.CategoryNames {
+		if slices.Contains(e.Cats(), n) {
+			cats = append(cats, button(t.s("去掉分类：", "Remove category: ")+t.sensitiveLabel(n), "act:"+curate.ActCatRemove+":"+e.ID+":"+n, ""))
+		} else {
+			cats = append(cats, button(t.s("加上分类：", "Add category: ")+t.sensitiveLabel(n), "act:"+curate.ActCatAdd+":"+e.ID+":"+n, ""))
+		}
+	}
 	v.Sections = append(v.Sections, wire.Section{Items: acts},
+		wire.Section{Title: t.s("分类", "Categories"), Footer: t.s("带分类的条目按场景用；只有你能去掉分类。", "Entries in a category are used by scene; only you can take a category off."), Items: cats},
 		wire.Section{Title: t.s("对不对", "Is it right?"), Footer: t.s("点「不对」立刻撤出出口，记成反例。", "\"Wrong\" withdraws it from every exit at once and keeps it as a counter-example."),
 			Items: []wire.Component{verdictSeg(t, "m:"+e.ID, lastMark(e.Verdicts), false)}})
 	v.Sections = append(v.Sections, wire.Section{Title: t.s("出处", "Evidence"), Items: evidenceRows(t, entryEvidence(st, e))})
 	if len(e.Counters) > 0 {
 		var items []wire.Component
-		for _, id := range e.Counters {
+		for i, id := range e.Counters {
+			if i >= 30 {
+				items = append(items, secondary(t.f("还有 %d 条", "%d more", len(e.Counters)-i)))
+				break
+			}
 			if x := st.Entries[id]; x != nil {
 				items = append(items, entryRow(t, x, nil, page{Tab: tabFacets, Facet: string(x.Facet)}))
 			}
 		}
-		v.Sections = append(v.Sections, wire.Section{Title: t.s("反例", "Counter-examples"), Items: items})
+		if len(items) > 0 {
+			v.Sections = append(v.Sections, wire.Section{Title: t.s("反例", "Counter-examples"), Items: items})
+		}
 	}
 	if len(e.Members) > 0 {
 		var items []wire.Component
@@ -652,7 +721,7 @@ func (a *app) peopleTab(t tr, st *store.State) []wire.Section {
 		if n := evidenceCount(lines); n < fewEvidence {
 			badge = &wire.Badge{Text: t.f("证据少（%d 条）", "little evidence (%d)", n), Tone: wire.ToneCaution}
 		}
-		rows = append(rows, row(title, sub, badge, ext.Open("open:card", "", page{Tab: tabPeople, Open: "card:" + c.Person}, title)), caption(sub2))
+		rows = append(rows, row(title, sub, badge, ext.Open("open:card:"+hashKey(c.Person), "", page{Tab: tabPeople, Open: "card:" + c.Person}, title)), caption(sub2))
 	}
 	if len(rows) == 0 {
 		rows = append(rows, empty(t.s("交集名单还是空的：接一个消息来源后，和你有来往的人会列在这里", "The list is empty: once a message source is connected, the people you deal with are listed here")))
@@ -748,18 +817,25 @@ func (a *app) cardPage(t tr, st *store.State, s page, who string) *wire.View {
 	all := cardLines(st, persons)
 	exits := exitIndex(a.exitsDir())
 	back := page{Tab: tabPeople, Open: "card:" + who}
+	const maxCardRows = 220
+	budget := maxCardRows
 	var reported []*entry.Entry
 	for _, part := range []string{entry.PartFact, entry.PartUserEval, entry.PartInferred, entry.PartCommitment} {
 		var items []wire.Component
 		if part == entry.PartInferred && !entry.On(st.Switches, entry.K15Inferred) {
 			items = append(items, secondary(t.s("推断侧写已关（K15）。", "Inferred profiles are off (K15).")))
 		}
+		skipped := 0
 		for _, e := range all {
 			if e.Part != part || e.Deleted {
 				continue
 			}
 			if e.ReportedOnly && s.Show != "reported" {
 				reported = append(reported, e)
+				continue
+			}
+			if budget <= 0 {
+				skipped++
 				continue
 			}
 			r := entryRow(t, e, exits[e.ID], back)
@@ -770,6 +846,10 @@ func (a *app) cardPage(t tr, st *store.State, s page, who string) *wire.View {
 				r.Subtitle += t.s(" · 只在你自己的理解里", " · for your own understanding only")
 			}
 			items = append(items, r)
+			budget--
+		}
+		if skipped > 0 {
+			items = append(items, secondary(t.f("还有 %d 条（按计数 × 来源种数排在后面）", "%d more (lower by count × kinds of source)", skipped)))
 		}
 		if len(items) == 0 {
 			items = append(items, secondary(t.s("还没有", "None yet")))

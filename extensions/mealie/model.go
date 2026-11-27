@@ -33,9 +33,9 @@ type step struct {
 type recipePage struct {
 	Items      []recipe `json:"items"`
 	Page       int      `json:"page"`
-	PerPage    int      `json:"perPage"`
+	PerPage    int      `json:"per_page"`
 	Total      int      `json:"total"`
-	TotalPages int      `json:"totalPages"`
+	TotalPages int      `json:"total_pages"`
 	Next       *string  `json:"next"`
 }
 

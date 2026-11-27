@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -20,15 +21,16 @@ import (
 // state is in the queue (Task.Exec), so a restart of the program picks every attempt up where it was.
 
 const (
-	dispatchInterval = 15 * time.Second
-	refreshInterval  = 60 * time.Second
-	stablePolls      = 2
-	pruneMaxAge      = 30 * 24 * time.Hour
-	pruneKeep        = 500
-	lostSessionAfter = 2 * time.Minute
-	blockedMarker    = "ATS_BLOCKED:"
-	waitingInSession = "Agent 在会话里等你回答或批准"
-	nodeCallTimeout  = 25 * time.Second
+	dispatchInterval        = 15 * time.Second
+	refreshInterval         = 60 * time.Second
+	stablePolls             = 2
+	pruneMaxAge             = 30 * 24 * time.Hour
+	pruneKeep               = 500
+	lostSessionAfter        = 2 * time.Minute
+	blockedMarker           = "ATS_BLOCKED:"
+	waitingInSession        = "Agent 在会话里等你回答或批准"
+	nodeCallTimeout         = 25 * time.Second
+	maxReadonlyPlanDeclines = 3
 )
 
 type dispatcher struct {
@@ -43,15 +45,16 @@ type dispatcher struct {
 	// changed tells the apps the queue page's data changed.
 	changed func()
 
-	mu          sync.Mutex
-	accepted    map[string]acceptResult // acceptance results the node program reported, by attempt key
-	lastRefresh time.Time
-	wake        chan struct{}
+	mu           sync.Mutex
+	accepted     map[string]acceptResult // acceptance results the node program reported, by attempt key
+	planDeclines map[string]int          // count of ExitPlanMode auto-declines per attempt key
+	lastRefresh  time.Time
+	wake         chan struct{}
 }
 
 func newDispatcher(q *Queue, api hubAPI, nodes nodeCaller, writer *DecisionWriter, cfg func() ExtConfig, now func() time.Time) *dispatcher {
 	return &dispatcher{q: q, api: api, nodes: nodes, writer: writer, cfg: cfg, now: now,
-		accepted: map[string]acceptResult{}, wake: make(chan struct{}, 1)}
+		accepted: map[string]acceptResult{}, planDeclines: map[string]int{}, wake: make(chan struct{}, 1)}
 }
 
 // run is the background loop; it ends with ctx.
@@ -223,30 +226,71 @@ func (d *dispatcher) prepare(ctx context.Context, t *Task, att Attempt) bool {
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: classIf(permanent, "rejected", "infra_error"), message: "准备工作目录失败：" + msg})
 		return true
 	}
-	mode := "plan"
+	updated, err := d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(e *Execution) {
+		e.Worktree, e.Branch, e.BaseSHA = ws.Path, ws.Branch, ws.BaseSHA
+	})
+	if err != nil {
+		// The attempt is no longer active (for example canceled during ats.prepare): release the worktree
+		// and untouched branch without starting an agent session.
+		t.Exec.Worktree, t.Exec.Branch, t.Exec.BaseSHA = ws.Path, ws.Branch, ws.BaseSHA
+		d.cleanup(context.WithoutCancel(ctx), t, att.AttemptNo, true)
+		return false
+	}
+	t = updated
+	e = t.Exec
+
+	mode := cfg.readonlyMode()
 	if !readonly {
 		mode = cfg.writeMode()
 	}
-	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	agentType := effectiveAgentType(att.Harness, t.AgentType)
+	launcher := launcherForSpec(t.Launcher, e.MachineID)
+	if launcher == "" {
+		if agentType == AgentClaude {
+			launcher = cfg.launcherFor(e.MachineID)
+		} else {
+			// 只指定引擎时，Hub 仍可能选用默认的 Claude 启动器。
+			launcher = agentType
+		}
+	}
+	model := strings.TrimSpace(t.Model)
+	if model == "" && agentType == AgentClaude {
+		model = cfg.model(cmpOr(att.ModelTier, t.ModelTier))
+	}
+	cctx, cancel := context.WithTimeout(ctx, sessionStartTimeout(agentType))
 	sid, err := d.api.CreateSession(cctx, sessionRequest{
-		MachineID: e.MachineID, Cwd: ws.Path, AgentType: "claude", Prompt: buildPrompt(t, ws, readonly, prev, resume != ""),
-		PermissionMode: mode, Model: cfg.model(cmpOr(att.ModelTier, t.ModelTier)), TabName: "ATS · " + firstLinePreview(t.Title, 40), Async: true,
+		MachineID: e.MachineID, Cwd: ws.Path, AgentType: agentType, Launcher: launcher, Prompt: buildPrompt(t, ws, readonly, prev, resume != ""),
+		PermissionMode: mode, Model: model, TabName: "ATS · " + firstLinePreview(t.Title, 40), Async: true,
 	})
 	cancel()
 	if err != nil {
-		t.Exec.Worktree = ws.Path
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "infra_error", message: "启动 Agent 会话失败：" + err.Error()})
 		return true
 	}
 	if _, err := d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(e *Execution) {
 		e.Phase, e.Worktree, e.Branch, e.BaseSHA, e.SessionID = PhaseWorking, ws.Path, ws.Branch, ws.BaseSHA, sid
+		e.Launcher, e.Model = launcher, model
 	}); err != nil {
+		// The attempt is no longer active (for example canceled while CreateSession was in flight):
+		// interrupt the live session and release the worktree and branch instead of leaking them.
+		t.Exec.Worktree, t.Exec.Branch, t.Exec.BaseSHA, t.Exec.SessionID = ws.Path, ws.Branch, ws.BaseSHA, sid
+		d.cleanup(context.WithoutCancel(ctx), t, att.AttemptNo, true)
 		return false
 	}
 	if todo := t.TodoID(); todo != "" {
 		actx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		_ = d.api.AttachTodo(actx, todo, e.MachineID, sid) // the to-do may be finished or gone; the task runs anyway
+		err := d.api.AttachTodo(actx, todo, e.MachineID, sid)
 		cancel()
+		if err != nil {
+			warning := firstLinePreview(err.Error(), 500)
+			slog.Warn("ATS could not attach session to to-do", "task_id", t.ID, "attempt", att.AttemptNo,
+				"todo_id", todo, "machine_id", e.MachineID, "session_id", sid, "error", warning)
+			if _, err := d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(e *Execution) {
+				e.TodoAttachError = warning
+			}); err != nil {
+				slog.Warn("ATS could not save to-do attachment error", "task_id", t.ID, "attempt", att.AttemptNo, "error", err)
+			}
+		}
 	}
 	return true
 }
@@ -312,7 +356,9 @@ func errorClassInWords(class string) string {
 }
 
 const (
-	promptFailureRunes = 1500
+	// promptFailureRunes is how much of the earlier attempt's report a retry is told: its first line (how the
+	// acceptance command ended) and the end of the output. The agent can run the command again for the rest.
+	promptFailureRunes = 800
 	summaryRunes       = 1200
 )
 
@@ -367,6 +413,7 @@ func buildPrompt(t *Task, ws prepareResult, readonly bool, prev *EvidenceReport,
 	fmt.Fprintf(&b, "You are running unattended as queued task %s, in a git worktree of its own checked out at commit %s.\n", t.ID, ws.BaseSHA)
 	if readonly {
 		b.WriteString("- This task is read-only: do not change, create or delete files, and do not run commands that do. Investigate and report.\n")
+		b.WriteString("- This is an unattended read-only inspection task: do not write plan files or call ExitPlanMode; run read-only inspection commands directly and output your final report.\n")
 	} else {
 		fmt.Fprintf(&b, "- Work only inside this worktree. Commit your work on the current branch (%s) if you can; changes left uncommitted are committed to it for you when you finish. Do not push, and do not touch other branches or worktrees.\n", ws.Branch)
 	}
@@ -382,10 +429,12 @@ func buildPrompt(t *Task, ws prepareResult, readonly bool, prev *EvidenceReport,
 			attempt = t.Attempts[n-1].AttemptNo
 		}
 		fmt.Fprintf(&b, "\n---\nThis is attempt %d of this task. Attempt %d did not succeed: %s.\n", attempt, prev.AttemptNo, errorClassInWords(prev.ErrorClass))
-		if msg := tailRunes(prev.Message, promptFailureRunes); msg != "" {
+		msg := outputEnd(prev.Message, promptFailureRunes)
+		if msg != "" {
 			fmt.Fprintf(&b, "How it ended (the end of the output):\n%s\n", indentBlock(msg))
 		}
-		if sum := strings.TrimSpace(prev.Summary); sum != "" {
+		// A turn that ended in an error reports the agent's reply as its message: not said twice.
+		if sum := strings.TrimSpace(prev.Summary); sum != "" && !strings.HasSuffix(msg, sum) {
 			fmt.Fprintf(&b, "What that attempt's agent said at its end:\n%s\n", indentBlock(sum))
 		}
 		switch {
@@ -420,6 +469,14 @@ func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt) bool {
 		}
 		return false
 	}
+	if model := strings.TrimSpace(s.Model); model != "" && model != e.Model {
+		updated, err := d.q.UpdateExec(t.ID, t.FenceToken, now, func(e *Execution) { e.Model = model })
+		if err != nil {
+			return false
+		}
+		t = updated
+		e = t.Exec
+	}
 	switch {
 	case s.StartError != "":
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "infra_error", message: "Agent 会话没有启动：" + s.StartError})
@@ -439,6 +496,11 @@ func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt) bool {
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: class, message: msg})
 		return true
 	case s.State == "needs_you" || s.PendingInteractions > 0:
+		if t.PermissionProfile != PermissionDefault {
+			if declined, changed := d.tryDeclineReadonlyPlan(ctx, t, att, e); declined {
+				return changed
+			}
+		}
 		why, known := d.waitingFor(ctx, e)
 		if !known && e.Waiting != "" && e.JudgedUpdate == "" {
 			return false // the hub did not say what the session asks: keep what was known
@@ -544,10 +606,70 @@ func (d *dispatcher) waitingFor(ctx context.Context, e *Execution) (why string, 
 	return waitingInSession, true
 }
 
+// tryDeclineReadonlyPlan auto-declines ExitPlanMode prompts on unattended read-only tasks up to
+// maxReadonlyPlanDeclines times per attempt so Claude Code outputs its report directly without stalling.
+func (d *dispatcher) tryDeclineReadonlyPlan(ctx context.Context, t *Task, att Attempt, e *Execution) (declined, changed bool) {
+	cctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ixs, err := d.api.Interactions(cctx)
+	cancel()
+	if err != nil {
+		return false, false
+	}
+	var target *hubInteraction
+	for i := range ixs {
+		ix := &ixs[i]
+		if ix.SessionID != e.SessionID || (ix.MachineID != "" && ix.MachineID != e.MachineID) {
+			continue
+		}
+		if ix.Kind == "plan" || ix.ToolName == "ExitPlanMode" {
+			target = ix
+			break
+		}
+	}
+	if target == nil {
+		return false, false
+	}
+	key, err := attemptKey(t.ID, att.AttemptNo)
+	if err != nil {
+		return false, false
+	}
+	d.mu.Lock()
+	if d.planDeclines == nil {
+		d.planDeclines = map[string]int{}
+	}
+	count := d.planDeclines[key]
+	if count >= maxReadonlyPlanDeclines {
+		d.mu.Unlock()
+		return false, false
+	}
+	d.planDeclines[key] = count + 1
+	d.mu.Unlock()
+
+	no := false
+	rctx, rcancel := context.WithTimeout(ctx, 10*time.Second)
+	err = d.api.ResolveInteraction(rctx, target.ID, interactionResolution{
+		Approve:  &no,
+		Feedback: "This is an unattended read-only ATS task. Stay in plan mode; do not exit plan mode or write plan files. Output your final report directly.",
+	})
+	rcancel()
+	if err != nil {
+		return false, false
+	}
+	if e.Waiting != "" || e.JudgedUpdate != "" || e.Stable != 0 || e.SeenUpdate != "" {
+		_, uerr := d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(ex *Execution) {
+			ex.Waiting, ex.JudgedUpdate, ex.Stable, ex.SeenUpdate = "", "", 0, ""
+		})
+		return true, uerr == nil
+	}
+	return true, false
+}
+
 // waitingText is one line for a pending card: what to approve, or what is asked.
 func waitingText(ix hubInteraction) string {
 	what := firstLinePreview(ix.Summary, 120)
 	switch ix.Kind {
+	case "plan":
+		return "Agent 提交了计划，等你批准"
 	case "permission":
 		tool := strings.TrimSpace(ix.ToolName)
 		switch {
@@ -584,8 +706,9 @@ func (d *dispatcher) setWaiting(t *Task, why, judged string) bool {
 // startAcceptance: the agent is done. With no acceptance command the task ends unverified; with one, the
 // computer's program runs it.
 func (d *dispatcher) startAcceptance(ctx context.Context, t *Task, att Attempt, reply string) bool {
+	t.Exec.LastReply, t.Exec.FullReply = agentSummary(reply), reply
 	if t.Acceptance == nil || strings.TrimSpace(t.Acceptance.Command) == "" {
-		d.finish(ctx, t, att, outcome{state: StateSucceeded, verdict: VerdictUnverified, message: reply, summary: agentSummary(reply)})
+		d.finish(ctx, t, att, outcome{state: StateSucceeded, verdict: VerdictUnverified, message: reply, summary: agentSummary(reply), fullReply: reply})
 		return true
 	}
 	key, _ := attemptKey(t.ID, att.AttemptNo)
@@ -601,6 +724,7 @@ func (d *dispatcher) startAcceptance(ctx context.Context, t *Task, att Attempt, 
 	}
 	_, err = d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(e *Execution) {
 		e.Phase, e.Waiting, e.LastReply = PhaseAccepting, "", agentSummary(reply)
+		e.FullReply = reply
 	})
 	return err == nil
 }
@@ -623,7 +747,7 @@ func (d *dispatcher) collect(ctx context.Context, t *Task, att Attempt) bool {
 		}
 	}
 	code := res.ExitCode
-	out := outcome{exitCode: &code, summary: e.LastReply}
+	out := outcome{exitCode: &code, summary: e.LastReply, fullReply: e.FullReply, headSHA: res.HeadSHA, dirty: cloneBoolPtr(res.Dirty)}
 	tail := strings.TrimSpace(res.OutputTail)
 	switch {
 	case res.TimedOut:
@@ -656,6 +780,9 @@ type outcome struct {
 	exitCode  *int
 	message   string
 	summary   string // the end of the agent's last reply
+	fullReply string
+	headSHA   string
+	dirty     *bool
 	artifacts []Artifact
 }
 
@@ -676,8 +803,18 @@ func classIf(cond bool, a, b string) string {
 // finish ends the attempt: releases what it holds on the computer, records the outcome (the queue decides
 // between another attempt and a final state) and writes a final outcome to the to-do.
 func (d *dispatcher) finish(ctx context.Context, t *Task, att Attempt, out outcome) {
-	arts := d.cleanup(ctx, t, att.AttemptNo, false)
-	out.artifacts = mergeCommit(out.artifacts, arts, t.Exec)
+	if key, err := attemptKey(t.ID, att.AttemptNo); err == nil {
+		d.mu.Lock()
+		delete(d.planDeclines, key)
+		d.mu.Unlock()
+	}
+	arts, releasedHeadSHA, relDirty := d.cleanup(ctx, t, att.AttemptNo, false)
+	out.headSHA = cmpOr(releasedHeadSHA, out.headSHA)
+	// 验收发现的修改需要保留为证据，即使释放时已自动提交。
+	if relDirty != nil && (out.dirty == nil || *relDirty) {
+		out.dirty = boolPtr(*relDirty)
+	}
+	out.artifacts = mergeCommit(out.artifacts, releasedHeadSHA, t.Exec)
 	if t.Exec != nil && t.Exec.SessionID != "" {
 		arts = append(arts, Artifact{Kind: "session", Path: t.Exec.MachineID + "/" + t.Exec.SessionID})
 	}
@@ -692,11 +829,18 @@ func (d *dispatcher) finish(ctx context.Context, t *Task, att Attempt, out outco
 	}
 	now := d.now()
 	_ = d.q.RenewLeases(now)
-	done, err := d.q.CompleteAttempt(CompleteAttemptInput{
+	in := CompleteAttemptInput{
 		TaskID: t.ID, AttemptNo: att.AttemptNo, FenceToken: att.FenceToken, WorkerID: att.WorkerID,
 		Outcome: out.state, Verdict: out.verdict, ErrorClass: out.errClass, ExitCode: out.exitCode,
-		Message: out.message, Summary: out.summary, Artifacts: append(out.artifacts, arts...), Retryable: retryable, Now: now,
-	})
+		Message: out.message, Summary: out.summary, FullReply: out.fullReply, HeadSHA: out.headSHA, Dirty: out.dirty,
+		Artifacts: append(out.artifacts, arts...), Retryable: retryable, Now: now,
+	}
+	if e := t.Exec; e != nil {
+		in.Launcher, in.Model, in.SessionID, in.Worktree, in.BaseSHA = e.Launcher, e.Model, e.SessionID, e.Worktree, e.BaseSHA
+		in.FullReply = cmpOr(in.FullReply, e.FullReply)
+		in.Summary = cmpOr(in.Summary, e.LastReply)
+	}
+	done, err := d.q.CompleteAttempt(in)
 	if err != nil || !done.IsTerminal() || d.writer == nil || !d.writer.HasTodosWriteScope() {
 		return
 	}
@@ -705,23 +849,15 @@ func (d *dispatcher) finish(ctx context.Context, t *Task, att Attempt, out outco
 	cancel()
 }
 
-// mergeCommit leaves one commit in an attempt's evidence: the head the release found (it has the work ATS
-// committed itself) rather than the one the acceptance command ran on, and none when the branch never left the
-// commit the attempt started from.
-func mergeCommit(own, released []Artifact, e *Execution) []Artifact {
+// mergeCommit 优先采用 release 读取的最终 HEAD。只有偏离起点的提交进入证据。
+func mergeCommit(own []Artifact, releasedHeadSHA string, e *Execution) []Artifact {
 	base := ""
 	if e != nil {
 		base = e.BaseSHA
 	}
-	hasReleased := false
-	for _, a := range released {
-		if a.Kind == "commit" {
-			hasReleased = true
-		}
-	}
 	var out []Artifact
 	for _, a := range own {
-		if a.Kind == "commit" && (hasReleased || (base != "" && a.Path == base)) {
+		if a.Kind == "commit" && (releasedHeadSHA != "" || (base != "" && a.Path == base)) {
 			continue
 		}
 		out = append(out, a)
@@ -744,10 +880,10 @@ func releaseCommitMessage(t *Task, attempt int) string {
 // could not be committed) and, when the attempt is being canceled, the agent's turn. An attempt of a writable
 // task that ends by itself has its uncommitted work committed to its branch. It returns what stays behind as
 // evidence.
-func (d *dispatcher) cleanup(ctx context.Context, t *Task, attempt int, interrupt bool) []Artifact {
+func (d *dispatcher) cleanup(ctx context.Context, t *Task, attempt int, interrupt bool) (arts []Artifact, headSHA string, dirty *bool) {
 	e := t.Exec
 	if e == nil || e.MachineID == "" {
-		return nil
+		return nil, "", nil
 	}
 	if interrupt && e.SessionID != "" {
 		ictx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -755,7 +891,7 @@ func (d *dispatcher) cleanup(ctx context.Context, t *Task, attempt int, interrup
 		cancel()
 	}
 	if e.Worktree == "" {
-		return nil
+		return nil, "", nil
 	}
 	msg := ""
 	if !interrupt && t.PermissionProfile == PermissionDefault {
@@ -764,12 +900,14 @@ func (d *dispatcher) cleanup(ctx context.Context, t *Task, attempt int, interrup
 	var rel releaseResult
 	if err := d.nodeCall(ctx, e.MachineID, "ats.release", releaseParams{
 		TaskID: t.ID, Attempt: attempt, Repo: t.Workspace.Repo, BaseSHA: e.BaseSHA, CommitMessage: msg,
+		Readonly: t.PermissionProfile != PermissionDefault,
 	}, &rel); err != nil {
-		return []Artifact{{Kind: "worktree", Path: e.Worktree}}
+		slog.Warn("ATS could not release worktree", "task_id", t.ID, "attempt", attempt, "error", err)
+		return []Artifact{{Kind: "worktree", Path: e.Worktree}}, "", nil
 	}
-	var arts []Artifact
-	if rel.HeadSHA != "" && rel.HeadSHA != e.BaseSHA {
-		arts = append(arts, Artifact{Kind: "commit", Path: rel.HeadSHA})
+	headSHA = strings.TrimSpace(rel.HeadSHA)
+	if headSHA != "" && headSHA != e.BaseSHA {
+		arts = append(arts, Artifact{Kind: "commit", Path: headSHA})
 	}
 	if rel.Branch != "" {
 		arts = append(arts, Artifact{Kind: "branch", Path: rel.Branch})
@@ -777,18 +915,17 @@ func (d *dispatcher) cleanup(ctx context.Context, t *Task, attempt int, interrup
 	if rel.Kept != "" {
 		arts = append(arts, Artifact{Kind: "worktree", Path: rel.Kept})
 	}
-	return arts
+	return arts, headSHA, rel.Dirty
 }
 
 // cancel cancels a task from the queue page: the queue first, then what its attempt holds.
 func (d *dispatcher) cancel(ctx context.Context, taskID string) (*Task, error) {
-	before, err := d.q.GetTask(taskID)
+	before, t, canceled, err := d.q.cancelTaskWithSnapshot(taskID, d.now())
 	if err != nil {
 		return nil, err
 	}
-	t, err := d.q.CancelTask(taskID, d.now())
-	if err != nil {
-		return nil, err
+	if !canceled {
+		return t, nil
 	}
 	if before.Exec != nil && len(before.Attempts) > 0 {
 		d.cleanup(ctx, before, before.Attempts[len(before.Attempts)-1].AttemptNo, true)

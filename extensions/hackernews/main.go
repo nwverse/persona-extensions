@@ -1,7 +1,7 @@
 // Command hackernews is a Persona extension for Hacker News (https://news.ycombinator.com), read only and without an
 // account (docs/extensions/hackernews.md):
 //
-//   - ui (plugin_page "stories"): the Top, New, Best, Ask and Show lists, filtered by the user's interests; a story
+//   - ui (plugin_page "hackernews"): the Top, New, Best, Ask and Show lists, filtered by the user's interests; a story
 //     opens with its text, a link to the article and its top-level comments, read by the hub. The page's own text
 //     follows the locale the hub passes (zh-Hans, en, ja).
 //   - connectors (id hackernews, tools): hn_stories and hn_item, for the assistant.
@@ -30,7 +30,7 @@ var about = func() (m struct{ ID, Version string }) {
 
 // The contributions' ids (persona-extension.json).
 const (
-	pageUI      = "stories"
+	pageUI      = "hackernews"
 	connectorID = "hackernews"
 )
 

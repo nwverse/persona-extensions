@@ -111,16 +111,18 @@ type Reminder struct {
 	Config Config
 }
 
-// state is what the reminder has already done: the day of the last notification, and the to-do id of each alert
-// key that has one.
+// state is what the reminder has already done: the day of the last notification, the to-do id of each alert
+// key that has one, and the alert keys whose create had an unknown outcome (the to-do may exist without its id
+// being known), which are not created again while the alert lasts.
 type state struct {
-	Notified string            `json:"notified,omitempty"`
-	Todos    map[string]string `json:"todos,omitempty"`
+	Notified    string            `json:"notified,omitempty"`
+	Todos       map[string]string `json:"todos,omitempty"`
+	Quarantined map[string]bool   `json:"quarantined,omitempty"`
 }
 
 // Run does what is due at now: the daily notification and the to-dos. It is called on every tick. A failing call
 // does not hold back the others: the errors are joined and returned, the state reached so far is saved, and what
-// failed is tried again on the next call.
+// failed is tried again on the next call, except a to-do create whose outcome is unknown (see todos).
 func (r *Reminder) Run(ctx context.Context, h *model.Home, now time.Time, loc *time.Location) error {
 	if r.Hub == nil {
 		return nil
@@ -134,10 +136,10 @@ func (r *Reminder) Run(ctx context.Context, h *model.Home, now time.Time, loc *t
 	// ones already created are marked done.
 	todosScope := r.Hub.Can(ScopeTodos)
 	createTodos := (mode == modeTodos || mode == modeBoth) && todosScope
-	if !notifyOn && !todosScope {
-		return nil
-	}
 	if r.Path == "" {
+		if !notifyOn && !todosScope {
+			return nil
+		}
 		return errors.New("没有提醒状态文件的位置")
 	}
 	if loc == nil {
@@ -146,7 +148,12 @@ func (r *Reminder) Run(ctx context.Context, h *model.Home, now time.Time, loc *t
 	today := model.DayOf(now, loc)
 
 	st := readState(r.Path)
-	if !notifyOn && !createTodos && len(st.Todos) == 0 {
+	// The quarantine ends with its alert also while to-dos are off, so it is checked on every run.
+	pruned := pruneQuarantine(&st, h, today)
+	if !notifyOn && !createTodos && (!todosScope || len(st.Todos) == 0) {
+		if pruned {
+			return writeState(r.Path, st)
+		}
 		return nil
 	}
 	err := r.step(ctx, &st, h, now, loc, today, notifyOn, todosScope, createTodos)
@@ -197,7 +204,10 @@ func (r *Reminder) notify(ctx context.Context, st *state, h *model.Home, now tim
 
 // todos creates a to-do for each alert that has none, when create is set (at most maxTodos attempts per run), and
 // marks done the to-dos whose alert is gone, or all of them when create is not set. A failed call is recorded and
-// the rest go on; the failed to-do is tried again on the next run.
+// the rest go on. A create the hub did not make is tried again on the next run. A create with an unknown outcome
+// is not: the hub has no idempotency key, so repeating it could duplicate a to-do the hub did make. Its alert is
+// quarantined, and the error says so once; without an id that to-do cannot be marked done, so the user closes it.
+// The quarantine ends with the alert (see pruneQuarantine), so that the alert's next occurrence gets a to-do again.
 func (r *Reminder) todos(ctx context.Context, st *state, h *model.Home, today model.Day, create bool) error {
 	if st.Todos == nil {
 		st.Todos = map[string]string{}
@@ -211,12 +221,20 @@ func (r *Reminder) todos(ctx context.Context, st *state, h *model.Home, today mo
 	attempts := 0
 	for _, a := range alerts {
 		live[a.Key] = true
-		if _, ok := st.Todos[a.Key]; ok || attempts == maxTodos {
+		if _, ok := st.Todos[a.Key]; ok || st.Quarantined[a.Key] || attempts == maxTodos {
 			continue
 		}
 		attempts++
 		id, err := r.Hub.CreateTodo(ctx, Todo{Title: a.Title, Notes: a.Notes, DueDate: string(today)})
 		if err != nil {
+			if !createNotMade(err) {
+				if st.Quarantined == nil {
+					st.Quarantined = map[string]bool{}
+				}
+				st.Quarantined[a.Key] = true
+				errs = append(errs, fmt.Errorf("创建待办 %q：不确定建没建成，不再自动重建，请到待办里查看：%w", a.Title, err))
+				continue
+			}
 			errs = append(errs, fmt.Errorf("创建待办 %q：%w", a.Title, err))
 			continue
 		}
@@ -233,6 +251,21 @@ func (r *Reminder) todos(ctx context.Context, st *state, h *model.Home, today mo
 		delete(st.Todos, k)
 	}
 	return errors.Join(errs...)
+}
+
+// pruneQuarantine drops the quarantined keys whose alert is gone and reports whether it dropped any. It calls no
+// hub, so it also runs while to-dos are off: the mode does not create them or the todos.write scope is gone.
+func pruneQuarantine(st *state, h *model.Home, today model.Day) bool {
+	if len(st.Quarantined) == 0 {
+		return false
+	}
+	live := map[string]bool{}
+	for _, a := range Alerts(h, today) {
+		live[a.Key] = true
+	}
+	n := len(st.Quarantined)
+	maps.DeleteFunc(st.Quarantined, func(k string, _ bool) bool { return !live[k] })
+	return len(st.Quarantined) < n
 }
 
 // parseAt reads "HH:MM" and returns the minutes after midnight. "" is 08:30.

@@ -9,6 +9,7 @@ func TestRefused(t *testing.T) {
 		"model.complete: finish_reason content_filter":               true,
 		"model.complete: dial tcp 127.0.0.1:443: connection refused": false,
 		"model.complete: 529 overloaded":                             false,
+		`model.complete: ai: HTTP 400: {"error":{"message":"the request was rejected as invalid","type":"invalid_request_error"}}`: true,
 	} {
 		if got := refused(msg); got != want {
 			t.Errorf("refused(%q) = %v, want %v", msg, got, want)

@@ -196,37 +196,41 @@ func spikes(st *store.State, now time.Time, loc *time.Location, sent map[string]
 	from := now.In(loc).AddDate(0, 0, -7).Format("2006-01-02")
 	type acc struct {
 		sum  int64
-		days int
+		days map[string]struct{}
 	}
 	past := map[string]*acc{}
 	current := map[string]int64{}
 	for _, d := range st.Days {
 		for _, b := range d.Buckets {
+			total := b.Total()
+			if total <= 0 {
+				continue
+			}
 			at := time.Unix(b.Minute, 0).In(loc)
 			if at.Hour() != hour {
 				continue
 			}
 			day := at.Format("2006-01-02")
 			if day == today {
-				current[b.Model] += b.Total()
+				current[b.Model] += total
 			} else if day >= from && day < today {
 				a := past[b.Model]
 				if a == nil {
-					a = &acc{}
+					a = &acc{days: map[string]struct{}{}}
 					past[b.Model] = a
 				}
-				a.sum += b.Total()
-				a.days++
+				a.sum += total
+				a.days[day] = struct{}{}
 			}
 		}
 	}
 	var out []Notice
 	for model, now := range current {
 		a := past[model]
-		if a == nil || a.days == 0 {
+		if a == nil || len(a.days) == 0 {
 			continue
 		}
-		mean := float64(a.sum) / float64(a.days)
+		mean := float64(a.sum) / float64(len(a.days))
 		if mean <= 0 || float64(now) < SpikeTimes*mean || now < SpikeMin {
 			continue
 		}

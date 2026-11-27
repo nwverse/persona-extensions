@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,7 +29,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.SpaceID) > 256 || len(st.SpaceName) > 1000 || len(st.ObjectID) > 256 || len(st.DraftID) > 128 || len(st.Name) > 300 || len(st.Body) > 31000 || len(st.Query) > 250 {
+	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.SpaceID) > 256 || len([]rune(st.SpaceName)) > maxNameChars || len(st.ObjectID) > 256 || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len([]rune(st.Body)) > maxBodyChars || len([]rune(st.Query)) > maxQueryChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -49,12 +50,12 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Offset, st.Mode = clipText(r.Values["q"], 200), 0, "search"
+		st.Query, st.Offset, st.Mode = clipText(r.Values["q"], maxQueryChars), 0, "search"
 	case "space":
 		if err := validObjectID(r.Values["id"]); err != nil {
 			return nil, err
 		}
-		if r.Values["name"] == "" || len(r.Values["name"]) > 255 {
+		if strings.TrimSpace(r.Values["name"]) == "" || len([]rune(r.Values["name"])) > maxNameChars {
 			return nil, errors.New("invalid space name")
 		}
 		st = pageState{Mode: "objects", SpaceID: r.Values["id"], SpaceName: r.Values["name"]}
@@ -84,6 +85,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil, err
 		}
 		st.TypeKey, st.Name, st.Body, st.Mode = in.TypeKey, in.Name, in.Body, "review-create"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("object draft exceeds page state limit")
+		}
 	case "confirm-create":
 		raw, _ := json.Marshal(createArgs{SpaceID: st.SpaceID, TypeKey: st.TypeKey, Name: st.Name, Body: st.Body})
 		out, err := a.doAction(ctx, "ui-create:"+st.DraftID, "anytype_create_object", raw)
@@ -121,22 +125,22 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if err := validObjectID(st.SpaceID); err != nil {
 			return nil, err
 		}
-		page, err := a.client.objects(ctx, st.SpaceID, st.Offset)
+		objects, more, err := a.collectObjects(ctx, st.SpaceID, st.Offset)
 		a.record(err)
 		if err != nil {
 			return nil, err
 		}
-		section := wire.Section{Title: fmt.Sprintf(t.objects, len(page.Data))}
-		for _, item := range page.Data {
+		section := wire.Section{Title: fmt.Sprintf(t.objects, len(objects))}
+		for _, item := range objects {
 			if item.ID == "" || item.Name == "" {
 				continue
 			}
-			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "object-" + item.ID, Title: clipText(item.Name, 1800), Subtitle: clipText(item.Type.Name+" · "+item.Snippet, 1800), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID, "space": st.SpaceID}}})
+			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: rowKey("object", "object-"+item.ID), Title: clipText(item.Name, 1800), Subtitle: clipText(item.Type.Name+" · "+item.Snippet, 1800), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID, "space": st.SpaceID}}})
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noObjects})
 		}
-		if page.Pagination.HasMore {
+		if more {
 			section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 		}
 		v := &wire.View{Title: clipText(st.SpaceName, 1800), State: ext.EncodeState(st), Sections: []wire.Section{section, {Title: t.objects, Items: []wire.Component{
@@ -148,45 +152,114 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Mode != "" {
 		return nil, errors.New("invalid knowledge view")
 	}
-	page, err := a.client.spaces(ctx, st.Offset)
+	spaces, more, err := a.collectSpaces(ctx, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
 	section := wire.Section{Title: t.spaces}
-	for _, item := range page.Data {
+	for _, item := range spaces {
 		if item.ID == "" || item.Name == "" {
 			continue
 		}
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "space-" + item.ID, Title: clipText(item.Name, 1800), Subtitle: item.ID, Action: &wire.Action{ID: "space", Values: map[string]string{"id": item.ID, "name": item.Name}}})
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: rowKey("space", "space-"+item.ID), Title: clipText(item.Name, 1800), Subtitle: item.ID, Action: &wire.Action{ID: "space", Values: map[string]string{"id": item.ID, "name": clipText(item.Name, maxNameChars)}}})
 	}
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noSpaces})
 	}
-	if page.Pagination.HasMore {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	return &wire.View{Title: t.knowledge, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}, Sections: []wire.Section{section}}, nil
 }
 
+// maxViewObjects keeps the accumulated list within the SDK's component limit.
+const maxViewObjects = 250
+
+// collectObjects reads batches from offset 0 through offset so that Load more extends the list instead of
+// replacing it, and reports whether Anytype has more objects that the cap still leaves room to show.
+func (a *app) collectObjects(ctx context.Context, spaceID string, offset int) ([]knowledgeObject, bool, error) {
+	var out []knowledgeObject
+	more := false
+	for pos := 0; pos <= offset && len(out) < maxViewObjects; pos += 50 {
+		batch, err := a.client.objects(ctx, spaceID, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Data...)
+		more = batch.Pagination.HasMore
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewObjects {
+		out = out[:maxViewObjects]
+	}
+	return out, more && len(out) < maxViewObjects, nil
+}
+
+// collectSpaces reads batches from offset 0 through offset so that Load more extends the spaces list instead of
+// replacing it, and reports whether Anytype has more spaces that the cap still leaves room to show.
+func (a *app) collectSpaces(ctx context.Context, offset int) ([]space, bool, error) {
+	var out []space
+	more := false
+	for pos := 0; pos <= offset && len(out) < maxViewObjects; pos += 50 {
+		batch, err := a.client.spaces(ctx, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Data...)
+		more = batch.Pagination.HasMore
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewObjects {
+		out = out[:maxViewObjects]
+	}
+	return out, more && len(out) < maxViewObjects, nil
+}
+
+// collectSearch reads batches from offset 0 through offset so that Load more extends the results instead of
+// replacing them, and reports whether Anytype has more matches that the cap still leaves room to show.
+func (a *app) collectSearch(ctx context.Context, query string, offset int) ([]knowledgeObject, bool, error) {
+	var out []knowledgeObject
+	more := false
+	for pos := 0; pos <= offset && len(out) < maxViewObjects; pos += 50 {
+		batch, err := a.client.search(ctx, query, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Data...)
+		more = batch.Pagination.HasMore
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewObjects {
+		out = out[:maxViewObjects]
+	}
+	return out, more && len(out) < maxViewObjects, nil
+}
+
 func (a *app) searchView(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
-	page, err := a.client.search(ctx, st.Query, st.Offset)
+	results, more, err := a.collectSearch(ctx, st.Query, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
-	section := wire.Section{Title: fmt.Sprintf(t.objects, len(page.Data))}
-	for _, item := range page.Data {
+	section := wire.Section{Title: fmt.Sprintf(t.objects, len(results))}
+	for _, item := range results {
 		if item.ID == "" || item.Name == "" || item.SpaceID == "" {
 			continue
 		}
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "object-" + item.SpaceID + "-" + item.ID, Title: clipText(item.Name, 1800), Subtitle: clipText(item.Type.Name+" · "+item.Snippet, 1800), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID, "space": item.SpaceID}}})
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: rowKey("object", "object-"+item.SpaceID+"-"+item.ID), Title: clipText(item.Name, 1800), Subtitle: clipText(item.Type.Name+" · "+item.Snippet, 1800), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID, "space": item.SpaceID}}})
 	}
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noObjects})
 	}
-	if page.Pagination.HasMore {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	return &wire.View{Title: t.search, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}, Sections: []wire.Section{section, {Items: []wire.Component{{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "spaces"}}}}}}, nil
@@ -251,6 +324,14 @@ func textComponents(text string) []wire.Component {
 		out = append(out, wire.Component{Type: wire.ComponentText, Text: " ", Style: wire.TextStyleSecondary})
 	}
 	return out
+}
+
+func rowKey(prefix, raw string) string {
+	if len(raw) <= 128 && len([]rune(raw)) <= 128 {
+		return raw
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return prefix + "-" + hex.EncodeToString(sum[:16])
 }
 
 func randomID() string {

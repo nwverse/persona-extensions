@@ -1,0 +1,19 @@
+{
+  "status": "1",
+  "info": "OK",
+  "infocode": "10000",
+  "results": [
+    {
+      "origin_id": "1",
+      "dest_id": "1",
+      "distance": "9183",
+      "duration": "2057"
+    },
+    {
+      "origin_id": "2",
+      "dest_id": "1",
+      "distance": "4200",
+      "duration": "900"
+    }
+  ]
+}

@@ -21,8 +21,14 @@ type updateArgs struct {
 	Markdown string `json:"markdown"`
 }
 
+// maxTitleChars and maxMarkdownChars bound page drafts across validation, tool schemas, and page state checks.
+const (
+	maxTitleChars    = 255
+	maxMarkdownChars = 60000
+)
+
 func validTitle(value string) error {
-	if strings.TrimSpace(value) == "" || len([]rune(value)) > 255 {
+	if strings.TrimSpace(value) == "" || len([]rune(value)) > maxTitleChars {
 		return errors.New("page title must be nonempty and at most 255 characters")
 	}
 	for _, r := range value {
@@ -34,7 +40,7 @@ func validTitle(value string) error {
 }
 
 func validMarkdown(value string) error {
-	if strings.TrimSpace(value) == "" || len([]rune(value)) > 60000 {
+	if strings.TrimSpace(value) == "" || len([]rune(value)) > maxMarkdownChars {
 		return errors.New("Markdown must be nonempty and at most 60000 characters")
 	}
 	for _, r := range value {

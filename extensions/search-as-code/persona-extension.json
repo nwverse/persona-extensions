@@ -1,29 +1,45 @@
 {
   "manifest_version": 1,
   "id": "search-as-code",
-  "name": "代码化搜索",
-  "version": "0.2.1",
+  "name": "AI 聊天记录搜索",
+  "version": "0.4.2",
   "icon": "assets/icon.png",
-  "description": "受 Perplexity「Rethinking Search as Code Generation」与 CASS 会话检索启发：把复杂的多步检索与排查任务编译为可执行的搜索代码（Search as Code），跨本机 Coding Agent 会话历史（Claude Code、Codex，支持排除工具噪音的纯对话检索、角色过滤与报错排查；含 disklessly 已移到云端的会话，经本机纯文本索引照常检索、标记「已上云」并可一键恢复到原路径）和本地代码仓库执行流水线算子（过滤、正则匹配、跨会话文件关联、聚合统计、相关性与新鲜度排序）。界面透明展示生成的搜索程序与每一步算子的耗时和命中轨迹，支持保存为可复用的搜索配方；附带本机 MCP 服务器（search-as-code mcp），只读检索工具直接运行，保存与删除配方、恢复已上云会话按对话权限询问。",
+  "description": "在你以前和 Claude Code、Codex 的聊天记录里找东西，比如「上次那个 429 报错是怎么修好的？」：找出当时的聊天，标明是哪个项目、哪台电脑上的。可以同时搜你的几台电脑（不在线的电脑搜之前同步过来的精简副本），也可以连你指定的代码文件夹一起搜；用 disklessly 移到云端的聊天照样能搜到，并能一键恢复到原来的位置。可以在页面上直接输入几个词搜，也可以让 Persona 助手帮你搜：它读其他电脑或其他项目的聊天记录前会先问你。常用的搜索可以存起来，点一下就搜。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/docs/extensions/search-as-code.md",
-  "tags": ["搜索", "Search as Code", "会话检索", "MCP"],
-  "engines": {"extension_protocol": 1},
+  "tags": ["搜索", "聊天记录", "Claude Code", "Codex"],
+  "engines": {"persona": ">=202611092100", "extension_protocol": 1},
   "runtime": {
     "command": {
       "linux-amd64": "bin/search-as-code-linux-amd64",
       "linux-arm64": "bin/search-as-code-linux-arm64",
       "darwin-amd64": "bin/search-as-code-darwin-amd64",
       "darwin-arm64": "bin/search-as-code-darwin-arm64"
-    }
+    },
+    "http": true
+  },
+  "node": {
+    "command": {
+      "linux-amd64": "bin/search-as-code-linux-amd64",
+      "linux-arm64": "bin/search-as-code-linux-arm64",
+      "darwin-amd64": "bin/search-as-code-darwin-amd64",
+      "darwin-arm64": "bin/search-as-code-darwin-arm64"
+    },
+    "args": ["node"],
+    "machines": "machines",
+    "keep_running": "lease",
+    "permissions": {"files": true}
   },
   "contributes": {
     "ui": [
-      {"id": "search-as-code", "title": "代码化搜索", "placement": "nav_page", "icon": "search"},
-      {"id": "search-as-code-card", "title": "代码化搜索", "placement": "overview_card", "opens": "search-as-code"}
+      {"id": "search-as-code", "title": "AI 聊天记录搜索", "placement": "nav_page", "icon": "search"},
+      {"id": "search-as-code-card", "title": "AI 聊天记录搜索 · 概况", "placement": "overview_card", "opens": "search-as-code"}
     ],
     "skills": [
       {"id": "search-as-code", "dir": "skills/search-as-code"}
+    ],
+    "assistant": [
+      {"id": "sessions", "skills": ["skills/sac-remote"], "gate": "assistant/gate.json"}
     ],
     "mcp_servers": [
       {
@@ -32,42 +48,53 @@
         "env": "PERSONA_SEARCH_AS_CODE_BIN",
         "args": ["mcp"],
         "requires": ["mcp"],
-        "allow": ["sac_execute", "sac_session_search", "sac_recipes_list"]
+        "allow": ["sac_recipes_list"]
       }
     ]
+  },
+  "permissions": {
+    "hub": ["machines.read", "extensions.call:search-as-code"]
   },
   "configuration": {
     "type": "object",
     "properties": {
+      "machines": {
+        "type": "array",
+        "title": "要搜哪些电脑",
+        "description": "选中的电脑会装上这个扩展的小程序：搜索时在那台电脑上直接查它的聊天记录，只把找到的片段传回来；它还会定时把一份精简副本（只有你和助手说的话，每条截短）同步过来，那台电脑不在线时也能搜。一台都不选时，只搜运行 Persona 的这台电脑。",
+        "items": {"type": "string", "format": "machine", "x-os": ["darwin", "linux"]},
+        "default": [],
+        "x-confirm": "选上后，这个扩展的一个小程序会在这台电脑上运行，用的是你自己的账号权限（没有沙箱隔开，你能读的文件它都能读）。它做的事：读 Claude Code（~/.claude/projects）和 Codex（~/.codex/sessions）的聊天记录、disklessly 留下的云端聊天索引，以及你在「其他聊天记录文件夹」里填的文件夹。它是只读的：不会改、不会删任何聊天记录，也不在这台电脑上写文件；只有你点「恢复」把移到云端的聊天放回原处时，才会在这里运行 disklessly 把那个文件写回去。它不连外网，只通过 Persona 自己的连接，把这些传给运行 Persona 的电脑：每次搜索找到的片段和项目名（不是整段聊天），还有每 15 分钟同步一次的精简副本（只有你和助手说的话，每条最多 280 个字，那边最多留最新的 300 段聊天）。助手第一次读其他电脑或其他项目的聊天前会先问你。"
+      },
       "session_dirs": {
         "type": "string",
-        "title": "额外会话目录",
-        "description": "除默认的 ~/.claude/projects 与 ~/.codex/sessions 外，额外扫描的 Agent 会话日志目录（多个路径用逗号或分号分隔）",
+        "title": "其他聊天记录文件夹（一般不用填）",
+        "description": "默认已经会搜 Claude Code（~/.claude/projects）和 Codex（~/.codex/sessions）的聊天记录。记录还放在别的文件夹时才填，多个用逗号或分号隔开。",
         "default": ""
       },
       "cold_text_dirs": {
         "type": "string",
-        "title": "已上云会话索引目录",
-        "description": "除默认的 disklessly 状态目录（DISKLESSLY_STATE_DIR、~/.local/share/disklessly、~/Library/Application Support/Disklessly）下的 sessions/text 外，额外读取的已上云会话纯文本索引目录（多个路径用逗号或分号分隔）",
+        "title": "云端聊天的索引文件夹（一般不用填）",
+        "description": "用 disklessly 把聊天移到云端后，它会在本机留一份只有文字的索引，默认位置已经会自动找。只有你把它放到了别处才需要填，多个用逗号或分号隔开。默认位置：~/.local/share/disklessly/sessions/text 或 ~/Library/Application Support/Disklessly/sessions/text（设了 DISKLESSLY_STATE_DIR 时在它下面）。",
         "default": ""
       },
       "repo_dirs": {
         "type": "string",
-        "title": "本地代码与文档目录",
-        "description": "供 scan_files 算子检索的本地仓库或文档目录（多个路径用逗号或分号分隔）",
+        "title": "也能搜的代码文件夹",
+        "description": "想连代码和文档一起搜时，填文件夹路径（例如 ~/code/my-app），多个用逗号或分号隔开。搜索时在词后面加 file:* 就会一起搜这些文件夹（只搜 Go 文件就写 file:*.go）。不填就只搜聊天记录。",
         "default": ""
       },
       "default_scope": {
         "type": "string",
-        "title": "默认检索范围",
-        "description": "conversation 默认排除工具调用噪音，只搜用户与助手对话；all 包含工具调用与输出；errors 只看报错与异常",
+        "title": "默认搜哪些内容",
+        "description": "打开页面时默认搜的内容，页面上随时可以换。一般选「只看对话」：只搜你和助手说的话，不会被命令和工具输出淹没。",
         "default": "conversation",
         "oneOf": [
-          {"const": "conversation", "title": "纯对话（不含工具噪音）"},
-          {"const": "all", "title": "全部（含工具调用与输出）"},
-          {"const": "user", "title": "仅用户提问"},
-          {"const": "assistant", "title": "仅助手回复"},
-          {"const": "errors", "title": "报错与异常"}
+          {"const": "conversation", "title": "只看对话（推荐）"},
+          {"const": "all", "title": "全部（含命令和工具输出）"},
+          {"const": "user", "title": "只看我说的"},
+          {"const": "assistant", "title": "只看助手说的"},
+          {"const": "errors", "title": "只看报错"}
         ]
       }
     }

@@ -131,6 +131,10 @@ func (t tr) sourceLabel(code, name string) string {
 		return t.s("知识库", "Knowledge base")
 	case entry.SrcRecording:
 		return t.s("录音和纪要", "Recordings and minutes")
+	case entry.SrcLedger:
+		return t.s("助手台账", "Assistant ledger")
+	case entry.SrcSent:
+		return t.s("已发消息溯源", "Sent messages provenance")
 	}
 	if name != "" {
 		return code + " " + name
@@ -204,8 +208,21 @@ func (t tr) sensitiveLabel(c string) string {
 		return t.s("健康", "health")
 	case entry.SensFamily:
 		return t.s("家庭", "family")
+	case entry.CatRelationships:
+		return t.s("关系", "relationships")
+	case entry.CatLegalID:
+		return t.s("证件与法律", "papers and legal")
 	}
 	return c
+}
+
+// categoryLabels names categories for the page, joined.
+func (t tr) categoryLabels(cs []string) string {
+	var out []string
+	for _, c := range cs {
+		out = append(out, t.sensitiveLabel(c))
+	}
+	return strings.Join(out, t.s("、", ", "))
 }
 
 func (t tr) tieLabel(k string) string {

@@ -30,6 +30,11 @@ const ClientVersion = "2.4.6"
 const (
 	apiTimeout      = 15 * time.Second
 	longPollTimeout = 35 * time.Second
+	// edgePollTimeoutStatus is the HTTP status edge proxies (such as Tencent EdgeOne on ilinkai.wechat.com)
+	// return when an idle long poll hits the edge's origin read timeout before longPollTimeout.
+	edgePollTimeoutStatus = 524
+	// minEdgePollWait avoids treating a fast HTTP 524 failure as a normal idle poll timeout (and prevents hot loops).
+	minEdgePollWait = 10 * time.Second
 	maxResponse     = 4 << 20
 	maxPollMessages = 100
 	maxItems        = 20
@@ -49,13 +54,15 @@ type Options struct {
 
 // Client calls iLink. It is safe for concurrent use.
 type Client struct {
-	base  *url.URL
-	token string
-	agent string
-	http  *http.Client
+	base            *url.URL
+	token           string
+	agent           string
+	http            *http.Client
+	now             func() time.Time
+	minEdgePollWait time.Duration
 }
 
-// New checks the base URL: only credential-free HTTPS origins under weixin.qq.com are accepted.
+// New checks the base URL: only credential-free HTTPS origins under weixin.qq.com or wechat.com are accepted.
 func New(o Options) (*Client, error) {
 	if o.BaseURL == "" {
 		o.BaseURL = AuthOrigin
@@ -74,12 +81,24 @@ func New(o Options) (*Client, error) {
 	return &Client{base: base, token: strings.TrimSpace(o.Token), agent: sanitizeAgent(o.Agent), http: &hc}, nil
 }
 
-// ValidateBaseURL accepts https://<weixin.qq.com or a subdomain>[:443]/ and nothing else.
+const (
+	diagMaxScheme = 16
+	diagMaxHost   = 128
+	diagMaxPort   = 16
+	diagMaxPath   = 64
+)
+
+// ValidateBaseURL accepts https://<weixin.qq.com, wechat.com, or a subdomain>[:443]/ and nothing else.
 func ValidateBaseURL(raw string) (*url.URL, error) {
+	return validateBaseURL("", raw)
+}
+
+func validateBaseURL(source, raw string) (*url.URL, error) {
 	u, err := url.Parse(strings.TrimSpace(raw))
 	if err != nil || u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") ||
-		u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") || !tencentHost(u.Hostname()) {
-		return nil, &Error{Code: CodeProtocol, Msg: "iLink base URL must be a Tencent HTTPS origin"}
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" ||
+		(u.Path != "" && u.Path != "/") || !tencentHost(u.Hostname()) {
+		return nil, &Error{Code: CodeProtocol, Msg: invalidBaseURLMessage(source, u, err)}
 	}
 	u.Path = "/"
 	return u, nil
@@ -87,7 +106,89 @@ func ValidateBaseURL(raw string) (*url.URL, error) {
 
 func tencentHost(h string) bool {
 	h = strings.ToLower(h)
-	return h == "weixin.qq.com" || strings.HasSuffix(h, ".weixin.qq.com")
+	return matchesDomain(h, "weixin.qq.com") || matchesDomain(h, "wechat.com")
+}
+
+func matchesDomain(h, domain string) bool {
+	if h == domain {
+		return true
+	}
+	if !strings.HasSuffix(h, "."+domain) {
+		return false
+	}
+	prefix := h[:len(h)-len(domain)-1]
+	if prefix == "" {
+		return false
+	}
+	for _, label := range strings.Split(prefix, ".") {
+		if label == "" || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for i := 0; i < len(label); i++ {
+			c := label[i]
+			if !(c >= 'a' && c <= 'z' || c >= '0' && c <= '9' || c == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func invalidBaseURLMessage(source string, u *url.URL, parseErr error) string {
+	return "iLink base URL must be a Tencent HTTPS origin (" + formatURLDiag(source, u, parseErr, true) + ")"
+}
+
+// formatURLDiag summarizes a rejected URL using only sanitized scheme/host/port (and path when includePath is true).
+// It never includes raw input on parse failure, nor userinfo, query, fragment, or opaque values.
+func formatURLDiag(source string, u *url.URL, parseErr error, includePath bool) string {
+	var parts []string
+	if source != "" {
+		parts = append(parts, "source="+source)
+	}
+	if parseErr != nil || u == nil {
+		parts = append(parts, "unparseable")
+		return strings.Join(parts, " ")
+	}
+	parts = append(parts,
+		`scheme="`+sanitizeDiagPart(u.Scheme, diagMaxScheme)+`"`,
+		`host="`+sanitizeDiagPart(u.Hostname(), diagMaxHost)+`"`,
+		`port="`+sanitizeDiagPart(u.Port(), diagMaxPort)+`"`,
+	)
+	if includePath {
+		parts = append(parts, `path="`+sanitizeDiagPart(u.EscapedPath(), diagMaxPath)+`"`)
+	}
+	if u.User != nil {
+		parts = append(parts, "userinfo=redacted")
+	}
+	if includePath {
+		if u.RawQuery != "" || u.ForceQuery {
+			parts = append(parts, "query=redacted")
+		}
+		if u.Fragment != "" || u.RawFragment != "" {
+			parts = append(parts, "fragment=redacted")
+		}
+	}
+	if u.Opaque != "" {
+		parts = append(parts, "opaque=redacted")
+	}
+	return strings.Join(parts, " ")
+}
+
+func sanitizeDiagPart(s string, maxLen int) string {
+	var b strings.Builder
+	b.Grow(min(len(s), maxLen))
+	for _, r := range s {
+		if b.Len() >= maxLen {
+			b.WriteString("...")
+			break
+		}
+		if r < 0x21 || r >= 0x7f || r == '"' || r == '\\' {
+			b.WriteByte('?')
+		} else {
+			b.WriteByte(byte(r))
+		}
+	}
+	return b.String()
 }
 
 // sanitizeAgent keeps the product/version tokens of a User-Agent-like string, at most 256 bytes.
@@ -188,6 +289,8 @@ func (c *Client) call(ctx context.Context, method, path string, body any, authed
 	resp, err := c.http.Do(req)
 	if err != nil {
 		switch {
+		case errors.Is(ctx.Err(), context.DeadlineExceeded):
+			return nil, &Error{Code: CodeTimeout, Msg: "iLink call timed out", Retry: true}
 		case ctx.Err() != nil:
 			return nil, &Error{Code: CodeAborted, Msg: "iLink call cancelled", Retry: true}
 		case errors.Is(cctx.Err(), context.DeadlineExceeded):
@@ -207,27 +310,45 @@ func (c *Client) call(ctx context.Context, method, path string, body any, authed
 		return nil, &Error{Code: CodeBadResponse, Msg: "iLink answer too large", Retry: true}
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, &Error{Code: CodeHTTP, Msg: fmt.Sprintf("iLink answered HTTP %d", resp.StatusCode), Retry: resp.StatusCode >= 500 || resp.StatusCode == 429}
+		return nil, &Error{
+			Code:   CodeHTTP,
+			Msg:    fmt.Sprintf("iLink answered HTTP %d", resp.StatusCode),
+			Retry:  resp.StatusCode >= 500 || resp.StatusCode == 429,
+			status: resp.StatusCode,
+		}
 	}
 	var out map[string]any
-	if err := json.Unmarshal(data, &out); err != nil || out == nil {
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil || out == nil || dec.Decode(&struct{}{}) != io.EOF {
 		return nil, &Error{Code: CodeBadResponse, Msg: "iLink answered invalid JSON", Retry: true}
 	}
 	return out, nil
 }
 
-// ret checks the {"ret": n} most answers carry; absent counts as 0.
+// ret checks the {"ret": n} most answers carry; absent counts as 0. A non-zero n may pass when asked again.
 func ret(out map[string]any, what string) error {
+	return retStatus(out, what, true)
+}
+
+// refusal is ret for what iLink is asked to take (sendmessage, getuploadurl): a non-zero n is its answer to that
+// message or picture, which asking again does not change. openclaw-weixin does not ask again either: its sendMessage
+// throws on a non-zero ret and is not tried again (its docs/protocol.md, "Return values and errors").
+func refusal(out map[string]any, what string) error {
+	return retStatus(out, what, false)
+}
+
+func retStatus(out map[string]any, what string, retry bool) error {
 	v, ok := out["ret"]
 	if !ok {
 		return nil
 	}
-	n, isNum := v.(float64)
+	n, isNum := responseInt(v)
 	if !isNum {
 		return &Error{Code: CodeBadResponse, Msg: "iLink answered an invalid status for " + what, Retry: true}
 	}
 	if n != 0 {
-		return &Error{Code: CodeProtocol, Msg: fmt.Sprintf("iLink rejected %s (%d)", what, int(n)), Retry: true}
+		return &Error{Code: CodeProtocol, Msg: fmt.Sprintf("iLink rejected %s (%d)", what, n), Retry: retry}
 	}
 	return nil
 }
@@ -235,6 +356,30 @@ func ret(out map[string]any, what string) error {
 func str(m map[string]any, k string) string {
 	s, _ := m[k].(string)
 	return s
+}
+
+func responseInt(v any) (int64, bool) {
+	switch n := v.(type) {
+	case json.Number:
+		value, err := n.Int64()
+		return value, err == nil
+	case float64: // retained for callers that construct responses directly
+		value := int64(n)
+		return value, float64(value) == n
+	default:
+		return 0, false
+	}
+}
+
+func responseMessageID(v any) string {
+	switch id := v.(type) {
+	case string:
+		return strings.TrimSpace(id)
+	case json.Number:
+		return id.String()
+	default:
+		return ""
+	}
 }
 
 // NotifyStart and NotifyStop tell iLink the bot went on or off line.
@@ -261,20 +406,42 @@ type Poll struct {
 	Timeout time.Duration
 }
 
+func (c *Client) clock() time.Time {
+	if c.now != nil {
+		return c.now()
+	}
+	return time.Now()
+}
+
+func (c *Client) isLongPollTimeout(err error, elapsed time.Duration) bool {
+	var e *Error
+	if !errors.As(err, &e) {
+		return false
+	}
+	if e.Code == CodeTimeout {
+		return true
+	}
+	minWait := c.minEdgePollWait
+	if minWait <= 0 {
+		minWait = minEdgePollWait
+	}
+	return e.Code == CodeHTTP && e.status == edgePollTimeoutStatus && elapsed >= minWait
+}
+
 // GetUpdates long-polls for new messages after cursor ("" the first time). A long poll that ends without anything
 // is not an error: it answers the same cursor and no messages. errcode -14 (another client took the token) is
 // CodeReplaced.
 func (c *Client) GetUpdates(ctx context.Context, cursor string) (Poll, error) {
+	start := c.clock()
 	out, err := c.call(ctx, http.MethodPost, "ilink/bot/getupdates",
 		map[string]any{"get_updates_buf": cursor, "base_info": c.baseInfo()}, true, longPollTimeout, nil)
 	if err != nil {
-		var e *Error
-		if errors.As(err, &e) && e.Code == CodeTimeout {
+		if c.isLongPollTimeout(err, c.clock().Sub(start)) {
 			return Poll{Cursor: cursor}, nil
 		}
 		return Poll{}, err
 	}
-	if code, ok := out["errcode"].(float64); ok && code == -14 {
+	if code, ok := responseInt(out["errcode"]); ok && code == -14 {
 		return Poll{}, &Error{Code: CodeReplaced, Msg: "the iLink token is no longer active"}
 	}
 	if err := ret(out, "the poll"); err != nil {
@@ -284,7 +451,7 @@ func (c *Client) GetUpdates(ctx context.Context, cursor string) (Poll, error) {
 	if s, ok := out["get_updates_buf"].(string); ok {
 		p.Cursor = s
 	}
-	if ms, ok := out["longpolling_timeout_ms"].(float64); ok && ms > 0 {
+	if ms, ok := responseInt(out["longpolling_timeout_ms"]); ok && ms > 0 {
 		p.Timeout = time.Duration(ms) * time.Millisecond
 	}
 	raw, err := json.Marshal(out["msgs"])
@@ -314,9 +481,15 @@ func (c *Client) GetUpdates(ctx context.Context, cursor string) (Poll, error) {
 // SendText sends text (at most MaxText code points; use Chunk) to peer as the bot. contextToken comes from the
 // peer's latest message; clientID makes the send idempotent on iLink's side.
 func (c *Client) SendText(ctx context.Context, peer, contextToken, clientID, text string) error {
+	_, err := c.SendTextWithID(ctx, peer, contextToken, clientID, text)
+	return err
+}
+
+// SendTextWithID also returns the server message id, which a later ref_msg.svr_id can reference.
+func (c *Client) SendTextWithID(ctx context.Context, peer, contextToken, clientID, text string) (string, error) {
 	if strings.TrimSpace(peer) == "" || strings.TrimSpace(contextToken) == "" || strings.TrimSpace(clientID) == "" ||
 		text == "" || len([]rune(text)) > MaxText {
-		return &Error{Code: CodeProtocol, Msg: "incomplete iLink text message"}
+		return "", &Error{Code: CodeProtocol, Msg: "incomplete iLink text message"}
 	}
 	msg := map[string]any{
 		"from_user_id":  "",
@@ -329,9 +502,12 @@ func (c *Client) SendText(ctx context.Context, peer, contextToken, clientID, tex
 	}
 	out, err := c.call(ctx, http.MethodPost, "ilink/bot/sendmessage", map[string]any{"msg": msg, "base_info": c.baseInfo()}, true, apiTimeout, nil)
 	if err != nil {
-		return err
+		return "", err
 	}
-	return ret(out, "the message")
+	if err := refusal(out, "the message"); err != nil {
+		return "", err
+	}
+	return responseMessageID(out["message_id"]), nil
 }
 
 // TypingTicket gets the ticket SetTyping needs for peer.

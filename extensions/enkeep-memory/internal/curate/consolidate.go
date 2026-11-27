@@ -10,6 +10,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
@@ -269,10 +270,20 @@ func quotesOf(e *entry.Entry, n int) []string {
 
 // Consolidate files every pending action seen by day (design 5.0 steps 1–4) and settles the statuses. Without a
 // model nothing is judged: the actions wait for the next run with one. Call it with the store's lock held.
+//
+// With Workers > 1 the facets are judged at once (0.2.0-beta.41): each facet's batches stay in order (a batch recalls
+// what the one before it filed), and up to Workers facets have a call out at a time. Building a batch and applying
+// its answer read and change the state, so they take turns under one lock; only the model calls overlap. The process
+// limiter (model.Limiter) still caps the calls at 4 at once and 20 a minute, with the scheduled passes first.
 func (c *Curator) Consolidate(ctx context.Context, m model.Model, day string, run *store.Run) error {
 	s := c.St.S
 	c.noteActiveDays(day)
 	c.seedTypes()
+	type job struct {
+		f  entry.Facet
+		as []*entry.Entry
+	}
+	var jobs []job
 	for _, f := range entry.Facets {
 		as := pending(s, day)[f]
 		if len(as) == 0 {
@@ -282,24 +293,47 @@ func (c *Curator) Consolidate(ctx context.Context, m model.Model, day string, ru
 		if f == entry.People && c.Cards != nil {
 			as = c.fileCards(as, run)
 		}
-		if m == nil {
-			continue
+		if m != nil && len(as) > 0 {
+			jobs = append(jobs, job{f, as})
 		}
-		for len(as) > 0 {
-			if err := ctx.Err(); err != nil {
-				return err
-			}
+	}
+	j := &consJudge{c: c, m: m, day: day, run: run}
+	jctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	parallel(jctx, max(1, c.Workers), len(jobs), func(i int) {
+		as := jobs[i].as
+		for len(as) > 0 && jctx.Err() == nil {
+			j.mu.Lock()
 			batch := c.consBatch(as)
+			j.mu.Unlock()
 			as = as[len(batch):]
-			if err := c.judgeBatch(ctx, m, f, batch, day, run); err != nil {
-				if errors.Is(err, model.ErrUnavailable) {
-					run.Notes = append(run.Notes, "整理：模型不可用，新条目留到下次归档")
-					return nil
+			if err := j.judge(jctx, jobs[i].f, batch); err != nil {
+				j.mu.Lock()
+				switch {
+				case errors.Is(err, model.ErrPaused), errors.Is(err, model.ErrUnavailable):
+					if j.stop == nil {
+						j.stop = err
+					}
+					cancel()
+				case jctx.Err() != nil:
+				default:
+					run.Notes = append(run.Notes, fmt.Sprintf("整理（%s）：%v", jobs[i].f, err))
+					run.Counts["consolidate_errors"]++
 				}
-				run.Notes = append(run.Notes, fmt.Sprintf("整理（%s）：%v", f, err))
-				run.Counts["consolidate_errors"]++
+				j.mu.Unlock()
 			}
 		}
+	})
+	if errors.Is(j.stop, model.ErrPaused) {
+		run.Notes = append(run.Notes, "整理：模型等闸，新条目留到下次归档")
+		return nil
+	}
+	if j.stop != nil {
+		run.Notes = append(run.Notes, "整理：模型不可用，新条目留到下次归档")
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	c.cleanRelations(run)
 	c.learnTypes(run)
@@ -351,9 +385,21 @@ func (c *Curator) consBatch(as []*entry.Entry) []*entry.Entry {
 	return as
 }
 
-// judgeBatch asks the model about a batch of one facet's actions and applies the checked answer. A batch the model
-// declines is split; a single action it declines is left standing alone.
-func (c *Curator) judgeBatch(ctx context.Context, m model.Model, f entry.Facet, batch []*entry.Entry, day string, run *store.Run) error {
+// consJudge judges the batches of a consolidation, one facet per goroutine; mu guards the state and the run.
+type consJudge struct {
+	c    *Curator
+	m    model.Model
+	day  string
+	run  *store.Run
+	mu   sync.Mutex
+	stop error // the model paused or went away: no more batches
+}
+
+// judge asks the model about a batch of one facet's actions and applies the checked answer. A batch the model
+// declines is split; a single action it declines is left standing alone. The call is made without the lock.
+func (j *consJudge) judge(ctx context.Context, f entry.Facet, batch []*entry.Entry) error {
+	c, run := j.c, j.run
+	j.mu.Lock()
 	s := c.St.S
 	in := consInput{Facet: string(f), Meaning: facetMeaning[f], Lang: c.language(), Types: c.typeNames(f), Rule: mergeRule[f], Entries: []consEntry{}}
 	local := map[string]string{} // short id → entry id
@@ -377,30 +423,66 @@ func (c *Curator) judgeBatch(ctx context.Context, m model.Model, f entry.Facet, 
 		in.Items = append(in.Items, it)
 	}
 	body, _ := json.Marshal(in)
-	resp, err := m.Complete(ctx, model.Request{Step: "consolidate", Tier: model.Small, System: consolidatePrompt, User: string(body),
+	j.mu.Unlock()
+	resp, err := j.m.Complete(ctx, model.Request{Step: "consolidate", Tier: model.Small, System: consolidatePrompt, User: string(body),
 		MaxTokens: consolidateMaxTokens, Schema: consolidateSchema})
 	if errors.Is(err, model.ErrRefused) {
+		j.mu.Lock()
 		run.Counts["consolidate_refused"]++
 		if len(batch) == 1 {
 			c.standalone(batch[0], "refused", run)
+			j.mu.Unlock()
 			return nil
 		}
+		j.mu.Unlock()
 		half := len(batch) / 2
-		if err := c.judgeBatch(ctx, m, f, batch[:half], day, run); err != nil {
+		if err := j.judge(ctx, f, batch[:half]); err != nil {
 			return err
 		}
-		return c.judgeBatch(ctx, m, f, batch[half:], day, run)
+		return j.judge(ctx, f, batch[half:])
 	}
 	if err != nil {
 		return err
 	}
-	run.Counts["consolidate_calls"]++
 	var out consOutput
 	if err := json.Unmarshal([]byte(extractJSON(resp.Text)), &out); err != nil {
+		j.mu.Lock()
+		run.Counts["consolidate_calls"]++
+		j.mu.Unlock()
 		return fmt.Errorf("consolidation answer: %w", err)
 	}
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	run.Counts["consolidate_calls"]++
 	c.applyDecisions(f, batch, out.Decisions, local, allowed, run)
 	return nil
+}
+
+// parallel runs fn(0..n-1) on up to workers goroutines (in order on this one when workers ≤ 1), and waits; once ctx
+// ends no more are started.
+func parallel(ctx context.Context, workers, n int, fn func(i int)) {
+	if workers <= 1 {
+		for i := 0; i < n && ctx.Err() == nil; i++ {
+			fn(i)
+		}
+		return
+	}
+	next := make(chan int)
+	var wg sync.WaitGroup
+	for w := 0; w < min(workers, n); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range next {
+				fn(i)
+			}
+		}()
+	}
+	for i := 0; i < n && ctx.Err() == nil; i++ {
+		next <- i
+	}
+	close(next)
+	wg.Wait()
 }
 
 // extractJSON cuts the outermost JSON object out of an answer that may carry text around it.
@@ -503,6 +585,8 @@ func (c *Curator) fileInto(a, t *entry.Entry, why string, run *store.Run) {
 		c.standalone(a, "no target", run)
 	case t.Deleted:
 		c.dropTombstoned(a, run)
+	case markedWrong(t):
+		c.afterWrong(a, t, run)
 	case t.Grain == entry.Action:
 		if err := c.Merge(a.ID, t.ID, "same fact: "+why, run.ID); err == nil {
 			run.Counts["consolidate_same_fact"]++
@@ -514,6 +598,53 @@ func (c *Curator) fileInto(a, t *entry.Entry, why string, run *store.Run) {
 				run.Counts["consolidate_handwritten_counted"]++
 			}
 		}
+	}
+}
+
+// flagOnceWrong marks an entry started beside one the user (or the assistant) marked wrong: "曾被标不对", with the
+// wrong entry's id after the colon.
+const flagOnceWrong = "once_wrong:"
+
+// markedWrong: the entry's last verdict is wrong (entry.Live is false for it, but it is still a filing target).
+func markedWrong(e *entry.Entry) bool {
+	n := len(e.Verdicts)
+	return n > 0 && e.Verdicts[n-1].Mark == ActWrong
+}
+
+// afterWrong files an action the model matched with an entry marked wrong (design v2 §4.5): the wrong entry is a
+// counter-example, so new evidence of the same meaning never adds up on it and never brings it back. The action
+// starts an entry of its own instead, carrying flagOnceWrong, and has to earn its status from its own evidence; an
+// entry of that kind already started beside the same wrong one takes it.
+func (c *Curator) afterWrong(a, t *entry.Entry, run *store.Run) {
+	run.Counts["consolidate_after_wrong"]++
+	mark := flagOnceWrong + t.ID
+	for _, id := range sortedKeys(c.St.S.Entries) {
+		if e := c.St.S.Entries[id]; e.ID != a.ID && e.Live() && slices.Contains(e.Flags, mark) && e.Facet == a.Facet {
+			if e.Grain == entry.Action {
+				_ = c.Merge(a.ID, e.ID, "same as an entry started beside a wrong one", run.ID)
+			} else {
+				_ = c.File(a.ID, e.ID, run.ID)
+			}
+			return
+		}
+	}
+	if t.Grain == entry.Action { // a fact: the action stands alone, marked
+		a.Flags = appendFlag(a.Flags, mark)
+		c.standalone(a, "beside an entry marked wrong", run)
+		return
+	}
+	k := c.create(&entry.Entry{Facet: a.Facet, Grain: entry.Class, Type: a.Type, Text: a.Text, Situation: a.Situation,
+		Choice: a.Choice, Rejected: a.Rejected, Why: a.Why, Exception: a.Exception, Object: a.Object, Pitfall: a.Pitfall, Fix: a.Fix,
+		Person: a.Person, Part: a.Part, Inferred: a.Inferred, ReportedOnly: a.ReportedOnly, Domain: a.Domain, Sensitive: a.Sensitive,
+		Categories: slices.Clone(a.Categories), OriginSpace: a.OriginSpace,
+		Scopes: slices.Clone(a.Scopes), Impact: a.Impact, OriginVersion: ConsolidatePrompt, Flags: []string{mark}}, run.ID)
+	if markedWrong(k) || k.Deleted { // the action says word for word what was marked wrong: it stands alone, marked
+		a.Flags = appendFlag(a.Flags, mark)
+		c.standalone(a, "the text of an entry marked wrong", run)
+		return
+	}
+	if err := c.File(a.ID, k.ID, run.ID); err == nil {
+		run.Counts["consolidate_filed"]++
 	}
 }
 
@@ -551,6 +682,7 @@ func (c *Curator) newClass(a *entry.Entry, n *consNew, byKey map[string]string, 
 		Choice: strings.TrimSpace(n.Choice), Rejected: strings.TrimSpace(n.Rejected), Why: strings.TrimSpace(n.Why),
 		Exception: strings.TrimSpace(n.Exception), Object: firstNonEmpty(strings.TrimSpace(n.Object), a.Object), Pitfall: a.Pitfall, Fix: a.Fix,
 		Person: person, Part: a.Part, Inferred: a.Inferred, ReportedOnly: a.ReportedOnly, Domain: a.Domain, Sensitive: a.Sensitive,
+		Categories: slices.Clone(a.Categories), OriginSpace: a.OriginSpace,
 		Scopes: slices.Clone(a.Scopes), Impact: a.Impact, OriginVersion: ConsolidatePrompt}, run.ID)
 	c.noteType(a.Facet, typ)
 	if n.Key != "" {
@@ -608,8 +740,8 @@ func (c *Curator) dropTombstoned(a *entry.Entry, run *store.Run) {
 	run.Counts["consolidate_tombstoned"]++
 }
 
-// noteActiveDays adds the day, and every day an entry was seen on, to the user's active days (days with any source
-// data, 4.4): the thresholds count these, not the calendar.
+// noteActiveDays adds every day an entry was seen on up to day to the user's active days (4.4): the thresholds count
+// these, not the calendar. The day itself is added by the daily pass only when the model read it (MarkActive, E4).
 func (c *Curator) noteActiveDays(day string) {
 	s := c.St.S
 	add := func(d string) {
@@ -622,7 +754,6 @@ func (c *Curator) noteActiveDays(day string) {
 		}
 		s.ActiveDays = slices.Insert(s.ActiveDays, i, d)
 	}
-	add(day)
 	for _, e := range s.Entries {
 		if e.Grain == entry.Action && e.First <= day {
 			for _, o := range occurrences(e) {
@@ -634,7 +765,7 @@ func (c *Curator) noteActiveDays(day string) {
 	}
 }
 
-// MarkActive records that day had source data (the daily pass, whenever it reads any unit).
+// MarkActive records that the model read day (the daily pass, when it had model output for the day).
 func (c *Curator) MarkActive(day string) {
 	s := c.St.S
 	if !slices.Contains(s.ActiveDays, day) {
@@ -689,5 +820,5 @@ func abstractStable(s *store.State, e *entry.Entry) bool {
 			n++
 		}
 	}
-	return n >= 2 || e.Origin != entry.Behavior
+	return n >= 2 || e.Origin != entry.Behavior && (e.Origin != entry.Seed || e.Status == entry.Stable)
 }

@@ -70,7 +70,7 @@ func (c *Curator) BackfillStep(ctx context.Context) (bool, error) {
 		if c.Model != nil {
 			m = &model.Metered{Model: c.Model, Usage: c.St, Day: day}
 		}
-		c.compileExits(ctx, m, run)
+		_ = c.compileExits(ctx, m, run) // held (model_paused): the next daily pass writes them
 	}
 	return b.Finished != "", c.St.Save()
 }

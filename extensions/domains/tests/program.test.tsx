@@ -53,7 +53,7 @@ test("lookup, detail navigation and history work with both native navigation con
   try {
     for (const version of [1, 5]) {
       const session = `lookup-${version}`;
-      await h.call("ui.page.mount", { session, params: { contribution: "lookup", locale: "en", ui_version: version } });
+      await h.call("ui.page.mount", { session, params: { contribution: "domains", locale: "en", ui_version: version } });
       let snapshot = await settled(h, session, "domain-welcome-text");
       await h.call("ui.page.event", { session, ticket: "host-ticket", interaction: interaction(snapshot, "domain-submit", { domain: "EXAMPLE.com" }) });
       snapshot = await settled(h, session, "Example Registrar");
@@ -63,8 +63,8 @@ test("lookup, detail navigation and history work with both native navigation con
       snapshot = await settled(h, session, "history-example.com");
       const opened = await h.call("ui.page.event", { session, ticket: "host-ticket", interaction: interaction(snapshot, "history-example.com") });
       if (version >= 3) {
-        assert.equal(opened.result.result.push.ui, "lookup");
-        await h.call("ui.page.mount", { session: "child", params: { contribution: "lookup", locale: "en", ui_version: version, state: opened.result.result.push.state } });
+        assert.equal(opened.result.result.push.ui, "domains");
+        await h.call("ui.page.mount", { session: "child", params: { contribution: "domains", locale: "en", ui_version: version, state: opened.result.result.push.state } });
         assert.ok(body(await settled(h, "child", "Example Registrar")).includes("https://rdap.verisign.com/com/v1/domain/example.com"));
         await h.call("ui.page.dispose", { session: "child" });
       } else assert.ok(body(await settled(h, session, "Example Registrar")).includes("Example Registrar"));
@@ -75,7 +75,7 @@ test("lookup, detail navigation and history work with both native navigation con
 test("history clear, replay and three-language pure snapshots remain safe", async () => {
   const h = await setup();
   try {
-    await h.call("ui.page.mount", { session: "owned", params: { contribution: "lookup", locale: "en", ui_version: 5 } });
+    await h.call("ui.page.mount", { session: "owned", params: { contribution: "domains", locale: "en", ui_version: 5 } });
     const welcome = await settled(h, "owned", "domain-welcome-text"), event = interaction(welcome, "domain-submit", { domain: "example.com" });
     assert.ok((await h.call("ui.page.event", { session: "owned", interaction: event })).error);
     const accepted = (await h.call("ui.page.event", { session: "owned", ticket: "host-ticket", interaction: event })).result;
@@ -87,13 +87,13 @@ test("history clear, replay and three-language pure snapshots remain safe", asyn
     await h.call("ui.page.event", { session: "owned", ticket: "host-ticket", interaction: interaction(history, "history-clear") });
     await settled(h, "owned", "Recent lookups cleared.");
     assert.equal((await h.call("connector.tools.call", { name: "domains_lookup", args: { domain: "example.com" } })).result.text.includes("Example Registrar"), true);
-    const remount: Snapshot = (await h.call("ui.page.mount", { session: "new", params: { contribution: "lookup", ui_version: 5 } })).result;
+    const remount: Snapshot = (await h.call("ui.page.mount", { session: "new", params: { contribution: "domains", ui_version: 5 } })).result;
     assert.notEqual(remount.generation, welcome.generation);
     assert.equal((await h.call("ui.page.event", { session: "new", ticket: "host-ticket", interaction: event })).result.status, "ambiguous");
     const local = new h.bundle.Domains(h.fixture.fetch, {}, { locale: "en", now: () => h.fixture.clock, limits: { gap: 0 } });
     const pure = h.bundle.snapshotPage(local, new h.bundle.MemoryHistory());
     for (const [locale, expected] of [["en", "Domain registration"], ["zh-Hans", "域名注册信息"], ["ja", "ドメイン登録情報"]]) {
-      assert.ok(JSON.stringify(await pure.render({ contribution: "lookup", locale, ui_version: 1, hub: {} })).includes(expected));
+      assert.ok(JSON.stringify(await pure.render({ contribution: "domains", locale, ui_version: 1, hub: {} })).includes(expected));
     }
   } finally { h.p.close(); }
 });

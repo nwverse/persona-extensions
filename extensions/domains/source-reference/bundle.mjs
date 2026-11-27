@@ -33,6 +33,9 @@ var ExtensionStorage = class {
   claim(params) {
     return this.hub.call("storage.queue.claim", params);
   }
+  renew(params) {
+    return this.hub.call("storage.queue.renew", params);
+  }
   ack(params) {
     return this.hub.call("storage.queue.ack", params);
   }
@@ -128,6 +131,8 @@ var Composer = native("composer");
 var Image = native("image");
 var Grid = native("grid");
 var Carousel = native("carousel");
+var Graph = native("graph");
+var Scene = native("scene");
 
 // ../../sdk/ts/src/hooks.ts
 var context;
@@ -217,7 +222,10 @@ var fields = {
   composer: ["name", "placeholder", "value", "buttons"],
   image: ["src", "alt", "caption", "aspect", "fit", "no_zoom"],
   grid: ["tiles", "max_columns"],
-  carousel: ["title", "tiles", "width"]
+  carousel: ["title", "tiles", "width"],
+  graph: ["nodes", "edges", "layout", "direction", "selected", "folded"],
+  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"],
+  map: ["title", "alt", "caption", "aspect", "viewport", "markers", "routes", "links", "static", "show_list"]
 };
 function pathPart(parent, ...segments) {
   return parent + segments.map((segment) => `${segment.length}:${segment}`).join("");
@@ -827,7 +835,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "domains", name: "Domains \u57DF\u540D", version: "0.1.1", icon: "assets/icon.png", description: "\u67E5\u8BE2\u5355\u4E2A .com \u6216 .net \u57DF\u540D\u7684\u516C\u5F00 RDAP \u6CE8\u518C\u4FE1\u606F\uFF0C\u67E5\u770B\u6CE8\u518C\u3001\u5230\u671F\u548C\u53D8\u66F4\u65E5\u671F\uFF0C\u4FDD\u7559\u672C\u5730\u6700\u8FD1\u67E5\u8BE2\u3002\u65E0\u9700\u8D26\u53F7\uFF1B\u4E0D\u505A\u6279\u91CF\u626B\u63CF\u3001DNS \u63A2\u6D4B\u6216\u8054\u7CFB\u4EBA\u6536\u96C6\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/domains/README.md", tags: ["\u57DF\u540D", "RDAP", "\u6CE8\u518C\u4FE1\u606F", "\u5230\u671F\u65E5\u671F"], engines: { persona: ">=202611101800", extension_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/domains.mjs", sha256: "" } }, contributes: { connectors: [{ id: "domains", name: "Domains", capabilities: ["status", "tools"], hosts: ["data.iana.org", "rdap.verisign.com"], agent_tools: ["domains_*"] }], ui: [{ id: "lookup", title: "\u57DF\u540D\u67E5\u8BE2", placement: "nav_page", icon: "search" }] }, permissions: { network: ["data.iana.org", "rdap.verisign.com"], storage: { keys: ["history"] } } };
+var persona_extension_default = { manifest_version: 1, id: "domains", name: "Domains \u57DF\u540D", version: "0.1.4", icon: "assets/icon.png", description: "\u67E5\u8BE2\u5355\u4E2A .com \u6216 .net \u57DF\u540D\u7684\u516C\u5F00 RDAP \u6CE8\u518C\u4FE1\u606F\uFF0C\u67E5\u770B\u6CE8\u518C\u3001\u5230\u671F\u548C\u53D8\u66F4\u65E5\u671F\uFF0C\u4FDD\u7559\u672C\u5730\u6700\u8FD1\u67E5\u8BE2\u3002\u65E0\u9700\u8D26\u53F7\uFF1B\u4E0D\u505A\u6279\u91CF\u626B\u63CF\u3001DNS \u63A2\u6D4B\u6216\u8054\u7CFB\u4EBA\u6536\u96C6\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/domains/README.md", tags: ["\u57DF\u540D", "RDAP", "\u6CE8\u518C\u4FE1\u606F", "\u5230\u671F\u65E5\u671F"], engines: { persona: ">=202611101800", extension_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/domains.mjs", sha256: "" } }, contributes: { connectors: [{ id: "domains", name: "Domains", capabilities: ["status", "tools"], hosts: ["data.iana.org", "rdap.verisign.com"], agent_tools: ["domains_*"] }], ui: [{ id: "domains", title: "\u57DF\u540D\u67E5\u8BE2", placement: "nav_page", icon: "search" }] }, permissions: { network: ["data.iana.org", "rdap.verisign.com"], storage: { keys: ["history"] } } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 18e3, tool: 18e3, response: 1 << 20, bootstrap: 24 * 60 * 6e4, fresh: 15 * 6e4, cache: 48, cacheBytes: 2 << 20, gap: 350 });
@@ -1416,7 +1424,7 @@ async function loadPage(service, history, state, refresh, signal) {
 }
 function page(props) {
   const { service, state, loaded } = props, t = textsFor(props.locale ?? service.locale), tz = props.tz ?? "Local";
-  const act = (id, next, title) => props.action?.(id, next, title) ?? (next && (props.uiVersion ?? 0) >= 3 ? { id, push: { ui: "lookup", state: encodeState(next), ...title ? { title } : {} } } : { id });
+  const act = (id, next, title) => props.action?.(id, next, title) ?? (next && (props.uiVersion ?? 0) >= 3 ? { id, push: { ui: "domains", state: encodeState(next), ...title ? { title } : {} } } : { id });
   const text = (key, value, style = "secondary") => /* @__PURE__ */ jsx(Text, { text: clip(value, 1800), style }, key);
   const form = /* @__PURE__ */ jsxs(Section, { title: t.search, children: [
     /* @__PURE__ */ jsx(Field, { name: "domain", label: t.search, kind: "text", placeholder: t.hint, value: state.q }, "domain-input"),
@@ -1501,7 +1509,7 @@ function Root(options) {
     loaded: result?.service === options.service && result.identity === identity ? result.loaded : { kind: "loading" },
     action: (id, next, title) => {
       if (next && (options.uiVersion ?? 0) >= 3) {
-        const push = { ui: "lookup", state: encodeState(next), ...title ? { title } : {} };
+        const push = { ui: "domains", state: encodeState(next), ...title ? { title } : {} };
         return callback(() => ({ push }), { push });
       }
       return callback(async (values) => {
@@ -1676,7 +1684,7 @@ function createProgram(fetch = (input, init) => globalThis.fetch(input, init), o
       if (!history) await recent.load();
     },
     namespaces: { connector: connector(() => current().service, () => current().history) },
-    ui: { lookup: componentPage((req) => root({ service: current().service, history: current().history, state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) }
+    ui: { domains: componentPage((req) => root({ service: current().service, history: current().history, state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) }
   };
 }
 var index_default = createProgram();

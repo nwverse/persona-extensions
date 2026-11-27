@@ -4,7 +4,13 @@ export type ReadCode = "invalid" | "bad_answer" | "not_found" | "rate_limited" |
 export class ReadError extends Error {
   constructor(readonly code: ReadCode, readonly status?: number) { super(code); }
 }
-export const clip = (text: string, most: number) => text.length <= most ? text : text.slice(0, most).trimEnd() + "…";
+export const clip = (text: string, most: number) => {
+  if (!(most > 0)) return "";
+  const chars = Array.from(text);
+  if (chars.length <= most) return text;
+  if (most === 1) return chars[0];
+  return chars.slice(0, most - 1).join("").trimEnd() + "…";
+};
 export const oneLine = (text: string) => text.replace(/\s+/gu, " ").trim();
 export function queryText(value: unknown): string {
   if (typeof value !== "string" || /[\u0000-\u001f\u007f]/u.test(value)) throw new ReadError("invalid");
@@ -53,7 +59,7 @@ function productURL(value: unknown, code: string): string {
   if (typeof value !== "string") throw new ReadError("bad_answer");
   let url: URL;
   try { url = new URL(value); } catch { throw new ReadError("bad_answer"); }
-  if (url.protocol !== "https:" || url.hostname !== "world.openfoodfacts.org" || url.username || url.password || url.port || !url.pathname.startsWith(`/product/${code}`)) throw new ReadError("bad_answer");
+  if (url.protocol !== "https:" || url.hostname !== "world.openfoodfacts.org" || url.username || url.password || url.port || (url.pathname !== `/product/${code}` && !url.pathname.startsWith(`/product/${code}/`))) throw new ReadError("bad_answer");
   return url.href;
 }
 export interface Product {
@@ -61,6 +67,7 @@ export interface Product {
   nutriscore?: "a" | "b" | "c" | "d" | "e"; nova?: number; url: string;
 }
 export interface SearchResult { products: Product[]; total: number; at: number; stale?: ReadError }
+export interface ProductResult { product: Product; at: number; stale?: ReadError }
 export function parseProduct(raw: unknown, expectedCode: string, at: number): Product {
   const root = object(raw);
   if (root.status === 0 || root.status_verbose === "product not found") throw new ReadError("not_found");
@@ -68,7 +75,9 @@ export function parseProduct(raw: unknown, expectedCode: string, at: number): Pr
   return product(root.product, expectedCode);
 }
 function product(raw: unknown, expectedCode?: string): Product {
-  const item = object(raw), code = barcode(item.code);
+  const item = object(raw);
+  if (typeof item.code !== "string" || !/^[0-9]{8,14}$/.test(item.code)) throw new ReadError("bad_answer");
+  const code = item.code;
   // Open Food Facts answers a 12-digit UPC-A as its EAN-13, with a leading zero: the same product.
   if (expectedCode && code.replace(/^0+/, "") !== expectedCode.replace(/^0+/, "")) throw new ReadError("bad_answer");
   const name = string(item.product_name, 300);

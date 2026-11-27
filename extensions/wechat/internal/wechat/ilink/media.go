@@ -16,10 +16,21 @@ import (
 // cdnOrigin serves media that has an encrypted query but no full URL.
 const cdnOrigin = "https://novac2c.cdn.weixin.qq.com"
 
-// MaxMedia is the largest media Download accepts (decrypted).
-const MaxMedia = 8 << 20
+const (
+	// MaxMedia is the largest voice Download accepts (decrypted) and the largest picture UploadImage sends.
+	MaxMedia = 8 << 20
+	// MaxPicture is the largest picture Download accepts (decrypted): room for a photo sent as the original (often
+	// 3–10 MB), which the hub scales down for the model.
+	MaxPicture = 16 << 20
+	// MaxFile is the largest file or video Download accepts, and the hub's raw budget for one message's attachments.
+	MaxFile = 40 << 20
+)
 
-var hex32 = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+var (
+	hex32 = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+	// ErrMediaTooLarge reports a media object that exceeds Download's decrypted size cap.
+	ErrMediaTooLarge = errors.New("media too large")
+)
 
 // Download fetches m from WeChat's CDN and decrypts it (AES-128-ECB, PKCS#7).
 func (c *Client) Download(ctx context.Context, m Media) ([]byte, error) {
@@ -45,21 +56,35 @@ func (c *Client) Download(ctx context.Context, m Media) ([]byte, error) {
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, &Error{Code: CodeHTTP, Msg: "media download answered HTTP " + resp.Status, Retry: resp.StatusCode >= 500}
 	}
-	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxMedia+aes.BlockSize+1))
+	limit := MaxMedia
+	switch m.Kind {
+	case MediaImage:
+		limit = MaxPicture
+	case MediaFile, MediaVideo:
+		limit = MaxFile
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit+aes.BlockSize+1)))
 	if err != nil {
 		return nil, &Error{Code: CodeNetwork, Msg: "media download failed", Retry: true, err: err}
 	}
-	if len(data) > MaxMedia+aes.BlockSize {
-		return nil, &Error{Code: CodeBadResponse, Msg: "media too large"}
+	if len(data) > limit+aes.BlockSize {
+		return nil, &Error{Code: CodeBadResponse, Msg: "media too large", err: ErrMediaTooLarge}
 	}
-	return DecryptECB(data, key)
+	plain, err := DecryptECB(data, key)
+	if err != nil {
+		return nil, err
+	}
+	if len(plain) > limit { // PKCS#7 can hide up to fifteen extra bytes inside the same final cipher block.
+		return nil, &Error{Code: CodeBadResponse, Msg: "media too large", err: ErrMediaTooLarge}
+	}
+	return plain, nil
 }
 
 func mediaURL(m Media) (string, error) {
 	if m.URL != "" {
 		u, err := url.Parse(m.URL)
 		if err != nil || u.Scheme != "https" || u.User != nil || (u.Port() != "" && u.Port() != "443") || !tencentHost(u.Hostname()) {
-			return "", &Error{Code: CodeProtocol, Msg: "media URL is not a Tencent HTTPS URL"}
+			return "", &Error{Code: CodeProtocol, Msg: "media URL is not a Tencent HTTPS URL (" + formatURLDiag("media_url", u, err, false) + ")"}
 		}
 		return u.String(), nil
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	exits "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/people"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
@@ -40,7 +41,7 @@ func (a *app) v4Action(ctx context.Context, s *page, act string, values map[stri
 	c := a.c
 	switch {
 	case act == "facet":
-		s.Facet, s.Open = values["facet"], ""
+		s.Facet, s.Sub, s.Open = values["facet"], "", ""
 		return "", true, nil
 	case act == "check":
 		s.Check, s.Sub, s.Open = values["check"], "", ""
@@ -81,9 +82,23 @@ func (a *app) v4Action(ctx context.Context, s *page, act string, values map[stri
 			return false, nil
 		})
 		toast, s.Open = t.s("跳过了；以后在「起步」里还能回答", "Skipped; you can still answer under Start"), ""
+	case act == "profile:refresh":
+		c.St.Lock()
+		lang := c.Cfg.Language
+		if lang == "" {
+			lang = c.Lang
+		}
+		_, err = profile.Refresh(ctx, c.St.S, c.St.Dir, profile.Options{Provider: c.ProfileInput, Lang: lang, SkipModel: true, Force: true})
+		c.St.Unlock()
+		if err == nil {
+			toast = t.s("已按当前稳定条目刷新侧写汇总", "Profile summary refreshed from settled entries")
+		}
 	case strings.HasPrefix(act, "act:"):
 		verb, id, _ := strings.Cut(strings.TrimPrefix(act, "act:"), ":")
 		value := ""
+		if verb == curate.ActCatAdd || verb == curate.ActCatRemove {
+			id, value, _ = strings.Cut(id, ":") // act:cat_add:<id>:<category>
+		}
 		if verb == curate.ActEdit {
 			value = strings.TrimSpace(values["text"])
 			if value == "" {
@@ -91,13 +106,15 @@ func (a *app) v4Action(ctx context.Context, s *page, act string, values map[stri
 			}
 		}
 		err = write(func(st *store.State) (bool, error) {
-			return verb == curate.ActDelete, c.UserAct(id, verb, value)
+			return verb == curate.ActDelete || verb == curate.ActCatAdd || verb == curate.ActCatRemove, c.UserAct(id, verb, value)
 		})
 		if err == nil {
 			toast = map[string]string{curate.ActEdit: t.s("改好了：以后整理不会覆盖你的版本", "Saved: curation never overwrites your wording"),
 				curate.ActPin: t.s("钉住了", "Pinned"), curate.ActUnpin: t.s("取消钉住了", "Unpinned"),
-				curate.ActDelete:  t.s("删掉了，也撤出了出口；可以恢复", "Deleted and withdrawn from the exits; it can be restored"),
-				curate.ActRestore: t.s("恢复了；下一次整理后回到出口", "Restored; back in the exits after the next run")}[verb]
+				curate.ActDelete:    t.s("删掉了，也撤出了出口；可以恢复", "Deleted and withdrawn from the exits; it can be restored"),
+				curate.ActRestore:   t.s("恢复了；下一次整理后回到出口", "Restored; back in the exits after the next run"),
+				curate.ActCatAdd:    t.s("加上分类了：按分类和场景用", "Category added: used by category and scene"),
+				curate.ActCatRemove: t.s("去掉分类了：以后整理不会再自动加回来", "Category removed: curation will not add it back")}[verb]
 		}
 	case strings.HasPrefix(act, "pick:"):
 		keep, drop, _ := strings.Cut(strings.TrimPrefix(act, "pick:"), ":")
@@ -164,7 +181,7 @@ func (a *app) v4Action(ctx context.Context, s *page, act string, values map[stri
 			}
 			err = write(func(st *store.State) (bool, error) {
 				setSwitch(st, key, value, time.Now())
-				return value == "off" || strings.HasPrefix(key, entry.K13Sensitive), nil
+				return value == "off" || strings.HasPrefix(key, entry.K22Resident), nil
 			})
 			toast = t.f("%s 改成%s", "%s set %s", key, onOff(t, value))
 		}
@@ -311,6 +328,14 @@ func uniq(xs []string) []string {
 func (a *app) withdraw(ctx context.Context) {
 	c := a.c
 	s := c.St.S
+	// Keep profile-summary.json immediately consistent whenever an entry is withdrawn or marked wrong.
+	profLang := c.Cfg.Language
+	if profLang == "" {
+		profLang = c.Lang
+	}
+	if prev, err := profile.Load(c.St.Dir); err == nil && prev != nil {
+		_, _ = profile.Refresh(ctx, s, c.St.Dir, profile.Options{Provider: c.ProfileInput, Lang: profLang, SkipModel: true, Force: true})
+	}
 	in := exitIndex(c.St.Dir)
 	if len(in) == 0 {
 		return // nothing in any exit yet
@@ -330,7 +355,11 @@ func (a *app) withdraw(ctx context.Context) {
 	if lang == "" {
 		lang = c.Lang
 	}
-	rep, err := exits.Compile(ctx, clone, exits.Options{Dir: c.St.Dir, Lang: lang, Loc: c.Loc, Hub: c.Hub, Run: "page",
+	var projects []entry.KBProject
+	if clone.Exits != nil {
+		projects = clone.Exits.Projects
+	}
+	rep, err := exits.Compile(ctx, clone, exits.Options{Dir: c.St.Dir, Lang: lang, Loc: c.Loc, Hub: c.Hub, Run: "page", Projects: projects,
 		Event: func(ev entry.Event) { _ = c.St.AppendEvents(ev) }, Logf: a.logf})
 	if err != nil {
 		a.logf("enkeep-memory: withdraw: %v", err)

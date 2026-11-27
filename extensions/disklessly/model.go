@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -35,20 +36,21 @@ var CategoryIDs = []string{
 }
 
 var CategoryLabels = map[string]string{
-	CatGoCache:          "Go 构建与模块缓存",
-	CatNodePythonCache:  "Node / Python 包缓存",
-	CatDockerUnused:     "Docker 悬空镜像与 Buildx",
-	CatRustXcodeBuild:   "Rust / Xcode / 编译器缓存",
-	CatTmpLogs:          "系统日志与陈旧临时产物",
-	CatColdAgentSession: "Agent 冷会话日志 (>7d)",
+	CatGoCache:          "Go 编译和下载缓存",
+	CatNodePythonCache:  "Node / Python 下载的包",
+	CatDockerUnused:     "Docker 没在用的镜像和构建缓存",
+	CatRustXcodeBuild:   "Rust / Xcode 等编译缓存",
+	CatTmpLogs:          "系统日志和过期的临时文件",
+	CatColdAgentSession: "一周没动的 AI 对话",
 }
 
 // Health levels for disk watermark.
 const (
-	HealthOK       = "ok"
-	HealthWarning  = "warning"  // >= 80% used or free < 25 GiB (when total >= 50 GiB)
-	HealthCritical = "critical" // >= 90% used or free < 10 GiB (when total >= 20 GiB)
-	HealthOffline  = "offline"
+	HealthOK        = "ok"
+	HealthWarning   = "warning"  // >= 80% used or free < 25 GiB (when total >= 50 GiB)
+	HealthCritical  = "critical" // >= 90% used or free < 10 GiB (when total >= 20 GiB)
+	HealthOffline   = "offline"
+	HealthUnscanned = "unscanned"
 )
 
 // Safety levels for cleanup items.
@@ -66,17 +68,20 @@ const (
 
 // State is the persisted extension state in disklessly_state.json.
 type State struct {
-	Machines []*Machine       `json:"machines"`
-	Scans    map[string]*Scan `json:"scans,omitempty"`
-	History  []*CleanRecord   `json:"history,omitempty"`
+	Machines        []*Machine       `json:"machines"`
+	Scans           map[string]*Scan `json:"scans,omitempty"`
+	History         []*CleanRecord   `json:"history,omitempty"`
+	DeletedMachines map[string]bool  `json:"deleted_machines,omitempty"`
 	// Cold is the local lightweight index of each machine's cloud-archived sessions, by machine ID.
 	// It is kept in a file per machine (disklessly_cold/), loaded only when used: use cold,
 	// setCold and dropCold rather than the map.
 	Cold map[string]*ColdCatalog `json:"-"`
 
-	coldLoad   func(id string) *ColdCatalog // nil: Cold holds everything
-	coldLoaded map[string]bool
-	coldGone   map[string]bool
+	coldLoad          func(id string) *ColdCatalog // nil: Cold holds everything
+	coldLoaded        map[string]bool
+	coldGone          map[string]bool
+	shellCheck        func(*Machine) bool
+	resolveConnection func(string, string, string, int) (string, string, int)
 }
 
 // cold returns machine id's cold index, loading it on first use; nil when there is none.
@@ -120,6 +125,7 @@ func (st *State) dropCold(id string) {
 type Machine struct {
 	ID            string    `json:"id"`
 	Host          string    `json:"host"`
+	Hostname      string    `json:"hostname,omitempty"`
 	Name          string    `json:"name"`
 	User          string    `json:"user,omitempty"`
 	Port          int       `json:"port,omitempty"`
@@ -249,6 +255,8 @@ type CleanRecord struct {
 	// Referenced counts the sessions a cold-session run kept because they are still referenced
 	// (running agents, open transcripts, herdr / Persona panes, exclusion lists).
 	Referenced int `json:"referenced,omitempty"`
+	// Moved counts the sessions a cold-session run moved to the backend.
+	Moved int `json:"moved,omitempty"`
 	// RefsFound counts the session ids and transcript paths the reference probe found on the machine.
 	RefsFound int       `json:"refs_found,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
@@ -283,7 +291,7 @@ func EvaluateHealth(reachable bool, totalBytes, availableBytes uint64) string {
 		return HealthOffline
 	}
 	if totalBytes == 0 {
-		return HealthOK
+		return HealthUnscanned
 	}
 	var usedBytes uint64
 	if totalBytes >= availableBytes {
@@ -364,7 +372,24 @@ func isSelfHostAlias(h string) bool {
 			return true
 		}
 	}
+	if ip := net.ParseIP(strings.Trim(h, "[]")); ip != nil {
+		if ip.IsLoopback() {
+			return true
+		}
+		addrs, _ := net.InterfaceAddrs()
+		for _, addr := range addrs {
+			local, _, err := net.ParseCIDR(addr.String())
+			if err == nil && local.Equal(ip) {
+				return true
+			}
+		}
+	}
 	return false
+}
+
+// A loopback address on another port can be an SSH tunnel to a different machine.
+func isLocalConnection(host string, port int) bool {
+	return (port == 0 || port == 22) && isSelfHostAlias(host)
 }
 
 // ensureDefaults guarantees that the State maps/slices are initialized and the local machine is present.
@@ -424,17 +449,53 @@ func (st *State) machine(idOrHost string) *Machine {
 		}
 		return nil
 	}
+	// The pages and the MCP tools call the hub's own computer 运行 Persona 的电脑 (machineLabel):
+	// an agent sending that label back as machine means this computer, even when a remote
+	// computer carries the same name (older state, or a name set before such names were refused).
+	if isLocalLabel(idOrHost) {
+		if m := st.localMachine(); m != nil {
+			return m
+		}
+	}
 	for _, m := range st.Machines {
 		if m.ID == idOrHost || strings.EqualFold(m.Host, idOrHost) || strings.EqualFold(m.Name, idOrHost) {
 			return m
 		}
 	}
 	if isSelfHostAlias(idOrHost) {
-		for _, m := range st.Machines {
-			if m.IsLocal {
-				return m
-			}
+		return st.localMachine()
+	}
+	return nil
+}
+
+func (st *State) localMachine() *Machine {
+	for _, m := range st.Machines {
+		if m.IsLocal {
+			return m
 		}
+	}
+	return nil
+}
+
+// isLocalLabel reports whether s is the label the pages show for the hub's own computer
+// (localMachineName), ignoring spaces and letter case.
+func isLocalLabel(s string) bool {
+	squash := func(v string) string {
+		return strings.ToLower(strings.Join(strings.Fields(v), ""))
+	}
+	return s != "" && squash(s) == squash(localMachineName)
+}
+
+// checkRemoteName refuses a remote computer name that the pages would show, or the tools would
+// resolve, as the hub's own computer.
+func checkRemoteName(name, host, id string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return nil
+	}
+	label := machineLabel(&Machine{Name: name, Host: host, ID: id})
+	if isLocalLabel(name) || isLocalLabel(label) {
+		return fmt.Errorf("「%s」是运行 Persona 的电脑在页面上的名字，别的电脑不能用这个名字，不然会分不清是哪台。请换一个名字", name)
 	}
 	return nil
 }
@@ -442,6 +503,7 @@ func (st *State) machine(idOrHost string) *Machine {
 type MachineInput struct {
 	ID           string
 	Host         string
+	Hostname     string
 	Name         string
 	User         string
 	Port         int
@@ -454,7 +516,7 @@ func (st *State) upsertMachine(in MachineInput, now time.Time) (*Machine, error)
 	st.ensureDefaults(now)
 	host := strings.TrimSpace(in.Host)
 	id := strings.TrimSpace(in.ID)
-	if id == "local" || isSelfHostAlias(host) {
+	if id == "local" || isLocalConnection(host, in.Port) {
 		m := st.machine("local")
 		if name := strings.TrimSpace(in.Name); name != "" {
 			m.Name = name
@@ -473,13 +535,28 @@ func (st *State) upsertMachine(in MachineInput, now time.Time) (*Machine, error)
 		}
 	}
 	if !IsConcreteHost(host) {
-		return nil, fmt.Errorf("无效的机器地址或 SSH Host 别名：%q", host)
+		return nil, fmt.Errorf("「%s」不是能远程登录的地址：请填 ~/.ssh/config 里的名字或电脑地址", host)
 	}
 	if id == "" {
 		id = sanitizeID(host)
 	}
 	if !IsConcreteHost(id) {
-		return nil, fmt.Errorf("无效的机器 ID：%q", id)
+		return nil, fmt.Errorf("电脑编号 %q 不对", id)
+	}
+	if err := checkRemoteName(cmp.Or(strings.TrimSpace(in.Name), host), host, id); err != nil {
+		return nil, err
+	}
+	if in.Source == "" || in.Source == "manual" {
+		if st.resolveConnection != nil {
+			in.Hostname, in.User, in.Port = st.resolveConnection(host, in.Hostname, in.User, in.Port)
+		}
+		delete(st.DeletedMachines, connectionKey(cmp.Or(in.Hostname, host), in.Port, in.User))
+		delete(st.DeletedMachines, "host:"+strings.ToLower(host))
+		for _, m := range st.Machines {
+			if strings.EqualFold(m.Host, host) {
+				delete(st.DeletedMachines, connectionKey(cmp.Or(m.Hostname, m.Host), m.Port, m.User))
+			}
+		}
 	}
 
 	var existing *Machine
@@ -491,6 +568,9 @@ func (st *State) upsertMachine(in MachineInput, now time.Time) (*Machine, error)
 	}
 	if existing != nil {
 		existing.Host = host
+		if in.Hostname != "" {
+			existing.Hostname = in.Hostname
+		}
 		if name := strings.TrimSpace(in.Name); name != "" {
 			existing.Name = name
 		}
@@ -516,7 +596,7 @@ func (st *State) upsertMachine(in MachineInput, now time.Time) (*Machine, error)
 	}
 
 	if len(st.Machines) >= maxMachines {
-		return nil, fmt.Errorf("最多纳管 %d 台机器", maxMachines)
+		return nil, fmt.Errorf("最多只能管 %d 台电脑", maxMachines)
 	}
 	enabled := true
 	if in.Enabled != nil {
@@ -525,6 +605,7 @@ func (st *State) upsertMachine(in MachineInput, now time.Time) (*Machine, error)
 	m := &Machine{
 		ID:           id,
 		Host:         host,
+		Hostname:     in.Hostname,
 		Name:         cmp.Or(strings.TrimSpace(in.Name), host),
 		User:         strings.TrimSpace(in.User),
 		Port:         in.Port,
@@ -542,18 +623,12 @@ func (st *State) upsertMachine(in MachineInput, now time.Time) (*Machine, error)
 func (st *State) deleteMachine(idOrHost string) error {
 	m := st.machine(idOrHost)
 	if m == nil {
-		return fmt.Errorf("找不到机器 %q", idOrHost)
+		return fmt.Errorf("找不到电脑 %q", idOrHost)
 	}
 	if m.IsLocal || m.ID == "local" {
-		return errors.New("本机节点（local）不可移除")
+		return errors.New("运行 Persona 的电脑不能去掉")
 	}
-	if m.Source == "ssh-config" || m.Source == "persona" {
-		// Discovered machines are disabled so automatic discovery does not immediately re-enable them.
-		m.Enabled = false
-		delete(st.Scans, m.ID)
-		st.dropCold(m.ID)
-		return nil
-	}
+	st.rememberDeleted(m)
 	delete(st.Scans, m.ID)
 	st.dropCold(m.ID)
 	st.Machines = slices.DeleteFunc(st.Machines, func(x *Machine) bool { return x.ID == m.ID })
@@ -590,7 +665,7 @@ func (st *State) statuses() []MachineStatus {
 func (st *State) machineStatus(m *Machine) MachineStatus {
 	ms := MachineStatus{
 		Machine: m,
-		Level:   HealthOK,
+		Level:   HealthUnscanned,
 	}
 	if !m.Reachable {
 		ms.Level = HealthOffline
@@ -627,6 +702,40 @@ func (st *State) machineStatus(m *Machine) MachineStatus {
 
 // ---- Discovery from ~/.persona/config.json, ~/.ssh/config, and ~/.disklessly ----
 
+func connectionKey(host string, port int, user string) string {
+	if port == 0 {
+		port = 22
+	}
+	if u, h, ok := strings.Cut(host, "@"); ok {
+		user, host = u, h
+	}
+	if user == "" {
+		user = os.Getenv("USER")
+	}
+	return net.JoinHostPort(strings.ToLower(strings.Trim(host, "[]")), strconv.Itoa(port)) + "/" + user
+}
+
+func isGitHost(host string) bool {
+	if _, h, ok := strings.Cut(host, "@"); ok {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	switch host {
+	case "github.com", "ssh.github.com", "gitlab.com", "altssh.gitlab.com", "bitbucket.org", "codeberg.org", "gitee.com", "ssh.dev.azure.com":
+		return true
+	}
+	first, _, hasDot := strings.Cut(host, ".")
+	return first == "git" || first == "gitlab" || first == "github" || (hasDot && (first == "code" || first == "gerrit"))
+}
+
+func (st *State) rememberDeleted(m *Machine) {
+	if st.DeletedMachines == nil {
+		st.DeletedMachines = map[string]bool{}
+	}
+	st.DeletedMachines[connectionKey(cmp.Or(m.Hostname, m.Host), m.Port, m.User)] = true
+	st.DeletedMachines["host:"+strings.ToLower(m.Host)] = true
+}
+
 // SSHHostEntry represents a parsed Host block from ~/.ssh/config.
 type SSHHostEntry struct {
 	Alias        string `json:"alias"`
@@ -640,6 +749,7 @@ type SSHHostEntry struct {
 func ParseSSHConfig(text string) []SSHHostEntry {
 	var results []SSHHostEntry
 	aliasIndex := map[string]int{}
+	firstAlias := map[string]string{}
 	type wildcardBlock struct {
 		patterns []string
 		fields   map[string]string
@@ -663,6 +773,9 @@ func ParseSSHConfig(text string) []SSHHostEntry {
 		}
 		port, _ := strconv.Atoi(fields["port"])
 		for _, alias := range concretes {
+			if firstAlias[alias] == "" {
+				firstAlias[alias] = concretes[0]
+			}
 			if idx, ok := aliasIndex[alias]; ok {
 				if results[idx].Hostname == "" {
 					results[idx].Hostname = fields["hostname"]
@@ -758,6 +871,11 @@ func ParseSSHConfig(text string) []SSHHostEntry {
 			}
 		}
 	}
+	for i := range results {
+		if results[i].Hostname == "" {
+			results[i].Hostname = firstAlias[results[i].Alias]
+		}
+	}
 	return results
 }
 
@@ -850,7 +968,7 @@ func ParsePersonaConfig(raw []byte) []MachineInput {
 		if json.Unmarshal(data, &arr) == nil && len(arr) > 0 {
 			for _, item := range arr {
 				host := cmp.Or(strings.TrimSpace(item.Host), strings.TrimSpace(item.SSH), strings.TrimSpace(item.ID))
-				if !IsConcreteHost(host) || isSelfHostAlias(host) {
+				if !IsConcreteHost(host) || isLocalConnection(host, item.Port) {
 					continue
 				}
 				out = append(out, MachineInput{
@@ -880,7 +998,7 @@ func ParsePersonaConfig(raw []byte) []MachineInput {
 			for _, k := range keys {
 				item := mp[k]
 				host := cmp.Or(strings.TrimSpace(item.Host), strings.TrimSpace(item.SSH), strings.TrimSpace(k))
-				if !IsConcreteHost(host) || isSelfHostAlias(host) {
+				if !IsConcreteHost(host) || isLocalConnection(host, item.Port) {
 					continue
 				}
 				out = append(out, MachineInput{
@@ -905,10 +1023,93 @@ func (st *State) DiscoverMachines(homeDir string, now time.Time) int {
 	if homeDir == "" {
 		return 0
 	}
+	var entries []SSHHostEntry
+	if raw, err := os.ReadFile(filepath.Join(homeDir, ".ssh", "config")); err == nil {
+		entries = ParseSSHConfig(string(raw))
+	}
+	resolve := func(host, hostname, user string, port int) (string, string, int) {
+		for _, entry := range entries {
+			if strings.EqualFold(entry.Alias, host) {
+				hostname = cmp.Or(hostname, entry.Hostname)
+				user = cmp.Or(user, entry.User)
+				if port == 0 {
+					port = entry.Port
+				}
+				break
+			}
+		}
+		return cmp.Or(hostname, host), user, port
+	}
+	st.resolveConnection = resolve
+	// Prefer the first SSH alias even when a previous version imported its siblings first.
+	preferred := map[string]string{}
+	for _, entry := range entries {
+		key := connectionKey(cmp.Or(entry.Hostname, entry.Alias), entry.Port, entry.User)
+		if preferred[key] == "" && !isGitHost(entry.Alias) && !isGitHost(entry.Hostname) {
+			preferred[key] = entry.Alias
+		}
+	}
+	seen := map[string]*Machine{}
+	enabled := map[string]bool{}
+	for _, m := range st.Machines {
+		if !m.IsLocal {
+			m.Hostname, m.User, m.Port = resolve(m.Host, m.Hostname, m.User, m.Port)
+			if m.Enabled {
+				enabled[connectionKey(m.Hostname, m.Port, m.User)] = true
+			}
+		}
+	}
+	for _, m := range st.Machines {
+		if m.IsLocal {
+			continue
+		}
+		key := connectionKey(m.Hostname, m.Port, m.User)
+		if !m.Enabled && (m.Source == "ssh-config" || m.Source == "persona") {
+			// An enabled sibling means the user removed a duplicate alias, not the connection.
+			st.rememberDeleted(m)
+			if enabled[key] {
+				delete(st.DeletedMachines, key)
+			}
+			continue
+		}
+		old := seen[key]
+		if old == nil || strings.EqualFold(m.Host, preferred[key]) {
+			seen[key] = m
+		}
+	}
+	st.Machines = slices.DeleteFunc(st.Machines, func(m *Machine) bool {
+		if m.IsLocal {
+			return false
+		}
+		key := connectionKey(m.Hostname, m.Port, m.User)
+		if isLocalConnection(m.Hostname, m.Port) || isGitHost(m.Host) || isGitHost(m.Hostname) || st.DeletedMachines[key] || st.DeletedMachines["host:"+strings.ToLower(m.Host)] || seen[key] != m ||
+			((m.Source == "ssh-config" || m.Source == "persona") && (st.Scans[m.ID] == nil || st.Scans[m.ID].Mount.TotalBytes == 0) && st.shellCheck != nil && !st.shellCheck(m)) {
+			keep := seen[key]
+			if isLocalConnection(m.Hostname, m.Port) {
+				keep = st.machine("local")
+			}
+			if keep != nil && keep != m && st.Scans[keep.ID] == nil && st.Scans[m.ID] != nil {
+				sc := *st.Scans[m.ID]
+				sc.MachineID, sc.Host = keep.ID, keep.Host
+				st.Scans[keep.ID] = &sc
+			}
+			delete(st.Scans, m.ID)
+			st.dropCold(m.ID)
+			return true
+		}
+		return false
+	})
 	added := 0
 	mergeOne := func(in MachineInput) {
-		if in.Host == "" || isSelfHostAlias(in.Host) || !IsConcreteHost(in.Host) {
+		in.Hostname, in.User, in.Port = resolve(in.Host, in.Hostname, in.User, in.Port)
+		key := connectionKey(in.Hostname, in.Port, in.User)
+		if in.Host == "" || isLocalConnection(in.Host, in.Port) || isLocalConnection(in.Hostname, in.Port) || !IsConcreteHost(in.Host) || isGitHost(in.Host) || isGitHost(in.Hostname) || st.DeletedMachines[key] || st.DeletedMachines["host:"+strings.ToLower(in.Host)] {
 			return
+		}
+		for _, m := range st.Machines {
+			if !m.IsLocal && connectionKey(m.Hostname, m.Port, m.User) == key {
+				return
+			}
 		}
 		if existing := st.machine(in.ID); existing != nil {
 			// Respect user's explicit disable; only fill missing connection metadata.
@@ -926,12 +1127,24 @@ func (st *State) DiscoverMachines(homeDir string, now time.Time) int {
 		if existing := st.machine(in.Host); existing != nil {
 			return
 		}
+		if st.shellCheck != nil && !st.shellCheck(&Machine{Host: in.Host, Hostname: in.Hostname, User: in.User, Port: in.Port, IdentityFile: in.IdentityFile}) {
+			return
+		}
 		if _, err := st.upsertMachine(in, now); err == nil {
 			added++
 		}
 	}
 
-	// 1. ~/.persona/config.json
+	// SSH order determines the first alias for each connection.
+	for _, entry := range entries {
+		name := entry.Alias
+		if entry.Hostname != "" && entry.Hostname != entry.Alias {
+			name = fmt.Sprintf("%s (%s)", entry.Alias, entry.Hostname)
+		}
+		mergeOne(MachineInput{ID: sanitizeID(entry.Alias), Host: entry.Alias, Hostname: entry.Hostname,
+			Name: name, User: entry.User, Port: entry.Port, IdentityFile: entry.IdentityFile, Source: "ssh-config"})
+	}
+	// ~/.persona/config.json
 	for _, rel := range []string{
 		filepath.Join(".persona", "config.json"),
 		filepath.Join(".config", "persona", "config.json"),
@@ -940,28 +1153,6 @@ func (st *State) DiscoverMachines(homeDir string, now time.Time) int {
 			for _, m := range ParsePersonaConfig(raw) {
 				mergeOne(m)
 			}
-		}
-	}
-
-	// 2. ~/.ssh/config
-	if raw, err := os.ReadFile(filepath.Join(homeDir, ".ssh", "config")); err == nil {
-		for _, entry := range ParseSSHConfig(string(raw)) {
-			if isSelfHostAlias(entry.Alias) {
-				continue
-			}
-			name := entry.Alias
-			if entry.Hostname != "" && entry.Hostname != entry.Alias {
-				name = fmt.Sprintf("%s (%s)", entry.Alias, entry.Hostname)
-			}
-			mergeOne(MachineInput{
-				ID:           sanitizeID(entry.Alias),
-				Host:         entry.Alias,
-				Name:         name,
-				User:         entry.User,
-				Port:         entry.Port,
-				IdentityFile: entry.IdentityFile,
-				Source:       "ssh-config",
-			})
 		}
 	}
 
@@ -997,20 +1188,24 @@ func (st *State) DiscoverMachines(homeDir string, now time.Time) int {
 	return added
 }
 
-// FormatBytes formats a byte count in human-readable binary units (GiB, MiB, KiB, B).
+// FormatBytes formats a byte count in human-readable binary units (GiB, MiB, KiB, B). A value
+// that would read 1000 or more of a unit is written in the next one (1023.0 MiB reads 1.0 GiB),
+// so a size never shows four digits before the point.
 func FormatBytes(b uint64) string {
 	const (
 		tiB = 1024 * gib
 		kiB = 1024
 	)
+	// under reports that b, rounded to one decimal in unit, stays below 1000 of it.
+	under := func(unit uint64) bool { return float64(b)/float64(unit) < 999.95 }
 	switch {
-	case b >= tiB:
+	case b >= tiB || !under(gib):
 		return fmt.Sprintf("%.2f TiB", float64(b)/float64(tiB))
-	case b >= gib:
+	case b >= gib || !under(mib):
 		return fmt.Sprintf("%.1f GiB", float64(b)/float64(gib))
-	case b >= mib:
+	case b >= mib || !under(kiB):
 		return fmt.Sprintf("%.1f MiB", float64(b)/float64(mib))
-	case b >= kiB:
+	case b >= kiB || b >= 1000:
 		return fmt.Sprintf("%.1f KiB", float64(b)/float64(kiB))
 	default:
 		return fmt.Sprintf("%d B", b)

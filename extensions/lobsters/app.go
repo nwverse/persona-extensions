@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "lobsters"
-const pageUI = "stories"
+const pageUI = "lobsters"
 
 type app struct {
 	mu      sync.RWMutex

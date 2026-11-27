@@ -25,7 +25,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || st.EntryID < 0 || len(st.DraftID) > 128 || len(st.Query) > 300 {
+	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || st.EntryID < 0 || len(st.DraftID) > 128 || len([]rune(st.Query)) > maxQueryChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -46,7 +46,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Offset = clipText(r.Values["q"], 200), 0
+		st.Query, st.Offset = clipText(r.Values["q"], maxQueryChars), 0
 		if strings.TrimSpace(st.Query) != "" {
 			st.View = "search"
 		} else {
@@ -88,6 +88,31 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+// maxViewEntries keeps the accumulated list within the SDK's component limit.
+const maxViewEntries = 250
+
+// collectEntries reads batches from offset 0 through offset so that Load more extends the list instead of
+// replacing it, and reports whether the last batch was full and the cap still leaves room to show more.
+func (a *app) collectEntries(ctx context.Context, view, query string, offset int) ([]entry, bool, error) {
+	var out []entry
+	more := false
+	for pos := 0; pos <= offset && len(out) < maxViewEntries; pos += 50 {
+		batch, err := a.client.entries(ctx, view, query, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Entries...)
+		more = len(batch.Entries) == 50
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewEntries {
+		out = out[:maxViewEntries]
+	}
+	return out, more && len(out) < maxViewEntries, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -118,7 +143,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.View != "unread" && st.View != "starred" && st.View != "search" {
 		return nil, errors.New("invalid reading view")
 	}
-	page, err := a.client.entries(ctx, st.View, st.Query, st.Offset)
+	entries, more, err := a.collectEntries(ctx, st.View, st.Query, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -130,8 +155,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.View == "search" {
 		v.Filter.Value = "unread"
 	}
-	section := wire.Section{Title: fmt.Sprintf(t.results, len(page.Entries))}
-	for _, item := range page.Entries {
+	section := wire.Section{Title: fmt.Sprintf(t.results, len(entries))}
+	for _, item := range entries {
 		if item.ID <= 0 || item.Title == "" {
 			continue
 		}
@@ -140,7 +165,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noEntries})
 	}
-	if len(page.Entries) == 50 {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section}

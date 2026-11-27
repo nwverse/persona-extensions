@@ -16,6 +16,12 @@ type createArgs struct {
 	Body    string `json:"body"`
 }
 
+// maxNameChars and maxBodyChars bound object names and bodies in characters.
+const (
+	maxNameChars = 255
+	maxBodyChars = 30000
+)
+
 func (in createArgs) validate() error {
 	if err := validObjectID(in.SpaceID); err != nil {
 		return err
@@ -23,7 +29,7 @@ func (in createArgs) validate() error {
 	if in.TypeKey != "page" && in.TypeKey != "note" {
 		return errors.New("type_key must be page or note")
 	}
-	if strings.TrimSpace(in.Name) == "" || len([]rune(in.Name)) > 255 {
+	if strings.TrimSpace(in.Name) == "" || len([]rune(in.Name)) > maxNameChars {
 		return errors.New("object name must be nonempty and at most 255 characters")
 	}
 	for _, r := range in.Name {
@@ -31,7 +37,7 @@ func (in createArgs) validate() error {
 			return errors.New("object name contains unsupported control characters")
 		}
 	}
-	if strings.TrimSpace(in.Body) == "" || len([]rune(in.Body)) > 30000 {
+	if strings.TrimSpace(in.Body) == "" || len([]rune(in.Body)) > maxBodyChars {
 		return errors.New("object body must be nonempty and at most 30000 characters")
 	}
 	for _, r := range in.Body {

@@ -69,11 +69,19 @@ type Session struct {
 	Updated   time.Time `json:"updated"`
 	Ended     string    `json:"ended,omitempty"`     // normal | interrupted | timeout | "" (running)
 	Assistant bool      `json:"assistant,omitempty"` // the main assistant's own session (S4)
-	Health    bool      `json:"health,omitempty"`    // a health space session: never read
-	Cwd       string    `json:"cwd,omitempty"`
-	Status    string    `json:"status,omitempty"` // the hub's: idle | working | blocked | done | interrupted…
+	Health    bool      `json:"health,omitempty"`    // a health space session (read since 0.2.0-beta.40, tagged health)
+	// Space is the slug of the assistant space the session belongs to ("": the main space, or not an assistant
+	// session): entries from it carry it as their origin space and the space's default categories.
+	Space  string `json:"space,omitempty"`
+	Cwd    string `json:"cwd,omitempty"`
+	Status string `json:"status,omitempty"` // the hub's: idle | working | blocked | done | interrupted…
 	// ByPersona: Persona started it (a task, a relay): its first message is Persona's, not the user's.
 	ByPersona bool `json:"by_persona,omitempty"`
+	// Archived, HistorySource and HistoryRuntime: a row of session history (History): archived in its runtime, and
+	// the source that listed it (claude, codex or runtime) with the runtime's id.
+	Archived       bool   `json:"archived,omitempty"`
+	HistorySource  string `json:"history_source,omitempty"`
+	HistoryRuntime string `json:"history_runtime,omitempty"`
 }
 
 // ItemsQuery reads a session's items. Daily reading asks Fold (work folded to counts and file names) and After
@@ -146,7 +154,8 @@ type Interaction struct {
 	ID       string    `json:"id"`
 	Machine  string    `json:"machine_id,omitempty"`
 	Session  string    `json:"session_id,omitempty"`
-	Kind     string    `json:"kind"` // ask_user, permission, plan…
+	Kind     string    `json:"kind"`            // ask_user, permission, plan…
+	Space    string    `json:"space,omitempty"` // the session's assistant space, when the sessions list says one
 	At       time.Time `json:"created_at"`
 	Question string    `json:"question"`
 	Options  []string  `json:"options,omitempty"`

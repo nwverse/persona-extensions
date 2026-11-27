@@ -23,6 +23,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/relay"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/voice"
 	"github.com/nwverse/persona/sdk/go/wire"
 )
@@ -370,10 +371,24 @@ func cleanUser(text string) (string, bool) {
 			return "", false
 		}
 	}
+	if relay.Classify(text) == relay.Persona { // before the hub's blocks are taken out: they mark a task prompt
+		if t := strings.TrimSpace(injected.ReplaceAllString(text, "")); t == "" || relay.Classify(t) != relay.None {
+			return "", false
+		}
+	}
 	text = injected.ReplaceAllString(text, "")
 	text = interrupted.ReplaceAllString(text, "")
+	// Pasted blocks are material, not the user's words; a relay or a test prompt is not the user's either
+	// (0.2.0-beta.37, internal/relay).
+	own, n := relay.SplitPaste(text)
+	if n > 0 {
+		if own == "" {
+			return "", false
+		}
+		text = own + " " + relay.PasteMark(n)
+	}
 	text = strings.TrimSpace(text)
-	if text == "" {
+	if text == "" || relay.Classify(text) != relay.None {
 		return "", false
 	}
 	for _, h := range noticeHeads {

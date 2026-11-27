@@ -1,9 +1,14 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -21,6 +26,162 @@ func artifactKinds(t *Task) []string {
 	return kinds
 }
 
+type todoAttachTestHub struct {
+	*fakeHub
+	client *hubClient
+}
+
+func (h todoAttachTestHub) AttachTodo(ctx context.Context, todo, machine, session string) error {
+	return h.client.AttachTodo(ctx, todo, machine, session)
+}
+
+func TestTodoAttachOutcomeIsVisibleAfterQueueReload(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		warn   bool
+	}{
+		{"conflict", http.StatusConflict, true},
+		{"attached", http.StatusNoContent, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				if req.Method != http.MethodPut || req.URL.Path != "/api/v1/todos/todo_1/agents/"+testMachine+"/session-1" {
+					t.Errorf("attach request: %s %s", req.Method, req.URL.Path)
+				}
+				w.WriteHeader(tc.status)
+				if tc.warn {
+					_, _ = w.Write([]byte(`{"code":"todo_closed","error":"the to-do is already complete"}`))
+				}
+			}))
+			defer srv.Close()
+			r.d.api = todoAttachTestHub{fakeHub: r.hub, client: newHubClient(srv.URL, "test-token")}
+			task := r.enqueue(EnqueueInput{Title: "Record the attachment result"})
+			check := func(terminal bool) {
+				t.Helper()
+				q, err := NewQueue(filepath.Dir(r.q.dataFile), r.cfg.queueConfig())
+				if err != nil {
+					t.Fatal(err)
+				}
+				h := (&atsApp{queue: q}).handler()
+				get := func(path string) map[string]json.RawMessage {
+					t.Helper()
+					rec := httptest.NewRecorder()
+					h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+					body := map[string]json.RawMessage{}
+					if err := json.Unmarshal(rec.Body.Bytes(), &body); rec.Code != http.StatusOK || err != nil {
+						t.Fatalf("GET %s: %d %s (%v)", path, rec.Code, rec.Body, err)
+					}
+					return body
+				}
+				path := "/tasks/" + task.ID
+				view, evidence := get(path), get(path+"/evidence")
+				var attempts []map[string]json.RawMessage
+				if err := json.Unmarshal(view["attempts"], &attempts); err != nil || len(attempts) != 1 {
+					t.Fatalf("attempts: %s (%v)", view["attempts"], err)
+				}
+				warnings := []json.RawMessage{attempts[0]["todo_attach_error"], evidence["todo_attach_error"]}
+				if terminal {
+					var report map[string]json.RawMessage
+					if err := json.Unmarshal(evidence["last_report"], &report); err != nil {
+						t.Fatal(err)
+					}
+					warnings = append(warnings, report["todo_attach_error"])
+				}
+				for _, warning := range warnings {
+					if tc.warn && !strings.Contains(string(warning), "409") || !tc.warn && warning != nil {
+						t.Fatalf("todo_attach_error = %s (want warning = %v)", warning, tc.warn)
+					}
+				}
+			}
+			r.tick()
+			check(false)
+			r.hub.turnEnds("session-1", "u1", "Finished the review.")
+			r.tick()
+			r.tick()
+			if got := r.task(task.ID); got.State != StateSucceeded {
+				t.Fatalf("the review did not finish: %s", got.State)
+			}
+			check(true)
+		})
+	}
+}
+
+func TestReadonlyWithoutAcceptanceStillReportsAndKeepsSourceChanges(t *testing.T) {
+	for _, stage := range []string{"untracked", "modified", "committed", "tool configuration"} {
+		t.Run(stage, func(t *testing.T) {
+			r := newRig(t)
+			task := r.enqueue(EnqueueInput{Title: "Inspect source"})
+			r.tick()
+			wt := r.task(task.ID).Exec.Worktree
+			runGit(t, wt, "config", "status.showUntrackedFiles", "no")
+			name := "README.md"
+			switch stage {
+			case "untracked":
+				name = "new-source.go"
+			case "tool configuration":
+				name = ".serena/project.yml"
+				if err := os.Mkdir(filepath.Join(wt, ".serena"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.WriteFile(filepath.Join(wt, name), []byte("changed\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if stage == "committed" {
+				runGit(t, wt, "add", name)
+				runGit(t, wt, "commit", "-qm", "unexpected change")
+			}
+			r.hub.turnEnds("session-1", "u1", "Finished the review.")
+			r.tick()
+			r.tick()
+			got := r.task(task.ID)
+			if len(got.Reports) != 1 || got.Reports[0].Dirty == nil || !*got.Reports[0].Dirty || !slices.Contains(artifactKinds(got), "worktree") {
+				t.Fatalf("missing dirty worktree evidence: %+v", got.Reports)
+			}
+			if _, err := os.Stat(filepath.Join(wt, name)); err != nil {
+				t.Fatalf("worktree did not retain the work: %v", err)
+			}
+		})
+	}
+}
+
+func TestDispatcherPreservesInspectionWhenReleaseFails(t *testing.T) {
+	for _, tc := range []struct {
+		name, acceptance string
+		wantDirty        *bool
+	}{
+		{"clean acceptance", "true", boolPtr(false)},
+		{"dirty acceptance", "echo work > draft.txt", boolPtr(true)},
+		{"no acceptance", "", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.nodes.fail["ats.release"] = errors.New("node unavailable")
+			task := r.enqueue(EnqueueInput{PermissionProfile: PermissionDefault, AcceptanceCommand: tc.acceptance})
+			r.tick()
+			r.hub.turnEnds("session-1", "u1", "Finished.")
+			r.tick()
+			r.tick()
+			if tc.acceptance != "" {
+				r.waitAccepted(task.ID, 1)
+				r.tick()
+			}
+			got := r.task(task.ID)
+			if got.State != StateSucceeded || len(got.Attempts) != 1 || len(got.Reports) != 1 {
+				t.Fatalf("task did not finish: state %s, attempts %d, reports %d", got.State, len(got.Attempts), len(got.Reports))
+			}
+			if !slices.Contains(artifactKinds(got), "worktree") {
+				t.Fatal("release failure did not retain the worktree artifact")
+			}
+			if !reflect.DeepEqual(got.Attempts[0].Dirty, tc.wantDirty) || !reflect.DeepEqual(got.Reports[0].Dirty, tc.wantDirty) {
+				t.Fatalf("dirty evidence did not reflect the acceptance result for %q", tc.name)
+			}
+		})
+	}
+}
+
 func TestWritingTaskRunsInItsOwnWorktreeAndPassesAcceptance(t *testing.T) {
 	r := newRig(t)
 	task := r.enqueue(EnqueueInput{Title: "Add the marker", PermissionProfile: PermissionDefault, AcceptanceCommand: "test -f done.txt && echo checked"})
@@ -35,8 +196,11 @@ func TestWritingTaskRunsInItsOwnWorktreeAndPassesAcceptance(t *testing.T) {
 	}
 	req := r.hub.created[0]
 	wt := got.Exec.Worktree
-	if req.Cwd != wt || req.MachineID != testMachine || req.PermissionMode != "acceptEdits" || !req.Async || req.AgentType != "claude" {
+	if req.Cwd != wt || req.MachineID != testMachine || req.PermissionMode != "acceptEdits" || !req.Async || req.AgentType != AgentClaude || req.Launcher != "" {
 		t.Fatalf("session request: %+v", req)
+	}
+	if len(got.Attempts) != 1 || got.Attempts[0].Harness != AgentClaude {
+		t.Fatalf("attempts: %+v", got.Attempts)
 	}
 	if !strings.HasPrefix(wt, r.worker.data) || got.Exec.Branch != "ats/"+task.ID+"-1" {
 		t.Fatalf("worktree %s branch %s", wt, got.Exec.Branch)
@@ -116,6 +280,111 @@ func TestWritingTaskRunsInItsOwnWorktreeAndPassesAcceptance(t *testing.T) {
 	}
 }
 
+func TestWritingTaskRecordsReleasedHead(t *testing.T) {
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	t.Setenv("GIT_CONFIG_SYSTEM", os.DevNull)
+	for _, tc := range []struct {
+		name, acceptance string
+		pendingEdits     bool
+		afterAcceptance  string
+	}{
+		{name: "agent commit without acceptance"},
+		{name: "release commits without acceptance", pendingEdits: true},
+		{name: "release commits after acceptance", acceptance: "test -f work.txt", pendingEdits: true},
+		{name: "release has no head", acceptance: "test -f work.txt", afterAcceptance: "remove worktree"},
+		{name: "release finds the base", acceptance: "test -f work.txt", afterAcceptance: "restore base"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			task := r.enqueue(EnqueueInput{Title: "Record work", PermissionProfile: PermissionDefault, AcceptanceCommand: tc.acceptance})
+			r.tick()
+			e := r.task(task.ID).Exec
+			if e == nil || e.Phase != PhaseWorking {
+				t.Fatalf("worktree was not prepared: %+v", e)
+			}
+			if err := os.WriteFile(filepath.Join(e.Worktree, "work.txt"), []byte("work\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			runGit(t, e.Worktree, "add", "work.txt")
+			runGit(t, e.Worktree, "commit", "-qm", "agent work")
+			agentHead := runGit(t, e.Worktree, "rev-parse", "HEAD")
+			if tc.pendingEdits {
+				if err := os.WriteFile(filepath.Join(e.Worktree, "pending.txt"), []byte("pending\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			r.hub.turnEnds(e.SessionID, "u1", "Changed the files.")
+			r.tick()
+			r.tick()
+			wantVerdict := VerdictUnverified
+			if tc.acceptance != "" {
+				wantVerdict = VerdictPass
+				r.waitAccepted(task.ID, 1)
+				accepted, err := r.worker.acceptStatus(task.ID, 1)
+				if err != nil || accepted.HeadSHA != agentHead || accepted.ExitCode != 0 {
+					t.Fatalf("acceptance: %+v (%v), want commit %s and exit 0", accepted, err, agentHead)
+				}
+				switch tc.afterAcceptance {
+				case "remove worktree":
+					runGit(t, r.repo, "worktree", "remove", e.Worktree)
+				case "restore base":
+					runGit(t, e.Worktree, "reset", "--hard", e.BaseSHA)
+				}
+				r.tick()
+			}
+
+			head := e.BaseSHA
+			if tc.afterAcceptance != "restore base" {
+				head = runGit(t, r.repo, "rev-parse", e.Branch)
+			}
+			if tc.pendingEdits {
+				if parent := runGit(t, r.repo, "rev-parse", head+"^"); parent != agentHead {
+					t.Fatalf("release commit parent = %s, want %s", parent, agentHead)
+				}
+				if got := runGit(t, r.repo, "show", head+":pending.txt"); got != "pending" {
+					t.Fatalf("release commit contains %q in pending.txt", got)
+				}
+			} else if tc.afterAcceptance != "restore base" && head != agentHead {
+				t.Fatalf("branch head = %s, want %s", head, agentHead)
+			}
+
+			q, err := NewQueue(filepath.Dir(r.q.dataFile), r.cfg.queueConfig())
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := q.GetTask(task.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.State != StateSucceeded || got.Verdict != wantVerdict || len(got.Attempts) != 1 || len(got.Reports) != 1 {
+				t.Fatalf("reloaded task: state %s, verdict %s, attempts %d, reports %d", got.State, got.Verdict, len(got.Attempts), len(got.Reports))
+			}
+			report := got.Reports[0]
+			if got.Attempts[0].HeadSHA != head || report.HeadSHA != head {
+				t.Errorf("persisted head_sha = %q in attempt and %q in report, want %s", got.Attempts[0].HeadSHA, report.HeadSHA, head)
+			}
+			wantDirty := tc.pendingEdits && tc.acceptance != ""
+			if !reflect.DeepEqual(got.Attempts[0].Dirty, &wantDirty) || !reflect.DeepEqual(report.Dirty, &wantDirty) {
+				t.Errorf("attempt and report should both have dirty = %t", wantDirty)
+			}
+			var commits []string
+			for _, a := range report.Artifacts {
+				if a.Kind == "commit" {
+					commits = append(commits, a.Path)
+				}
+			}
+			var wantCommits []string
+			if head != e.BaseSHA {
+				wantCommits = []string{head}
+			}
+			if !slices.Equal(commits, wantCommits) {
+				t.Errorf("commit artifacts = %v, want %v", commits, wantCommits)
+			}
+		})
+	}
+}
+
 func TestReadonlyTaskRunsInPlanModeAndEndsUnverifiedWithoutAcceptance(t *testing.T) {
 	r := newRig(t)
 	r.cfg.ModelStandard = "example-model"
@@ -141,6 +410,169 @@ func TestReadonlyTaskRunsInPlanModeAndEndsUnverifiedWithoutAcceptance(t *testing
 	}
 	if out := runGit(t, r.repo, "branch", "--list", "ats/*"); out != "" {
 		t.Fatalf("branches left: %s", out)
+	}
+}
+
+func TestSelectedEngineAndPermissionModeReachSessionCreation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		permission string
+		wantMode   string
+	}{
+		"read only": {PermissionReadonly, "plan"},
+		"writable":  {PermissionDefault, "acceptEdits"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			task := r.enqueue(EnqueueInput{AgentType: AgentCodex, PermissionProfile: tc.permission})
+			r.tick()
+			if len(r.hub.created) != 1 {
+				t.Fatalf("sessions started: %d", len(r.hub.created))
+			}
+			req := r.hub.created[0]
+			if req.AgentType != AgentCodex || req.Launcher != AgentCodex || req.PermissionMode != tc.wantMode || req.MachineID != testMachine {
+				t.Fatalf("session request: %+v", req)
+			}
+			got := r.task(task.ID)
+			if len(got.Attempts) != 1 || got.Attempts[0].Harness != AgentCodex {
+				t.Fatalf("attempts: %+v", got.Attempts)
+			}
+		})
+	}
+}
+
+func TestTaskSessionOverridesReachSessionCreation(t *testing.T) {
+	for _, tc := range []struct {
+		name, agentType, difficulty, model, launcher string
+		wantModel, wantLauncher                      string
+	}{
+		{"agy engine default", "agy", DifficultyMedium, "", "", "", "agy"},
+		{"codex engine default", AgentCodex, DifficultyHard, "", "", "", AgentCodex},
+		{"claude explicit overrides", AgentClaude, DifficultyHard, " task-model ", " task-launcher ", "task-model", "task-launcher"},
+		{"agy explicit model", "agy", DifficultyMedium, "agy-model", "", "agy-model", "agy"},
+		{"codex launcher mapped to machine", AgentCodex, DifficultyMedium, "", "other=elsewhere\n MACHINE-1 = task-launcher ", "", "task-launcher"},
+		{"agy launcher map misses machine", "agy", DifficultyMedium, "", "other=elsewhere", "", "agy"},
+		{"claude launcher map misses machine", AgentClaude, DifficultyHard, "", "other=elsewhere", "claude-strong", "claude-machine"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			r.cfg.ModelStandard, r.cfg.ModelStrong = "claude-standard", "claude-strong"
+			r.cfg.Launcher = "claude-default; " + testMachine + "=claude-machine"
+			a := newATSApp(r.q)
+			a.cfg = r.cfg
+			a.nowFunc = func() time.Time { return r.now }
+			body := map[string]string{
+				"todo_id": "todo_1", "prompt": "Inspect the code", "repo": r.repo,
+				"agent_type": tc.agentType, "difficulty": tc.difficulty,
+			}
+			if tc.model != "" {
+				body["model"] = tc.model
+			}
+			if tc.launcher != "" {
+				body["launcher"] = tc.launcher
+			}
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ans := call(t, a, "POST", "/tasks", string(raw))
+			if ans.Status != http.StatusCreated {
+				t.Fatalf("enqueue: %d %v", ans.Status, ans.Body)
+			}
+
+			r.tick()
+			if len(r.hub.created) != 1 {
+				t.Fatalf("sessions started: %d", len(r.hub.created))
+			}
+			req := r.hub.created[0]
+			if req.AgentType != tc.agentType || req.Model != tc.wantModel || req.Launcher != tc.wantLauncher {
+				t.Fatalf("session engine %q, model %q, launcher %q; want %q, %q, %q",
+					req.AgentType, req.Model, req.Launcher, tc.agentType, tc.wantModel, tc.wantLauncher)
+			}
+			detail := call(t, a, "GET", "/tasks/"+taskOf(t, ans)["id"].(string), "")
+			view := taskOf(t, detail)
+			if view["launcher"] != tc.wantLauncher ||
+				tc.wantModel != "" && view["model"] != tc.wantModel ||
+				tc.wantModel == "" && view["model"] != nil {
+				t.Fatalf("running task: %v", view)
+			}
+		})
+	}
+}
+
+func TestReadonlyPermissionModeReachesSessionCreation(t *testing.T) {
+	for _, tc := range []struct {
+		name, setting, profile, writeMode, wantMode string
+	}{
+		{"empty setting", "", PermissionReadonly, "auto", "plan"},
+		{"explicit plan", "plan", PermissionReadonly, "auto", "plan"},
+		{"explicit bypass", "bypassPermissions", PermissionReadonly, "auto", "bypassPermissions"},
+		{"invalid setting", "bypassPermissions ", PermissionReadonly, "auto", "plan"},
+		{"write mode stays independent", "bypassPermissions", PermissionDefault, "auto", "auto"},
+		{"default write mode stays independent", "bypassPermissions", PermissionDefault, "", "acceptEdits"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			raw, err := json.Marshal(map[string]string{
+				"readonly_permission_mode": tc.setting, "write_permission_mode": tc.writeMode,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := json.Unmarshal(raw, &r.cfg); err != nil {
+				t.Fatal(err)
+			}
+			r.enqueue(EnqueueInput{PermissionProfile: tc.profile})
+			r.tick()
+			if len(r.hub.created) != 1 {
+				t.Fatalf("sessions started: %d", len(r.hub.created))
+			}
+			req := r.hub.created[0]
+			if req.PermissionMode != tc.wantMode {
+				t.Fatalf("permission mode = %q, want %q", req.PermissionMode, tc.wantMode)
+			}
+			if tc.profile == PermissionReadonly {
+				if !strings.Contains(req.Prompt, "do not change, create or delete files") || !strings.Contains(req.Prompt, "ExitPlanMode") {
+					t.Fatalf("read-only prompt: %s", req.Prompt)
+				}
+				if branch := runGit(t, req.Cwd, "rev-parse", "--abbrev-ref", "HEAD"); branch != "HEAD" {
+					t.Fatalf("read-only task has a branch: %q", branch)
+				}
+			}
+		})
+	}
+}
+
+func TestSynchronousEngineStartGetsTheLongerBudget(t *testing.T) {
+	c := newHubClient("http://example.com", "token")
+	if got := sessionStartTimeout(AgentClaude); got != 30*time.Second {
+		t.Fatalf("Claude start timeout: %s", got)
+	}
+	if got := sessionStartTimeout(AgentCodex); got <= 100*time.Second {
+		t.Fatalf("Codex start timeout %s does not cover the hub's startup budget", got)
+	}
+	if c.sessionClientFor(AgentClaude) != c.client || c.sessionClientFor(AgentCodex) != c.syncStartClient {
+		t.Fatal("the engine did not select its session-start HTTP client")
+	}
+	if c.syncStartClient.Timeout != sessionStartTimeout(AgentCodex) || c.client.Timeout != 20*time.Second {
+		t.Fatalf("HTTP timeouts: default %s synchronous %s", c.client.Timeout, c.syncStartClient.Timeout)
+	}
+}
+
+func TestSessionCreationRejectionDoesNotChangeEngineOrPermission(t *testing.T) {
+	r := newRig(t)
+	zero := 0
+	r.hub.createErr = errors.New("unsupported engine and permission combination")
+	task := r.enqueue(EnqueueInput{AgentType: AgentCodex, PermissionProfile: PermissionDefault, MaxRetries: &zero})
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateFailed || got.FailureReason != "infra_error" || got.Exec != nil {
+		t.Fatalf("after refusal: %+v", got)
+	}
+	if len(r.hub.requests) != 1 || r.hub.requests[0].AgentType != AgentCodex || r.hub.requests[0].Launcher != AgentCodex || r.hub.requests[0].PermissionMode != "acceptEdits" {
+		t.Fatalf("session requests: %+v", r.hub.requests)
+	}
+	if len(r.hub.created) != 0 || len(r.hub.attached) != 0 {
+		t.Fatalf("a refused session was used: created %+v attached %+v", r.hub.created, r.hub.attached)
 	}
 }
 
@@ -261,6 +693,17 @@ func TestRestartPicksTheAttemptUpWhereItWas(t *testing.T) {
 	r := newRig(t)
 	task := r.enqueue(EnqueueInput{AcceptanceCommand: "true"})
 	r.tick()
+
+	// Simulate a queue written before agent_type existed: the active attempt has no engine fields either.
+	r.q.mu.Lock()
+	stored := r.q.tasks[task.ID]
+	stored.AgentType = ""
+	stored.Attempts[len(stored.Attempts)-1].Harness = ""
+	saveErr := r.q.saveLocked()
+	r.q.mu.Unlock()
+	if saveErr != nil {
+		t.Fatal(saveErr)
+	}
 	dir, nodeData := filepath.Dir(r.q.dataFile), r.worker.data
 
 	// Both programs restart, long after the lease would have run out.
@@ -276,6 +719,9 @@ func TestRestartPicksTheAttemptUpWhereItWas(t *testing.T) {
 	got := r.task(task.ID)
 	if got.State != StateRunning || got.AttemptNo != 1 || got.Exec.SessionID != "session-1" {
 		t.Fatalf("after the restart: %s attempt %d exec %+v", got.State, got.AttemptNo, got.Exec)
+	}
+	if got.AgentType != "" || got.Attempts[0].Harness != "" || viewTask(got, promptNone).AgentType != AgentClaude {
+		t.Fatalf("legacy engine fields changed after the restart: %+v", got)
 	}
 	if len(r.hub.created) != 1 {
 		t.Fatalf("the restart started %d sessions", len(r.hub.created))
@@ -381,4 +827,250 @@ func TestBlockedReason(t *testing.T) {
 			t.Errorf("%q: %q %v", reply, got, blocked)
 		}
 	}
+}
+
+func TestCreateSessionFailureCleansUpBranchAndRecordsNoPhantomArtifacts(t *testing.T) {
+	r := newRig(t)
+	one := 1
+	r.hub.createErr = errors.New("hub unavailable")
+	task := r.enqueue(EnqueueInput{Title: "Writable task", PermissionProfile: PermissionDefault, MaxRetries: &one})
+
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateQueued || got.NotBefore == nil || got.FailureReason != "infra_error" {
+		t.Fatalf("after CreateSession failure: state %s not_before %v reason %s", got.State, got.NotBefore, got.FailureReason)
+	}
+	if branches := runGit(t, r.repo, "branch", "--list", "ats/*"); branches != "" {
+		t.Fatalf("leaked untouched branch after CreateSession failure: %q", branches)
+	}
+	key, err := attemptKey(task.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(r.worker.worktree(key)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("leaked worktree after CreateSession failure: %v", err)
+	}
+	if kinds := artifactKinds(got); len(kinds) != 0 {
+		t.Fatalf("fabricated artifacts after CreateSession failure: %+v", got.Reports[0].Artifacts)
+	}
+
+	// Retry after CreateSession failure must start fresh from base, not pretend to resume a phantom commit.
+	r.hub.createErr = nil
+	r.now = got.NotBefore.Add(time.Second)
+	r.tick()
+	if len(r.hub.created) != 1 {
+		t.Fatalf("retry sessions started: %d", len(r.hub.created))
+	}
+	if strings.Contains(r.hub.created[0].Prompt, "continue from it") {
+		t.Fatalf("retry prompt falsely claimed to resume a commit:\n%s", r.hub.created[0].Prompt)
+	}
+}
+
+func TestCancelDuringCreateSessionInterruptsSessionAndReleasesWorktree(t *testing.T) {
+	r := newRig(t)
+	task := r.enqueue(EnqueueInput{Title: "Cancel during start", PermissionProfile: PermissionDefault})
+	var wt string
+	r.hub.onCreateSession = func(req sessionRequest) {
+		wt = req.Cwd
+		if _, err := r.d.cancel(context.Background(), task.ID); err != nil {
+			t.Errorf("cancel during CreateSession: %v", err)
+		}
+	}
+
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateCanceled || got.Exec != nil {
+		t.Fatalf("after cancel during CreateSession: state %s exec %+v", got.State, got.Exec)
+	}
+	if !slices.Equal(r.hub.interrupts, []string{"session-1"}) {
+		t.Fatalf("leaked live session (interrupts=%v, want [session-1])", r.hub.interrupts)
+	}
+	if len(r.hub.attached) != 0 {
+		t.Fatalf("attached canceled session to to-do: %v", r.hub.attached)
+	}
+	if wt == "" {
+		t.Fatal("CreateSession was not invoked with a worktree path")
+	}
+	if _, err := os.Stat(wt); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("leaked worktree %s: %v", wt, err)
+	}
+	if branches := runGit(t, r.repo, "branch", "--list", "ats/*"); branches != "" {
+		t.Fatalf("leaked branch: %q", branches)
+	}
+}
+
+func TestCancelDuringPrepareReleasesWorktreeWithoutStartingSession(t *testing.T) {
+	r := newRig(t)
+	task := r.enqueue(EnqueueInput{Title: "Cancel during prepare", PermissionProfile: PermissionDefault})
+	r.nodes.afterPrepare = func() {
+		if _, err := r.d.cancel(context.Background(), task.ID); err != nil {
+			t.Errorf("cancel during prepare: %v", err)
+		}
+	}
+
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateCanceled || got.Exec != nil {
+		t.Fatalf("after cancel during prepare: state %s exec %+v", got.State, got.Exec)
+	}
+	if len(r.hub.requests) != 0 || len(r.hub.created) != 0 {
+		t.Fatalf("started session for canceled task: requests=%d created=%d", len(r.hub.requests), len(r.hub.created))
+	}
+	key, err := attemptKey(task.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(r.worker.worktree(key)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("leaked worktree after cancel during prepare: %v", err)
+	}
+	if branches := runGit(t, r.repo, "branch", "--list", "ats/*"); branches != "" {
+		t.Fatalf("leaked branch after cancel during prepare: %q", branches)
+	}
+}
+
+func TestCancelAlreadyTerminalTaskIsNoop(t *testing.T) {
+	r := newRig(t)
+	task := r.enqueue(EnqueueInput{Title: "Already finished"})
+	r.tick()
+	r.hub.turnEnds("session-1", "u1", "Done.")
+	r.tick()
+	r.tick()
+	if got := r.task(task.ID); got.State != StateSucceeded {
+		t.Fatalf("expected succeeded, got %s", got.State)
+	}
+	callsBefore := len(r.nodes.calls)
+	interruptsBefore := len(r.hub.interrupts)
+	got, err := r.d.cancel(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateSucceeded {
+		t.Fatalf("terminal state changed to %s", got.State)
+	}
+	if len(r.nodes.calls) != callsBefore || len(r.hub.interrupts) != interruptsBefore {
+		t.Fatalf("cancel on terminal task ran cleanup: node calls %d->%d interrupts %d->%d",
+			callsBefore, len(r.nodes.calls), interruptsBefore, len(r.hub.interrupts))
+	}
+}
+
+func TestUpdateExecRollsBackInMemoryStateOnSaveError(t *testing.T) {
+	r := newRig(t)
+	task := r.enqueue(EnqueueInput{Title: "Save error rollback"})
+	_, att, err := r.q.LeaseTask(task.ID, "dispatcher", testMachine, r.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.q.UpdateExec(task.ID, att.FenceToken, r.now, func(e *Execution) {
+		e.MachineID, e.Phase = testMachine, PhasePreparing
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Point dataFile at a nonexistent parent directory so saveLocked fails deterministically.
+	origFile := r.q.dataFile
+	r.q.mu.Lock()
+	r.q.dataFile = filepath.Join(t.TempDir(), "missing", "sub", "queue.json")
+	r.q.mu.Unlock()
+	_, err = r.q.UpdateExec(task.ID, att.FenceToken, r.now, func(e *Execution) {
+		e.Phase, e.SessionID = PhaseWorking, "session-unsaved"
+	})
+	r.q.mu.Lock()
+	r.q.dataFile = origFile
+	r.q.mu.Unlock()
+	if err == nil {
+		t.Fatal("expected UpdateExec to fail when queue file cannot be saved")
+	}
+
+	got := r.task(task.ID)
+	if got.Exec == nil || got.Exec.Phase != PhasePreparing || got.Exec.SessionID != "" {
+		t.Fatalf("UpdateExec left dirty in-memory state after save failure: %+v", got.Exec)
+	}
+}
+
+func TestReadonlyTaskAutoDeclinesExitPlanMode(t *testing.T) {
+	t.Run("readonly bypass auto-declines plan exit up to limit and succeeds", func(t *testing.T) {
+		r := newRig(t)
+		r.cfg.ReadonlyPermissionMode = "bypassPermissions"
+		task := r.enqueue(EnqueueInput{Title: "Readonly plan guard"})
+		r.tick()
+
+		for i := 1; i <= maxReadonlyPlanDeclines; i++ {
+			ixID := "ix_plan_" + string(rune('0'+i))
+			r.hub.mu.Lock()
+			r.hub.interactions = []hubInteraction{{
+				ID: ixID, MachineID: testMachine, SessionID: "session-1",
+				Kind: "plan", ToolName: "ExitPlanMode",
+			}}
+			r.hub.sessions["session-1"].State = "needs_you"
+			r.hub.sessions["session-1"].PendingInteractions = 1
+			r.hub.mu.Unlock()
+
+			r.tick()
+			got := r.task(task.ID)
+			if got.State != StateRunning {
+				t.Fatalf("decline %d moved task to %s (%+v)", i, got.State, got.Exec)
+			}
+		}
+
+		r.hub.mu.Lock()
+		resolvedCount := len(r.hub.resolved)
+		firstRes := r.hub.resolved[0]
+		r.hub.mu.Unlock()
+		if resolvedCount != maxReadonlyPlanDeclines {
+			t.Fatalf("resolved %d interactions, want %d", resolvedCount, maxReadonlyPlanDeclines)
+		}
+		if firstRes.Res.Approve == nil || *firstRes.Res.Approve {
+			t.Fatalf("expected approve=false, got %+v", firstRes.Res)
+		}
+
+		// Exceeding maxReadonlyPlanDeclines falls back to needs_input.
+		r.hub.mu.Lock()
+		r.hub.interactions = []hubInteraction{{
+			ID: "ix_plan_over", MachineID: testMachine, SessionID: "session-1",
+			Kind: "plan", ToolName: "ExitPlanMode",
+		}}
+		r.hub.sessions["session-1"].State = "needs_you"
+		r.hub.sessions["session-1"].PendingInteractions = 1
+		r.hub.mu.Unlock()
+
+		r.tick()
+		if got := r.task(task.ID); got.State != StateNeedsInput || got.Exec.Waiting != "Agent 提交了计划，等你批准" {
+			t.Fatalf("after limit: state=%s waiting=%q", got.State, got.Exec.Waiting)
+		}
+
+		// Manual approval resumes and finishes cleanly.
+		r.hub.turnEnds("session-1", "u2", "Done after staying in plan mode.")
+		r.tick()
+		r.tick()
+		if got := r.task(task.ID); got.State != StateSucceeded {
+			t.Fatalf("final state: %s", got.State)
+		}
+	})
+
+	t.Run("writable task with plan card enters needs_input without auto-decline", func(t *testing.T) {
+		r := newRig(t)
+		task := r.enqueue(EnqueueInput{Title: "Writable plan", PermissionProfile: PermissionDefault})
+		r.tick()
+
+		r.hub.mu.Lock()
+		r.hub.interactions = []hubInteraction{{
+			ID: "ix_write_plan", MachineID: testMachine, SessionID: "session-1",
+			Kind: "plan", ToolName: "ExitPlanMode",
+		}}
+		r.hub.sessions["session-1"].State = "needs_you"
+		r.hub.sessions["session-1"].PendingInteractions = 1
+		r.hub.mu.Unlock()
+
+		r.tick()
+		got := r.task(task.ID)
+		if got.State != StateNeedsInput || got.Exec.Waiting != "Agent 提交了计划，等你批准" {
+			t.Fatalf("writable task: state=%s waiting=%q", got.State, got.Exec.Waiting)
+		}
+		r.hub.mu.Lock()
+		resolvedCount := len(r.hub.resolved)
+		r.hub.mu.Unlock()
+		if resolvedCount != 0 {
+			t.Fatalf("writable task should not auto-decline ExitPlanMode, got %d resolves", resolvedCount)
+		}
+	})
 }

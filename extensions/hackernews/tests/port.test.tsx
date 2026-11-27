@@ -152,6 +152,112 @@ test("cancellation never returns stale data or changes connector error", async (
   assert.equal(service.status().state, "ok");
   const before = fixture.hits.size; await assert.rejects(service.item(2, false, abort.signal), { name: "AbortError" }); assert.equal(fixture.hits.size, before);
 });
+test("broker-bound item reads return a complete localized feed and classify gone items separately", async () => {
+  const fixture = new Fixture(), target = Array.from({ length: 30 }, (_, i) => i + 1);
+  fixture.bodies.set("/topstories.json", target);
+  for (const id of target) fixture.item({ id, type: id === 28 ? "job" : id === 29 ? "poll" : "story", title: `Target ${id}`, dead: id === 6, deleted: id === 7 });
+  let active = 0, peak = 0, refused = 0;
+  const service = new HackerNews(async (input, init) => {
+    const excess = ++active > 4; peak = Math.max(peak, active);
+    try {
+      await new Promise(resolve => setTimeout(resolve, 2));
+      if (excess) { refused++; return new Response("busy", { status: 429 }); }
+      return await fixture.fetch(input, init);
+    } finally { active--; }
+  }, {}, () => fixture.time);
+  const listing = await service.stories("top", 30), wanted = target.filter(id => id !== 6 && id !== 7);
+  assert.deepEqual(listing.stories.map(it => it.id), wanted); assert.equal(listing.missed, 0);
+  assert.equal(refused, 0); assert.ok(peak > 1 && peak <= 4);
+  for (const locale of ["en", "zh-Hans", "ja"]) {
+    const keys = new Set((await draw(service, {}, locale)).sections.flatMap(section => section.items).map(item => item.key));
+    for (const id of target) assert.equal(keys.has(`story-${id}`), wanted.includes(id));
+  }
+});
+test("request deadlines start after queue admission", async () => {
+  const { fixture, service } = setup(), target = Array.from({ length: 30 }, (_, i) => i + 1);
+  fixture.bodies.set("/topstories.json", target); fixture.delay = 20;
+  for (const id of target) fixture.item({ id, type: "story", title: `Slow ${id}` });
+  const timeout = AbortSignal.timeout;
+  try {
+    AbortSignal.timeout = milliseconds => timeout(milliseconds === limits.request ? 100 : milliseconds);
+    const listing = await service.stories("top", 30);
+    assert.deepEqual(listing.stories.map(it => it.id), target); assert.equal(listing.missed, 0);
+  } finally { AbortSignal.timeout = timeout; }
+});
+test("overlapping feeds share item reads", async () => {
+  const { fixture, service } = setup(); fixture.delay = 30;
+  const listings = await Promise.all([service.stories("top"), service.stories("new")]);
+  for (const listing of listings) {
+    assert.deepEqual(listing.stories.map(it => it.id), [1, 2, 3]); assert.equal(listing.missed, 0);
+  }
+  for (const id of [1, 2, 3, 4]) assert.equal(fixture.hits.get(`/item/${id}.json`), 1);
+  assert.equal(service.status().state, "ok");
+});
+test("canceling one shared item waiter leaves the other and the read intact", async () => {
+  const { fixture, service } = setup(); fixture.delay = 30;
+  const abort = new AbortController();
+  const cancelled = service.item(1, false, abort.signal), other = service.item(1);
+  await until(() => (fixture.hits.get("/item/1.json") ?? 0) > 0);
+  abort.abort(); await assert.rejects(cancelled, { name: "AbortError" });
+  assert.equal((await other).id, 1); assert.equal(fixture.hits.get("/item/1.json"), 1);
+  assert.equal(service.status().state, "ok");
+});
+test("canceling every waiter aborts a shared item read and releases its slot", async () => {
+  let started = 0, canceled = 0, stall = true, followupStarted = 0;
+  let releaseFollowup!: () => void;
+  const followupGate = new Promise<void>(resolve => { releaseFollowup = resolve; });
+  const service = new HackerNews(async input => {
+    if (stall) return new Response(new ReadableStream<Uint8Array>({
+      start() { started++; }, pull() {}, cancel() { canceled++; }
+    }));
+    const id = Number(/item\/(\d+)/.exec(new URL(input).pathname)?.[1]);
+    followupStarted++; await followupGate; return Response.json({ id });
+  });
+  const first = new AbortController(), second = new AbortController();
+  const one = assert.rejects(service.item(9, false, first.signal), { name: "AbortError" });
+  const two = assert.rejects(service.item(9, false, second.signal), { name: "AbortError" });
+  await until(() => started === 1); first.abort(); await one; await Promise.resolve(); assert.equal(canceled, 0);
+  second.abort(); await two; await until(() => canceled === 1);
+  stall = false;
+  const followup = [1, 2, 3, 4].map(id => service.item(id));
+  await until(() => followupStarted === 4); releaseFollowup();
+  assert.deepEqual((await Promise.all(followup)).map(it => it.id), [1, 2, 3, 4]);
+  assert.equal(service.status().state, "ok");
+});
+test("an older failed read cannot overwrite newer health", async () => {
+  const started = new Set<string>();
+  let releaseOld!: () => void, releaseNew!: () => void;
+  const oldGate = new Promise<void>(resolve => { releaseOld = resolve; }), newGate = new Promise<void>(resolve => { releaseNew = resolve; });
+  const service = new HackerNews(async input => {
+    const path = new URL(input).pathname;
+    if (path.endsWith("/item/1.json")) { started.add(path); await oldGate; return new Response("failure", { status: 500 }); }
+    if (path.endsWith("/item/2.json")) { started.add(path); await newGate; return Response.json({ id: 2 }); }
+    throw new Error("unexpected path");
+  }, {}, () => 42);
+  const older = service.item(1), oldFailure = assert.rejects(older, (error: unknown) => error instanceof ReadError && error.code === "http");
+  await until(() => started.has("/v0/item/1.json"));
+  const newer = service.item(2); await until(() => started.has("/v0/item/2.json"));
+  releaseNew(); assert.equal((await newer).id, 2);
+  const lastSync = service.status().last_sync; assert.equal(service.status().state, "ok");
+  releaseOld(); await oldFailure;
+  assert.equal(service.status().state, "ok"); assert.equal(service.status().last_sync, lastSync);
+});
+test("an older successful read cannot clear a newer health failure", async () => {
+  const started = new Set<string>();
+  let releaseOld!: () => void, releaseNew!: () => void;
+  const oldGate = new Promise<void>(resolve => { releaseOld = resolve; }), newGate = new Promise<void>(resolve => { releaseNew = resolve; });
+  const service = new HackerNews(async input => {
+    const path = new URL(input).pathname;
+    if (path.endsWith("/item/1.json")) { started.add(path); await oldGate; return Response.json({ id: 1 }); }
+    if (path.endsWith("/item/2.json")) { started.add(path); await newGate; return new Response("failure", { status: 500 }); }
+    throw new Error("unexpected path");
+  });
+  const older = service.item(1); await until(() => started.has("/v0/item/1.json"));
+  const newer = assert.rejects(service.item(2), (error: unknown) => error instanceof ReadError && error.code === "http");
+  await until(() => started.has("/v0/item/2.json")); releaseNew(); await newer;
+  assert.equal(service.status().state, "error"); releaseOld(); assert.equal((await older).id, 1);
+  assert.equal(service.status().state, "error");
+});
 test("assistant tools preserve filters, IDs/links, metadata and trust warning", async () => {
   const { service } = setup({ min_score: 10 });
   let out = await callTool(service, "hn_stories"); assert.ok(out.includes("3 stories, 2 after filtering by at least 10 points")); assert.ok(!out.includes("Synthetic old site"));
@@ -263,7 +369,7 @@ test("rapid feed selection ignores late effects and denied callbacks cannot chan
 test("legacy snapshot downgrade works through the process SDK", async () => {
   const { service } = setup();
   const answers = new Map<string, { error?: unknown; result: any }>();
-  const connection = connect({ id: "hackernews", version: "0.1.0", ui: { stories: snapshotPage(service) } }, line => {
+  const connection = connect({ id: "hackernews", version: "0.1.0", ui: { hackernews: snapshotPage(service) } }, line => {
     const frame = JSON.parse(line); answers.set(frame.id, frame);
   });
   let next = 0;
@@ -275,7 +381,7 @@ test("legacy snapshot downgrade works through the process SDK", async () => {
   try {
     await call("initialize", { protocol: 1, hub: { build: 0, extension_points: {} }, granted: {} });
     for (const ui_version of [1, 2]) {
-      const context = { contribution: "stories", locale: "en", ui_version };
+      const context = { contribution: "hackernews", locale: "en", ui_version };
       const list: View = await call("ui.render", context);
       const story = list.sections.flatMap(section => section.items).find(it => it.key === "story-1");
       assert.ok(story?.type === "row" && story.action); assert.match(story.action.id, /^ext\.push\./);

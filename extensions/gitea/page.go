@@ -26,7 +26,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Page < 0 || st.PRID < 0 || len(st.Owner) > 128 || len(st.Repo) > 128 || len(st.DraftID) > 128 || len(st.Body) > 11000 {
+	if err := r.DecodeState(&st); err != nil || st.Page < 0 || st.PRID < 0 || len(st.Owner) > 128 || len(st.Repo) > 128 || len(st.DraftID) > 128 || len([]rune(st.Body)) > maxCommentChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -47,10 +47,18 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "scope":
-		if err := validRepo(r.Values["owner"], r.Values["repo"]); err != nil {
+		owner, repo := r.Values["owner"], r.Values["repo"]
+		if q := strings.TrimSpace(r.Values["q"]); q != "" || (owner == "" && repo == "") {
+			parts := strings.Split(q, "/")
+			if len(parts) != 2 {
+				return nil, errors.New("owner and repository must be single path segments")
+			}
+			owner, repo = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+		}
+		if err := validRepo(owner, repo); err != nil {
 			return nil, err
 		}
-		st.Owner, st.Repo, st.Page, st.Mode = r.Values["owner"], r.Values["repo"], 1, "list"
+		st.Owner, st.Repo, st.Page, st.Mode = owner, repo, 1, "list"
 	case "more":
 		st.Page++
 	case "detail":
@@ -78,6 +86,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil, err
 		}
 		st.Body, st.Mode = r.Values["body"], "review-comment"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("comment draft exceeds page state limit")
+		}
 	case "confirm-comment":
 		raw, _ := json.Marshal(reviewArgs{Owner: st.Owner, Repo: st.Repo, Number: st.PRID, Body: st.Body})
 		out, err := a.doAction(ctx, "ui-comment:"+st.DraftID, "gitea_comment", raw)
@@ -123,10 +134,18 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Mode != "" && st.Mode != "list" {
 		return nil, errors.New("invalid review view")
 	}
+	if st.Owner == "" && st.Repo == "" {
+		return &wire.View{
+			Title:    t.reviews,
+			State:    ext.EncodeState(st),
+			Search:   &wire.Search{Placeholder: "owner/repo", Value: "", Action: wire.Action{ID: "scope"}},
+			Sections: []wire.Section{{Title: t.open, Items: []wire.Component{{Type: wire.ComponentEmpty, Title: t.chooseRepo}}}},
+		}, nil
+	}
 	if st.Page < 1 {
 		st.Page = 1
 	}
-	items, err := a.client.pullRequests(ctx, st.Owner, st.Repo, st.Page)
+	items, more, err := a.collectPullRequests(ctx, st.Owner, st.Repo, st.Page)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -142,11 +161,35 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noPRs})
 	}
-	if len(items) == 50 {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section}
 	return v, nil
+}
+
+const maxViewRecords = 250
+
+// collectPullRequests reads page 1 through current so that Load more answers the whole list, longer. It stops at
+// maxViewRecords to keep the view within the SDK's component limit, and reports whether another page can be loaded.
+func (a *app) collectPullRequests(ctx context.Context, owner, repo string, current int) ([]pullRequest, bool, error) {
+	var out []pullRequest
+	last := 0
+	for page := 1; page <= current && len(out) < maxViewRecords; page++ {
+		batch, err := a.client.pullRequests(ctx, owner, repo, page)
+		if err != nil {
+			return nil, false, err
+		}
+		last = len(batch)
+		out = append(out, batch...)
+		if last < 50 {
+			break
+		}
+	}
+	if len(out) > maxViewRecords {
+		out = out[:maxViewRecords]
+	}
+	return out, last == 50 && len(out) < maxViewRecords, nil
 }
 
 func detailView(r *ext.UIRequest, st pageState, item pullRequest, comments []comment) *wire.View {
@@ -160,13 +203,14 @@ func detailView(r *ext.UIRequest, st pageState, item pullRequest, comments []com
 	}
 	items = append(items,
 		wire.Component{Type: wire.ComponentButton, Title: t.approve, Action: &wire.Action{ID: "approve", Confirm: t.approve + "\n" + item.Title}},
-		wire.Component{Type: wire.ComponentButton, Title: t.comment, Action: &wire.Action{ID: "comment", Push: &wire.Push{Title: t.comment, State: ext.EncodeState(pageState{Owner: st.Owner, Repo: st.Repo, PRID: st.PRID, Mode: "comment", DraftID: randomID()})}}},
+		wire.Component{Type: wire.ComponentButton, Title: t.comment, Action: &wire.Action{ID: "comment", Push: &wire.Push{Title: t.comment, State: ext.EncodeState(pageState{Owner: st.Owner, Repo: st.Repo, Page: st.Page, PRID: st.PRID, Mode: "comment", DraftID: randomID()})}}},
 		wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}},
 	)
 	v := &wire.View{Title: fmt.Sprintf("PR #%d", item.Number), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.reviews, Items: items}}}
 	if item.Body != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Body, 60000))})
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: capComponents(textComponents(clipText(item.Body, 60000)), maxDescriptionItems)})
 	}
+	budget := maxViewItems - viewItemCount(v)
 	section := wire.Section{Title: t.comments}
 	for _, comment := range comments {
 		if comment.Body == "" {
@@ -175,11 +219,37 @@ func detailView(r *ext.UIRequest, st pageState, item pullRequest, comments []com
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: clipText(comment.User.FullName+" (@"+comment.User.Login+")", 1800), Style: wire.TextStyleSecondary})
 		section.Items = append(section.Items, textComponents(clipText(comment.Body, 12000))...)
 	}
+	section.Items = capComponents(section.Items, budget)
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.noComments, Style: wire.TextStyleSecondary})
 	}
 	v.Sections = append(v.Sections, section)
 	return v
+}
+
+const (
+	// maxViewItems keeps the pull request view within the hub's 300 component limit, whatever the comments hold.
+	maxViewItems = 250
+	// maxDescriptionItems leaves the comments room in it.
+	maxDescriptionItems = 100
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
+}
+
+func viewItemCount(v *wire.View) int {
+	n := 0
+	for _, section := range v.Sections {
+		n += len(section.Items)
+	}
+	return n
 }
 
 func commentView(r *ext.UIRequest, st pageState) *wire.View {

@@ -110,9 +110,9 @@ func (s *Store) Update(f func(st *State) error) error {
 	return s.save(st)
 }
 
-// Merge adds one machine's buckets, replacing a minute of the same model and launcher that is already stored, and
-// drops days older than KeepDays before the newest day written. loc is the hub's time zone, which decides the day a
-// minute belongs to. It returns how many buckets were new or changed.
+// Merge adds one machine's buckets, replacing a minute of the same model and launcher that is already stored and
+// deleting it when its correction is zero, and drops days older than KeepDays before the newest day written. loc is
+// the hub's time zone, which decides the day a minute belongs to. It returns how many buckets were new or changed.
 func (s *Store) Merge(machine string, buckets []Bucket, loc *time.Location) (int, error) {
 	if machine == "" {
 		return 0, errors.New("a machine has no id")
@@ -148,6 +148,19 @@ func (s *Store) Merge(machine string, buckets []Bucket, loc *time.Location) (int
 			}
 			d := &st.Days[dayIndex]
 			k := keyOf(b)
+			if b.Total() == 0 && b.Requests == 0 {
+				if i, ok := index[date][k]; ok {
+					d.Buckets = append(d.Buckets[:i], d.Buckets[i+1:]...)
+					delete(index[date], k)
+					for storedKey, j := range index[date] {
+						if j > i {
+							index[date][storedKey] = j - 1
+						}
+					}
+					changed++
+				}
+				continue
+			}
 			if i, ok := index[date][k]; ok {
 				if d.Buckets[i] != b {
 					d.Buckets[i] = b

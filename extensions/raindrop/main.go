@@ -25,7 +25,7 @@ var about = func() (m struct{ ID, Version string }) {
 
 const (
 	connectorID = "raindrop"
-	pageUI      = "bookmarks"
+	pageUI      = "raindrop"
 )
 
 func main() {

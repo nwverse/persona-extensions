@@ -7,14 +7,16 @@ import threading
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chats (
-  id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'group', last_at REAL NOT NULL DEFAULT 0);
+  id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'group', last_at REAL NOT NULL DEFAULT 0,
+  mute TEXT NOT NULL DEFAULT 'unknown', checked_at REAL NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS messages (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE, chat TEXT NOT NULL, position INTEGER NOT NULL DEFAULT 0,
   sender TEXT NOT NULL DEFAULT '', sender_name TEXT NOT NULL DEFAULT '', mine INTEGER NOT NULL DEFAULT 0,
   type TEXT NOT NULL DEFAULT '', text TEXT NOT NULL DEFAULT '', at REAL NOT NULL DEFAULT 0,
   root TEXT NOT NULL DEFAULT '', parent TEXT NOT NULL DEFAULT '', at_me INTEGER NOT NULL DEFAULT 0,
-  media TEXT NOT NULL DEFAULT '[]');
+  media TEXT NOT NULL DEFAULT '[]', mentions TEXT NOT NULL DEFAULT '[]', markdown TEXT NOT NULL DEFAULT '');
 CREATE INDEX IF NOT EXISTS messages_chat ON messages (chat, position);
+CREATE INDEX IF NOT EXISTS messages_topic ON messages (chat, root) WHERE root NOT IN ('', '0');
 CREATE TABLE IF NOT EXISTS names (id TEXT PRIMARY KEY, name TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS sends (key TEXT PRIMARY KEY, result TEXT);
 """
@@ -28,9 +30,26 @@ class Store:
         self._db = sqlite3.connect(path, check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.executescript(SCHEMA)
+        # Databases from before self-mentions have no mention metadata column. Keep those messages inert.
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(messages)")}
+        if "mentions" not in columns:
+            self._db.execute("ALTER TABLE messages ADD COLUMN mentions TEXT NOT NULL DEFAULT '[]'")
+        # Older messages have no verified safe Markdown representation and keep their original plain-text display.
+        if "markdown" not in columns:
+            self._db.execute("ALTER TABLE messages ADD COLUMN markdown TEXT NOT NULL DEFAULT ''")
+        # Older chats have no verified mute state. Keep their existing inbox behavior until a refresh succeeds.
+        columns = {r["name"] for r in self._db.execute("PRAGMA table_info(chats)")}
+        if "mute" not in columns:
+            self._db.execute("ALTER TABLE chats ADD COLUMN mute TEXT NOT NULL DEFAULT 'unknown'")
+        if "checked_at" not in columns:
+            self._db.execute("ALTER TABLE chats ADD COLUMN checked_at REAL NOT NULL DEFAULT 0")
         # 0.1 named a direct chat it saw only through the user's own messages 私聊 ("direct chat") for good.
         self._db.execute("UPDATE chats SET name = '' WHERE kind = 'dm' AND name = '私聊'")
         self._db.commit()
+
+    def close(self):
+        with self._lock:
+            self._db.close()
 
     def _all(self, sql, *args):
         with self._lock:
@@ -49,11 +68,12 @@ class Store:
     def add_message(self, m, sender_name, mine):
         """Keeps a message once; True when it is new."""
         return self._do(
-            "INSERT OR IGNORE INTO messages (id, chat, position, sender, sender_name, mine, type, text, at, root, parent, at_me, media)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT OR IGNORE INTO messages (id, chat, position, sender, sender_name, mine, type, text, at, root, parent, at_me, media, mentions, markdown)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             m["id"], m["chat"], m.get("position") or 0, m.get("sender") or "", sender_name, 1 if mine else 0,
             m.get("type") or "", m.get("text") or "", m.get("at") or 0, m.get("root") or "", m.get("parent") or "",
-            1 if m.get("at_me") else 0, json.dumps(m.get("media") or [], ensure_ascii=False)) > 0
+            1 if m.get("at_me") else 0, json.dumps(m.get("media") or [], ensure_ascii=False),
+            json.dumps(m.get("mentions") or [], ensure_ascii=False), m.get("markdown") or "") > 0
 
     def touch_chat(self, chat, kind, at):
         self._do("INSERT INTO chats (id, kind, last_at) VALUES (?, ?, ?)"
@@ -61,6 +81,11 @@ class Store:
 
     def name_chat(self, chat, name):
         self._do("UPDATE chats SET name = ? WHERE id = ?", name, chat)
+
+    def mute_chat(self, chat, mute, checked_at):
+        if mute not in ("muted", "normal", "unknown"):
+            raise ValueError("unknown chat mute state")
+        self._do("UPDATE chats SET mute = ?, checked_at = ? WHERE id = ?", mute, checked_at, chat)
 
     def chat(self, chat):
         return self._one("SELECT * FROM chats WHERE id = ?", chat)
@@ -82,6 +107,39 @@ class Store:
             where, args = "chat = ? AND position < ?", [chat, before]
         rows = self._all("SELECT * FROM messages WHERE %s ORDER BY position DESC, at DESC, seq DESC LIMIT ?" % where, *args, limit)
         return [_message(r) for r in reversed(rows)]
+
+    def inbox_topics(self, chat, since, limit):
+        """Recent group messages partitioned by topic, with the empty key for chat-level traffic."""
+        rows = self._all(
+            """
+            WITH scoped AS (
+                SELECT m.seq, m.position, m.at,
+                    CASE WHEN m.root NOT IN ('', '0') THEN m.root
+                         WHEN EXISTS (SELECT 1 FROM messages AS reply
+                                      WHERE reply.chat = m.chat AND reply.root = m.id
+                                        AND reply.root NOT IN ('', '0') AND reply.type != 'SYSTEM') THEN m.id
+                         ELSE '' END AS topic
+                FROM messages AS m WHERE m.chat = ? AND m.at >= ? AND m.type != 'SYSTEM'
+            ), ranked AS (
+                SELECT seq, topic, ROW_NUMBER() OVER (
+                    PARTITION BY topic ORDER BY position DESC, at DESC, seq DESC
+                ) AS rank FROM scoped
+            )
+            SELECT messages.*, ranked.topic FROM ranked JOIN messages USING (seq)
+            WHERE ranked.rank <= ? ORDER BY ranked.topic, ranked.rank DESC
+            """, chat, since, limit)
+        topics = {}
+        for row in rows:
+            topic = row.pop("topic")
+            topics.setdefault(topic, []).append(_message(row))
+        return topics
+
+    def topic_messages(self, chat, root, before, limit):
+        rows = self._all(
+            """SELECT * FROM messages WHERE chat = ? AND (root = ? OR id = ?)
+               AND (? = 0 OR position < ?) ORDER BY position DESC, at DESC, seq DESC LIMIT ?""",
+            chat, root, root, before, before, limit)
+        return [_message(row) for row in reversed(rows)]
 
     def oldest_position(self, chat):
         row = self._one("SELECT MIN(position) AS p FROM messages WHERE chat = ? AND position > 0", chat)
@@ -117,6 +175,10 @@ class Store:
             row = self._db.execute("SELECT result FROM sends WHERE key = ?", (key,)).fetchone()
         return False, row["result"] or ""
 
+    def claimed(self, key):
+        """True when key was taken for a send, whatever that send ended with."""
+        return self._one("SELECT 1 AS one FROM sends WHERE key = ?", key) is not None
+
     def finish_send(self, key, result):
         self._do("UPDATE sends SET result = ? WHERE key = ?", result, key)
 
@@ -126,6 +188,7 @@ def _message(row):
         return None
     row = dict(row)
     row["media"] = json.loads(row.get("media") or "[]")
+    row["mentions"] = json.loads(row.get("mentions") or "[]")
     row["mine"] = bool(row.get("mine"))
     row["at_me"] = bool(row.get("at_me"))
     return row

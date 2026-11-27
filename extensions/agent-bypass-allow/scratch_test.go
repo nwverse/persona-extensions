@@ -211,7 +211,7 @@ func TestAllowDestructiveSetting(t *testing.T) {
 	for _, c := range []string{
 		"rm -rf /srv/data", "rm -rf ~/notes", "git reset --hard", "mv a b", "echo {} > settings.json", "git clean -fdx",
 		"docker system prune -a", "psql -c 'DROP TABLE t'", "git branch -D x", "kubectl delete pod p", "git checkout -- .",
-		"find . -delete", "truncate -s 0 log", "sed -i s/a/b/ f", "aws s3 rm s3://b/x", "cd x && rm -f sub/*", "ls | xargs rm",
+		"truncate -s 0 log", "sed -i s/a/b/ f", "aws s3 rm s3://b/x", "cd x && rm -f sub/*", "ls | xargs rm",
 		"ssh host rm -rf /srv/x", "bash -c 'rm -rf x'", "gh repo delete me/r --yes", "dd if=a of=b",
 	} {
 		if why := g.personOnly(c); why != "" {
@@ -221,7 +221,7 @@ func TestAllowDestructiveSetting(t *testing.T) {
 		}
 	}
 	for _, c := range []string{
-		"git push --force", "git push -f origin main", "chmod 777 x", "chown me f", "rm -rf x && chmod 777 y",
+		"find . -delete", "git push --force", "git push -f origin main", "chmod 777 x", "chown me f", "rm -rf x && chmod 777 y",
 		"rm -rf x; git push -f", "bash -c 'git push -f'", "gh secret delete X", "gh -R o/r secret set X",
 		"gh api -X DELETE repos/o/r/branches/main/protection", "kubectl delete rolebinding rb", "psql -c 'GRANT ALL ON t TO u'",
 		"psql -c 'DROP USER u'", "mkfs.ext4 /dev/sdb1", "dd if=/dev/zero of=/dev/sda", "wipefs -a /dev/sda",
@@ -320,4 +320,44 @@ func initWith(e env, config string) *ext.Init {
 	in.Extension = &wire.ExtensionInfo{ID: currentExtensionID, DataDir: e.data}
 	in.InitializeParams.Config = json.RawMessage(config)
 	return in
+}
+
+func TestTargetsOfTargetDirectoryAndCombinedFlags(t *testing.T) {
+	b := newBox(t)
+	if err := os.Symlink(b.home, filepath.Join(b.tmp, "home-link")); err != nil {
+		t.Fatal(err)
+	}
+	// Destinations outside scratch via --target-directory, abbreviated --target, combined short flags,
+	// or a symlink target directory must stay with a person.
+	for _, command := range []string{
+		`cp -f --target-directory {keep} {tmp}/a`,
+		`cp -f --target {keep} {tmp}/a`,
+		`ln -sf --target-directory {keep} {tmp}/a`,
+		`ln -sf --target {keep} {tmp}/a`,
+		`cp -f -t {tmp}/home-link {tmp}/a`,
+		`mv -f -t {tmp}/home-link {tmp}/a`,
+		`ln -sf -t {tmp}/home-link {tmp}/a`,
+		`cp -ft {keep} {tmp}/a`,
+		`ln -sft {keep} {tmp}/a`,
+		`cp -ft{keep} {tmp}/a`,
+		`ln -sft{keep} {tmp}/a`,
+		`mv -ft {keep} {tmp}/a {tmp}/b`,
+		`mv -ft{keep} {tmp}/a {tmp}/b`,
+	} {
+		if why := newGuard(b.project, false).personOnly(b.cmd(command)); why == "" {
+			t.Errorf("%q should stay with a person (target outside scratch)", command)
+		}
+	}
+	// Destinations inside scratch via those same flags remain allowed.
+	for _, command := range []string{
+		`cp -f --target-directory {tmp}/dst {tmp}/a`,
+		`cp -ft {tmp}/dst {tmp}/a`,
+		`cp -ft{tmp}/dst {tmp}/a`,
+		`mv -ft {tmp}/dst {tmp}/a`,
+		`mv -fS.txt {tmp}/a {tmp}/b`,
+	} {
+		if why := newGuard(b.project, false).personOnly(b.cmd(command)); why != "" {
+			t.Errorf("%q should be allowed as scratch, got %q", command, why)
+		}
+	}
 }

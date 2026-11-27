@@ -29,7 +29,7 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "redmine_create_issue", Description: "Create a Redmine issue in an exact project after explicit confirmation. Only project_id, subject and description are sent; no custom fields or arbitrary filters.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"project_id", "subject"}, "properties": map[string]any{
-			"project_id": idSchema, "subject": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}, "description": map[string]any{"type": "string", "maxLength": 30000},
+			"project_id": idSchema, "subject": map[string]any{"type": "string", "minLength": 1, "maxLength": maxSubjectChars}, "description": map[string]any{"type": "string", "maxLength": 30000},
 		}}},
 }
 

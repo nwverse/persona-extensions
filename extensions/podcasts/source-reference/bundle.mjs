@@ -33,6 +33,9 @@ var ExtensionStorage = class {
   claim(params) {
     return this.hub.call("storage.queue.claim", params);
   }
+  renew(params) {
+    return this.hub.call("storage.queue.renew", params);
+  }
   ack(params) {
     return this.hub.call("storage.queue.ack", params);
   }
@@ -128,6 +131,8 @@ var Composer = native("composer");
 var Image = native("image");
 var Grid = native("grid");
 var Carousel = native("carousel");
+var Graph = native("graph");
+var Scene = native("scene");
 
 // ../../sdk/ts/src/hooks.ts
 var context;
@@ -217,7 +222,10 @@ var fields = {
   composer: ["name", "placeholder", "value", "buttons"],
   image: ["src", "alt", "caption", "aspect", "fit", "no_zoom"],
   grid: ["tiles", "max_columns"],
-  carousel: ["title", "tiles", "width"]
+  carousel: ["title", "tiles", "width"],
+  graph: ["nodes", "edges", "layout", "direction", "selected", "folded"],
+  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"],
+  map: ["title", "alt", "caption", "aspect", "viewport", "markers", "routes", "links", "static", "show_list"]
 };
 function pathPart(parent, ...segments) {
   return parent + segments.map((segment) => `${segment.length}:${segment}`).join("");
@@ -827,7 +835,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "podcasts", name: "Podcasts \u64AD\u5BA2", version: "0.1.2", icon: "assets/icon.png", description: "\u641C\u7D22\u516C\u5F00\u64AD\u5BA2\uFF0C\u67E5\u770B\u8282\u76EE\u548C\u8FD1\u671F\u5355\u96C6\uFF0C\u628A\u60F3\u542C\u7684\u8282\u76EE\u4FDD\u5B58\u5230\u672C\u5730\u6536\u542C\u6E05\u5355\u3002\u901A\u8FC7 Apple \u516C\u5F00\u76EE\u5F55\u83B7\u53D6\u5143\u6570\u636E\uFF0C\u65E0\u9700\u8D26\u53F7\uFF1B\u4E0D\u4E0B\u8F7D\u5A92\u4F53\uFF0C\u4E0D\u63A7\u5236\u64AD\u653E\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/podcasts/README.md", tags: ["\u64AD\u5BA2", "\u5355\u96C6", "\u6536\u542C\u6E05\u5355", "Apple Podcasts"], engines: { persona: ">=202611101800", extension_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/podcasts.mjs", sha256: "" } }, contributes: { connectors: [{ id: "podcasts", name: "Podcasts", capabilities: ["status", "tools"], hosts: ["itunes.apple.com"], agent_tools: ["podcasts_*"] }], ui: [{ id: "discover", title: "\u53D1\u73B0\u64AD\u5BA2", placement: "nav_page", icon: "music" }] }, permissions: { network: ["itunes.apple.com"], storage: { keys: ["subscriptions"] } } };
+var persona_extension_default = { manifest_version: 1, id: "podcasts", name: "Podcasts \u64AD\u5BA2", version: "0.1.5", icon: "assets/icon.png", description: "\u641C\u7D22\u516C\u5F00\u64AD\u5BA2\uFF0C\u67E5\u770B\u8282\u76EE\u548C\u8FD1\u671F\u5355\u96C6\uFF0C\u628A\u60F3\u542C\u7684\u8282\u76EE\u4FDD\u5B58\u5230\u672C\u5730\u6536\u542C\u6E05\u5355\u3002\u901A\u8FC7 Apple \u516C\u5F00\u76EE\u5F55\u83B7\u53D6\u5143\u6570\u636E\uFF0C\u65E0\u9700\u8D26\u53F7\uFF1B\u4E0D\u4E0B\u8F7D\u5A92\u4F53\uFF0C\u4E0D\u63A7\u5236\u64AD\u653E\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/podcasts/README.md", tags: ["\u64AD\u5BA2", "\u5355\u96C6", "\u6536\u542C\u6E05\u5355", "Apple Podcasts"], engines: { persona: ">=202611101800", extension_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/podcasts.mjs", sha256: "" } }, contributes: { connectors: [{ id: "podcasts", name: "Podcasts", capabilities: ["status", "tools"], hosts: ["itunes.apple.com"], agent_tools: ["podcasts_*"] }], ui: [{ id: "podcasts", title: "\u53D1\u73B0\u64AD\u5BA2", placement: "nav_page", icon: "music" }] }, permissions: { network: ["itunes.apple.com"], storage: { keys: ["subscriptions"] } } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 18e3, tool: 18e3, response: 2 << 20, fresh: 15 * 6e4, cache: 48, cacheBytes: 2 << 20, gap: 350 });
@@ -1521,7 +1529,7 @@ async function loadPage(service, store, state, refresh, signal) {
 }
 function page(props) {
   const { service, state, loaded, uiVersion = 0 } = props, t = textsFor(props.locale ?? service.locale), tz = props.tz ?? "Local";
-  const act = (id2, next, title) => props.action?.(id2, next, title) ?? (next && uiVersion >= 3 ? { id: id2, push: { ui: "discover", state: encodeState(next), ...title ? { title } : {} } } : { id: id2 });
+  const act = (id2, next, title) => props.action?.(id2, next, title) ?? (next && uiVersion >= 3 ? { id: id2, push: { ui: "podcasts", state: encodeState(next), ...title ? { title } : {} } } : { id: id2 });
   const text2 = (key, value, style = "secondary") => /* @__PURE__ */ jsx(Text, { text: clip(value, 1800), style }, key);
   const search = /* @__PURE__ */ jsxs(Section, { title: t.search, children: [
     /* @__PURE__ */ jsx(Field, { name: "query", label: t.search, kind: "text", placeholder: t.searchHint, value: state.q }, "podcast-query"),
@@ -1608,7 +1616,7 @@ function Root(options) {
     loaded: result?.service === options.service && result.identity === identity ? result.loaded : { kind: "loading" },
     action: (id2, next, title) => {
       if (next && (options.uiVersion ?? 0) >= 3) {
-        const push = { ui: "discover", state: encodeState(next), ...title ? { title } : {} };
+        const push = { ui: "podcasts", state: encodeState(next), ...title ? { title } : {} };
         return callback(() => ({ push }), { push });
       }
       return callback(async (values) => {
@@ -1831,7 +1839,7 @@ function createProgram(fetch = (input, init) => globalThis.fetch(input, init), o
       if (!store) await listening.load();
     },
     namespaces: { connector: connector(() => current().service) },
-    ui: { discover: componentPage((req) => root({ service: current().service, store: current().store, state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) }
+    ui: { podcasts: componentPage((req) => root({ service: current().service, store: current().store, state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) }
   };
 }
 var index_default = createProgram();

@@ -31,7 +31,7 @@ speaker (P4)      Unit.Who[n] = self | person:<id> | ""   (3.2)
 triage (P4)       drop only: unresolved speaker, no intersection, bots/alerts/broadcasts (3.3)
 extract (P2)      one prompt, English instructions, target language parameter → schema.DailyOutput
                   .Facts (⑤) .Assertions (⑤ relations) .Observations (①②③④⑤′⑥)
-checks (P2/P4)    quotes, self-only for ③④⑥ and ①'s asks, impact, language, secrets, K13
+checks (P2/P4)    quotes, self-only for ③④⑥ and ①'s asks, impact, language, secrets, categories (tagged)
 entries (P3)      State.Entries; events.jsonl; recall → judge → file/counter/new; counts; status; abstract gate
 signals (P5)      State.Corrections (① ledger), State.Digs (friction → segment → ② entries)
 people (P9)       State.Contacts (intersection list), card entries (facet people), commitments
@@ -43,7 +43,7 @@ replay (P8)       offline.go: history replay, readings, samples, cold start, smo
 | Package | Owns (writes) | Reads |
 |---|---|---|
 | P1 `internal/hubapi`, `internal/sources`, `internal/convsrc` | units of S1–S7, S11 filters; `State.Sources` availability and volumes; `State.Cursors`; `State.Backfill` | — |
-| P2 `internal/prompts`, `internal/schema`, `internal/verify`, `internal/norm`, `curate/judge.go`, `curate/rules.go` checks | `schema.Observation` contract, checks, rejections | `Unit.Who`, switches K13 |
+| P2 `internal/prompts`, `internal/schema`, `internal/verify`, `internal/norm`, `curate/judge.go`, `curate/rules.go` checks | `schema.Observation` contract, checks, rejections | `Unit.Who`, categories |
 | P3 `curate/entries.go`, `curate/synth.go`, `curate/own.go`, `curate/thresholds.go`, `internal/store` | `State.Entries`, `Tombstones`, `Types`, `ActiveDays`, `events.jsonl` | observations |
 | P4 `internal/speaker`, `internal/triage`, `internal/graph`, `curate/daily.go` gates, `curate/proposals.go` | `Unit.Who`, `State.SpeakerChecks`, `SourceStatus.LearnPeople`, kb writes for ⑤ | `kb.owner`, members |
 | P5 `internal/signals` | `State.Corrections`, `State.Digs` | S1–S3 items via `hubapi.Hub`, entries |
@@ -61,7 +61,7 @@ that every change is an event.
 - Person: `person:<kb id>`; project: `project:<kb id>`.
 - Unit refs: `chats/<id>`, `docs/<id>`, `recordings/<id>`, `chats/persona-<id>` (S1), `agents/<machine>/<session>`
   (S3), `asks/<day>` (S2), `todos/<id>` (S5).
-- Switch keys: `K1`…`K17`, per item `K2.<fork type>`, `K13.<category>`, `K16.<source>` (`entry.Switch`).
+- Switch keys: `K1`…`K22`, per item `K2.<fork type>`, `K13.<category>` (no effect since 0.2.0-beta.40), `K16.<source>`, `K22.<category>` (`entry.Switch`).
 
 ## Exit files (data directory; contract with the hub, design §12)
 
@@ -76,7 +76,7 @@ that every change is an event.
 | G page and weekly report | plugin page; weekly report via `notify` | — | — |
 | manifest | `exits.json`: exit → hash, bytes, entry ids | — | — |
 
-Never in A, B, D: K13 categories, ⑤′ user evaluations and inferred lines. Never in A: ⑤′ at all.
+Never in A, B, D: entries in a category the user has not let in (K22, `Entry.Resident`), a domain space's content outside ① and ⑥, ⑤′ user evaluations and inferred lines. Never in A: ⑤′ at all.
 Exit A carries the fixed line: entries marked inferred or evaluation on people pages are for reference only and
 are not to be passed on.
 

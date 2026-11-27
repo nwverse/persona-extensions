@@ -20,6 +20,7 @@ import (
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
@@ -116,7 +117,7 @@ func buildWeekly(st *store.State, week string, days []string, today, lang string
 	// 1. New in effect this week: what went into an exit for the first time.
 	var fresh []*entry.Entry
 	for _, e := range st.Entries {
-		if e.Live() && e.Effective != "" && in(e.Effective) && e.Sensitive == "" && e.Part != entry.PartUserEval && e.Part != entry.PartInferred {
+		if e.Live() && e.Effective != "" && in(e.Effective) && !e.IsSensitive() && e.Part != entry.PartUserEval && e.Part != entry.PartInferred {
 			fresh = append(fresh, e)
 		}
 	}
@@ -191,7 +192,7 @@ func buildWeekly(st *store.State, week string, days []string, today, lang string
 	// 5. Quiet confirmed entries, asked about once.
 	var asks []*entry.Entry
 	for _, e := range st.Entries {
-		if e.Live() && slices.Contains(e.Flags, flagAskedDormant) && e.Sensitive == "" && (led == nil || !slices.Contains(led.Asked, e.ID)) {
+		if e.Live() && slices.Contains(e.Flags, flagAskedDormant) && !e.IsSensitive() && (led == nil || !slices.Contains(led.Asked, e.ID)) {
 			asks = append(asks, e)
 		}
 	}
@@ -257,8 +258,9 @@ func buildWeekly(st *store.State, week string, days []string, today, lang string
 	return rep
 }
 
-// weeklyTick sends the report of the week before, by the hub's time zone, once its weekly pass has run. A week is
-// looked at once: with nothing new it is not pushed; a failed notify is noted and not retried every minute.
+// weeklyTick sends the report of the week before, by the hub's time zone, once its weekly pass and its overview have
+// run. A week is looked at once: with nothing new it is not pushed; a failed notify is noted and not retried every
+// minute (enkeep_overview_run report sends it again).
 func (a *app) weeklyTick(ctx context.Context, now time.Time) error {
 	loc := a.hubLoc
 	if loc == nil {
@@ -267,31 +269,70 @@ func (a *app) weeklyTick(ctx context.Context, now time.Time) error {
 	now = now.In(loc)
 	monday := now.AddDate(0, 0, -int((now.Weekday()+6)%7))
 	week := curate.ISOWeek(monday.AddDate(0, 0, -1).Format("2006-01-02"))
-	if !a.ran("weekly", week) {
+	if !a.ran("weekly", week) || !a.overviewSettled(week) {
 		return nil
 	}
+	if led := loadLedger(a.c.St.Dir); led.Week == week {
+		// A push the hub refused (or that failed) is tried once more by a new process (an upgrade that fixed it),
+		// never every minute.
+		if led.Pushed || led.Err == "" || a.attempted("report@"+week) {
+			return nil
+		}
+	}
+	a.mu.Lock()
+	a.tried = append(a.tried, "report@"+week)
+	a.mu.Unlock()
+	_, err := a.weeklySend(ctx, week, now, false)
+	return err
+}
+
+// weeklySend writes week's full report (the overview's section and the curation's) for the page and pushes its short
+// summary (overview.Summary: at most 300 characters; the hub refuses a body over 1000). force sends it even when the
+// ledger says the week was already looked at (a failed push sent again). It returns the summary pushed, "" when the
+// week had nothing new.
+func (a *app) weeklySend(ctx context.Context, week string, now time.Time, force bool) (string, error) {
 	dir := a.c.St.Dir
 	led := loadLedger(dir)
-	if led.Week == week {
-		return nil
+	if led.Week == week && led.Pushed && !force {
+		return "", fmt.Errorf("the report of %s was already sent", week)
 	}
 	days, err := curate.WeekDays(week)
 	if err != nil {
-		return err
+		return "", err
 	}
 	lang := a.c.Cfg.Language
 	if lang == "" {
 		lang = a.c.Lang
 	}
+	loc := a.hubLoc
+	if loc == nil {
+		loc = a.c.Loc
+	}
 	st, done := a.read()
-	rep := buildWeekly(st, week, days, now.Format("2006-01-02"), lang, loc, led)
+	rep := buildWeekly(st, week, days, now.In(loc).Format("2006-01-02"), lang, loc, led)
 	done()
-	led.Week, led.At, led.Pushed, led.Err, led.Counts = week, now.UTC().Format(time.RFC3339), false, "", rep.Counts
-	if rep.Changed {
+	ovs := (&overview.State{}).Clone() // the overview off: its section says so, the push is still the short summary
+	if a.ov != nil {
+		ovs = a.ov.Snapshot()
+	}
+	run := ovs.Weeks[week]
+	full := "# " + rep.Title + "\n\n" + overview.Section(ovs, run, lang) + "\n\n" + rep.Body + "\n"
+	if err := overview.SaveReportIn(dir, "weekly", week, full); err != nil {
+		a.logf("enkeep-memory: weekly report %s not saved: %v", week, err)
+	}
+	body := overview.Summary(ovs, run, rep.Counts, lang)
+	changed := rep.Changed || run != nil && len(run.Changed) > 0
+	if led.Week != week {
+		led.Pushed = false
+	}
+	led.Week, led.At, led.Err, led.Counts = week, now.UTC().Format(time.RFC3339), "", rep.Counts
+	led.Counts["summary_chars"] = len([]rune(body))
+	led.Counts["full_chars"] = len([]rune(full))
+	if changed || force {
 		if a.hubAPI == nil {
 			err = errors.New("no hub")
 		} else {
-			err = a.hubAPI.Notify(ctx, rep.Title, rep.Body)
+			err = a.hubAPI.Notify(ctx, rep.Title, body)
 		}
 		if err != nil {
 			led.Err = err.Error()
@@ -303,7 +344,13 @@ func (a *app) weeklyTick(ctx context.Context, now time.Time) error {
 				led.ToldCards = true
 			}
 		}
+	} else {
+		body = ""
 	}
 	sort.Strings(led.Asked)
-	return saveLedger(dir, led)
+	led.Asked = slices.Compact(led.Asked)
+	if serr := saveLedger(dir, led); serr != nil && err == nil {
+		err = serr
+	}
+	return body, err
 }

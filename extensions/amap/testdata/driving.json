@@ -1,0 +1,175 @@
+{
+ "status": "1",
+ "info": "OK",
+ "infocode": "10000",
+ "count": "3",
+ "route": {
+  "origin": "116.397755,39.903182",
+  "destination": "116.378517,39.865246",
+  "taxi_cost": "26",
+  "paths": [
+   {
+    "distance": "9183",
+    "restriction": "0",
+    "cost": {
+     "duration": "2057",
+     "tolls": "0",
+     "toll_distance": "0",
+     "traffic_lights": "20"
+    },
+    "steps": [
+     {
+      "instruction": "沿广场东侧路向北行驶475米左转",
+      "orientation": "北",
+      "road_name": "广场东侧路",
+      "step_distance": "475",
+      "polyline": "116.397755,39.903182;116.397760,39.905400;116.397740,39.907300"
+     },
+     {
+      "instruction": "沿西长安街途径复兴门内大街向西行驶2.3千米右转",
+      "orientation": "西",
+      "road_name": "西长安街",
+      "step_distance": "2325",
+      "polyline": "116.397740,39.907300;116.386500,39.907250;116.374128,39.907439"
+     },
+     {
+      "instruction": "沿华远街向北行驶177米右转",
+      "orientation": "北",
+      "road_name": "华远街",
+      "step_distance": "177",
+      "polyline": "116.374128,39.907439;116.374130,39.909020"
+     },
+     {
+      "instruction": "沿民丰胡同向东行驶195米右转",
+      "orientation": "东",
+      "road_name": "民丰胡同",
+      "step_distance": "195",
+      "polyline": "116.374130,39.909020;116.376300,39.909010"
+     },
+     {
+      "instruction": "沿西单北大街途径宣武门内大街、宣武门外大街、菜市口大街、开阳路向南行驶4.6千米左转",
+      "orientation": "南",
+      "road_name": "西单北大街",
+      "step_distance": "4580",
+      "polyline": "116.376300,39.909010;116.374355,39.899784;116.375200,39.882000;116.375800,39.868500"
+     },
+     {
+      "instruction": "沿南站幸福路向东行驶390米右转",
+      "orientation": "东",
+      "road_name": "南站幸福路",
+      "step_distance": "390",
+      "polyline": "116.375800,39.868500;116.377200,39.866800;116.378517,39.865246"
+     }
+    ]
+   },
+   {
+    "distance": "13679",
+    "restriction": "0",
+    "cost": {
+     "duration": "1908",
+     "tolls": "0",
+     "toll_distance": "0",
+     "traffic_lights": "10"
+    },
+    "steps": [
+     {
+      "instruction": "沿广场东侧路向北行驶475米左转",
+      "orientation": "北",
+      "road_name": "广场东侧路",
+      "step_distance": "475",
+      "polyline": "116.397755,39.903182;116.397740,39.907300"
+     },
+     {
+      "instruction": "沿西长安街途径复兴门内大街向西行驶3.7千米右转进入匝道",
+      "orientation": "西",
+      "road_name": "西长安街",
+      "step_distance": "3686",
+      "polyline": "116.397740,39.907300;116.365000,39.907200;116.356800,39.907100"
+     },
+     {
+      "instruction": "沿复兴门桥向北行驶129米右转",
+      "orientation": "北",
+      "road_name": "复兴门桥",
+      "step_distance": "129",
+      "polyline": "116.356800,39.907100;116.356750,39.908200"
+     },
+     {
+      "instruction": "沿复兴门桥向南行驶336米靠左",
+      "orientation": "南",
+      "road_name": "复兴门桥",
+      "step_distance": "336",
+      "polyline": "116.356750,39.908200;116.356700,39.905000"
+     },
+     {
+      "instruction": "沿复兴门桥向南行驶155米靠左",
+      "orientation": "南",
+      "road_name": "复兴门桥",
+      "step_distance": "155",
+      "polyline": "116.356700,39.905000;116.356720,39.903500"
+     },
+     {
+      "instruction": "沿西二环向南行驶195米靠左沿主路行驶",
+      "orientation": "南",
+      "road_name": "西二环",
+      "step_distance": "195",
+      "polyline": "116.356720,39.903500;116.368000,39.874000;116.378517,39.865246"
+     }
+    ]
+   },
+   {
+    "distance": "8910",
+    "restriction": "0",
+    "cost": {
+     "duration": "2084",
+     "tolls": "0",
+     "toll_distance": "0",
+     "traffic_lights": "20"
+    },
+    "steps": [
+     {
+      "instruction": "沿广场东侧路向北行驶475米右转",
+      "orientation": "北",
+      "road_name": "广场东侧路",
+      "step_distance": "475",
+      "polyline": "116.397755,39.903182;116.397740,39.907300"
+     },
+     {
+      "instruction": "沿东长安街向东行驶611米右转",
+      "orientation": "东",
+      "road_name": "东长安街",
+      "step_distance": "611",
+      "polyline": "116.397740,39.907300;116.405000,39.907280"
+     },
+     {
+      "instruction": "沿正义路途径草厂三条向南行驶1.7千米右转进入主路",
+      "orientation": "南",
+      "road_name": "正义路",
+      "step_distance": "1670",
+      "polyline": "116.405000,39.907280;116.405100,39.892000"
+     },
+     {
+      "instruction": "沿珠市口东大街途径珠市口西大街向西行驶1.8千米左转",
+      "orientation": "西",
+      "road_name": "珠市口东大街",
+      "step_distance": "1817",
+      "polyline": "116.405100,39.892000;116.386000,39.891900"
+     },
+     {
+      "instruction": "沿虎坊路向南行驶650米左转",
+      "orientation": "南",
+      "road_name": "虎坊路",
+      "step_distance": "650",
+      "polyline": "116.386000,39.891900;116.385900,39.878000"
+     },
+     {
+      "instruction": "沿北纬路向东行驶176米右转",
+      "orientation": "东",
+      "road_name": "北纬路",
+      "step_distance": "176",
+      "polyline": "116.385900,39.878000;116.382000,39.868000;116.378517,39.865246"
+     }
+    ]
+   }
+  ]
+ }
+}

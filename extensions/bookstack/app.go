@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "bookstack"
-const pageUI = "knowledge"
+const pageUI = "bookstack"
 
 type app struct {
 	mu       sync.RWMutex

@@ -12,3 +12,8 @@ References need a Persona hub with secret providers ([nwverse/persona#3962](http
 - [Installation](../../docs/installation.md)
 - [Development and tests](../../docs/development.md)
 - [Manifest](persona-extension.json)
+
+
+Version 0.4.0 adds phone-approved encrypted storage through the configured resident `op` node. See
+[phone-approved writes](../../docs/extensions/onepassword.md#phone-approved-writes) for local file input, supported
+categories, restrictions and authorization expiry. The metadata query tools remain read-only.

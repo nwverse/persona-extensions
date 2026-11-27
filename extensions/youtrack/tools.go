@@ -29,7 +29,7 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "youtrack_create_issue", Description: "Create an issue in a specific YouTrack project after explicit confirmation. Only summary and description are sent to the documented project issues endpoint; no arbitrary commands or custom fields.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"project_id", "summary"}, "properties": map[string]any{
-			"project_id": idSchema, "summary": map[string]any{"type": "string", "minLength": 1, "maxLength": 500}, "description": map[string]any{"type": "string", "maxLength": 30000},
+			"project_id": idSchema, "summary": map[string]any{"type": "string", "minLength": 1, "maxLength": maxSummaryChars}, "description": map[string]any{"type": "string", "maxLength": 30000},
 		}}},
 }
 
@@ -106,9 +106,17 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 	return "", fmt.Errorf("no tool %s", name)
 }
 
+// resolvedText is the time an issue was resolved as YouTrack answers it, in milliseconds, or "none" for null.
+func resolvedText(resolved *int64) string {
+	if resolved == nil {
+		return "none"
+	}
+	return fmt.Sprint(*resolved)
+}
+
 func formatIssue(item issue, comments []comment, detail bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "- Issue %s: %s\n  Database ID: %s | project: %s (%s) | updated: %d | resolved: %v\n", item.IDReadable, clipText(item.Summary, 500), item.ID, item.Project.Name, item.Project.ShortName, item.Updated, item.Resolved)
+	fmt.Fprintf(&b, "- Issue %s: %s\n  Database ID: %s | project: %s (%s) | updated: %d | resolved: %v\n", item.IDReadable, clipText(item.Summary, 500), item.ID, item.Project.Name, item.Project.ShortName, item.Updated, resolvedText(item.Resolved))
 	if detail {
 		if item.Description != "" {
 			b.WriteString("\nDescription:\n" + clipText(item.Description, 30000) + "\n")

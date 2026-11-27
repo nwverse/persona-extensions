@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -121,8 +122,9 @@ type ha struct {
 	retry     bool // the user asked to try again (Retry, refresh): the next request goes out even after a refusal
 	reg       *Registry
 	regAt     time.Time
-	regFailAt time.Time         // the page's last failed read of the registry (pageRegistry)
-	autoCfg   map[string]string // automation config id → its config as last read (canonical JSON)
+	regFailAt time.Time            // the page's last failed read of the registry (pageRegistry)
+	autoCfg   map[string]string    // automation config id → its config as last read (canonical JSON)
+	scripts   map[string]scriptCfg // a shortcut's script key → its config as last read (shortcuts.go)
 
 	wsMu sync.Mutex
 	wsc  *wsConn // the commands' WebSocket (ws.go)
@@ -392,6 +394,26 @@ func (h *ha) Call(ctx context.Context, domain, service string, data map[string]a
 	h.statesAt = time.Time{}
 	h.mu.Unlock()
 	return err
+}
+
+// invalidateStates updates s in cached states (on a copy) and clears statesAt so an immediate redraw reads fresh states.
+func (h *ha) invalidateStates(s State) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.statesAt = time.Time{}
+	if h.states == nil || s.EntityID == "" {
+		return
+	}
+	next := slices.Clone(h.states)
+	i := sort.Search(len(next), func(i int) bool { return next[i].EntityID >= s.EntityID })
+	if i < len(next) && next[i].EntityID == s.EntityID {
+		next[i] = s
+	} else {
+		next = append(next, State{})
+		copy(next[i+1:], next[i:])
+		next[i] = s
+	}
+	h.states = next
 }
 
 // Change is a state an entity had from At.

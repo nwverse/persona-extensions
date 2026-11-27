@@ -3,6 +3,7 @@ package signals
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"regexp"
@@ -10,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
@@ -17,6 +19,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/prompts"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/verify"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/voice"
 )
 
 // The correction ledger (design 5.1): the user's messages in S1, S2 and S3, screened by word lists, judged by the
@@ -44,6 +47,25 @@ type ledger struct {
 	mems  map[string]time.Time
 }
 
+// shortCorrectionRunes: a reply of the user's to the AI this short goes to the correction judge whatever its words
+// (design v2 §4.4, "用户短句纠正单独抽一遍"): "？？？", "又来了", "不是这个" carry no word of the list, and were
+// missed before 0.2.0-beta.38. A bare agreement ("好", "ok") is no correction and is not sent.
+const shortCorrectionRunes = 40
+
+// shortReply: a short message answering an AI line or a card, not only agreement or "go on". Punctuation alone
+// ("？？？") is a reply too: exasperation, not agreement.
+func shortReply(m msg) bool {
+	t := strings.TrimSpace(m.Text)
+	if m.Prior == "" || t == "" || utf8.RuneCountInString(t) > shortCorrectionRunes {
+		return false
+	}
+	q := norm.Q(t)
+	return q == "" || !voice.Agreement(t) && !goOn.MatchString(q)
+}
+
+// goOn is a reply that only lets the AI go on ("好的继续", "continue").
+var goOn = regexp.MustCompile(`^(好的?|行|可以|嗯+|ok|okay)?(继续|接着(做|来)?|开始吧?|go ?on|continue|proceed)(吧|呀|啊|干)?$`)
+
 func corrID(m msg) string {
 	return "c-" + hash(m.Session, fmt.Sprint(m.Seq), m.At.UTC().Format(time.RFC3339), m.Text)[:10]
 }
@@ -69,7 +91,7 @@ func (l *ledger) run(ctx context.Context, g *gathered, res *Result) error {
 			l.found = append(l.found, l.st.Corrections[i])
 			continue
 		}
-		if match(entry.SigCorrection, m.Text, l.sd.Words) != "" {
+		if match(entry.SigCorrection, m.Text, l.sd.Words) != "" || shortReply(m) {
 			cand = append(cand, m)
 		}
 	}
@@ -96,6 +118,11 @@ func (l *ledger) run(ctx context.Context, g *gathered, res *Result) error {
 		if l.o.Workers <= 1 {
 			verdicts, err = l.judge(ctx, cat, batch)
 		}
+		if errors.Is(err, model.ErrPaused) {
+			// The hub held the model past the call's wait: the day's signals stop here and the day stays open; what
+			// was kept is kept (a correction is kept once, by its id) and the rest is judged on the next pass.
+			return err
+		}
 		if err != nil {
 			l.o.logf("signals: correction judge: %v", err)
 			continue
@@ -112,7 +139,8 @@ func (l *ledger) run(ctx context.Context, g *gathered, res *Result) error {
 		}
 	}
 	if res.Corrections > 0 {
-		if err := l.groupIssues(ctx); err != nil {
+		// Held (model_paused): the grouping is upkeep over every open issue, made again with the next correction.
+		if err := l.groupIssues(ctx); err != nil && !errors.Is(err, model.ErrPaused) {
 			l.o.logf("signals: issue grouping: %v", err)
 		}
 	}
@@ -261,7 +289,7 @@ func (l *ledger) catalogue(g *gathered) []catItem {
 	}
 	var rest []*entry.Entry
 	for _, e := range l.st.Entries {
-		if !e.Live() || e.Sensitive != "" {
+		if !e.Live() || e.IsSensitive() {
 			continue
 		}
 		rest = append(rest, e)
@@ -360,10 +388,7 @@ func (l *ledger) keep(m msg, v verdict, cat []catItem) entry.Correction {
 		Seq: m.Seq, Quote: verify.Redact(cut(m.Text, 500)), Prior: verify.Redact(cut(m.Prior, 200))}
 	sens := v.Sensitive
 	if sens != "" && !slices.Contains(entry.Sensitives, sens) {
-		sens = ""
-	}
-	if sens != "" && !entry.On(l.st.Switches, entry.K13Sensitive+"."+sens) {
-		c.Quote, c.Prior = "", "" // counted, not kept: the category is off (K13)
+		sens = "" // kept whatever the category: the entry it makes is tagged (0.2.0-beta.40)
 	}
 	target := v.Target
 	if !slices.ContainsFunc(cat, func(x catItem) bool { return x.ID == target }) {
@@ -443,14 +468,12 @@ func (l *ledger) fileIssues() []string {
 		if is.Text == "" || len(is.Corrections) < 2 || len(uniq(append([]string(nil), is.Sessions...))) < 2 {
 			continue
 		}
-		if is.Sensitive != "" && !entry.On(l.st.Switches, entry.K13Sensitive+"."+is.Sensitive) {
-			continue
-		}
 		if l.o.Observe == nil {
 			continue
 		}
 		e := &entry.Entry{Facet: entry.Interaction, Grain: entry.Action, Type: "correction", Text: is.Text,
-			Impact: entry.Impact{Moment: "every_turn", Action: is.Text}, Sensitive: is.Sensitive, Flags: []string{"ledger:" + k}}
+			Impact: entry.Impact{Moment: "every_turn", Action: is.Text}, Flags: []string{"ledger:" + k}}
+		e.AddCategory(is.Sensitive, entry.ByModel)
 		var sessions []string
 		for _, id := range is.Corrections {
 			c := byID[id]
@@ -459,7 +482,7 @@ func (l *ledger) fileIssues() []string {
 			}
 			ev := entry.Evidence{Source: c.Source, Ref: c.Ref, Day: c.Day, Seq: c.Seq, Who: entry.WhoSelf, Role: "user", Quote: c.Quote}
 			if ev.Quote == "" {
-				continue // a quote not kept (K13) is no evidence
+				continue // a quote not kept (before 0.2.0-beta.40, K13) is no evidence
 			}
 			e.Evidence = append(e.Evidence, ev)
 			sessions = append(sessions, c.Ref+"#"+c.Day)

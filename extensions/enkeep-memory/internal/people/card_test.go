@@ -187,8 +187,12 @@ func TestSwitchesOnCard(t *testing.T) {
 		t.Error("K15 off keeps the user's own evaluation")
 	}
 	in.Switches[entry.K13Sensitive+"."+entry.SensFamily] = entry.SwitchSetting{Value: "on"}
+	if line(BuildCard(in, "person:p1"), "c1") != nil {
+		t.Error("K13 opened a category (it decides nothing since 0.2.0-beta.40)")
+	}
+	in.Switches[entry.K22Resident+"."+entry.CatRelationships] = entry.SwitchSetting{Value: "on"}
 	if line(BuildCard(in, "person:p1"), "c1") == nil {
-		t.Error("the user turned the category on")
+		t.Error("the user let the category in (K22)")
 	}
 }
 

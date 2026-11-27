@@ -9,7 +9,9 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/hubapi"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/readings"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/signals"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -19,12 +21,18 @@ import (
 // readings, then the exits compiled from every entry (internal/export, P6). The weekly pass picks the ledger's spot
 // check. Both run with the store's lock held and never on a dry run.
 
-func (c *Curator) afterDaily(ctx context.Context, m model.Model, day string, run *store.Run, dry bool) {
+// afterDaily returns an error only when the hub held the model (model.ErrPaused) past a call's wait: the day's signals or
+// exits wait for the next pass, which runs the day again (what was kept is not asked again).
+func (c *Curator) afterDaily(ctx context.Context, m model.Model, day string, run *store.Run, dry bool) error {
 	if dry {
-		return
+		return nil
 	}
 	res, err := signals.Run(ctx, c.St.S, day, signals.Options{Hub: c.Hub, Model: m, Tier: tier(c.Cfg.DailyTier),
 		Lang: c.language(), Loc: c.Loc, Now: c.now, Dir: c.St.Dir, Observe: c.Observe, Run: run.ID, Logf: c.logf, Workers: c.Workers})
+	if errors.Is(err, model.ErrPaused) {
+		run.Notes = append(run.Notes, "纠正台账和不顺信号：模型等闸，闸开后这一天接着跑")
+		return err
+	}
 	if err != nil {
 		c.logf("signals %s: %v", day, err)
 		run.Notes = append(run.Notes, "纠正台账和不顺信号没跑完："+err.Error())
@@ -42,7 +50,33 @@ func (c *Curator) afterDaily(ctx context.Context, m model.Model, day string, run
 		}
 	}
 	c.readings(ctx, day, run)
-	c.compileExits(ctx, m, run)
+	if err := c.compileExits(ctx, m, run); err != nil {
+		return err
+	}
+	c.refreshProfile(ctx, m, day, run)
+	return nil
+}
+
+// refreshProfile updates profile-summary.json after each daily pass. Never fails the daily run on model errors.
+func (c *Curator) refreshProfile(ctx context.Context, m model.Model, day string, run *store.Run) {
+	sum, err := profile.Refresh(ctx, c.St.S, c.St.Dir, profile.Options{
+		Provider: c.ProfileInput,
+		Model:    m,
+		Tier:     tier(c.Cfg.DailyTier),
+		Lang:     c.language(),
+		Day:      day,
+		Now:      c.now,
+		Logf:     c.logf,
+	})
+	if err != nil {
+		c.logf("profile summary %s: %v", day, err)
+		run.Notes = append(run.Notes, "用户侧写汇总保存失败："+err.Error())
+		return
+	}
+	if sum != nil {
+		run.Counts["profile_covered"] = sum.CoveredCount
+		run.Counts["profile_sources"] = sum.SourceCount
+	}
 }
 
 // readings computes the period's readings (internal/readings) with the cards of the two weeks, and opens or closes
@@ -74,13 +108,22 @@ func (c *Curator) readings(ctx context.Context, day string, run *store.Run) {
 }
 
 // compileExits writes the exits from every entry (nothing to the assistant while the first-run replay goes on).
-func (c *Curator) compileExits(ctx context.Context, m model.Model, run *store.Run) {
+// It returns the error only when the hub held the model (model.ErrPaused): the exits stay as they were.
+func (c *Curator) compileExits(ctx context.Context, m model.Model, run *store.Run) error {
+	projects := c.kbProjects(ctx)
 	rep, err := export.Compile(ctx, c.St.S, export.Options{Dir: c.St.Dir, Model: m, Tier: tier(c.Cfg.DailyTier), Lang: c.language(),
-		Loc: c.Loc, Now: c.now, Hub: c.Hub, Run: run.ID, Event: func(ev entry.Event) { c.event(ev) }, Logf: c.logf})
+		Loc: c.Loc, Now: c.now, Hub: c.Hub, Run: run.ID, Event: func(ev entry.Event) { c.event(ev) }, Logf: c.logf, Projects: projects})
+	if c.St.S.Exits != nil && projects != nil {
+		c.St.S.Exits.Projects = projects
+	}
+	if errors.Is(err, model.ErrPaused) {
+		run.Notes = append(run.Notes, "出口：模型等闸，这次沿用上一版，闸开后再写")
+		return err
+	}
 	if err != nil {
 		c.logf("exits %s: %v", run.Period, err)
 		run.Notes = append(run.Notes, "出口没写完："+err.Error())
-		return
+		return nil
 	}
 	if rep.Backfill {
 		run.Notes = append(run.Notes, "首次回放还没完成：出口先不写给助手")
@@ -101,6 +144,7 @@ func (c *Curator) compileExits(ctx context.Context, m model.Model, run *store.Ru
 	for _, w := range c.St.S.Exits.Warnings {
 		run.Notes = append(run.Notes, "出口告警："+w)
 	}
+	return nil
 }
 
 func (c *Curator) afterWeekly(week string, days []string, run *store.Run, dry bool) {
@@ -112,4 +156,38 @@ func (c *Curator) afterWeekly(week string, days []string, run *store.Run, dry bo
 	if n > 0 {
 		run.Notes = append(run.Notes, fmt.Sprintf("本周抽了 %d 条纠正判定，在核对页上看对不对", n))
 	}
+}
+
+// kbProjects are the knowledge base's projects with their aliases, for exit D's file names (the hub looks a project's
+// file up by the project's id, kb.Slug of its name). Nil when the list cannot be read: the last list read is used
+// then, and without one the files are named by kb.Slug's rule.
+func (c *Curator) kbProjects(ctx context.Context) []entry.KBProject {
+	if c.Src == nil {
+		return c.lastProjects()
+	}
+	es, err := c.Src.List(ctx, "projects")
+	if err != nil {
+		c.logf("exits: knowledge-base projects not read: %v", err)
+		return c.lastProjects()
+	}
+	out := []entry.KBProject{}
+	for _, e := range es {
+		p := entry.KBProject{ID: e.ID, Name: e.Name}
+		if d, err := c.Src.Get(ctx, "projects", e.ID); err == nil {
+			m := kbsrc.DecodeMeta(d)
+			if m.MergedInto != "" {
+				continue
+			}
+			p.Aliases = m.Aliases
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func (c *Curator) lastProjects() []entry.KBProject {
+	if c.St.S.Exits != nil {
+		return c.St.S.Exits.Projects
+	}
+	return nil
 }

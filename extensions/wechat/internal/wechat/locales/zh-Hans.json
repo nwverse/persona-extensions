@@ -1,5 +1,6 @@
 {
   "chat.hub_error": "没交给 Persona：hub 那边出错了，等一下再发。",
+  "chat.images_not_sent": "有 {count} 张图片没发出去。",
   "chat.send_failed": "微信没收下这条消息",
   "chat.stranger": "这个机器人只为绑定它的人服务。",
   "login.bound_already": "这个微信已经绑定过这个机器人了：在微信里把它删掉后再扫",

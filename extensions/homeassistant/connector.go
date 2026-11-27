@@ -529,6 +529,10 @@ type home struct {
 	// token), so the "areas" are the device types. Note says why, for the page and the tools.
 	ByType bool
 	Note   string
+	// Names are entities' names without their device's (named, entityName), when the page read the registry.
+	Names map[string]string
+	// Shortcuts are the user's shortcuts (shortcuts.go), read for 全屋's scenes row.
+	Shortcuts []*shortcut
 }
 
 // errNotAdmin: the token reads states but not the template API, which Home Assistant keeps for administrators.

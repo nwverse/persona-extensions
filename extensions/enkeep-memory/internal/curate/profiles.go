@@ -10,9 +10,9 @@ package curate
 //     that breaks the hub's rules (an inference without its basis) for the person the waiting card is about. A hub
 //     with profiles refuses it before writing anything ("invalid profile"); an older one ignores the field, which
 //     kb.update's ignored says or the absence of a refusal shows. Nothing is written to a person to find out.
-//   - The user's evaluations (views) and the inferred profile (inferences) also wait for the hub's privacy filter that
-//     gives the inbox and the Lark agent only a person's facts and commitments (ProfileViewsReleased). Until then a
-//     written profile carries only facts and commitments; the page says the rest can be seen only there.
+//   - The user's evaluations (views) and the inferred profile (inferences) are written only with the hub's privacy
+//     filter that keeps them from conversations writing to other people (ProfileViewsReleased, #6119); without it a
+//     written profile carries only facts and commitments and the page says the rest can be seen only there.
 // Until the hub takes profiles the proposals stay blocked and the page says so. A write that cannot be read back is
 // taken as a hub without profiles: blocked again, with a warning, probed again the next day. Evaluations and
 // inferences never fall back to the pinned facts.
@@ -30,9 +30,10 @@ import (
 )
 
 // ProfileViewsReleased: the user's evaluations and the inferred profile are written to the knowledge base too, not
-// only facts and commitments. false until the hub's privacy filter (inbox drafting and the Lark agent see only facts
-// and commitments) is deployed; the owner flips it then.
-const ProfileViewsReleased = false
+// only facts and commitments. The hub's privacy filter (nwverse/persona#6119: conversations that write to other
+// people, such as inbox drafting, the Lark agent and extension-opened conversations, never read a profile's private
+// parts) is what makes this safe; the manifest's engines.persona asks for a hub built with it (>=202611122324).
+const ProfileViewsReleased = true
 
 // profileViewsReleased is ProfileViewsReleased; tests set it.
 var profileViewsReleased = ProfileViewsReleased

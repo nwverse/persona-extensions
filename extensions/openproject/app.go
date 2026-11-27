@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "openproject"
-const pageUI = "work"
+const pageUI = "openproject"
 
 type app struct {
 	mu       sync.RWMutex

@@ -77,11 +77,14 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil, err
 		}
 		st.Mode = "review-comment"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("comment draft exceeds page state limit")
+		}
 	case "edit-comment":
 		st.Mode = "comment"
 	case "approve", "unapprove":
-		if st.IID <= 0 || validProjectID(st.Project) != nil {
-			return nil, errors.New("project and merge request IID are required")
+		if st.IID <= 0 || validProjectID(st.Project) != nil || st.DraftID == "" {
+			return nil, errors.New("project, merge request IID and draft are required")
 		}
 		raw, _ := json.Marshal(reviewArgs{Project: st.Project, IID: st.IID})
 		out, err := a.doAction(ctx, "ui-"+r.Action+":"+st.DraftID, "gitlab_"+r.Action, raw)
@@ -122,12 +125,15 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			}
 			return reviewCommentView(r, st), nil
 		}
-		item, notes, err := a.readDetail(ctx, st.Project, st.IID)
+		item, notes, next, err := a.readDetail(ctx, st.Project, st.IID)
 		if err != nil {
 			return nil, err
 		}
 		st.DraftID = randomID()
-		return detailView(r, st, item, notes), nil
+		return detailView(r, st, item, notes, next), nil
+	}
+	if st.Scope == "" {
+		st.Scope = "assigned_to_me"
 	}
 	if st.Scope != "assigned_to_me" && st.Scope != "reviews_for_me" {
 		return nil, errors.New("invalid review scope")
@@ -138,7 +144,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Page < 1 {
 		st.Page = 1
 	}
-	page, err := a.client.mergeRequests(ctx, st.Scope, st.Query, st.Page)
+	items, more, err := a.collectMergeRequests(ctx, st.Scope, st.Query, st.Page)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -147,8 +153,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		Name: "view", Title: t.open, Value: st.Scope, Action: wire.Action{ID: "scope"},
 		Choices: []wire.Choice{{Value: "assigned_to_me", Title: t.assigned}, {Value: "reviews_for_me", Title: t.review}},
 	}}
-	section := wire.Section{Title: fmt.Sprintf(t.results, len(page.Items))}
-	for _, item := range page.Items {
+	section := wire.Section{Title: fmt.Sprintf(t.results, len(items))}
+	for _, item := range items {
 		if item.ProjectID <= 0 || item.IID <= 0 {
 			continue
 		}
@@ -157,14 +163,39 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noMRs})
 	}
-	if page.Next != "" {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section}
 	return v, nil
 }
 
-func detailView(r *ext.UIRequest, st pageState, item mergeRequest, notes []note) *wire.View {
+// maxViewMergeRequests keeps the accumulated list within the SDK's component limit.
+const maxViewMergeRequests = 250
+
+// collectMergeRequests reads pages 1 through page so that Load more extends the list instead of replacing it,
+// and reports whether GitLab has more merge requests that the cap still leaves room to show.
+func (a *app) collectMergeRequests(ctx context.Context, scope, query string, page int) ([]mergeRequest, bool, error) {
+	var out []mergeRequest
+	more := false
+	for p := 1; p <= page && len(out) < maxViewMergeRequests; p++ {
+		batch, err := a.client.mergeRequests(ctx, scope, query, p)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Items...)
+		more = batch.Next != ""
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewMergeRequests {
+		out = out[:maxViewMergeRequests]
+	}
+	return out, more && len(out) < maxViewMergeRequests, nil
+}
+
+func detailView(r *ext.UIRequest, st pageState, item mergeRequest, notes []note, next ...string) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{
 		{Type: wire.ComponentText, Text: clipText(item.Title, 1800)},
@@ -176,12 +207,12 @@ func detailView(r *ext.UIRequest, st pageState, item mergeRequest, notes []note)
 	items = append(items,
 		wire.Component{Type: wire.ComponentButton, Title: t.approve, Action: &wire.Action{ID: "approve", Confirm: t.approve + "\n" + item.Title}},
 		wire.Component{Type: wire.ComponentButton, Title: t.unapprove, Action: &wire.Action{ID: "unapprove", Confirm: t.unapprove + "\n" + item.Title}},
-		wire.Component{Type: wire.ComponentButton, Title: t.comment, Action: &wire.Action{ID: "comment", Push: &wire.Push{Title: t.comment, State: ext.EncodeState(pageState{Project: st.Project, IID: st.IID, Mode: "comment", DraftID: randomID()})}}},
+		wire.Component{Type: wire.ComponentButton, Title: t.comment, Action: &wire.Action{ID: "comment", Push: &wire.Push{Title: t.comment, State: ext.EncodeState(pageState{Scope: st.Scope, Query: st.Query, Page: st.Page, Project: st.Project, IID: st.IID, Mode: "comment", DraftID: randomID()})}}},
 		wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}},
 	)
 	v := &wire.View{Title: fmt.Sprintf("MR !%d", item.IID), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.reviews, Items: items}}}
 	if item.Description != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Description, 60000))})
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: capComponents(textComponents(clipText(item.Description, 60000)), maxDescriptionItems)})
 	}
 	budget := 250 - viewItemCount(v)
 	if len(item.Reviewers) > 0 {
@@ -218,8 +249,25 @@ func detailView(r *ext.UIRequest, st pageState, item mergeRequest, notes []note)
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.noComments, Style: wire.TextStyleSecondary})
 	}
+	if len(next) > 0 && next[0] != "" {
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText,
+			Text: "Discussion is incomplete; next notes page: " + next[0], Style: wire.TextStyleSecondary})
+	}
 	v.Sections = append(v.Sections, section)
 	return v
+}
+
+// maxDescriptionItems leaves the reviewers and the discussion room in the 250 components a merge request view keeps.
+const maxDescriptionItems = 100
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func authorLabel(user user) string {
@@ -267,7 +315,7 @@ func commentView(r *ext.UIRequest, st pageState) *wire.View {
 
 func reviewCommentView(r *ext.UIRequest, st pageState) *wire.View {
 	t := textsFor(r.Locale)
-	items := textComponents(st.Body)
+	items := capComponents(textComponents(st.Body), maxViewMergeRequests-2)
 	items = append(items,
 		wire.Component{Type: wire.ComponentButton, Title: t.confirmComment, Action: &wire.Action{ID: "confirm-comment", Confirm: t.confirmComment + "\n" + fmt.Sprintf("MR !%d", st.IID)}},
 		wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "edit-comment"}},

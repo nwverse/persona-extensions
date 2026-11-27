@@ -31,3 +31,13 @@ func TestPauseLine(t *testing.T) {
 		t.Fatalf("English: %q", en)
 	}
 }
+
+func TestPauseLineAssistantAway(t *testing.T) {
+	a := &app{c: &curate.Curator{Loc: time.UTC}}
+	st := &store.State{ModelPause: &store.ModelPause{Since: "2026-11-13T20:00:00Z", Reason: "the assistant is away（占位）", Day: "2026-09-30",
+		Fails: 1, NextTry: "2026-11-13T20:10:00Z", What: "assistant"}}
+	text, _ := a.pauseLine(tr{}, st, time.Now())
+	if !strings.Contains(text, "助手的电脑没连上") || strings.Contains(text, "模型") || !strings.Contains(text, "2026-09-30") {
+		t.Fatalf("away: %q", text)
+	}
+}

@@ -118,7 +118,7 @@ func (c *client) accounts(ctx context.Context, kind string) ([]account, error) {
 		return nil, errors.New("invalid account type")
 	}
 	var out struct {
-		Accounts []account `json:"accounts"`
+		Accounts []account `json:"plaid_accounts"`
 	}
 	var manual struct {
 		Accounts []account `json:"manual_accounts"`

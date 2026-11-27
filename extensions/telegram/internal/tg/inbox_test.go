@@ -59,8 +59,8 @@ func TestInbox(t *testing.T) {
 	now := time.Now()
 	f.mu.Lock()
 	f.dialogs = []dialog{
-		{Peer: peer{Kind: 'u', ID: 1, Hash: 11}, Name: "示例用户", Kind: "dm", Top: 3, TopAt: now, Unread: 1, TopFrom: "示例用户", TopText: "示例问题", Username: "example"},
-		{Peer: peer{Kind: 'c', ID: 2, Hash: 22}, Name: "示例群", Kind: "group", Top: 12, TopAt: now, Unread: 5, Mentions: 1},
+		{Peer: peer{Kind: 'u', ID: 1, Hash: 11}, Name: "示例用户", Kind: "dm", Top: 3, TopAt: now, Unread: 1, TopFrom: "示例用户", TopText: "示例问题", Username: "example", Photo: 501},
+		{Peer: peer{Kind: 'c', ID: 2, Hash: 22}, Name: "示例群", Kind: "group", Top: 12, TopAt: now, Unread: 5, Mentions: 1, Photo: 900},
 		{Peer: peer{Kind: 'c', ID: 6}, Name: "静音的示例群", Kind: "group", Top: 7, TopAt: now, Mentions: 2, Muted: true},
 		{Peer: peer{Kind: 'u', ID: 7}, Name: "归档的示例用户", Kind: "dm", Top: 4, TopAt: now, Unread: 1, Archived: true},
 		{Peer: peer{Kind: 'u', ID: 8}, Name: "我回过的示例用户", Kind: "dm", Top: 9, TopAt: now, TopOut: true},
@@ -68,6 +68,10 @@ func TestInbox(t *testing.T) {
 		{Peer: peer{Kind: 'u', ID: 3}, Name: "示例机器人", Kind: "dm", Top: 5, TopAt: now, Unread: 1, Bot: true},
 	}
 	f.history["c2"][1].Mentioned = true // 12: the message that @ me
+	if f.files == nil {
+		f.files = map[string][]byte{}
+	}
+	f.files["avatar 501"], f.files["avatar 900"] = []byte("made-up avatar 501"), []byte("made-up group picture")
 	f.mu.Unlock()
 	c.refreshInbox(ctx)
 	things, _ := c.Collect(ctx)
@@ -89,6 +93,16 @@ func TestInbox(t *testing.T) {
 	}
 	if r := thingOf(things, "u8"); r == nil || r.Done != connector.DoneReplied {
 		t.Fatalf("answered %+v", r)
+	}
+	// The row's picture is the conversation's own (nwverse/persona#10923): the other person's, the group's; none without
+	// one. Media serves it from the conversations listed, no page opened.
+	if dm.Avatar != "a.u1.501" || group.Avatar != "a.c2.900" || thingOf(things, "u8").Avatar != "" {
+		t.Fatalf("pictures %q %q %q", dm.Avatar, group.Avatar, thingOf(things, "u8").Avatar)
+	}
+	for ref, want := range map[string]string{dm.Avatar: "made-up avatar 501", group.Avatar: "made-up group picture"} {
+		if m, err := c.Media(ctx, ref); err != nil || string(m.Data) != want {
+			t.Errorf("%s: %q %v", ref, m.Data, err)
+		}
 	}
 
 	// Read on the phone: the dm is read; the group gets another mention later, then it is read.

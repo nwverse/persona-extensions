@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -42,7 +43,7 @@ func codeIn(items []wire.Component) []string {
 // (a command to copy); the raw OpenSSH line is kept for 详情 only.
 func TestSSHProblems(t *testing.T) {
 	noSandbox(t)
-	m := &Machine{ID: "mm-2", Host: "mm-2", Name: "mm-2 (100.64.0.2)", User: "dev", Enabled: true}
+	m := &Machine{ID: "mm-2", Host: "mm-2", Name: "mm-2 (198.51.100.2)", User: "dev", Enabled: true}
 	cases := []struct {
 		name, raw  string
 		cause      string
@@ -52,8 +53,8 @@ func TestSSHProblems(t *testing.T) {
 		wantRetry  bool
 		wantEditor bool
 	}{
-		{name: "timeout", raw: "SSH 连接 mm-2 失败：ssh: connect to host 100.64.0.2 port 22: Connection timed out", cause: causeTimeout, reason: "超时", command: "ssh -o BatchMode=yes", wantRetry: true},
-		{name: "auth", raw: "SSH 连接 mm-2 失败：dev@mm-2: Permission denied (publickey).", cause: causeAuth, reason: "拒绝了 SSH 登录", command: "ssh-copy-id dev@mm-2", wantRetry: true, wantEditor: true},
+		{name: "timeout", raw: "SSH 连接 mm-2 失败：ssh: connect to host 198.51.100.2 port 22: Connection timed out", cause: causeTimeout, reason: "等了太久没反应", command: "ssh -o BatchMode=yes", wantRetry: true},
+		{name: "auth", raw: "SSH 连接 mm-2 失败：dev@mm-2: Permission denied (publickey).", cause: causeAuth, reason: "不让登录", command: "ssh-copy-id dev@mm-2", wantRetry: true, wantEditor: true},
 		{name: "host key", raw: "SSH 连接 mm-2 失败：Host key verification failed.", cause: causeHostKey, reason: "指纹", command: "ssh dev@mm-2", wantRetry: true},
 		{name: "refused", raw: "SSH 连接 mm-2 失败：ssh: connect to host mm-2 port 22: Connection refused", cause: causeRefused, reason: "拒绝了连接", wantRetry: true, wantEditor: true},
 		{name: "dns", raw: "SSH 连接 mm-2 失败：ssh: Could not resolve hostname mm-2: Name or service not known", cause: causeDNS, reason: "找不到", command: "ssh -G mm-2", wantRetry: true, wantEditor: true},
@@ -64,7 +65,7 @@ func TestSSHProblems(t *testing.T) {
 		{name: "hub ssh config", raw: "SSH 连接 mm-2 失败：Bad owner or permissions on /etc/ssh/ssh_config.d/50-redhat.conf", cause: causeSSHConfig, reason: "/etc/ssh/ssh_config.d/50-redhat.conf", command: "sudo chmod 644 /etc/ssh/ssh_config.d/50-redhat.conf", wantRetry: true},
 		// The same line inside the hub's sandbox: nothing on either machine is wrong.
 		{name: "sandbox", raw: "SSH 连接 mm-2 失败：Bad owner or permissions on /etc/ssh/ssh_config.d/50-redhat.conf", sandbox: true, cause: causeSandbox, reason: "沙箱", command: "personad extension sandbox disklessly off", wantRetry: true},
-		{name: "other", raw: "SSH 连接 mm-2 失败：kex_exchange_identification: read: Connection reset by peer", cause: "", reason: "SSH 连接", command: "ssh -o BatchMode=yes", wantRetry: true},
+		{name: "other", raw: "SSH 连接 mm-2 失败：kex_exchange_identification: read: Connection reset by peer", cause: "", reason: "远程登录", command: "ssh -o BatchMode=yes", wantRetry: true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -73,7 +74,7 @@ func TestSSHProblems(t *testing.T) {
 			if p.Cause != c.cause {
 				t.Fatalf("cause %q, want %q", p.Cause, c.cause)
 			}
-			if !strings.Contains(p.Reason, "mm-2") || strings.Contains(p.Reason, "100.64.0.2") {
+			if !strings.Contains(p.Reason, "mm-2") || strings.Contains(p.Reason, "198.51.100.2") {
 				t.Fatalf("reason must name the machine without its address: %q", p.Reason)
 			}
 			if !strings.Contains(p.Reason, c.reason) {
@@ -106,7 +107,7 @@ func TestSSHProblems(t *testing.T) {
 	}
 	// A failed local command is not an SSH problem.
 	p := sshProblem(&Machine{ID: "local", Name: "local (devbox)", IsLocal: true}, "本地探测命令执行失败：exit status 2")
-	if !strings.Contains(p.Reason, "本机") || p.Command != "" || !strings.Contains(p.Raw, "exit status 2") {
+	if !strings.Contains(p.Reason, localMachineName) || strings.Contains(p.Reason+p.Next, "SSH") || p.Command != "" || !strings.Contains(p.Raw, "exit status 2") {
 		t.Fatalf("local problem: %+v", p)
 	}
 }
@@ -115,7 +116,7 @@ func TestSSHProblems(t *testing.T) {
 func TestHumanize(t *testing.T) {
 	noSandbox(t)
 	msg, raw := humanize("从 build-box 复制安装失败：读取 build-box 上的 CLI 失败：SSH 连接 build-box 失败：dev@build-box: Permission denied (publickey).")
-	if !strings.HasPrefix(msg, "从 build-box 复制安装失败") || !strings.Contains(msg, "拒绝了 SSH 登录") || strings.Contains(msg, "Permission denied") {
+	if !strings.HasPrefix(msg, "从 build-box 复制安装失败") || !strings.Contains(msg, "不让登录") || strings.Contains(msg, "Permission denied") {
 		t.Fatalf("msg %q", msg)
 	}
 	if !strings.Contains(raw, "Permission denied (publickey)") {
@@ -126,9 +127,9 @@ func TestHumanize(t *testing.T) {
 		t.Fatalf("plain message changed: %q %q", msg, raw)
 	}
 	// An error carrying its raw part separately.
-	err := rawError("备份后端连不上，没有上传或删除任何会话", "dial tcp 10.0.0.9:443: i/o timeout")
+	err := rawError("备份后端连不上，没有上传或删除任何会话", "dial tcp 203.0.113.9:443: i/o timeout")
 	msg, raw = humanizeErr(err)
-	if msg != "备份后端连不上，没有上传或删除任何会话" || raw != "dial tcp 10.0.0.9:443: i/o timeout" || err.Error() != msg {
+	if msg != "备份后端连不上，没有上传或删除任何会话" || raw != "dial tcp 203.0.113.9:443: i/o timeout" || err.Error() != msg {
 		t.Fatalf("raw error: %q %q %q", err.Error(), msg, raw)
 	}
 	if _, raw := humanizeErr(errors.Join(errors.New("外层"), err)); raw == "" {
@@ -144,7 +145,7 @@ func coldFleet(t *testing.T, a *app) {
 	yes := true
 	err := a.db().update(func(st *State, now time.Time) error {
 		for _, h := range []string{"build-box", "studio-mac", "old-box", "bare-box", "far-box"} {
-			if _, err := st.upsertMachine(MachineInput{Host: h, Name: h + " (100.64.0.9)"}, now); err != nil {
+			if _, err := st.upsertMachine(MachineInput{Host: h, Name: h + " (198.51.100.9)"}, now); err != nil {
 				return err
 			}
 		}
@@ -160,7 +161,7 @@ func coldFleet(t *testing.T, a *app) {
 		st.setCold("bare-box", &ColdCatalog{MachineID: "bare-box", State: ColdNoCLI, Platform: "linux-arm64", CheckedAt: now, BrewKnown: true,
 			Error: "目标机器未安装 disklessly CLI，无法读取云端会话索引"})
 		st.setCold("far-box", &ColdCatalog{MachineID: "far-box", State: ColdOffline, Cause: causeTimeout, CheckedAt: now,
-			Error: "SSH 连接 far-box 失败：ssh: connect to host 100.64.0.9 port 2222: Connection timed out"})
+			Error: "SSH 连接 far-box 失败：ssh: connect to host 198.51.100.9 port 2222: Connection timed out"})
 		return nil
 	})
 	if err != nil {
@@ -186,12 +187,12 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 		if len(items) == 0 {
 			t.Fatalf("%s: no row", id)
 		}
-		row := items[0]
-		if !strings.Contains(row.Detail, id) {
-			t.Fatalf("%s: detail does not name the machine: %q", id, row.Detail)
+		says := rowSays(items)
+		if !strings.Contains(says, id) {
+			t.Fatalf("%s: detail does not name the machine: %q", id, says)
 		}
-		if english.MatchString(row.Detail) || strings.Contains(row.Detail, "EX_") || strings.Contains(row.Detail, "100.64.0.9") {
-			t.Fatalf("%s: raw text in the row: %q", id, row.Detail)
+		if english.MatchString(says) || strings.Contains(says, "EX_") || strings.Contains(says, "198.51.100.9") {
+			t.Fatalf("%s: raw text in the row: %q", id, says)
 		}
 		hasFix := false
 		for _, c := range items[1:] {
@@ -204,7 +205,7 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 
 	// Homebrew first where the machine has it.
 	mac := itemsOf(v, "studio-mac")
-	brew := buttonIn(mac, "用 Homebrew 安装")
+	brew := buttonIn(mac, "用 Homebrew 安装配套小工具")
 	if brew == nil || brew.Action.ID != "cold-brew" || brew.Action.Values["m"] != "studio-mac" {
 		t.Fatalf("studio-mac: no Homebrew install: %+v", mac)
 	}
@@ -218,11 +219,11 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 	}
 	// No Homebrew: copy from a machine of the same platform.
 	old := itemsOf(v, "old-box")
-	if buttonIn(old, "用 Homebrew") != nil || buttonIn(old, "从 build-box 复制安装") == nil {
+	if buttonIn(old, "用 Homebrew") != nil || buttonIn(old, "从 build-box 复制过来") == nil {
 		t.Fatalf("old-box: %+v", old)
 	}
-	if !strings.Contains(old[0].Detail, "0.1.0") || !strings.Contains(old[0].Detail, "没有 Homebrew") {
-		t.Fatalf("old-box detail: %q", old[0].Detail)
+	if says := rowSays(old); !strings.Contains(says, "0.1.0") || !strings.Contains(says, "没有 Homebrew") {
+		t.Fatalf("old-box detail: %q", says)
 	}
 	// Neither: the manual commands, and no install button.
 	bare := itemsOf(v, "bare-box")
@@ -239,7 +240,7 @@ func TestColdRowsSpeakPlainly(t *testing.T) {
 		t.Fatal(err)
 	}
 	v2, _ := a.renderSessions(context.Background(), &ext.UIRequest{})
-	if d := itemsOf(v2, "bare-box")[0].Detail; strings.Contains(d, "这台电脑没有 Homebrew") || !strings.Contains(d, "重新检查") {
+	if d := rowSays(itemsOf(v2, "bare-box")); strings.Contains(d, "这台电脑没有 Homebrew") || !strings.Contains(d, "重新检查") {
 		t.Fatalf("unknown Homebrew: %q", d)
 	}
 	if cmds := strings.Join(codeIn(bare), "\n"); !strings.Contains(cmds, brewInstallCmd) || !strings.Contains(cmds, "brew.sh") {
@@ -281,7 +282,7 @@ func TestBackendWithoutRepository(t *testing.T) {
 	cat := &ColdCatalog{MachineID: "gcp", State: ColdBackendDown, Backend: ColdBackend{ID: "nas", Type: "smb", Reachable: &no,
 		Error: "repo.json is not in the backend; if the repo folder is there and new, run disklessly init"}}
 	a := coldProblem(st, m, cat, ColdBackendDown)
-	if !strings.Contains(a.Reason, "还没有 Disklessly 仓库") || !strings.Contains(a.Command, "disklessly backend use") || !strings.Contains(a.Raw, "repo.json") || english.MatchString(a.text()) {
+	if !strings.Contains(a.Reason, "还没有 Disklessly 的存放目录") || !strings.Contains(a.Command, "disklessly backend use") || !strings.Contains(a.Raw, "repo.json") || english.MatchString(a.text()) {
 		t.Fatalf("%+v", a)
 	}
 }
@@ -308,7 +309,7 @@ func TestFleetTabSpeaksPlainly(t *testing.T) {
 	if strings.Contains(all, "Permission denied") {
 		t.Fatalf("raw SSH output on the fleet tab:\n%s", all)
 	}
-	if !strings.Contains(all, "far-box") || !strings.Contains(all, "拒绝了 SSH 登录") {
+	if !strings.Contains(all, "far-box") || !strings.Contains(all, "不让登录") {
 		t.Fatalf("fleet tab:\n%s", all)
 	}
 	var cmds []string
@@ -322,7 +323,7 @@ func TestFleetTabSpeaksPlainly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if c := texts(card); strings.Contains(c, "Permission denied") || !strings.Contains(c, "拒绝") {
+	if c := texts(card); strings.Contains(c, "Permission denied") || !strings.Contains(c, "远程登录被拒绝") {
 		t.Fatalf("card:\n%s", c)
 	}
 }
@@ -350,7 +351,8 @@ func TestSandboxBanner(t *testing.T) {
 
 // fakeBrew writes a Homebrew stand-in to dir/brew that records its arguments in dir/log and,
 // on install or upgrade, puts a disklessly stand-in at prefix/opt/disklessly-cli/bin.
-// mode "fail" fails the download; "link" installs the keg, then fails Homebrew's link step.
+// mode "fail" fails the download; "link" installs the keg, then fails Homebrew's link step; "status-fail" makes the
+// installed CLI's sessions status exit 1 without printing anything.
 func fakeBrew(t *testing.T, dir, version string, installed bool, mode string) {
 	t.Helper()
 	prefix := filepath.Join(dir, "prefix")
@@ -358,7 +360,7 @@ func fakeBrew(t *testing.T, dir, version string, installed bool, mode string) {
 	if err := os.MkdirAll(cli, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	dkl := "#!/bin/sh\ncase \"$*\" in\n  version) echo \"disklessly " + version + "\" ;;\n  *\"sessions status\"*) echo '{\"ok\":true,\"backend\":{\"id\":\"\",\"type\":\"\",\"reachable\":false},\"counts\":{},\"segments\":{}}' ;;\nesac\n"
+	dkl := "#!/bin/sh\ncase \"$*\" in\n  version) echo \"disklessly " + version + "\" ;;\n  *\"sessions status\"*) if [ \"" + mode + "\" = status-fail ]; then exit 1; fi; echo '{\"ok\":true,\"backend\":{\"id\":\"\",\"type\":\"\",\"reachable\":false},\"counts\":{},\"segments\":{}}' ;;\nesac\n"
 	listRC := "1"
 	if installed {
 		listRC = "0"
@@ -390,10 +392,26 @@ esac
 	}
 }
 
+// machineWide are the fixed locations the scripts search besides PATH and HOME: Homebrew's prefixes, /usr/local
+// and the Disklessly app (TestHermeticCoversEveryFixedLocation keeps the list complete).
+var machineWide = []string{"/opt/homebrew/", "/usr/local/", "/home/linuxbrew/", "/Applications/"}
+
+// hermetic is script with machineWide moved under root, where nothing exists unless the test puts it there. A test
+// then sees only its own fakes, never a Homebrew or a CLI installed on the machine running it: GitHub's Ubuntu
+// runners have /home/linuxbrew/.linuxbrew, and a developer's Mac /opt/homebrew, where the unchanged script would
+// tap and install for real (#592).
+func hermetic(script, root string) string {
+	var pairs []string
+	for _, p := range machineWide {
+		pairs = append(pairs, p, filepath.Join(root, p)+"/")
+	}
+	return strings.NewReplacer(pairs...).Replace(script)
+}
+
 func runBrewScript(t *testing.T, dir string) brewOutcome {
 	t.Helper()
 	cmd := exec.Command("/bin/sh", "-s")
-	cmd.Stdin = strings.NewReader(brewScript())
+	cmd.Stdin = strings.NewReader(hermetic(brewScript(), dir))
 	cmd.Env = []string{"HOME=" + filepath.Join(dir, "home"), "PATH=" + dir + ":/usr/bin:/bin", "TMPDIR=" + dir}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -448,20 +466,57 @@ func TestBrewScript(t *testing.T) {
 	if k, b := strings.Index(resolveCLIScript, "/opt/homebrew/opt/disklessly-cli/bin/disklessly"), strings.Index(resolveCLIScript, "/opt/homebrew/bin/disklessly"); k < 0 || k > b {
 		t.Fatal("lookup does not try the Homebrew keg before /opt/homebrew/bin")
 	}
-	// No Homebrew at all.
+	// No Homebrew at all, whatever the machine running the test has.
 	dir = t.TempDir()
 	if o := runBrewScript(t, dir); o.ok || o.step != "nobrew" {
 		t.Fatalf("no brew: %+v", o)
+	}
+	// A Homebrew at one of the fixed prefixes, not on PATH (a non-interactive SSH shell), is found.
+	dir = t.TempDir()
+	fakeBrew(t, dir, "0.3.0", false, "")
+	fixed := filepath.Join(dir, "home", "linuxbrew", ".linuxbrew", "bin")
+	if err := os.MkdirAll(fixed, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(dir, "brew"), filepath.Join(fixed, "brew")); err != nil {
+		t.Fatal(err)
+	}
+	if o := runBrewScript(t, dir); !o.ok || o.op != "install" {
+		t.Fatalf("brew at a fixed prefix: %+v", o)
 	}
 	// The refresh script reports where Homebrew is.
 	dir = t.TempDir()
 	fakeBrew(t, dir, "0.3.0", false, "")
 	cmd := exec.Command("/bin/sh", "-s")
-	cmd.Stdin = strings.NewReader(coldListScript(false, true))
+	cmd.Stdin = strings.NewReader(hermetic(coldListScript(false, true), dir))
 	cmd.Env = []string{"HOME=" + filepath.Join(dir, "home"), "PATH=" + dir + ":/usr/bin:/bin"}
 	out, _ := cmd.CombinedOutput()
 	if got := firstNonEmpty(splitSections(string(out))["COLD_BREW"]); got != filepath.Join(dir, "brew") {
 		t.Fatalf("COLD_BREW %q in\n%s", got, out)
+	}
+}
+
+// TestHermeticCoversEveryFixedLocation: every absolute path the scripts search starts with one of machineWide,
+// so hermetic leaves no way to a Homebrew or CLI of the machine running the tests.
+func TestHermeticCoversEveryFixedLocation(t *testing.T) {
+	path := regexp.MustCompile(`(?:^|[\s"'=(])(/[A-Za-z][^\s"';)]*)`)
+	for name, script := range map[string]string{"brew": brewScript(), "cold list": coldListScript(false, true), "resolve": resolveCLIScript} {
+		for _, m := range path.FindAllStringSubmatch(script, -1) {
+			p := m[1]
+			if p == "/dev/null" || strings.HasPrefix(p, "/bin/") || strings.HasPrefix(p, "/usr/bin/") {
+				continue
+			}
+			if !slices.ContainsFunc(machineWide, func(w string) bool { return strings.HasPrefix(p, w) }) {
+				t.Errorf("%s script searches %s, which hermetic does not move", name, p)
+			}
+		}
+		root := t.TempDir()
+		h := hermetic(script, root)
+		for _, w := range machineWide {
+			if n, moved := strings.Count(h, w), strings.Count(h, root+w); n == 0 || n != moved {
+				t.Errorf("%s script: %d of %d mentions of %s moved", name, moved, n, w)
+			}
+		}
 	}
 }
 
@@ -509,7 +564,7 @@ func TestBrewJob(t *testing.T) {
 	}
 	a.waitJobs()
 	j := a.jobSnapshot()["studio-mac"]
-	if j.Err != "" || !strings.Contains(j.Note, "已用 Homebrew 安装 disklessly 0.3.0（/opt/homebrew/opt/disklessly-cli/bin/disklessly）") ||
+	if j.Err != "" || !strings.Contains(j.Note, "已用 Homebrew 安装好配套小工具 disklessly 0.3.0（/opt/homebrew/opt/disklessly-cli/bin/disklessly）") ||
 		!strings.Contains(j.Note, "/opt/homebrew/bin/disklessly → /Applications/Disklessly.app/Contents/MacOS/disklessly（disklessly 0.2.3）") || strings.Contains(j.Note, "revision") {
 		t.Fatalf("job %+v", j)
 	}
@@ -577,6 +632,14 @@ func TestScanAndCleanInBackground(t *testing.T) {
 	ctx := context.Background()
 	slow := &slowRunner{release: make(chan struct{})}
 	a.runner = slow.run
+	// A failed assertion must not leave the scan blocked: the app's cleanup waits for its jobs.
+	t.Cleanup(func() {
+		select {
+		case <-slow.release:
+		default:
+			close(slow.release)
+		}
+	})
 	v, err := a.render(ctx, &ext.UIRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -596,13 +659,13 @@ func TestScanAndCleanInBackground(t *testing.T) {
 		close(slow.release)
 		t.Fatal("scan blocked the request")
 	}
-	if !strings.Contains(res.Toast, "已开始扫描") || res.View.RefreshAfter == 0 {
+	if !strings.Contains(res.Toast, "开始检查") || res.View.RefreshAfter == 0 {
 		t.Fatalf("toast %q refresh %d", res.Toast, res.View.RefreshAfter)
 	}
 	if err := wire.CheckView(res.View); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(texts(res.View), "正在扫描") {
+	if !strings.Contains(texts(res.View), "正在检查硬盘") {
 		t.Fatalf("running scan not shown:\n%s", texts(res.View))
 	}
 	close(slow.release)
@@ -612,13 +675,13 @@ func TestScanAndCleanInBackground(t *testing.T) {
 	if !scanned {
 		t.Fatal("background scan stored nothing")
 	}
-	if j := a.jobSnapshot()["local"]; j.Kind != jobScan || !strings.Contains(j.Note, "可回收") {
+	if j := a.jobSnapshot()["local"]; j.Kind != jobScan || !strings.Contains(j.Note, "可以腾出") {
 		t.Fatalf("scan job %+v", j)
 	}
 
 	a.runner = fakeRunner
 	res, err = a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{State: v.State, Action: "clean-safe", Values: map[string]string{"m": "local"}}})
-	if err != nil || !strings.Contains(res.Toast, "已开始清理") {
+	if err != nil || !strings.Contains(res.Toast, "开始在") {
 		t.Fatalf("clean: %v %+v", err, res)
 	}
 	a.waitJobs()
@@ -639,16 +702,16 @@ func TestScanAndCleanInBackground(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err = a.action(ctx, &ext.UIRequest{UIParams: wire.UIParams{State: v.State, Action: "scan-all"}})
-	if err != nil || !strings.Contains(res.Toast, "已开始扫描 2 台") {
+	if err != nil || !strings.Contains(res.Toast, "开始检查 2 台") {
 		t.Fatalf("scan-all: %v %q", err, res.Toast)
 	}
 	a.waitJobs()
 	j := a.jobSnapshot()["offline-box"]
-	if !strings.Contains(j.Err, "offline-box") || !strings.Contains(j.Err, "超时") || strings.Contains(j.Err, "Connection timed out") {
+	if !strings.Contains(j.Err, "offline-box") || !strings.Contains(j.Err, "等了太久没反应") || strings.Contains(j.Err, "Connection timed out") {
 		t.Fatalf("offline scan job %+v", j)
 	}
 	v, _ = a.render(ctx, &ext.UIRequest{})
-	if all := texts(v); strings.Contains(all, "Connection timed out") || !strings.Contains(all, "超时") {
+	if all := texts(v); strings.Contains(all, "Connection timed out") || !strings.Contains(all, "等了太久没反应") {
 		t.Fatalf("fleet tab after failed scan:\n%s", all)
 	}
 }
@@ -674,7 +737,7 @@ func TestMCPStatusSpeaksPlainly(t *testing.T) {
 		t.Fatal(err)
 	}
 	res = out.(map[string]any)["machines"].([]map[string]any)[0]
-	if msg := res["message"].(string); !strings.Contains(msg, "超时") || english.MatchString(msg) {
+	if msg := res["message"].(string); !strings.Contains(msg, "等了太久没反应") || english.MatchString(msg) {
 		t.Fatalf("far-box message %q", msg)
 	}
 	if !strings.Contains(res["detail"].(string), "Connection timed out") {
@@ -682,7 +745,7 @@ func TestMCPStatusSpeaksPlainly(t *testing.T) {
 	}
 	text := toolErrorText(errors.New("SSH 连接 far-box 失败：ssh: connect to host far-box port 22: Connection timed out"))
 	head, tail, _ := strings.Cut(text, "\n")
-	if !strings.Contains(head, "far-box") || !strings.Contains(head, "超时") || english.MatchString(head) || !strings.Contains(tail, "详情") || !strings.Contains(tail, "Connection timed out") {
+	if !strings.Contains(head, "far-box") || !strings.Contains(head, "等了太久没反应") || english.MatchString(head) || !strings.Contains(tail, "详情") || !strings.Contains(tail, "Connection timed out") {
 		t.Fatalf("tool error text %q", text)
 	}
 }

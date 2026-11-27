@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -74,6 +75,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		return detailView(r, st, item, comments), nil
 	}
 	var items []article
+	full := false // whether the last batch read was full, so another page may exist (before any filter hides articles)
 	for n := 0; n <= st.Page; n++ {
 		batch, err := a.client.articles(ctx, "", n+1)
 		if err != nil {
@@ -81,7 +83,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			return nil, err
 		}
 		items = append(items, batch...)
-		if len(batch) < 30 {
+		if full = len(batch) == 30; !full {
 			break
 		}
 	}
@@ -95,33 +97,73 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noArticles})
 	}
-	if len(items) >= 30*(st.Page+1) && st.Page < 5 {
+	if full && st.Page < 5 {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section}
 	return v, nil
 }
 
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
 func detailView(r *ext.UIRequest, st pageState, item article, comments []comment) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{
 		{Type: wire.ComponentText, Text: item.User.Name + " · " + fmt.Sprintf("%d min read", item.ReadingMinutes), Style: wire.TextStyleSecondary},
-		{Type: wire.ComponentLink, Title: t.open, URL: item.URL},
-		{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}},
 	}
+	if httpsLink(item.URL) {
+		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.URL})
+	}
+	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	v := &wire.View{Title: clipText(item.Title, 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
+	used := len(items)
 	if item.Description != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.summary, Items: textComponents(item.Description)})
+		summary := capComponents(textComponents(item.Description), maxSummaryItems)
+		if len(summary) > 0 {
+			used += len(summary)
+			v.Sections = append(v.Sections, wire.Section{Title: t.summary, Items: summary})
+		}
 	}
 	if item.BodyMarkdown != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.read, Items: textComponents(item.BodyMarkdown)})
+		body := capComponents(textComponents(item.BodyMarkdown), maxArticleItems)
+		if len(body) > 0 {
+			used += len(body)
+			v.Sections = append(v.Sections, wire.Section{Title: t.read, Items: body})
+		}
 	}
 	if len(comments) > 0 {
 		section := wire.Section{Title: t.comments}
 		addCommentViews(&section, comments, 0)
-		v.Sections = append(v.Sections, section)
+		section.Items = capComponents(section.Items, maxViewItems-used)
+		if len(section.Items) > 0 {
+			v.Sections = append(v.Sections, section)
+		}
 	}
 	return v
+}
+
+const (
+	// maxViewItems keeps the article view within the SDK's 300 component limit, whatever the discussion holds.
+	maxViewItems    = 250
+	maxSummaryItems = 40
+	maxArticleItems = 150
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if n <= 0 {
+		return nil
+	}
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func addCommentViews(section *wire.Section, comments []comment, depth int) {

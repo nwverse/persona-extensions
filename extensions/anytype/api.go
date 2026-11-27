@@ -130,8 +130,11 @@ func (c *client) objects(ctx context.Context, spaceID string, offset int) (page[
 	return out, err
 }
 
+// maxQueryChars is the longest search query: the client, the page clip, the tool schema and the page state check use it.
+const maxQueryChars = 200
+
 func (c *client) search(ctx context.Context, query string, offset int) (page[knowledgeObject], error) {
-	if strings.TrimSpace(query) == "" || len([]rune(query)) > 200 || strings.ContainsRune(query, 0) {
+	if strings.TrimSpace(query) == "" || len([]rune(query)) > maxQueryChars || strings.ContainsRune(query, 0) {
 		return page[knowledgeObject]{}, errors.New("search text must be nonempty and at most 200 characters")
 	}
 	if err := validOffset(offset); err != nil {
@@ -151,8 +154,9 @@ func (c *client) object(ctx context.Context, spaceID, objectID string) (knowledg
 	if err := validObjectID(objectID); err != nil {
 		return out, err
 	}
-	err := c.do(ctx, http.MethodGet, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects/"+url.PathEscape(objectID), nil, nil, &out)
-	return out, err
+	var answer objectAnswer
+	err := c.do(ctx, http.MethodGet, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects/"+url.PathEscape(objectID), nil, nil, &answer)
+	return answer.Object, err
 }
 
 func (c *client) types(ctx context.Context, spaceID string, offset int) (page[objectType], error) {
@@ -173,9 +177,9 @@ func (c *client) createObject(ctx context.Context, spaceID, name, markdown, type
 		return knowledgeObject{}, err
 	}
 	body := map[string]any{"name": name, "body": markdown, "type_key": typeKey}
-	var out knowledgeObject
-	err := c.do(ctx, http.MethodPost, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects", nil, body, &out)
-	return out, err
+	var answer objectAnswer
+	err := c.do(ctx, http.MethodPost, "/v1/spaces/"+url.PathEscape(spaceID)+"/objects", nil, body, &answer)
+	return answer.Object, err
 }
 
 func objectText(item knowledgeObject) string {

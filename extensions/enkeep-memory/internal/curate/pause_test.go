@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/convsrc"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
+	"github.com/nwverse/persona/sdk/go/wire"
 	"strings"
 	"testing"
 	"time"
@@ -94,5 +97,80 @@ func TestPauseBackoff(t *testing.T) {
 		if got := pauseBackoff(fails); got != want {
 			t.Errorf("pauseBackoff(%d) = %v, want %v", fails, got, want)
 		}
+	}
+}
+
+// awaySrc is the sample source whose day reads find the assistant's computer away.
+type awaySrc struct{ kbsrc.Source }
+
+func (a awaySrc) Recent(ctx context.Context, since, until time.Time) ([]wire.KBEntry, error) {
+	return nil, fmt.Errorf("kb.recent: %w: the assistant's computer is not connected", convsrc.ErrAway)
+}
+
+// The assistant's computer away: the day is not done either, the pause says what was away, and it is tried again
+// after the wait rather than only at the next start.
+func TestAssistantAwayKeepsTheDay(t *testing.T) {
+	c, _ := newCurator(t, &stub.Model{}, "shadow")
+	c.Src = awaySrc{c.Src}
+	_, err := c.RunDaily(context.Background(), "2026-11-03", false)
+	if !errors.Is(err, ErrModelDown) {
+		t.Fatalf("err %v, want ErrModelDown", err)
+	}
+	if got := strings.Join(dailyRuns(c.St.S), ","); got != "" {
+		t.Fatalf("a day not read counted as run: %s", got)
+	}
+	p := c.St.S.ModelPause
+	if p == nil || p.What != "assistant" || p.Day != "2026-11-03" || !strings.Contains(p.Reason, "not connected") {
+		t.Fatalf("pause: %+v", p)
+	}
+	if _, wait := c.ModelWait(c.now()); !wait {
+		t.Fatal("no wait before the next try")
+	}
+}
+
+// broken is the stub model, failing every daily call with an error that is not the model being unavailable (every
+// fallback model failed, say) while broken is set.
+type broken struct {
+	stub.Model
+	broken bool
+}
+
+func (f *broken) Complete(ctx context.Context, r model.Request) (model.Response, error) {
+	if f.broken && r.Step == "daily" {
+		return model.Response{}, errors.New("model.complete: every candidate failed")
+	}
+	return f.Model.Complete(ctx, r)
+}
+
+// A unit the model could not read is not counted and passed over (0.2.0-beta.33): the day is not done, as when the
+// model is away, so it is not marked read with the current prompt and its unit is read when the model answers again.
+func TestUnreadUnitKeepsTheDay(t *testing.T) {
+	m := &broken{broken: true}
+	c, _ := newCurator(t, m, "shadow")
+	c.Cfg.BackfillDays = 3
+	c.StartBackfill("2026-11-05") // 11-02 … 11-04
+	ctx := context.Background()
+	if done, err := c.BackfillStep(ctx); done || err != nil { // 11-02: nothing to read
+		t.Fatalf("empty day: done %v err %v", done, err)
+	}
+	if done, err := c.BackfillStep(ctx); done || !errors.Is(err, ErrModelDown) {
+		t.Fatalf("a unit failed: done %v err %v, want ErrModelDown", done, err)
+	}
+	if c.St.S.Backfill.Next != "2026-11-03" || strings.Join(dailyRuns(c.St.S), ",") != "2026-11-02" {
+		t.Fatalf("the day counted as run: next %s runs %v", c.St.S.Backfill.Next, dailyRuns(c.St.S))
+	}
+	if p := c.St.S.ModelPause; p == nil || !strings.Contains(p.Reason, "every candidate failed") {
+		t.Fatalf("pause: %+v", p)
+	}
+	// The model answers again: the same day runs, the replay goes on, the pause is cleared.
+	m.broken = false
+	if err := c.RunBackfill(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(dailyRuns(c.St.S), ","); got != "2026-11-02,2026-11-03,2026-11-04" {
+		t.Errorf("daily runs after recovery: %s", got)
+	}
+	if c.St.S.ModelPause != nil || !c.BackfillDone() {
+		t.Errorf("after recovery: pause %+v, done %v", c.St.S.ModelPause, c.BackfillDone())
 	}
 }

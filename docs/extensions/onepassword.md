@@ -2,9 +2,9 @@
 
 [Documentation](../README.md) · [Source](../../extensions/onepassword/)
 
-This extension (id `onepassword`) connects Persona to your 1Password vaults, either those you grant to a 1Password [service account](https://developer.1password.com/docs/service-accounts/) or those of the account the [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) is signed in to on one of your computers. The assistant gets three read-only tools: the vaults it can read, item search by title, tag or website, and one item's fields with each field's `op://` [secret reference](https://developer.1password.com/docs/cli/secret-reference-syntax/). No tool returns a secret value, and nothing the extension does changes your vaults. It is also Persona's secret provider for `op://` references: when one of Persona's settings holds a reference, or you approve handing one to an Agent run, Persona's manager asks this extension for the value.
+This extension (id `onepassword`) connects Persona to your 1Password vaults, either those you grant to a 1Password [service account](https://developer.1password.com/docs/service-accounts/) or those of the account the [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) is signed in to on one of your computers. The assistant gets three read-only tools: the vaults it can read, item search by title, tag or website, and one item's fields with each field's `op://` [secret reference](https://developer.1password.com/docs/cli/secret-reference-syntax/). No tool returns a secret value, and the query tools never change your vaults. Phone-approved storage is a separate manager-owned flow, described below. It is also Persona's secret provider for `op://` references: when one of Persona's settings holds a reference, or you approve handing one to an Agent run, Persona's manager asks this extension for the value.
 
-This page describes version 0.3.1. When the manifest shown in the install preview disagrees with this page, the manifest wins.
+This page describes version 0.4.0. When the manifest shown in the install preview disagrees with this page, the manifest wins.
 
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |
@@ -57,7 +57,7 @@ Since 0.3.0 the token is optional, so the extension runs without one, and a firs
 
 ### With op on one of your computers
 
-For people without a service account (they need 1Password Business or Teams), or who would rather not keep a token on the hub:
+For people who prefer desktop authorization instead of keeping a service-account token on the hub:
 
 1. On a Mac or Linux computer connected to Persona, install the 1Password app and the [1Password CLI](https://developer.1password.com/docs/cli/get-started/), and sign in to the app.
 2. In the 1Password app, open Settings › Developer and turn on **Integrate with 1Password CLI**.
@@ -134,7 +134,7 @@ Since 0.3.1 the extension keeps 1Password's metadata in its own memory, for both
 
 ## Not in this version
 
-- Creating or editing items, browser autofill, and 1Password's SSH agent or Git signing.
+- Browser autofill, 1Password's SSH agent or Git signing, and service-account writes. Phone-approved resident-node item writes are described below.
 
 ## Tests
 
@@ -144,3 +144,48 @@ scripts/package.sh onepassword
 ```
 
 The tests use a fake 1Password that answers the SDK's own types, with synthetic secret values in its items, and check that no tool result, description, error, status or page carries any of them or the token; that a reference resolves to its value by names or IDs and fails with the right codes; and that the page lists uses newest first, at most 20. For `op` on a computer, a fake `op` answers in the shape `op` 2 writes: the tests check that no answer leaving the computer carries a value, a file name or an address with a password in it, that only IDs and references reach `op`'s arguments, that `op` runs without a service account token in its environment (a real process, from a script standing in for `op`), and what the page, the status and the secret provider say when `op` is missing, locked, offline or finds nothing. They also run the SDK's process-protocol conformance checks and validate the connection page's views. No test needs a real 1Password account.
+
+
+## Phone-approved writes
+
+Requires the coordinated Persona storage update (nwverse/persona#13051). From an Agent on any connected personal
+computer, use `personad tool secret_store --from-file /private/path/manifest.json`. A manifest contains only public
+metadata and local field-file paths:
+
+```json
+{"operation":"create","vault":"Dev","title":"New credential","category":"API_CREDENTIAL",
+ "fields":[{"name":"credential","type":"CONCEALED","file":"/private/path/credential"}]}
+```
+
+For an update use `operation: "edit"`, stable vault/item IDs and fields, omitting category/title. Create categories:
+`LOGIN`, `PASSWORD`, `SECURE_NOTE`, `API_CREDENTIAL`, `SERVER`, `DATABASE`. Types: `STRING`, `CONCEALED` (default).
+Private regular files only (0600; no symlinks), UTF-8 text values of 1–16384 bytes, at most 16 fields. Delete source
+files after the command returns. The metadata manifest can also come from stdin (`--from-file -`). Never put values
+in JSON arguments or shell commands. The CLI reads field files only after approval and seals them to the resident
+node's one-use, two-minute HPKE key. Manager/hub/extension relay ciphertext; only that node decrypts.
+
+The phone/web card identifies create/edit, vault, item, field names, Agent and source computer. No value or source
+path is shown. Only an explicit card approval authorizes the write; no Always rule applies. Commit consumes the key
+and binds it to the approved target and source identity. `op item create` and `op item edit` receive JSON on stdin,
+never field values in argv. The answer is only `{references:{field:"op://vault-id/item-id/field-id"}}`. Raw op output
+and error text never leave the write path. Inspect item metadata before retrying an uncertain result.
+
+Login updates are refused because CLI JSON template editing can overwrite passkeys. Sectioned/ambiguous fields,
+attachments and documents are also refused; unrelated fields, metadata and version remain in the node's template.
+Writes through service-account mode are not implemented in this release: storage requires a configured resident op
+node, and never falls back to another authentication method. Existing service-account metadata reads/resolution stay
+available.
+
+### Authorization expiry and keepalive
+
+Desktop authorization is **not permanent**: 10 minutes of CLI inactivity, a hard 12-hour limit even with activity,
+and any App lock revoke it. The same resident process refreshes a previously successful foreground authorization
+with `op whoami` after five minutes of inactivity and discards all output. It stops on a failed refresh and before
+its observed 12-hour window; it never changes lock settings or approves prompts. The App locking, a process restart,
+or an already older authorization can still require a new desktop approval. A lock may make one background refresh
+ask for authorization; failed refreshes are not retried until a foreground call succeeds.
+
+The Mac setting is **1Password › Settings › Security › Auto-lock**, including **Lock after the device is idle for**;
+lock-on-sleep/screensaver/user-switch and administrator policies can also apply. These are distinct from CLI idle
+expiry. See the official [CLI authorization model](https://developer.1password.com/docs/cli/app-integration-security/)
+and [auto-lock settings](https://support.1password.com/auto-lock/). No lock preferences are changed by this extension.

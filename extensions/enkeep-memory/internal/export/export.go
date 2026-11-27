@@ -17,6 +17,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/hubapi"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
@@ -33,6 +34,11 @@ type Options struct {
 	Run   string
 	Event func(entry.Event) // the curator's event log: an entry going into an exit for the first time
 	Logf  func(format string, args ...any)
+	// Projects are the knowledge base's projects (kb.list "projects": the id is the slug the hub looks exit D files
+	// up by). An entry's project names are matched to them by name, alias or id; a name that matches none gets no
+	// project file (it stays in memory.entries). Nil: the list could not be read, and files are named by kb.Slug's
+	// rule from the entry's own project name.
+	Projects []entry.KBProject
 }
 
 // Report is what a compile did, for the run's notes, the page and the replay.
@@ -57,12 +63,22 @@ type FileReport struct {
 	Written bool   `json:"written"` // written by this compile (not unchanged, not deferred)
 }
 
+type kbEntry struct {
+	slug    string
+	name    string
+	aliases []string
+	keys    []string // normalized id, name, display-base, aliases, repo suffixes
+}
+
 type compiler struct {
-	o     Options
-	st    *store.State
-	rep   *Report
-	never []string
-	fw    words
+	o      Options
+	st     *store.State
+	rep    *Report
+	never  []string
+	fw     words
+	held   error               // the hub held the model (model.ErrPaused): nothing is written this time
+	kb     map[string]*kbEntry // norm.Q of a project's id, name, slug and aliases → the project; nil when ambiguous
+	kbList []*kbEntry          // all indexed projects, for unique-substring fallback
 }
 
 func (c *compiler) now() time.Time {
@@ -90,6 +106,7 @@ func (c *compiler) logf(format string, args ...any) {
 func Compile(ctx context.Context, st *store.State, o Options) (*Report, error) {
 	c := &compiler{o: o, st: st, fw: fixed(o.Lang),
 		rep: &Report{Files: map[string]FileReport{}, Sections: map[string]int{}, SecLines: map[string]int{}}}
+	c.indexProjects()
 	if st.Exits == nil {
 		st.Exits = &entry.Exits{}
 	}
@@ -105,6 +122,12 @@ func Compile(ctx context.Context, st *store.State, o Options) (*Report, error) {
 	c.never = c.neverLines()
 	p := c.plan()
 	texts := c.texts(ctx, p.wants)
+	if c.held != nil {
+		// The hub held the model's connection past the call's wait (model_paused): the files stay as the last
+		// compile wrote them, rather than go out with the lines that could not be rewritten left out; the rewrites
+		// already made are kept on their entries and reused next time (0.2.0-beta.34).
+		return c.rep, c.held
+	}
 	files := c.render(p, texts)
 	if err := c.write(files); err != nil {
 		return c.rep, err
@@ -118,17 +141,28 @@ func Compile(ctx context.Context, st *store.State, o Options) (*Report, error) {
 // stable: only stable entries go out (a candidate never does). What the user wrote about themself, the first-run
 // answers and the hand-written memory are stable from the start; a pinned entry counts as stable.
 func stable(e *entry.Entry) bool {
-	return e.Status == entry.Stable || e.Pinned || (e.Origin != entry.Behavior && e.Origin != "" && e.Status == entry.Candidate)
+	return e.Status == entry.Stable || e.Pinned || (entry.Hard(e) && e.Status == entry.Candidate) ||
+		(e.Origin != entry.Behavior && e.Origin != "" && e.Origin != entry.Seed && e.Status == entry.Candidate)
 }
 
-// usable is the gate every exit A–E shares: live (not deleted, retired, merged, invalidated or marked wrong), not
-// in a sensitive category (K13, whether its switch is on or not: an opened category reaches only the user's own
-// understanding), stable, and not life content when the user chose "work only" at the first-run questions.
-func (c *compiler) usable(e *entry.Entry) bool {
-	if !e.Live() || e.Sensitive != "" || !stable(e) {
+// Stable says whether an entry counts as settled for the exits (stable, pinned, or written by the user).
+func Stable(e *entry.Entry) bool { return stable(e) }
+
+// usable is the gate every exit A–E shares: live (not deleted, retired, merged, invalidated or marked wrong), allowed
+// in the resident exits by its categories and source space (entry.Resident: a category only once the user turned
+// K22.<category> on; a domain space's content only as interaction or persona), stable, and not life content when
+// the user chose "work only" at the first-run questions.
+func (c *compiler) usable(e *entry.Entry) bool { return Usable(c.st, e) }
+
+// Usable is the exits' shared gate for an entry of st (the overview card counts with it too).
+func Usable(st *store.State, e *entry.Entry) bool {
+	if !e.Live() || !e.Resident(st.Switches) || !stable(e) {
 		return false
 	}
-	if e.Domain == entry.Life && c.st.Onboarding != nil && c.st.Onboarding.Use == entry.Work {
+	if e.Origin == entry.Seed && !entry.On(st.Switches, entry.K21Seeds) { // the seeds' source switched off
+		return false
+	}
+	if e.Domain == entry.Life && st.Onboarding != nil && st.Onboarding.Use == entry.Work {
 		return false
 	}
 	return true
@@ -195,15 +229,16 @@ func underExported(es []*entry.Entry) []*entry.Entry {
 func openCommitment(e *entry.Entry) bool { return e.Commitment != nil && e.Commitment.Done == "" }
 
 type project struct {
-	name  string
-	parts map[string][]*entry.Entry
+	name     string
+	aliases  []string
+	parts    map[string][]*entry.Entry
+	skeleton []string // 1-hop structural skeleton lines (owners, assignees, upstream/downstream dependencies)
 }
 
 type plan struct {
 	a        map[string][]*entry.Entry // exit A section → entries
 	objects  []string                  // ② objects, for the index line and the skill's description
 	tools    []*entry.Entry            // exit B machines-and-tools
-	work     map[string][]*entry.Entry // exit B ways-of-working, by kind of task
 	projects map[string]*project       // exit D, by slug
 	inbox    map[string][]*entry.Entry // exit E parts
 	contacts []string                  // exit E: the people who matter most
@@ -211,24 +246,23 @@ type plan struct {
 }
 
 func (c *compiler) plan() *plan {
-	p := &plan{a: map[string][]*entry.Entry{}, work: map[string][]*entry.Entry{}, projects: map[string]*project{}, inbox: map[string][]*entry.Entry{}}
+	p := &plan{a: map[string][]*entry.Entry{}, projects: map[string]*project{}, inbox: map[string][]*entry.Entry{}}
 	add := func(e *entry.Entry, mode, exit string) { p.wants = append(p.wants, want{e: e, mode: mode, exit: exit}) }
 
 	// Exit A (K1). People (⑤′) never; the hand-written memory is in the assistant's context already.
+	// What holds only in a knowledge-base project goes to that project's block (exit D), not to every turn: it would be
+	// applied everywhere else (0.2.0-beta.37). Without the project list it stays in exit A as before.
+	general := func(e *entry.Entry) bool {
+		return notHandwritten(e) && !(c.on(entry.K6WorkflowSkill) && c.inProject(e))
+	}
 	if c.on(entry.K1PerTurnBlock) {
-		p.a["interaction"] = underExported(c.entries(entry.Interaction, notHandwritten))
-		p.a["judgement"] = c.entries(entry.Judgement, func(e *entry.Entry) bool { return notHandwritten(e) && c.lifted(e) })
-		var work []*entry.Entry
-		top := false
-		for _, e := range c.entries(entry.Workflow, notHandwritten) {
-			switch {
-			case e.Grain == entry.Abstract && c.on(entry.K3Abstract), e.Origin != entry.Behavior && e.Origin != "":
-				work = append(work, e)
-			case e.Grain == entry.Class && !top: // the most used class only; the rest is in the skills
-				work, top = append(work, e), true
-			}
-		}
-		p.a["workflow"] = work
+		p.a["interaction"] = underExported(c.entries(entry.Interaction, general))
+		p.a["judgement"] = underExported(c.entries(entry.Judgement, func(e *entry.Entry) bool { return general(e) && (c.lifted(e) || forkReady(e)) }))
+		// ④: every stable way of working that holds across projects (the ways-of-working skills are gone); an
+		// abstract entry only while K3 is on.
+		p.a["workflow"] = underExported(c.entries(entry.Workflow, func(e *entry.Entry) bool {
+			return general(e) && (e.Grain != entry.Abstract || c.on(entry.K3Abstract))
+		}))
 		p.a["world"] = c.entries(entry.World, openCommitment)
 		if c.on(entry.K4Persona) {
 			p.a["persona"] = underExported(c.entries(entry.Persona, func(e *entry.Entry) bool {
@@ -253,22 +287,16 @@ func (c *compiler) plan() *plan {
 			add(e, ModePlain, "B")
 		}
 	}
+	// Exit D (K6): per knowledge-base project, its goals, project-specific rules (①②③④), facts (⑤) and 1-hop
+	// structural skeleton (owners and upstream/downstream dependencies). Nothing of people cards or ⑥.
 	if c.on(entry.K6WorkflowSkill) {
-		for _, e := range c.entries(entry.Workflow, notHandwritten) {
-			p.work[e.Type] = append(p.work[e.Type], e)
-			add(e, ModePlain, "B")
-		}
-	}
-	// Exit D (K6): per project, its ②, ③, ④ and ⑤. Nothing of people cards, ⑥ or ①.
-	if c.on(entry.K6WorkflowSkill) {
-		for _, f := range []entry.Facet{entry.Tools, entry.Judgement, entry.Workflow, entry.World} {
+		for _, f := range []entry.Facet{entry.Interaction, entry.Tools, entry.Judgement, entry.Workflow, entry.World} {
 			for _, e := range c.entries(f, nil) {
-				for _, name := range projectsOf(e) {
-					slug := Slug(name)
-					pr := p.projects[slug]
+				for _, r := range c.projectsFor(e) {
+					pr := p.projects[r.slug]
 					if pr == nil {
-						pr = &project{name: name, parts: map[string][]*entry.Entry{}}
-						p.projects[slug] = pr
+						pr = &project{name: r.name, aliases: r.aliases, parts: map[string][]*entry.Entry{}}
+						p.projects[r.slug] = pr
 					}
 					pr.parts[string(f)] = append(pr.parts[string(f)], e)
 					if !openCommitment(e) {
@@ -276,6 +304,9 @@ func (c *compiler) plan() *plan {
 					}
 				}
 			}
+		}
+		for slug, pr := range p.projects {
+			pr.skeleton = c.projectSkeleton(slug, pr)
 		}
 	}
 	// Exit E: who matters and open commitments (⑤, ⑤′ commitments), how to communicate with them (⑤′ tips, K14; inferred
@@ -309,6 +340,257 @@ func (c *compiler) plan() *plan {
 		add(e, ModePlain, "E")
 	}
 	return p
+}
+
+// forkReady: an action-grain judgement that says its fork, the choice and what was not chosen or why may go into
+// exit A (0.2.0-beta.37): the grain gate alone left most judgements out.
+func forkReady(e *entry.Entry) bool {
+	return strings.TrimSpace(e.Situation) != "" && strings.TrimSpace(e.Choice) != "" &&
+		(strings.TrimSpace(e.Rejected) != "" || strings.TrimSpace(e.Why) != "")
+}
+
+// indexProjects indexes the knowledge base's projects by id, normalized slug, name, display-base, aliases and repo
+// suffix (norm.Q); a key two projects share leads to neither. Projects whose raw ID is not a valid hub slug fall back
+// to KBSlug(id) or KBSlug(name) so Chinese/Unicode project names are never silently dropped.
+func (c *compiler) indexProjects() {
+	if c.o.Projects == nil {
+		return
+	}
+	c.kb = map[string]*kbEntry{}
+	c.kbList = nil
+	for i := range c.o.Projects {
+		pr := &c.o.Projects[i]
+		slug := strings.TrimSpace(pr.ID)
+		if !projectSlug(slug) {
+			if s := KBSlug(slug); projectSlug(s) {
+				slug = s
+			} else if s := KBSlug(pr.Name); projectSlug(s) {
+				slug = s
+			} else {
+				continue
+			}
+		}
+		ke := &kbEntry{slug: slug, name: firstNonEmpty(pr.Name, slug), aliases: pr.Aliases}
+		c.kbList = append(c.kbList, ke)
+		seen := map[string]bool{}
+		addKey := func(raw string) {
+			k := norm.Q(raw)
+			if k == "" || seen[k] {
+				return
+			}
+			seen[k] = true
+			ke.keys = append(ke.keys, k)
+			if old, ok := c.kb[k]; ok && old != ke {
+				c.kb[k] = nil
+				return
+			}
+			c.kb[k] = ke
+		}
+		raws := append([]string{pr.ID, slug, pr.Name, KBSlug(pr.Name)}, pr.Aliases...)
+		for _, n := range raws {
+			addKey(n)
+			if base := stripProjectDisplay(n); base != "" && base != n {
+				addKey(base)
+			}
+			if _, tail, ok := strings.Cut(strings.TrimSpace(n), "/"); ok && tail != "" {
+				addKey(tail)
+			}
+		}
+	}
+}
+
+type projRef struct {
+	slug, name string
+	aliases    []string
+}
+
+func (c *compiler) matchKBProject(name string) *kbEntry {
+	name = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(name), "project:"))
+	if name == "" {
+		return nil
+	}
+	candidates := []string{name}
+	if base := stripProjectDisplay(name); base != "" && base != name {
+		candidates = append(candidates, base)
+	}
+	if sl := KBSlug(name); sl != "" {
+		candidates = append(candidates, sl)
+	}
+	if _, tail, ok := strings.Cut(name, "/"); ok && tail != "" {
+		candidates = append(candidates, tail)
+	}
+	for _, cand := range candidates {
+		k := norm.Q(cand)
+		if k == "" {
+			continue
+		}
+		if ke, ok := c.kb[k]; ok {
+			return ke // nil if ambiguous across two KB projects
+		}
+	}
+	// Unique substring match for Chinese/Unicode or descriptive project names (>= 2 runes):
+	// only accepted when exactly one KB project matches, never when ambiguous.
+	q := norm.Q(stripProjectDisplay(name))
+	if len([]rune(q)) < 2 {
+		return nil
+	}
+	var hit *kbEntry
+	for _, ke := range c.kbList {
+		matched := false
+		for _, k := range ke.keys {
+			if len([]rune(k)) >= 2 && (strings.Contains(q, k) || strings.Contains(k, q)) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			continue
+		}
+		if hit != nil && hit != ke {
+			return nil // ambiguous
+		}
+		hit = ke
+	}
+	return hit
+}
+
+// projectsFor are the project files an entry goes into: its project names matched to knowledge-base projects, or,
+// without the project list, named by kb.Slug's rule.
+func (c *compiler) projectsFor(e *entry.Entry) []projRef {
+	var out []projRef
+	names := projectsOf(e)
+	if c.o.Projects != nil {
+		if o := strings.TrimSpace(e.Impact.Object); o != "" && len([]rune(o)) <= 24 && !slices.Contains(names, o) {
+			names = append(names, o)
+		}
+		if o := strings.TrimSpace(e.Object); o != "" && !slices.Contains(names, o) {
+			names = append(names, o)
+		}
+	}
+	for _, name := range names {
+		var r projRef
+		if c.o.Projects != nil {
+			ke := c.matchKBProject(name)
+			if ke == nil {
+				continue
+			}
+			r = projRef{slug: ke.slug, name: ke.name, aliases: ke.aliases}
+		} else if s := KBSlug(name); projectSlug(s) {
+			r = projRef{slug: s, name: name}
+		} else {
+			continue
+		}
+		if !slices.ContainsFunc(out, func(x projRef) bool { return x.slug == r.slug }) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// projectSkeleton collects 1-hop structural skeleton lines (owners, assignees, upstream/downstream dependencies)
+// for a project from st.Graph and usable World skeleton entries.
+func (c *compiler) projectSkeleton(slug string, pr *project) []string {
+	norms := map[string]bool{}
+	for _, n := range append([]string{slug, pr.name}, pr.aliases...) {
+		if q := norm.Q(n); q != "" {
+			norms[q] = true
+		}
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		s = oneLine(s)
+		if s == "" || seen[s] || len(out) >= 8 {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	zh := norm.Base(c.o.Lang) == "zh"
+	formatEdge := func(from, pred, to string) string {
+		if from == "" || to == "" || from == to {
+			return ""
+		}
+		if zh {
+			switch pred {
+			case "owns":
+				return fmt.Sprintf("负责人：%s 负责 %s", from, to)
+			case "assigned":
+				return fmt.Sprintf("分配：%s 承接 %s", from, to)
+			case "depends_on":
+				return fmt.Sprintf("依赖：%s 依赖 %s", from, to)
+			case "member_of":
+				return fmt.Sprintf("归属：%s 属于 %s", from, to)
+			case "collaborates_with":
+				return fmt.Sprintf("协作：%s 与 %s 协作", from, to)
+			case "role":
+				return fmt.Sprintf("角色：%s（%s）", from, to)
+			case "reports_to":
+				return fmt.Sprintf("汇报：%s 汇报给 %s", from, to)
+			}
+		}
+		return fmt.Sprintf("%s %s %s", from, pred, to)
+	}
+	if c.st.Graph != nil {
+		g := c.st.Graph
+		var nodeIDs []string
+		for id, n := range g.Nodes {
+			if n == nil || n.MergedInto != "" || n.Status == "not_entity" {
+				continue
+			}
+			matched := norms[norm.Q(n.Name)]
+			if !matched {
+				for _, a := range n.Aliases {
+					if norms[norm.Q(a.Name)] {
+						matched = true
+						break
+					}
+				}
+			}
+			if matched {
+				nodeIDs = append(nodeIDs, id)
+			}
+		}
+		sort.Strings(nodeIDs)
+		for _, id := range nodeIDs {
+			for _, a := range g.About(id, func(a *store.Assertion) bool {
+				return (a.Status == "active" || a.Status == "candidate") && entry.IsSkeletonPredicate(a.P)
+			}) {
+				sn, on := g.Nodes[g.Resolve(a.S)], g.Nodes[g.Resolve(a.O)]
+				if sn == nil || on == nil || sn.ID == "me" || on.ID == "me" {
+					continue
+				}
+				add(formatEdge(strings.TrimSpace(sn.Name), strings.ToLower(strings.TrimSpace(a.P)), strings.TrimSpace(on.Name)))
+			}
+		}
+	}
+	for _, e := range pr.parts["world"] {
+		if !entry.IsSkeletonPredicate(e.Predicate) {
+			continue
+		}
+		from := c.cleanRef(e.Subject)
+		to := c.cleanRef(e.Target)
+		add(formatEdge(from, strings.ToLower(strings.TrimSpace(e.Predicate)), to))
+	}
+	return out
+}
+
+func (c *compiler) cleanRef(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "person:") {
+		if n := c.name(raw); n != "" {
+			return n
+		}
+	}
+	for _, p := range []string{"project:", "person:", "system:", "object:"} {
+		raw = strings.TrimPrefix(raw, p)
+	}
+	return strings.TrimSpace(raw)
+}
+
+// inProject: the entry holds in a project the knowledge base knows, so its project block carries it.
+func (c *compiler) inProject(e *entry.Entry) bool {
+	return c.o.Projects != nil && len(c.projectsFor(e)) > 0
 }
 
 // objectOf is the machine or tool a ② entry is about.
@@ -381,11 +663,12 @@ func (c *compiler) contactNames(n int) []string {
 
 // neverLines are the cards' evaluation and inferred lines, as written and as the user edited them, and the user's
 // own words they rest on: never in a draft (exit E's never_quote.txt, checked by the hub), never in exits A, B, D.
-// Sensitive ones are left out with the rest of their category (K13: in no exit file at all).
+// Lines in a category the resident exits keep out are not listed either (no exit file carries them; no draft can
+// copy what it never gets).
 func (c *compiler) neverLines() []string {
 	var es []*entry.Entry
 	for _, e := range c.st.Entries {
-		if e.Facet == entry.People && (e.Part == entry.PartUserEval || e.Part == entry.PartInferred) && e.Live() && e.Sensitive == "" {
+		if e.Facet == entry.People && (e.Part == entry.PartUserEval || e.Part == entry.PartInferred) && e.Live() && e.Resident(c.st.Switches) {
 			es = append(es, e)
 		}
 	}
@@ -472,7 +755,8 @@ func writeFile(path string, data []byte) error {
 }
 
 // write puts the files on disk: only those whose hash changed; exit A at most once a day unless the change only
-// takes entries out (a withdrawal goes out at once); files no longer made are removed.
+// takes entries out, or the file out there still carries an entry that may no longer go out (a withdrawal goes out
+// at once, even when the same compile also adds lines); files no longer made are removed.
 func (c *compiler) write(files []file) error {
 	old := c.readManifest()
 	now := c.now()
@@ -492,7 +776,8 @@ func (c *compiler) write(files []file) error {
 			c.rep.Files[f.path] = FileReport{Exit: f.exit, Bytes: prev.Bytes, Entries: len(prev.Entries)}
 			continue
 		}
-		if f.path == InstructionsPath && prev != nil && onDisk && sameDay(prev.Written, today, c.loc()) && !subset(f.ids, prev.Entries) {
+		if f.path == InstructionsPath && prev != nil && onDisk && sameDay(prev.Written, today, c.loc()) && !subset(f.ids, prev.Entries) &&
+			!c.stale(prev.Entries) {
 			next.Files[f.path] = prev // once a day (H1 restarts the assistant on a change); withdrawals are not held back
 			c.rep.Deferred = true
 			c.rep.Files[f.path] = FileReport{Exit: f.exit, Bytes: prev.Bytes, Entries: len(prev.Entries)}
@@ -560,6 +845,17 @@ func (c *compiler) write(files []file) error {
 	}
 	b, _ := json.MarshalIndent(next, "", " ")
 	return writeFile(filepath.Join(c.o.Dir, ManifestPath), b)
+}
+
+// stale: one of ids (what a file out there carries) is gone or may no longer go out (wrong, deleted, sensitive, not
+// stable any more). Before 0.2.0-beta.38 such a file waited for the next day when the same compile also added a line.
+func (c *compiler) stale(ids []string) bool {
+	for _, id := range ids {
+		if e := c.st.Entries[id]; e == nil || !c.usable(e) {
+			return true
+		}
+	}
+	return false
 }
 
 func sameDay(written, today string, loc *time.Location) bool {

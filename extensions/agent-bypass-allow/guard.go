@@ -1,11 +1,14 @@
 package main
 
 import (
+	"cmp"
+	"os"
 	"path"
 	"regexp"
 	"slices"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // The floor: Bash commands that stay with a person even in bypassPermissions mode, because they delete or overwrite
@@ -133,7 +136,8 @@ func personOnly(cmd string) string { return (&guard{}).personOnly(cmd) }
 type guard struct {
 	allowDestructive bool   // the setting: deletions and overwrites go through (not disk formatting)
 	roots            *roots // where scratch targets may be; nil: nowhere
-	cwd              string // the session's working directory
+	cwd              string // the command's working directory
+	inElsewhere      bool   // true while checking a nested command that runs elsewhere (ssh, docker...)
 
 	sv  *shellVars // the command string being read
 	seg int        // the segment being read in it
@@ -144,7 +148,21 @@ type guard struct {
 
 // newGuard is the guard for a session in cwd.
 func newGuard(cwd string, allowDestructive bool) *guard {
-	return &guard{allowDestructive: allowDestructive, roots: scratchRoots(cwd), cwd: cwd}
+	return newGuardWithWorkspaces(cwd, nil, allowDestructive)
+}
+
+func newGuardWithWorkspaces(cwd string, workspaces []string, allowDestructive bool) *guard {
+	return newGuardForCommand(cwd, workspaces, "", allowDestructive)
+}
+
+// newGuardForCommand builds scratch roots from the session's cwd and workspaces, while resolving
+// relative command targets against cmdCwd when the tool call specifies a separate working directory.
+func newGuardForCommand(sessionCwd string, workspaces []string, cmdCwd string, allowDestructive bool) *guard {
+	return &guard{
+		allowDestructive: allowDestructive,
+		roots:            scratchRootsWithWorkspaces(sessionCwd, workspaces),
+		cwd:              cmp.Or(cmdCwd, sessionCwd),
+	}
 }
 
 // personOnly says why cmd must stay with a person ("" when it need not).
@@ -183,10 +201,22 @@ func (g *guard) stays(why string) string {
 	return why
 }
 
+const (
+	maxNestDepth  = 3
+	tooDeepReason = "unclear: command nesting too deep"
+)
+
 func (g *guard) personOnlyDepth(cmd string, depth int) string {
-	all, _ := scan(cmd)
-	for _, words := range all {
-		for _, w := range words {
+	if depth > maxNestDepth {
+		return tooDeepReason
+	}
+	if evaluatedZshExpansion(stripHeredocsWith(cmd, true)) {
+		return "unclear: evaluated zsh parameter expansion"
+	}
+	stripped := stripHeredocs(cmd)
+	full, redirects, tail := scanFull(stripped)
+	for _, s := range full {
+		for _, w := range s.words {
 			if !sqlClients[progName(w)] {
 				continue
 			}
@@ -200,11 +230,19 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 			}
 		}
 	}
-	stripped := stripHeredocs(cmd)
-	full, redirects, tail := scanFull(stripped)
 	sv, seg := g.sv, g.seg
 	defer func() { g.sv, g.seg = sv, seg }()
-	g.sv = readVars(stripped, full, tail, g.cwd, depth == 0)
+	var inheritedProt []string
+	var inheritedUnknown bool
+	if depth > 0 && !g.inElsewhere {
+		if sv != nil {
+			inheritedProt = sv.protCwds
+			inheritedUnknown = sv.protUnknown
+		} else if g.cwd != "" {
+			inheritedProt = []string{g.cwd}
+		}
+	}
+	g.sv = readVarsWithProtected(stripped, full, tail, g.cwd, depth == 0, inheritedProt, inheritedUnknown)
 	for _, r := range redirects {
 		g.seg = r.seg
 		if g.quickScratch(r.target) {
@@ -225,12 +263,31 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 		if why := g.segmentPersonOnly(kept, depth); why != "" {
 			return why
 		}
-		if depth >= 3 {
-			continue
-		}
-		shell, ssh := false, false
+		shell, ssh, cmdShell, envSplit := false, false, false, false
+		first, wrapped := true, false
 		for i, w := range kept {
+			if first && strings.Contains(w, "=") && !strings.HasPrefix(w, "-") {
+				continue
+			}
+			program := first || wrapped
+			first = false
 			b := progName(w)
+			if program {
+				if shells[b] && !sshClients[b] {
+					cmdShell = true
+				}
+				if (b == "sudo" || b == "doas") && sudoShell(kept[i+1:]) {
+					cmdShell = true
+				}
+				for _, n := range globMatches(b) {
+					if shells[n] && !sshClients[n] {
+						cmdShell = true
+					}
+				}
+			}
+			if wrappers[w] || (program && wrappers[b]) || (program && runners[b] && has(kept[i+1:], "run")) {
+				wrapped = true
+			}
 			ssh = ssh || sshClients[b]
 			shell = shell || shells[b] || ((b == "sudo" || b == "doas") && sudoShell(kept[i+1:]))
 			for _, n := range globMatches(b) {
@@ -239,8 +296,9 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 			}
 			if b == "env" {
 				for _, a := range kept[i+1:] {
-					if a == "-S" || a == "--split-string" || strings.HasPrefix(a, "-S") || strings.HasPrefix(a, "--split-string=") {
+					if a == "-S" || longOpt(a, "--split-string") || (!strings.HasPrefix(a, "--") && strings.HasPrefix(a, "-") && strings.ContainsRune(a[1:], 'S')) {
 						shell = true
+						envSplit = true
 						break
 					}
 				}
@@ -253,7 +311,7 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 				}
 			}
 		}
-		for _, w := range kept {
+		for i, w := range kept {
 			if ssh {
 				if command, ok := sshOptionCommand(w); ok {
 					if why := g.nested(kept, command, depth+1); why != "" {
@@ -263,29 +321,77 @@ func (g *guard) personOnlyDepth(cmd string, depth int) string {
 				}
 			}
 			sub := strings.Contains(w, "$(") || strings.Contains(w, "`")
-			if sub || (shell && strings.ContainsAny(w, " \t\n;&|()<>")) {
-				target := w
-				if shell {
+			if sub {
+				if why := g.nested(kept, w, depth+1); why != "" {
+					return why
+				}
+			}
+			target, explicitCmd := shellCommandTarget(w, i, kept, cmdShell, envSplit)
+			if shell && (explicitCmd || sub || strings.ContainsAny(w, " \t\n;&|()<>") || strings.Contains(w, `\_`)) {
+				if !explicitCmd {
+					target = w
 					switch {
-					case strings.HasPrefix(target, "-S"):
-						target = strings.TrimPrefix(target, "-S")
-					case strings.HasPrefix(target, "--split-string="):
-						target = strings.TrimPrefix(target, "--split-string=")
+					case longOpt(target, "--split-string") && strings.Contains(target, "="):
+						_, target, _ = strings.Cut(target, "=")
 					case strings.HasPrefix(target, "--command="):
 						target = strings.TrimPrefix(target, "--command=")
-					case strings.HasPrefix(target, "-c"):
-						target = strings.TrimPrefix(target, "-c")
-					case strings.HasPrefix(target, "-qc"):
-						target = strings.TrimPrefix(target, "-qc")
+					default:
+						if rest, ok := shortFlagAttached(target, 'S'); ok {
+							target = rest
+						} else if rest, ok := shortFlagAttached(target, 'c'); ok {
+							target = rest
+						}
 					}
 				}
-				if why := g.nested(kept, target, depth+1); why != "" {
-					return why
+				if strings.Contains(target, `\_`) {
+					target = strings.ReplaceAll(target, `\_`, " ")
+				}
+				if target != w || !sub {
+					if why := g.nested(kept, target, depth+1); why != "" {
+						return why
+					}
 				}
 			}
 		}
 	}
 	return ""
+}
+
+// shellCommandTarget extracts an explicit single-word or inline command argument for a non-ssh shell (-c / --command)
+// or env -S / --split-string, so single-word commands (such as sh -c passwd or bash -c '{rm,-rf,/}') are still
+// inspected and fail closed when nesting exceeds maxNestDepth.
+func shellCommandTarget(w string, i int, kept []string, cmdShell, envSplit bool) (string, bool) {
+	if envSplit {
+		if longOpt(w, "--split-string") && strings.Contains(w, "=") {
+			_, v, _ := strings.Cut(w, "=")
+			return v, v != ""
+		}
+		if rest, ok := shortFlagAttached(w, 'S'); ok {
+			return rest, true
+		}
+		if i > 0 {
+			prev := kept[i-1]
+			if prev == "-S" || (longOpt(prev, "--split-string") && !strings.Contains(prev, "=")) ||
+				(!strings.HasPrefix(prev, "--") && strings.HasPrefix(prev, "-") && strings.HasSuffix(prev, "S")) {
+				return w, true
+			}
+		}
+	}
+	if cmdShell {
+		if v, ok := strings.CutPrefix(w, "--command="); ok {
+			return v, v != ""
+		}
+		if rest, ok := shortFlagAttached(w, 'c'); ok {
+			return rest, true
+		}
+		if i > 0 {
+			prev := kept[i-1]
+			if prev == "--command" || (!strings.HasPrefix(prev, "--") && strings.HasPrefix(prev, "-") && strings.HasSuffix(prev, "c")) {
+				return w, true
+			}
+		}
+	}
+	return "", false
 }
 
 // sshClients pass -o options to ssh's config parser.
@@ -384,12 +490,25 @@ func sftpServerCommands(args []string) []string {
 // nested reads a command string that the words run: with no scratch targets when it runs elsewhere (ssh host '…',
 // docker exec c sh -c '…').
 func (g *guard) nested(words []string, cmd string, depth int) string {
+	if depth > maxNestDepth {
+		return tooDeepReason
+	}
 	for _, w := range words {
 		if elsewhere[progName(w)] {
-			roots := g.roots
-			g.roots = nil
-			defer func() { g.roots = roots }()
+			roots, prevElsewhere := g.roots, g.inElsewhere
+			g.roots, g.inElsewhere = nil, true
+			defer func() { g.roots, g.inElsewhere = roots, prevElsewhere }()
 			break
+		}
+	}
+	if !g.inElsewhere && g.sv != nil {
+		home, _ := os.UserHomeDir()
+		extraCwds, extraUnknown := wrapperCwdChanges(words, resolve(home, true))
+		if len(extraCwds) > 0 || extraUnknown {
+			prevCwds, prevUnknown := g.sv.protCwds, g.sv.protUnknown
+			g.sv.protCwds = append(append([]string(nil), prevCwds...), extraCwds...)
+			g.sv.protUnknown = prevUnknown || extraUnknown
+			defer func() { g.sv.protCwds, g.sv.protUnknown = prevCwds, prevUnknown }()
 		}
 	}
 	return g.personOnlyDepth(cmd, depth)
@@ -401,6 +520,13 @@ func (g *guard) nested(words []string, cmd string, depth int) string {
 // the command's words end on (a quote or a backslash-newline carries them on), and a shell anywhere in those words
 // keeps the bodies. Where the scan is unsure it finds no heredoc, so a body is read as commands: that asks more.
 func stripHeredocs(cmd string) string {
+	return stripHeredocsWith(cmd, false)
+}
+
+func stripHeredocsWith(cmd string, quotedOnly bool) string {
+	if !strings.Contains(cmd, "<<") {
+		return cmd
+	}
 	lines := strings.Split(cmd, "\n")
 	var out []string
 	var st heredocScan
@@ -413,6 +539,10 @@ func stripHeredocs(cmd string) string {
 		pending = append(pending, st.line(line)...)
 		if st.single || st.double || st.cont || st.inside(pending) {
 			continue // the command goes on to the next line, and the bodies start after the line it ends on
+		}
+		if len(pending) == 0 {
+			words = nil
+			continue
 		}
 		keep := false
 		segs, _ := scan(strings.Join(words, "\n"))
@@ -449,7 +579,7 @@ func stripHeredocs(cmd string) string {
 					out = append(out, lines[i])
 					break
 				}
-				if keep {
+				if keep || (quotedOnly && !h.quoted) {
 					out = append(out, lines[i])
 				}
 			}
@@ -462,9 +592,10 @@ func stripHeredocs(cmd string) string {
 // heredocStart is a heredoc operator: its delimiter, whether it was <<- (leading tabs stripped from the body), and
 // how many command substitutions it is inside.
 type heredocStart struct {
-	delim string
-	dash  bool
-	depth int
+	delim  string
+	dash   bool
+	depth  int
+	quoted bool
 }
 
 // heredocScan reads a command line by line for heredoc operators, carrying quotes, backticks and arithmetic across
@@ -592,7 +723,9 @@ func heredocWord(rs []rune, i int) (int, heredocStart) {
 			quote = 0
 		case quote == 0 && (r == '\'' || r == '"'):
 			quote = r
+			h.quoted = true
 		case r == '\\' && quote != '\'':
+			h.quoted = true
 			if i+1 == len(rs) {
 				unsure = true // a backslash-newline: the word goes on on the next line
 				break
@@ -712,17 +845,23 @@ func scanFull(cmd string) (segs []segment, redirects []redirect, tail string) {
 			} else {
 				cur.WriteRune(r)
 			}
+		case double:
+			if r == '"' {
+				double = false
+			} else if r == '\\' && i+1 < len(rs) && strings.ContainsRune("$`\"\\\n", rs[i+1]) {
+				i++
+				if rs[i] != '\n' {
+					cur.WriteRune(rs[i])
+					inWord = true
+				}
+			} else {
+				cur.WriteRune(r)
+			}
 		case r == '\\' && i+1 < len(rs):
 			i++
 			if rs[i] != '\n' {
 				cur.WriteRune(rs[i])
 				inWord = true
-			}
-		case double:
-			if r == '"' {
-				double = false
-			} else {
-				cur.WriteRune(r)
 			}
 		case r == '#' && !inWord && (i == 0 || strings.ContainsRune(" \t\r\n;&|(<>", rs[i-1])):
 			// a comment, to the end of the line: decoding $'…' must not leave a quote in it open. Not after ) or a
@@ -758,6 +897,18 @@ func scanFull(cmd string) (segs []segment, redirects []redirect, tail string) {
 				// part of a word: brace expansion makes it several words ({rm,-rf,x} is rm -rf x)
 				cur.WriteRune(map[rune]rune{'{': braceOpen, '}': braceClose}[r])
 				inWord = true
+			}
+		case r == '(' && param > 0 && i > 0 && rs[i-1] == '{':
+			end := i + 1
+			for end < len(rs) && (rs[end] >= 'a' && rs[end] <= 'z' || rs[end] >= 'A' && rs[end] <= 'Z') {
+				end++
+			}
+			if end < len(rs) && rs[end] == ')' {
+				cur.WriteString(string(rs[i : end+1]))
+				i = end
+			} else {
+				endSegment()
+				sep.WriteRune(r)
 			}
 		case r == ',' && !single && !double:
 			cur.WriteRune(braceComma)
@@ -911,14 +1062,39 @@ var runners = map[string]bool{"uv": true, "poetry": true, "pdm": true, "pipenv":
 // and fold it the Unicode way, so RM, /bin/Rm and ſhred (a long s) run rm and shred: each letter becomes the lower
 // case of the smallest letter it folds with (on a case-sensitive file system that only asks more). The shell's own
 // builtins and keywords (cd, if) are matched as written.
-func progName(w string) string {
-	return strings.Map(func(r rune) rune {
-		m := r
-		for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
-			m = min(m, f)
+func foldRune(r rune) rune {
+	if r < utf8.RuneSelf {
+		if r >= 'A' && r <= 'Z' {
+			return r + ('a' - 'A')
 		}
-		return unicode.ToLower(m)
-	}, path.Base(w))
+		return r
+	}
+	m := r
+	for f := unicode.SimpleFold(r); f != r; f = unicode.SimpleFold(f) {
+		m = min(m, f)
+	}
+	return unicode.ToLower(m)
+}
+
+func progName(w string) string {
+	base := path.Base(w)
+	if len(base) > 64 && !strings.ContainsAny(base, "*?[") {
+		// All known command names are short except mkfs* prefixes; fold only the first 4 runes to check mkfs.
+		var prefix [4]rune
+		n := 0
+		for _, r := range base {
+			prefix[n] = foldRune(r)
+			n++
+			if n == 4 {
+				break
+			}
+		}
+		if n == 4 && prefix[0] == 'm' && prefix[1] == 'k' && prefix[2] == 'f' && prefix[3] == 's' {
+			return "mkfs"
+		}
+		return ""
+	}
+	return strings.Map(foldRune, base)
 }
 
 // segmentPersonOnly looks at one simple command. A word counts as a program when it comes first (after NAME=value
@@ -932,8 +1108,11 @@ func (g *guard) segmentPersonOnly(words []string, depth int) string {
 // segmentFrom is segmentPersonOnly for words that come after pre in the simple command (a globbed program's).
 func (g *guard) segmentFrom(pre, words []string, depth int) string {
 	first, wrapped := len(pre) == 0, len(pre) > 0
+	if dynamicExecutable(words) {
+		return "unclear: dynamically selected executable"
+	}
 	for i, w := range words {
-		if name, val, ok := strings.Cut(w, "="); ok && (first || wrapped) && commandVars[strings.TrimSuffix(name, "+")] && depth < 3 {
+		if name, val, ok := strings.Cut(w, "="); ok && (first || wrapped) && commandVars[strings.TrimSuffix(name, "+")] && strings.TrimSpace(val) != "" {
 			if why := g.personOnlyDepth(val, depth+1); why != "" {
 				return why
 			}
@@ -969,6 +1148,9 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 		rest := words[i+1:]
 		if why, ok := alwaysPerson[name]; ok {
 			r := why + ": " + name
+			if why == "deletion" && g.protectedTargetsWithContext(before, rest, false) {
+				return "protected deletion target: " + name
+			}
 			if name == "dd" && ddDisk(rest) {
 				return "disk overwrite: dd"
 			}
@@ -995,7 +1177,7 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 			return g.stays(ghPersonOnly(rest))
 		case "export", "declare", "typeset", "readonly", "local": // export GIT_SSH_COMMAND='…'; git fetch
 			for _, a := range rest {
-				if v, val, ok := strings.Cut(a, "="); ok && commandVars[strings.TrimSuffix(v, "+")] && depth < 3 {
+				if v, val, ok := strings.Cut(a, "="); ok && commandVars[strings.TrimSuffix(v, "+")] && strings.TrimSpace(val) != "" {
 					if why := g.personOnlyDepth(val, depth+1); why != "" {
 						return why
 					}
@@ -1003,6 +1185,10 @@ func (g *guard) segmentFrom(pre, words []string, depth int) string {
 			}
 		case "find": // what -exec runs is checked as the words after it
 			if has(rest, "-delete") {
+				starts, followLinks := parseFindStarts(rest)
+				if g.protectedTargetsWithContext(before, append([]string{"--"}, starts...), followLinks) {
+					return "protected deletion target: find -delete"
+				}
 				why = "deletion: find -delete"
 			}
 			if f := findOutputs(rest); f != "" {
@@ -1114,7 +1300,7 @@ func (g *guard) gitPersonOnly(args []string, depth int) string {
 	aliases := map[string]string{}
 	for i < len(args) && strings.HasPrefix(args[i], "-") {
 		if gitValueOpts[args[i]] && i+1 < len(args) {
-			if args[i] == "-c" && depth < 3 {
+			if args[i] == "-c" {
 				if why := g.gitConfigPersonOnly(args[i+1], depth); why != "" {
 					return why
 				}
@@ -1123,7 +1309,7 @@ func (g *guard) gitPersonOnly(args []string, depth int) string {
 				gitAlias(aliases, args[i+1], args[i] == "--config-env")
 			}
 			i++
-		} else if strings.HasPrefix(args[i], "-c") && depth < 3 {
+		} else if strings.HasPrefix(args[i], "-c") {
 			if why := g.gitConfigPersonOnly(strings.TrimPrefix(args[i], "-c"), depth); why != "" {
 				return why
 			}
@@ -1141,7 +1327,7 @@ func (g *guard) gitPersonOnly(args []string, depth int) string {
 	// commands, so the subcommand as written is read too
 	if val, ok := aliases[strings.ToLower(sub)]; ok {
 		segs, _ := scan(val)
-		if val == "" || len(segs) != 1 || depth >= 3 {
+		if val == "" || len(segs) != 1 || depth >= maxNestDepth {
 			return "git alias: " + sub
 		}
 		expanded := append(append(append([]string{}, args[:i]...), segs[0]...), rest...)
@@ -1155,7 +1341,7 @@ func (g *guard) gitPersonOnly(args []string, depth int) string {
 			if a == "run" && k+1 < len(rest) {
 				cmdArgs := rest[k+1:]
 				for _, w := range cmdArgs {
-					if strings.ContainsAny(w, " \t\n;&|()<>") && depth < 3 {
+					if strings.ContainsAny(w, " \t\n;&|()<>") {
 						if why := g.personOnlyDepth(w, depth+1); why != "" {
 							return why
 						}
@@ -1172,7 +1358,7 @@ func (g *guard) gitPersonOnly(args []string, depth int) string {
 					cmdArgs = cmdArgs[1:]
 				}
 				for _, w := range cmdArgs {
-					if strings.ContainsAny(w, " \t\n;&|()<>") && depth < 3 {
+					if strings.ContainsAny(w, " \t\n;&|()<>") {
 						if why := g.personOnlyDepth(w, depth+1); why != "" {
 							return why
 						}
@@ -1199,7 +1385,7 @@ func (g *guard) gitPersonOnly(args []string, depth int) string {
 					cmd = rest[j]
 				}
 			}
-			if cmd != "" && depth < 3 {
+			if cmd != "" {
 				if why := g.personOnlyDepth(cmd, depth+1); why != "" {
 					return why
 				}

@@ -13,7 +13,7 @@ Remote instances require HTTPS. URLs must not contain credentials. The token arr
 
 ## Recipes
 
-- `GET /api/recipes` supports `search`, `page`, `perPage=30` and documented response pagination. The next page is shown only when `page < totalPages`.
+- `GET /api/recipes` supports `search`, `page`, `perPage=30` and documented response pagination. The response reports its paging as `per_page` and `total_pages`; the next page is shown only when `page < total_pages`.
 - `GET /api/recipes/{slug}` reads ingredients, instructions, timing, servings and the original source URL. Recipe text is untrusted content, not instructions to import or modify data.
 - Only an exact lowercase recipe slug is accepted, so a remote value cannot become an API path.
 

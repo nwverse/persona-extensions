@@ -69,7 +69,7 @@ func TestProbeUsesCLIPlanAndBackendReachability(t *testing.T) {
 	if got := sessionItems(st.Scans["local"]); len(got) != 0 {
 		t.Fatalf("session items with unreachable backend: %+v", got)
 	}
-	if !strings.Contains(st.Scans["local"].Sessions.Note, "备份后端连不上") {
+	if !strings.Contains(st.Scans["local"].Sessions.Note, "网盘连不上") {
 		t.Fatalf("note: %q", st.Scans["local"].Sessions.Note)
 	}
 }
@@ -104,7 +104,7 @@ func TestSessionArchiveRunsOnceAndAttributesReport(t *testing.T) {
 	for _, r := range rec.Items {
 		switch r.ID {
 		case "sessions-cold-claude":
-			if r.FreedBytes != 1228800 || !strings.Contains(r.Note, "被引用") {
+			if r.FreedBytes != 1228800 || !strings.Contains(r.Note, "还在用") {
 				t.Fatalf("claude result: %+v", r)
 			}
 		case "sessions-cold-codex":
@@ -134,7 +134,7 @@ func TestSessionArchiveRefusalIsAnError(t *testing.T) {
 			if err == nil || rec != nil || len(st.History) != 0 {
 				t.Fatalf("err=%v rec=%+v history=%d", err, rec, len(st.History))
 			}
-			if name == "backend" && !strings.Contains(err.Error(), "备份后端连不上") {
+			if name == "backend" && !strings.Contains(err.Error(), "网盘连不上") {
 				t.Fatalf("err = %v", err)
 			}
 		})
@@ -209,7 +209,7 @@ func TestSessionArchiveScriptKeepsFilesWhenCLIRefuses(t *testing.T) {
 
 	// Without any CLI the script reports it and still touches nothing.
 	cmd = exec.Command("sh", "-c", BuildItemCleanScript(item, nil))
-	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin"}
+	cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin", "DKL_CANDIDATES=" + filepath.Join(home, "no-such-cli")}
 	out, _ = cmd.CombinedOutput()
 	if o := parseSessionRun(string(out)); o.exitCode != cliExitMissing {
 		t.Fatalf("missing CLI outcome: %+v\n%s", o, out)
@@ -274,7 +274,7 @@ func TestColdSessionsNeedExplicitSelection(t *testing.T) {
 	if strings.Join(ids, ",") != "sessions-cold-claude,sessions-cold-codex,sessions-cold-other" && strings.Join(ids, ",") != "sessions-cold-codex,sessions-cold-claude,sessions-cold-other" {
 		t.Fatalf("record items: %v", ids)
 	}
-	if last := rec.Items[len(rec.Items)-1]; last.FreedBytes != 2048 || !strings.Contains(last.Note, "1 个其他 Agent") {
+	if last := rec.Items[len(rec.Items)-1]; last.FreedBytes != 2048 || !strings.Contains(last.Note, "1 个其他 AI 助手") {
 		t.Fatalf("other agents: %+v", last)
 	}
 }
@@ -293,9 +293,10 @@ func TestColdSessionDaysPassedToCLI(t *testing.T) {
 }
 
 func TestResolveCLIScriptLocations(t *testing.T) {
+	root := t.TempDir() // the machine-wide locations, empty: the machine running the test does not count (#592)
 	resolve := func(home string, env ...string) string {
 		t.Helper()
-		cmd := exec.Command("/bin/sh", "-c", resolveCLIScript+"\nprintf '%s' \"$DKL\"")
+		cmd := exec.Command("/bin/sh", "-c", hermetic(resolveCLIScript, root)+"\nprintf '%s' \"$DKL\"")
 		cmd.Env = append([]string{"HOME=" + home, "PATH=/nonexistent"}, env...)
 		out, err := cmd.Output()
 		if err != nil {
@@ -304,8 +305,19 @@ func TestResolveCLIScriptLocations(t *testing.T) {
 		return string(out)
 	}
 	home := t.TempDir()
-	if got := resolve(home); got != "" && !strings.HasPrefix(got, "/usr/local/bin/") && !strings.HasPrefix(got, "/opt/homebrew/") && !strings.HasPrefix(got, "/Applications/") {
+	if got := resolve(home); got != "" {
 		t.Fatalf("empty home resolved %q", got)
+	}
+	// A Homebrew keg found at a fixed prefix (no PATH needed), until the home has its own.
+	keg := filepath.Join(root, "home", "linuxbrew", ".linuxbrew", "opt", "disklessly-cli", "bin", "disklessly")
+	if err := os.MkdirAll(filepath.Dir(keg), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keg, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := resolve(home); got != keg {
+		t.Fatalf("keg: got %q", got)
 	}
 	local := filepath.Join(home, ".local", "bin", "disklessly")
 	if err := os.MkdirAll(filepath.Dir(local), 0o755); err != nil {

@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "openlibrary",
   "name": "Open Library 图书发现",
-  "version": "0.1.1",
+  "version": "0.1.5",
   "icon": "assets/icon.png",
   "description": "按书名、作者或 ISBN 搜索图书，查看出版信息、作品简介和 Open Library 阅读入口。内容由 hub 通过公开 API 获取，无需账号。",
   "publisher": "nwverse",
@@ -20,7 +20,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/openlibrary.mjs",
-      "sha256": "cfcd5c598c9f8634d744aee08611b4f206c2d829a6611663768650242c1f015b"
+      "sha256": "03b69f097901379db91c43a998d2dbda3543c277e7fb6f8ec5808d34e4ac7225"
     }
   },
   "contributes": {
@@ -42,7 +42,7 @@
     ],
     "ui": [
       {
-        "id": "discover",
+        "id": "openlibrary",
         "title": "发现图书",
         "placement": "nav_page",
         "icon": "doc"

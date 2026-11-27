@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "enkeep-memory",
   "name": "enkeep 记忆",
-  "version": "0.2.0-beta.22",
+  "version": "0.2.7",
   "icon": "assets/icon.png",
   "description": "从你在 Persona 里的对话、Agent 会话、卡片问答和消息来源里，整理你和 AI 怎么打交道、AI 怎么用工具、你的默认判断和做事方式、你的人和事、你自己，以及和你有来往的人；每条都带出处，你可以改、删、点对错。",
   "publisher": "nwverse",
@@ -12,7 +12,7 @@
     "memory"
   ],
   "engines": {
-    "persona": ">=202611121555",
+    "persona": ">=202611122324",
     "extension_protocol": 1
   },
   "runtime": {
@@ -65,7 +65,8 @@
         "id": "enkeep-memory-kb",
         "subscribe": [
           "kb.changed",
-          "kb.forgotten"
+          "kb.forgotten",
+          "assistant.entries.changed"
         ]
       }
     ],
@@ -86,6 +87,35 @@
         "kind": "inbox_context",
         "file": "inbox/context.md",
         "never_quote": "inbox/never_quote.txt"
+      }
+    ],
+    "memory_sources": [
+      {
+        "id": "memory",
+        "name": "enkeep 记忆"
+      }
+    ],
+    "connectors": [
+      {
+        "id": "enkeep",
+        "name": "enkeep 记忆",
+        "capabilities": [
+          "status",
+          "tools",
+          "actions"
+        ],
+        "agent_tools": [
+          "enkeep_rerun_status",
+          "enkeep_resettle_preview",
+          "enkeep_seed_status",
+          "enkeep_seed_preview",
+          "enkeep_overview_status",
+          "enkeep_rerun",
+          "enkeep_resettle",
+          "enkeep_seed_import",
+          "enkeep_mark_wrong",
+          "enkeep_overview_run"
+        ]
       }
     ]
   },
@@ -240,8 +270,8 @@
       },
       "privacy_keywords": {
         "type": "array",
-        "title": "隐私词",
-        "description": "含这些词的消息不读、不发给模型",
+        "title": "不读名单",
+        "description": "含这些词的消息不读、不发给模型（敏感类别现在都收集并打标签，按场景用；真不想让它读的，写在这里）",
         "items": {
           "type": "string"
         }
@@ -328,6 +358,69 @@
         "default": 30,
         "minimum": 7,
         "maximum": 365
+      },
+      "resident_bytes": {
+        "type": "integer",
+        "title": "常驻记忆字节数",
+        "description": "每轮都带上的那几条记忆按这个字节数挑。hub 给扩展的常驻空间变大后再调大",
+        "default": 1400,
+        "minimum": 800,
+        "maximum": 8192
+      },
+      "fast_minutes": {
+        "type": "integer",
+        "title": "纠正快通道间隔（分钟）",
+        "description": "每隔这么久看一眼今天和助手的对话，用户纠正了助手就马上整理进记忆；0 关闭",
+        "default": 10,
+        "minimum": 0,
+        "maximum": 120
+      },
+      "model_route": {
+        "type": "string",
+        "title": "模型路线",
+        "description": "chain：把首选模型和按这次调用长短选的备用模型一起交给 hub 按顺序试，前一个失败（报错、超时、返回空、格式不合规、拒答、暂停）就换下一个；hub 不支持时自动按 purpose 走。purpose：和以前一样，全部用 hub 模型设置里本插件用途的模型",
+        "default": "chain",
+        "enum": [
+          "chain",
+          "purpose"
+        ]
+      },
+      "model_primary": {
+        "type": "array",
+        "title": "首选模型",
+        "description": "按顺序先试的模型（模型 id，填连接上快而便宜的模型）；空着就直接按长短用备用模型",
+        "items": {
+          "type": "string"
+        },
+        "default": []
+      },
+      "model_long": {
+        "type": "string",
+        "title": "长调用的备用模型",
+        "description": "首选模型都没答出来、这次调用估算超过分界时用",
+        "default": "claude-sonnet-5-5"
+      },
+      "model_short": {
+        "type": "string",
+        "title": "短调用的备用模型",
+        "description": "首选模型都没答出来、这次调用估算不超过分界时用",
+        "default": "claude-haiku-5-5"
+      },
+      "model_long_above": {
+        "type": "integer",
+        "title": "长短分界",
+        "description": "估算 = 输入（系统提示、正文、答案格式；英文每 4 字节算 1、其他每字算 1）+ 本次给答案留的长度（max_tokens）。超过它算长调用",
+        "default": 16000,
+        "minimum": 1000,
+        "maximum": 1000000
+      },
+      "model_timeout": {
+        "type": "integer",
+        "title": "每个候选模型的超时（秒）",
+        "description": "链上每个模型一次尝试（含格式不对时的第二次）最多等这么久，超时就换下一个；整次调用最长 600 秒",
+        "default": 180,
+        "minimum": 10,
+        "maximum": 300
       }
     }
   },
@@ -341,7 +434,9 @@
       "todos.read",
       "notify",
       "assistant.ask",
-      "assistant.memory.read"
+      "assistant.memory.read",
+      "assistant.entries.read",
+      "sent.read"
     ]
   }
 }

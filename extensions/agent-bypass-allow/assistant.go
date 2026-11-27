@@ -57,6 +57,9 @@ func isAssistantWriteTool(name string) bool {
 // So an agent that cd's into the assistant's directory, or a process started from an assistant's shell (which
 // inherits the variable) in some other directory, is not one.
 func isAssistantSession(req hookInput, getenv func(string) string) bool {
+	if req.isAgy {
+		return isAgyAssistantSession(req, getenv)
+	}
 	if getenv("PERSONA_ASSISTANT") != "1" && getenv("JARVIS_ASSISTANT") != "1" {
 		return false
 	}
@@ -93,7 +96,7 @@ func refuseAssistantWrite(a hookArgs, req hookInput, o options, now time.Time) (
 	if dir == "" {
 		return "not in a listed assistant directory: " + req.ToolInput.FilePath, ""
 	}
-	if r := matchingRule(userRules(a.ConfigDir, req.Cwd), req.ToolName, ""); r != "" {
+	if r := matchingRule(userRulesFor(a, req), req.ToolName, ""); r != "" {
 		return "a rule of the user's: " + r, ""
 	}
 	return "", "Persona assistant conversation, in " + dir
@@ -147,16 +150,20 @@ func danglingLink(p string) bool {
 }
 
 // protectedAssistantPath says whether rel (inside a listed directory) is one a conversation must not write without
-// asking: its Claude settings, skills and hooks (.claude), its repository's hooks and config (.git), its MCP servers
-// (.mcp.json). Letter case does not count: macOS's file systems ignore it.
+// asking: its Claude or Antigravity settings, skills and hooks (.claude, .gemini, .agents, .agent, _agents, _agent,
+// hooks.json), its repository's hooks and config (.git), its MCP servers (.mcp.json, mcp_config.json). Letter case does
+// not count: macOS's file systems ignore it.
 func protectedAssistantPath(rel string) bool {
 	parts := strings.Split(rel, "/")
 	for _, part := range parts {
-		if strings.EqualFold(part, ".claude") || strings.EqualFold(part, ".git") {
-			return true
+		for _, blocked := range []string{".claude", ".git", ".gemini", ".agents", ".agent", "_agents", "_agent"} {
+			if strings.EqualFold(part, blocked) {
+				return true
+			}
 		}
 	}
-	return strings.EqualFold(parts[len(parts)-1], ".mcp.json")
+	last := parts[len(parts)-1]
+	return strings.EqualFold(last, ".mcp.json") || strings.EqualFold(last, "hooks.json") || strings.EqualFold(last, "mcp_config.json")
 }
 
 // env is how the hook reads its environment: os.Getenv, or a fake in tests.

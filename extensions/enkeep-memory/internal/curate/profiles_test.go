@@ -154,11 +154,16 @@ func TestCardProfileMapping(t *testing.T) {
 			t.Fatalf("%s written: %s", never, all)
 		}
 	}
-	// K13: the sensitive category only when the user turned it on.
+	// K13 decides nothing now; K22: the category only when the user let it into the resident exits.
 	c.St.S.Switches[entry.K13Sensitive+"."+entry.SensHealth] = entry.SwitchSetting{Value: "on", By: "user"}
 	prof, _ = c.cardProfile(c.PersonCard(pA, "2026-11-08"), true)
+	if slices.Contains(texts(prof.Facts), "sensitive-line") {
+		t.Fatalf("K13 on opened a category: %q", texts(prof.Facts))
+	}
+	c.St.S.Switches[entry.K22Resident+"."+entry.CatHealth] = entry.SwitchSetting{Value: "on", By: "user"}
+	prof, _ = c.cardProfile(c.PersonCard(pA, "2026-11-08"), true)
 	if !slices.Contains(texts(prof.Facts), "sensitive-line") {
-		t.Fatalf("K13 on: %q", texts(prof.Facts))
+		t.Fatalf("K22 on: %q", texts(prof.Facts))
 	}
 	// K15 off: no inferences.
 	prof, _ = c.cardProfile(c.PersonCard(pA, "2026-11-08"), false)
@@ -232,6 +237,9 @@ func TestProfileBlockedUntilReleased(t *testing.T) {
 // The probe finds a hub with profiles; it writes nothing to the person. Until the privacy filter is released only
 // facts and commitments go out: evaluations and inferences stay in the plugin, never in the pinned facts either.
 func TestProfileProbeAndViewsHeld(t *testing.T) {
+	old := profileViewsReleased
+	profileViewsReleased = false // the held path: a build without the hub's privacy filter
+	t.Cleanup(func() { profileViewsReleased = old })
 	c := profileCard(t)
 	ctx := context.Background()
 	fx := c.Src.(*kbsrc.Fixture)

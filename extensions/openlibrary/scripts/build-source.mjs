@@ -53,7 +53,7 @@ const released = JSON.parse(releasedText);
 released.runtime.source.sha256 = "";
 await writeFile(bundle, bytes);
 const program = (await import(pathToFileURL(bundle).href + "?sha=" + digest(bytes))).default;
-if (program.id !== "openlibrary" || !program.init || !program.namespaces?.connector || !program.ui?.discover || program.fetch) throw new Error("incomplete default Program");
+if (program.id !== "openlibrary" || !program.init || !program.namespaces?.connector || !program.ui?.openlibrary || program.fetch) throw new Error("incomplete default Program");
 const source = { entry: "src/index.ts", bundle: "build/openlibrary.mjs", sha256: digest(bytes) };
 const runtimeSource = program.manifest?.runtime?.source;
 if (program.manifest?.runtime?.mode !== "deno" || program.manifest?.runtime?.command || runtimeSource?.entry !== source.entry || runtimeSource?.bundle !== source.bundle || runtimeSource?.sha256) throw new Error("Program manifest differs from source package");

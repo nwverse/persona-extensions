@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -23,8 +25,11 @@ func (a *app) readState(r *ext.UIRequest) pageState {
 	if r.DecodeState(&st) != nil {
 		st = pageState{}
 	}
+	st.City = strings.TrimSpace(st.City)
 	if st.City != "" {
-		if _, ok := cityByName(a.cities, st.City); !ok {
+		if c, ok := cityByName(a.cities, st.City); ok {
+			st.City = c.Name
+		} else {
 			st.City = ""
 		}
 	}
@@ -48,14 +53,22 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	defer cancel()
 	st := a.readState(r)
 	refresh := false
-	switch r.Action {
-	case "city":
-		if name := r.Values["city"]; name != "" {
-			if _, ok := cityByName(a.cities, name); ok {
-				st.City = name
+	switch {
+	case r.Action == "city":
+		if name := strings.TrimSpace(r.Values["city"]); name != "" {
+			if c, ok := cityByName(a.cities, name); ok {
+				st.City = c.Name
 			}
 		}
-	case "refresh":
+	case strings.HasPrefix(r.Action, "city:"):
+		if name := strings.TrimSpace(r.Values["city"]); name != "" {
+			if c, ok := cityByName(a.cities, name); ok {
+				st.City = c.Name
+			}
+		} else if idx, err := strconv.Atoi(strings.TrimPrefix(r.Action, "city:")); err == nil && idx >= 0 && idx < len(a.cities) {
+			st.City = a.cities[idx].Name
+		}
+	case r.Action == "refresh":
 		refresh = true
 	}
 	return &wire.ActionResult{View: a.page(ctx, r, st, refresh)}, nil
@@ -69,12 +82,31 @@ func button(title, id string) wire.Component {
 	return wire.Component{Type: wire.ComponentButton, Title: title, Action: &wire.Action{ID: id}}
 }
 
-// picker chooses the city when there are several: a segmented control, or a row each before UI version 2.
+const (
+	segmentedMaxChoices = 5
+	segmentedMaxRunes   = 12
+)
+
+// segmentedFits reports whether cities fit within wire.ComponentSegmented limits (2 to 5 choices, each label at most 12 runes).
+func segmentedFits(cities []City) bool {
+	if len(cities) < 2 || len(cities) > segmentedMaxChoices {
+		return false
+	}
+	for _, c := range cities {
+		if utf8.RuneCountInString(c.Name) > segmentedMaxRunes {
+			return false
+		}
+	}
+	return true
+}
+
+// picker chooses the city when there are several: a segmented control when UI version >= 2 and every city fits
+// segmented limits, or a row each otherwise.
 func (a *app) picker(r *ext.UIRequest, st pageState) wire.Section {
 	if len(a.cities) <= 1 {
 		return wire.Section{}
 	}
-	if r.UIVersion >= 2 {
+	if r.UIVersion >= 2 && segmentedFits(a.cities) {
 		seg := wire.Component{Type: wire.ComponentSegmented, Name: "city", Value: a.selected(st).Name, Action: &wire.Action{ID: "city"}}
 		for _, c := range a.cities {
 			seg.Choices = append(seg.Choices, wire.Choice{Value: c.Name, Title: c.Name})
@@ -82,8 +114,12 @@ func (a *app) picker(r *ext.UIRequest, st pageState) wire.Section {
 		return wire.Section{Items: []wire.Component{seg}}
 	}
 	sec := wire.Section{Title: "城市"}
-	for _, c := range a.cities {
-		it := wire.Component{Type: wire.ComponentRow, Title: c.Name, Action: &wire.Action{ID: "city", Values: map[string]string{"city": c.Name}}}
+	for i, c := range a.cities {
+		it := wire.Component{
+			Type:   wire.ComponentRow,
+			Title:  c.Name,
+			Action: &wire.Action{ID: fmt.Sprintf("city:%d", i), Values: map[string]string{"city": c.Name}},
+		}
 		if c.Name == a.selected(st).Name {
 			it.Badge = &wire.Badge{Text: "正在看", Tone: wire.TonePositive}
 		}
@@ -149,16 +185,19 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, refresh 
 // and today's high and low beside it.
 func (a *app) nowSection(c City, f forecast, u temperatureUnit, w windUnit) wire.Section {
 	cur := f.Current
-	desc, icon := wmo(cur.WeatherCode)
-	big := wire.Component{Type: wire.ComponentMetric, Label: "现在", Value: icon + " " + fmtTemp(cur.Temperature, u), Detail: desc}
+	desc, icon := wmoOptional(cur.WeatherCode)
+	big := wire.Component{Type: wire.ComponentMetric, Label: "现在", Value: icon + " " + tempText(cur.Temperature, u), Detail: desc}
 
 	stats := []wire.Stat{
-		{Label: "体感", Value: fmtTemp(cur.Apparent, u)},
-		{Label: "湿度", Value: fmt.Sprintf("%.0f%%", cur.Humidity)},
+		{Label: "体感", Value: tempText(cur.Apparent, u)},
+		{Label: "湿度", Value: percentText(cur.Humidity)},
 	}
-	if cur.WindSpeed > 0 {
-		stats = append(stats, wire.Stat{Label: windDir(cur.WindDirection), Value: fmtWind(cur.WindSpeed, w)})
-	} else {
+	switch {
+	case !cur.WindSpeed.OK:
+		stats = append(stats, wire.Stat{Label: "风", Value: "未知"})
+	case cur.WindSpeed.Value > 0:
+		stats = append(stats, wire.Stat{Label: windDirLabel(cur.WindDirection), Value: fmtWind(cur.WindSpeed.Value, w)})
+	default:
 		stats = append(stats, wire.Stat{Label: "风", Value: "无风"})
 	}
 	if hi, lo, ok := f.todayHighLow(); ok {
@@ -185,14 +224,14 @@ func (a *app) hoursSection(hours []hourPoint, u temperatureUnit) wire.Section {
 func (a *app) forecastSection(ds []day, u temperatureUnit) wire.Section {
 	sec := wire.Section{Title: "7 天预报"}
 	for _, d := range ds {
-		desc, icon := wmo(d.code)
+		desc, icon := wmoOptional(d.code)
 		title := d.weekday()
 		if title == "" {
 			title = d.date.Format("01-02")
 		}
 		row := wire.Component{Type: wire.ComponentRow,
-			Title:    fmt.Sprintf("%s %s %s / %s", title, icon, fmtTemp(d.max, u), fmtTemp(d.min, u)),
-			Subtitle: fmt.Sprintf("%s · 降水概率 %.0f%%", desc, d.precip)}
+			Title:    fmt.Sprintf("%s %s %s / %s", title, icon, tempText(d.max, u), tempText(d.min, u)),
+			Subtitle: fmt.Sprintf("%s · 降水概率 %s", desc, percentText(d.precip))}
 		sec.Items = append(sec.Items, row)
 	}
 	if len(sec.Items) == 0 {

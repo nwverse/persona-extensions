@@ -20,11 +20,13 @@ func (q *Queue) UpdateExec(taskID string, fence int, now time.Time, fn func(e *E
 	if !isActiveState(t.State) || t.FenceToken != fence || len(t.Attempts) == 0 {
 		return nil, ErrStaleAttempt
 	}
+	prev := cloneTask(t)
 	if t.Exec == nil {
 		t.Exec = &Execution{PhaseSince: now.UTC()}
 	}
 	phase := t.Exec.Phase
 	fn(t.Exec)
+	t.Exec.Dirty = cloneBoolPtr(t.Exec.Dirty)
 	if t.Exec.Phase != phase {
 		t.Exec.PhaseSince = now.UTC()
 	}
@@ -33,8 +35,14 @@ func (q *Queue) UpdateExec(taskID string, fence int, now time.Time, fn func(e *E
 		state = StateNeedsInput
 	}
 	t.State = state
-	t.Attempts[len(t.Attempts)-1].State = state
+	att := &t.Attempts[len(t.Attempts)-1]
+	att.State = state
+	att.Launcher, att.Model, att.SessionID, att.Worktree = t.Exec.Launcher, t.Exec.Model, t.Exec.SessionID, t.Exec.Worktree
+	att.BaseSHA, att.HeadSHA, att.FullReply = t.Exec.BaseSHA, t.Exec.HeadSHA, t.Exec.FullReply
+	att.Dirty = cloneBoolPtr(t.Exec.Dirty)
+	att.TodoAttachError = t.Exec.TodoAttachError
 	if err := q.saveLocked(); err != nil {
+		q.tasks[taskID] = prev
 		return nil, err
 	}
 	return cloneTask(t), nil

@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "bitbucket",
   "name": "Bitbucket 评审",
-  "version": "0.1.1",
+  "version": "0.1.6",
   "icon": "assets/icon.png",
   "description": "在 Persona 里处理自建 Bitbucket 的代码评审：打开 PR 看项目/仓库、作者、审查人、描述和讨论；批准或取消批准前在手机上确认。个人访问令牌加密存在 hub，不合并 PR，不改仓库设置。",
   "publisher": "nwverse",
@@ -23,7 +23,7 @@
       "hosts": [], "agent_tools": ["bitbucket_*"],
       "confirm_always": ["bitbucket_approve", "bitbucket_unapprove"]
     }],
-    "ui": [{"id": "reviews", "title": "代码评审", "placement": "nav_page", "icon": "pull_request"}]
+    "ui": [{"id": "bitbucket", "title": "代码评审", "placement": "nav_page", "icon": "pull_request"}]
   },
   "configuration": {
     "type": "object",

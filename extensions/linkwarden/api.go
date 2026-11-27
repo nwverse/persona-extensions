@@ -95,50 +95,60 @@ func (c *client) do(ctx context.Context, method, path string, query url.Values, 
 func (c *client) search(ctx context.Context, query string, collectionID int64) ([]link, error) {
 	q := url.Values{}
 	if query != "" {
-		q.Set("q", query)
+		q.Set("searchQueryString", query)
 	}
 	if collectionID > 0 {
 		q.Set("collectionId", strconv.FormatInt(collectionID, 10))
 	}
+	// The links are in data.links; data is an empty array when nothing matched.
 	var out struct {
-		Links []link `json:"links"`
-		Data  []link `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := c.do(ctx, http.MethodGet, "/search", q, nil, &out); err != nil {
 		return nil, err
 	}
-	if out.Links != nil {
-		return out.Links, nil
+	var found struct {
+		Links []link `json:"links"`
 	}
-	return out.Data, nil
+	if len(out.Data) > 0 && out.Data[0] == '{' {
+		if err := json.Unmarshal(out.Data, &found); err != nil {
+			return nil, errors.New("Linkwarden returned invalid JSON")
+		}
+	}
+	return found.Links, nil
+}
+
+// answer is what Linkwarden answers for a call other than the search: the result in response.
+type answer[T any] struct {
+	Response T `json:"response"`
 }
 
 func (c *client) collections(ctx context.Context) ([]collection, error) {
-	var out []collection
+	var out answer[[]collection]
 	err := c.do(ctx, http.MethodGet, "/collections", nil, nil, &out)
-	return out, err
+	return out.Response, err
 }
 
 func (c *client) link(ctx context.Context, id int64) (link, error) {
-	var out link
+	var out answer[link]
 	err := c.do(ctx, http.MethodGet, "/links/"+strconv.FormatInt(id, 10), nil, nil, &out)
-	return out, err
+	return out.Response, err
 }
 
 func (c *client) highlights(ctx context.Context, id int64) ([]highlight, error) {
-	var out []highlight
+	var out answer[[]highlight]
 	err := c.do(ctx, http.MethodGet, "/links/"+strconv.FormatInt(id, 10)+"/highlights", nil, nil, &out)
-	return out, err
+	return out.Response, err
 }
 
 func (c *client) save(ctx context.Context, rawURL string) (link, error) {
-	var out link
+	var out answer[link]
 	err := c.do(ctx, http.MethodPost, "/links", nil, map[string]string{"url": rawURL}, &out)
-	return out, err
+	return out.Response, err
 }
 
 func (c *client) archive(ctx context.Context, id int64) error {
-	return c.do(ctx, http.MethodPost, "/links/"+strconv.FormatInt(id, 10)+"/archive", nil, nil, nil)
+	return c.do(ctx, http.MethodPut, "/links/"+strconv.FormatInt(id, 10)+"/archive", nil, nil, nil)
 }
 
 func clipText(text string, limit int) string {

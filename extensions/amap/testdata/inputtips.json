@@ -1,0 +1,35 @@
+{
+  "status": "1",
+  "info": "OK",
+  "infocode": "10000",
+  "count": "3",
+  "tips": [
+    {
+      "id": "B000A83M61",
+      "name": "天安门广场",
+      "district": "北京市东城区",
+      "adcode": "110101",
+      "location": "116.397755,39.903182",
+      "address": "东长安街",
+      "typecode": "110202"
+    },
+    {
+      "id": "B000A7BD6C",
+      "name": "天安门东(地铁站)",
+      "district": "北京市东城区",
+      "adcode": "110101",
+      "location": "116.407173,39.908201",
+      "address": "1号线八通线",
+      "typecode": "150500"
+    },
+    {
+      "id": "",
+      "name": "天安门地区",
+      "district": "北京市东城区",
+      "adcode": "110101",
+      "location": [],
+      "address": [],
+      "typecode": "190105"
+    }
+  ]
+}

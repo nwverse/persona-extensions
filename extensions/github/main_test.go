@@ -12,6 +12,7 @@ import (
 
 	"github.com/nwverse/persona-extensions/extensions/github/internal/connector"
 	"github.com/nwverse/persona-extensions/extensions/github/internal/github"
+	"github.com/nwverse/persona-extensions/extensions/github/internal/page"
 	"github.com/nwverse/persona-extensions/extensions/github/internal/serve"
 	"github.com/nwverse/persona-extensions/pluginkit"
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -57,9 +58,20 @@ func TestManifestIsWhatTheProgramDeclares(t *testing.T) {
 	if len(m.Runtime.Command) != 4 {
 		t.Fatalf("platforms: %v", m.Runtime.Command)
 	}
+	// the page, and the card on Overview opening it: the ids the program draws
 	var ui []wire.UIItem
-	if err := json.Unmarshal(m.Contributes["ui"], &ui); err != nil || len(ui) != 1 || ui[0].ID != "github" || ui[0].Placement != wire.PlacementNavPage {
+	if err := json.Unmarshal(m.Contributes["ui"], &ui); err != nil || len(ui) != 2 || ui[0].ID != page.ID || ui[0].Placement != wire.PlacementNavPage ||
+		ui[1].ID != page.CardID || ui[1].Placement != wire.PlacementOverviewCard || ui[1].Opens != page.ID {
 		t.Fatalf("ui: %s (%v)", m.Contributes["ui"], err)
+	}
+	prog := program(&app{})
+	for _, u := range ui {
+		if p, ok := prog.UI[u.ID]; !ok || p.Render == nil {
+			t.Errorf("ui %s: the program does not draw it", u.ID)
+		}
+	}
+	if prog.UI[page.CardID].Action != nil {
+		t.Error("the card has actions: an Overview card only shows")
 	}
 }
 

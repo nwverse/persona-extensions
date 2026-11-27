@@ -27,7 +27,7 @@ export function createProgram(fetch: FetchAdapter = (input, init) => globalThis.
       if (!history) await recent.load();
     },
     namespaces: { connector: connector(() => current().service, () => current().history) },
-    ui: { lookup: componentPage(req => root({ service: current().service, history: current().history, state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) },
+    ui: { domains: componentPage(req => root({ service: current().service, history: current().history, state: req.state, locale: req.locale, tz: req.tz, uiVersion: req.ui_version })) },
   };
 }
 export default createProgram();

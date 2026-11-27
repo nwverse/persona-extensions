@@ -1,5 +1,6 @@
 {
   "chat.hub_error": "Didn't reach Persona: something went wrong on the hub. Send it again in a bit.",
+  "chat.images_not_sent": "Couldn't send {count} picture(s).",
   "chat.send_failed": "WeChat didn't take this message",
   "chat.stranger": "This bot only works for the person who bound it.",
   "login.bound_already": "This WeChat is already bound to this bot. Delete it in WeChat, then scan again",

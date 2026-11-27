@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -157,8 +158,13 @@ func (a *app) detailView(r *ext.UIRequest, st pageState, item raindrop) *wire.Vi
 	if len(item.Tags) > 0 {
 		v.Sections[0].Items = append(v.Sections[0].Items, wire.Component{Type: wire.ComponentText, Text: clipText(strings.Join(item.Tags, ", "), 2000)})
 	}
+	used := len(v.Sections[0].Items)
 	if item.Note != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: textComponents(item.Note)})
+		note := capComponents(textComponents(item.Note), maxNoteItems)
+		if len(note) > 0 {
+			used += len(note)
+			v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: note})
+		}
 	}
 	if len(item.Highlights) > 0 {
 		section := wire.Section{Title: t.highlights}
@@ -166,7 +172,10 @@ func (a *app) detailView(r *ext.UIRequest, st pageState, item raindrop) *wire.Vi
 			section.Items = append(section.Items, textComponents(h.Text)...)
 			section.Items = append(section.Items, textComponents(h.Note)...)
 		}
-		v.Sections = append(v.Sections, section)
+		section.Items = capComponents(section.Items, maxViewItems-used)
+		if len(section.Items) > 0 {
+			v.Sections = append(v.Sections, section)
+		}
 	}
 	return v
 }
@@ -208,11 +217,30 @@ func (a *app) reviewSaveView(ctx context.Context, r *ext.UIRequest, st pageState
 		{Type: wire.ComponentText, Text: t.tags + ": " + strings.Join(st.Save.Tags, ", ")},
 	}
 	if st.Save.Title != "" {
-		items = append(items, textComponents(st.Save.Title)...)
+		items = append(items, capComponents(textComponents(st.Save.Title), maxTitleItems)...)
 	}
-	items = append(items, textComponents(st.Save.Note)...)
+	items = append(items, capComponents(textComponents(st.Save.Note), maxViewItems-len(items)-1)...)
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.confirmSave, Action: &wire.Action{ID: "save", Submit: true, Confirm: t.save + "\n" + st.Save.URL}})
 	return &wire.View{Title: t.review, State: ext.EncodeState(st), Sections: []wire.Section{{Items: items}}}, nil
+}
+
+const (
+	// maxViewItems keeps bookmark detail and save-review views within the SDK's 300 component limit.
+	maxViewItems  = 250
+	maxNoteItems  = 80
+	maxTitleItems = 10
+)
+
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if n <= 0 {
+		return nil
+	}
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func textComponent(text, style string) wire.Component {
@@ -225,9 +253,18 @@ func compactComponents(items ...wire.Component) []wire.Component {
 		if item.Type == wire.ComponentText && item.Text == "" {
 			continue
 		}
+		if item.Type == wire.ComponentLink && !httpsLink(item.URL) {
+			continue
+		}
 		out = append(out, item)
 	}
 	return out
+}
+
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
 func textComponents(text string) []wire.Component {
@@ -252,12 +289,14 @@ func collectionName(id string, cols []collection, t *texts) string {
 	return t.unsorted
 }
 
-func collectionLabel(item raindrop, t *texts) string {
-	if item.Collection.Title != "" {
-		return item.Collection.Title
-	}
+func collectionLabel(item raindrop, cols []collection, t *texts) string {
 	if item.Collection.ID == -1 {
 		return t.unsorted
+	}
+	for _, c := range cols {
+		if c.ID == item.Collection.ID {
+			return c.Title
+		}
 	}
 	return "Raindrop"
 }

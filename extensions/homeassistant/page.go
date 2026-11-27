@@ -47,6 +47,7 @@ type pageState struct {
 	All     bool   `json:"qa,omitempty"` // 家 lists every device, not only those on and the first few
 	Rooms   bool   `json:"r,omitempty"`  // 家 lists the quiet areas one by one
 	Lost    bool   `json:"lo,omitempty"` // 家 lists the devices offline one by one
+	SC      string `json:"sc,omitempty"` // a shortcut's form (shortcuts.go): its script's key, new or not
 }
 
 const (
@@ -71,7 +72,7 @@ var quickDomains = []string{"light", "switch", "fan", "input_boolean", "humidifi
 var rowServices = map[string][]string{
 	"light": {"turn_on", "turn_off"}, "switch": {"turn_on", "turn_off"}, "fan": {"turn_on", "turn_off"},
 	"input_boolean": {"turn_on", "turn_off"}, "humidifier": {"turn_on", "turn_off"},
-	"script": {"turn_on", "turn_off"}, "scene": {"turn_on"},
+	"script": {"turn_on", "turn_off"}, "scene": {"turn_on"}, "button": {"press"},
 }
 
 func (st *pageState) clean() {
@@ -84,6 +85,9 @@ func (st *pageState) clean() {
 	st.Q = clip(strings.TrimSpace(st.Q), 40)
 	if !entityRE.MatchString(st.Entity) {
 		st.Entity = ""
+	}
+	if !shortcutKeyRE.MatchString(st.SC) {
+		st.SC = ""
 	}
 }
 
@@ -104,6 +108,10 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	case "tab":
 		if arg == "" {
 			arg = r.Values["tab"]
+		}
+		if room, ok := strings.CutPrefix(arg, roomTab); ok { // a room's tab (roomTabs)
+			st = pageState{Area: room, Kind: st.Kind}
+			break
 		}
 		st = pageState{Tab: arg, Kind: st.Kind}
 		st.clean()
@@ -172,12 +180,33 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if h, _, _ := a.client(); h != nil {
 			h.tryAgain()
 		}
+	case "alloff": // 全关 (scenesRow): the area's lights, switches and fans that are on, or the home's
+		msg, err := a.allOff(ctx, r.Values["area"])
+		if err != nil {
+			toast = err.Error()
+		} else {
+			toast = msg
+		}
+		fresh = 0
+	case "sc": // a shortcut (shortcuts.go): run, save (the form, submitted) or delete
+		return a.shortcutAction(ctx, r, st, arg)
 	case "do": // a row's own call: a light or a switch on or off, a script or a scene run
 		eid, svc, _ := strings.Cut(arg, "|")
 		if arg == "" { // an entity id too long for the action's id (rowDo)
 			eid, svc = r.Values["entity"], r.Values["service"]
 		}
 		msg, err := a.rowCall(ctx, eid, svc)
+		if err != nil {
+			toast = err.Error()
+		} else {
+			toast = msg
+		}
+		fresh = 0
+	case "irmark": // 标记为已关 on a remote's tile (irmarks.go): nothing is sent
+		if arg == "" {
+			arg = r.Values["entity"]
+		}
+		msg, err := a.markRemoteOff(ctx, arg)
 		if err != nil {
 			toast = err.Error()
 		} else {
@@ -216,20 +245,28 @@ func (a *app) rowCall(ctx context.Context, eid, svc string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, ok := hm.ByID[eid]; !ok || !hm.visible(eid) {
+	s, ok := hm.ByID[eid]
+	if !ok || !hm.visible(eid) {
 		return "", errNoEntity
 	}
-	return a.tap(ctx, eid, "svc", svc, nil)
+	msg, err := a.tap(ctx, eid, "svc", svc, nil)
+	if err == nil && d == "button" { // a remote's button (remoteTile) has no state to tell: say what was sent
+		msg = "已发送「" + buttonWord(hm.named(a.pageRegistry(ctx)), s) + "」"
+	}
+	return msg, err
 }
 
 // setControl runs a control's change on eid: power (a switch: turn_on or turn_off), bri (a light's brightness in
-// percent), pct (a fan's speed), temp (a climate's target temperature), pos (a cover's position). Only on an entity the
-// page shows, that the control is drawn for (its domain and what it declares it can do), of a domain the settings
-// allow, with a value in its range; never a lock or an alarm panel (canWrite: those go through their own page, which
+// percent), pct (a fan's speed), temp (a climate's target temperature), pos (a cover's position), ir (a remote's
+// switch: its 开机 or 关机 pressed, remotePower). Only on an entity the page shows, that the control is drawn for (its
+// domain and what it declares it can do), of a domain the settings allow, with a value in its range; never a lock or an alarm panel (canWrite: those go through their own page, which
 // asks first), nor a garage door, a gate or a door's position.
 func (a *app) setControl(ctx context.Context, eid, kind, value string) (string, error) {
 	if !entityRE.MatchString(eid) {
 		return "", errUnknownOp
+	}
+	if kind == "ir" {
+		return a.remotePower(ctx, eid, value)
 	}
 	hm, err := a.home(ctx, statesFor)
 	if err != nil {
@@ -365,6 +402,11 @@ func (a *app) tap(ctx context.Context, eid, kind, arg string, values map[string]
 }
 
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh time.Duration) *wire.View {
+	return a.pageWith(ctx, r, st, fresh, nil)
+}
+
+// pageWith is page with a shortcut's form showing draft (a save that was refused) instead of the shortcut's own.
+func (a *app) pageWith(ctx context.Context, r *ext.UIRequest, st pageState, fresh time.Duration, draft *shortcutDraft) *wire.View {
 	v := &wire.View{Title: "家", RefreshAfter: refreshList}
 	hm, err := a.home(ctx, fresh)
 	if err != nil {
@@ -378,12 +420,23 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh ti
 		st.Area = ""
 	}
 	reg := a.pageRegistry(ctx)
+	hm = hm.named(reg)
+	if st.SC != "" {
+		a.shortcutPage(ctx, hm, reg, st, draft, v)
+		v.State = ext.EncodeState(st)
+		return v
+	}
+	if r.UIVersion >= 6 && st.Entity == "" && st.Tab == "" && st.Area == "" && st.Q == "" {
+		hm.Shortcuts = a.shortcuts(ctx, hm)
+	}
+	rooms := roomTabs(r, hm, reg)
+	tabbed := st.Area != "" && slices.ContainsFunc(rooms, func(ar *Area) bool { return ar.ID == st.Area })
 	if st.Entity == "" {
-		renderTabs(r, st, v, alarmCount(hm, reg))
+		renderTabs(r, st, v, alarmCount(hm, reg), rooms)
 	}
 	if r.UIVersion >= 3 && st.Entity == "" && st.Tab == "" {
 		v.Search = &wire.Search{Placeholder: "搜设备、传感器：客厅灯、空调、温度", Value: st.Q, Action: wire.Action{ID: "search"}}
-		if len(hm.Areas) >= 1 && len(hm.Areas) <= 19 {
+		if len(hm.Areas) >= 1 && len(hm.Areas) <= 19 && len(rooms) == 0 { // room tabs are the filter
 			f := &wire.Filter{Name: "area", Title: "区域", Value: st.Area, Action: wire.Action{ID: "filter"},
 				Choices: []wire.Choice{{Value: "", Title: "全部区域"}}}
 			if hm.ByType {
@@ -407,7 +460,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh ti
 	case st.Area == "":
 		a.homePage(r, hm, reg, st, v)
 	default:
-		a.roomPage(r, hm, reg, st, v)
+		a.roomPage(r, hm, reg, st, v, tabbed)
 	}
 	v.State = ext.EncodeState(st)
 	return v
@@ -437,6 +490,9 @@ func (hm *home) visible(e string) bool { return !hm.Hidden[e] || hm.AreaOf[e] !=
 // more are left.
 func shortName(hm *home, s State) string {
 	n := s.Name()
+	if dn, ok := hm.Names[s.EntityID]; ok {
+		n = dn
+	}
 	if area := hm.areaName(s.EntityID); area != "" && !hm.ByType && strings.HasPrefix(n, area) {
 		if rest := strings.TrimSpace(strings.TrimPrefix(n, area)); utf8.RuneCountInString(rest) >= 2 {
 			return rest

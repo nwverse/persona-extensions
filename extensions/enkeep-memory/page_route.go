@@ -21,7 +21,7 @@ func (a *app) v4Tab(tab string) bool {
 
 // v4Opens says whether an open page is one of the v4 pages.
 func (a *app) v4Opens(open string) bool {
-	return open == "onboarding" || open == "k2" || strings.HasPrefix(open, "e:") || strings.HasPrefix(open, "card:") || strings.HasPrefix(open, "types:")
+	return open == "onboarding" || open == "k2" || open == "profile" || open == "overview" || strings.HasPrefix(open, "ovr:") || strings.HasPrefix(open, "e:") || strings.HasPrefix(open, "card:") || strings.HasPrefix(open, "types:")
 }
 
 func (a *app) v4Open(t tr, s page) *wire.View {
@@ -32,6 +32,12 @@ func (a *app) v4Open(t tr, s page) *wire.View {
 		return a.onboardingPage(t, st)
 	case s.Open == "k2":
 		return a.k2Page(t, st, s)
+	case s.Open == "profile":
+		return a.profilePage(t, st, a.profileSnapshot(st))
+	case s.Open == "overview":
+		return a.overviewPage(t)
+	case strings.HasPrefix(s.Open, "ovr:"):
+		return a.reportPage(t, s.Open)
 	case strings.HasPrefix(s.Open, "e:"):
 		return a.entryPage(t, st, strings.TrimPrefix(s.Open, "e:"))
 	case strings.HasPrefix(s.Open, "card:"):
@@ -122,6 +128,18 @@ func (a *app) pauseLine(t tr, st *store.State, now time.Time) (string, string) {
 	why := cp.Reason
 	if why == "" {
 		why = t.s("hub 没有给出原因", "the hub gave no reason")
+	}
+	if cp.What == "assistant" {
+		// The assistant's computer was away: its conversations, one of the day's sources, could not be read.
+		return fmt.Sprintf(t.s("助手的电脑没连上（%s），%s 这一天先不算读完，%s 再试。",
+			"The assistant's computer is not connected (%s); %s is not counted as read and will be tried again at %s."),
+			why, cp.Day, clock(cp.NextTry)), wire.ToneCaution
+	}
+	if cp.What == curate.WhatHeld {
+		// The hub held the model's connection (model_paused): a wait, not a failure.
+		return fmt.Sprintf(t.s("模型那边忙（hub 压闸：%s），%s 这一天先不算读完，%s 闸开后接着读。",
+			"The model's connection is busy (held by the hub: %s); %s is not counted as read yet and goes on at %s, when the hold lets go."),
+			why, cp.Day, clock(cp.NextTry)), wire.ToneCaution
 	}
 	if cp.Fails < curate.PausedAfter {
 		return fmt.Sprintf(t.s("模型暂时不可用（%s），%s 再试 %s 这一天。", "The model is briefly unavailable (%s); %s will be tried again at %s."),

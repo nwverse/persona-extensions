@@ -9,7 +9,7 @@ This is a fresh native Persona Go extension built from Jellyfin's stable OpenAPI
 1. Create an API key in the Jellyfin dashboard's API Keys section.
 2. In **Settings › Extensions › Jellyfin**, enter the instance URL and API key. For example `https://jellyfin.example.com`; a local instance can use `http://127.0.0.1:8096`.
 
-Remote instances require HTTPS. URLs must not contain credentials. The key arrives through the encrypted extension-secret flow and is sent only as `X-Emby-Token` to the configured instance. Redirects are not followed.
+Remote instances require HTTPS. URLs must not contain credentials. The key arrives through the encrypted extension-secret flow and is sent only as `Authorization: MediaBrowser Token="<key>"` to the configured instance. Redirects are not followed.
 
 ## Library
 
@@ -33,7 +33,7 @@ go -C extensions/jellyfin test -race ./...
 scripts/package.sh jellyfin
 ```
 
-Synthetic fixtures cover `X-Emby-Token` authentication, current-user resume/favorites/search, bounded pagination, item details, favorite-only writes, persistent replay and unknown outcomes. No real library or media is used.
+Synthetic fixtures cover `Authorization: MediaBrowser Token` authentication, current-user resume/favorites/search, bounded pagination, item details, favorite-only writes, persistent replay and unknown outcomes. No real library or media is used.
 
 ## Public API
 

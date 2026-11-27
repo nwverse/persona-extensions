@@ -13,9 +13,9 @@ The token arrives through the encrypted extension-secret flow and is sent only i
 
 ## Work
 
-- List accessible boards and their exact IDs. Read `items_page` with `limit=50`, the returned cursor and item IDs/names/status/column values. No arbitrary query or filter is supplied by tools.
+- List accessible boards and their exact IDs, page by page (`boards(limit: 50, page: N)`, since the query answers only 25 boards without a `limit`), up to 250 boards. Read `items_page` with `limit=50`, the returned cursor and item IDs/names/status/column values. No arbitrary query or filter is supplied by tools.
 - Read board columns and status settings before editing. Status updates are limited to an existing label on an existing status column; a new label is never created implicitly.
-- Create an item with only `board_id` and `item_name` after confirming the board. Update a status with `change_multiple_column_values` using the documented JSON string format for status labels.
+- Create an item with only `board_id` and `item_name` after confirming the board. Update a status with `change_multiple_column_values` using the documented JSON string format for status labels, `{"<column ID>": {"label": "<label>"}}`.
 - No arbitrary GraphQL, label creation, arbitrary column edits, deletion, board/workspace administration or bulk operations.
 
 Before a write, the extension stores its normalized operation and request ID in `write-receipts.json` in its own data directory (`0600`, without the token). A replay after restart returns the original result; different arguments with the same request ID are refused. Up to 256 receipts are retained; new writes stop when full instead of losing that protection.

@@ -9,6 +9,8 @@
 //     flow, kept in the hub's sealed connector secret: the same id, so a hub that had its own connector hands its
 //     sign-in, inbox, archive and switches over as they are.
 //   - ui (nav_page github): the GitHub page (internal/page).
+//   - ui (overview_card github-today): the card on Overview, what needs the user from the page's cached lists, opening
+//     the page (internal/page/card.go).
 package main
 
 import (
@@ -72,7 +74,7 @@ func main() {
 	}
 }
 
-// app holds the connector the hub started the program with and its page.
+// app holds the connector the hub started the program with and its page (which draws the card too).
 type app struct {
 	page *page.Page
 }
@@ -91,7 +93,7 @@ func program(a *app) ext.Program {
 		}
 		return contributes, nil
 	}
-	prog.UI = map[string]ext.Page{page.ID: {Render: a.render, Action: a.action}}
+	prog.UI = map[string]ext.Page{page.ID: {Render: a.render, Action: a.action}, page.CardID: {Render: a.renderCard}}
 	return prog
 }
 
@@ -100,6 +102,14 @@ func (a *app) render(ctx context.Context, r *ext.UIRequest) (*wire.View, error) 
 		return nil, &ext.Error{Code: wire.ErrorCodeNotInitialized, Message: "not initialized"}
 	}
 	return a.page.Render(ctx, r)
+}
+
+// renderCard draws the Overview card; it has no actions (a tap opens the page, a row a PR on it).
+func (a *app) renderCard(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
+	if a.page == nil {
+		return nil, &ext.Error{Code: wire.ErrorCodeNotInitialized, Message: "not initialized"}
+	}
+	return a.page.RenderCard(ctx, r)
 }
 
 func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult, error) {

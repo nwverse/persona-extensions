@@ -7,11 +7,11 @@ understands you better. It keeps six facets, all equally important, and a card f
 
 | Facet | What it keeps | Where it is used |
 | --- | --- | --- |
-| How you work with the AI | what you ask of the AI, corrections, how you want reports and questions | the assistant's per-turn instructions |
-| How the AI works with machines and tools | approaches, pitfalls and their way round, boundaries, per machine or tool | a skill the assistant and agents load when they touch that machine or tool |
-| Your default judgements | at a kind of fork, what you usually choose over what, and why | the per-turn instructions; a suggestion when the assistant asks you |
-| How you handle kinds of tasks | your way of doing a kind of task, and why | skills per kind of task; agent project context |
-| Your world | facts, who is responsible for what, relations, commitments | the knowledge base's people and projects |
+| How you work with the AI | what you ask of the AI, corrections, how you want reports and questions | the assistant's per-turn instructions (what holds everywhere); agent project context (what holds in a project) |
+| How the AI works with machines and tools | approaches, pitfalls and their way round, boundaries, per machine or tool | a look-up skill the assistant loads when it touches that machine or tool; agent project context |
+| Your default judgements | at a kind of fork, what you usually choose over what, and why | the per-turn instructions; agent project context; a suggestion when the assistant asks you |
+| How you handle kinds of tasks | your way of doing a kind of task, and why | the per-turn instructions (what holds everywhere); agent project context; `enkeep_recall` |
+| Your world | facts, who is responsible for what, relations, commitments | `enkeep_recall`; open commitments and a names index in the per-turn instructions; agent project context; the knowledge base |
 | You as a person | role, current work, goals, preferences you stated | the per-turn instructions; inbox drafting |
 | People you deal with | facts, your own words about them, labelled inferences, commitments either way | people pages (see below); a communication tip for inbox drafting |
 
@@ -20,6 +20,22 @@ differently because of it, and is counted by how often the kind of situation cam
 You can pin, edit, delete (it is not made again) or mark any entry right or wrong on the plugin page; wrong takes it
 out of everything the assistant reads at once.
 
+It is the long-term layer: it reads each day once, the next morning, and keeps what holds over days. What was decided
+an hour ago or which task is running is the hub's to bring back after a conversation is compacted, not this
+extension's. Which content goes where, and the contract with the hub, are in
+[exits](../../extensions/enkeep-memory/docs/exits.md).
+
+## Looking things up and taking a wrong line out
+
+- `enkeep_recall {"query": "…"}`: the assistant or an agent looks up what was curated about a person, a project, a
+  system or a kind of task. The per-turn instructions keep only what holds everywhere and names; the rest is here.
+  Only counts are kept (calls per day, empty answers), never the query.
+- `enkeep_mark_wrong {"ids": [...], "reason": "…"}`: the assistant takes out a line that is plainly not your rule
+  (a task prompt or a test prompt taken for your words) without a card on your phone. It is recorded as the
+  assistant's, with the reason; mark it right on the plugin page to bring it back.
+- Lines Persona typed into an agent session (task prompts, relays), test prompts and pasted material are not taken as
+  your words.
+
 ## Requirements
 
 - A hub from build `202611121555` on: data-directory instructions, skills, project and inbox context with read-back,
@@ -27,7 +43,11 @@ out of everything the assistant reads at once.
   counts.
 - Scopes: `kb.read`, `kb.write`, `models`, `assistant.read`, `agents.read`, `todos.read`, `notify`, `assistant.ask`,
   `assistant.memory.read`. A scope you do not grant is a source the extension goes without; the sources card says so.
-- A model for it under Settings › Model configuration. The extension never sees the key.
+- A model for it under Settings › Model configuration. The extension never sees the key. On a hub whose
+  `model.complete` takes `models`, each call tries `model_primary` first and, when it fails, `model_long` or
+  `model_short` by the call's estimated size (`model_long_above`); `model_route: purpose` keeps every call on the
+  purpose's model. `enkeep_rerun_status` shows the calls per model and the fallback rate
+  ([model routes](../../extensions/enkeep-memory/docs/model-routes.md)).
 
 ## Sources
 
@@ -48,17 +68,34 @@ anything for the assistant. A source you do not have is shown as missing on the 
   check page can stop a source from teaching people and relations.
 - People cards keep facts, your own words, inferences (always labelled, with their basis) and commitments apart.
   Evaluations and inferences never go into a draft sent to someone: the inbox gets only a communication tip, and the
-  lines a draft must never repeat. Until your hub filters people profiles for the inbox and agents that write for
-  you, only facts and commitments are written to people pages; evaluations and inferences stay on the plugin page.
+  lines a draft must never repeat. People pages carry all four parts; the hub keeps evaluations and inferences out
+  of the conversations that write to other people for you (inbox drafting, the Lark agent, conversations an
+  extension opens), so this version needs a hub with that filter. The filter does not cover a conversation reading
+  the profile file with its own file tools, an extension's own tools, or a paraphrase.
 - Credentials, tokens and connection strings are never extracted.
 - Everything stays in your own hub: the extension's data directory and your knowledge base.
 
 ## The plugin page
 
 A start card (per facet: what is in use, what is building up, which source is missing), a sources card (read volume,
-attribution checks), three skippable first-run questions, the facets and the people cards, switches K1–K17 (per
+attribution checks), three skippable first-run questions, the facets and the people cards, switches K1–K20 (per
 category, per fork type and per source where they apply), a check page, and whether each exit reached the assistant
 (the hub's read-back). A weekly report goes to your devices when something changed.
+
+## Reading days again
+
+After the model was down, or when the extraction prompt changed, past days can be read again with the current
+prompt. Ask the assistant (or an Agent) to call `enkeep_rerun` with the first and last day; `enkeep_rerun_status` shows
+progress. The days run one at a time in the background, each at most once per prompt version, at most 31 days per
+call. The `rerun_range` setting does the same and still works. With `force: true` the days are read again even if
+they were already read with the current prompt, for a day that lost a unit to a model error; what was read before is
+reused and only the rest calls the model. A unit the model cannot read keeps its day open: the day waits and runs again
+from where it stopped, as when the model is away. When the hub holds the model's connection (busy or out of quota) a
+call waits for the hold and asks again; a unit still held goes back to the queue, its day stays open, and nothing is
+counted as failed. A rerun also reads the agent sessions earlier passes found, though their runtime no longer lists
+them, and adds to what the day admitted rather than replace it. On a hub with session history, every pass also lists
+the day's archived, finished and offline sessions (scheduled runs left out); `enkeep_rerun_status` names the days,
+machines and sources the history could not list in full, or says the hub has none.
 
 ## Development
 

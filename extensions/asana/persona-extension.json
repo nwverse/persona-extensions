@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "asana",
   "name": "Asana 任务",
-  "version": "0.1.1",
+  "version": "0.1.5",
   "icon": "assets/icon.png",
   "description": "在 Persona 里处理 Asana 个人任务：选择工作区，查看分配给自己的任务、截止日期、项目和备注；创建任务或标记完成前在手机上确认。个人访问令牌加密存在 hub，不删除任务，不管理工作区。",
   "publisher": "nwverse",
@@ -23,7 +23,7 @@
       "hosts": ["app.asana.com"], "agent_tools": ["asana_*"],
       "confirm_always": ["asana_create_task", "asana_complete_task"]
     }],
-    "ui": [{"id": "tasks", "title": "Asana 任务", "placement": "nav_page", "icon": "check"}]
+    "ui": [{"id": "asana", "title": "Asana 任务", "placement": "nav_page", "icon": "check"}]
   },
   "configuration": {"type": "object", "properties": {}},
   "secrets": [{

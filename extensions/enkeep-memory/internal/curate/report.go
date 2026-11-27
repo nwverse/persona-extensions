@@ -196,7 +196,7 @@ func (c *Curator) entriesReport(b *strings.Builder, run *store.Run) {
 			n[k] = map[entry.Status]int{}
 		}
 		n[k][e.Status]++
-		if slices.Contains(e.Flags, flagAskedDormant) && e.Sensitive == "" && e.Status != entry.Dormant {
+		if slices.Contains(e.Flags, flagAskedDormant) && !e.IsSensitive() && e.Status != entry.Dormant {
 			asks = append(asks, e.Shown())
 		}
 	}

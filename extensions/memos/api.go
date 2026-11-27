@@ -111,6 +111,8 @@ func quoteCEL(value string) string {
 	return string(data)
 }
 
+const maxQueryChars = 200
+
 func (c *client) memos(ctx context.Context, creator, view, query, token string) (memoPage, error) {
 	if creator == "" || !strings.HasPrefix(creator, "users/") || validUsername(strings.TrimPrefix(creator, "users/")) != nil {
 		return memoPage{}, errors.New("invalid creator")
@@ -121,7 +123,7 @@ func (c *client) memos(ctx context.Context, creator, view, query, token string) 
 	if err := validPageToken(token); err != nil {
 		return memoPage{}, err
 	}
-	if len([]rune(query)) > 200 || strings.ContainsRune(query, 0) {
+	if len([]rune(query)) > maxQueryChars || strings.ContainsRune(query, 0) {
 		return memoPage{}, errors.New("invalid note search")
 	}
 	filter := "creator == " + quoteCEL(creator)

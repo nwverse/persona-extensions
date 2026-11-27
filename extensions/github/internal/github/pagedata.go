@@ -55,10 +55,21 @@ func (e Entry) Ref() string {
 	return fmt.Sprintf("%s#%d", e.Repo, e.Number)
 }
 
-// listCache keeps each list a while: a page drawn again (a tap, coming back) does not read GitHub again.
+// listCache keeps each list a while: a page drawn again (a tap, coming back) does not read GitHub again. A list being
+// read is read once: who asks for it meanwhile (the page and the Overview card, cards for apps of two versions) waits
+// for that read rather than asking GitHub again.
 type listCache struct {
-	mu   sync.Mutex
-	tabs map[string]pageList
+	mu      sync.Mutex
+	tabs    map[string]pageList
+	reading map[string]*listRead
+}
+
+// listRead is a read of one list on its way; done closes once entries, at and err are set.
+type listRead struct {
+	done    chan struct{}
+	entries []Entry
+	at      time.Time
+	err     error
 }
 
 type pageList struct {
@@ -68,6 +79,10 @@ type pageList struct {
 
 // listFresh is how long a list is kept.
 var listFresh = time.Minute
+
+// listLooked, when a test sets it, runs in List between its first look at the cache and taking the lock again to
+// read: where another read of the list can end.
+var listLooked func(tab string)
 
 // List is the tab's entries, from the cache unless fresh is asked for or it is older than listFresh; at is when they
 // were read.
@@ -81,6 +96,63 @@ func (c *Connector) List(ctx context.Context, tab string, fresh bool) (entries [
 	if ok && c.ratesLow() { // save the hour's requests for the inbox
 		return cached.entries, cached.at, nil
 	}
+	if listLooked != nil {
+		listLooked(tab)
+	}
+	c.lists.mu.Lock()
+	// Another read may have ended since the look above: what it read is the newest there is (what a failed read
+	// falls back on), and, for an ask that is not fresh, the answer, rather than reading GitHub again.
+	cached, ok = c.lists.tabs[tab]
+	if ok && !fresh && time.Since(cached.at) < listFresh {
+		c.lists.mu.Unlock()
+		return cached.entries, cached.at, nil
+	}
+	if r, going := c.lists.reading[tab]; going {
+		c.lists.mu.Unlock()
+		select {
+		case <-r.done:
+			entries, at, err = r.entries, r.at, r.err
+		case <-ctx.Done():
+			err = ctx.Err()
+		}
+		if err != nil {
+			if ok { // what was read before, rather than nothing
+				return cached.entries, cached.at, err
+			}
+			return nil, time.Time{}, err
+		}
+		return entries, at, nil
+	}
+	r := &listRead{done: make(chan struct{})}
+	if c.lists.reading == nil {
+		c.lists.reading = map[string]*listRead{}
+	}
+	c.lists.reading[tab] = r
+	c.lists.mu.Unlock()
+	entries, err = c.readList(ctx, tab)
+	now := time.Now()
+	c.lists.mu.Lock()
+	if err == nil {
+		if c.lists.tabs == nil {
+			c.lists.tabs = map[string]pageList{}
+		}
+		c.lists.tabs[tab] = pageList{at: now, entries: entries}
+	}
+	delete(c.lists.reading, tab)
+	r.entries, r.at, r.err = entries, now, err
+	c.lists.mu.Unlock()
+	close(r.done)
+	if err != nil {
+		if ok { // what was read before, rather than nothing
+			return cached.entries, cached.at, err
+		}
+		return nil, time.Time{}, err
+	}
+	return entries, now, nil
+}
+
+// readList reads the tab's entries from GitHub.
+func (c *Connector) readList(ctx context.Context, tab string) (entries []Entry, err error) {
 	switch tab {
 	case TabReview:
 		entries, err = c.pulls(ctx, "is:open is:pr review-requested:@me archived:false")
@@ -93,22 +165,9 @@ func (c *Connector) List(ctx context.Context, tab string, fresh bool) (entries [
 	case TabActivity:
 		entries, err = c.activity(ctx)
 	default:
-		return nil, time.Time{}, fmt.Errorf("no tab %q", tab)
+		return nil, fmt.Errorf("no tab %q", tab)
 	}
-	if err != nil {
-		if ok { // what was read before, rather than nothing
-			return cached.entries, cached.at, err
-		}
-		return nil, time.Time{}, err
-	}
-	now := time.Now()
-	c.lists.mu.Lock()
-	if c.lists.tabs == nil {
-		c.lists.tabs = map[string]pageList{}
-	}
-	c.lists.tabs[tab] = pageList{at: now, entries: entries}
-	c.lists.mu.Unlock()
-	return entries, now, nil
+	return entries, err
 }
 
 // listMost is how many rows a list has.

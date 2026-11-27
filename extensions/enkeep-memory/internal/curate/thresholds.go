@@ -1,6 +1,7 @@
 package curate
 
 import (
+	"fmt"
 	"math"
 	"slices"
 	"sort"
@@ -14,10 +15,11 @@ import (
 // works with Persona one day a week is not held back by the calendar and a heavy user does not take chance for habit.
 // The quality gates (the abstract gate, 5.3) and the gates that widen what is decided for the user do not adapt.
 const (
-	recentActiveDays  = 20   // the window counter-examples are looked for in ("the last 4 weeks" before)
-	shiftingShare     = 0.25 // of the chances in that window that went against an entry: it is shifting
-	dormantActiveDays = 40   // quiet this many active days: dormant ("8 weeks" before)
-	stableMinDays     = 2    // a stable entry rests on at least this many active days
+	recentActiveDays       = 20   // the window counter-examples are looked for in ("the last 4 weeks" before)
+	shiftingShare          = 0.25 // of the chances in that window that went against an entry: it is shifting
+	dormantActiveDays      = 90   // quiet this many active days: dormant for one-off / transient entries (matches ruleDormantDays)
+	dormantEstablishedDays = 180  // quiet this many active days: dormant for established / durable entries
+	stableMinDays          = 2    // a stable entry rests on at least this many active days
 )
 
 // StableK is how many consistent occurrences an entry needs to be stable, given n chances: 2 below 5 chances, 3 for
@@ -79,8 +81,9 @@ type Decision struct {
 //   - stable: n chances, at least StableK(n) consistent, no counter-example in the last 20 active days, on ≥2
 //     active days; self-reported, first-run and hand-written entries start stable;
 //   - shifting: counter-examples are ≥25% of the chances in the last 20 active days (shown, not exported);
-//   - dormant: quiet for 40 active days; an entry the user confirmed or pinned is not put to sleep but asked about
-//     once (the "ask" result, for the weekly report);
+//   - dormant: quiet for 90 active days for one-off entries, or 180 active days for established/durable entries; an
+//     entry the user confirmed or pinned, and a stable rooted one (entry.Rooted: a core principle), is not put to
+//     sleep but asked about once (the "ask" result, for the weekly report);
 //   - candidate otherwise.
 //
 // Retired entries and user-pinned ones keep what they have. ask says the weekly report should ask the user about it.
@@ -101,15 +104,38 @@ func Settle(s *store.State, e *entry.Entry, t Tally, today string) (d Decision, 
 			againstRecent++
 		}
 	}
-	if againstRecent > 0 && float64(againstRecent) >= shiftingShare*float64(forRecent+againstRecent) && !e.Pinned {
+	hardSeed := e.Origin == entry.Seed && e.Seed != nil && e.Seed.Hard
+	if againstRecent > 0 && float64(againstRecent) >= shiftingShare*float64(forRecent+againstRecent) && !e.Pinned && !hardSeed {
 		return Decision{entry.Shifting, "recent counter-examples"}, false
 	}
 	confirmed := e.Pinned || userConfirmed(e)
-	if quietDays(s, e.Last, today) >= dormantActiveDays {
+	limit := dormantLimit(e, t)
+	if quietDays(s, e.Last, today) >= limit {
 		if confirmed || e.Origin != entry.Behavior {
 			return Decision{e.Status, "quiet, confirmed: ask once"}, !slices.Contains(e.Flags, flagAskedDormant)
 		}
-		return Decision{entry.Dormant, "quiet for 40 active days"}, false
+		// A core principle (evidence in four ISO weeks, or a lasting cross-project principle) is not said again and
+		// again: quiet days alone do not put it to sleep; the user is asked once, as for a confirmed one.
+		if e.Status == entry.Stable && entry.Rooted(e, tallyDays(t)) {
+			return Decision{e.Status, "quiet, rooted: ask once"}, !slices.Contains(e.Flags, flagAskedDormant)
+		}
+		return Decision{entry.Dormant, fmt.Sprintf("quiet for %d active days", limit)}, false
+	}
+	if e.Origin == entry.Seed {
+		// A seed (design v2 §11.2) starts a candidate and is stable once the user's own records bear it out: an
+		// occurrence of its own members on at least seedMinDays active day. A hard rule is never turned by
+		// counter-examples alone (the shifting rule above spares nothing else, but a hard seed is only asked about).
+		if seedExpired(s, e, today) {
+			return Decision{entry.Dormant, "a seed that dates (" + e.Seed.Expiring + ") with nothing new for its period"}, false
+		}
+		days := map[string]bool{}
+		for _, o := range t.For {
+			days[o.day] = true
+		}
+		if len(days) >= seedMinDays {
+			return Decision{entry.Stable, "a seed borne out by the user's own records"}, false
+		}
+		return Decision{entry.Candidate, "a seed waiting for the user's own records"}, false
 	}
 	if e.Origin != entry.Behavior && e.Origin != "" {
 		return Decision{entry.Stable, "the user's own words or hand-written memory"}, false
@@ -136,6 +162,38 @@ func Settle(s *store.State, e *entry.Entry, t Tally, today string) (d Decision, 
 	return Decision{entry.Candidate, "not yet enough"}, false
 }
 
+// seedMinDays: the active days of the user's own records a seed needs to be stable (design v2 §11.2: "至少 1 天佐证").
+const seedMinDays = 1
+
+// Seed periods (seed-import design §2): what the user is doing now dates after recentSeedDays active days with
+// nothing new, responsibilities after roleSeedDays; lasting identity, values and guardrails never by themselves.
+const (
+	recentSeedDays = 30
+	roleSeedDays   = 90
+)
+
+// seedExpired: a dating seed with no occurrence of its own for its period of active days since it was confirmed (or
+// last seen, when later).
+func seedExpired(s *store.State, e *entry.Entry, today string) bool {
+	if e.Seed == nil {
+		return false
+	}
+	n := 0
+	switch e.Seed.Expiring {
+	case "recent":
+		n = recentSeedDays
+	case "role":
+		n = roleSeedDays
+	default:
+		return false
+	}
+	since := e.Seed.Confirmed
+	if e.Last > since {
+		since = e.Last
+	}
+	return since != "" && quietDays(s, since, today) >= n
+}
+
 // oneShot: an action entry that one sighting proves: a pitfall and its fix shown by the tool results (② from a dug
 // segment, 5.5), or a quoted fact about the world (⑤, kept with its single-source mark, 4.4).
 func oneShot(e *entry.Entry) bool {
@@ -157,5 +215,27 @@ func userConfirmed(e *entry.Entry) bool {
 	return false
 }
 
+// dormantLimit returns how many quiet active days put e to sleep: established or durable entries (classes, abstracts,
+// durable rules, self/person facts, or entries corroborated on multiple active days) stay awake for
+// dormantEstablishedDays; one-off / transient entries go dormant after dormantActiveDays.
+func dormantLimit(e *entry.Entry, t Tally) int {
+	if e.Grain == entry.Class || e.Grain == entry.Abstract ||
+		slices.Contains(e.Flags, "durable") ||
+		entry.SelfFact(e) || entry.PersonFact(e) ||
+		len(t.Days) >= stableMinDays || len(e.ActiveDays) >= stableMinDays {
+		return dormantEstablishedDays
+	}
+	return dormantActiveDays
+}
+
 // flagAskedDormant: the weekly report has asked the user once whether a quiet, confirmed entry still holds.
 const flagAskedDormant = "asked_dormant"
+
+// tallyDays are the days of t's own occurrences, for entry.Rooted.
+func tallyDays(t Tally) []string {
+	out := make([]string, 0, len(t.For))
+	for _, o := range t.For {
+		out = append(out, o.day)
+	}
+	return out
+}

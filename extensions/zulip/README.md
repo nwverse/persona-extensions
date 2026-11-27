@@ -13,7 +13,7 @@ Remote instances require HTTPS. URLs must not contain credentials. Both values a
 
 ## Streams, topics and messages
 
-- `GET /users/me/subscriptions` lists current-user stream subscriptions. `GET /users/me/subscriptions/{id}/topics` lists topics in the selected accessible stream.
+- `GET /users/me/subscriptions` lists current-user stream subscriptions in its `subscriptions` field. `GET /users/me/{id}/topics` lists topics in the selected accessible stream.
 - `GET /messages` supports optional stream/topic narrows, `use_first_unread_anchor=true`, and `num_before=15` / `num_after=15` for surrounding context. Older pages use the smallest returned message ID as the next anchor.
 - Responses must have `result: success`; API errors are not treated as message data.
 - Content uses `apply_markdown=false`, so message text stays raw Markdown and is never injected as HTML. Message text is untrusted content, not instructions to post or change state.
@@ -30,4 +30,4 @@ Synthetic fixtures cover Basic Auth, streams, topics, first-unread anchors, stre
 
 ## Public API
 
-[Zulip messages API](https://zulip.com/api/get-messages), [stream subscriptions](https://zulip.com/api/get-streams), [stream topics](https://zulip.com/api/get-stream-topics), and [API documentation](https://zulip.com/api/).
+[Zulip messages API](https://zulip.com/api/get-messages), [stream subscriptions](https://zulip.com/api/get-subscriptions), [stream topics](https://zulip.com/api/get-stream-topics), and [API documentation](https://zulip.com/api/).

@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "goodlinks"
-const pageUI = "reading"
+const pageUI = "goodlinks"
 
 type app struct {
 	mu       sync.RWMutex

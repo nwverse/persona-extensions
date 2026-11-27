@@ -1,5 +1,6 @@
 {
   "chat.hub_error": "Personaに届きませんでした。ハブでエラーが発生しました。少し待ってからもう一度送ってください。",
+  "chat.images_not_sent": "画像を {count} 枚送れませんでした。",
   "chat.send_failed": "WeChat がこのメッセージを受け取りませんでした",
   "chat.stranger": "このボットは連携した本人専用です。",
   "login.bound_already": "このWeChatはすでにこのボットと連携されています。WeChatで削除してからもう一度スキャンしてください",

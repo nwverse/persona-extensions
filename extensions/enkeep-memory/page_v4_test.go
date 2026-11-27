@@ -14,6 +14,7 @@ import (
 	exits "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/hubapi"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -130,20 +131,29 @@ func TestV4PagesBothLanguages(t *testing.T) {
 			t.Errorf("page %+v is the same in both languages", p)
 		}
 	}
-	_, zh := render(t, a, page{Tab: tabStart}, "zh-Hans")
+	sv, zh := render(t, a, page{Tab: tabStart}, "zh-Hans")
+	for _, sec := range sv.Sections {
+		if sec.Title == "起步" {
+			t.Error("a section is titled as the first tab")
+		}
+	}
 	for _, want := range []string{"等 hub（H2）", "没授权", "助手电脑离线", "等 hub（H1）", "三个问题", "① 和 AI 的交互", "⑤′ 有来往的人",
 		"「deploy」看到过", "没有 Agent 会话", "本周读了多少、挖了几段"} {
 		if !strings.Contains(zh, want) {
 			t.Errorf("the start page does not say %q", want)
 		}
 	}
+	// The section under the tabs is not titled as the first tab is, and no row repeats "还差 1 次".
+	if strings.Contains(zh, "离成条目最近") || !strings.Contains(zh, "各方面进度") || !strings.Contains(zh, "观察中") {
+		t.Errorf("start page heading or rows: %s", zh)
+	}
 	_, en := render(t, a, page{Tab: tabStart}, "en-US")
-	for _, want := range []string{"waiting for the hub (H2)", "not granted", "the assistant's computer is offline", "Getting started", "Three questions"} {
+	for _, want := range []string{"waiting for the hub (H2)", "not granted", "the assistant's computer is offline", "Facets at a glance", "Three questions"} {
 		if !strings.Contains(en, want) {
 			t.Errorf("the English start page does not say %q", want)
 		}
 	}
-	if strings.Contains(en, "已有") || strings.Contains(en, "来源") {
+	if strings.Contains(en, "已定") || strings.Contains(en, "来源") {
 		t.Errorf("Chinese left on the English start page: %s", en)
 	}
 	// The card: facts, inferred lines labelled with little evidence, the reported-only line folded until opened.
@@ -272,21 +282,24 @@ func TestCheckWrongWithdraws(t *testing.T) {
 	}
 }
 
-// K13 per category, K2 per fork type, K16 per source: each item its own switch, set by the user.
+// K22 per category, K2 per fork type, K16 per source: each item its own switch, set by the user.
 func TestSwitchesPerItem(t *testing.T) {
 	a := v4App(t)
 	seed(a)
 	s := page{Tab: tabSwitches}
 	_, v := render(t, a, s, "zh-Hans")
-	for _, want := range []string{"sw:K13.health", "sw:K13.family", "sw:K13.emotion", "sw:K13.finance", "k2:deploy", "sw:K16.lark", "量不出", "只由你打开"} {
+	for _, want := range []string{"sw:K22.health", "sw:K22.relationships", "sw:K22.emotion", "sw:K22.finance", "sw:K22.legal_id", "k2:deploy", "sw:K16.lark", "量不出", "健康空间也一样"} {
 		if !strings.Contains(v, want) {
 			t.Errorf("the switches page has no %q", want)
 		}
 	}
-	act(t, a, s, "switch", map[string]string{"sw:K13.health": "true"}, "zh-Hans")
+	if strings.Contains(v, "sw:K13.") {
+		t.Error("K13 decides nothing now: not on the page")
+	}
+	act(t, a, s, "switch", map[string]string{"sw:K22.health": "true"}, "zh-Hans")
 	sw := a.c.St.S.Switches
-	if !entry.On(sw, "K13.health") || entry.On(sw, "K13.family") || sw["K13.health"].By != "user" {
-		t.Errorf("K13 is not per category: %+v", sw)
+	if !entry.On(sw, "K22.health") || entry.On(sw, "K22.relationships") || sw["K22.health"].By != "user" {
+		t.Errorf("K22 is not per category: %+v", sw)
 	}
 	act(t, a, s, "k2", map[string]string{"k2:deploy": "act"}, "zh-Hans")
 	if entry.Switch(sw, "K2.deploy") != "act" || entry.Switch(sw, "K2.other") != "suggest" {
@@ -430,14 +443,28 @@ func TestWeeklyReport(t *testing.T) {
 	if len(h.sent) != 1 {
 		t.Fatalf("sent %d", len(h.sent))
 	}
+	// The push is the short summary (the hub refuses a body over 1000 characters); the full text is on the page.
 	body := h.sent[0]
-	for _, want := range []string{"week 2026-W46", "1 new in effect", "选项要写全称", "not measurable", "How the people cards are used"} {
+	for _, want := range []string{"week 2026-W46", "1 new in effect", "Periodic overview"} {
 		if !strings.Contains(body, want) {
-			t.Errorf("the report does not say %q: %s", want, body)
+			t.Errorf("the summary does not say %q: %s", want, body)
 		}
+	}
+	if _, sum, _ := strings.Cut(body, "\n"); len([]rune(sum)) > overview.SummaryMost {
+		t.Errorf("summary of %d characters", len([]rune(sum)))
 	}
 	if strings.Contains(body, "新生效") {
 		t.Errorf("not in the target language: %s", body)
+	}
+	full := overview.ReportIn(a.c.St.Dir, "weekly", "2026-W46")
+	for _, want := range []string{"week 2026-W46", "1 new in effect", "选项要写全称", "not measurable", "How the people cards are used", "Cross-event overview"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("the full report does not say %q: %s", want, full)
+		}
+	}
+	_, v := render(t, a, page{Tab: tabStart, Open: "ovr:weekly:2026-W46"}, "en")
+	if !strings.Contains(v, "选项要写全称") {
+		t.Errorf("the report page does not show the full text: %s", v)
 	}
 	// Looked at once a week.
 	if err := a.weeklyTick(context.Background(), next.Add(time.Hour)); err != nil || len(h.sent) != 1 {

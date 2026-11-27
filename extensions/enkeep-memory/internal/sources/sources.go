@@ -40,10 +40,12 @@ const (
 	KindTodos  = "todos"  // S5: id the to-do's
 	KindAbout  = "about"  // S7: id "me"
 	KindMemory = "memory" // S6: id the file's name
+	KindLedger = "ledger" // S12: id "<day>" or "<space>/<day>"
+	KindSent   = "sent"   // S13: sent-as-user provenance on S8 kb.day (not a standalone DayKind)
 )
 
 // Kinds lists them.
-var Kinds = []string{KindAgents, KindAsks, KindTodos, KindAbout, KindMemory}
+var Kinds = []string{KindAgents, KindAsks, KindTodos, KindAbout, KindMemory, KindLedger}
 
 // DayKind says whether a unit kind is one of this package's (read with Day("<kind>/<id>", day)).
 func DayKind(kind string) bool { return slices.Contains(Kinds, kind) }
@@ -54,6 +56,7 @@ const (
 	SpeakerAgent   = "Agent" // an agent's text
 	SpeakerPersona = "Persona"
 	SpeakerPaste   = "粘贴材料"
+	SpeakerTest    = "测试提示" // a probe sent to check a deployment: never the user's words (internal/relay)
 	SpeakerOther   = "其他会话"
 	SpeakerWork    = "工作"
 	SpeakerCard    = "卡片"
@@ -61,6 +64,10 @@ const (
 	SpeakerTodo    = "待办"
 	SpeakerDecide  = "决定"
 	SpeakerMemory  = "助手记忆"
+	SpeakerLedger  = "台账"
+	// SpeakerRelayCand is a claim of the user's words inside a task prompt or a relay (relay.Quotes), not yet
+	// verified: curate's verifyRelays makes it the user's line (relay.RelayedMark) or drops it.
+	SpeakerRelayCand = "转达待核"
 )
 
 // Limits on what a line keeps.
@@ -89,6 +96,12 @@ type Source struct {
 	status   map[string]*entry.SourceStatus
 	counted  map[string]bool // "<code>|<ref>@<day>": a unit counted once per pass
 	sessions map[string]hubapi.Session
+	seen     map[string]store.SeenSession // sessions known before this pass (State.SeenSessions, cursors, admitted units)
+	listed   map[string]store.SeenSession // sessions this pass found in the hub's list: kept at End
+	first    map[string]string            // the day of a session's first item, read from the start this pass
+	fromHist map[string]bool              // sessions only the hub's session history listed this pass
+	hist     *store.HistoryRead           // how this pass could list the day's sessions from history (nil: not asked)
+	histAt   time.Time                    // the window's start history was asked for
 	folds    map[string]*foldPage
 	cards    map[string][]hubapi.Interaction // day → the cards of the day
 	cardErr  map[string]error
@@ -96,6 +109,9 @@ type Source struct {
 	decided  map[string][]hubapi.Decision
 	about    string
 	memories map[string]hubapi.MemoryFile
+	ledgers  map[string][]hubapi.LedgerEntry
+	sentSeen map[int64]bool
+	sentNoID map[string]bool
 	private  map[string]bool // recordings marked private
 	srcOf    map[string]string
 	days     map[string]wire.KBDayResult
@@ -120,12 +136,20 @@ func (s *Source) reset() {
 	s.pending = map[string]string{}
 	s.counted = map[string]bool{}
 	s.sessions = map[string]hubapi.Session{}
+	s.seen = map[string]store.SeenSession{}
+	s.listed = map[string]store.SeenSession{}
+	s.first = map[string]string{}
+	s.fromHist = map[string]bool{}
+	s.hist = nil
 	s.folds = map[string]*foldPage{}
 	s.cards = map[string][]hubapi.Interaction{}
 	s.cardErr = map[string]error{}
 	s.todos = map[string]hubapi.Todo{}
 	s.decided = map[string][]hubapi.Decision{}
 	s.memories = map[string]hubapi.MemoryFile{}
+	s.ledgers = map[string][]hubapi.LedgerEntry{}
+	s.sentSeen = map[int64]bool{}
+	s.sentNoID = map[string]bool{}
 	s.private = map[string]bool{}
 	s.srcOf = map[string]string{}
 	s.days = map[string]wire.KBDayResult{}
@@ -160,6 +184,40 @@ func (s *Source) Begin(st *store.State, day string) {
 		c := *v
 		c.Units, c.Lines, c.Bytes = 0, 0, 0 // this pass's reading; End adds it to the totals
 		s.status[k] = &c
+	}
+	s.knownSessions(st)
+}
+
+// knownSessions is every agent session a pass found before (State.SeenSessions), with those read before that record
+// was kept: an agent cursor names a session and the last day read of it, an admitted unit a day it was read.
+func (s *Source) knownSessions(st *store.State) {
+	for id, v := range st.SeenSessions {
+		if v != nil {
+			s.seen[id] = *v
+		}
+	}
+	known := func(id, day string) {
+		if id == "" || !strings.Contains(id, "/") || day == "" {
+			return
+		}
+		k := s.seen[id]
+		if day > k.Last {
+			k.Last = day
+		}
+		s.seen[id] = k
+	}
+	for k, v := range st.Cursors {
+		if id, ok := strings.CutPrefix(k, entry.SrcAgent+"/"); ok {
+			_, day := cursorOf(v)
+			known(id, day)
+		}
+	}
+	for day, refs := range st.Admitted {
+		for _, ref := range refs {
+			if id, ok := strings.CutPrefix(ref, KindAgents+"/"); ok {
+				known(id, day)
+			}
+		}
 	}
 }
 
@@ -197,6 +255,40 @@ func (s *Source) End(st *store.State, day string, units int) {
 			st.Cursors[k] = v
 		}
 	}
+	if len(s.listed) > 0 && st.SeenSessions == nil {
+		st.SeenSessions = map[string]*store.SeenSession{}
+	}
+	for id, v := range s.listed {
+		if cur := st.SeenSessions[id]; cur != nil {
+			v.Last, v.First = max(v.Last, cur.Last), cur.First
+		}
+		st.SeenSessions[id] = &v
+	}
+	for id, first := range s.first {
+		cur := st.SeenSessions[id]
+		if cur == nil {
+			if st.SeenSessions == nil {
+				st.SeenSessions = map[string]*store.SeenSession{}
+			}
+			k := s.seen[id] // known from a cursor or an admitted unit
+			cur = &k
+			st.SeenSessions[id] = cur
+		}
+		if cur.First == "" || first < cur.First {
+			cur.First = first
+		}
+	}
+	if s.hist != nil {
+		if s.hist.Offered && len(s.hist.Gaps) == 0 {
+			delete(st.SessionHistory, day) // listed in full
+		} else {
+			if st.SessionHistory == nil {
+				st.SessionHistory = map[string]*store.HistoryRead{}
+			}
+			h := *s.hist
+			st.SessionHistory[day] = &h
+		}
+	}
 	if units > 0 && !slices.Contains(st.ActiveDays, day) {
 		st.ActiveDays = append(st.ActiveDays, day)
 		sort.Strings(st.ActiveDays)
@@ -212,6 +304,7 @@ func (s *Source) End(st *store.State, day string, units int) {
 var baseRows = [][2]string{
 	{entry.SrcAssistant, "persona"}, {entry.SrcAsk, KindAsks}, {entry.SrcAgent, KindAgents}, {entry.SrcTools, "segments"},
 	{entry.SrcTodo, KindTodos}, {entry.SrcMemory, KindMemory}, {entry.SrcAbout, KindAbout}, {entry.SrcRecording, "recordings"},
+	{entry.SrcLedger, KindLedger}, {entry.SrcSent, KindSent},
 }
 
 // Status is a copy of the ledger as it stands in this pass (for tests and the replay report).
@@ -243,6 +336,7 @@ func (s *Source) note(code, name string, err error) {
 	st := s.statusOf(code, name)
 	st.LastRead = time.Now().UTC().Format(time.RFC3339)
 	var w *hubapi.WaitingHub
+	var ld *hubapi.LedgerDenied
 	switch {
 	case err == nil:
 		st.Available, st.Missing, st.Waiting = true, "", ""
@@ -251,7 +345,7 @@ func (s *Source) note(code, name string, err error) {
 		if st.Units == 0 {
 			st.Available, st.Missing = false, "waiting_hub"
 		}
-	case errors.Is(err, hubapi.ErrNoScope), errors.Is(err, convsrc.ErrNoAccess):
+	case errors.Is(err, hubapi.ErrNoScope), errors.Is(err, convsrc.ErrNoAccess), errors.As(err, &ld):
 		st.Available, st.Missing, st.Waiting = false, "no_scope", ""
 	case errors.Is(err, hubapi.ErrNotConnected):
 		st.Available, st.Missing, st.Waiting = false, "not_connected", ""
@@ -328,6 +422,7 @@ func (s *Source) Recent(ctx context.Context, since, until time.Time) ([]wire.KBE
 	out = append(out, s.todoEntries(ctx, since, end)...)
 	out = append(out, s.aboutEntries(ctx, since)...)
 	out = append(out, s.memoryEntries(ctx, since, end)...)
+	out = append(out, s.ledgerEntries(ctx, day, since, end)...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
 	return out, nil
 }
@@ -423,6 +518,9 @@ func (s *Source) Get(ctx context.Context, kind, id string) (wire.KBDetail, error
 		meta["name"] = "Agent 会话"
 		if ok {
 			meta["name"] = sessionName(se, s.Machine)
+			if se.Space != "" {
+				meta["space"] = se.Space // entries from it carry the space (0.2.0-beta.40)
+			}
 		}
 	case KindAsks:
 		meta["code"], meta["name"] = entry.SrcAsk, "卡片问答 · "+id
@@ -444,6 +542,14 @@ func (s *Source) Get(ctx context.Context, kind, id string) (wire.KBDetail, error
 			meta["note"] = m.Description
 		}
 		s.mu.Unlock()
+	case KindLedger:
+		sp := ledgerUnitSpace(id)
+		dayPart := id
+		if sp != "" {
+			_, dayPart, _ = strings.Cut(id, "/")
+			meta["space"] = sp
+		}
+		meta["code"], meta["name"] = entry.SrcLedger, ledgerUnitName(sp, dayPart)
 	}
 	raw, _ := json.Marshal(meta)
 	return wire.KBDetail{Kind: kind, ID: id, Meta: raw}, nil
@@ -483,6 +589,7 @@ func (s *Source) Day(ctx context.Context, chat, day string) (wire.KBDayResult, e
 		r, err := s.Source.Day(ctx, chat, day)
 		if err == nil {
 			s.countDay(chat, day, r)
+			s.recordSent(chat, day, r)
 		}
 		return r, err
 	}
@@ -508,6 +615,8 @@ func (s *Source) Day(ctx context.Context, chat, day string) (wire.KBDayResult, e
 		lines = s.aboutDay(day)
 	case KindMemory:
 		lines = s.memoryDay(id, day)
+	case KindLedger:
+		lines = s.ledgerDay(id, day)
 	}
 	if err != nil {
 		return wire.KBDayResult{}, err

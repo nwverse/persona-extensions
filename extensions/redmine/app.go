@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "redmine"
-const pageUI = "issues"
+const pageUI = "redmine"
 
 type app struct {
 	mu       sync.RWMutex

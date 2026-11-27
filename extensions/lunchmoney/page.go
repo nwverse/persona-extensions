@@ -72,6 +72,34 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+// maxViewRecords is half the SDK's component limit: a transaction renders a line and a notes line.
+const maxViewRecords = 125
+
+// collectTransactions reads the batches from the start through the one at offset so that Load more answers the whole
+// list, longer. It stops at maxViewRecords to keep the view within the SDK's component limit, and HasMore reports
+// whether another batch can be loaded.
+func (a *app) collectTransactions(ctx context.Context, start, end string, categoryID int64, offset int) (transactionPage, error) {
+	var out transactionPage
+	for pos := 0; pos <= offset && len(out.Transactions) < maxViewRecords; pos += 50 {
+		batch, err := a.client.transactions(ctx, start, end, categoryID, pos)
+		if err != nil {
+			return transactionPage{}, err
+		}
+		out.Transactions = append(out.Transactions, batch.Transactions...)
+		out.HasMore = batch.HasMore
+		if !batch.HasMore {
+			break
+		}
+	}
+	if len(out.Transactions) > maxViewRecords {
+		out.Transactions = out.Transactions[:maxViewRecords]
+	}
+	if len(out.Transactions) >= maxViewRecords {
+		out.HasMore = false
+	}
+	return out, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.token == "" {
@@ -100,7 +128,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		}
 		section := wire.Section{Title: t.accounts}
 		for _, item := range items {
-			section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: clipText(fmt.Sprintf("%s · %s %s · %s", item.Name, item.Balance, item.Currency, item.BalanceAsOf), 1800)})
+			section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: clipText(fmt.Sprintf("%s · %s %s · %s", item.Name, item.Balance, item.Currency, item.asOf()), 1800)})
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noAccounts})
@@ -110,7 +138,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Mode != "" {
 		return nil, errors.New("invalid finance view")
 	}
-	page, err := a.client.transactions(ctx, st.StartDate, st.EndDate, st.CategoryID, st.Offset)
+	page, err := a.collectTransactions(ctx, st.StartDate, st.EndDate, st.CategoryID, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err

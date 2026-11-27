@@ -20,7 +20,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Page < 0 || st.DocumentID < 0 || len(st.Query) > 600 {
+	if err := r.DecodeState(&st); err != nil || st.Page < 0 || st.DocumentID < 0 || len([]rune(st.Query)) > maxQueryChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -41,7 +41,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Mode, st.Query, st.Page = "", strings.TrimSpace(clipText(r.Values["q"], 500)), 1
+		st.Mode, st.Query, st.Page = "", strings.TrimSpace(clipText(r.Values["q"], maxQueryChars)), 1
 	case "more":
 		st.Page, err = strconv.Atoi(r.Values["page"])
 		if err != nil || st.Page < 2 {
@@ -65,6 +65,35 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	v, err := a.page(ctx, r, st)
 	return &wire.ActionResult{View: v}, err
+}
+
+// maxViewRecords is half the SDK's component limit: a document can render a row and a search highlight line.
+const maxViewRecords = 125
+
+// collectDocuments reads page 1 through the current page so that Load more answers the whole list, longer. It stops at
+// maxViewRecords to keep the view within the SDK's component limit, and reports whether another page can be loaded
+// (HasMore, NextPage) and the total Paperless-ngx counts (Count) as of the last page read.
+func (a *app) collectDocuments(ctx context.Context, query string, current int) (documentPage, error) {
+	var out documentPage
+	for pageNumber := 1; pageNumber <= current && len(out.Items) < maxViewRecords; {
+		batch, err := a.client.documents(ctx, query, pageNumber)
+		if err != nil {
+			return documentPage{}, err
+		}
+		out.Items = append(out.Items, batch.Items...)
+		out.Count, out.HasMore, out.NextPage = batch.Count, batch.HasMore, batch.NextPage
+		if !batch.HasMore {
+			break
+		}
+		pageNumber = batch.NextPage
+	}
+	if len(out.Items) > maxViewRecords {
+		out.Items = out.Items[:maxViewRecords]
+	}
+	if len(out.Items) >= maxViewRecords {
+		out.HasMore = false
+	}
+	return out, nil
 }
 
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
@@ -101,7 +130,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Page == 0 {
 		st.Page = 1
 	}
-	page, err := a.client.documents(ctx, st.Query, st.Page)
+	page, err := a.collectDocuments(ctx, st.Query, st.Page)
 	a.record(err)
 	if err != nil {
 		return nil, err

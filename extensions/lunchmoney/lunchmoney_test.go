@@ -44,7 +44,7 @@ func newFakeLunchMoney(t *testing.T) *fakeLunchMoney {
 		case "/v2/manual_accounts":
 			_ = json.NewEncoder(w).Encode(map[string]any{"manual_accounts": []account{{ID: 7, Name: "Everyday account", Balance: "1250.0000", Currency: "usd", BalanceAsOf: "2026-11-10T10:00:00Z", Status: "active"}}})
 		case "/v2/plaid_accounts":
-			_ = json.NewEncoder(w).Encode(map[string]any{"accounts": []account{{ID: 8, Name: "Synced account", Balance: "2400.0000", Currency: "usd", BalanceAsOf: "2026-11-10T10:00:00Z", Status: "active"}}})
+			_ = json.NewEncoder(w).Encode(map[string]any{"plaid_accounts": []account{{ID: 8, Name: "Synced account", Balance: "2400.0000", Currency: "usd", BalanceLastUpdate: "2026-11-10T10:00:00Z", Status: "active"}}})
 		case "/v2/categories":
 			if r.URL.Query().Get("format") != "flattened" {
 				w.WriteHeader(http.StatusBadRequest)

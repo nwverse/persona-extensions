@@ -89,6 +89,24 @@ test("cancellation and deadlines propagate and do not swallow parent AbortError"
   await rejected; timed.dispose();
 });
 
+test("internal per-request timeout surfaces ReadError(slow) and falls back to stale cache", async () => {
+  const fixture = new Fixture();
+  const service = make(fixture, { limits: { gap: 0, request: 20 } });
+  await service.search("typescript");
+  fixture.clock += 61_000;
+  fixture.put(questionPath, { items: [question] }, { delay: 500 });
+  const stale = await service.search("typescript", "stackoverflow", "", 12, true);
+  assert.equal(stale.questions[0].id, 70794241);
+  assert.equal(stale.stale?.code, "slow");
+  assert.equal(service.status().state, "error");
+
+  const uncachedFixture = new Fixture();
+  uncachedFixture.put(questionPath, { items: [question] }, { delay: 500 });
+  const uncached = make(uncachedFixture, { limits: { gap: 0, request: 20 } });
+  await assert.rejects(uncached.search("typescript"), (error: unknown) => error instanceof ReadError && error.code === "slow");
+  assert.equal(uncached.status().state, "error");
+});
+
 test("malformed responses never become stale cached content", async () => {
   const fixture = new Fixture(), service = make(fixture);
   fixture.put(questionPath, { items: [{ ...question, link: "https://attacker.invalid/questions/70794241" }] });

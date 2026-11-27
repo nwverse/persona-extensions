@@ -64,6 +64,8 @@ var Composer = native("composer");
 var Image = native("image");
 var Grid = native("grid");
 var Carousel = native("carousel");
+var Graph = native("graph");
+var Scene = native("scene");
 
 // ../../sdk/ts/src/hooks.ts
 var context;
@@ -153,7 +155,10 @@ var fields = {
   composer: ["name", "placeholder", "value", "buttons"],
   image: ["src", "alt", "caption", "aspect", "fit", "no_zoom"],
   grid: ["tiles", "max_columns"],
-  carousel: ["title", "tiles", "width"]
+  carousel: ["title", "tiles", "width"],
+  graph: ["nodes", "edges", "layout", "direction", "selected", "folded"],
+  scene: ["alt", "caption", "poster", "camera", "shapes", "labels", "pins"],
+  map: ["title", "alt", "caption", "aspect", "viewport", "markers", "routes", "links", "static", "show_list"]
 };
 function pathPart(parent, ...segments) {
   return parent + segments.map((segment) => `${segment.length}:${segment}`).join("");
@@ -763,7 +768,7 @@ function withExactParams(handler) {
 }
 
 // persona-extension.json
-var persona_extension_default = { manifest_version: 1, id: "foodfacts", name: "\u98DF\u54C1\u5546\u54C1\u67E5\u8BE2", version: "0.1.3", icon: "assets/icon.png", description: "\u6309\u5546\u54C1\u540D\u79F0\u6216\u6761\u7801\u67E5\u8BE2 Open Food Facts\uFF0C\u67E5\u770B\u54C1\u724C\u3001\u914D\u6599\u3001\u6807\u79F0\u8FC7\u654F\u539F\u3001\u8425\u517B\u7B49\u7EA7\u548C\u539F\u59CB\u5546\u54C1\u94FE\u63A5\u3002\u4F17\u5305\u4FE1\u606F\u53EF\u80FD\u4E0D\u5B8C\u6574\uFF0C\u8FC7\u654F\u548C\u996E\u98DF\u51B3\u7B56\u8BF7\u4EE5\u5B9E\u9645\u5305\u88C5\u4E3A\u51C6\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/foodfacts/README.md", tags: ["\u98DF\u54C1", "\u914D\u6599", "Open Food Facts"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/foodfacts.mjs", sha256: "" } }, contributes: { connectors: [{ id: "foodfacts", name: "Open Food Facts", capabilities: ["status", "tools"], hosts: ["world.openfoodfacts.org"], agent_tools: ["foodfacts_*"] }], ui: [{ id: "products", title: "\u98DF\u54C1\u5546\u54C1\u67E5\u8BE2", placement: "nav_page", icon: "search" }] }, permissions: { network: ["world.openfoodfacts.org"] } };
+var persona_extension_default = { manifest_version: 1, id: "foodfacts", name: "\u98DF\u54C1\u5546\u54C1\u67E5\u8BE2", version: "0.1.6", icon: "assets/icon.png", description: "\u6309\u5546\u54C1\u540D\u79F0\u6216\u6761\u7801\u67E5\u8BE2 Open Food Facts\uFF0C\u67E5\u770B\u54C1\u724C\u3001\u914D\u6599\u3001\u6807\u79F0\u8FC7\u654F\u539F\u3001\u8425\u517B\u7B49\u7EA7\u548C\u539F\u59CB\u5546\u54C1\u94FE\u63A5\u3002\u4F17\u5305\u4FE1\u606F\u53EF\u80FD\u4E0D\u5B8C\u6574\uFF0C\u8FC7\u654F\u548C\u996E\u98DF\u51B3\u7B56\u8BF7\u4EE5\u5B9E\u9645\u5305\u88C5\u4E3A\u51C6\u3002", publisher: "nwverse", homepage: "https://github.com/nwverse/persona-extensions/blob/main/extensions/foodfacts/README.md", tags: ["\u98DF\u54C1", "\u914D\u6599", "Open Food Facts"], engines: { plugin_protocol: 1 }, runtime: { mode: "deno", source: { entry: "src/index.ts", bundle: "build/foodfacts.mjs", sha256: "" } }, contributes: { connectors: [{ id: "foodfacts", name: "Open Food Facts", capabilities: ["status", "tools"], hosts: ["world.openfoodfacts.org"], agent_tools: ["foodfacts_*"] }], ui: [{ id: "products", title: "\u98DF\u54C1\u5546\u54C1\u67E5\u8BE2", placement: "nav_page", icon: "search" }] }, permissions: { network: ["world.openfoodfacts.org"] } };
 
 // src/model.ts
 var limits = Object.freeze({ request: 12e3, page: 15e3, tool: 15e3, response: 1 << 20, fresh: 24 * 60 * 6e4, cache: 24, cacheBytes: 1 << 20, gap: 1200 });
@@ -774,7 +779,13 @@ var ReadError = class extends Error {
     this.status = status;
   }
 };
-var clip = (text, most) => text.length <= most ? text : text.slice(0, most).trimEnd() + "\u2026";
+var clip = (text, most) => {
+  if (!(most > 0)) return "";
+  const chars = Array.from(text);
+  if (chars.length <= most) return text;
+  if (most === 1) return chars[0];
+  return chars.slice(0, most - 1).join("").trimEnd() + "\u2026";
+};
 var oneLine = (text) => text.replace(/\s+/gu, " ").trim();
 function queryText(value) {
   if (typeof value !== "string" || /[\u0000-\u001f\u007f]/u.test(value)) throw new ReadError("invalid");
@@ -785,10 +796,6 @@ function queryText(value) {
 function barcode(value) {
   if (typeof value !== "string" || !/^[0-9]{8,14}$/.test(value)) throw new ReadError("invalid");
   return value;
-}
-function lookupPath(query) {
-  if (/^[0-9]{8,14}$/.test(query)) return productPath(query);
-  return searchPath(query);
 }
 function searchPath(query, limit = 12) {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new ReadError("invalid");
@@ -827,7 +834,7 @@ function productURL(value, code) {
   } catch {
     throw new ReadError("bad_answer");
   }
-  if (url.protocol !== "https:" || url.hostname !== "world.openfoodfacts.org" || url.username || url.password || url.port || !url.pathname.startsWith(`/product/${code}`)) throw new ReadError("bad_answer");
+  if (url.protocol !== "https:" || url.hostname !== "world.openfoodfacts.org" || url.username || url.password || url.port || url.pathname !== `/product/${code}` && !url.pathname.startsWith(`/product/${code}/`)) throw new ReadError("bad_answer");
   return url.href;
 }
 function parseProduct(raw, expectedCode, at) {
@@ -837,7 +844,9 @@ function parseProduct(raw, expectedCode, at) {
   return product(root2.product, expectedCode);
 }
 function product(raw, expectedCode) {
-  const item = object(raw), code = barcode(item.code);
+  const item = object(raw);
+  if (typeof item.code !== "string" || !/^[0-9]{8,14}$/.test(item.code)) throw new ReadError("bad_answer");
+  const code = item.code;
   if (expectedCode && code.replace(/^0+/, "") !== expectedCode.replace(/^0+/, "")) throw new ReadError("bad_answer");
   const name = string(item.product_name, 300);
   if (!name) throw new ReadError("bad_answer");
@@ -992,8 +1001,12 @@ function checkSignal(signal) {
 function budget(parent, milliseconds) {
   const controller = new AbortController();
   const cancel = () => controller.abort(parent?.reason ?? new DOMException("Cancelled", "AbortError"));
-  if (parent?.aborted) cancel();
-  else parent?.addEventListener("abort", cancel, { once: true });
+  if (parent?.aborted) {
+    cancel();
+    return { signal: controller.signal, dispose: () => {
+    } };
+  }
+  parent?.addEventListener("abort", cancel, { once: true });
   const timer = setTimeout(() => controller.abort(new ReadError("slow")), milliseconds);
   return { signal: controller.signal, dispose: () => {
     clearTimeout(timer);
@@ -1026,7 +1039,10 @@ var FoodFacts = class {
     const bytes = new TextEncoder().encode(JSON.stringify(raw)).byteLength;
     if (bytes > this.limits.cacheBytes) return;
     const old = this.cache.get(path);
-    if (old) this.bytes -= old.bytes;
+    if (old) {
+      this.bytes -= old.bytes;
+      this.cache.delete(path);
+    }
     this.cache.set(path, { raw, at, used: this.monotonic(), bytes });
     this.bytes += bytes;
     while (this.cache.size > this.limits.cache || this.bytes > this.limits.cacheBytes) {
@@ -1095,11 +1111,12 @@ var FoodFacts = class {
       throw new ReadError("bad_answer");
     }
   }
-  async read(path, fresh, signal) {
-    checkSignal(signal);
+  async read(path, fresh, signal, validate) {
+    if (signal?.aborted && !(signal.reason instanceof ReadError)) checkSignal(signal);
     const cached = this.cached(path, fresh);
     if (cached) return cached;
     const run = this.queue.then(async () => {
+      checkSignal(signal);
       const again = this.cached(path, fresh);
       if (again) return again;
       const pause = Math.max(0, this.limits.gap - (this.monotonic() - this.lastRequest));
@@ -1120,14 +1137,15 @@ var FoodFacts = class {
       try {
         const raw = await this.response(path, request.signal);
         const at = this.now();
+        validate(raw, at);
         this.save(path, raw, at);
         this.lastOK = at;
         this.lastError = void 0;
         return { raw, at };
       } catch (error) {
-        if (request.signal.aborted) throw error instanceof Error && error.name === "AbortError" ? error : new DOMException("Cancelled", "AbortError");
-        const failure = error instanceof ReadError ? error : error instanceof Error && error.name === "AbortError" ? error : new ReadError("network");
-        if (failure instanceof ReadError) this.lastError = { code: failure.code, at: this.monotonic() };
+        if (signal?.aborted && !(signal.reason instanceof ReadError)) throw error instanceof Error && error.name === "AbortError" ? error : new DOMException("Cancelled", "AbortError");
+        const failure = error instanceof ReadError ? error : signal?.aborted && signal.reason instanceof ReadError ? signal.reason : request.signal.aborted ? request.signal.reason instanceof ReadError ? request.signal.reason : new ReadError("slow") : error instanceof Error && error.name === "AbortError" ? error : new ReadError("network");
+        if (failure instanceof ReadError && failure.code !== "not_found") this.lastError = { code: failure.code, at: this.monotonic() };
         throw failure;
       } finally {
         this.lastRequest = this.monotonic();
@@ -1141,6 +1159,7 @@ var FoodFacts = class {
       return await run;
     } catch (error) {
       if (error instanceof Error && error.name === "AbortError") throw error;
+      if (error instanceof ReadError && error.code === "slow") this.lastError = { code: error.code, at: this.monotonic() };
       const old = this.cached(path, Infinity);
       if (old && (!(error instanceof ReadError) || error.code !== "not_found")) return { ...old, stale: error instanceof ReadError ? error : new ReadError("network") };
       throw error;
@@ -1156,12 +1175,19 @@ var FoodFacts = class {
     };
   }
   async search(query, limit = 12, refresh = false, signal) {
-    const rd = await this.read(searchPath(query, limit), refresh ? 0 : this.limits.fresh, signal);
+    const rd = await this.read(searchPath(query, limit), refresh ? 0 : this.limits.fresh, signal, (raw, at) => {
+      parseSearch(raw, at);
+    });
     return { ...parseSearch(rd.raw, rd.at), stale: rd.stale };
   }
+  async productResult(code, refresh = false, signal) {
+    const rd = await this.read(productPath(code), refresh ? 0 : this.limits.fresh, signal, (raw, at) => {
+      parseProduct(raw, code, at);
+    });
+    return { product: parseProduct(rd.raw, code, rd.at), at: rd.at, ...rd.stale ? { stale: rd.stale } : {} };
+  }
   async product(code, refresh = false, signal) {
-    const rd = await this.read(lookupPath(code), refresh ? 0 : this.limits.fresh, signal);
-    return parseProduct(rd.raw, code, rd.at);
+    return (await this.productResult(code, refresh, signal)).product;
   }
   cacheStats() {
     return { entries: this.cache.size, bytes: this.bytes };
@@ -1185,43 +1211,70 @@ function line(product2, index, locale) {
    ${t.allergens}: ${product2.allergens || t.unknown}
    ${product2.url}`;
 }
-function argsFrom(raw, exact) {
+function argsFrom(raw, exact, stringFields, allowLimit) {
   if (exact) {
+    if (exact.raw === "null") return {};
+    if (!exact.raw.startsWith("{")) throw new ReadError("invalid");
     const args = {};
-    for (const field of ["query", "code"]) for (const token of exact.fieldValues(field)) {
+    for (const field of stringFields) for (const token of exact.fieldValues(field)) {
+      if (token.raw === "null") continue;
+      if (!token.raw.startsWith('"')) throw new ReadError("invalid");
       const value2 = JSON.parse(token.raw);
       if (typeof value2 !== "string") throw new ReadError("invalid");
       args[field] = value2;
     }
-    const limit = exact.int64Fields(["limit"]).limit;
-    if (limit !== 0n) args.limit = limit;
+    if (allowLimit) {
+      let hasLimit = false;
+      let limit = 0n;
+      for (const token of exact.fieldValues("limit")) {
+        if (token.raw === "null") continue;
+        try {
+          limit = token.int64(limit);
+        } catch {
+          throw new ReadError("invalid");
+        }
+        hasLimit = true;
+      }
+      if (hasLimit) args.limit = limit;
+    }
     return args;
   }
   if (raw == null) return {};
   if (typeof raw !== "object" || Array.isArray(raw)) throw new ReadError("invalid");
   const value = raw;
-  if (value.query != null && typeof value.query !== "string") throw new ReadError("invalid");
-  if (value.code != null && typeof value.code !== "string") throw new ReadError("invalid");
-  if (value.limit != null && (typeof value.limit !== "number" || !Number.isSafeInteger(value.limit))) throw new ReadError("invalid");
+  for (const field of stringFields) if (value[field] != null && typeof value[field] !== "string") throw new ReadError("invalid");
+  if (allowLimit && value.limit != null && (typeof value.limit !== "number" || !Number.isSafeInteger(value.limit))) throw new ReadError("invalid");
   return value;
 }
 async function callTool(service, name, raw = {}, signal, exact) {
-  const args = argsFrom(raw, exact), t = textsFor(service.locale), request = budget(signal, service.limits.tool);
+  if (name !== "foodfacts_search" && name !== "foodfacts_product") throw unknownMethod(`connector.tools.${name}`);
+  const args = argsFrom(raw, exact, name === "foodfacts_search" ? ["query"] : ["code"], name === "foodfacts_search");
+  const t = textsFor(service.locale), request = budget(signal, service.limits.tool);
   try {
     if (name === "foodfacts_search") {
-      const query = queryText(args.query), limit = args.limit == null ? 10 : Number(args.limit);
-      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 20) throw new ReadError("invalid");
-      const result = await service.search(query, limit, false, request.signal);
-      return clip((result.products.length ? result.products.map((product2, index) => line(product2, index, service.locale)).join("\n").trim() : fmt(t.results, { query }) + "\n" + t.empty) + `
+      const query = queryText(args.query);
+      let limit = 10;
+      if (args.limit != null) {
+        if (typeof args.limit === "bigint") {
+          if (args.limit < 1n || args.limit > 20n) throw new ReadError("invalid");
+          limit = Number(args.limit);
+        } else {
+          if (typeof args.limit !== "number" || !Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 20) throw new ReadError("invalid");
+          limit = args.limit;
+        }
+      }
+      const result2 = await service.search(query, limit, false, request.signal);
+      return clip((result2.products.length ? result2.products.map((product2, index) => line(product2, index, service.locale)).join("\n").trim() : fmt(t.results, { query }) + "\n" + t.empty) + `
+${t.attribution}${result2.stale ? `
+${errorText(result2.stale, service.locale)}` : ""}`, 29999);
+    }
+    const result = await service.productResult(barcode(args.code), false, request.signal);
+    return clip(line(result.product, 0, service.locale) + `
 ${t.attribution}${result.stale ? `
 ${errorText(result.stale, service.locale)}` : ""}`, 29999);
-    }
-    if (name === "foodfacts_product") {
-      const product2 = await service.product(barcode(args.code), false, request.signal);
-      return clip(line(product2, 0, service.locale) + `
-${t.attribution}`, 29999);
-    }
-    throw unknownMethod(`connector.tools.${name}`);
+  } catch (error) {
+    if (!(error instanceof ReadError) && !signal?.aborted && request.signal.aborted && request.signal.reason instanceof ReadError) throw request.signal.reason;
+    throw error;
   } finally {
     request.dispose();
   }
@@ -1291,11 +1344,14 @@ async function loadPage(service, state, refresh, signal) {
   const request = budget(signal, service.limits.page);
   try {
     if (!state.found) return { kind: "empty" };
-    if (/^[0-9]{8,14}$/.test(state.q)) return { kind: "result", result: { products: [await service.product(state.q, refresh, request.signal)], total: 1, at: service.now() } };
+    if (/^[0-9]{8,14}$/.test(state.q)) {
+      const found = await service.productResult(state.q, refresh, request.signal);
+      return { kind: "result", result: { products: [found.product], total: 1, at: found.at, ...found.stale ? { stale: found.stale } : {} } };
+    }
     return { kind: "result", result: await service.search(state.q, 12, refresh, request.signal) };
   } catch (error) {
     checkSignal(signal);
-    return { kind: "error", error };
+    return { kind: "error", error: !(error instanceof ReadError) && request.signal.aborted && request.signal.reason instanceof ReadError ? request.signal.reason : error };
   } finally {
     request.dispose();
   }
@@ -1303,7 +1359,7 @@ async function loadPage(service, state, refresh, signal) {
 function page(props) {
   const { service, state, loaded, uiVersion = 0 } = props, t = textsFor(props.locale ?? service.locale);
   const act = (id, next, title) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "products", state: encodeState(next), ...title ? { title } : {} } } : { id });
-  const text = (key, value, style = "secondary") => /* @__PURE__ */ jsx(Text, { text: clip(value || t.unknown, 2800), style }, key);
+  const text = (key, value, style = "secondary") => /* @__PURE__ */ jsx(Text, { text: clip(value || t.unknown, 2e3), style }, key);
   const search = /* @__PURE__ */ jsxs(Section, { title: t.search, children: [
     /* @__PURE__ */ jsx(Field, { name: "query", label: t.search, kind: "text", placeholder: t.searchHint, value: state.q }, "foodfacts-query"),
     /* @__PURE__ */ jsx(Button, { title: t.searchAction, action: act("search") }, "foodfacts-submit")

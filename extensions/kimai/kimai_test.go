@@ -41,6 +41,13 @@ func sampleTimesheet() timesheet {
 	return item
 }
 
+// isHTML5Time is whether v is a date and time as Kimai takes them in a write: local, without an offset.
+func isHTML5Time(v any) bool {
+	text, _ := v.(string)
+	_, err := time.Parse("2006-01-02T15:04:05", text)
+	return err == nil
+}
+
 func newFakeKimai(t *testing.T) *fakeKimai {
 	f := &fakeKimai{}
 	f.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +67,7 @@ func newFakeKimai(t *testing.T) *fakeKimai {
 					return
 				}
 				var in map[string]any
-				if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["project"] != float64(7) || in["activity"] != float64(3) || in["begin"] == "" {
+				if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in["project"] != float64(7) || in["activity"] != float64(3) || !isHTML5Time(in["begin"]) {
 					w.WriteHeader(http.StatusBadRequest)
 					return
 				}
@@ -77,6 +84,8 @@ func newFakeKimai(t *testing.T) *fakeKimai {
 				return
 			}
 			_ = json.NewEncoder(w).Encode([]timesheet{sampleTimesheet()})
+		case "/api/users/me":
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": 1, "username": "reader", "timezone": "Asia/Shanghai"})
 		case "/api/timesheets/42/stop":
 			if r.Method != http.MethodPatch || f.failWrite {
 				w.WriteHeader(http.StatusServiceUnavailable)

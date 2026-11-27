@@ -40,6 +40,10 @@ See the [`extensions/`](extensions/) directory for the available extensions. Eac
 
 The bypass extension's source is now `agent-bypass-allow` (formerly `claude-bypass-allow`). Its same-market update requires explicit identity confirmation and preserves installed settings, rules and data. Wait for its package/catalog publication and upgrade the hub and nodes first; do not uninstall/reinstall to migrate. See [its guide](docs/extensions/agent-bypass-allow.md#upgrading-from-the-former-id).
 
+### Water and built-in Health
+
+Persona releases that include [nwverse/persona#14228](https://github.com/nwverse/persona/pull/14228) have water logging, reminders and widgets built into Health. On iPhone or iPad, the Health home offers a card to import the water extension's records and settings and disable the extension. **Migrate before uninstalling**, which deletes its data. Replace extension widgets, watch-face complications and shortcuts with built-in ones; enabling both reminder systems causes duplicate reminders. Web-only and Android-only users can keep using the extension. See the [migration guide](docs/extensions/water.md#move-water-tracking-into-health).
+
 ## Documentation and contributing
 
 - [Documentation index](docs/README.md)

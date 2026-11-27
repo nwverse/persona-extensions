@@ -25,7 +25,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.LinkID) > 256 || len(st.DraftID) > 128 || len(st.Query) > 250 {
+	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.LinkID) > 256 || len(st.DraftID) > 128 || len([]rune(st.Query)) > maxQueryChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -46,7 +46,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Offset = clipText(r.Values["q"], 200), 0
+		st.Query, st.Offset = clipText(r.Values["q"], maxQueryChars), 0
 		if strings.TrimSpace(st.Query) != "" {
 			st.View = "search"
 		} else {
@@ -128,7 +128,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.View == "" {
 		st.View = "unread"
 	}
-	page, err := a.client.links(ctx, st.View, st.Query, st.Offset)
+	links, more, err := a.collectLinks(ctx, st.View, st.Query, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err
@@ -140,8 +140,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.View == "search" {
 		v.Filter.Value = "unread"
 	}
-	section := wire.Section{Title: fmt.Sprintf(t.results, len(page.Data))}
-	for _, item := range page.Data {
+	section := wire.Section{Title: fmt.Sprintf(t.results, len(links))}
+	for _, item := range links {
 		if item.ID == "" || item.Title == "" {
 			continue
 		}
@@ -150,11 +150,36 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noLinks})
 	}
-	if page.HasMore {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section}
 	return v, nil
+}
+
+// maxViewLinks keeps the accumulated list within the SDK's component limit.
+const maxViewLinks = 250
+
+// collectLinks reads batches from offset 0 through offset so that Load more extends the list instead of
+// replacing it, and reports whether GoodLinks has more links that the cap still leaves room to show.
+func (a *app) collectLinks(ctx context.Context, view, query string, offset int) ([]link, bool, error) {
+	var out []link
+	more := false
+	for pos := 0; pos <= offset && len(out) < maxViewLinks; pos += 50 {
+		batch, err := a.client.links(ctx, view, query, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Data...)
+		more = batch.HasMore
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewLinks {
+		out = out[:maxViewLinks]
+	}
+	return out, more && len(out) < maxViewLinks, nil
 }
 
 func detailView(r *ext.UIRequest, st pageState, item link, text string, highlights []highlight) *wire.View {

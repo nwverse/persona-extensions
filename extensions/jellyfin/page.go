@@ -25,7 +25,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.StartIndex < 0 || len(st.Query) > 250 || len(st.ItemID) > 64 || len(st.DraftID) > 128 || len(st.Mode) > 30 || len(st.View) > 30 {
+	if err := r.DecodeState(&st); err != nil || st.StartIndex < 0 || len([]rune(st.Query)) > maxQueryChars || len(st.ItemID) > 64 || len(st.DraftID) > 128 || len(st.Mode) > 30 || len(st.View) > 30 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -51,7 +51,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		st.View, st.StartIndex = r.Values["view"], 0
 	case "search":
-		st.Query, st.StartIndex = strings.TrimSpace(clipText(r.Values["q"], 200)), 0
+		st.Query, st.StartIndex = strings.TrimSpace(clipText(r.Values["q"], maxQueryChars)), 0
 		if st.Query == "" {
 			st.View = "resume"
 		} else {
@@ -90,6 +90,32 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const maxViewRecords = 250
+
+// collectItems reads the batches from the start through the one at start so that Load more answers the whole list,
+// longer. It stops at maxViewRecords to keep the view within the SDK's component limit, and reports whether another
+// batch can be loaded and where it starts.
+func (a *app) collectItems(ctx context.Context, userID, view, query string, start int) ([]mediaItem, int, bool, error) {
+	var out []mediaItem
+	next, more := 0, false
+	for pos := 0; len(out) < maxViewRecords; pos = next {
+		page, err := a.client.items(ctx, userID, view, query, pos)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		out = append(out, page.Items...)
+		next = pos + len(page.Items)
+		more = len(page.Items) > 0 && next < page.TotalRecordCount
+		if !more || pos >= start {
+			break
+		}
+	}
+	if len(out) > maxViewRecords {
+		out = out[:maxViewRecords]
+	}
+	return out, next, more && len(out) < maxViewRecords, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -114,14 +140,14 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.View == "" {
 		st.View = "resume"
 	}
-	page, err := a.client.items(ctx, me.ID, st.View, st.Query, st.StartIndex)
+	items, next, more, err := a.collectItems(ctx, me.ID, st.View, st.Query, st.StartIndex)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
 	v := &wire.View{Title: t.watching, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}, Filter: &wire.Filter{Name: "view", Title: t.watching, Value: st.View, Action: wire.Action{ID: "view"}, Choices: []wire.Choice{{Value: "resume", Title: t.resume}, {Value: "favorites", Title: t.favorites}, {Value: "search", Title: t.searchView}}}}
 	section := wire.Section{Title: t.items}
-	for _, item := range page.Items {
+	for _, item := range items {
 		if !validMediaID(item.ID) || item.Name == "" {
 			continue
 		}
@@ -130,8 +156,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noItems})
 	}
-	if page.StartIndex+len(page.Items) < page.TotalRecordCount {
-		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"start_index": fmt.Sprint(page.StartIndex + len(page.Items))}}}
+	if more {
+		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"start_index": fmt.Sprint(next)}}}
 	}
 	v.Sections = []wire.Section{section}
 	return v, nil

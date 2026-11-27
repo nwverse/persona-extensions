@@ -3,6 +3,7 @@ package curate
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"unicode"
@@ -12,6 +13,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
 	srcs "github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/sources"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/speaker"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/triage"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/verify"
@@ -31,7 +33,9 @@ import (
 //   - the impact names a moment, an action and its object (rules.go impactCheck);
 //   - the wording is in the target language and never speaks of the user as "I" or "owner": rewritten once, then
 //     dropped;
-//   - sensitive categories (K13) are dropped unless the user turned that category on; then kept, marked;
+//   - every category is collected and tagged (health, finance, relationships, emotion, legal_id: the model's label,
+//     money words, identity and legal words, the source space's default); the exits decide by category and scene
+//     (0.2.0-beta.40, user 11-22: "敏感空间也可以收集……信息使用的时候确实要按照场景去做分级");
 //   - no credential is ever kept: an observation that carries one in its own words is dropped, a quote that carries
 //     one is kept with the credential cut out.
 
@@ -46,12 +50,11 @@ const (
 	obsEvalNotSelf     = "EVAL_NOT_SELF"         // ⑤′ user_eval without the user's own line
 	obsLanguage        = "LANGUAGE"              // the wording is not mainly in the target language, even rewritten
 	obsSelfWord        = "SELF_WORD"             // the wording calls the user "I", "我", "owner"… even rewritten
-	obsSensitiveOff    = "SENSITIVE_OFF"         // a K13 category the user has not turned on
 )
 
 // ObsRejectCodes lists the codes of this file in report order.
 var ObsRejectCodes = []string{obsFacetNotAllowed, obsNotSelf, obsAgreementOnly, obsNotToAI, obsPersonUnknown, obsUnattributed,
-	obsEvalNotSelf, obsLanguage, obsSelfWord, obsSensitiveOff, verify.SecretFound, impactMoment, impactAction, impactObject}
+	obsEvalNotSelf, obsLanguage, obsSelfWord, verify.SecretFound, impactMoment, impactAction, impactObject}
 
 // Flags an entry may carry from the daily pass.
 const (
@@ -64,8 +67,10 @@ const (
 // With the prompt (about 4k tokens), the known entities and the answer (dailyMaxTokens), a call stays within 32k.
 const (
 	dailyBatchTokens = 12000
-	dailyMaxTokens   = 6000
-	rewriteMaxTokens = 4000
+	// dailyOverlapTokens: a unit read in parts gives each part this much of the lines before and after its core.
+	dailyOverlapTokens = 1000
+	dailyMaxTokens     = 6000
+	rewriteMaxTokens   = 4000
 )
 
 // dailyParts cuts an admitted unit's shown lines into parts that each fit dailyBatchTokens, in line order. A unit
@@ -91,56 +96,63 @@ func dailyParts(u *Unit, d triage.Decision) []struct {
 	if total <= dailyBatchTokens || len(lines) < 2 {
 		return []part{{d, ""}}
 	}
+	// Cores of at most dailyBatchTokens − 2×dailyOverlapTokens, each read with up to dailyOverlapTokens of the lines
+	// before and after it (design v2 §4.4, daily/16): a correction, a step or an answer that falls on a cut keeps the
+	// words around it. A part is named by its core's range.
+	core := dailyBatchTokens - 2*dailyOverlapTokens
+	weight := func(n int) int { l := byN[n]; return norm.Tokens(l.Speaker+": "+l.Body) + 4 }
 	var out []part
-	var cur []int
-	size := 0
-	flush := func() {
-		if len(cur) == 0 {
+	start, size := 0, 0
+	flush := func(end int) { // lines[start:end] is a core
+		if end <= start {
 			return
+		}
+		lo, hi := start, end
+		for t := 0; lo > 0 && t+weight(lines[lo-1]) <= dailyOverlapTokens; lo-- {
+			t += weight(lines[lo-1])
+		}
+		for t := 0; hi < len(lines) && t+weight(lines[hi]) <= dailyOverlapTokens; hi++ {
+			t += weight(lines[hi])
 		}
 		pd := d
 		pd.Shown = map[int]bool{}
-		for _, n := range cur {
+		for _, n := range lines[lo:hi] {
 			pd.Shown[n] = true
 		}
-		out = append(out, part{pd, fmt.Sprintf("%d-%d", cur[0], cur[len(cur)-1])})
-		cur, size = nil, 0
+		out = append(out, part{pd, fmt.Sprintf("%d-%d", lines[start], lines[end-1])})
+		start, size = end, 0
 	}
-	for _, n := range lines {
-		l := byN[n]
-		t := norm.Tokens(l.Speaker+": "+l.Body) + 4
-		if size+t > dailyBatchTokens {
-			flush()
+	for i, n := range lines {
+		t := weight(n)
+		if size+t > core && i > start {
+			flush(i)
 		}
-		cur = append(cur, n)
 		size += t
 	}
-	flush()
+	flush(len(lines))
 	return out
 }
 
-// factGate is the daily/8 checks of a fact past its citations: no credential in its words, its K13 category on (or
-// none), its wording in the target language (rewritten once already: fixWording). It returns the rejection and the
-// category.
-func (c *Curator) factGate(it schema.Item, ev []store.Evidence, owner []string) (string, string) {
+// factGate is the daily/8 checks of a fact past its citations: no credential in its words, a category label that is
+// one (or none), its wording in the target language (rewritten once already: fixWording). It returns the rejection
+// and the categories, which tag the entry.
+func (c *Curator) factGate(it schema.Item, ev []store.Evidence, owner []string) (string, []string) {
 	if slices.ContainsFunc([]string{it.Claim, it.Impact, it.About, it.ImpactObject}, verify.Secret) {
-		return verify.SecretFound, ""
+		return verify.SecretFound, nil
 	}
 	texts := []string{it.Claim, it.Impact}
 	for _, e := range ev {
 		texts = append(texts, e.Quote)
 	}
-	sens := sensitiveOf(it.Sensitive, texts...)
-	switch {
-	case sens == "?":
-		return verify.Schema, ""
-	case sens == entry.SensFinance && strings.TrimSpace(it.Sensitive) == "":
-		// A money notice the model did not label: itemGate drops it as ever (PRIVATE_FINANCE).
-		sens = ""
-	case sens != "" && !entry.On(c.St.S.Switches, entry.K13Sensitive+"."+sens):
-		return obsSensitiveOff, ""
+	cats, ok := categoriesOf(it.Sensitive, texts...)
+	if !ok {
+		return verify.Schema, nil
 	}
-	return wordingCheck(factFields(&it), c.language(), owner), sens
+	if strings.TrimSpace(it.Sensitive) == "" {
+		// A money notice the model did not label: itemGate drops it as ever (PRIVATE_FINANCE).
+		cats = slices.DeleteFunc(cats, func(n string) bool { return n == entry.CatFinance })
+	}
+	return wordingCheck(factFields(&it), c.language(), owner), cats
 }
 
 // maxObsField is the longest field of an observation, in characters.
@@ -181,6 +193,8 @@ func unitCode(u *Unit) string {
 		return entry.SrcMemory
 	case strings.HasPrefix(ref, "recordings/"):
 		return entry.SrcRecording
+	case strings.HasPrefix(ref, "ledger/"):
+		return entry.SrcLedger
 	}
 	return entry.SrcChat
 }
@@ -189,7 +203,7 @@ func unitCode(u *Unit) string {
 // and memory for the AI, a bot chat, or an assistant line in it.
 func aiUnit(u *Unit) bool {
 	switch unitCode(u) {
-	case entry.SrcAssistant, entry.SrcAgent, entry.SrcAsk, entry.SrcAbout, entry.SrcMemory, entry.SrcTools:
+	case entry.SrcAssistant, entry.SrcAgent, entry.SrcAsk, entry.SrcAbout, entry.SrcMemory, entry.SrcTools, entry.SrcLedger:
 		return true
 	}
 	if u.Meta.Kind == "bot" || u.Meta.Kind == "assistant" || u.Meta.Kind == "agent" {
@@ -344,7 +358,12 @@ func (c *Curator) attributeEvidence(u *Unit, k *known, w *verify.Window, ev []st
 	out := make([]obsEvidence, 0, len(ev))
 	for _, e := range ev {
 		e.Quote = verify.Redact(e.Quote)
-		out = append(out, obsEvidence{Evidence: e, who: whoOf(u, k, w.All[e.N], w.Kind)})
+		l := w.All[e.N]
+		who := whoOf(u, k, l, w.Kind)
+		if speaker.QuotedIn(w.Kind, l.Body, e.Quote) {
+			who = "" // in a quoted mail or a group's quote block: not the sender's words (design v2 §4.2)
+		}
+		out = append(out, obsEvidence{Evidence: e, who: who})
 	}
 	return out
 }
@@ -395,7 +414,8 @@ func selfCheck(u *Unit, ev []obsEvidence) ([]obsEvidence, string) {
 // obsFields are an observation's own words, by name: what the language checks read and the rewrite gets.
 func obsFields(o *schema.Observation) map[string]*string {
 	return map[string]*string{"text": &o.Text, "situation": &o.Situation, "choice": &o.Choice, "rejected": &o.Rejected,
-		"why": &o.Why, "exception": &o.Exception, "pitfall": &o.Pitfall, "fix": &o.Fix, "action": &o.Impact.Action}
+		"why": &o.Why, "exception": &o.Exception, "pitfall": &o.Pitfall, "fix": &o.Fix, "action": &o.Impact.Action,
+		"principle": &o.Principle, "hint": &o.Hint}
 }
 
 func factFields(it *schema.Item) map[string]*string {
@@ -431,17 +451,44 @@ func wordingCheck(fields map[string]*string, lang string, owner []string) string
 // dropped).
 type rewriter func(in schema.RewriteInput) (schema.RewriteOutput, bool)
 
-// sensitiveOf is an observation's K13 category: the model's label, or finance when the words are a money matter
-// (voice.Finance) whatever the label says. "?" is a label that is none of the categories.
-func sensitiveOf(label string, texts ...string) string {
+// categoriesOf are an observation's categories: the model's label (daily/16's sensitive field: emotion, finance,
+// health, family), finance when the words are a money matter (voice.Finance) and the model gave no label, legal_id
+// when they name identity papers or a legal matter (legalWords). ok is false for a label that is none of them. The
+// prompt is unchanged (daily/16): legal_id comes from words only until the hub tags (H1e).
+func categoriesOf(label string, texts ...string) (cats []string, ok bool) {
 	label = strings.ToLower(strings.TrimSpace(label))
-	if label != "" && !slices.Contains(entry.Sensitives, label) {
-		return "?"
+	if label != "" {
+		n := entry.CategoryOf(label)
+		if n == "" {
+			return nil, false
+		}
+		cats = append(cats, n)
 	}
 	if label == "" && slices.ContainsFunc(texts, voice.Finance) {
-		return entry.SensFinance
+		cats = append(cats, entry.CatFinance)
 	}
-	return label
+	if slices.ContainsFunc(texts, legalWords.MatchString) && !slices.Contains(cats, entry.CatLegalID) {
+		cats = append(cats, entry.CatLegalID)
+	}
+	return cats, true
+}
+
+// legalWords are the marks of identity papers, their numbers, and a person's legal matters (legal_id). Contracts at
+// work are left out: they are work, not the person's papers.
+var legalWords = regexp.MustCompile(`(?i)身份证|护照|签证|驾驶证|驾照|户口|户籍|居住证|绿卡|社保号|诉讼|起诉|被告|原告|官司|律师函|仲裁|判决书|` +
+	`\bpassport\b|\bvisa\b|green card|driver'?s licen[cs]e|social security number|\bssn\b|lawsuit|\bsued\b|arbitration`)
+
+// CategoriesOf is categoriesOf for the memory source's tagging of entries read before these rules (memsrc.Tags).
+func CategoriesOf(label string, texts ...string) ([]string, bool) {
+	return categoriesOf(label, texts...)
+}
+
+// tagCategories adds categories to an entry, as tagged by the plugin's model reading and rules.
+func tagCategories(e *entry.Entry, cats []string) {
+	e.Tagged = true
+	for _, n := range cats {
+		e.AddCategory(n, entry.ByModel)
+	}
 }
 
 // scopesOf turns an observation's scope into entry scopes: global, or a project, runtime or object.
@@ -505,6 +552,10 @@ func (c *Curator) checkObservation(w *verify.Window, u *Unit, k *known, tier str
 	switch {
 	case origin == entry.SelfReport && f != entry.Interaction && f != entry.Tools && f != entry.Persona:
 		return bad(obsFacetNotAllowed) // what the user says about how they choose is not how they choose (4.1, 4.3)
+	case unitCode(u) == entry.SrcAgent && f != entry.Tools && f != entry.Interaction && f != entry.Judgement:
+		// S3 agent sessions are scoped to reusable tools experience and explicit user-authored (WhoSelf)
+		// interaction/judgement observations (unified design §1.3, §5.1 block 2).
+		return bad(obsFacetNotAllowed)
 	case tier == triage.TierBackground && f != entry.People && f != entry.Persona:
 		return bad(verify.TierNotAllowed)
 	}
@@ -649,20 +700,18 @@ func (c *Curator) checkObservation(w *verify.Window, u *Unit, k *known, tier str
 	for _, x := range kept {
 		quotes = append(quotes, x.Quote)
 	}
-	sens := sensitiveOf(o.Sensitive, append(slices.Clone(all), quotes...)...)
-	if sens == "?" {
+	cats, ok := categoriesOf(o.Sensitive, append(slices.Clone(all), quotes...)...)
+	if !ok {
 		return bad(verify.Schema)
 	}
-	if sens != "" {
-		if !entry.On(c.St.S.Switches, entry.K13Sensitive+"."+sens) {
-			return bad(obsSensitiveOff)
-		}
-		e.Sensitive = sens // the user turned it on: kept for their own understanding; the exits keep it out
-	}
+	tagCategories(e, cats) // kept and tagged; the exits decide by category and scene
+	e.TagSpace(u.Meta.Space)
 	e.Evidence = c.entryEvidence(u, kept, reportedOf)
 	if o.Durable {
 		e.Flags = append(e.Flags, flagDurable)
 	}
+	e.Leverage = (&entry.Leverage{Reach: o.Reach, Horizon: o.Horizon, Principle: o.Principle,
+		PrincipleInferred: o.PrincipleInferred, Dimension: o.Dimension, Hint: o.Hint}).Normalize()
 	if o.Confidence == "low" && !slices.Contains(e.Flags, verify.LowConfidence) {
 		e.Flags = append(e.Flags, verify.LowConfidence)
 	}
@@ -733,7 +782,9 @@ func (c *Curator) ingestObservations(w *verify.Window, u *Unit, k *known, tier s
 	for i, o := range obs {
 		r := c.checkObservation(w, u, k, tier, o)
 		if r.rej == "" {
-			if rej := wordingCheck(obsFields(&o), lang, owner); rej != "" {
+			checked := o
+			checked.Text = r.e.Text // checkObservation may have synthesized Text from Object/Pitfall/Fix; check that text
+			if rej := wordingCheck(obsFields(&checked), lang, owner); rej != "" {
 				r = observation{rej: rej}
 			} else if rewritten[fmt.Sprintf("o%d", i)] {
 				r.e.Flags = append(r.e.Flags, flagRewritten)
@@ -774,7 +825,7 @@ func (c *Curator) keepObservation(u *Unit, o schema.Observation, r observation, 
 
 // worldEntry makes the ⑤ entry of a fact kept by the daily pass (daily/8): the claim, its kind, what it is about, its
 // impact, and the lines it rests on with who said them.
-func (c *Curator) worldEntry(u *Unit, k *known, w *verify.Window, it schema.Item, ev []store.Evidence, flags []string, sens string) *entry.Entry {
+func (c *Curator) worldEntry(u *Unit, k *known, w *verify.Window, it schema.Item, ev []store.Evidence, flags []string, cats []string) *entry.Entry {
 	subject := strings.TrimSpace(it.About)
 	if kind, id, ok := strings.Cut(subject, "/"); ok && kind == "people" {
 		subject = "person:" + id
@@ -788,11 +839,14 @@ func (c *Curator) worldEntry(u *Unit, k *known, w *verify.Window, it schema.Item
 	if domain != entry.Life {
 		domain = entry.Work
 	}
-	return &entry.Entry{Facet: entry.World, Grain: entry.Action, Type: it.Kind, Text: strings.TrimSpace(it.Claim), Subject: subject,
+	e := &entry.Entry{Facet: entry.World, Grain: entry.Action, Type: it.Kind, Text: strings.TrimSpace(it.Claim), Subject: subject,
 		Impact:       entry.Impact{Moment: strings.TrimSpace(it.Moment), Action: strings.TrimSpace(it.Impact), Object: strings.TrimSpace(it.ImpactObject)},
-		SingleSource: true, Domain: domain, Sensitive: sens, Evidence: c.entryEvidence(u, att, nil),
+		SingleSource: true, Domain: domain, Evidence: c.entryEvidence(u, att, nil),
 		Origin: unitOrigin(u.Ref), OriginVersion: schema.DailyPrompt + "@" + schema.Ruleset, Flags: flags,
 		Scopes: []entry.Scope{{Kind: entry.ScopeGlobal}}}
+	tagCategories(e, cats)
+	e.TagSpace(u.Meta.Space)
+	return e
 }
 
 // relationEntry makes the ⑤ entry of a relation the graph took: subject, predicate and target, as a class (a
