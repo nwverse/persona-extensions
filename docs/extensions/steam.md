@@ -2,16 +2,23 @@
 
 [Documentation](../README.md) · [Source](../../extensions/steam/README.md)
 
-Steam v0.1 reads a configured Steam player's profile, playtime, library, achievements and public wishlist. Open **Personal › Steam** to search the library, sort it by lifetime playtime or name, and open a game to see achievement progress and its Steam Store link. The Overview card opens the same page.
+Steam reads player status, playtime, library, achievements and wishlist prices. Open **Personal › Steam** to search the library, sort it by lifetime playtime or name, and open a game to see achievement progress and its Steam Store link. The Overview card opens the same page.
 
-## Configuration
+## Sign in with Steam Mobile QR
 
-1. Install Steam on your Persona Hub. For a locally built archive, follow [Install a local package](../installation.md#install-a-local-package).
-2. In **Settings › Extensions › Steam**, enter a 17-digit individual SteamID64 or the vanity name after `/id/` in the Steam profile URL. The extension resolves vanity names through the Steam Web API. [Steamworks ISteamUser reference](https://partner.steamgames.com/doc/webapi/ISteamUser)
-3. Enter your key in the **Steam Web API key** secret field. The Hub encrypts it. [Steam Web API key settings](https://steamcommunity.com/dev/apikey)
-4. Set **Store country or region** to a two-letter ISO 3166-1 alpha-2 code for the desired wishlist prices and currency. It defaults to `US`. [ISO 3166 country codes](https://www.iso.org/iso-3166-country-codes.html)
+1. Install Steam on a Persona Hub that supports extension sign-in. For a locally built archive, follow [Install a local package](../installation.md#install-a-local-package).
+2. Open **Settings › Extensions › Steam** and select **Sign In**. New installations use QR by default. If you already have a Steam player ID and Web API key, select **Steam Mobile QR** as the sign-in method and save before signing in.
+3. Open Steam Guard in the Steam Mobile App, scan the QR code and approve the sign-in on your phone. The extension reads the SteamID of the account you approved. A pending scan expires after five minutes. Start again if the code expires or Steam ends the request. [Steam Guard Mobile Authenticator](https://help.steampowered.com/faqs/view/7EFD-3CAE-64D3-1C31)
 
-Set Steam profile visibility and **Game details** to **Public** for the activity, library and achievements you want Persona to see. Restricted data shows a visibility message, while available sections remain usable. Steam can return an indistinguishable response for a hidden or empty wishlist. The extension presents this as unavailable unless Steam explicitly returns an empty list. [Steam profile privacy](https://help.steampowered.com/en/faqs/view/588C-C67D-0251-C276)
+QR sign-in can read the signed-in account's private library and wishlist when Steam shares them. Each dataset can be unavailable independently. Presence shows as unknown when Steam omits it. An ambiguous wishlist reply shows as unavailable, and an explicitly empty wishlist shows as empty.
+
+## Use a Web API key
+
+In **Settings › Extensions › Steam**, choose **Web API key** as the sign-in method and save a **Steam player ID** and **Steam Web API key**. The ID is a 17-digit individual SteamID64 or the vanity name after `/id/` in a Steam profile URL. The Hub encrypts the key. Installations that already have both settings continue in this mode when **Sign-in method** is unset. Clear the saved key in the extension settings to disconnect that configuration. [Steam Web API key settings](https://steamcommunity.com/dev/apikey) · [Steamworks ISteamUser reference](https://partner.steamgames.com/doc/webapi/ISteamUser)
+
+Web API key mode uses read-only calls for publicly visible data. Set the profile and **Game details** to **Public** for the activity, library and achievements you want Persona to see. [Steam profile privacy](https://help.steampowered.com/en/faqs/view/588C-C67D-0251-C276)
+
+In either mode, set **Store country or region** to a two-letter ISO 3166-1 alpha-2 code for wishlist prices and currency. The default is `US`. [ISO 3166 country codes](https://www.iso.org/iso-3166-country-codes.html)
 
 ## Assistant tools
 
@@ -46,13 +53,13 @@ The runtime uses the documented default when a numeric limit is missing or outsi
 
 Profile metadata, vanity resolution and the owned library are cached for eight hours. Presence, recent games and wishlist prices use ten-minute freshness windows. Select **Refresh** to request a new snapshot for all four sections. Game details fetch achievement progress when opened.
 
-The extension keeps one record per dataset in memory and in a `steam-cache-v1` subdirectory of the extension data directory (`PERSONA_EXTENSION_DATA_DIR`, or the data directory sent by the Hub). A temporary request failure can reuse a labeled snapshot up to 24 hours old. A definitive denial for a dataset discards its cached record. Automatic retries for a failing dataset wait 30 seconds, and Refresh can retry immediately.
+In QR mode, the extension keeps its data cache in memory for the active signed-in account. Web API key mode keeps one bounded record per dataset in memory and in `steam-cache-v1` under the extension data directory (`PERSONA_EXTENSION_DATA_DIR`, or the data directory sent by the Hub). A temporary request failure can reuse a labeled snapshot up to 24 hours old. A definitive denial for a dataset discards its cached record. Automatic retries for a failing dataset wait 30 seconds, and Refresh can retry immediately.
 
 The navigation and tools browse up to 20,000 library or recent entries and price up to 1,000 wishlist items in batches of 50. The wishlist keeps its full item count alongside the number of Store responses received. The card shows a lower bound when some prices remain unchecked and a dash when none could be checked. Titles without a Steam Store price in the chosen region show a price availability message.
 
 ### Local snapshots
 
-Steam keeps local snapshots in four versioned files under `steam-store-v1` inside the extension data directory. Each file has a 16 MiB limit and is replaced atomically. With no data directory the stores keep their state in memory. Snapshot writes happen during existing reads and carry zero additional network or LLM requests. A failed local write leaves the Steam read result available.
+QR mode keeps all four snapshot stores in memory for the signed-in session and clears them at sign-out. Web API key mode uses four versioned files under `steam-store-v1` inside the extension data directory. Each file has a 16 MiB limit and is replaced atomically. When the Hub supplies no data directory, Web API key mode also keeps the stores in memory. Price and playtime observations use existing reads without extra network or LLM requests. A failed local write leaves the Steam read result available.
 
 | Store | Contents and limits |
 | --- | --- |
@@ -63,6 +70,24 @@ Steam keeps local snapshots in four versioned files under `steam-store-v1` insid
 
 ## Network and credentials
 
-Account reads go to `api.steampowered.com`. The Web API key is sent in a header over HTTPS for authenticated player calls to that host. The public wishlist and storefront metadata calls use AppIDs or the configured SteamID64. Store price requests go to `store.steampowered.com` with AppIDs and the selected country code. The client refuses redirects and converts upstream failures to fixed messages. Cached records contain parsed response fields and account or region identifiers. [Steam Web API overview](https://partner.steamgames.com/doc/webapi_overview)
+QR sign-in uses Valve's first-party `IAuthenticationService` over HTTPS. The extension begins a `MobileApp` session with `BeginAuthSessionViaQR`, follows Valve's poll interval with `PollAuthSessionStatus`, and renews access with `GenerateAccessTokenForApp`. The extension hands the `s.team` challenge URL to the Hub for local QR rendering. The extension's only network permissions are `api.steampowered.com` and `store.steampowered.com`. [Valve authentication message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/service_authentication.proto) · [Persona extension sign-in protocol](https://github.com/nwverse/persona/blob/main/docs/extensions/extensions.md#sign-in-auth)
 
-The extension uses IPlayerService for games and ISteamUserStats for achievement progress. Wishlist availability comes from Valve's public Wishlist service, with regional pricing from Steam Store AppDetails. [IPlayerService](https://partner.steamgames.com/doc/webapi/IPlayerService), [ISteamUserStats](https://partner.steamgames.com/doc/webapi/ISteamUserStats)
+The QR grant is a Steam mobile-client session with account privileges determined by Valve. The extension limits its use to the five read operations below. It sends the access token only in HTTPS requests to `api.steampowered.com`. Web API key mode uses `X-WebAPI-Key` for the authenticated legacy calls at that host and reads the public wishlist anonymously. Store names and prices are fetched anonymously in both modes. The client refuses redirects and reports fixed diagnostic messages. [Steam Web API overview](https://partner.steamgames.com/doc/webapi_overview)
+
+| Read | Steam Mobile QR | Web API key |
+| --- | --- | --- |
+| Player name, presence and current game | `IPlayerService/GetPlayerLinkDetails` | `ISteamUser/GetPlayerSummaries` |
+| Recent playtime | `IPlayerService/GetRecentlyPlayedGames` | `IPlayerService/GetRecentlyPlayedGames` |
+| Owned games and lifetime playtime | `IPlayerService/GetOwnedGames` | `IPlayerService/GetOwnedGames` |
+| Achievement progress | `IPlayerService/GetAchievementsProgress` | `ISteamUserStats/GetPlayerAchievements` |
+| Wishlist | `IWishlistService/GetWishlist` | Public `IWishlistService/GetWishlist` |
+
+Wishlist names use `IStoreBrowseService/GetItems` in Simplified Chinese or English. Prices come from `store.steampowered.com/api/appdetails` for the selected country. [Player message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/service_player.proto) · [Steamworks IPlayerService](https://partner.steamgames.com/doc/webapi/IPlayerService)
+
+The Hub encrypts the versioned QR sign-in record through `connector.secrets.*`. It holds the refresh token, SteamID, account name and timestamps. The access token stays in the extension process. The extension makes a rotated refresh token usable after the Hub has saved it.
+
+## Sign out or revoke a QR session
+
+**Sign Out** in Persona cancels the extension's pending sign-in and reads, clears the session's cache and snapshots, and removes the Hub's saved QR sign-in. For server-side revocation, open Steam's **Authorized Devices** and remove the corresponding Persona session. When Steam confirms that the refresh token is invalid or revoked, Persona clears the session and prompts you to sign in again. [Steam Authorized Devices](https://store.steampowered.com/account/authorizeddevices) · [Steam Support account security](https://help.steampowered.com/en/faqs/view/6639-EB3C-EC79-FF60)
+
+Switching to Web API key mode uses the ID and key from settings. Switching back to QR restores any saved QR sign-in. Use **Sign Out** while QR is selected if you want to clear that record before switching.
