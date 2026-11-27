@@ -1945,10 +1945,73 @@ func recallNonStandingL1(st *store.State, ov *overview.State, f heFilter, day, s
 	return lines
 }
 
+// collabEntityNoiseStop filters generic common nouns and short ASCII tokens out of entity-slot recall queries,
+// and collabEphemeralFact filters one-off PR/ticket status lines out of the persistent entity supplement slot.
+var collabEntityNoiseStop = map[string]bool{
+	"文档": true, "系统": true, "模型": true, "任务": true, "测试": true, "配置": true, "工具": true,
+	"方案": true, "项目": true, "用户": true, "助手": true, "实验": true, "报告": true, "笔记": true,
+	"推送": true, "代码": true, "文件": true, "目录": true, "接口": true, "服务": true, "机器": true,
+	"launch": true, "push": true, "status": true, "config": true, "agent": true, "task": true,
+	"test": true, "doc": true, "docs": true, "file": true, "code": true, "repo": true,
+	"prompt": true, "session": true, "review": true, "model": true, "user": true, "system": true,
+}
+
+var collabEphemeralFact = regexp.MustCompile(`(?i)\bPR\s*#\d+|#\d{3,}|答应.*再看|临时计划|打算把.*挪到`)
+
+func collabIsASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
+// collabContainsEntity matches n inside situation using whole-word boundaries for pure-ASCII names
+// (preventing "Launch" from matching "launcher" or "ST" from matching "astergate").
+func collabContainsEntity(situation, name string) bool {
+	n := strings.TrimSpace(name)
+	if n == "" {
+		return false
+	}
+	nq := norm.Q(n)
+	if nq == "" || collabEntityNoiseStop[nq] || collabGeneric[n] {
+		return false
+	}
+	if collabIsASCII(n) {
+		if len(n) < 3 {
+			return false
+		}
+		lowSit := strings.ToLower(situation)
+		lowN := strings.ToLower(n)
+		isWord := func(b byte) bool {
+			return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
+		}
+		for off := 0; off < len(lowSit); {
+			i := strings.Index(lowSit[off:], lowN)
+			if i < 0 {
+				return false
+			}
+			pos := off + i
+			leftOK := pos == 0 || !isWord(lowSit[pos-1])
+			end := pos + len(lowN)
+			rightOK := end == len(lowSit) || !isWord(lowSit[end])
+			if leftOK && rightOK {
+				return true
+			}
+			off = pos + 1
+		}
+		return false
+	}
+	return len([]rune(n)) >= 2 && strings.Contains(situation, n)
+}
+
 // recallTwoLayer implements the unified design §2.2 two-layer contextual recall within budget bytes:
-//   - Layer A: situation-relevant non-standing L1 contracts and principles (kept in both recall and recall-noent);
-//   - Layer B: Block 2 1-hop entity skeleton expansion (recall.Search EntityContext) + high-IDF anchored local rules
-//     and World/People facts (entities=false cleanly ablates World/People skeleton and entity entries).
+//   - Main rule slot (~70%, <= 1400 B, symmetric across recall and recall-noent): non-standing L1 contracts/principles
+//     (<= 850 B) + high-IDF non-entity local rules, ensuring entity facts can never crowd out core rules;
+//   - Controlled entity supplement slot (remaining ~30%, <= 648 B when entities=true): high-purity word-boundary
+//     Block 2 1-hop entity skeleton expansion (pruned of hub fan-in and generic nouns) + persistent World/People
+//     facts (filtered of ephemeral PR/ticket noise). When entities=false, remaining room stays strictly non-entity.
 func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f heFilter, day, situation, standing string, budget int, entities bool) string {
 	if budget <= 0 {
 		return ""
@@ -1956,11 +2019,11 @@ func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f
 	var out []string
 	seen := map[string]bool{}
 	used := 0
-	addLine := func(ln string) bool {
+	addLine := func(ln string, capBytes int) bool {
 		if ln == "" || seen[ln] {
 			return false
 		}
-		if used+len(ln)+1 > budget {
+		if used+len(ln)+1 > capBytes || used+len(ln)+1 > budget {
 			return false
 		}
 		seen[ln] = true
@@ -1969,17 +2032,29 @@ func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f
 		return true
 	}
 
-	// Layer A: non-standing L1 contracts and principles (at most 45% of recall budget, <= 900 B).
-	l1Budget := min(900, budget*45/100)
+	// Main rule slot (identical priority in recall and recall-noent so entity facts never evict core rules).
+	mainCap := min(1400, budget*70/100)
 	if !entities {
-		l1Budget = min(1200, budget*60/100)
+		mainCap = budget
 	}
+	l1Budget := min(850, mainCap*60/100)
 	for _, ln := range recallNonStandingL1(st, ov, f, day, situation, standing, l1Budget) {
-		addLine(ln)
+		addLine(ln, mainCap)
+	}
+	if rem := mainCap - used; rem > 40 {
+		for _, ln := range strings.Split(idx.recall(st, f, day, situation, standing, rem, false), "\n") {
+			ln = strings.TrimSpace(ln)
+			if ln != "" {
+				addLine(ln, mainCap)
+			}
+		}
+	}
+	if !entities {
+		return strings.Join(out, "\n")
 	}
 
-	// Layer B1: Block 2 1-hop entity skeleton expansion + anchored local rules when entities=true.
-	if entities && st != nil && st.Graph != nil {
+	// Controlled entity supplement slot (budget - used, ~648 B): high-purity 1-hop skeleton + persistent entity facts.
+	if st != nil && st.Graph != nil && budget-used > 40 {
 		cleanSt := &store.State{
 			Version:    st.Version,
 			Onboarding: st.Onboarding,
@@ -1993,7 +2068,6 @@ func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f
 			}
 			cleanSt.Entries[id] = e
 		}
-		// Pick up to 3 highest-IDF matched entity names/identifiers from the situation.
 		type entQ struct {
 			name string
 			df   int
@@ -2001,13 +2075,13 @@ func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f
 		var qs []entQ
 		seenQ := map[string]bool{}
 		for n, es := range idx {
-			if strings.Contains(situation, n) && len([]rune(n)) >= 2 && !seenQ[n] {
+			if !seenQ[n] && collabContainsEntity(situation, n) {
 				seenQ[n] = true
 				qs = append(qs, entQ{name: n, df: len(es)})
 			}
 		}
 		for _, idt := range collabIdent.FindAllString(situation, -1) {
-			if !seenQ[idt] {
+			if !seenQ[idt] && collabContainsEntity(situation, idt) {
 				seenQ[idt] = true
 				qs = append(qs, entQ{name: idt, df: 1})
 			}
@@ -2018,39 +2092,43 @@ func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f
 			}
 			return len(qs[i].name) > len(qs[j].name)
 		})
-		if len(qs) > 3 {
-			qs = qs[:3]
+		if len(qs) > 2 {
+			qs = qs[:2]
 		}
 		for _, q := range qs {
-			sr := recall.Search(cleanSt, recall.Query{Text: q.name, Limit: 6})
+			sr := recall.Search(cleanSt, recall.Query{Text: q.name, Limit: 4})
 			for _, ec := range sr.Entities {
-				for i, edge := range ec.Skeleton {
-					if i >= 4 {
+				skelAdded := 0
+				for _, edge := range ec.Skeleton {
+					if skelAdded >= 3 {
 						break
 					}
-					addLine(fmt.Sprintf("- [实体骨架] %s --%s--> %s", edge.From, edge.Predicate, edge.To))
+					if addLine(fmt.Sprintf("- [实体骨架] %s --%s--> %s", edge.From, edge.Predicate, edge.To), budget) {
+						skelAdded++
+					}
 				}
 				for i, rule := range ec.Rules {
-					if i >= 3 {
+					if i >= 2 {
 						break
 					}
 					t := heClip(rule.Text, 200)
-					if strings.Contains(standing, heClip(t, 24)) {
+					if collabEphemeralFact.MatchString(t) || strings.Contains(standing, heClip(t, 24)) {
 						continue
 					}
-					addLine("- " + t)
+					addLine("- "+t, budget)
 				}
 			}
 		}
 	}
 
-	// Layer B2: high-IDF name-indexed entries (World/People + entity-anchored rules), filling remaining budget.
+	// Fill any remaining bytes in the entity supplement slot with persistent World/People facts (filtered of ephemeral tickets).
 	if rem := budget - used; rem > 40 {
-		for _, ln := range strings.Split(idx.recall(st, f, day, situation, standing, rem, entities), "\n") {
+		for _, ln := range strings.Split(idx.recall(st, f, day, situation, standing, rem*2, true), "\n") {
 			ln = strings.TrimSpace(ln)
-			if ln != "" {
-				addLine(ln)
+			if ln == "" || collabEphemeralFact.MatchString(ln) {
+				continue
 			}
+			addLine(ln, budget)
 		}
 	}
 	return strings.Join(out, "\n")
@@ -2078,9 +2156,11 @@ func (idx collabNameIndex) recall(st *store.State, f heFilter, day, situation, s
 		if !strings.Contains(situation, n) {
 			continue
 		}
+		entOK := collabContainsEntity(situation, n)
 		w := idf(len(es))
 		for _, e := range es {
-			if f.entryOut(st, e, day) || (!entities && (e.Facet == entry.World || e.Facet == entry.People)) {
+			isEnt := e.Facet == entry.World || e.Facet == entry.People
+			if f.entryOut(st, e, day) || (isEnt && (!entities || !entOK)) {
 				continue
 			}
 			add(e, w)
@@ -2091,12 +2171,14 @@ func (idx collabNameIndex) recall(st *store.State, f heFilter, day, situation, s
 	if entities {
 		names := map[string]bool{}
 		for n := range idx {
-			if strings.Contains(situation, n) && len([]rune(n)) >= 4 {
+			if collabContainsEntity(situation, n) && len([]rune(n)) >= 4 {
 				names[n] = true
 			}
 		}
 		for _, n := range collabIdent.FindAllString(situation, -1) { // a repository, a service, a command named in it
-			names[n] = true
+			if collabContainsEntity(situation, n) {
+				names[n] = true
+			}
 		}
 		for n := range names {
 			var found []*entry.Entry
