@@ -35,7 +35,7 @@ type App struct {
 func program() ext.Program {
 	a := &App{}
 	return ext.Program{
-		ID: "space-conversations", Version: "0.2.0", Manifest: manifest,
+		ID: "space-conversations", Version: "0.3.0", Manifest: manifest,
 		Init: func(_ context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
 			a.mu.Lock()
 			a.client = NewClient(in.Hub.URL, in.Hub.Token)
@@ -198,6 +198,9 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	case "edit":
 		return &wire.ActionResult{Push: &wire.Push{UI: "edit", State: slug}}, nil
 	case "pick":
+		if strings.TrimSpace(r.Values["space"]) == newValue {
+			return &wire.ActionResult{Push: &wire.Push{UI: "new"}}, nil
+		}
 		v, err := pageView(ctx, c, envOf(r), r.Values["space"])
 		if err != nil {
 			return nil, err
@@ -278,6 +281,9 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	default:
 		// Apps before UI version 4 send no action values: a switcher row there names its space in its id.
 		if sel, ok := strings.CutPrefix(r.Action, pickPrefix); ok {
+			if sel == newValue {
+				return &wire.ActionResult{Push: &wire.Push{UI: "new"}}, nil
+			}
 			v, err := pageView(ctx, c, envOf(r), sel)
 			if err != nil {
 				return nil, err

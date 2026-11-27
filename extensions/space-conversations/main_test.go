@@ -45,7 +45,7 @@ func TestSpaceLifecycleUsesCoreRecords(t *testing.T) {
 	defer srv.Close()
 	a := &App{client: NewClient(srv.URL, "test-token")}
 	home, err := a.render(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: "home"}})
-	if err != nil || len(home.Sections[0].Items) != 2 {
+	if err != nil || len(home.Sections[0].Items) != 1 {
 		t.Fatalf("home = %#v, %v", home, err)
 	}
 	createdResult, err := a.action(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Action: "create", Values: map[string]string{"title": "阅读", "slug": "reading", "description": "想读的书"}}})
@@ -255,7 +255,7 @@ func TestRenderedViewsPassWireValidationAndPreserveState(t *testing.T) {
 			t.Fatalf("home view failed wire.CheckView: %v", err)
 		}
 		// Row for "reading" must use Subtitle (not Detail) for description and fallback title to slug.
-		readingRow := home.Sections[0].Items[2]
+		readingRow := home.Sections[0].Items[1]
 		if readingRow.Title != "reading" {
 			t.Fatalf("empty track title fallback = %q, want %q", readingRow.Title, "reading")
 		}
@@ -275,7 +275,7 @@ func TestRenderedViewsPassWireValidationAndPreserveState(t *testing.T) {
 		if page.State != "no-desc" {
 			t.Fatalf("space view State = %q, want %q for RefreshAfter re-renders", page.State, "no-desc")
 		}
-		firstChatRow := page.Sections[2].Items[0]
+		firstChatRow := page.Sections[1].Items[0]
 		if firstChatRow.Subtitle != "第一条消息预览" {
 			t.Fatalf("conversation row Subtitle = %q (Detail=%q), want last_text in Subtitle", firstChatRow.Subtitle, firstChatRow.Detail)
 		}
@@ -296,8 +296,9 @@ func TestRenderedViewsPassWireValidationAndPreserveState(t *testing.T) {
 		if err := wire.CheckView(page); err != nil {
 			t.Fatalf("space view with description failed wire.CheckView: %v", err)
 		}
-		if page.Sections[0].Items[0].Type != wire.ComponentText || page.Sections[0].Items[0].Text != "想读的书和笔记" {
-			t.Fatalf("expected description text component first, got %#v", page.Sections[0].Items[0])
+		about := page.Sections[2]
+		if about.Items[0].Type != wire.ComponentRow || about.Items[0].Subtitle == "" {
+			t.Fatalf("expected folded SPACE.md summary row, got %#v", about.Items[0])
 		}
 	})
 
@@ -589,23 +590,36 @@ func spacesNamed(n int) []map[string]any {
 	return out
 }
 
-// Tabs hold eight items, All included: seven spaces are tabs, eight a drop-down.
+// Tabs hold eight items (All + spaces + "+ 新建空间"): six spaces are tabs, seven a drop-down.
 func TestSwitcherIsTabsUpToEightItemsThenAFilter(t *testing.T) {
 	for _, tc := range []struct {
 		spaces int
 		tabs   bool
-	}{{7, true}, {8, false}} {
+	}{{6, true}, {7, false}} {
 		a := (&fakeHub{tracks: spacesNamed(tc.spaces)}).start(t)
 		for _, state := range []string{"", "space-3"} {
 			v := render(t, a, "home", state)
 			want := cmp.Or(state, allValue)
 			switch {
-			case tc.tabs && (v.Tabs == nil || v.Filter != nil || len(v.Tabs.Items) != 8 || v.Tabs.Value != want || v.Tabs.Name != "space" || v.Tabs.Action.ID != "pick"):
+			case tc.tabs && (v.Tabs == nil || v.Filter != nil || len(v.Tabs.Items) != 8 || v.Tabs.Value != want || v.Tabs.Name != "space" || v.Tabs.Action.ID != "pick" || v.Tabs.Items[len(v.Tabs.Items)-1].Value != newValue):
 				t.Fatalf("%d spaces, %q: tabs = %#v, filter = %#v", tc.spaces, state, v.Tabs, v.Filter)
-			case !tc.tabs && (v.Filter == nil || v.Tabs != nil || len(v.Filter.Choices) != 9 || v.Filter.Value != want || v.Filter.Action.ID != "pick"):
+			case !tc.tabs && (v.Filter == nil || v.Tabs != nil || len(v.Filter.Choices) != 9 || v.Filter.Value != want || v.Filter.Action.ID != "pick" || v.Filter.Choices[len(v.Filter.Choices)-1].Value != newValue):
 				t.Fatalf("%d spaces, %q: tabs = %#v, filter = %#v", tc.spaces, state, v.Tabs, v.Filter)
 			}
 		}
+	}
+}
+
+// Choosing "+ 新建空间" in the switcher pushes the new-space form directly (both modern and pre-UI-4 actions).
+func TestPickNewSpacePushesNewForm(t *testing.T) {
+	a := (&fakeHub{tracks: spacesNamed(2)}).start(t)
+	res, err := a.action(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: "home", State: allValue, Action: "pick", Values: map[string]string{"space": newValue}}})
+	if err != nil || res.Push == nil || res.Push.UI != "new" {
+		t.Fatalf("pick new = %#v, %v", res, err)
+	}
+	oldRes, err := a.action(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: "home", Action: pickPrefix + newValue, UIVersion: 2}})
+	if err != nil || oldRes.Push == nil || oldRes.Push.UI != "new" {
+		t.Fatalf("old pick new = %#v, %v", oldRes, err)
 	}
 }
 
@@ -625,7 +639,7 @@ func TestPickKeepsTheSelectionInState(t *testing.T) {
 			t.Fatalf("picked view state %q tabs %q title %q", res.View.State, res.View.Tabs.Value, res.View.Title)
 		}
 		again := render(t, a, contribution, res.View.State)
-		if again.Tabs.Value != "space-1" || again.Sections[0].Title != "空间 1" {
+		if again.Tabs.Value != "space-1" || again.Sections[0].Title != "新对话" {
 			t.Fatalf("refresh lost the selection: %#v", again)
 		}
 		back, err := a.action(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: contribution, State: "space-1", Action: "pick", Values: map[string]string{"space": "all"}}})
@@ -667,16 +681,16 @@ func TestAllMergesConversationsLabeledBySpace(t *testing.T) {
 	if badges["all"] != "" || badges["reading"] != "99+" || badges["travel"] != "5" || badges["quiet"] != "" {
 		t.Fatalf("tab badges = %v", badges)
 	}
-	spaces := v.Sections[0]
-	if spaces.Items[0].Type != wire.ComponentButton || spaces.Items[0].Action.ID != "new" {
-		t.Fatalf("first item should create a space: %#v", spaces.Items[0])
+	if last := v.Tabs.Items[len(v.Tabs.Items)-1]; last.Value != newValue || last.Title != "+ 新建空间" {
+		t.Fatalf("last tab should be + 新建空间, got %#v", last)
 	}
-	reading := spaces.Items[1]
+	spaces := v.Sections[0]
+	reading := spaces.Items[0]
 	if reading.Title != "阅读" || reading.Subtitle != "每月读两本书。" || reading.Value != "150 个对话" || reading.Action.ID != "pick" || reading.Action.Values["space"] != "reading" {
 		t.Fatalf("reading row = %#v", reading)
 	}
-	if spaces.Items[3].Value != "0 个对话" {
-		t.Fatalf("quiet row = %#v", spaces.Items[3])
+	if spaces.Items[2].Value != "0 个对话" {
+		t.Fatalf("quiet row = %#v", spaces.Items[2])
 	}
 	recent := v.Sections[1]
 	if recent.Title != "最近对话 · 全部空间" || len(recent.Items) != 3 {
@@ -698,7 +712,7 @@ func TestAllMergesConversationsLabeledBySpace(t *testing.T) {
 	}
 }
 
-// A space's page: its overview with counts and the SPACE.md excerpt, a new conversation, its conversations labeled.
+// A space's page leads with compact quick-start and recent conversations, with SPACE.md folded to a single-line summary below.
 func TestSelectedSpaceShowsOverviewAndExcerpt(t *testing.T) {
 	fixClock(t)
 	f := &fakeHub{
@@ -708,19 +722,23 @@ func TestSelectedSpaceShowsOverviewAndExcerpt(t *testing.T) {
 			"<!-- 作者的备注 -->\n## 目标\n\n- 每月两本\n- 写笔记\n"},
 	}
 	v := render(t, f.start(t), "space", "reading")
-	overview := v.Sections[0]
-	if overview.Title != "阅读" || overview.Items[0].Text != "1 个对话 · 最近 昨天" {
-		t.Fatalf("overview = %#v", overview)
+	if v.Sections[0].Title != "新对话" || v.Sections[0].Items[0].Kind != wire.FieldKindText {
+		t.Fatalf("quick start section = %#v", v.Sections[0])
 	}
-	md := overview.Items[1]
-	if md.Type != wire.ComponentMarkdown || md.Text != "## 目标\n\n- 每月两本\n- 写笔记" {
-		t.Fatalf("excerpt = %#v", md)
+	recent := v.Sections[1]
+	if recent.Title != "最近对话" || recent.Footer != "1 个对话 · 最近 昨天" || recent.Items[0].Badge.Text != "阅读" || recent.Items[0].Value != "昨天" {
+		t.Fatalf("recent section = %#v", recent)
 	}
-	if overview.Items[2].Action.ID != "edit" || overview.Items[3].Action.ID != "archive" {
-		t.Fatalf("buttons = %#v", overview.Items[2:])
+	about := v.Sections[2]
+	if about.Title != "空间说明" || len(about.Items) != 2 {
+		t.Fatalf("about section = %#v", about)
 	}
-	if v.Sections[1].Title != "新对话" || v.Sections[2].Items[0].Badge.Text != "阅读" || v.Sections[2].Items[0].Value != "昨天" {
-		t.Fatalf("sections = %#v", v.Sections)
+	mdRow := about.Items[0]
+	if mdRow.Type != wire.ComponentRow || mdRow.Subtitle != "目标" || mdRow.Value != "查看 / 编辑" || mdRow.Action.ID != "edit" {
+		t.Fatalf("folded SPACE.md row = %#v", mdRow)
+	}
+	if about.Items[1].Action.ID != "archive" {
+		t.Fatalf("archive button = %#v", about.Items[1])
 	}
 }
 
@@ -746,18 +764,14 @@ func TestSpaceMDErrorDoesNotFailThePage(t *testing.T) {
 	f := &fakeHub{tracks: []map[string]any{spaceTrack("reading", "阅读")}, mdFail: map[string]bool{"reading": true}}
 	a := f.start(t)
 	v := render(t, a, "space", "reading")
-	found := false
-	for _, it := range v.Sections[0].Items {
-		found = found || it.Text == "SPACE.md 暂时读不到（助手所在的电脑可能离线）"
-	}
-	if !found {
-		t.Fatalf("no notice for an unreadable SPACE.md: %#v", v.Sections[0])
+	if v.Sections[2].Items[0].Subtitle != "SPACE.md 暂时读不到（助手所在的电脑可能离线）" {
+		t.Fatalf("no notice for an unreadable SPACE.md: %#v", v.Sections[2])
 	}
 	// the page of every space falls back to the description
 	render(t, a, "home", "")
 	empty := render(t, (&fakeHub{tracks: []map[string]any{spaceTrack("reading", "阅读")}, md: map[string]string{"reading": "# 阅读\n"}}).start(t), "space", "reading")
-	if empty.Sections[0].Items[1].Text != "SPACE.md 还没有内容" {
-		t.Fatalf("empty SPACE.md = %#v", empty.Sections[0].Items)
+	if empty.Sections[2].Items[0].Subtitle != "SPACE.md 还没有内容" {
+		t.Fatalf("empty SPACE.md = %#v", empty.Sections[2].Items)
 	}
 }
 
@@ -776,7 +790,7 @@ func testFallBack(t *testing.T, status int) {
 	}}
 	a := f.start(t)
 	v := render(t, a, "space", "reading")
-	rows := v.Sections[2].Items
+	rows := v.Sections[1].Items
 	if len(rows) != 2 || rows[0].Action.Values["sid"] != "r-new" || v.Tabs.Items[1].Badge != "2" {
 		t.Fatalf("fallback rows = %#v, tabs %#v", rows, v.Tabs)
 	}
@@ -822,7 +836,7 @@ func TestArchivedSelectedSpaceStaysInTheSwitcher(t *testing.T) {
 	f := &fakeHub{tracks: []map[string]any{spaceTrack("reading", "阅读"), archived}}
 	a := f.start(t)
 	v := render(t, a, "space", "old-trip")
-	if v.Tabs == nil || v.Tabs.Value != "old-trip" || len(v.Tabs.Items) != 3 {
+	if v.Tabs == nil || v.Tabs.Value != "old-trip" || len(v.Tabs.Items) != 4 {
 		t.Fatalf("tabs = %#v", v.Tabs)
 	}
 	for _, s := range v.Sections {
@@ -830,11 +844,11 @@ func TestArchivedSelectedSpaceStaysInTheSwitcher(t *testing.T) {
 			t.Fatal("an archived space offers a new conversation")
 		}
 	}
-	if b := v.Sections[0].Items; b[len(b)-1].Action.ID != "unarchive" {
-		t.Fatalf("overview = %#v", b)
+	if b := v.Sections[len(v.Sections)-1].Items; b[len(b)-1].Action.ID != "unarchive" {
+		t.Fatalf("about = %#v", b)
 	}
 	all := render(t, a, "home", "")
-	if len(all.Tabs.Items) != 2 || len(all.Sections[0].Items) != 2 {
+	if len(all.Tabs.Items) != 3 || len(all.Sections[0].Items) != 1 {
 		t.Fatalf("archived space listed on the page of every space: %#v", all)
 	}
 }

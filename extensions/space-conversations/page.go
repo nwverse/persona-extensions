@@ -19,9 +19,11 @@ import (
 const (
 	// allValue is the switcher's choice for every space; a space's slug may not take it (validSlug).
 	allValue = "all"
+	// newValue is the switcher's choice to create a new space; a space's slug may not take it (validSlug).
+	newValue = "new"
 	// pickPrefix names the space in a switcher row's action id for apps that send no action values.
 	pickPrefix = "pick:"
-	// tabsMost is how many items tabs hold (All included); more spaces get a drop-down filter.
+	// tabsMost is how many items tabs hold (All and + New space included); more spaces get a drop-down filter.
 	tabsMost = 8
 	// filterMost is how many choices a filter holds.
 	filterMost = 100
@@ -188,8 +190,8 @@ func countItems(v *wire.View) int {
 
 type switchItem struct{ value, title, badge string }
 
-// switcher sets the view's tabs (at most tabsMost items) or filter, as the app draws them. An app before UI version 3
-// gets rows instead, returned for the page of one space (the page of every space lists the spaces itself).
+// switcher sets the view's tabs (at most tabsMost items) or filter, as the app draws them, with "+ 新建空间" at the end.
+// An app before UI version 3 gets rows instead, returned for the page of one space.
 func switcher(v *wire.View, e env, spaces []Track, infos map[string]*spaceInfo, value string) []wire.Component {
 	items := []switchItem{{value: allValue, title: "全部"}}
 	for _, t := range spaces {
@@ -199,6 +201,7 @@ func switcher(v *wire.View, e env, spaces []Track, infos map[string]*spaceInfo, 
 		}
 		items = append(items, it)
 	}
+	items = append(items, switchItem{value: newValue, title: "+ 新建空间"})
 	pick := wire.Action{ID: "pick"}
 	switch {
 	case e.atLeast(4) && len(items) <= tabsMost:
@@ -263,43 +266,26 @@ func countBadge(n int) string {
 	return clipRunes(strconv.Itoa(n), tabBadgeMost)
 }
 
-// selectedSections draws one space: its overview, a new conversation (unless archived) and its recent conversations.
+// selectedSections draws one space in conversation-first order: a compact quick-start box (unless archived),
+// recent conversations on the first screen, and a folded single-line SPACE.md summary with view/edit and archive below.
 // used is how many items the view already has.
 func selectedSections(e env, info *spaceInfo, used int) []wire.Section {
 	t := info.track
 	slug := t.Slug
-	title := spaceTitle(t)
-	var items []wire.Component
-	if desc := strings.TrimSpace(t.Description); desc != "" {
-		items = append(items, secondary(desc))
-	}
-	items = append(items, secondary(summaryLine(e, info)))
-	switch excerpt := spaceExcerpt(info.md, title); {
-	case info.mdErr != nil:
-		items = append(items, secondary("SPACE.md 暂时读不到（助手所在的电脑可能离线）"))
-	case excerpt == "":
-		items = append(items, secondary("SPACE.md 还没有内容"))
-	default:
-		items = append(items, markdownOrText(e, excerpt))
-	}
-	items = append(items, button("edit", "编辑 SPACE.md", map[string]string{"slug": slug}))
-	if t.Archived {
-		items = append(items, button("unarchive", "恢复空间", map[string]string{"slug": slug}))
-	} else {
-		items = append(items, button("archive", "归档空间", map[string]string{"slug": slug}))
-	}
-	sections := []wire.Section{{Title: title, Items: items}}
-	used += len(items)
+	var sections []wire.Section
 	if !t.Archived {
 		sections = append(sections, wire.Section{Title: "新对话", Items: []wire.Component{
-			{Type: wire.ComponentField, Name: "prompt", Label: "消息", Kind: wire.FieldKindMultiline, Placeholder: "说说想在这个空间里处理的事"},
+			{Type: wire.ComponentField, Name: "prompt", Label: "消息", Kind: wire.FieldKindText, Placeholder: "输入消息，直接开始新对话…"},
 			{Type: wire.ComponentButton, Title: "开始对话", Action: &wire.Action{ID: "start", Submit: true, Values: map[string]string{"slug": slug}}},
 		}})
 		used += 2
 	}
+
+	// Reserve room for the folded SPACE.md summary row and archive/restore action below the conversations.
+	const aboutItems = 2
 	rows := []wire.Component{}
 	for _, chat := range info.chats {
-		if used+len(rows) >= wire.ItemsMost {
+		if used+aboutItems+len(rows) >= wire.ItemsMost {
 			break
 		}
 		rows = append(rows, chatRow(e, t, info.machine, chat))
@@ -307,7 +293,39 @@ func selectedSections(e env, info *spaceInfo, used int) []wire.Section {
 	if len(rows) == 0 {
 		rows = append(rows, wire.Component{Type: wire.ComponentEmpty, Title: "还没有对话"})
 	}
-	return append(sections, wire.Section{Title: "最近对话", Items: rows})
+	sections = append(sections, wire.Section{Title: "最近对话", Footer: summaryLine(e, info), Items: rows})
+
+	about := []wire.Component{
+		{
+			Type:     wire.ComponentRow,
+			Title:    "SPACE.md",
+			Subtitle: clipRunes(spaceSummaryLine(info), wire.StringMost),
+			Value:    "查看 / 编辑",
+			Icon:     "doc",
+			Action:   action("edit", map[string]string{"slug": slug}),
+		},
+	}
+	if t.Archived {
+		about = append(about, button("unarchive", "恢复空间", map[string]string{"slug": slug}))
+	} else {
+		about = append(about, button("archive", "归档空间", map[string]string{"slug": slug}))
+	}
+	return append(sections, wire.Section{Title: "空间说明", Items: about})
+}
+
+// spaceSummaryLine folds SPACE.md (or the space description) into a single plain-text line for the compact summary row.
+func spaceSummaryLine(info *spaceInfo) string {
+	if info.mdErr != nil {
+		return "SPACE.md 暂时读不到（助手所在的电脑可能离线）"
+	}
+	title := spaceTitle(info.track)
+	if line := firstLine(spaceExcerpt(info.md, title)); line != "" {
+		return line
+	}
+	if desc := strings.TrimSpace(info.track.Description); desc != "" {
+		return desc
+	}
+	return "SPACE.md 还没有内容"
 }
 
 // summaryLine is "N 个对话 · 最近 <when>" for a space.
@@ -325,12 +343,15 @@ func summaryLine(e env, info *spaceInfo) string {
 }
 
 // allSections draws every space: the spaces, each opening its own page, and their conversations merged.
+// "+ 新建空间" lives in the top switcher bar so it stays one tap away without taking card height here.
 func allSections(e env, spaces []Track, infos map[string]*spaceInfo, missing bool) []wire.Section {
 	var items []wire.Component
 	if missing {
 		items = append(items, secondary("这个空间已不存在，下面是全部空间。"))
 	}
-	items = append(items, button("new", "新建空间", nil))
+	if !e.atLeast(3) {
+		items = append(items, button("new", "新建空间", nil))
+	}
 	type labeled struct {
 		track   Track
 		machine string
@@ -388,18 +409,6 @@ func chatRow(e env, t Track, machine string, chat Conversation) wire.Component {
 		Badge:    &wire.Badge{Text: clipRunes(spaceTitle(t), tabTitleMost)},
 		Action:   action("chat", map[string]string{"slug": t.Slug, "sid": chat.SessionID, "mid": cmp.Or(chat.MachineID, machine)}),
 	}
-}
-
-// markdownOrText shows an excerpt as Markdown when the app draws it and it holds to the subset views allow (no
-// images, https links only), else as plain text.
-func markdownOrText(e env, text string) wire.Component {
-	if e.atLeast(3) {
-		md := wire.Component{Type: wire.ComponentMarkdown, Text: text}
-		if wire.CheckView(&wire.View{Sections: []wire.Section{{Items: []wire.Component{md}}}}) == nil {
-			return md
-		}
-	}
-	return wire.Component{Type: wire.ComponentText, Text: clipRunes(text, wire.StringMost)}
 }
 
 var (
