@@ -19,6 +19,12 @@ var testNow = time.Date(2026, time.November, 26, 9, 30, 0, 0, time.UTC)
 
 const testToday = model.Day("2026-11-26")
 
+func openTestStore(dir string) *Store {
+	imp := Open(dir)
+	imp.SetClock(func() time.Time { return testNow })
+	return imp
+}
+
 func f(v float64) *float64 { return &v }
 
 // fixture is a household with a fridge and a pantry, milk counted in boxes, eggs counted one by one, untracked
@@ -313,7 +319,7 @@ func TestDraftsExpireAndAreCapped(t *testing.T) {
 
 func TestStoreOnDiskIsSharedAndRefusesABrokenFile(t *testing.T) {
 	dir := t.TempDir()
-	a, b := Open(dir), Open(dir)
+	a, b := openTestStore(dir), openTestStore(dir)
 	d, err := Preview(a, &model.Home{}, Input{Source: SrcText, Lines: []Line{{Title: "牛奶"}}}, time.UTC, false)
 	if err != nil {
 		t.Fatal(err)
@@ -372,8 +378,7 @@ func snapshot(t *testing.T, b *kernel.Base) string {
 
 func TestApplyWritesEveryStepAndRecordsIt(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
-	imp.SetClock(func() time.Time { return testNow })
+	imp := openTestStore("")
 	a := apply(t, fx, imp, Input{Source: SrcReceipt, Lines: []Line{
 		{Title: "牛奶", Qty: f(2), Unit: "盒"},
 		{Title: "酸奶", Qty: f(4), Unit: "杯"},
@@ -419,7 +424,7 @@ func TestApplyWritesEveryStepAndRecordsIt(t *testing.T) {
 
 func TestApplyIsAllOrNothing(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	d, err := Preview(imp, fx.home(), Input{Source: SrcReceipt, Lines: []Line{
 		{Title: "牛奶", Qty: f(2), Unit: "盒"}, {Title: "纯牛奶", Qty: f(1), Unit: "盒"},
 	}}, time.UTC, false)
@@ -469,7 +474,7 @@ func TestApplyIsAllOrNothing(t *testing.T) {
 
 func TestUndoPutsEverythingBack(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	before := fx.home()
 	apply(t, fx, imp, Input{Source: SrcReceipt, Lines: []Line{
 		{Title: "牛奶", Qty: f(2), Unit: "盒"}, {Title: "酸奶", Qty: f(4), Unit: "杯", Place: "阳台"}, {Title: "洗洁精"},
@@ -502,7 +507,7 @@ func TestUndoPutsEverythingBack(t *testing.T) {
 
 func TestUndoRefusesWhenSomethingChangedSince(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	a := apply(t, fx, imp, Input{Source: SrcReceipt, Lines: []Line{{Title: "牛奶", Qty: f(2), Unit: "盒"}, {Title: "酸奶", Qty: f(4), Unit: "杯"}}})
 	if _, err := ops.Use(fx.b, fx.milk, 1, testNow.Add(time.Minute), time.UTC); err != nil {
 		t.Fatal(err)
@@ -518,7 +523,7 @@ func TestUndoRefusesWhenSomethingChangedSince(t *testing.T) {
 	}
 	// A purchase made later for a new item blocks too.
 	fx2 := newFixture(t)
-	imp2 := Open("")
+	imp2 := openTestStore("")
 	apply(t, fx2, imp2, Input{Source: SrcReceipt, Lines: []Line{{Title: "酸奶", Qty: f(1), Unit: "杯"}}})
 	var yogurt string
 	for _, it := range fx2.home().Items {
@@ -544,7 +549,7 @@ func TestExpiredItemTakesTheNewBatchOnly(t *testing.T) {
 	if _, err := ops.Save(fx.b, kernel.EntityInput{ID: fx.eggs, Values: map[string]any{"expires": string(testToday.Add(-2))}}, testNow, time.UTC); err != nil {
 		t.Fatal(err)
 	}
-	imp := Open("")
+	imp := openTestStore("")
 	p := plan(t, fx, Input{Source: SrcReceipt, Lines: []Line{{Title: "鸡蛋", Qty: f(10), Unit: "个", Expires: "2026-12-20"}}})
 	if s := step(t, p, 1); *s.After != 10 || s.SetExpires != "2026-12-20" {
 		t.Fatalf("step %+v", s)
