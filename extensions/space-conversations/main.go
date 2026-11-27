@@ -268,7 +268,12 @@ func (a *App) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if slug == "" {
 			return notice("先选择一个空间")
 		}
-		if _, _, err := c.Start(ctx, slug, prompt); err != nil {
+		opts := StartOptions{
+			Launcher: strings.TrimSpace(r.Values["launcher"]),
+			Model:    strings.TrimSpace(r.Values["model"]),
+			Effort:   strings.TrimSpace(r.Values["effort"]),
+		}
+		if _, _, err := c.Start(ctx, slug, prompt, opts); err != nil {
 			return nil, err
 		}
 		// The refreshed page lists the new conversation; its row opens it. No persona://tracks link here: hubs before

@@ -160,7 +160,23 @@ func pageView(ctx context.Context, c *Client, e env, sel string) (*wire.View, er
 		infos[t.Slug] = info
 		batch = append(batch, info)
 	}
-	fetch(ctx, c, batch)
+	var launchers TrackLaunchers
+	if selected != nil && !selected.Archived {
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			lCtx, cancel := context.WithTimeout(ctx, spaceMDWait)
+			defer cancel()
+			if res, err := c.TrackLaunchers(lCtx); err == nil {
+				launchers = res
+			}
+		}()
+		fetch(ctx, c, batch)
+		wg.Wait()
+	} else {
+		fetch(ctx, c, batch)
+	}
 
 	value := allValue
 	if selected != nil {
@@ -173,7 +189,7 @@ func pageView(ctx context.Context, c *Client, e env, sel string) (*wire.View, er
 		if len(switcherRows) > 0 {
 			v.Sections = append(v.Sections, wire.Section{Items: switcherRows})
 		}
-		v.Sections = append(v.Sections, selectedSections(e, infos[selected.Slug], countItems(v))...)
+		v.Sections = append(v.Sections, selectedSections(e, infos[selected.Slug], launchers, countItems(v))...)
 		return v, nil
 	}
 	v.Sections = allSections(e, spaces, infos, missing)
@@ -266,19 +282,55 @@ func countBadge(n int) string {
 	return clipRunes(strconv.Itoa(n), tabBadgeMost)
 }
 
-// selectedSections draws one space in conversation-first order: a compact quick-start box (unless archived),
-// recent conversations on the first screen, and a folded single-line SPACE.md summary with view/edit and archive below.
-// used is how many items the view already has.
-func selectedSections(e env, info *spaceInfo, used int) []wire.Section {
+// selectedSections draws one space in conversation-first order: a compact quick-start box (with launcher, model and
+// effort selectors when the hub provides them, unless archived), recent conversations on the first screen, and a folded
+// single-line SPACE.md summary with view/edit and archive below. used is how many items the view already has.
+func selectedSections(e env, info *spaceInfo, launchers TrackLaunchers, used int) []wire.Section {
 	t := info.track
 	slug := t.Slug
 	var sections []wire.Section
 	if !t.Archived {
-		sections = append(sections, wire.Section{Title: "新对话", Items: []wire.Component{
+		startItems := []wire.Component{
 			{Type: wire.ComponentField, Name: "prompt", Label: "消息", Kind: wire.FieldKindText, Placeholder: "输入消息，直接开始新对话…"},
-			{Type: wire.ComponentButton, Title: "开始对话", Action: &wire.Action{ID: "start", Submit: true, Values: map[string]string{"slug": slug}}},
-		}})
-		used += 2
+		}
+		if len(launchers.Launchers) > 0 {
+			defaultLabel := "跟随默认"
+			if launchers.Default.Launcher != "" {
+				defaultLabel = "默认（" + clipRunes(launchers.Default.Launcher, 24) + "）"
+			}
+			choices := []wire.Choice{{Value: "", Title: defaultLabel}}
+			for _, l := range launchers.Launchers {
+				if len(choices) >= filterMost {
+					break
+				}
+				label := cmp.Or(strings.TrimSpace(l.DisplayName), l.Name)
+				if l.DefaultModel != "" {
+					label += " · " + l.DefaultModel
+				}
+				choices = append(choices, wire.Choice{Value: l.Name, Title: clipRunes(label, wire.StringMost)})
+			}
+			modelPlaceholder := "留空用默认模型，或输入模型 ID"
+			if launchers.Default.Model != "" {
+				modelPlaceholder = "留空默认：" + clipRunes(launchers.Default.Model, 40)
+			}
+			startItems = append(startItems,
+				wire.Component{Type: wire.ComponentField, Name: "launcher", Label: "启动器", Kind: wire.FieldKindChoice, Choices: choices},
+				wire.Component{Type: wire.ComponentField, Name: "model", Label: "模型（可选）", Kind: wire.FieldKindText, Placeholder: modelPlaceholder},
+				wire.Component{Type: wire.ComponentField, Name: "effort", Label: "思考档位", Kind: wire.FieldKindChoice, Choices: []wire.Choice{
+					{Value: "", Title: "默认"},
+					{Value: "low", Title: "低"},
+					{Value: "medium", Title: "中"},
+					{Value: "high", Title: "高"},
+				}},
+			)
+		}
+		startItems = append(startItems, wire.Component{
+			Type:   wire.ComponentButton,
+			Title:  "开始对话",
+			Action: &wire.Action{ID: "start", Submit: true, Values: map[string]string{"slug": slug}},
+		})
+		sections = append(sections, wire.Section{Title: "新对话", Items: startItems})
+		used += len(startItems)
 	}
 
 	// Reserve room for the folded SPACE.md summary row and archive/restore action below the conversations.

@@ -482,15 +482,17 @@ func checkVersioned(t *testing.T, v *wire.View, ui int) {
 // fakeHub is a hub with spaces, their conversations and SPACE.md. A nonzero old is the status the scoped conversations
 // route answers with, as a hub before it does: 403 without a scope from the hub, 404 from an older assistant manager.
 type fakeHub struct {
-	tracks []map[string]any
-	chats  map[string][]map[string]any
-	totals map[string]int
-	md     map[string]string
-	mdFail map[string]bool
-	old    int
+	tracks    []map[string]any
+	chats     map[string][]map[string]any
+	totals    map[string]int
+	md        map[string]string
+	mdFail    map[string]bool
+	launchers *TrackLaunchers
+	old       int
 
-	mu    sync.Mutex
-	calls []string
+	mu        sync.Mutex
+	calls     []string
+	startBody map[string]any
 }
 
 func spaceTrack(slug, title string) map[string]any {
@@ -518,6 +520,17 @@ func (f *fakeHub) start(t *testing.T) *App {
 		switch {
 		case r.URL.Path == "/api/v1/assistant/tracks" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"tracks": f.tracks})
+		case r.URL.Path == "/api/v1/assistant/tracks/launchers" && r.Method == http.MethodGet:
+			if f.old != 0 {
+				w.WriteHeader(f.old)
+				_ = json.NewEncoder(w).Encode(map[string]any{"error": "permission_denied"})
+				return
+			}
+			if f.launchers != nil {
+				_ = json.NewEncoder(w).Encode(f.launchers)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(TrackLaunchers{Launchers: []TrackLauncher{}})
 		case isTrack && strings.HasSuffix(rest, "/conversations"):
 			if f.old != 0 {
 				w.WriteHeader(f.old)
@@ -554,6 +567,11 @@ func (f *fakeHub) start(t *testing.T) *App {
 		case r.URL.Path == "/api/v1/assistant" && r.Method == http.MethodGet:
 			_ = json.NewEncoder(w).Encode(map[string]any{"machine_id": "computer-example", "conversations": f.chats[r.URL.Query().Get("space")]})
 		case r.URL.Path == "/api/v1/assistant/conversations" && r.Method == http.MethodPost:
+			var body map[string]any
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			f.mu.Lock()
+			f.startBody = body
+			f.mu.Unlock()
 			_, _ = w.Write([]byte(`{"session":{"session_id":"session-new","machine_id":"computer-example"}}`))
 		default:
 			http.NotFound(w, r)
@@ -878,6 +896,55 @@ func TestStartShowsTheSpaceOnBothPages(t *testing.T) {
 		if err != nil || res.View == nil || res.View.State != "space-1" || res.Toast != "对话已开始" {
 			t.Fatalf("%s start = %#v, %v", contribution, res, err)
 		}
+	}
+}
+
+// When the hub lists launchers, the selected space offers launcher, model and effort fields and forwards them on start;
+// older hubs that refuse /tracks/launchers degrade cleanly without failing the page.
+func TestStartWithLauncherModelAndEffort(t *testing.T) {
+	f := &fakeHub{
+		tracks: []map[string]any{spaceTrack("reading", "阅读")},
+		launchers: &TrackLaunchers{
+			Default: TrackLauncherDefault{Launcher: "claude", Model: "claude-sonnet-4-6"},
+			Launchers: []TrackLauncher{
+				{Name: "claude", DisplayName: "Claude Code", DefaultModel: "claude-sonnet-4-6"},
+				{Name: "codex", DisplayName: "Codex", DefaultModel: "gpt-5.4"},
+			},
+		},
+	}
+	a := f.start(t)
+	v := render(t, a, "space", "reading")
+	startItems := v.Sections[0].Items
+	if len(startItems) != 5 || startItems[1].Name != "launcher" || startItems[2].Name != "model" || startItems[3].Name != "effort" {
+		t.Fatalf("expected launcher/model/effort fields, got %#v", startItems)
+	}
+	if len(startItems[1].Choices) != 3 || startItems[1].Choices[0].Value != "" || startItems[1].Choices[2].Value != "codex" {
+		t.Fatalf("launcher choices = %#v", startItems[1].Choices)
+	}
+	res, err := a.action(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{
+		Contribution: "space",
+		State:        "reading",
+		Action:       "start",
+		Values: map[string]string{
+			"slug":     "reading",
+			"prompt":   "推荐两本书",
+			"launcher": "codex",
+			"model":    "gpt-5.4",
+			"effort":   "high",
+		},
+	}})
+	if err != nil || res.View == nil || res.Toast != "对话已开始" {
+		t.Fatalf("start with model = %#v, %v", res, err)
+	}
+	if f.startBody["launcher"] != "codex" || f.startBody["model"] != "gpt-5.4" || f.startBody["effort"] != "high" || f.startBody["space"] != "reading" {
+		t.Fatalf("forwarded start body = %#v", f.startBody)
+	}
+
+	// Older hub without /tracks/launchers still renders cleanly with prompt + start button.
+	oldApp := (&fakeHub{tracks: []map[string]any{spaceTrack("reading", "阅读")}, old: http.StatusForbidden}).start(t)
+	oldView := render(t, oldApp, "space", "reading")
+	if len(oldView.Sections[0].Items) != 2 {
+		t.Fatalf("old hub start items = %#v", oldView.Sections[0].Items)
 	}
 }
 

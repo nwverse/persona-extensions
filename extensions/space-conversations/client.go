@@ -50,6 +50,33 @@ type SpaceMD struct {
 	State   string `json:"state"`
 }
 
+// TrackLaunchers is GET /api/v1/assistant/tracks/launchers's answer.
+type TrackLaunchers struct {
+	Default   TrackLauncherDefault `json:"default"`
+	Launchers []TrackLauncher      `json:"launchers"`
+}
+
+type TrackLauncherDefault struct {
+	Launcher string `json:"launcher,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Effort   string `json:"effort,omitempty"`
+}
+
+type TrackLauncher struct {
+	Name         string   `json:"name"`
+	DisplayName  string   `json:"display_name,omitempty"`
+	Agent        string   `json:"agent,omitempty"`
+	DefaultModel string   `json:"default_model,omitempty"`
+	Models       []string `json:"models,omitempty"`
+}
+
+// StartOptions holds optional launcher, model and effort overrides for a new space conversation.
+type StartOptions struct {
+	Launcher string
+	Model    string
+	Effort   string
+}
+
 // HTTPError is a hub answer outside 2xx, with its status and refused scope kept so callers can tell an older hub apart.
 type HTTPError struct {
 	Status  int
@@ -222,10 +249,28 @@ func (c *Client) Archive(ctx context.Context, track Track, archived bool) error 
 	return c.call(ctx, http.MethodPut, "/api/v1/assistant/tracks/"+url.PathEscape(track.Slug), map[string]any{"revision": track.Revision, "archived": archived}, nil)
 }
 
-func (c *Client) Start(ctx context.Context, slug, prompt string) (string, string, error) {
+// TrackLaunchers reads the healthy assistant launchers available for starting a space conversation.
+// Older hubs that do not have the route answer 403/404/405; callers treat that as no choices.
+func (c *Client) TrackLaunchers(ctx context.Context) (TrackLaunchers, error) {
+	var out TrackLaunchers
+	err := c.call(ctx, http.MethodGet, "/api/v1/assistant/tracks/launchers", nil, &out)
+	return out, err
+}
+
+func (c *Client) Start(ctx context.Context, slug, prompt string, opts StartOptions) (string, string, error) {
 	var out struct {
 		Session Conversation `json:"session"`
 	}
-	err := c.call(ctx, http.MethodPost, "/api/v1/assistant/conversations?space="+url.QueryEscape(slug), map[string]any{"space": slug, "prompt": prompt}, &out)
+	body := map[string]any{"space": slug, "prompt": prompt}
+	if v := strings.TrimSpace(opts.Launcher); v != "" {
+		body["launcher"] = v
+	}
+	if v := strings.TrimSpace(opts.Model); v != "" {
+		body["model"] = v
+	}
+	if v := strings.TrimSpace(opts.Effort); v != "" {
+		body["effort"] = v
+	}
+	err := c.call(ctx, http.MethodPost, "/api/v1/assistant/conversations?space="+url.QueryEscape(slug), body, &out)
 	return out.Session.MachineID, out.Session.SessionID, err
 }
