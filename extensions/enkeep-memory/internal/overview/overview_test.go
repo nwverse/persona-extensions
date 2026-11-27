@@ -752,3 +752,21 @@ func TestHoldoutHardFilter(t *testing.T) {
 		t.Fatalf("unexpected rates: %+v", h)
 	}
 }
+
+func TestEnrichSubjects(t *testing.T) {
+	p := &Pattern{
+		ID: "ov:tp1", Facet: string(entry.Tools), Lifecycle: Core,
+		Text:      "用 task_plan 派运维写操作时，带 supervisor 并设 user_requested=true，估时间不按人工期。",
+		Exception: "涉及 1Password 时改用 secret_env",
+		Subjects:  []string{"existing-tag"},
+	}
+	got := EnrichSubjects(p)
+	if len(got) > memsrc.MaxSubjects {
+		t.Fatalf("enriched subjects exceeded MaxSubjects: %d %v", len(got), got)
+	}
+	for _, want := range []string{"existing-tag", "task_plan", "1Password", "派活", "排期", "密钥", "工具"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("missing expected enriched subject %q in %v", want, got)
+		}
+	}
+}

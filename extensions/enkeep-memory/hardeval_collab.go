@@ -41,6 +41,7 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/recall"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 )
 
@@ -1265,16 +1266,16 @@ type collabResult struct {
 	SegmentN map[string]int                                      `json:"segment_n,omitempty"`
 }
 
-const collabDecisionsQueryPrompt = `你是这位用户的主 AI 助手。线上你可以主动调用 decisions_query(tag) 从记忆池按关键词查询局部规矩、负责人或例外（tag 按空格拆词，所有词都以子串同时匹配才命中，结果截断在 3072 字节；查单个项目名、人名、仓库名、机器名或单个场合词如「派活」「汇报」「提问」「开工」最容易命中）。
+const collabDecisionsQueryPrompt = `你是这位用户的主 AI 助手。线上规则提示：涉及具体的人、项目、系统、机器、工具命令或账号，或者要在岔口上替用户选、派活、汇报、验收或问用户之前，先调 decisions_query(tag) 从记忆池查局部规矩、负责人和例外（tag 按空格拆词，所有词以子串同时匹配才命中，结果截断在 3072 字节；用单个实体/工具名如 task_plan、sj-wsl、1Password、项目名、人名，或单个场合词如「派活」「汇报」「提问」「开工」「验收」「排期」「配置」「门禁」最容易命中）。
 
-下面给你当前常驻记忆和若干互相独立的情境。对每个情境，判断是否需要调用 decisions_query：
-- 不需要查则返回空数组 []；
-- 需要查则返回 1 到 2 个简短 tag（每个 1 个词或 2 个空格分隔的词，不要写长句）。
+下面给你当前常驻记忆和若干互相独立的情境。对每个情境，判断是否需要调用 decisions_query 查常驻之外的局部规矩、工具规范或实体关系：
+- 纯粹已被常驻覆盖且不涉具体实体/工具细节时返回空数组 []；
+- 需要查则返回 1 到 3 个简短 tag（每个尽量 1 个词，不要写长句）。
 输出 JSON。`
 
 const collabDecisionsQuerySchema = `{"type":"object","additionalProperties":false,"required":["queries"],"properties":{"queries":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["id","tags"],"properties":{"id":{"type":"string"},"tags":{"type":"array","items":{"type":"string"}}}}}}}`
 
-// collabQueryPlan asks the answering model which decisions_query tags (0-2) it wants to query for each incident.
+// collabQueryPlan asks the answering model which decisions_query tags (0-3) it wants to query for each incident.
 func collabQueryPlan(ctx context.Context, answer model.Model, memory string, incs []collabIncident, attempt int) (map[string][]string, error) {
 	type q struct {
 		ID        string `json:"id"`
@@ -1302,8 +1303,8 @@ func collabQueryPlan(ctx context.Context, answer model.Model, memory string, inc
 		}
 		mu.Lock()
 		for _, item := range out.Queries {
-			if len(item.Tags) > 2 {
-				item.Tags = item.Tags[:2]
+			if len(item.Tags) > 3 {
+				item.Tags = item.Tags[:3]
 			}
 			planned[item.ID] = item.Tags
 		}
@@ -1314,10 +1315,12 @@ func collabQueryPlan(ctx context.Context, answer model.Model, memory string, inc
 }
 
 // collabHubPage1 builds the exact first page of memory.entries (up to memsrc.MaxLimit = 500, standing first then rank
-// desc) visible before day with no sensitive or restricted-space entries, matching the hub's decisions_query scope.
+// desc) visible before day with no sensitive or restricted-space entries, using real overview.Exits(ov) so non-standing
+// L1 contracts/principles carry enriched subjects and exact online ranks, matching the hub's decisions_query scope.
 func collabHubPage1(st *store.State, ov *overview.State, f heFilter, day string, budget int) []memsrc.Entry {
 	daySt := &store.State{
 		Contacts: st.Contacts,
+		Graph:    sliceGraphBefore(st.Graph, day),
 		Entries:  make(map[string]*entry.Entry, len(st.Entries)),
 	}
 	for id, e := range st.Entries {
@@ -1328,24 +1331,13 @@ func collabHubPage1(st *store.State, ov *overview.State, f heFilter, day string,
 	}
 	var extras []memsrc.Extra
 	if ov != nil {
-		for _, p := range ov.Sorted(func(p *overview.Pattern) bool {
-			return p.Used() && len(p.Categories) == 0 && p.OriginSpace == "" && !f.patternOut(st, p, day)
-		}) {
-			extras = append(extras, memsrc.Extra{
-				Entry: memsrc.Entry{
-					ID:       p.ID,
-					Text:     overview.Text(p),
-					Facet:    p.Facet,
-					Status:   "active",
-					Rank:     overview.Score(p) * 9,
-					Subjects: p.Subjects,
-				},
-				Last:     p.LastEvidence,
-				Score:    overview.Score(p),
-				Kind:     entry.KindOfFacet(p.Facet),
-				Evidence: p.EvidenceIDs,
-			})
+		cleanOv := &overview.State{Patterns: map[string]*overview.Pattern{}}
+		for id, p := range ov.Patterns {
+			if p != nil && p.Used() && len(p.Categories) == 0 && p.OriginSpace == "" && !f.patternOut(st, p, day) {
+				cleanOv.Patterns[id] = p
+			}
 		}
+		extras = overview.Exits(cleanOv)
 	}
 	res, _, err := memsrc.PageWith(daySt, nil, extras, memsrc.Params{
 		Limit:         memsrc.MaxLimit,
@@ -1525,7 +1517,7 @@ func collabRun(args []string) error {
 					mem = mems["resident"]
 					incs = slices.Clone(incs)
 					for i := range incs {
-						incs[i].Recall = dayNames.recall(daySt, dayF, d, incs[i].Situation, mem, *recallBytes, arm == "recall")
+						incs[i].Recall = dayNames.recallTwoLayer(daySt, dayOv, dayF, d, incs[i].Situation, mem, *recallBytes, arm == "recall")
 						bytes += len(incs[i].Recall)
 						samples[bk+"/"+arm+"/"+incs[i].ID] = incs[i].Recall
 					}
@@ -1830,6 +1822,239 @@ var collabIdent = regexp.MustCompile(`[A-Za-z][A-Za-z0-9_.]*-[A-Za-z0-9_.-]{3,}|
 
 // collabNameMost is the most entries one name may bring in before it counts as too common to name anything.
 const collabNameMost = 150
+
+// collabQueryIdent matches ASCII tool/command/host/service tokens (>=3 chars) in an incident situation.
+var collabQueryIdent = regexp.MustCompile(`[A-Za-z0-9][A-Za-z0-9_.-]{2,}`)
+
+func collabBigrams(s string) map[string]bool {
+	r := []rune(norm.Q(s))
+	out := make(map[string]bool, max(0, len(r)-1))
+	for i := 0; i+1 < len(r); i++ {
+		out[string(r[i:i+2])] = true
+	}
+	return out
+}
+
+func collabExtractIdents(s string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range collabQueryIdent.FindAllString(s, -1) {
+		m = strings.ToLower(strings.Trim(m, ".-_"))
+		if len(m) < 3 || seen[m] {
+			continue
+		}
+		hasLetter := false
+		for i := 0; i < len(m); i++ {
+			if m[i] >= 'a' && m[i] <= 'z' {
+				hasLetter = true
+				break
+			}
+		}
+		if !hasLetter {
+			continue
+		}
+		seen[m] = true
+		out = append(out, m)
+	}
+	return out
+}
+
+// recallNonStandingL1 retrieves the most situation-relevant non-standing L1 contracts and principles from ov
+// (strictly pre-cutoff and leak-filtered), keeping the ~60 L1 rules outside 4096 B standing reachable on demand.
+func recallNonStandingL1(st *store.State, ov *overview.State, f heFilter, day, situation, standing string, budget int) []string {
+	if ov == nil || budget <= 0 || strings.TrimSpace(situation) == "" {
+		return nil
+	}
+	sitLow := strings.ToLower(situation)
+	sitIdents := collabExtractIdents(situation)
+	sitBi := collabBigrams(situation)
+	type scoredPat struct {
+		p     *overview.Pattern
+		score float64
+		sc    int
+	}
+	var cands []scoredPat
+	for _, p := range ov.Patterns {
+		if p == nil || !p.Used() || len(p.Categories) > 0 || p.OriginSpace != "" || f.patternOut(st, p, day) {
+			continue
+		}
+		head := strings.TrimSpace(p.Text)
+		if head == "" {
+			continue
+		}
+		if strings.Contains(standing, heClip(head, 24)) {
+			continue
+		}
+		txtLow := strings.ToLower(head + " " + p.Exception)
+		subjs := overview.EnrichSubjects(p)
+		s := 0.0
+		for _, idt := range sitIdents {
+			if strings.Contains(txtLow, idt) {
+				s += 5.0
+				continue
+			}
+			for _, sb := range subjs {
+				if strings.Contains(strings.ToLower(sb), idt) {
+					s += 4.0
+					break
+				}
+			}
+		}
+		for _, sb := range subjs {
+			sb = strings.TrimSpace(sb)
+			if len([]rune(sb)) < 2 || collabGeneric[sb] {
+				continue
+			}
+			if strings.Contains(sitLow, strings.ToLower(sb)) {
+				s += 2.5
+			}
+		}
+		ovl := 0
+		for bi := range collabBigrams(head) {
+			if sitBi[bi] {
+				ovl++
+			}
+		}
+		s += 0.35 * float64(ovl)
+		if s >= 3.0 {
+			cands = append(cands, scoredPat{p: p, score: s, sc: overview.Score(p)})
+		}
+	}
+	sort.SliceStable(cands, func(i, j int) bool {
+		if cands[i].score != cands[j].score {
+			return cands[i].score > cands[j].score
+		}
+		if cands[i].sc != cands[j].sc {
+			return cands[i].sc > cands[j].sc
+		}
+		return cands[i].p.ID < cands[j].p.ID
+	})
+	var lines []string
+	used := 0
+	for _, c := range cands {
+		if len(lines) >= 6 {
+			break
+		}
+		ln := "- " + heClip(overview.Text(c.p), 240)
+		if used+len(ln)+1 > budget {
+			continue
+		}
+		lines = append(lines, ln)
+		used += len(ln) + 1
+	}
+	return lines
+}
+
+// recallTwoLayer implements the unified design §2.2 two-layer contextual recall within budget bytes:
+//   - Layer A: situation-relevant non-standing L1 contracts and principles (kept in both recall and recall-noent);
+//   - Layer B: Block 2 1-hop entity skeleton expansion (recall.Search EntityContext) + high-IDF anchored local rules
+//     and World/People facts (entities=false cleanly ablates World/People skeleton and entity entries).
+func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f heFilter, day, situation, standing string, budget int, entities bool) string {
+	if budget <= 0 {
+		return ""
+	}
+	var out []string
+	seen := map[string]bool{}
+	used := 0
+	addLine := func(ln string) bool {
+		if ln == "" || seen[ln] {
+			return false
+		}
+		if used+len(ln)+1 > budget {
+			return false
+		}
+		seen[ln] = true
+		out = append(out, ln)
+		used += len(ln) + 1
+		return true
+	}
+
+	// Layer A: non-standing L1 contracts and principles (at most 45% of recall budget, <= 900 B).
+	l1Budget := min(900, budget*45/100)
+	if !entities {
+		l1Budget = min(1200, budget*60/100)
+	}
+	for _, ln := range recallNonStandingL1(st, ov, f, day, situation, standing, l1Budget) {
+		addLine(ln)
+	}
+
+	// Layer B1: Block 2 1-hop entity skeleton expansion + anchored local rules when entities=true.
+	if entities && st != nil && st.Graph != nil {
+		cleanSt := &store.State{
+			Version:    st.Version,
+			Onboarding: st.Onboarding,
+			Contacts:   st.Contacts,
+			Graph:      sliceGraphBefore(st.Graph, day),
+			Entries:    make(map[string]*entry.Entry, len(st.Entries)),
+		}
+		for id, e := range st.Entries {
+			if e == nil || len(e.Cats()) > 0 || e.OriginSpace != "" || e.Inferred || f.entryOut(st, e, day) {
+				continue
+			}
+			cleanSt.Entries[id] = e
+		}
+		// Pick up to 3 highest-IDF matched entity names/identifiers from the situation.
+		type entQ struct {
+			name string
+			df   int
+		}
+		var qs []entQ
+		seenQ := map[string]bool{}
+		for n, es := range idx {
+			if strings.Contains(situation, n) && len([]rune(n)) >= 2 && !seenQ[n] {
+				seenQ[n] = true
+				qs = append(qs, entQ{name: n, df: len(es)})
+			}
+		}
+		for _, idt := range collabIdent.FindAllString(situation, -1) {
+			if !seenQ[idt] {
+				seenQ[idt] = true
+				qs = append(qs, entQ{name: idt, df: 1})
+			}
+		}
+		sort.SliceStable(qs, func(i, j int) bool {
+			if qs[i].df != qs[j].df {
+				return qs[i].df < qs[j].df
+			}
+			return len(qs[i].name) > len(qs[j].name)
+		})
+		if len(qs) > 3 {
+			qs = qs[:3]
+		}
+		for _, q := range qs {
+			sr := recall.Search(cleanSt, recall.Query{Text: q.name, Limit: 6})
+			for _, ec := range sr.Entities {
+				for i, edge := range ec.Skeleton {
+					if i >= 4 {
+						break
+					}
+					addLine(fmt.Sprintf("- [实体骨架] %s --%s--> %s", edge.From, edge.Predicate, edge.To))
+				}
+				for i, rule := range ec.Rules {
+					if i >= 3 {
+						break
+					}
+					t := heClip(rule.Text, 200)
+					if strings.Contains(standing, heClip(t, 24)) {
+						continue
+					}
+					addLine("- " + t)
+				}
+			}
+		}
+	}
+
+	// Layer B2: high-IDF name-indexed entries (World/People + entity-anchored rules), filling remaining budget.
+	if rem := budget - used; rem > 40 {
+		for _, ln := range strings.Split(idx.recall(st, f, day, situation, standing, rem, entities), "\n") {
+			ln = strings.TrimSpace(ln)
+			if ln != "" {
+				addLine(ln)
+			}
+		}
+	}
+	return strings.Join(out, "\n")
+}
 
 // recall is what mentioning the incident's names brings in, as the hub's recall would: the entries whose subjects the
 // situation names, first seen before the day, not already in the standing memory, highest rank first, in budget

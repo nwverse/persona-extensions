@@ -30,7 +30,7 @@ func sliceStateBefore(st *store.State, cutoff string) *store.State {
 		Version:    st.Version,
 		Onboarding: st.Onboarding,
 		Contacts:   st.Contacts,
-		Graph:      st.Graph,
+		Graph:      sliceGraphBefore(st.Graph, cutoff),
 		Entries:    make(map[string]*entry.Entry, len(st.Entries)),
 	}
 	for id, e := range st.Entries {
@@ -81,6 +81,32 @@ func sliceStateBefore(st *store.State, cutoff string) *store.State {
 			cp.Members = slices.Clone(e.Members)
 		}
 		out.Entries[id] = &cp
+	}
+	return out
+}
+
+// sliceGraphBefore returns a time-clean view of g keeping only nodes created strictly before cutoff and assertions
+// with ValidFrom strictly before cutoff, so 1-hop entity skeleton expansion cannot leak post-cutoff relations.
+func sliceGraphBefore(g *store.Graph, cutoff string) *store.Graph {
+	if g == nil || cutoff == "" {
+		return g
+	}
+	out := &store.Graph{
+		Nodes:      make(map[string]*store.Node, len(g.Nodes)),
+		Assertions: make(map[string]*store.Assertion, len(g.Assertions)),
+		NextNode:   g.NextNode,
+	}
+	for id, n := range g.Nodes {
+		if n == nil || (n.Created != "" && n.Created >= cutoff) {
+			continue
+		}
+		out.Nodes[id] = n
+	}
+	for id, a := range g.Assertions {
+		if a == nil || (a.ValidFrom != "" && a.ValidFrom >= cutoff) {
+			continue
+		}
+		out.Assertions[id] = a
 	}
 	return out
 }

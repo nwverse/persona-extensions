@@ -627,3 +627,71 @@ func TestHasPriorRuleMemoryAndTableSplit(t *testing.T) {
 		t.Fatalf("expected prior-memory recurrences split table, got:\n%s", md)
 	}
 }
+
+func TestTwoLayerRecallAndHubPage1(t *testing.T) {
+	st := &store.State{
+		Graph: &store.Graph{
+			Nodes: map[string]*store.Node{
+				"n-proj":  {ID: "n-proj", Type: "project", Name: "polaris", Status: "active", Created: "2026-10-01"},
+				"n-owner": {ID: "n-owner", Type: "person", Name: "Lin", Status: "active", Created: "2026-10-01"},
+				"n-later": {ID: "n-later", Type: "person", Name: "FutureOwner", Status: "active", Created: "2026-11-25"},
+			},
+			Assertions: map[string]*store.Assertion{
+				"a-own":   {ID: "a-own", S: "n-owner", P: "owns", O: "n-proj", Status: "active", ValidFrom: "2026-10-02"},
+				"a-later": {ID: "a-later", S: "n-later", P: "owns", O: "n-proj", Status: "active", ValidFrom: "2026-11-25"},
+			},
+		},
+		Entries: map[string]*entry.Entry{
+			"w-polaris": {
+				ID: "w-polaris", Facet: entry.World, Text: "polaris is owned by Lin and hosts longtask code",
+				Status: entry.Stable, Count: 3, First: "2026-10-02", Last: "2026-10-10", Tagged: true, Origin: entry.Behavior,
+				Object: "polaris",
+			},
+			"i-polaris": {
+				ID: "i-polaris", Facet: entry.Interaction, Text: "polaris 改动合并前必须先跑 sj-wsl 门禁",
+				Status: entry.Stable, Count: 3, First: "2026-10-05", Last: "2026-10-12", Tagged: true, Origin: entry.Behavior,
+				Scopes: []entry.Scope{{Kind: entry.ScopeProject, Name: "polaris"}},
+			},
+		},
+	}
+	ov := &overview.State{Patterns: map[string]*overview.Pattern{
+		"ov:tp": {
+			ID: "ov:tp", Facet: string(entry.Tools), Kind: overview.KindContract, Lifecycle: overview.Core,
+			Text: "用 task_plan 派活时填全 cwd、launcher、model 并写明理由。", ScenesCount: 2, SourcesCount: 2, LastEvidence: "2026-11-10",
+		},
+		"ov:future": {
+			ID: "ov:future", Facet: string(entry.Tools), Kind: overview.KindContract, Lifecycle: overview.Core,
+			Text: "未来才出现的 task_plan 规则不能泄漏。", ScenesCount: 2, SourcesCount: 2, LastEvidence: "2026-11-25",
+		},
+	}}
+	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}}
+	// 1. collabHubPage1 uses real overview.Exits + enriched subjects, excluding post-cutoff patterns.
+	page := collabHubPage1(st, ov, f, "2026-11-20", 4096)
+	dq := hubDecisionsQuery(page, []string{"task_plan"}, decisionsQueryMaxBytes)
+	if !strings.Contains(dq, "填全 cwd") {
+		t.Fatalf("expected non-standing L1 contract via enriched task_plan tag, got %q", dq)
+	}
+	if strings.Contains(dq, "未来才出现") {
+		t.Fatalf("post-cutoff L1 pattern leaked into hubDecisionsQuery: %q", dq)
+	}
+	// 2. recallTwoLayer brings in non-standing L1 + Block 2 1-hop skeleton edges (time-clean), and entities=false ablates skeleton.
+	idx := collabNames(st)
+	sit := "准备用 task_plan 给 polaris 派一个功能开发任务。"
+	withEnt := idx.recallTwoLayer(st, ov, f, "2026-11-20", sit, "", 2048, true)
+	if !strings.Contains(withEnt, "填全 cwd") {
+		t.Errorf("recallTwoLayer missing non-standing L1 rule: %q", withEnt)
+	}
+	if !strings.Contains(withEnt, "[实体骨架]") || !strings.Contains(withEnt, "Lin") {
+		t.Errorf("recallTwoLayer missing Block 2 1-hop skeleton edge: %q", withEnt)
+	}
+	if strings.Contains(withEnt, "FutureOwner") || strings.Contains(withEnt, "未来才出现") {
+		t.Errorf("recallTwoLayer leaked post-cutoff graph/L1 data: %q", withEnt)
+	}
+	noEnt := idx.recallTwoLayer(st, ov, f, "2026-11-20", sit, "", 2048, false)
+	if !strings.Contains(noEnt, "填全 cwd") {
+		t.Errorf("recall-noent should keep non-standing L1 rule: %q", noEnt)
+	}
+	if strings.Contains(noEnt, "[实体骨架]") || strings.Contains(noEnt, "FutureOwner") {
+		t.Errorf("recall-noent must ablate entity skeleton: %q", noEnt)
+	}
+}
