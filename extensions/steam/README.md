@@ -1,6 +1,6 @@
 # Steam
 
-Steam is a read-only Persona extension for player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** for details or use the Overview card and the `steam_*` assistant tools.
+Steam reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to see these details, review your backlog and annotate games locally. The Overview card opens the same page. Use the `steam_*` assistant tools to work with your library and get picks for tonight.
 
 New installations use Steam Mobile QR by default. In **Settings › Extensions › Steam**, select **Sign In**, scan with Steam Guard in the Steam Mobile App, and approve the login on the phone. The Hub encrypts the refresh token in its connector secret store. The extension keeps the access token and QR account cache in memory.
 
@@ -10,6 +10,16 @@ To use the read-only Web API key fallback, select **Web API key** and enter a St
 
 - Ask `steam_achievement_hunter` for one game's AppID to find the most commonly unlocked achievements you still need and see your recent unlocks. If Steam supplies only counts or the public unlock rates, the tool shows the progress Steam shares and global rankings. Locked hidden achievements display their hidden status with their names and descriptions withheld.
 - Open **Personal › Steam › Recent official updates** to browse the latest headlines for your played games. Ask `steam_game_news` for a specific AppID or omit it to check up to four games by default. The tool uses recent playtime first and falls back to lifetime playtime if the recent list is empty or unavailable. [Tool arguments and limits](../../docs/extensions/steam.md#assistant-tools)
+
+## Backlog and tonight's picks
+
+Open a game from the library to select and save a local status. The **Backlog & local progress** section shows library counts, and annotated games display their status on their rows. Use **Clear local annotation** in game details to remove the status, note and tags.
+
+- `steam_backlog_summary` counts games by lifetime minutes, recent activity and local status. Pass `bucket` or `status` to list matching games in pages of up to 50. Counts can overlap.
+- `steam_backlog_mark` sets `status` for one `appid`, with an optional `note` and `tags`. Omitted fields retain their values. Use `clear: true` with the AppID to clear the annotation.
+- `steam_tonight_pick` ranks games from your library by `available_minutes` and `mood` and gives a reason for each pick. Filter by local `tag` or title `query`. It returns five candidates by default, up to 20.
+
+Both sign-in modes save explicit annotations by SteamID64 in `PERSONA_EXTENSION_DATA_DIR/steam-store-v1/backlog.json`. Signing out keeps those annotations. Steam account access stays read-only. [Tool arguments and storage details](../../docs/extensions/steam.md#backlog-and-tonights-picks)
 
 ## Token settings
 

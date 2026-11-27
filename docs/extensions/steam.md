@@ -2,7 +2,7 @@
 
 [Documentation](../README.md) · [Source](../../extensions/steam/README.md)
 
-Steam reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search the library, sort it by lifetime playtime or name, and open a game to see achievement progress and its Steam Store link. Select **Recent official updates** on the Steam page to see up to five headlines with links to their Steam announcements. Updates load when you open that view. The Overview card opens the main Steam page.
+Steam reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search the library, sort it by lifetime playtime or name and review your backlog. Game details show achievement progress, local annotations and a link to the Steam Store. **Recent official updates** loads up to five headlines with links to their Steam announcements when you open it. The Overview card opens the main Steam page.
 
 ## Sign in with Steam Mobile QR
 
@@ -31,12 +31,35 @@ In either mode, set **Store country or region** to a two-letter ISO 3166-1 alpha
 | `steam_wishlist` | Wishlist titles with current Store prices and discount percentages for the configured country. |
 | `steam_achievement_hunter` | Locked achievements sorted by global unlock rate and a timeline of dated personal unlocks for one numeric `appid`. |
 | `steam_game_news` | Latest game updates in descending date order for one optional numeric `appid` or a selection of the account's played games. |
+| `steam_backlog_summary` | Library counts by playtime, activity and local status, with optional paged titles. |
+| `steam_backlog_mark` | Saves or clears one game's local annotation and returns the current annotation. |
+| `steam_tonight_pick` | Ranked owned games with a short reason for each pick. |
 
-`steam_recent_games`, `steam_library` and `steam_wishlist` accept an `offset` and a `limit` from 1 through 50, with 20 items by default. Continue with `next_offset` using the same search and sort. Playtime is returned in minutes. An unavailable dataset reports a reason. A partial or cached result carries a warning when a request fails.
+The recent games, library, wishlist and backlog list results accept an `offset` from 0 through 20,000 and a `limit` from 1 through 50, with 20 items by default. Continue with `next_offset` using the same filters and sort. Playtime is returned in minutes. An unavailable dataset reports a reason. A partial or cached result carries a warning when a request fails.
 
 `steam_achievement_hunter` applies the same `offset` and `limit` to each list and provides `next_offset` when another page is available. The personal timeline uses Unix timestamps in seconds and starts with the most recent unlock. Hidden achievements carry `hidden: true`. Their names, API identifiers and descriptions appear only after a dated unlock. Missing achievement metadata yields `hidden: null` and hides those fields. When Steam withholds individual progress, use `global_easiest` and `global_rarest` as reference lists. Personal progress counts reflect what Steam supplies, with `unlocked: null` if it withholds the unlocked count.
 
 `steam_game_news` accepts a `limit` from 1 through 20, with 10 updates by default. Omitting `appid` checks up to `games_limit` games (default 4, range 1–5) ranked by minutes played over the past two weeks. If the recent list is empty or unavailable, Steam ranks played library games by lifetime minutes. The default `official_only: true` uses Steam's official announcements feed and selects updates, patches and DLC using tags and headlines from up to 40 recent posts per game. This can miss posts without recognized tags or headlines. Set `official_only: false` to include other announcements and third-party media. Publication dates are Unix timestamps in seconds. [Steamworks news API](https://partner.steamgames.com/doc/webapi/ISteamNews)
+
+## Backlog and tonight's picks
+
+**Backlog & local progress** shows the counts for the visible library. Annotated games have status badges. Open a game, choose a status and select **Save status locally**. Existing notes and tags stay with the annotation. In game details, **Clear local annotation** asks you to confirm removal of the status, note and tags.
+
+`steam_backlog_summary` returns counts by default. Pass a `bucket`, `status`, `limit` or `offset` to get a page of titles sorted by name. The `status` filter matches your exact local annotation, including `unplayed`. If you supply both filters, they apply together. Counts cover the analyzed games in the visible library and can overlap.
+
+| Bucket | Included games |
+| --- | --- |
+| `never_played` | Zero lifetime minutes, excluding games marked `completed` or `dropped`. |
+| `tried_under_2h` | One to 119 lifetime minutes. |
+| `playing` | Marked `playing` or played within the last two weeks. |
+| `long_term` | At least 1,200 lifetime minutes. |
+| `queued`, `paused`, `completed`, `dropped` | Games with the corresponding local status. |
+
+`steam_backlog_mark` takes a positive numeric `appid` and one of six statuses, `unplayed`, `playing`, `queued`, `paused`, `completed` or `dropped`. Omit `note` or `tags` to keep its current value. Send an empty string or array to clear that field. Send only `appid` and `clear: true` to remove the whole annotation. Select **Refresh** on the Steam page to see edits made through the assistant.
+
+`steam_tonight_pick` accepts `available_minutes` from 1 to 1,440 (default 60) and a `mood` of `quick_session`, `continue_playing`, `clear_backlog`, `hidden_gem` or `any` (default). Quick picks favor games with recorded playtime within your budget. Continuing favors manually marked or recently active games. Clearing the backlog favors queued and unopened titles. Hidden gems favor games you tried briefly and haven't played in the last two weeks. The ranking uses aggregate playtime as a heuristic for time fit.
+
+Filter tonight's candidates by an exact local `tag` or a title substring in `query`. Both ignore case and surrounding whitespace. The result defaults to five candidates, with a `limit` of 1 to 20. Set `include_completed: true` to consider completed games. Dropped games stay excluded.
 
 ## Token settings
 
@@ -53,11 +76,11 @@ Under **Settings › Extensions › Steam**, these settings define the defaults 
 | `discovery_tools_enabled` | On | Allows high-context game research tools and their skill. Turning this off disables those features before they can add research context. |
 | `discovery_max_results` | 15 (1–50) | Caps the candidates that a game search or research request can add to context. |
 
-Token settings use the documented default when a numeric limit is missing or outside its range. The Steam page shows news headlines, dates and links. Steam collects local observations during normal reads.
+Token settings use the documented default when a numeric limit is missing or outside its range. The Steam page shows news headlines, dates and links. The backlog tools compute counts and rankings locally on demand and bound their output. Steam collects local observations during normal reads.
 
 ## Refresh and storage
 
-Profile metadata, vanity resolution and the owned library are cached for eight hours. Presence, recent games and wishlist prices use ten-minute freshness windows. Select **Refresh** to request a new snapshot for all four sections. Game details fetch achievement progress when opened. The global unlock rates, achievement schema and news are cached in memory by AppID, with freshness windows of one hour, eight hours and ten minutes respectively. The news page and tool share cached headline results when summary mode is off.
+Profile metadata, vanity resolution and the owned library are cached for eight hours. Presence, recent games and wishlist prices use ten-minute freshness windows. Select **Refresh** to request new Steam data and reload local annotations. Game details fetch achievement progress when opened. The global unlock rates, achievement schema and news are cached in memory by AppID, with freshness windows of one hour, eight hours and ten minutes respectively. The news page and tool share cached headline results when summary mode is off.
 
 In QR mode, the extension keeps its data cache in memory for the active signed-in account. Web API key mode keeps one bounded record per dataset in memory and in `steam-cache-v1` under the extension data directory (`PERSONA_EXTENSION_DATA_DIR`, or the data directory sent by the Hub). A temporary request failure can reuse a labeled snapshot up to 24 hours old. A definitive denial for a dataset discards its cached record. Automatic retries for a failing dataset wait 30 seconds, and Refresh can retry immediately.
 
@@ -65,20 +88,22 @@ The navigation and tools browse up to 20,000 library or recent entries and price
 
 ### Local snapshots
 
-QR mode keeps all four snapshot stores in memory for the signed-in session and clears them at sign-out. Web API key mode uses four versioned files under `steam-store-v1` inside the extension data directory. Each file has a 16 MiB limit and is replaced atomically. When the Hub supplies no data directory, Web API key mode also keeps the stores in memory. Price and playtime observations use existing reads without extra network or LLM requests. A failed local write leaves the Steam read result available.
+QR mode keeps Steam observations in memory for the signed-in session and clears them at sign-out. Web API key mode can persist observations in separate files under `steam-store-v1`. Price and playtime observations use existing Steam reads without extra network or LLM requests.
+
+Both modes use `PERSONA_EXTENSION_DATA_DIR/steam-store-v1/backlog.json` for explicit personal annotations. The file stores each status, note and set of tags under its SteamID64 and AppID. Signing out preserves the annotations, and they are available again when you use the same Steam account in either mode. A local edit for a vanity name first resolves its current SteamID64. The stores use the Hub's data directory when the environment variable is absent, and fall back to in-memory storage when no directory is available. Versioned files have a 16 MiB limit and are replaced atomically.
 
 | Store | Contents and limits |
 | --- | --- |
 | Price history | Fresh, checked wishlist prices are scoped to the Steam account, Store country and AppID. Up to 2,000 series retain 32 sampled UTC days each, the latest quote and the first observation of the local low with its discount. A change in Store currency starts a new series. |
 | Playtime | A complete library read records lifetime minutes, the two-week minutes supplied by the library, and counts of owned and unplayed games. The latest snapshot on each UTC day is kept for up to 400 days through the most recent observation, across up to 16 accounts. |
-| Backlog | Local per-account and per-game annotations support `unplayed`, `playing`, `queued`, `paused`, `completed` and `dropped`. The store holds up to 2,000 entries, with a 240-character note and up to eight tags of 32 characters each. Edits apply to the local annotation store only. |
+| Backlog | Up to 2,000 local annotations, each with a status, a note of up to 240 characters and up to eight tags of 32 characters each. Annotation edits apply to local storage only. |
 | Event cursors | Records of successful deliveries are scoped to the account, event kind, deduplication key and sale window or version. Up to 5,000 cursors expire after 90 days. |
 
 ## Network and credentials
 
 QR sign-in uses Valve's first-party `IAuthenticationService` over HTTPS. The extension begins a `MobileApp` session with `BeginAuthSessionViaQR`, follows Valve's poll interval with `PollAuthSessionStatus`, and renews access with `GenerateAccessTokenForApp`. The extension hands the `s.team` challenge URL to the Hub for local QR rendering. The extension's only network permissions are `api.steampowered.com` and `store.steampowered.com`. [Valve authentication message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/service_authentication.proto) · [Persona extension sign-in protocol](https://github.com/nwverse/persona/blob/main/docs/extensions/extensions.md#sign-in-auth)
 
-The QR grant is a Steam mobile-client session with account privileges determined by Valve. The extension uses it for the account reads below and sends the access token only in HTTPS requests to `api.steampowered.com`. Web API key mode uses `X-WebAPI-Key` for the authenticated legacy calls at that host and reads the public wishlist anonymously. Store names and prices are fetched anonymously in both modes. The client refuses redirects and reports fixed diagnostic messages. [Steam Web API overview](https://partner.steamgames.com/doc/webapi_overview)
+The QR grant is a Steam mobile-client session with account privileges determined by Valve. The extension uses it for the account reads below and sends the access token only in HTTPS requests to `api.steampowered.com`. Backlog analysis and tonight's picks reuse the owned library and recent playtime reads. Web API key mode uses `X-WebAPI-Key` for the authenticated legacy calls at that host and reads the public wishlist anonymously. Store names and prices are fetched anonymously in both modes. The client refuses redirects and reports fixed diagnostic messages. [Steam Web API overview](https://partner.steamgames.com/doc/webapi_overview)
 
 | Read | Steam Mobile QR | Web API key |
 | --- | --- | --- |
@@ -98,6 +123,6 @@ The Hub encrypts the versioned QR sign-in record through `connector.secrets.*`. 
 
 ## Sign out or revoke a QR session
 
-**Sign Out** in Persona cancels the extension's pending sign-in and reads, clears the session's cache and snapshots, and removes the Hub's saved QR sign-in. For server-side revocation, open Steam's **Authorized Devices** and remove the corresponding Persona session. When Steam confirms that the refresh token is invalid or revoked, Persona clears the session and prompts you to sign in again. [Steam Authorized Devices](https://store.steampowered.com/account/authorizeddevices) · [Steam Support account security](https://help.steampowered.com/en/faqs/view/6639-EB3C-EC79-FF60)
+**Sign Out** in Persona cancels the extension's pending sign-in and reads, clears the session's cache and observations, and removes the Hub's saved QR sign-in. Personal backlog annotations remain on the device. For server-side revocation, open Steam's **Authorized Devices** and remove the corresponding Persona session. When Steam confirms that the refresh token is invalid or revoked, Persona clears the session and prompts you to sign in again. [Steam Authorized Devices](https://store.steampowered.com/account/authorizeddevices) · [Steam Support account security](https://help.steampowered.com/en/faqs/view/6639-EB3C-EC79-FF60)
 
 Switching to Web API key mode uses the ID and key from settings. Switching back to QR restores any saved QR sign-in. Use **Sign Out** while QR is selected if you want to clear that record before switching.
