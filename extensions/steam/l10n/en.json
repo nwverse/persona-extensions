@@ -1,6 +1,6 @@
 {
   "name": "Steam",
-  "description": "Sign in with the Steam Mobile App to read your library, achievements and game updates in Persona, with optional wishlist alerts for deals, releases and demos. A Web API key is also available for public data.",
+  "description": "Sign in with the Steam Mobile App to read your library, achievements and game updates in Persona, track progress locally, and opt in to wishlist alerts for deals, releases and demos. A Web API key is also available for public data.",
   "configuration": {
     "auth_mode": {
       "title": "Sign-in method",

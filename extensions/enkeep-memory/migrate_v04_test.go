@@ -157,6 +157,13 @@ func TestMigrateV04Phase1DeterministicAndIdempotent(t *testing.T) {
 				ID: "i-ops-old", Facet: entry.Interaction, Grain: entry.Action,
 				Text: "在 sj-wsl 上运行 scripts/ci/fast.sh 跑门禁，不要在 Mac 上跑 go test", Origin: entry.Behavior, Status: entry.Stable, Last: "2026-09-01",
 			},
+			// 7b. Ops runbook carrying a non-user health tag -> cleared by Phase 1
+			"t-ops-sens": {
+				ID: "t-ops-sens", Facet: entry.Tools, Grain: entry.Action,
+				Text: "通过 run.sh 回补心率数据配额", Origin: entry.Behavior, Status: entry.Stable, Last: today,
+				OriginSpace: "health",
+				Categories:  []entry.Category{{Name: entry.CatHealth, By: entry.ByModel}},
+			},
 		},
 		Graph: &store.Graph{
 			Nodes: map[string]*store.Node{
@@ -210,6 +217,9 @@ func TestMigrateV04Phase1DeterministicAndIdempotent(t *testing.T) {
 	}
 	if st.Entries["i-ops-old"].MemoryClass != entry.ClassOpsRunbook || st.Entries["i-ops-old"].Status != entry.Dormant {
 		t.Fatalf("i-ops-old expected ops_runbook+dormant, got class=%s status=%s", st.Entries["i-ops-old"].MemoryClass, st.Entries["i-ops-old"].Status)
+	}
+	if st.Entries["t-ops-sens"].IsSensitive() || st.Entries["t-ops-sens"].OriginSpace != "" {
+		t.Fatalf("t-ops-sens ops_runbook must have non-user sensitivity cleared, cats=%v space=%q", st.Entries["t-ops-sens"].Cats(), st.Entries["t-ops-sens"].OriginSpace)
 	}
 	if rep1.Graph == nil || rep1.Graph.ArchivedTasks != 1 || rep1.Graph.ArchivedAbout != 1 || rep1.Graph.TotalMerged < 2 || rep1.Graph.DedupedCollabEdges != 1 {
 		t.Fatalf("unexpected graph report: %+v", rep1.Graph)

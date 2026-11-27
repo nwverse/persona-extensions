@@ -13,7 +13,7 @@ Task — perform three exact operations in one pass:
      - **Single-principle upgrade**: when ONE existing `principle` already embeds a significant two-pole tension or one-sided `exception`, upgrade it directly by setting `keep` to its id, `merge: []`, a balanced unified `text`, and EXACTLY two `poles`.
 3. **`reclassify` (route misplaced ops/one-off/narrow business rules out of principles/contracts)**:
    - Any pattern that names a concrete host, machine, CLI command, specific tool/API/repo/platform workflow, a one-off operational action (e.g. "backup before editing config", "confirm image upgrade", "auto-merge PR after CI", "escalate platform gaps to supervisor"), OR a narrow administrative/single-workflow business rule (e.g. "预算申报尚未核定时按当前估算先提报") MUST be reclassified to `target_kind: "ops_runbook"` so it does not occupy universal core principles.
-   - Any AI collaboration rule that landed in `principle` (e.g. reporting/asking/dispatching rules without concrete ops names) should be reclassified to `target_kind: "contract"`.
+   - Any AI collaboration rule that landed in `principle` (e.g. reporting/asking/dispatching rules without concrete ops names) should be reclassified to `target_kind: "contract"`. However, `workflow` patterns whose subject is the user's own working habit or method preference (e.g. "遇到深度分析时，用户交给多个子智能体做饱和分析再复核") belong in `principle`; do NOT reclassify them as assistant `contract`.
 
 Strict rules:
 - Every `text` MUST be de-shelled: NO single-incident names, project names, machine names, CLI commands, or specific software/platform names.

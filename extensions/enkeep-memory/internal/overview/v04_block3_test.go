@@ -394,6 +394,12 @@ func TestTagsNoChildOrSingleSpaceContagionAndOpsNotSensitive(t *testing.T) {
 		t.Fatalf("persona 10-scene principle contaminated: cats=%v space=%q", cats, space)
 	}
 
+	// KindOpsRunbook must always return cats=nil, space="" from tags() regardless of text or member tags.
+	pOps := &Pattern{ID: "ov:ops-clean", Facet: string(entry.Tools), Kind: KindOpsRunbook, Text: "运行心率回补脚本 run.sh", EvidenceIDs: ids}
+	if cats, space := tags(st, pOps, ids); len(cats) != 0 || space != "" {
+		t.Fatalf("ops_runbook tags() must return nil, \"\", got cats=%v space=%q", cats, space)
+	}
+
 	// OverviewBackedProvider.Items must strip Categories/OriginSpace from KindOpsRunbook so it never enters profile:cat:*.
 	s := newState()
 	s.Patterns["ov:rb1"] = &Pattern{

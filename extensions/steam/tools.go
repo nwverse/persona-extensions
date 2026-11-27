@@ -17,7 +17,7 @@ const (
 	pageProperties   = `"offset":{"type":"integer","minimum":0,"maximum":20000,"default":0},"limit":{"type":"integer","minimum":1,"maximum":50,"default":20}`
 )
 
-var tools = []wire.ConnectorTool{
+var tools = append([]wire.ConnectorTool{
 	{
 		Name: "steam_profile", Description: "Read the signed-in or configured Steam player's profile, online or in-game state, and visible owned game count.",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
@@ -41,7 +41,7 @@ var tools = []wire.ConnectorTool{
 	achievementHunterTool,
 	gameNewsTool,
 	wishlistDealsTool,
-}
+}, backlogTools...)
 
 type listArgs struct {
 	Offset int  `json:"offset"`
@@ -268,8 +268,12 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 			out["truncated"] = r.Data.Total > len(r.Data.Items)
 			setPage(out, "items", r.Data.Items, args)
 		}
+	case backlogSummaryTool, backlogMarkTool, tonightPickTool:
+		if err := a.callBacklogTool(ctx, d, t, name, raw, out); err != nil {
+			return wire.ConnectorCallResult{}, err
+		}
 	default:
-		return wire.ConnectorCallResult{}, invalid("Unknown Steam read tool.")
+		return wire.ConnectorCallResult{}, invalid("Unknown Steam tool.")
 	}
 	if issue := d.sessionIssue(); issue != "" {
 		out = map[string]any{"available": false}

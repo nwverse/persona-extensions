@@ -28,6 +28,7 @@ type app struct {
 	*steamData
 	publicData *steamPublicData
 	qr         *qrAuth
+	backlog    *BacklogStore
 	locale     string
 }
 
@@ -64,6 +65,7 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 			}
 			a.steamData = newSteamData(cfg, in.Secrets[keyName], dir, client, now)
 			a.publicData = &steamPublicData{client: steamClient{http: client, key: a.client.key}, now: now}
+			a.backlog = NewBacklogStore(dir)
 			a.locale = in.Hub.Locale
 			if a.config.AuthMode == modeQR {
 				a.qr = newQRAuth(ctx, hub, client, now, a.config, a.locale)

@@ -1,6 +1,6 @@
 {
   "name": "Steam",
-  "description": "用 Steam 手机 App 扫码登录，在 Persona 中只读查看游戏库、成就和游戏动态，并可订阅愿望单优惠、发售和免费试玩提醒。也可用 Web API 密钥读取公开数据。",
+  "description": "用 Steam 手机 App 扫码登录，在 Persona 中只读查看游戏库、成就和游戏动态，在本机标注游戏进度，并可订阅愿望单优惠、发售和免费试玩提醒。也可用 Web API 密钥读取公开数据。",
   "configuration": {
     "auth_mode": {
       "title": "登录方式",

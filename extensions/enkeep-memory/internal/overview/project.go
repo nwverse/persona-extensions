@@ -488,6 +488,9 @@ func apply(p *Pattern, t tally) {
 //     their own PayloadCategories match for that category; OriginSpace is inherited ONLY when 100% of valid top-level
 //     ids share the same non-empty OriginSpace.
 func tags(st *store.State, p *Pattern, ids []string) (cats []string, space string) {
+	if p != nil && p.IsOpsRunbook() {
+		return nil, ""
+	}
 	addCat := func(c string) {
 		if c != "" && !slices.Contains(cats, c) {
 			cats = append(cats, c)

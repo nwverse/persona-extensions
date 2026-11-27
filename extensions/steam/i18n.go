@@ -20,10 +20,27 @@ type text struct {
 	problems                                                            map[problem]string
 
 	recentNews, noRecentNews string
+	backlog                  backlogText
 
 	inboxPrice, inboxGiveaway, inboxRelease, inboxDemo, inboxRoundup string
 	inboxGiveawayHint, inboxReleaseHint, inboxDemoHint               string
 	inboxThreshold, inboxTarget, inboxNewLow, inboxUnits, inboxTop   string
+}
+
+type backlogText struct {
+	title, annotation, status, note, tags, unmarked, overlap         string
+	save, clear, confirmClear, saved, cleared, accountChanged        string
+	activity                                                         map[string]string
+	statuses                                                         map[BacklogStatus]string
+	pickFamiliar, pickRecent, pickTime, pickPlaying, pickQueued      string
+	pickPaused, pickUnplayed, pickTried, pickLongTerm, pickCompleted string
+}
+
+func (t *backlogText) bucketTitle(bucket string) string {
+	if title := t.activity[bucket]; title != "" {
+		return title
+	}
+	return t.statuses[BacklogStatus(bucket)]
 }
 
 var english = text{
@@ -79,12 +96,33 @@ var english = text{
 		problemAuthSave:           "Persona could not save the Steam sign-in. Try again when the Hub's secret store is available.",
 		problemAuthDelete:         "Persona could not delete the saved Steam sign-in. Try signing out again.",
 		problemAuthClearing:       "Persona is clearing the saved Steam sign-in. Try again in a moment.",
+		problemBacklogStore:       "Persona could not access your local Steam backlog.",
 
 		problemGlobalAchievements:     "Steam did not share global unlock rates for this game.",
 		problemAchievementSchema:      "Steam did not share this game's achievement names and hidden status.",
 		problemAchievementDetails:     "Steam did not share complete personal achievement details. Any global rankings are for all players.",
 		problemAchievementUnlockTimes: "Steam did not share timestamps for some unlocked achievements.",
 		problemGameNews:               "Steam did not share news for this game.",
+	},
+	backlog: backlogText{
+		title: "Backlog & local progress", annotation: "Local backlog annotation", status: "Status",
+		note: "Note", tags: "Tags", unmarked: "No local annotation", overlap: "A game can count in more than one category.",
+		save: "Save status locally", clear: "Clear local annotation", confirmClear: "Clear this game's local status, note and tags?",
+		saved: "Local Steam status saved.", cleared: "Local Steam annotation cleared.",
+		accountChanged: "Your Steam account changed. Reopen this game to edit its annotation.",
+		activity: map[string]string{
+			neverPlayed: "Never played", triedUnder2h: "Tried under 2 hours",
+			string(BacklogPlaying): "Playing or recently active", longTerm: "Played 20 hours or more",
+		},
+		statuses: map[BacklogStatus]string{
+			BacklogUnplayed: "Unplayed", BacklogPlaying: "Playing", BacklogQueued: "Queued",
+			BacklogPaused: "Paused", BacklogCompleted: "Completed", BacklogDropped: "Dropped",
+		},
+		pickFamiliar: "You have played it before.", pickRecent: "You played it in the last two weeks.",
+		pickTime: "Its recorded playtime fits your time budget.", pickPlaying: "You marked it as playing.",
+		pickQueued: "You queued it to play next.", pickPaused: "You marked it as paused.",
+		pickUnplayed: "An unopened game from your library.", pickTried: "You have spent under two hours on it.",
+		pickLongTerm: "You have spent at least 20 hours on it.", pickCompleted: "You previously marked it as completed.",
 	},
 }
 
@@ -141,12 +179,33 @@ var chinese = text{
 		problemAuthSave:           "Persona 无法保存 Steam 登录，请在 Hub 密钥存储可用后重试。",
 		problemAuthDelete:         "Persona 无法删除已保存的 Steam 登录，请重试登出。",
 		problemAuthClearing:       "Persona 正在清除已保存的 Steam 登录，请稍后重试。",
+		problemBacklogStore:       "Persona 无法访问本机 Steam 游戏标注。",
 
 		problemGlobalAchievements:     "Steam 未共享这款游戏的全球成就达成率。",
 		problemAchievementSchema:      "Steam 未共享这款游戏的成就名称和隐藏状态。",
 		problemAchievementDetails:     "Steam 未共享完整的个人成就明细。全球榜单适用于所有玩家。",
 		problemAchievementUnlockTimes: "Steam 未共享部分已解锁成就的解锁时间。",
 		problemGameNews:               "Steam 未共享这款游戏的更新消息。",
+	},
+	backlog: backlogText{
+		title: "吃灰盘点与标注", annotation: "本机游戏标注", status: "游玩状态",
+		note: "备注", tags: "标签", unmarked: "暂无本机标注", overlap: "同一款游戏可能计入多个分类。",
+		save: "保存到本机", clear: "清除本机标注", confirmClear: "清除这款游戏的本机状态、备注和标签？",
+		saved: "已保存本机 Steam 游戏状态。", cleared: "已清除本机 Steam 游戏标注。",
+		accountChanged: "Steam 账号已切换，请重新打开游戏详情再编辑标注。",
+		activity: map[string]string{
+			neverPlayed: "从未打开", triedUnder2h: "试水不足 2 小时",
+			string(BacklogPlaying): "正在推进或近两周活跃", longTerm: "游玩至少 20 小时",
+		},
+		statuses: map[BacklogStatus]string{
+			BacklogUnplayed: "未玩", BacklogPlaying: "正在推进", BacklogQueued: "待玩",
+			BacklogPaused: "暂停", BacklogCompleted: "已通关", BacklogDropped: "已搁置",
+		},
+		pickFamiliar: "你之前玩过这款游戏。", pickRecent: "你在近两周玩过这款游戏。",
+		pickTime: "已有游玩时长在你今晚的时间预算内。", pickPlaying: "你把这款游戏标记为正在推进。",
+		pickQueued: "你已把这款游戏排入待玩清单。", pickPaused: "你把这款游戏标记为暂停。",
+		pickUnplayed: "游戏库里还没打开过的一款游戏。", pickTried: "你在这款游戏上试水不足两小时。",
+		pickLongTerm: "你已在这款游戏上投入至少 20 小时。", pickCompleted: "你之前把这款游戏标记为已通关。",
 	},
 }
 

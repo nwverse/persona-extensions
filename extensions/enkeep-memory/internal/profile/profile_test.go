@@ -323,7 +323,8 @@ func TestV04ProfileExcludesS3S6AndIsolatesWorkRulesFromSensitive(t *testing.T) {
 		"true-health": {
 			ID: "true-health", Facet: entry.Persona, Origin: entry.Behavior, Status: entry.Stable,
 			Text: "近期体检空腹血糖偏高，需要按医生建议复查", Count: 2, Last: "2026-11-24", Tagged: true,
-			Evidence: []entry.Evidence{{Source: entry.SrcAssistant, Ref: "c/1", Day: "2026-11-24", Who: entry.WhoSelf, Quote: "体检血糖高"}},
+			Categories: []entry.Category{{Name: entry.CatHealth, By: entry.ByModel}},
+			Evidence:   []entry.Evidence{{Source: entry.SrcAssistant, Ref: "c/1", Day: "2026-11-24", Who: entry.WhoSelf, Quote: "体检血糖高"}},
 		},
 	}}
 
@@ -361,5 +362,70 @@ func TestV04ProfileExcludesS3S6AndIsolatesWorkRulesFromSensitive(t *testing.T) {
 	}
 	if !foundHealth {
 		t.Fatalf("genuine health disclosure missing from Sensitive[health]: %+v", sum.Sensitive)
+	}
+}
+
+// v0.4.0 rehearsal round 2: state.json persisted categories are the single source of truth for profile sensitive
+// sections — profile.Build must NEVER resurrect categories already cleared by Phase 2.2, and ops_runbook entries must
+// never enter profile:cat:*.
+func TestV04ProfileSensitiveSSOTNoResurrectionAndNoOpsRunbook(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		// Cleared by Phase 2.2 (Categories == nil): even if text contains a health/finance/legal keyword,
+		// profile.Build must NOT re-run PayloadCategories to resurrect it into Sensitive.
+		"released-fp-persona": {
+			ID: "released-fp-persona", Facet: entry.Persona, Origin: entry.Behavior, Status: entry.Stable,
+			Text: "关注系统心率回补任务的自动化监控指标", Count: 3, Last: "2026-11-24", Tagged: true,
+		},
+		// Work-methodology rule with cleared Categories + leftover OriginSpace: must stay general, never sensitive.
+		"released-fp-work": {
+			ID: "released-fp-work", Facet: entry.Workflow, Origin: entry.Behavior, Status: entry.Stable,
+			Text: "体检数据汇总表按月归档输出", Count: 3, Last: "2026-11-24", Tagged: true,
+			OriginSpace: "health",
+		},
+		// Ops runbook (tools / script / ClassOpsRunbook) even with persisted sensitive tags must NEVER enter profile:cat:*.
+		"ops-tools-script": {
+			ID: "ops-tools-script", Facet: entry.Tools, Origin: entry.Behavior, Status: entry.Stable,
+			Text: "通过 run.sh 回补心率数据配额并检查 API 限流", Count: 3, Last: "2026-11-24", Tagged: true,
+			OriginSpace: "health",
+			Categories:  []entry.Category{{Name: entry.CatHealth, By: entry.ByModel}},
+		},
+		"ops-class-explicit": {
+			ID: "ops-class-explicit", Facet: entry.Workflow, Origin: entry.Behavior, Status: entry.Stable,
+			MemoryClass: entry.ClassOpsRunbook,
+			Text:        "执行合规审查脚本前先备份配置", Count: 2, Last: "2026-11-24", Tagged: true,
+			Categories: []entry.Category{{Name: entry.CatLegalID, By: entry.ByModel}},
+		},
+		// Genuine persisted sensitive entry (ByModel on non-work facet) stays isolated in Sensitive[finance].
+		"persisted-finance": {
+			ID: "persisted-finance", Facet: entry.Persona, Origin: entry.Behavior, Status: entry.Stable,
+			Text: "每月定投指数基金作为长期储蓄", Count: 2, Last: "2026-11-24", Tagged: true,
+			Categories: []entry.Category{{Name: entry.CatFinance, By: entry.ByModel}},
+		},
+		// Work-methodology entry with explicit ByUser sensitive tag stays isolated in Sensitive[relationships].
+		"work-by-user": {
+			ID: "work-by-user", Facet: entry.Interaction, Origin: entry.Behavior, Status: entry.Stable,
+			Text: "涉及家人安排时先私聊确认", Count: 2, Last: "2026-11-24", Tagged: true,
+			Categories: []entry.Category{{Name: entry.CatRelationships, By: entry.ByUser}},
+		},
+	}}
+
+	sum := Build(st, time.Date(2026, 11, 27, 0, 0, 0, 0, time.UTC), "zh-Hans")
+
+	sensIDs := map[string]string{}
+	for _, sec := range sum.Sensitive {
+		for _, pt := range sec.Points {
+			sensIDs[pt.ID] = sec.Category
+		}
+	}
+	for _, forbidden := range []string{"released-fp-persona", "released-fp-work", "ops-tools-script", "ops-class-explicit"} {
+		if cat, leaked := sensIDs[forbidden]; leaked {
+			t.Errorf("entry %s must not enter profile:cat:%s (SSOT / ops_runbook violation)", forbidden, cat)
+		}
+	}
+	if sensIDs["persisted-finance"] != entry.CatFinance {
+		t.Errorf("persisted-finance expected in finance, got %+v", sensIDs)
+	}
+	if sensIDs["work-by-user"] != entry.CatRelationships {
+		t.Errorf("work-by-user expected in relationships, got %+v", sensIDs)
 	}
 }

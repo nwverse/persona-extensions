@@ -106,7 +106,7 @@ var (
 	// entry's own payload, excluding work-interaction frustration words, data/export workflows, model/token costs,
 	// open-source licenses/API tokens, and public org structure.
 	payloadHealthRe = regexp.MustCompile(`(?i)` +
-		`体检|病历|诊断|确诊|就诊|复诊|门诊|看病|住院|手术|吃药|服药|用药|处方|剂量|药量|副作用|过敏|哮喘|` +
+		`体检|病历|医学诊断|临床诊断|医生诊断|医院确诊|确诊为|确诊病例|病理诊断|就诊|复诊|门诊|看病|住院|手术|吃药|服药|用药|处方|剂量|药量|药物副作用|吃药副作用|服药副作用|不良反应|过敏|哮喘|` +
 		`高血压|糖尿病|甲状腺|肿瘤|结节|发烧|咳嗽|头痛|胃痛|胸闷|心悸|血压|血糖|血脂|心率|静息心率|血氧|` +
 		`HRV|体脂率|BMI|体温|睡眠障碍|失眠|睡不着|打鼾|呼吸暂停|怀孕|备孕|产检|流产|疫苗|看医生|挂号|理疗|康复训练|` +
 		`慢病|慢性病|痛风|颈椎病|腰椎|近视手术|牙科|拔牙|根管|脂肪肝|` +
@@ -125,8 +125,8 @@ var (
 	// Strict personal finance payload (salary, assets, mortgage, investments, personal bank/tax/cards).
 	payloadFinanceStrictRe = regexp.MustCompile(`(?i)` +
 		`工资条?|薪资|薪水|年薪|月薪|底薪|年终奖|绩效奖金|个人所得税|个税|退税|报税|房贷|车贷|按揭|首付|` +
-		`买房|购房|还贷|贷款|负债|存款|储蓄|身家|净资产|家庭资产|个人资产|理财|股票持仓|基金持仓|定投|炒股|` +
-		`信用卡账单?|还款日|个人账单|银行卡|入账|到账|转账|汇款|扣款|股权激励|期权归属|股票期权|` +
+		`买房|购房|还贷|贷款|负债|存款|储蓄|身家|净资产|家庭资产|个人资产|理财|股票持仓|基金持仓|基金定投|股票定投|定投计划|每月定投|每周定投|炒股|` +
+		`信用卡账单?|还款日|个人账单|银行卡|工资入账|资金入账|款项入账|汇款入账|银行入账|货款入账|到账|转账|汇款|扣款|股权激励|期权归属|股票期权|` +
 		`\b(salary|annual income|paycheck|payslip|pay ?stub|bonus|mortgage|down payment|net worth|` +
 		`personal (savings|assets|debt|finance|tax)|bank (account|balance|statement)|` +
 		`credit card (bill|debt|statement)|wire transfer|direct deposit|minimum payment|401k|ira|rsu|vest(ing|ed)|tax return)\b`)
@@ -137,8 +137,10 @@ var (
 
 	payloadLegalIDRe = regexp.MustCompile(`(?i)` +
 		`身份证号?|护照号?|签证|驾驶证|驾照|户口本|户口簿|迁户口|落户|户籍证明|户籍信息|居住证|绿卡|社保号|医保卡号|税号|美国工卡|EAD工卡|实体工卡|工卡审批|工卡办理|\bEAD\b|居留许可|` +
-		`私人合同|购房合同|租房合同|劳动仲裁|诉讼|起诉|被告|原告|官司|律师函|仲裁|判决书|离婚协议|遗嘱|` +
-		`\b(passport|visa|green card|driver'?s? licen[cs]e|social security( number)?|ssn|national id|id card|` +
+		`私人合同|购房合同|租房合同|劳动仲裁|诉讼|起诉|成为被告|列为被告|起诉被告|原告方|被告方|民事诉讼|刑事诉讼|官司|律师函|仲裁|判决书|离婚协议|遗嘱|` +
+		`\b(us|chinese|my|renew|renewal|expired?|number|photo)\s+(?:the\s+|my\s+)?passport\b|\bpassport\s+(number|renewal|expir\w*|stamp|photo|application)\b|` +
+		`\b(h1b|h-1b|f1|f-1|b1/b2|o1|l1|eb[123]|work|student|tourist|schengen|us)\s+visa\b|\bvisa\s+(status|stamp|interview|renewal|expir\w*|approv\w*|application|extension)\b|` +
+		`\b(green card|driver'?s? licen[cs]e|social security( number)?|ssn|national id|id card|` +
 		`tax id|lawsuit|litigation|sued|arbitration|court order|subpoena|legal dispute|prenup)\b`)
 
 	payloadRelationshipsRe = regexp.MustCompile(`(?i)` +
@@ -201,6 +203,9 @@ func (e *Entry) MergeCategories(from *Entry) {
 			e.AddCategory(c.Name, ByUser)
 		}
 	}
+	if IsOpsRunbookEntry(e) {
+		return
+	}
 	ownCats := PayloadCategories(e.Facet, e.PayloadTexts()...)
 	for _, n := range ownCats {
 		e.AddCategory(n, ByModel)
@@ -244,7 +249,7 @@ func SpaceDefaults(space string) []string {
 // confinement unless their own payload directly discloses personal privacy (0.4.0 §1.6).
 func (e *Entry) TagSpace(space string) {
 	space = strings.TrimSpace(space)
-	if space == "" {
+	if space == "" || IsOpsRunbookEntry(e) {
 		return
 	}
 	if IsWorkMethodFacet(e.Facet) {
