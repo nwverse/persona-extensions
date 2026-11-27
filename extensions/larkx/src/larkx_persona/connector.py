@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from .hooks import delivery_id
-from .real import mention_parts
+from .real import parse_markdown_rich_text
 from .wire import RpcError
 
 ID = "larkx"
@@ -119,7 +119,7 @@ def _mentions(args, text):
     if not args.get("mentions"):
         return []
     try:
-        mention_parts(text, args.get("mentions") or [])
+        parse_markdown_rich_text(text, args.get("mentions") or [])
     except ValueError as e:
         raise RpcError(str(e), "invalid_params") from e
     return args.get("mentions") or []

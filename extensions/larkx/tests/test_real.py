@@ -74,6 +74,21 @@ class OutboundMarkdownTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_markdown_rich_text("**bold** without mention", mentions=[{"id": "7001", "name": "Alice"}])
 
+    def test_overlong_ordered_list_marker_and_nested_fence_info_string(self):
+        # CommonMark limits ordered-list markers to 1-9 digits so protobuf int32 start never overflows.
+        blocks, inner, has_rich, has_md = parse_markdown_rich_text("202611270001. note")
+        self.assertFalse(has_rich)
+        self.assertFalse(has_md)
+        self.assertEqual(blocks, [("line", [("text", "202611270001. note")])])
+        self.assertEqual(inner, "202611270001. note")
+
+        # A line like ```python inside a fenced code block is content, not a closing fence.
+        nested = "```markdown\nExample:\n```python\nprint(1)\n```"
+        blocks, _, has_rich, has_md = parse_markdown_rich_text(nested)
+        self.assertTrue(has_rich)
+        self.assertTrue(has_md)
+        self.assertEqual(blocks, [("code_block", "markdown", "Example:\n```python\nprint(1)")])
+
 
 class MuteStateTest(unittest.TestCase):
     def test_reminder_fields_preserve_presence_and_never_use_mute_at_all(self):
@@ -409,6 +424,33 @@ class RealTest(unittest.TestCase):
         self.assertEqual(plain_fb.type, 4)
         self.assertEqual([plain_fb.content.richText.elements.dictionary[e].tag for e in plain_fb.content.richText.elementIds], [5, 1])
         self.assertEqual(list(plain_fb.atUserIdList), [7001])
+
+        # HTTP 5xx responses may already have delivered the message: never retry with new cids.
+        class HttpErr(Exception):
+            def __init__(self, code):
+                self.response = mock.Mock(status_code=code, content=b"")
+
+        for code in (500, 502, 503, 504):
+            sent.clear()
+            def fail_5xx(packet, status=code):
+                sent.append(packet)
+                raise HttpErr(status)
+            backend._client._gateway_post = fail_5xx
+            self.assertIsNone(backend.send("6001", "**uncertain**", None))
+            self.assertEqual(len(sent), 1)
+
+        # HTTP 400 is an explicit rejection before delivery and does fall back.
+        sent.clear()
+        calls = iter([HttpErr(400), ok_pkt.SerializeToString()])
+        def fail_400_then_ok(packet):
+            sent.append(packet)
+            nxt = next(calls)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+        backend._client._gateway_post = fail_400_then_ok
+        self.assertEqual(backend.send("6001", "**bold**", None), "m_rich")
+        self.assertEqual(len(sent), 2)
 
     def test_no_mentions_keeps_the_original_send_path(self):
         from larkx_persona.real import RealBackend

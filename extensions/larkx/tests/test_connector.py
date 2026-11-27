@@ -632,6 +632,10 @@ class ConnectorTest(unittest.TestCase):
             with self.assertRaises(RpcError) as e:
                 self.c.inbox_reply({"thread": "c1", "text": "@Alice done", "mentions": bad, "client_id": "k_bad"})
             self.assertEqual(e.exception.code, "invalid_params")
+        for masked in ("See `@Alice`", "```\n@Alice\n```", "[ping @Alice](https://example.com/a)"):
+            with self.assertRaises(RpcError) as e:
+                self.c.inbox_reply({"thread": "c1", "text": masked, "mentions": [{"id": "7001", "name": "Alice"}], "client_id": "k_masked"})
+            self.assertEqual(e.exception.code, "invalid_params")
         self.assertEqual(len(self.backend.sent), 1)
 
     def test_a_reply_to_a_topic_stays_in_it(self):

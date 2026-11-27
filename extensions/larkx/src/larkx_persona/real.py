@@ -829,8 +829,11 @@ class RealBackend:
             except Exception as e:
                 resp = getattr(e, "response", None)
                 if resp is not None:
+                    code = getattr(resp, "status_code", -1)
                     hint = decode_error_hint(getattr(resp, "content", b""))
-                    return None, getattr(resp, "status_code", -1), True, tags, hint
+                    # Only explicit 4xx gateway rejections prove nothing was delivered; 5xx errors may have
+                    # already delivered the message and must never trigger fallback retries with new cids.
+                    return None, code, (400 <= code < 500), tags, hint
                 raise
             pkt = P.Packet()
             pkt.ParseFromString(content)
@@ -1017,9 +1020,10 @@ def mention_parts(text, mentions):
 
 
 _FENCE_RE = re.compile(r"^```([a-zA-Z0-9_+#-]*)\s*$")
+_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _QUOTE_RE = re.compile(r"^>\s?(.*)$")
 _UL_RE = re.compile(r"^[-*]\s+(.+)$")
-_OL_RE = re.compile(r"^(\d+)\.\s+(.+)$")
+_OL_RE = re.compile(r"^(\d{1,9})\.\s+(.+)$")
 _HEADING_RE = re.compile(r"^#{1,6}\s+(.+)$")
 _INLINE_RE = re.compile(
     r"`([^`\n]+)`"
@@ -1127,7 +1131,7 @@ def parse_markdown_rich_text(text, mentions=()):
         fence = _FENCE_RE.match(line)
         if fence:
             j = i + 1
-            while j < n and not _FENCE_RE.match(lines[j]):
+            while j < n and not _FENCE_CLOSE_RE.match(lines[j]):
                 j += 1
             if j < n:
                 state["has_rich"] = True
