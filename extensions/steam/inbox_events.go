@@ -416,7 +416,7 @@ func (s *EventCursorStore) observeWishlist(id string, cfg config, t *text, at ti
 	err = s.file.update(func(entries map[string]eventCursorRecord) (bool, error) {
 		saved := entries[scope]
 		if at.Before(saved.SeenAt) {
-			out = wishlistDeliveries(entries, scope, at)
+			out = wishlistDeliveries(entries, id, cfg.CountryCode, at)
 			return false, nil
 		}
 		var state wishlistWatchState
@@ -472,7 +472,7 @@ func (s *EventCursorStore) observeWishlist(id string, cfg config, t *text, at ti
 			return r.lastSeen()
 		})
 		entries[scope] = eventCursorRecord{SeenAt: at, Wishlist: &state}
-		out = wishlistDeliveries(entries, scope, at)
+		out = wishlistDeliveries(entries, id, cfg.CountryCode, at)
 		return true, nil
 	})
 	if err != nil {
@@ -481,15 +481,14 @@ func (s *EventCursorStore) observeWishlist(id string, cfg config, t *text, at ti
 	return out, created, nil
 }
 
-func wishlistDeliveries(entries map[string]eventCursorRecord, scope string, at time.Time) []wishlistDelivery {
-	id, country, _ := strings.Cut(scope, "/")
+func wishlistDeliveries(entries map[string]eventCursorRecord, id, country string, at time.Time) []wishlistDelivery {
 	var out []wishlistDelivery
 	for key, entry := range entries {
 		if entry.Delivery == nil || !at.Before(entry.Delivery.Until) || !strings.HasPrefix(key, id+"\x00") {
 			continue
 		}
 		parts := strings.SplitN(key, "\x00", 4)
-		if len(parts) == 4 && strings.HasPrefix(parts[2], country) {
+		if len(parts) == 4 && strings.HasPrefix(parts[2], country+"/") {
 			out = append(out, *entry.Delivery)
 		}
 	}

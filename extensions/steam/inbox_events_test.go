@@ -395,6 +395,29 @@ func TestWishlistInboxSaleWindowsSurviveRestart(t *testing.T) {
 	}
 }
 
+func TestWishlistDeliveriesCountryBoundary(t *testing.T) {
+	at := fixtureObservationAt
+	entries := make(map[string]eventCursorRecord)
+	for _, record := range []struct{ account, key, thread string }{
+		{fixtureID, "US/offer", "same-country"},
+		{fixtureID, "USA/offer", "longer-prefix"},
+		{fixtureID, "USoffer", "missing-separator"},
+		{fixtureID, "GB/offer", "different-country"},
+		{fixtureID2, "US/offer", "different-account"},
+	} {
+		key, err := eventCursorKey(record.account, wishlistPriceKind, record.key, "fixture-window")
+		requireStoreOK(t, err)
+		entries[key] = eventCursorRecord{Delivery: &wishlistDelivery{
+			Thing: wire.ConnectorInboxThing{Thread: record.thread},
+			Until: at.Add(time.Hour),
+		}}
+	}
+	got := wishlistDeliveries(entries, fixtureID, "US", at)
+	if len(got) != 1 || got[0].Thing.Thread != "same-country" {
+		t.Fatalf("US replay must match only its delimited country and account, got %+v", got)
+	}
+}
+
 func TestWishlistInboxDailyBudgetConcurrent(t *testing.T) {
 	f := newFakeSteam(t, time.Second)
 	var games []inboxFixtureGame
