@@ -37,11 +37,13 @@ JUNK = [
     'assistant/._answer-style.md',
     'assets/.DS_Store',
     'assets/._icon.png',
+    'l10n/._en.json',
 ]
 # Real files that must still ship despite the exclusions.
 KEEP = [
     'skills/weekly-review/SKILL.md',
     'assistant/answer-style.md',
+    'l10n/en.json',
 ]
 # Names that look like junk but must NOT be matched by the basename patterns (no prefix/glob over-reach).
 NEAR_MISS = [
@@ -67,6 +69,8 @@ class PackageJunkTests(unittest.TestCase):
             shutil.copy2(REPO / 'scripts' / name, self.tmp / 'scripts' / name)
         shutil.copytree(REPO / 'extensions' / EXT_ID, self.tmp / 'extensions' / EXT_ID)
         ext = self.tmp / 'extensions' / EXT_ID
+        (ext / 'l10n').mkdir()
+        (ext / 'l10n/en.json').write_text(json.dumps({'name': 'Starter kit'}))
         for rel in JUNK + NEAR_MISS:
             p = ext / rel
             p.parent.mkdir(parents=True, exist_ok=True)
@@ -82,6 +86,8 @@ class PackageJunkTests(unittest.TestCase):
         self.assertTrue(tarball.is_file())
         with tarfile.open(tarball, 'r:gz') as t:
             names = t.getnames()
+            with t.extractfile(f'{EXT_ID}/l10n/en.json') as translation:
+                self.assertEqual(json.load(translation), {'name': 'Starter kit'})
         # No path component is a junk name: catches files and excluded directories at every depth.
         for n in names:
             for part in n.split('/'):
