@@ -126,3 +126,90 @@ func TestEntityExpansionPurityAndHubFanIn(t *testing.T) {
 		t.Fatalf("expected 2 pruned skeleton edges (owns + outgoing depends_on), got %+v", skel)
 	}
 }
+
+func TestRecallConsumesMergedEntitiesSkipsArchivedAndDecaysEphemeral(t *testing.T) {
+	st := &store.State{
+		ActiveDays: []string{"2026-11-27"},
+		Entries: map[string]*entry.Entry{
+			"ops-fresh": {
+				ID: "ops-fresh", Facet: entry.Tools, Status: entry.Stable, Count: 2, Last: "2026-11-20",
+				Object: "nebulagate", Text: "nebulagate 升级前需刷新健康检查缓存",
+			},
+			"ops-stale": {
+				ID: "ops-stale", Facet: entry.Tools, Status: entry.Stable, Count: 2, Last: "2026-10-01",
+				Object: "nebulagate", Text: "nebulagate 旧脚本已废弃提示",
+			},
+			"ep-expired": {
+				ID: "ep-expired", Facet: entry.World, Type: "status", Status: entry.Stable, Count: 1, Last: "2026-11-01",
+				Subject: "project:nebulagate", Text: "nebulagate PR #1234 卡在测试",
+			},
+			"ep-recent": {
+				ID: "ep-recent", Facet: entry.World, Type: "status", Status: entry.Candidate, Count: 1, Last: "2026-11-22",
+				Subject: "nebulagate", Text: "nebulagate 正在灰度验证",
+			},
+			"w-about": {
+				ID: "w-about", Facet: entry.World, Predicate: "about", Status: entry.Stable, Count: 3, Last: "2026-11-25",
+				Subject: "nebulagate", Text: "nebulagate 关联某个文档",
+			},
+		},
+		Graph: &store.Graph{
+			Nodes: map[string]*store.Node{
+				"n-sys-1":  {ID: "n-sys-1", Type: "system", Name: "nebulagate", Status: "active"},
+				"n-sys-2":  {ID: "n-sys-2", Type: "system", Name: "nebula", MergedInto: "n-sys-1", Status: "candidate"},
+				"n-p-1":    {ID: "n-p-1", Type: "person", Name: "林明远", Status: "active"},
+				"n-p-2":    {ID: "n-p-2", Type: "person", Name: "陈明", Status: "active"},
+				"n-task-1": {ID: "n-task-1", Type: "task", Name: "nebulagate task", Status: "archived"},
+			},
+			Assertions: map[string]*store.Assertion{
+				"a-own":   {ID: "a-own", S: "n-p-1", P: "owns", O: "n-sys-2", Status: "active", ValidFrom: "2026-11-10"},
+				"a-c1":    {ID: "a-c1", S: "n-p-1", P: "collaborates_with", O: "n-p-2", Status: "active", ValidFrom: "2026-11-10"},
+				"a-c2":    {ID: "a-c2", S: "n-p-2", P: "collaborates_with", O: "n-p-1", Status: "active", ValidFrom: "2026-11-11"},
+				"a-task":  {ID: "a-task", S: "n-p-1", P: "assigned", O: "n-task-1", Status: "active", ValidFrom: "2026-11-10"},
+				"a-about": {ID: "a-about", S: "n-sys-1", P: "about", O: "n-p-2", Status: "archived", ValidFrom: "2026-11-10"},
+			},
+			Merges: []*store.MergeRec{{From: "n-sys-2", Into: "n-sys-1", At: "2026-11-26", Proposal: "auto-haiku-v04"}},
+		},
+	}
+
+	// Querying by the merged alias "nebula" resolves to canonical entity "nebulagate".
+	res := Search(st, Query{Text: "nebula"})
+	if len(res.Entities) != 1 || res.Entities[0].Name != "nebulagate" {
+		t.Fatalf("expected merged canonical entity nebulagate, got %+v", res.Entities)
+	}
+	if len(res.Entities[0].Skeleton) != 1 || res.Entities[0].Skeleton[0].From != "林明远" || res.Entities[0].Skeleton[0].To != "nebulagate" {
+		t.Errorf("expected owns edge resolved to canonical nebulagate, got %+v", res.Entities[0].Skeleton)
+	}
+	// Expired ephemeral (>= 14d) and stopped "about" world entries must be excluded; fresh ops ranks above 57d ops.
+	var hitIDs []string
+	for _, h := range res.Hits {
+		hitIDs = append(hitIDs, h.ID)
+	}
+	got := strings.Join(hitIDs, ",")
+	if strings.Contains(got, "ep-expired") || strings.Contains(got, "w-about") {
+		t.Errorf("expired ephemeral or stopped about leaked into hits: %s", got)
+	}
+	if !strings.Contains(got, "ops-fresh") || !strings.Contains(got, "ep-recent") {
+		t.Errorf("expected ops-fresh and ep-recent in hits: %s", got)
+	}
+	if len(res.Entities[0].Rules) >= 2 && res.Entities[0].Rules[0].ID != "ops-fresh" {
+		t.Errorf("expected fresh ops_runbook to rank ahead of aged ops_runbook, got %+v", res.Entities[0].Rules)
+	}
+
+	// Querying 林明远 should deduplicate mirror collaborates_with edges and skip archived task node.
+	pRes := Search(st, Query{Text: "林明远"})
+	if len(pRes.Entities) != 1 {
+		t.Fatalf("expected 林明远 entity context, got %+v", pRes.Entities)
+	}
+	collabCount := 0
+	for _, se := range pRes.Entities[0].Skeleton {
+		if se.Predicate == "collaborates_with" {
+			collabCount++
+		}
+		if strings.Contains(se.To, "task") {
+			t.Errorf("archived task leaked into skeleton: %+v", se)
+		}
+	}
+	if collabCount != 1 {
+		t.Errorf("expected 1 deduplicated collaborates_with edge, got %d (%+v)", collabCount, pRes.Entities[0].Skeleton)
+	}
+}
