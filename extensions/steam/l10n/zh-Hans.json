@@ -1,6 +1,6 @@
 {
   "name": "Steam",
-  "description": "用 Steam 手机 App 扫码登录，在 Persona 中只读查看玩家状态、游玩记录、游戏库、成就和愿望单地区价格。也可用 Web API 密钥读取公开数据。",
+  "description": "用 Steam 手机 App 扫码登录，在 Persona 中只读查看玩家状态、游玩记录、游戏库、成就、游戏官方更新和愿望单地区价格。也可用 Web API 密钥读取公开数据。",
   "configuration": {
     "auth_mode": {
       "title": "登录方式",
@@ -25,7 +25,7 @@
     },
     "patch_notes_summary_enabled": {
       "title": "重大更新 AI 摘要",
-      "description": "为常玩游戏的重大更新公告生成 AI 摘要，生成时消耗 Token。默认关闭。"
+      "description": "向助手提供简短的更新公告正文片段以生成摘要。默认关闭，此时可查看标题、日期、来源和链接。"
     },
     "sale_roundup_enabled": {
       "title": "愿望单大促汇总",

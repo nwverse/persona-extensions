@@ -322,3 +322,54 @@ func TestGameNewsRecentGamesAndLibraryFallback(t *testing.T) {
 		})
 	}
 }
+
+func TestRecentOfficialUpdatesPageLoadsOnDemandAndReusesNews(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	f.handle(newsForAppPath, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("maxlength") != "1" || q.Get("feeds") != officialNewsFeed {
+			t.Error("the news page should only request official headlines")
+		}
+		app := q.Get("appid")
+		_, _ = fmt.Fprintf(w, `{"appnews":{"appid":%s,"newsitems":[
+			{"gid":%q,"date":1720000000,"title":"Fixture Patch","feedname":"steam_community_announcements","contents":"UI_BODY_SENTINEL"}]}}`, app, app)
+	})
+	h := startTestHost(t, f, fixtureID, "GB", "")
+	nav := wire.UIParams{Contribution: extensionID, Size: wire.SizeFull, Placement: wire.PlacementNavPage, UIVersion: 12, Locale: "zh-Hans"}
+	first := viewAnswer(t, h, nav)
+	viewAnswer(t, h, wire.UIParams{Contribution: summaryID, Size: wire.SizeCompact, Placement: wire.PlacementOverviewCard, UIVersion: 12})
+	if f.hit(newsForAppPath) != 0 {
+		t.Fatal("the initial Steam page or card blocked on a news request")
+	}
+	entry := slices.IndexFunc(first.Sections[0].Items, func(item wire.Component) bool {
+		return item.Type == wire.ComponentButton && item.Title == "近期官方更新" && item.Action != nil
+	})
+	if entry < 0 {
+		t.Fatal("the overview is missing the localized news entry")
+	}
+	withQuery := act(t, h, nav, first, "search", map[string]string{"q": "rally"})
+	news := act(t, h, nav, withQuery, first.Sections[0].Items[entry].Action.ID, nil)
+	if news.Title != "近期官方更新" || len(news.Sections) != 1 || len(news.Sections[0].Items) != 3 {
+		t.Fatalf("unexpected official updates view: %+v", news)
+	}
+	link := news.Sections[0].Items[1]
+	wantURL := storeBase + "/news/app/" + appIDText(firstApp) + "/view/" + appIDText(firstApp)
+	if link.Type != wire.ComponentLink || link.URL != wantURL {
+		t.Fatalf("expected an official clickable Steam link, got %+v", link)
+	}
+	raw, _ := json.Marshal(news)
+	contains(t, string(raw), "Fixture Patch", "Synthetic Adventure", "2024-07-03")
+	assertHidden(t, string(raw), "UI_BODY_SENTINEL")
+
+	answer := toolAnswer(t, h, gameNewsName, `{}`)
+	contains(t, answer, wantURL, `"summary_enabled":false`)
+	if f.hit(newsForAppPath) != 2 || f.hit(recentPath) != 1 {
+		t.Fatal("the page and tool did not reuse the official news and recent games caches")
+	}
+	if back := act(t, h, nav, news, "back", nil); back.Search == nil || back.Search.Value != "rally" {
+		t.Fatal("returning from news lost the search state")
+	}
+	nav.Locale = "en"
+	raw, _ = json.Marshal(viewAnswer(t, h, nav))
+	contains(t, string(raw), "Recent official updates")
+}

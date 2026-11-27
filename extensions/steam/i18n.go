@@ -18,6 +18,8 @@ type text struct {
 	qrHint, keyMode, keySignOut                                         string
 	states                                                              map[string]string
 	problems                                                            map[problem]string
+
+	recentNews, noRecentNews string
 }
 
 var english = text{
@@ -34,6 +36,7 @@ var english = text{
 	noWishes:    "The wishlist is empty.", noPrice: "No price listed in this region.", priceUnchecked: "Price unavailable.",
 	achievements: "Achievements", noAchievements: "Steam lists no achievements for this game.", unlocked: "%d of %d unlocked",
 	game: "App %d", playing: "Playing %s", unknown: "Status unavailable",
+	recentNews: "Recent official updates", noRecentNews: "No recent official game updates were found.",
 	minutes: "%d min", hoursMinutes: "%d h %d min", discount: "%d%% off", atLeast: "%d+", stale: "Showing cached data.",
 	qrHint:     "Open Steam Guard in the Steam Mobile App, scan the QR code, and approve the sign-in on your phone.",
 	keyMode:    "Web API key mode is managed in Steam's extension settings. Select Steam Mobile QR there to sign in by scanning.",
@@ -90,6 +93,7 @@ var chinese = text{
 	noWishes:    "愿望单为空。", noPrice: "此地区没有挂牌价格。", priceUnchecked: "暂时无法获取价格。",
 	achievements: "成就", noAchievements: "Steam 没有列出这款游戏的成就。", unlocked: "已解锁 %d / %d",
 	game: "应用 %d", playing: "游戏中 · %s", unknown: "状态不可用",
+	recentNews: "近期官方更新", noRecentNews: "暂未找到近期官方游戏更新。",
 	minutes: "%d 分钟", hoursMinutes: "%d 小时 %d 分钟", discount: "优惠 %d%%", atLeast: "%d+", stale: "当前显示缓存数据。",
 	qrHint:     "在 Steam 手机 App 中打开 Steam 令牌，扫描二维码，并在手机上批准登录。",
 	keyMode:    "Web API 密钥在 Steam 扩展设置中管理。如需扫码，请在设置中选择 Steam 手机 App 扫码。",

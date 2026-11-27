@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nwverse/persona-extensions/pluginkit"
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -18,6 +19,8 @@ const (
 	recentSection  = "recent"
 	librarySection = "library"
 	wishSection    = "wishlist"
+	gameNewsAction = "game-news"
+	newsPageLimit  = 5
 )
 
 type pageState struct {
@@ -28,6 +31,7 @@ type pageState struct {
 	WishPage    int    `json:"wishlist_page,omitempty"`
 	AppID       uint32 `json:"appid,omitempty"`
 	From        string `json:"from,omitempty"`
+	News        bool   `json:"news,omitempty"`
 }
 
 type snapshot struct {
@@ -75,7 +79,7 @@ func (a *app) readState(r *ext.UIRequest, t *text) (pageState, error) {
 		st.RecentPage < 0 || st.RecentPage > maxGames/pageSize ||
 		st.LibraryPage < 0 || st.LibraryPage > maxGames/pageSize ||
 		st.WishPage < 0 || st.WishPage > maxWishlistItems/pageSize ||
-		(st.AppID != 0 && st.From != recentSection && st.From != librarySection) {
+		(st.AppID != 0 && (st.News || (st.From != recentSection && st.From != librarySection))) {
 		return pageState{}, invalid(t.invalidPage)
 	}
 	if st.Sort == "" {
@@ -110,7 +114,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	switch r.Action {
 	case "refresh":
 		refresh = true
-		st.AppID, st.From = 0, ""
+		st.AppID, st.From, st.News = 0, "", false
 	case "search":
 		st.Query, st.LibraryPage = a.viewQuery(r.Values["q"]), 0
 	case "sort":
@@ -123,7 +127,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		}
 		st.Sort, st.LibraryPage = order, 0
 	case "back":
-		st.AppID, st.From = 0, ""
+		st.AppID, st.From, st.News = 0, "", false
+	case gameNewsAction:
+		st.AppID, st.From, st.News = 0, "", true
 	case "recent-next":
 		st.RecentPage++
 	case "recent-previous":
@@ -142,7 +148,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if !ok || parseErr != nil || id == 0 || (from != recentSection && from != librarySection) {
 			return nil, invalid(t.invalidAction)
 		}
-		st.AppID, st.From = uint32(id), from
+		st.AppID, st.From, st.News = uint32(id), from, false
 	}
 	view := a.page(ctx, t, st, refresh)
 	if refresh && r.Hub != nil {
@@ -158,9 +164,12 @@ func (a *app) page(ctx context.Context, t *text, st pageState, refresh bool) *wi
 		return unavailablePage(t, d.setup)
 	}
 	var view *wire.View
-	if st.AppID != 0 {
+	switch {
+	case st.News:
+		view = a.gameNewsPage(ctx, d, t, st)
+	case st.AppID != 0:
 		view = d.gameDetail(ctx, t, st)
-	} else {
+	default:
 		view = d.overview(ctx, t, st, refresh)
 	}
 	if issue := d.sessionIssue(); issue != "" {
@@ -201,7 +210,7 @@ func (d *steamData) overview(ctx context.Context, t *text, st pageState, refresh
 	profile.Items = append(profile.Items, wire.Component{Type: wire.ComponentStatGrid, Stats: []wire.Stat{
 		{Label: t.recentTime, Value: recentValue(t, s.recent)},
 		{Label: t.owned, Value: countValue(s.library.Data)},
-	}}, button(t.refresh, "refresh"))
+	}}, button(t.refresh, "refresh"), button(t.recentNews, gameNewsAction))
 	view.Search = &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}
 	view.Filter = &wire.Filter{
 		Name: "order", Title: t.sort, Value: st.Sort, Action: wire.Action{ID: "sort"},
@@ -216,6 +225,26 @@ func (d *steamData) overview(ctx context.Context, t *text, st pageState, refresh
 	view.State = ext.EncodeState(st)
 	view.RefreshAfter = int(presenceTTL.Seconds())
 	return view
+}
+
+func (a *app) gameNewsPage(ctx context.Context, d *steamData, t *text, st pageState) *wire.View {
+	options := gameNewsOptions{limit: newsPageLimit, gamesLimit: defaultNewsGames, officialOnly: true}
+	news := a.accountGameNews(ctx, d, t, options)
+	section := wire.Section{Items: []wire.Component{button(t.back, "back")}}
+	for _, item := range news.Updates {
+		date := time.Unix(item.Date, 0).UTC().Format(time.DateOnly)
+		section.Items = append(section.Items, wire.Component{
+			Type: wire.ComponentLink, Key: item.GID, URL: item.URL,
+			Title: item.Title + " · " + item.GameName + " · " + date,
+		})
+	}
+	if news.Available && len(news.Updates) == 0 {
+		section.Items = append(section.Items, empty(t.noRecentNews))
+	}
+	for _, warning := range news.Warnings {
+		section.Footer = joinText(section.Footer, warning.Message)
+	}
+	return &wire.View{Title: t.recentNews, State: ext.EncodeState(st), Sections: []wire.Section{section}}
 }
 
 func (a *app) card(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
