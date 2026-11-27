@@ -17,7 +17,7 @@ import (
 func TestUnreadableStoreHoldsRecordWrites(t *testing.T) {
 	fx := newFixture(t)
 	dir := t.TempDir()
-	imp := Open(dir)
+	imp := openTestStore(dir)
 	d, err := Preview(imp, fx.home(), Input{Source: SrcReceipt, Lines: []Line{{Title: "香蕉", Qty: f(1), Unit: "把"}}}, time.UTC, false)
 	if err != nil {
 		t.Fatal(err)
@@ -52,7 +52,7 @@ func TestUnreadableStoreHoldsRecordWrites(t *testing.T) {
 // 3: an undo that cannot be decided is not said to be done, and can be acknowledged without touching records.
 func TestAnUndecidedUndoIsNotCalledDone(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	apply(t, fx, imp, Input{Source: SrcReceipt, Lines: []Line{{Title: "鸡蛋", Qty: f(6), Unit: "个"}, {Title: "香蕉", Qty: f(1), Unit: "把"}}})
 	work := copyBase(fx.b)
 	if _, _, err := UndoLast(work, imp, "", testNow.Add(time.Minute)); err != nil { // pending
@@ -88,7 +88,7 @@ func TestBoughtAndStillWantedKeepsTheListEntry(t *testing.T) {
 	if shop.Action != ActOnList || p.Totals.Bought != 0 {
 		t.Fatalf("shopping line %+v, totals %+v", shop, p.Totals)
 	}
-	imp := Open("")
+	imp := openTestStore("")
 	apply(t, fx, imp, in)
 	h := fx.home()
 	milk, _ := h.Item(fx.milk)
