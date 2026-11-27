@@ -180,7 +180,8 @@ func TestProtocolTools(t *testing.T) {
 	}
 	want := []string{"steam_profile", "steam_recent_games", "steam_library", "steam_achievements", "steam_wishlist",
 		"steam_achievement_hunter", "steam_game_news",
-		"steam_backlog_summary", "steam_backlog_mark", "steam_tonight_pick"}
+		"steam_backlog_summary", "steam_backlog_mark", "steam_tonight_pick",
+		"steam_store_tags"}
 	var names []string
 	for _, tool := range list.Tools {
 		names = append(names, tool.Name)

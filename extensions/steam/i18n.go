@@ -94,6 +94,10 @@ var english = text{
 		problemAchievementDetails:     "Steam did not share complete personal achievement details. Any global rankings are for all players.",
 		problemAchievementUnlockTimes: "Steam did not share timestamps for some unlocked achievements.",
 		problemGameNews:               "Steam did not share news for this game.",
+
+		problemDiscoveryDisabled: "Steam game research is off (discovery_tools_enabled). You can enable it in Settings › Extensions › Steam.",
+		problemDiscoveryTagArgs:  "Use a Steam language code, a tag query of up to 100 characters and a limit from 1 to 50.",
+		problemBuiltInTags:       "Using the built-in list of common Steam tags.",
 	},
 	backlog: backlogText{
 		title: "Backlog & local progress", annotation: "Local backlog annotation", status: "Status",
@@ -172,6 +176,10 @@ var chinese = text{
 		problemAchievementDetails:     "Steam 未共享完整的个人成就明细。全球榜单适用于所有玩家。",
 		problemAchievementUnlockTimes: "Steam 未共享部分已解锁成就的解锁时间。",
 		problemGameNews:               "Steam 未共享这款游戏的更新消息。",
+
+		problemDiscoveryDisabled: "Steam 游戏调研已关闭（discovery_tools_enabled）。可在「设置 › 扩展 › Steam」开启。",
+		problemDiscoveryTagArgs:  "请使用 Steam 语言代码，输入最多 100 字的标签关键词，并将返回上限设为 1–50。",
+		problemBuiltInTags:       "当前使用内置的 Steam 常用标签。",
 	},
 	backlog: backlogText{
 		title: "吃灰盘点与标注", annotation: "本机游戏标注", status: "游玩状态",

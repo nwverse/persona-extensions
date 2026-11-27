@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -111,7 +112,10 @@ func (a *app) connector(ctx context.Context, method string, params json.RawMessa
 	case "status":
 		return a.status(ctx), nil
 	case "tools.list":
-		return wire.ConnectorTools{Tools: tools}, nil
+		if !a.config.AllowsDiscoveryTools() {
+			return wire.ConnectorTools{Tools: tools}, nil
+		}
+		return wire.ConnectorTools{Tools: slices.Concat(tools, discoveryTools(a.config.DiscoveryResultLimit()))}, nil
 	case "tools.call":
 		return a.callTool(ctx, call.Name, call.Args)
 	default:
@@ -174,13 +178,20 @@ func (d *steamData) toolAccount(ctx context.Context, out map[string]any, t *text
 }
 
 func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (wire.ConnectorCallResult, error) {
+	const badPaging = "Use an offset from 0 to 20000 and a limit from 1 to 50."
 	switch name {
 	case achievementHunterName:
 		return encodeSteamTool(a.achievementHunter(ctx, raw))
 	case gameNewsName:
 		return encodeSteamTool(a.gameNews(ctx, raw))
+	case storeTagsTool:
+		if !a.config.AllowsDiscoveryTools() {
+			return wire.ConnectorCallResult{}, &ext.Error{
+				Code: string(problemDiscoveryDisabled), Message: textFor(a.locale).message(problemDiscoveryDisabled, false),
+			}
+		}
+		return a.callDiscoveryTool(ctx, name, raw)
 	}
-	const badPaging = "Use an offset from 0 to 20000 and a limit from 1 to 50."
 	d, ctx, cancel := a.readContext(ctx)
 	defer cancel()
 	out := map[string]any{"available": false}

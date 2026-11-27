@@ -93,8 +93,11 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 		case storePricesPath:
 			wantHost = storeHost
 		default:
-			t.Error("attempted an unexpected outbound request or followed a redirect")
-			return nil, fmt.Errorf("unexpected outbound request")
+			if !strings.HasPrefix(req.URL.Path, tagCatalogPath) {
+				t.Error("attempted an unexpected outbound request or followed a redirect")
+				return nil, fmt.Errorf("unexpected outbound request")
+			}
+			wantHost = storeHost
 		}
 		if req.Method != method || req.URL.Scheme != "https" || req.URL.Host != wantHost {
 			t.Error("wrong method or origin for a Steam read")
