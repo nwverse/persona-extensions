@@ -123,7 +123,7 @@ func (EntriesProvider) Items(st *store.State) []CandidateItem {
 			weight += contactScore[e.Person] / 10
 		}
 		originSpace := e.OriginSpace
-		if len(cats) == 0 && entry.IsWorkMethodFacet(e.Facet) {
+		if entry.IsOpsRunbookEntry(e) || (len(cats) == 0 && entry.IsWorkMethodFacet(e.Facet)) {
 			originSpace = ""
 		}
 		out = append(out, CandidateItem{
@@ -216,24 +216,26 @@ func groupOf(f entry.Facet) string {
 	}
 }
 
-// entryCategories returns the Payload-First sensitive categories of e (v0.4.0 §1.6):
-//   - Work-methodology facets (interaction, tools, workflow, judgement) carry ONLY explicit ByUser categories and
-//     genuine privacy disclosures matched by entry.PayloadCategories on e's own payload (never topic/tone or
-//     OriginSpace contagion), guaranteeing 0 work rules leak into profile:cat:emotion / profile:cat:health.
-//   - Non-work facets (persona, world, people) retain ByUser, BySpaceDefault, SpaceDefaults, and payload-supported
-//     categories.
+// entryCategories returns the sensitive categories of e using state.json's persisted categories as the single source
+// of truth (v0.4.0 §1.6):
+//   - Ops runbook entries (entry.IsOpsRunbookEntry) NEVER enter profile:cat:* sensitive sections.
+//   - Never re-runs entry.PayloadCategories from scratch to resurrect categories already cleared by Phase 1/2.2.
+//   - Work-methodology facets (interaction, tools, workflow, judgement) accept ONLY persisted ByUser categories or
+//     persisted ByModel categories still corroborated by entry.PayloadCategories (never OriginSpace or zero-tag items).
+//   - Non-work facets (persona, world, people) retain persisted Categories, legacy Sensitive, and SpaceDefaults.
 func entryCategories(e *entry.Entry) []string {
+	if e == nil || entry.IsOpsRunbookEntry(e) {
+		return nil
+	}
 	var cats []string
 	add := func(c string) {
 		if cn := entry.CategoryOf(c); cn != "" && !slices.Contains(cats, cn) && !slices.Contains(e.CatsRemoved, cn) {
 			cats = append(cats, cn)
 		}
 	}
-	ownPayload := entry.PayloadCategories(e.Facet, e.PayloadTexts()...)
-	for _, c := range ownPayload {
-		add(c)
-	}
 	workMethod := entry.IsWorkMethodFacet(e.Facet)
+	var ownPayload []string
+	payloadChecked := false
 	for _, c := range e.Categories {
 		cn := entry.CategoryOf(c.Name)
 		if cn == "" {
@@ -243,6 +245,14 @@ func entryCategories(e *entry.Entry) []string {
 			add(cn)
 		} else if !workMethod {
 			add(cn)
+		} else if c.By == entry.ByModel {
+			if !payloadChecked {
+				ownPayload = entry.PayloadCategories(e.Facet, e.PayloadTexts()...)
+				payloadChecked = true
+			}
+			if slices.Contains(ownPayload, cn) {
+				add(cn)
+			}
 		}
 	}
 	if !workMethod {
