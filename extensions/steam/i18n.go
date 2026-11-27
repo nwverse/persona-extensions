@@ -20,6 +20,10 @@ type text struct {
 	problems                                                            map[problem]string
 
 	recentNews, noRecentNews string
+
+	inboxPrice, inboxGiveaway, inboxRelease, inboxDemo, inboxRoundup string
+	inboxGiveawayHint, inboxReleaseHint, inboxDemoHint               string
+	inboxThreshold, inboxTarget, inboxNewLow, inboxUnits, inboxTop   string
 }
 
 var english = text{
@@ -37,6 +41,11 @@ var english = text{
 	achievements: "Achievements", noAchievements: "Steam lists no achievements for this game.", unlocked: "%d of %d unlocked",
 	game: "App %d", playing: "Playing %s", unknown: "Status unavailable",
 	recentNews: "Recent official updates", noRecentNews: "No recent official game updates were found.",
+	inboxPrice: "Wishlist price alert", inboxGiveaway: "100% off", inboxRelease: "Released on Steam", inboxDemo: "Demo available",
+	inboxRoundup: "Top wishlist deals", inboxGiveawayHint: "Check the Steam Store page to claim this limited-time offer.",
+	inboxReleaseHint: "This wishlist game has launched. Open its Steam Store page for details.", inboxDemoHint: "Open the Steam Store page to try the free demo.",
+	inboxThreshold: "At least %d%% off", inboxTarget: "Target price reached", inboxNewLow: "New locally observed low",
+	inboxUnits: "%d Steam price units in %s", inboxTop: "%d wishlist games on sale in %s. Top %d offers.",
 	minutes: "%d min", hoursMinutes: "%d h %d min", discount: "%d%% off", atLeast: "%d+", stale: "Showing cached data.",
 	qrHint:     "Open Steam Guard in the Steam Mobile App, scan the QR code, and approve the sign-in on your phone.",
 	keyMode:    "Web API key mode is managed in Steam's extension settings. Select Steam Mobile QR there to sign in by scanning.",
@@ -94,6 +103,11 @@ var chinese = text{
 	achievements: "成就", noAchievements: "Steam 没有列出这款游戏的成就。", unlocked: "已解锁 %d / %d",
 	game: "应用 %d", playing: "游戏中 · %s", unknown: "状态不可用",
 	recentNews: "近期官方更新", noRecentNews: "暂未找到近期官方游戏更新。",
+	inboxPrice: "愿望单价格提醒", inboxGiveaway: "喜加一", inboxRelease: "Steam 已发售", inboxDemo: "免费试玩已开放",
+	inboxRoundup: "愿望单大促精选", inboxGiveawayHint: "前往 Steam 商店页面查看并领取限时免费优惠。",
+	inboxReleaseHint: "这款愿望单游戏已发售，可前往 Steam 商店查看。", inboxDemoHint: "前往 Steam 商店页面下载免费试玩。",
+	inboxThreshold: "折扣达到 %d%%", inboxTarget: "已达到目标价", inboxNewLow: "本机观测新低",
+	inboxUnits: "%d Steam 价格单位（%s）", inboxTop: "%d 款愿望单游戏在 %s 区打折，精选 %d 款。",
 	minutes: "%d 分钟", hoursMinutes: "%d 小时 %d 分钟", discount: "优惠 %d%%", atLeast: "%d+", stale: "当前显示缓存数据。",
 	qrHint:     "在 Steam 手机 App 中打开 Steam 令牌，扫描二维码，并在手机上批准登录。",
 	keyMode:    "Web API 密钥在 Steam 扩展设置中管理。如需扫码，请在设置中选择 Steam 手机 App 扫码。",

@@ -93,4 +93,5 @@ type wishList struct {
 	Total      int        `json:"total"`
 	Checked    int        `json:"prices_checked"`
 	Discounted int        `json:"discounted_count"`
+	store      map[uint32]wishlistStoreItem
 }

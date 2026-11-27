@@ -34,8 +34,10 @@ func TestManifestAndTranslations(t *testing.T) {
 		t.Fatal("missing contribution declarations")
 	}
 	c := m.Contributes.Connectors[0]
-	if c.ID != extensionID || !slices.Equal(c.Capabilities, []string{"status", "tools"}) ||
-		!slices.Equal(c.Hosts, []string{storeHost, "steamcommunity.com"}) || !slices.Equal(c.AgentTools, []string{"steam_*"}) {
+	if c.ID != extensionID || !slices.Equal(c.Capabilities, []string{"status", "tools", "events", "inbox", "fallback"}) ||
+		!slices.Equal(c.Hosts, []string{storeHost, "steamcommunity.com"}) || !slices.Equal(c.AgentTools, []string{"steam_*"}) ||
+		!slices.Equal(c.Kinds, []string{wishlistPriceKind, wishlistGiveawayKind, wishlistReleaseKind, wishlistDemoKind, wishlistRoundupKind}) ||
+		!slices.Equal(m.ActivationEvents, []string{wire.ActivationEventOnStartup}) {
 		t.Fatalf("connector %+v", c)
 	}
 	page, card := m.Contributes.UI[0], m.Contributes.UI[1]
@@ -81,7 +83,8 @@ func TestManifestAndTranslations(t *testing.T) {
 			translation.UI[card.ID] == "" || translation.Groups[page.Group.ID] == "" {
 			t.Errorf("incomplete %s manifest translations", lang)
 		}
-		for _, key := range []string{"auth_mode", "steam_id", "country_code"} {
+		for _, key := range []string{"auth_mode", "steam_id", "country_code", "inbox_events_enabled", "inbox_max_events_per_day", "sale_roundup_enabled",
+			"wishlist_event_triggers", "wishlist_discount_threshold", "wishlist_target_prices"} {
 			if f := translation.Configuration[key]; f.Title == "" || f.Description == "" {
 				t.Errorf("missing %s translation for %s", lang, key)
 			}

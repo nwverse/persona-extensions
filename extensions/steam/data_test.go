@@ -262,6 +262,9 @@ func TestQRReadRoutes(t *testing.T) {
 	}
 	authStep(t, h, "")
 	await(t, 5*time.Second, func() bool { return authStep(t, h, qrStep).Done })
+	await(t, time.Second, func() bool {
+		return f.hit(wishlistPath) == 1 && f.hit(storeNamesPath) == 1 && f.hit(storePricesPath) == 1
+	})
 	profile := toolAnswer(t, h, "steam_profile", "{}")
 	contains(t, profile, "Private QR Pilot", `"public":false`, `"state":"online"`, "Synthetic Adventure", `"owned_game_count":3`)
 	assertHidden(t, profile, access, saved.RefreshToken, f.key, "Other Account")
@@ -269,9 +272,9 @@ func TestQRReadRoutes(t *testing.T) {
 	contains(t, toolAnswer(t, h, "steam_library", `{"query":"zeta"}`), "Zeta Rally", `"playtime_forever":600`)
 	contains(t, toolAnswer(t, h, "steam_achievements", fmt.Sprintf(`{"appid":%d}`, firstApp)), `"total":3`, `"unlocked":2`)
 	contains(t, toolAnswer(t, h, "steam_wishlist", `{"limit":1}`), "示例冒险", `"country_code":"GB"`, `"currency":"GBP"`, `"discounted_count":1`)
-	for _, path := range []string{playerLinkPath, ownedPath, recentPath, progressPath, wishlistPath, storeNamesPath, storePricesPath} {
-		if n := f.hit(path); n != 1 {
-			t.Errorf("expected one %s read, got %d", path, n)
+	for path, want := range map[string]int{playerLinkPath: 1, ownedPath: 1, recentPath: 1, progressPath: 1, wishlistPath: 2, storeNamesPath: 2, storePricesPath: 2} {
+		if n := f.hit(path); n != want {
+			t.Errorf("expected %d %s reads, got %d", want, path, n)
 		}
 	}
 	entries, err := os.ReadDir(filepath.Dir(file))

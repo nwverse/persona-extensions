@@ -114,6 +114,8 @@ func (a *app) connector(ctx context.Context, method string, params json.RawMessa
 		return wire.ConnectorTools{Tools: tools}, nil
 	case "tools.call":
 		return a.callTool(ctx, call.Name, call.Args)
+	case "inbox.collect":
+		return a.collectWishlistInbox(), nil
 	default:
 		return nil, ext.UnknownMethod("connector")
 	}

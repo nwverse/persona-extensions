@@ -1,6 +1,6 @@
 {
   "name": "Steam",
-  "description": "用 Steam 手机 App 扫码登录，在 Persona 中只读查看玩家状态、游玩记录、游戏库、成就、游戏官方更新和愿望单地区价格。也可用 Web API 密钥读取公开数据。",
+  "description": "用 Steam 手机 App 扫码登录，在 Persona 中只读查看游戏库、成就和游戏动态，并可订阅愿望单优惠、发售和免费试玩提醒。也可用 Web API 密钥读取公开数据。",
   "configuration": {
     "auth_mode": {
       "title": "登录方式",
@@ -17,11 +17,23 @@
     },
     "inbox_events_enabled": {
       "title": "Steam 收件箱事件",
-      "description": "向收件箱发送愿望单降价、发售、大促和重大更新等事件。收件箱分拣可能消耗 AI Token。默认关闭。"
+      "description": "自动检查愿望单并提醒优惠、发售和试玩。关闭时无需后台检查或额外 AI Token。"
     },
     "inbox_max_events_per_day": {
       "title": "Steam 收件箱每日事件上限",
-      "description": "开启收件箱事件后，每天最多发送的 Steam 事件数。范围 1–50，默认 5。"
+      "description": "每个 UTC 自然日最多生成的 Steam 收件箱事件数。范围 1–50，默认 5。"
+    },
+    "wishlist_event_triggers": {
+      "title": "愿望单提醒类型",
+      "description": "收件箱开启后，选择折扣（discount）、本机观测新低（local_low）、发售（release）、试玩（demo）和喜加一（giveaway）。同一促销的同一价格或已提醒的版本只提醒一次。"
+    },
+    "wishlist_discount_threshold": {
+      "title": "愿望单折扣门槛（%）",
+      "description": "折扣达到或超过该百分比时提醒。范围 1–100，默认 50。"
+    },
+    "wishlist_target_prices": {
+      "title": "愿望单目标价",
+      "description": "可选。使用 AppID:货币:Steam 价格单位，以逗号分隔，最多 20 条。例如 123:USD:999 表示 9.99 美元。"
     },
     "patch_notes_summary_enabled": {
       "title": "重大更新 AI 摘要",
@@ -29,7 +41,7 @@
     },
     "sale_roundup_enabled": {
       "title": "愿望单大促汇总",
-      "description": "在大促期间向收件箱发送愿望单优惠汇总。需要同时开启 Steam 收件箱事件，投递后分拣可能消耗 AI Token。默认关闭。"
+      "description": "至少 3 款愿望单游戏同时打折时，将单条价格提醒合并为一条精选。需要开启收件箱事件。默认关闭。"
     },
     "memory_export_enabled": {
       "title": "将游戏偏好导出到助手记忆",

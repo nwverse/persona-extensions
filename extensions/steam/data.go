@@ -31,6 +31,7 @@ type steamData struct {
 	wishes      *cacheSlot[wishList]
 	stores      steamStores
 	lastAccount atomic.Pointer[reading[player]]
+	inbox       atomic.Pointer[[]wishlistDelivery]
 }
 
 func newSteamData(cfg config, key, dir string, httpClient *http.Client, now func() time.Time) *steamData {
@@ -133,6 +134,7 @@ func (d *steamData) clearLocked() {
 	d.recent.clear()
 	d.wishes.clear()
 	d.stores.clearMemory()
+	d.inbox.Store(nil)
 }
 
 func (d *steamData) recordSnapshot(record func()) {

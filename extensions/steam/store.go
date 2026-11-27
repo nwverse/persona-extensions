@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -274,16 +275,16 @@ func putDaily[T comparable](entries []T, entry T, at func(T) time.Time) ([]T, bo
 	return entries, true
 }
 
-func trimOldest[T any](entries map[string]T, limit int, at func(T) time.Time) {
+func trimOldest[K cmp.Ordered, T any](entries map[K]T, limit int, at func(T) time.Time) {
 	extra := len(entries) - limit
 	if extra <= 0 {
 		return
 	}
-	keys := slices.SortedFunc(maps.Keys(entries), func(a, b string) int {
+	keys := slices.SortedFunc(maps.Keys(entries), func(a, b K) int {
 		if order := at(entries[a]).Compare(at(entries[b])); order != 0 {
 			return order
 		}
-		return strings.Compare(a, b)
+		return cmp.Compare(a, b)
 	})
 	for _, key := range keys[:extra] {
 		delete(entries, key)
@@ -310,6 +311,7 @@ type PriceHistory struct {
 	ObservedLowestFinal    uint32        `json:"observed_lowest_final"`
 	ObservedLowestDiscount int           `json:"observed_lowest_discount"`
 	ObservedLowestAt       time.Time     `json:"observed_lowest_at"`
+	ObservedLowestImproved bool          `json:"observed_lowest_improved,omitempty"`
 }
 
 type PriceHistoryStore struct{ file *snapshotFile[PriceHistory] }
@@ -379,6 +381,7 @@ func (h *PriceHistory) observe(sample PriceSample) bool {
 	}
 	if h.ObservedLowestAt.IsZero() || sample.Final < h.ObservedLowestFinal ||
 		sample.Final == h.ObservedLowestFinal && sample.At.Before(h.ObservedLowestAt) {
+		h.ObservedLowestImproved = !h.ObservedLowestAt.IsZero() && sample.Final < h.ObservedLowestFinal && !sample.At.Before(h.Latest.At)
 		h.ObservedLowestFinal = sample.Final
 		h.ObservedLowestDiscount = sample.DiscountPercent
 		h.ObservedLowestAt = sample.At
@@ -594,10 +597,35 @@ type EventCursor struct {
 	SentAt time.Time
 }
 
-type EventCursorStore struct{ file *snapshotFile[time.Time] }
+type eventCursorRecord struct {
+	SentAt   time.Time           `json:"sent_at,omitzero"`
+	SeenAt   time.Time           `json:"seen_at,omitzero"`
+	Delivery *wishlistDelivery   `json:"delivery,omitempty"`
+	Wishlist *wishlistWatchState `json:"wishlist,omitempty"`
+}
+
+func (r *eventCursorRecord) UnmarshalJSON(raw []byte) error {
+	// Slice 4 stored only the delivery timestamp under each cursor key.
+	if len(raw) > 0 && raw[0] == '"' {
+		return json.Unmarshal(raw, &r.SentAt)
+	}
+	type record eventCursorRecord
+	return json.Unmarshal(raw, (*record)(r))
+}
+
+func (r eventCursorRecord) lastSeen() time.Time {
+	if r.SeenAt.After(r.SentAt) {
+		return r.SeenAt
+	}
+	return r.SentAt
+}
+
+type EventCursorStore struct {
+	file *snapshotFile[eventCursorRecord]
+}
 
 func NewEventCursorStore(dataDir string) *EventCursorStore {
-	return &EventCursorStore{newSnapshotFile[time.Time](dataDir, "events")}
+	return &EventCursorStore{newSnapshotFile[eventCursorRecord](dataDir, "events")}
 }
 
 func eventCursorKey(steamID, kind, dedupKey, window string) (string, error) {
@@ -621,9 +649,9 @@ func (s *EventCursorStore) Lookup(steamID, kind, dedupKey, window string, now ti
 	}
 	var cursor EventCursor
 	var seen bool
-	err = s.file.view(func(entries map[string]time.Time) {
-		if sentAt, ok := entries[key]; ok && now.Before(sentAt.Add(eventCursorTTL)) {
-			cursor, seen = EventCursor{Window: window, SentAt: sentAt}, true
+	err = s.file.view(func(entries map[string]eventCursorRecord) {
+		if record, ok := entries[key]; ok && now.Before(record.lastSeen().Add(eventCursorTTL)) {
+			cursor, seen = EventCursor{Window: window, SentAt: record.SentAt}, true
 		}
 	})
 	return cursor, seen, err
@@ -639,29 +667,35 @@ func (s *EventCursorStore) MarkSent(steamID, kind, dedupKey string, cursor Event
 	if !validSnapshotTime(at) {
 		return errors.New("Steam event cursor requires a sent timestamp")
 	}
-	return s.file.update(func(entries map[string]time.Time) (bool, error) {
+	return s.file.update(func(entries map[string]eventCursorRecord) (bool, error) {
 		changed := pruneEventCursors(entries, at)
-		if !at.After(entries[key]) {
+		record := entries[key]
+		if !at.After(record.SentAt) {
 			return changed, nil
 		}
-		entries[key] = at
-		trimOldest(entries, maxEventCursors, func(at time.Time) time.Time { return at })
+		record.SentAt = at
+		entries[key] = record
+		trimOldest(entries, maxEventCursors, eventCursorRecord.lastSeen)
 		return true, nil
 	})
 }
 
 // Prune removes deliveries whose deduplication TTL has elapsed.
 func (s *EventCursorStore) Prune(now time.Time) error {
-	return s.file.update(func(entries map[string]time.Time) (bool, error) {
+	return s.file.update(func(entries map[string]eventCursorRecord) (bool, error) {
 		return pruneEventCursors(entries, now), nil
 	})
 }
 
-func pruneEventCursors(entries map[string]time.Time, now time.Time) bool {
+func pruneEventCursors(entries map[string]eventCursorRecord, now time.Time) bool {
 	changed := false
-	for key, sentAt := range entries {
-		if !now.Before(sentAt.Add(eventCursorTTL)) {
+	for key, record := range entries {
+		if !now.Before(record.lastSeen().Add(eventCursorTTL)) {
 			delete(entries, key)
+			changed = true
+		} else if record.Delivery != nil && !now.Before(record.Delivery.Until) {
+			record.Delivery = nil
+			entries[key] = record
 			changed = true
 		}
 	}

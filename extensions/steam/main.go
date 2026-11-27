@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"net/http"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/nwverse/persona-extensions/pluginkit"
@@ -51,6 +52,9 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 			if in.Config(&cfg) != nil {
 				return nil, invalid("Invalid Steam configuration.")
 			}
+			if in.Active != nil && !slices.Contains(in.Active["connectors"], extensionID) {
+				cfg.InboxEventsEnabled = false
+			}
 			dir := os.Getenv("PERSONA_EXTENSION_DATA_DIR")
 			if dir == "" {
 				dir = in.Info().DataDir
@@ -62,7 +66,9 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 			a.publicData = &steamPublicData{client: steamClient{http: client, key: a.client.key}, now: now}
 			a.locale = in.Hub.Locale
 			if a.config.AuthMode == modeQR {
-				a.qr = newQRAuth(ctx, hub, client, now, a.config)
+				a.qr = newQRAuth(ctx, hub, client, now, a.config, a.locale)
+			} else {
+				a.steamData.startWishlistInbox(ctx, hub, textFor(a.locale))
 			}
 			return nil, nil
 		},

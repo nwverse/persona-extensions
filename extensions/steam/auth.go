@@ -66,6 +66,7 @@ type qrAuth struct {
 	client steamClient
 	now    func() time.Time
 	config config
+	locale string
 
 	loaded     chan struct{}
 	cancelLoad context.CancelFunc
@@ -81,9 +82,9 @@ type qrAuth struct {
 	storeMu sync.Mutex
 }
 
-func newQRAuth(ctx context.Context, hub *ext.Hub, client *http.Client, now func() time.Time, cfg config) *qrAuth {
+func newQRAuth(ctx context.Context, hub *ext.Hub, client *http.Client, now func() time.Time, cfg config, locale string) *qrAuth {
 	loadCtx, cancel := context.WithTimeout(ctx, httpTimeout)
-	a := &qrAuth{ctx: ctx, hub: hub, client: steamClient{http: client}, now: now, config: cfg,
+	a := &qrAuth{ctx: ctx, hub: hub, client: steamClient{http: client}, now: now, config: cfg, locale: locale,
 		loaded: make(chan struct{}), cancelLoad: cancel, issue: problemAuthRequired}
 	go a.restore(loadCtx)
 	return a
@@ -408,6 +409,7 @@ func (a *qrAuth) installLocked(t steamTokens) {
 	s.reads = newAccountData(cfg, a.client, "", a.now, s)
 	a.session = s
 	a.issue = ""
+	s.reads.startWishlistInbox(s.ctx, a.hub, textFor(a.locale))
 }
 
 func (a *qrAuth) sessionLocked() *qrSession {
