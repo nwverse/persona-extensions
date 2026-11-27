@@ -9,6 +9,38 @@
     "country_code": {
       "title": "Store country or region",
       "description": "Two-letter ISO 3166-1 country or region code for wishlist prices and currency. Defaults to US."
+    },
+    "inbox_events_enabled": {
+      "title": "Steam Inbox events",
+      "description": "Send wishlist price drops, releases, major sales and game updates to the Inbox. Inbox triage may use AI tokens. Off by default."
+    },
+    "inbox_max_events_per_day": {
+      "title": "Daily Steam Inbox event limit",
+      "description": "Maximum number of Steam events sent per day when Inbox events are enabled. Range 1–50, default 5."
+    },
+    "patch_notes_summary_enabled": {
+      "title": "AI summaries of major updates",
+      "description": "Use AI tokens to summarize major update announcements for games you often play. Off by default."
+    },
+    "sale_roundup_enabled": {
+      "title": "Wishlist sale roundups",
+      "description": "Send a roundup of wishlist deals to the Inbox during major sales. Requires Steam Inbox events, and triage may use AI tokens. Off by default."
+    },
+    "memory_export_enabled": {
+      "title": "Export gaming preferences to assistant memory",
+      "description": "Share personal gaming preferences through memory_sources. Loading them into the assistant uses context tokens. Off by default."
+    },
+    "memory_max_items": {
+      "title": "Gaming preference export limit",
+      "description": "Maximum number of personal gaming preference items exported when memory export is enabled. Range 1–30, default 10."
+    },
+    "discovery_tools_enabled": {
+      "title": "Steam game research tools and skill",
+      "description": "Allow game research tools and their skill to add detailed results to the assistant's context. Turn this off to disable those research features. On by default."
+    },
+    "discovery_max_results": {
+      "title": "Game research result limit",
+      "description": "Maximum number of candidates per search or research request when game research is enabled. Range 1–50, default 15."
     }
   },
   "secrets": {

@@ -58,6 +58,60 @@
         "description": "用于愿望单价格和货币的两位 ISO 3166-1 国家或地区代码，默认为 US。",
         "default": "US",
         "pattern": "^[A-Za-z]{2}$"
+      },
+      "inbox_events_enabled": {
+        "type": "boolean",
+        "title": "Steam 收件箱事件",
+        "description": "向收件箱发送愿望单降价、发售、大促和重大更新等事件。收件箱分拣可能消耗 AI Token。默认关闭。",
+        "default": false
+      },
+      "inbox_max_events_per_day": {
+        "type": "integer",
+        "title": "Steam 收件箱每日事件上限",
+        "description": "开启收件箱事件后，每天最多发送的 Steam 事件数。范围 1–50，默认 5。",
+        "default": 5,
+        "minimum": 1,
+        "maximum": 50
+      },
+      "patch_notes_summary_enabled": {
+        "type": "boolean",
+        "title": "重大更新 AI 摘要",
+        "description": "为常玩游戏的重大更新公告生成 AI 摘要，生成时消耗 Token。默认关闭。",
+        "default": false
+      },
+      "sale_roundup_enabled": {
+        "type": "boolean",
+        "title": "愿望单大促汇总",
+        "description": "在大促期间向收件箱发送愿望单优惠汇总。需要同时开启 Steam 收件箱事件，投递后分拣可能消耗 AI Token。默认关闭。",
+        "default": false
+      },
+      "memory_export_enabled": {
+        "type": "boolean",
+        "title": "将游戏偏好导出到助手记忆",
+        "description": "允许通过 memory_sources 向助手提供个人游戏偏好。载入偏好时占用助手上下文 Token。默认关闭。",
+        "default": false
+      },
+      "memory_max_items": {
+        "type": "integer",
+        "title": "导出的游戏偏好条目上限",
+        "description": "开启记忆导出后，最多可导出的个人游戏偏好条目数。范围 1–30，默认 10。",
+        "default": 10,
+        "minimum": 1,
+        "maximum": 30
+      },
+      "discovery_tools_enabled": {
+        "type": "boolean",
+        "title": "Steam 游戏调研工具和技能",
+        "description": "允许调用会占用较多助手上下文的游戏调研工具和技能。关闭后停用这些调研功能。默认开启。",
+        "default": true
+      },
+      "discovery_max_results": {
+        "type": "integer",
+        "title": "单次游戏调研候选上限",
+        "description": "开启游戏调研后，单次游戏检索或调研最多可返回的候选数。范围 1–50，默认 15。",
+        "default": 15,
+        "minimum": 1,
+        "maximum": 50
       }
     }
   },

@@ -20,6 +20,7 @@ var (
 type config struct {
 	SteamID     string `json:"steam_id"`
 	CountryCode string `json:"country_code"`
+	TokenConfig
 }
 
 func (c config) normalized() (config, problem) {
