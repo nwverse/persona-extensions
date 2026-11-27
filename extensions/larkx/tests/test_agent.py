@@ -338,7 +338,18 @@ class AgentTopicTest(unittest.TestCase):
         props = manifest["configuration"]["properties"]
         self.assertEqual(
             set(props.keys()),
-            {"region", "triage_rules", "inbox_triage_chats", "agent_reply_suffix", "agent_mention", "agent_group_topics"},
+            {
+                "region",
+                "triage_rules",
+                "inbox_triage_chats",
+                "agent_reply_suffix",
+                "agent_mention",
+                "agent_group_topics",
+                "command_hooks",
+                "command_hook_url",
+                "command_hook_context",
+                "command_hook_quote",
+            },
         )
         # Configuration section hints are deferred to a follow-up PR so pre-#14833 hubs keep installing larkx.
         for name, spec in props.items():

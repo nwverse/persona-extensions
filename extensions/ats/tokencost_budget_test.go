@@ -31,7 +31,7 @@ var tokenBudgets = map[string]struct{ Bytes, Tokens int }{
 	// HTTP API answers.
 	"list.todo":        {859, 238},
 	"list.all":         {4781, 1373},
-	"list.full":        {9119, 2457},
+	"list.full":        {9354, 2516},
 	"list.page2":       {1514, 437},
 	"task.get":         {1617, 498},
 	"task.full":        {3353, 1080},

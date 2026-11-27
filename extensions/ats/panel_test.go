@@ -959,3 +959,42 @@ func TestTaskPageValidatesWithLongPromptSummaryAndFailureMessage(t *testing.T) {
 		t.Errorf("truncateRunes(..., 2000) returned %d runes", utf8.RuneCountInString(got))
 	}
 }
+
+func TestLauncherForSpec(t *testing.T) {
+	cases := []struct {
+		name     string
+		launcher string
+		machine  string
+		want     string
+	}{
+		{name: "empty", launcher: "", machine: "workstation", want: ""},
+		{name: "blank", launcher: " \n ; , ", machine: "workstation", want: ""},
+		{name: "single", launcher: "default-claude", machine: "laptop", want: "default-claude"},
+		{name: "single_trimmed", launcher: "  default-claude  ", machine: "laptop", want: "default-claude"},
+		{name: "override_match", launcher: "default-claude,workstation=local-claude", machine: "workstation", want: "local-claude"},
+		{name: "override_case_insensitive", launcher: "default-claude ; workstation = local-claude", machine: " WORKSTATION ", want: "local-claude"},
+		{name: "override_fallback", launcher: "default-claude,workstation=local-claude", machine: "server", want: "default-claude"},
+		{name: "explicit_only_unlisted", launcher: "workstation=local-claude\nserver=default-claude", machine: "laptop", want: ""},
+		{name: "explicit_only_listed", launcher: "workstation=local-claude\nserver=default-claude", machine: "server", want: "default-claude"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := launcherForSpec(tc.launcher, tc.machine); got != tc.want {
+				t.Fatalf("launcherForSpec(%q, %q) = %q, want %q", tc.launcher, tc.machine, got, tc.want)
+			}
+			cfg := ExtConfig{Launcher: tc.launcher}
+			if got := cfg.launcherFor(tc.machine); got != tc.want {
+				t.Fatalf("launcherFor(%q) = %q, want %q", tc.machine, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildPromptReadonlyNoExitPlanMode(t *testing.T) {
+	task := &Task{ID: "task_99", Prompt: "inspect repo"}
+	ws := prepareResult{Path: "/tmp/wt", BaseSHA: "abc1234"}
+	got := buildPrompt(task, ws, true, nil, false)
+	if !strings.Contains(got, "ExitPlanMode") {
+		t.Fatalf("expected readonly buildPrompt to forbid ExitPlanMode, got:\n%s", got)
+	}
+}

@@ -1103,6 +1103,18 @@
       "trademark_owner": "Tencent",
       "usage": "Exact Raycast extension icon used to identify the corresponding public service."
     },
+    "wecom": {
+      "path": "assets/icon.png",
+      "source_id": "dify-official-plugins",
+      "source_url": "https://raw.githubusercontent.com/langgenius/dify-official-plugins/60804e30f6fa41fbe890c02c9849b0bdbe28d13a/tools/wecom/_assets/icon.svg",
+      "sha256": "da23a88d05b22fa482fc8f858b2385c6605db1a0b5b562734898bd733721b4ad",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "Tencent (WeCom)",
+      "usage": "Service icon used solely to identify this integration. The upstream 40x40 SVG rasterized with Google Chrome 147.0.7727.56 at 512x512, preserving its artwork and aspect ratio.",
+      "transformation": "The upstream 40x40 SVG rasterized with Google Chrome 147.0.7727.56 at 512x512, preserving its artwork and aspect ratio."
+    },
     "wikipedia": {
       "path": "assets/icon.png",
       "source_id": "raycast",

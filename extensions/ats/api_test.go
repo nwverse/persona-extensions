@@ -1,14 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -71,7 +76,8 @@ func TestPostTaskQueuesAReadOnlyTaskForTheTodo(t *testing.T) {
 	}
 	task := taskOf(t, ans)
 	if task["state"] != StateQueued || task["permission_profile"] != PermissionReadonly || task["todo_id"] != "todo_1" ||
-		task["priority"] != PriorityP2 || task["repo"] != "/srv/code/app" || task["acceptance"] != "go test ./..." || task["agent_type"] != AgentClaude {
+		task["priority"] != PriorityP2 || task["repo"] != "/srv/code/app" || task["ref"] != "HEAD" ||
+		task["acceptance"] != "go test ./..." || task["agent_type"] != AgentClaude {
 		t.Fatalf("task: %v", task)
 	}
 	stored, err := a.queue.GetTask(task["id"].(string))
@@ -109,6 +115,398 @@ func TestPostTaskCanChooseAnEngine(t *testing.T) {
 	if replay.Status != http.StatusOK || replay.Body["created"] != false || taskOf(t, replay)["agent_type"] != AgentCodex ||
 		taskOf(t, replay)["id"] != taskOf(t, first)["id"] {
 		t.Fatalf("engine-changing replay: %d %v", replay.Status, replay.Body)
+	}
+}
+
+func TestPostTaskPreservesSessionOverridesAfterReloadAndReplay(t *testing.T) {
+	a := newTestApp(t)
+	body := strings.TrimSuffix(validTask, "}") +
+		`,"agent_type":"agy","model":"  provider/task-model  ","launcher":" machine-1=local\nmachine-2=remote ","idempotency_key":"overrides"}`
+	first := call(t, a, "POST", "/tasks", body)
+	if first.Status != http.StatusCreated || first.Body["created"] != true {
+		t.Fatalf("create: %d %v", first.Status, first.Body)
+	}
+	id := taskOf(t, first)["id"].(string)
+	check := func(ans apiAnswer) {
+		t.Helper()
+		task := taskOf(t, ans)
+		if task["id"] != id || task["model"] != "provider/task-model" || task["launcher"] != "machine-1=local\nmachine-2=remote" {
+			t.Fatalf("task after requesting session overrides: %v", task)
+		}
+	}
+	check(first)
+
+	reloaded, err := NewQueue(filepath.Dir(a.queue.dataFile), a.queue.Config())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.queue = reloaded
+	detail := call(t, a, "GET", "/tasks/"+id, "")
+	if detail.Status != http.StatusOK {
+		t.Fatalf("read after reload: %d %v", detail.Status, detail.Body)
+	}
+	check(detail)
+
+	body = strings.TrimSuffix(validTask, "}") + `,"model":"other-model","launcher":"other-launcher","idempotency_key":"overrides"}`
+	replay := call(t, a, "POST", "/tasks", body)
+	if replay.Status != http.StatusOK || replay.Body["created"] != false {
+		t.Fatalf("replay: %d %v", replay.Status, replay.Body)
+	}
+	check(replay)
+}
+
+func TestPostTaskValidatesSessionOverrides(t *testing.T) {
+	maxModel := strings.Repeat("é", 64)
+	maxLauncher := strings.Repeat("é", 256)
+	for _, tc := range []struct {
+		name, field, value, want string
+		reject                   bool
+	}{
+		{"empty model", "model", "  ", "", false},
+		{"empty launcher", "launcher", "  ", "", false},
+		{"model byte limit", "model", " " + maxModel + " ", maxModel, false},
+		{"launcher byte limit", "launcher", " " + maxLauncher + " ", maxLauncher, false},
+		{"single launcher with spaces", "launcher", "  local launcher  ", "local launcher", false},
+		{"launcher map separators", "launcher", " default, m1 = one; m2=two\nm3=three ", "default, m1 = one; m2=two\nm3=three", false},
+		{"model space", "model", "vendor/bad model", "", true},
+		{"model unicode space", "model", "vendor/bad\u00a0model", "", true},
+		{"model tab", "model", "vendor/bad\tmodel", "", true},
+		{"model leading control", "model", "\tmodel", "", true},
+		{"model newline", "model", "vendor/bad\nmodel", "", true},
+		{"model NUL", "model", "bad\x00model", "", true},
+		{"model control", "model", "bad\x1bmodel", "", true},
+		{"model too long", "model", maxModel + "a", "", true},
+		{"launcher NUL", "launcher", "bad\x00launcher", "", true},
+		{"launcher tab", "launcher", "m1=bad\tlauncher", "", true},
+		{"launcher trailing control", "launcher", "launcher\t", "", true},
+		{"launcher carriage return", "launcher", "m1=one\r\nm2=two", "", true},
+		{"launcher DEL", "launcher", "bad\x7flauncher", "", true},
+		{"launcher newline outside a map", "launcher", "bad\nlauncher", "", true},
+		{"launcher too long", "launcher", maxLauncher + "a", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newTestApp(t)
+			value, err := json.Marshal(tc.value)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := strings.TrimSuffix(validTask, "}") + `,"` + tc.field + `":` + string(value) + "}"
+			ans := call(t, a, "POST", "/tasks", body)
+			if tc.reject {
+				if ans.Status != http.StatusBadRequest || ans.Code != "invalid" || !strings.Contains(ans.Error, tc.field) {
+					t.Fatalf("invalid %s: %d %s %s", tc.field, ans.Status, ans.Code, ans.Error)
+				}
+				tasks, err := a.queue.ListTasks(TaskFilter{})
+				if err != nil || len(tasks) != 0 {
+					t.Fatalf("invalid override left %d tasks: %v", len(tasks), err)
+				}
+				return
+			}
+			if ans.Status != http.StatusCreated {
+				t.Fatalf("valid %s: %d %v", tc.field, ans.Status, ans.Body)
+			}
+			got, present := taskOf(t, ans)[tc.field]
+			if tc.want == "" {
+				if present {
+					t.Fatalf("empty %s was exposed as %q", tc.field, got)
+				}
+			} else if got != tc.want {
+				t.Fatalf("%s = %q, want %q", tc.field, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestTaskViewPrefersExecutionMetadataToRequestedOverrides(t *testing.T) {
+	task := &Task{Launcher: "requested-launcher", Model: "requested-model"}
+	check := func(wantLauncher, wantModel string) {
+		t.Helper()
+		if got := viewTask(task, promptNone); got.Launcher != wantLauncher || got.Model != wantModel {
+			t.Fatalf("view launcher %q, model %q; want %q, %q", got.Launcher, got.Model, wantLauncher, wantModel)
+		}
+	}
+	check("requested-launcher", "requested-model")
+	task.Reports = []EvidenceReport{{AttemptNo: 1, Launcher: "report-launcher", Model: "report-model"}}
+	check("report-launcher", "report-model")
+	task.Attempts = []Attempt{{AttemptNo: 1, Launcher: "attempt-launcher"}}
+	check("attempt-launcher", "report-model")
+	task.Exec = &Execution{Launcher: "active-launcher", Model: "active-model"}
+	check("active-launcher", "active-model")
+	task.Exec = nil
+	task.Attempts = append(task.Attempts, Attempt{AttemptNo: 2})
+	check("requested-launcher", "requested-model")
+}
+
+func TestPostTaskAcceptsLargePromptsAndBodies(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		prompt string
+	}{
+		{name: "256 KiB prompt", prompt: strings.Repeat("x", 256<<10)},
+		{name: "escaped JSON near 512 KiB", prompt: strings.Repeat("\"", (256<<10)-256)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newTestApp(t)
+			body, err := json.Marshal(map[string]string{"todo_id": "todo_1", "prompt": tc.prompt, "repo": "/srv/code/app"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			ans := call(t, a, "POST", "/tasks", string(body))
+			if ans.Status != http.StatusCreated {
+				t.Fatalf("large task: %d %v", ans.Status, ans.Body)
+			}
+			id := taskOf(t, ans)["id"].(string)
+			if got := taskOf(t, call(t, a, "GET", "/tasks/"+id+"?view=full", ""))["prompt"]; got != tc.prompt {
+				t.Fatal("the prompt was not preserved")
+			}
+		})
+	}
+}
+
+func TestTasksAndEvidencePreserveFullReplyAndExecutionMetadata(t *testing.T) {
+	for _, acceptance := range []string{"printf checked", ""} {
+		t.Run(cmpOr(acceptance, "no acceptance"), func(t *testing.T) {
+			r := newRig(t)
+			r.cfg.Launcher, r.cfg.ModelStandard = " provider ", " requested-model "
+			task := r.enqueue(EnqueueInput{PermissionProfile: PermissionDefault, AcceptanceCommand: acceptance})
+			r.tick()
+			running := r.task(task.ID)
+			if running.Exec == nil {
+				t.Fatal("the task did not start")
+			}
+			e := running.Exec
+			a := newATSApp(r.q)
+			want := map[string]any{"launcher": "provider", "model": "requested-model", "session_id": e.SessionID, "worktree": e.Worktree}
+			assertFields := func(got map[string]any, fields map[string]any) {
+				t.Helper()
+				for key, value := range fields {
+					if got[key] != value {
+						t.Errorf("%s: got %.100v, want %.100v", key, got[key], value)
+					}
+				}
+			}
+			if req := r.hub.created[0]; req.Launcher != "provider" || req.Model != "requested-model" {
+				t.Fatalf("session request: %+v", req)
+			}
+			reload := func() {
+				t.Helper()
+				q, err := NewQueue(filepath.Dir(r.q.dataFile), r.q.Config())
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.q, r.d.q, a = q, q, newATSApp(q)
+			}
+			one := call(t, a, "GET", "/tasks/"+task.ID+"?view=full", "")
+			assertFields(taskOf(t, one), want)
+			assertFields(one.Body["attempts"].([]any)[0].(map[string]any), want)
+			assertFields(call(t, a, "GET", "/tasks/"+task.ID+"/evidence", "").Body, want)
+
+			var acceptanceHead string
+			if acceptance != "" {
+				if err := os.WriteFile(e.Worktree+"/done.txt", []byte("committed\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				runGit(t, e.Worktree, "add", ".")
+				runGit(t, e.Worktree, "commit", "-q", "-m", "work")
+				acceptanceHead = runGit(t, e.Worktree, "rev-parse", "HEAD")
+				if err := os.WriteFile(e.Worktree+"/done.txt", []byte("uncommitted\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+			reply := "\n" + strings.Repeat("字", 1600) + "\n完整结尾\n"
+			r.hub.set(e.SessionID, func(s *hubSession) { s.Model = " actual-model " })
+			r.hub.turnEnds(e.SessionID, "u1", reply)
+			r.tick()
+			r.tick()
+			want["model"] = "actual-model"
+			if acceptance != "" {
+				reload()
+				if exec := r.task(task.ID).Exec; exec == nil || exec.FullReply != reply || exec.LastReply != agentSummary(reply) {
+					t.Fatal("acceptance did not retain the complete reply and its separate summary after reload")
+				}
+				assertFields(taskOf(t, call(t, a, "GET", "/tasks/"+task.ID, "")), want)
+				r.waitAccepted(task.ID, 1)
+				r.tick()
+			}
+			if got := r.task(task.ID); got.State != StateSucceeded {
+				t.Fatalf("task did not finish: %s", got.State)
+			}
+			reload()
+			one = call(t, a, "GET", "/tasks/"+task.ID+"?view=full", "")
+			assertFields(taskOf(t, one), want)
+			ev := call(t, a, "GET", "/tasks/"+task.ID+"/evidence", "")
+			assertFields(ev.Body, want)
+			if _, has := ev.Body["last_report"].(map[string]any)["full_reply"]; has {
+				t.Fatal("the compact report carried the full reply")
+			}
+			want["full_reply"], want["base_sha"] = reply, e.BaseSHA
+			want["head_sha"] = e.BaseSHA
+			want["dirty"] = acceptance != ""
+			if acceptance != "" {
+				releasedHead := runGit(t, r.repo, "rev-parse", e.Branch)
+				if parent := runGit(t, r.repo, "rev-parse", releasedHead+"^"); parent != acceptanceHead {
+					t.Fatalf("release commit parent = %s, want %s", parent, acceptanceHead)
+				}
+				want["head_sha"] = releasedHead
+			}
+			assertFields(one.Body["attempts"].([]any)[0].(map[string]any), want)
+			report := call(t, a, "GET", "/tasks/"+task.ID+"/evidence?attempt=1", "").Body["report"].(map[string]any)
+			assertFields(report, want)
+			if summary, ok := report["summary"].(string); !ok || summary == reply || len([]rune(summary)) > 1201 {
+				t.Fatal("the report should keep a bounded summary separately from the complete reply")
+			}
+			copy := r.task(task.ID)
+			copy.Attempts[0].FullReply, copy.Reports[0].FullReply = "changed", "changed"
+			assertFields(call(t, a, "GET", "/tasks/"+task.ID+"?view=full", "").Body["attempts"].([]any)[0].(map[string]any), want)
+			assertFields(call(t, a, "GET", "/tasks/"+task.ID+"/evidence?attempt=1", "").Body["report"].(map[string]any), want)
+		})
+	}
+}
+
+func assertDirtyJSON(t *testing.T, raw []byte, want *bool) {
+	t.Helper()
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil || fields == nil {
+		t.Fatalf("expected a JSON object: %v", err)
+	}
+	value, present := fields["dirty"]
+	if want == nil {
+		if present || bytes.Contains(raw, []byte(`"dirty":`)) {
+			t.Errorf("uninspected worktree has a dirty field: %v", value)
+		}
+		return
+	}
+	wantField := `"dirty":` + strconv.FormatBool(*want)
+	if !present || value != *want || !bytes.Contains(raw, []byte(wantField)) {
+		t.Errorf("dirty = %v (present: %t), want raw JSON field %s", value, present, wantField)
+	}
+}
+
+func TestTaskAPIReportsDirtyOnlyAfterInspection(t *testing.T) {
+	clean, dirty := false, true
+	for _, tc := range []struct {
+		name, permission, acceptance string
+		edit, failPrepare            bool
+		wantDirty                    *bool
+	}{
+		{name: "clean readonly", acceptance: "true", wantDirty: &clean},
+		{name: "dirty readonly", edit: true, wantDirty: &dirty},
+		{name: "clean writable without acceptance", permission: PermissionDefault, wantDirty: &clean},
+		{name: "uninspected failure", failPrepare: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			zero := 0
+			task := r.enqueue(EnqueueInput{PermissionProfile: tc.permission, AcceptanceCommand: tc.acceptance, MaxRetries: &zero})
+			if tc.failPrepare {
+				r.nodes.fail["ats.prepare"] = errors.New("node unavailable")
+			}
+			r.tick()
+			wantState, wantVerdict := StateFailed, VerdictUnverified
+			if !tc.failPrepare {
+				wantState = StateSucceeded
+				e := r.task(task.ID).Exec
+				if e == nil || e.Phase != PhaseWorking {
+					t.Fatalf("task did not start: %+v", e)
+				}
+				if tc.edit {
+					if err := os.WriteFile(filepath.Join(e.Worktree, "draft.txt"), []byte("draft\n"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+				r.hub.turnEnds(e.SessionID, "u1", "Finished.")
+				r.tick()
+				r.tick()
+				if tc.acceptance != "" {
+					wantVerdict = VerdictPass
+					r.waitAccepted(task.ID, 1)
+					r.tick()
+				}
+			}
+			if got := r.task(task.ID); got.State != wantState || got.Verdict != wantVerdict {
+				t.Fatalf("task state and verdict = %s/%s, want %s/%s", got.State, got.Verdict, wantState, wantVerdict)
+			}
+
+			handler := newATSApp(r.q).handler()
+			for _, suffix := range []string{"", "/evidence"} {
+				path := "/tasks/" + task.ID + suffix
+				rec := httptest.NewRecorder()
+				handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+				if rec.Code != http.StatusOK {
+					t.Fatalf("GET %s returned %d", path, rec.Code)
+				}
+				var body map[string]json.RawMessage
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+					t.Fatalf("GET %s: %v", path, err)
+				}
+				raw := body["last_report"]
+				if suffix == "" {
+					var attempts []json.RawMessage
+					if err := json.Unmarshal(body["attempts"], &attempts); err != nil || len(attempts) != 1 {
+						t.Fatalf("GET %s returned %d attempts: %v", path, len(attempts), err)
+					}
+					raw = attempts[0]
+				}
+				assertDirtyJSON(t, raw, tc.wantDirty)
+			}
+		})
+	}
+}
+
+func TestATSScriptSendsInlineAndFileBodies(t *testing.T) {
+	body := "{\n  \"prompt\": \"完整说明\"\n}\n"
+	received := make(chan string, 2)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" || r.URL.Path != "/tasks" || r.Header.Get("Content-Type") != "application/json" {
+			t.Errorf("request: %s %s %s", r.Method, r.URL.Path, r.Header.Get("Content-Type"))
+		}
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		}
+		received <- string(data)
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer srv.Close()
+	file := filepath.Join(t.TempDir(), "body with spaces.json")
+	if err := os.WriteFile(file, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arg := range []string{body, "@" + file} {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cmd := exec.CommandContext(ctx, "bash", "skills/ats-todo/scripts/api.sh", "POST", "/tasks", arg)
+		cmd.Env = append(os.Environ(), "ATS_BASE="+srv.URL)
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			t.Fatalf("body submission: %v %s", err, out)
+		}
+		select {
+		case got := <-received:
+			if got != body {
+				t.Fatal("the script changed the submitted body")
+			}
+		default:
+			t.Fatal("the script did not submit a body")
+		}
+	}
+	if err := os.Chmod(file, 0); err != nil {
+		t.Fatal(err)
+	}
+	invalidFiles := []string{"@" + file + ".missing"}
+	if os.Geteuid() != 0 {
+		invalidFiles = append(invalidFiles, "@"+file)
+	}
+	for _, arg := range invalidFiles {
+		cmd := exec.Command("bash", "skills/ats-todo/scripts/api.sh", "POST", "/tasks", arg)
+		cmd.Env = append(os.Environ(), "ATS_BASE="+srv.URL)
+		var stdout, stderr strings.Builder
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		err := cmd.Run()
+		var exit *exec.ExitError
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 || stdout.Len() != 0 || stderr.Len() == 0 {
+			t.Fatalf("invalid body file: %v stdout %q stderr %q", err, stdout.String(), stderr.String())
+		}
 	}
 }
 
@@ -162,6 +560,55 @@ func TestPostTaskRefusesWhatItMustNotQueue(t *testing.T) {
 	a.cfg.Repos = nil
 	if ans := call(t, a, "POST", "/tasks", validTask); ans.Status != http.StatusForbidden || ans.Code != "repos_not_configured" {
 		t.Fatalf("with no allowlist: %d %s", ans.Status, ans.Code)
+	}
+}
+
+func TestPostTaskRejectsUnsafeRefs(t *testing.T) {
+	for _, tc := range []struct{ name, ref string }{
+		{"forced refspec", "+refs/heads/main:refs/heads/other"},
+		{"refspec with destination", "refs/heads/main:refs/heads/other"},
+		{"force prefix", "+main"},
+		{"negative refspec", "^refs/heads/main"},
+		{"empty", ""},
+		{"blank", " \t"},
+		{"leading space", " main"},
+		{"trailing newline", "main\n"},
+		{"tab", "main\tother"},
+		{"carriage return", "main\rother"},
+		{"NUL", "main\x00other"},
+		{"control character", "main\x1fother"},
+		{"DEL", "main\x7fother"},
+		{"Unicode space", "main\u00a0other"},
+		{"over the byte limit", strings.Repeat("x", 201)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newTestApp(t)
+			ref, err := json.Marshal(tc.ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			body := strings.TrimSuffix(validTask, "}") + `,"ref":` + string(ref) + `}`
+			if ans := call(t, a, "POST", "/tasks", body); ans.Status != http.StatusBadRequest || ans.Code != "invalid_ref" {
+				t.Fatalf("POST /tasks with ref %q: got %d %s, want 400 invalid_ref", tc.ref, ans.Status, ans.Code)
+			}
+			if tasks, err := a.queue.ListTasks(TaskFilter{}); err != nil || len(tasks) != 0 {
+				t.Fatalf("queue has %d tasks after the rejected request: %v", len(tasks), err)
+			}
+		})
+	}
+}
+
+func TestPostTaskAcceptsCommitishRefs(t *testing.T) {
+	for _, ref := range []string{"main", "refs/heads/main", "HEAD^", "HEAD~1", "HEAD@{0}", strings.Repeat("x", 200)} {
+		a := newTestApp(t)
+		body := strings.TrimSuffix(validTask, "}") + `,"ref":"` + ref + `"}`
+		ans := call(t, a, "POST", "/tasks", body)
+		if ans.Status != http.StatusCreated {
+			t.Fatalf("POST /tasks with ref %q: got %d, want 201", ref, ans.Status)
+		}
+		if got := taskOf(t, ans)["ref"]; got != ref {
+			t.Errorf("stored ref = %q, want %q", got, ref)
+		}
 	}
 }
 
@@ -433,7 +880,9 @@ func TestManifest(t *testing.T) {
 	// The defaults the settings show are the ones the program uses when nothing is set.
 	def := defaultExtConfig()
 	for key, want := range map[string]any{
-		"write_permission_mode": def.WritePermissionMode, "parallel_per_machine": float64(def.ParallelPerMachine),
+		"launcher":                 def.Launcher,
+		"readonly_permission_mode": def.readonlyMode(),
+		"write_permission_mode":    def.WritePermissionMode, "parallel_per_machine": float64(def.ParallelPerMachine),
 		"task_timeout_minutes": float64(def.TaskTimeoutMinutes), "acceptance_timeout_minutes": float64(def.AcceptTimeoutMinutes),
 		"max_queued": float64(def.MaxQueued), "max_retries": float64(def.MaxRetries), "reserve_headroom_pct": float64(def.ReserveHeadroomPct),
 	} {
