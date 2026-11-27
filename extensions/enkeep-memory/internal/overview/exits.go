@@ -125,15 +125,24 @@ var facetLabel = map[string]string{
 	string(entry.Persona):     "关于用户",
 }
 
-// suffixOf returns the boundary suffix ("（两端：…）" or "（例外：…）") for p, or "" if none applies.
+// suffixOf returns the boundary suffix ("（两端：…）" or "（例外：…）") for p, or "" if none applies or if the exception
+// merely repeats p.Text.
 func suffixOf(p *Pattern) string {
 	if ends := poleText(p.Poles); ends != "" {
 		return "（两端：" + ends + "）"
 	}
-	if x := strings.TrimSpace(p.Exception); x != "" && !strings.Contains(p.Text, x) {
-		return "（例外：" + x + "）"
+	x := strings.TrimSpace(p.Exception)
+	if x == "" {
+		return ""
 	}
-	return ""
+	body := strings.TrimSpace(p.Text)
+	if strings.Contains(body, x) || norm.Jaccard(body, x) >= 0.45 {
+		return ""
+	}
+	if qb, qx := norm.Q(body), norm.Q(x); qx != "" && strings.Contains(qb, qx) {
+		return ""
+	}
+	return "（例外：" + x + "）"
 }
 
 // Text is a pattern as one line the assistant can act on (for recall and UI). A pattern whose evidence goes both ways

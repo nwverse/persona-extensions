@@ -128,11 +128,45 @@ func TestPayloadCategories(t *testing.T) {
 		{"legal_ssn_en", Persona, "Need to renew passport and prepare documents for the lawsuit", CatLegalID},
 		{"relationships_family", Persona, "和伴侣在子女教育与父母同住问题上有分歧", CatRelationships},
 		{"relationships_en", Persona, "Discussing childcare schedule with wife and parents", CatRelationships},
+		{"legal_hukouben", Persona, "需要准备户口本和身份证办理落户手续", CatLegalID},
+		{"relationships_ex_girlfriend", Persona, "提到前女友和前任伴侣的旧事", CatRelationships},
+		{"legal_us_ead_card", Persona, "美国工卡审批通过，实体工卡下周寄出", CatLegalID},
+		{"emotion_anxiety_disorder", Persona, "近期确诊焦虑症并持续接受心理咨询", CatEmotion},
 	}
 	for _, tc := range sensitive {
 		got := PayloadCategories(tc.facet, tc.text)
 		if !slices.Contains(got, tc.want) {
 			t.Errorf("%s: PayloadCategories = %v, want to contain %q", tc.name, got, tc.want)
 		}
+	}
+
+	// Cross-word Chinese false positives & Impact.Action exclusion regressions (v0.4.0 rehearsal round 1).
+	rehearsalFP := []struct {
+		name  string
+		entry *Entry
+	}{
+		{"dictation_summary_no_hukou", &Entry{Facet: Workflow, Text: "用户口述总结后再整理为结构化要点"}},
+		{"current_task_no_ex_partner", &Entry{Facet: World, Text: "同事甲当前任务进展同步到周报"}},
+		{"manual_checkpoint_no_work_card", &Entry{Facet: Judgement, Text: "agent 人工卡点是伪需求，能自动化就不要人工审批"}},
+		{"meeting_impact_action_no_dating", &Entry{
+			Facet:  People,
+			Text:   "同事乙约 15 分钟会议对齐接口细节",
+			Impact: Impact{Moment: "reply_person", Action: "提醒用户记住这项约会承诺", Object: "约会安排"},
+		}},
+		{"pace_impact_action_no_anxiety", &Entry{
+			Facet:  People,
+			Text:   "同事丙自认推进节奏偏慢，希望拆细里程碑",
+			Impact: Impact{Moment: "reply_person", Action: "把他的节奏焦虑当作背景参考", Object: "焦虑情绪"},
+		}},
+	}
+	for _, tc := range rehearsalFP {
+		if got := PayloadCategories(tc.entry.Facet, tc.entry.PayloadTexts()...); len(got) != 0 {
+			t.Errorf("%s: PayloadCategories(PayloadTexts) = %v, want empty", tc.name, got)
+		}
+	}
+
+	// Insomnia maps solely to health (not emotion) so sensitive-v04.md and profile-v04.md stay consistent.
+	if got := PayloadCategories(Persona, "用户这几天失眠，晚上睡不着"); !slices.Equal(got, []string{CatHealth}) {
+		t.Errorf("insomnia PayloadCategories = %v, want [health]", got)
 	}
 }

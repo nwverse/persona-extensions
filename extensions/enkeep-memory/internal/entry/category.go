@@ -108,17 +108,17 @@ var (
 	payloadHealthRe = regexp.MustCompile(`(?i)` +
 		`体检|病历|诊断|确诊|就诊|复诊|门诊|看病|住院|手术|吃药|服药|用药|处方|剂量|药量|副作用|过敏|哮喘|` +
 		`高血压|糖尿病|甲状腺|肿瘤|结节|发烧|咳嗽|头痛|胃痛|胸闷|心悸|血压|血糖|血脂|心率|静息心率|血氧|` +
-		`HRV|体脂率|BMI|体温|睡眠障碍|打鼾|呼吸暂停|怀孕|备孕|产检|流产|疫苗|看医生|挂号|理疗|康复训练|` +
+		`HRV|体脂率|BMI|体温|睡眠障碍|失眠|睡不着|打鼾|呼吸暂停|怀孕|备孕|产检|流产|疫苗|看医生|挂号|理疗|康复训练|` +
 		`慢病|慢性病|痛风|颈椎病|腰椎|近视手术|牙科|拔牙|根管|脂肪肝|` +
 		`\b(diagnos(is|ed)|symptom|prescription|medication|dosage|blood pressure|blood sugar|cholesterol|` +
 		`heart rate|hrv|spo2|lab result|medical record|hospitaliz\w*|surgery|pregnan\w*|illness|chronic disease|` +
-		`allergy|clinic|doctor'?s? visit|follow-up visit)\b`)
+		`insomnia|allergy|clinic|doctor'?s? visit|follow-up visit)\b`)
 
 	payloadEmotionRe = regexp.MustCompile(`(?i)` +
-		`抑郁|焦虑症?|重度焦虑|持续焦虑|失眠|睡不着|惊恐发作|恐慌|心理咨询|心理治疗|精神内耗|情绪低谷|` +
+		`抑郁|焦虑症|重度焦虑|持续焦虑|严重焦虑|惊恐发作|恐慌|心理咨询|心理治疗|精神内耗|情绪低谷|` +
 		`情绪崩溃|崩溃大哭|想哭|绝望|无助|孤独感|空虚|自卑|自我怀疑|自我否定|讨厌自己|压力太大|喘不过气|` +
 		`情绪耗竭|倦怠感|心累|难过|伤心|委屈|痛苦|失落|内疚|愧疚|恐惧|害怕失去|创伤|PTSD|` +
-		`\b(depress(ion|ed|ing)|anxiety|anxious|insomnia|panic attack|therapy|therapist|psycholog(ist|ical)|` +
+		`\b(depress(ion|ed|ing)|anxiety|anxious|panic attack|therapy|therapist|psycholog(ist|ical)|` +
 		`mental health|emotional(ly)? (exhausted|drained|vulnerable)|burnout|lonely|loneliness|grief|trauma|` +
 		`ptsd|suicid\w*|self[- ]doubt|feel(ing)? (hopeless|overwhelmed|worthless|sad))\b`)
 
@@ -136,14 +136,14 @@ var (
 	payloadEngCostCtxRe  = regexp.MustCompile(`(?i)模型|算力|token|api|claude|gpt|openai|anthropic|gemini|quota|云服务|aws|gcp|azure|调用成本|工程成本|项目预算|配额`)
 
 	payloadLegalIDRe = regexp.MustCompile(`(?i)` +
-		`身份证号?|护照号?|签证|驾驶证|驾照|户口本?|户籍|居住证|绿卡|社保号|医保卡号|税号|工卡|居留许可|` +
+		`身份证号?|护照号?|签证|驾驶证|驾照|户口本|户口簿|迁户口|落户|户籍证明|户籍信息|居住证|绿卡|社保号|医保卡号|税号|美国工卡|EAD工卡|实体工卡|工卡审批|工卡办理|\bEAD\b|居留许可|` +
 		`私人合同|购房合同|租房合同|劳动仲裁|诉讼|起诉|被告|原告|官司|律师函|仲裁|判决书|离婚协议|遗嘱|` +
 		`\b(passport|visa|green card|driver'?s? licen[cs]e|social security( number)?|ssn|national id|id card|` +
 		`tax id|lawsuit|litigation|sued|arbitration|court order|subpoena|legal dispute|prenup)\b`)
 
 	payloadRelationshipsRe = regexp.MustCompile(`(?i)` +
 		`配偶|伴侣|老婆|老公|妻子|丈夫|女友|男友|女朋友|男朋友|谈对象|处对象|找对象|未婚妻|未婚夫|` +
-		`前任|前女友|前男友|恋爱|相亲|约会|结婚|婚姻|离婚|分手|冷战|家庭矛盾|婆媳|父母|爸爸|妈妈|` +
+		`前任(男友|女友|对象|伴侣|配偶)|前妻|前夫|前女友|前男友|恋爱|谈恋爱|相亲|约会对象|初次约会|浪漫约会|结婚|婚姻|离婚|分手|冷战|家庭矛盾|婆媳|父母|爸爸|妈妈|` +
 		`父亲|母亲|岳父|岳母|公公|婆婆|儿子|女儿|孩子|宝宝|家人|亲戚|闺蜜|死党|` +
 		`\b(spouse|partner|wife|husband|girlfriend|boyfriend|fianc[eé]e?|ex-(wife|husband|girlfriend|boyfriend)|` +
 		`marriage|divorce|breakup|dating|romance|parents|mother|father|daughter|son|kids|children|family conflict|in-laws)\b`)

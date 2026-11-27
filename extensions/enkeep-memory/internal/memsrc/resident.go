@@ -59,9 +59,9 @@ const (
 	// Per-line maximum lengths in bytes by section.
 	HotTextMost       = 260
 	ProfileTextMost   = 240
-	PrincipleTextMost = 280
-	ContractTextMost  = 280
-	residentTextMost  = 280
+	PrincipleTextMost = 340
+	ContractTextMost  = 360
+	residentTextMost  = 340
 
 	// sameRule is the bigram Jaccard threshold above which two standing lines are treated as duplicates.
 	sameRule = 0.45
@@ -477,23 +477,114 @@ func sortPrinciples(cs []Candidate) {
 	})
 }
 
-// FormatResidentLine formats a standing line as body+suffix within maxBytes, always clipping body first and keeping
-// suffix (the exception or poles boundary) whole. Only when suffix itself leaves fewer than 30 bytes for body is the
-// suffix dropped to protect readability.
+// redundantExceptionSuffix reports whether suffix is an exception clause ("（例外：…）") whose core wording already
+// overlaps heavily with body (Jaccard >= 0.45 or core phrase containment), so standing lines never repeat the same
+// rule twice.
+func redundantExceptionSuffix(body, suffix string) bool {
+	inner := ""
+	if s, ok := strings.CutPrefix(suffix, "（例外："); ok {
+		inner = strings.TrimSpace(strings.TrimSuffix(s, "）"))
+	} else if s, ok := strings.CutPrefix(suffix, "(exception:"); ok {
+		inner = strings.TrimSpace(strings.TrimSuffix(s, ")"))
+	}
+	if inner == "" {
+		return false
+	}
+	if strings.Contains(body, inner) {
+		return true
+	}
+	qBody, qInner := norm.Q(body), norm.Q(inner)
+	if qInner != "" && strings.Contains(qBody, qInner) {
+		return true
+	}
+	if norm.Jaccard(body, inner) >= 0.45 {
+		return true
+	}
+	// Core phrase containment: if substantial clause(s) from inner already appear verbatim in body.
+	parts := strings.FieldsFunc(inner, func(r rune) bool {
+		switch r {
+		case '，', '。', '；', '、', '：', '！', '？', ',', '.', ';', ':', '!', '?':
+			return true
+		}
+		return false
+	})
+	totalRunes, matchedRunes := 0, 0
+	for _, part := range parts {
+		p := strings.TrimSpace(part)
+		n := utf8.RuneCountInString(p)
+		if n == 0 {
+			continue
+		}
+		totalRunes += n
+		if n >= 6 && (strings.Contains(body, p) || (norm.Q(p) != "" && strings.Contains(qBody, norm.Q(p)))) {
+			matchedRunes += n
+		}
+	}
+	return totalRunes > 0 && matchedRunes*2 >= totalRunes
+}
+
+// trimToNaturalBoundary shortens s to at most maxBytes at a complete sentence or clause boundary without ever cutting
+// mid-word or appending "…". Returns "" if not even the first complete sentence/clause fits within maxBytes.
+func trimToNaturalBoundary(s string, maxBytes int) string {
+	s = strings.TrimSpace(s)
+	if len(s) <= maxBytes {
+		return s
+	}
+	if maxBytes <= 0 {
+		return ""
+	}
+	lastSentenceEnd := 0
+	lastClauseEnd := 0
+	for i, r := range s {
+		end := i + utf8.RuneLen(r)
+		if end > maxBytes {
+			break
+		}
+		switch r {
+		case '。', '！', '？', '；', '.', '!', '?', ';':
+			lastSentenceEnd = end
+		case '，', '、', ',':
+			lastClauseEnd = i
+		}
+	}
+	if lastSentenceEnd > 0 {
+		return strings.TrimSpace(s[:lastSentenceEnd])
+	}
+	if lastClauseEnd > 0 {
+		return strings.TrimSpace(s[:lastClauseEnd])
+	}
+	return ""
+}
+
+// FormatResidentLine formats a standing line as body+suffix within maxBytes, dropping redundant exception suffixes
+// and never mid-word clipping with "…". When body+suffix exceeds maxBytes, body is shortened to the last complete
+// sentence/clause boundary; if even that does not fit alongside suffix, suffix is dropped in favor of body, and if
+// body still cannot fit at a natural boundary, "" is returned so the caller skips the line cleanly.
 func FormatResidentLine(body, suffix string, maxBytes int) string {
 	body = strings.TrimSpace(body)
 	suffix = strings.TrimSpace(suffix)
 	if maxBytes <= 0 {
 		maxBytes = residentTextMost
 	}
+	if redundantExceptionSuffix(body, suffix) {
+		suffix = ""
+	}
 	if len(body)+len(suffix) <= maxBytes {
 		return body + suffix
 	}
 	const minBodyBytes = 30
-	if suffix != "" && maxBytes-len(suffix) < minBodyBytes {
-		suffix = ""
+	if suffix != "" && maxBytes-len(suffix) >= minBodyBytes {
+		if trimmed := trimToNaturalBoundary(body, maxBytes-len(suffix)); len(trimmed) >= minBodyBytes {
+			return trimmed + suffix
+		}
 	}
-	return clipBytes(body, maxBytes-len(suffix)) + suffix
+	if len(body) <= maxBytes {
+		return body
+	}
+	if trimmed := trimToNaturalBoundary(body, maxBytes); trimmed != "" {
+		return trimmed
+	}
+	return ""
 }
 
 // ResidentText is the standing line for an L0 entry (hot slot or cold-start fallback): for understanding, its principle
@@ -512,22 +603,6 @@ func ResidentText(e *entry.Entry) string {
 		line = "原则：" + strings.TrimRight(p, "。.") + "（如 " + strings.TrimRight(ex, "。.") + "）"
 	}
 	return FormatResidentLine(line, recall.Exception(e), HotTextMost)
-}
-
-// clipBytes cuts s to at most n bytes at a UTF-8 rune boundary, reserving space for "…" (3 bytes) when clipped.
-func clipBytes(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	const ellipsis = "…"
-	if n <= len(ellipsis) {
-		return ""
-	}
-	s = s[:n-len(ellipsis)]
-	for len(s) > 0 && !utf8.ValidString(s) {
-		s = s[:len(s)-1]
-	}
-	return s + ellipsis
 }
 
 // standingForbidden enforces the v0.4.0 §1.7 hard bans for any entry entering global 4 KB standing:

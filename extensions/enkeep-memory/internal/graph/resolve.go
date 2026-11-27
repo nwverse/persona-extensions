@@ -981,8 +981,12 @@ var tier2Schema = json.RawMessage(`{
 const tier2SystemPrompt = `You disambiguate candidate entity pairs in a personal knowledge graph.
 For each pair (a, b), decide whether they refer to the exact same real-world entity ("same_entity"), different entities ("distinct"), or cannot be determined ("uncertain").
 Only mark verdict="same_entity" with confidence="high" when clearly aliases, abbreviations, bilingual equivalents, or repo/project variants of the same entity (e.g. "astergate" and "aster", "enkeep-memory" and "enkeep 记忆插件").
-Never merge distinct modules, distinct people with different full names, or a parent org with a child project.
-Never merge two people based solely on shared neighbors or shared team/project membership; specifically, never guess that an English name and a Chinese name (or any two people without direct name, pinyin, or alias correspondence) are the same person.
+Hard negative rules (ALWAYS mark "distinct"):
+- Never merge generic/common words (e.g. "Launch", "Platform", "API", "Gateway", "Service", "System") into a specific project or system.
+- Never merge standalone distribution repos, sub-packages, SDK/CLI packages, or edition branches (e.g. "*-dist", "*-sdk", "*-cli", "*-字节版") into the main project.
+- Never merge differently named independent pipelines, tables, jobs, or services solely because they share the same owner or team (e.g. "Data-arch-push" and "data_tiktok_push").
+- Never merge distinct modules, distinct people with different full names, or a parent org with a child project.
+- Never merge two people based solely on shared neighbors or shared team/project membership; specifically, never guess that an English name and a Chinese name (or any two people without direct name, pinyin, or alias correspondence) are the same person.
 Set "canonical" to "a" or "b" indicating the cleaner, more complete name. Return JSON matching the schema.`
 
 type tier2Response struct {

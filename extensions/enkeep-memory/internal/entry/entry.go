@@ -374,8 +374,8 @@ func IsTrueUserOwned(e *Entry) bool {
 	return e.User != nil && strings.TrimSpace(e.User.Text) != ""
 }
 
-// PayloadTexts returns the entry's own structured text fields (never raw Evidence quotes) for Payload-First
-// sensitivity checks and deterministic ops-runbook classification.
+// PayloadTexts returns the entry's own structured text fields (never raw Evidence quotes and never assistant-authored
+// Impact hints) for Payload-First sensitivity checks and deterministic ops-runbook classification.
 func (e *Entry) PayloadTexts() []string {
 	if e == nil {
 		return nil
@@ -383,7 +383,6 @@ func (e *Entry) PayloadTexts() []string {
 	return []string{
 		e.Shown(), e.Text, e.Situation, e.Choice, e.Rejected,
 		e.Why, e.Exception, e.Object, e.Pitfall, e.Fix,
-		e.Impact.Action, e.Impact.Object,
 	}
 }
 

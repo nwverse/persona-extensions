@@ -56,10 +56,19 @@ func (o OverviewBackedProvider) Items(st *store.State) []profile.CandidateItem {
 		if p.IsProfileCore() {
 			weight += 2000
 		}
+		var itemCats []string
+		itemSpace := p.OriginSpace
+		if p.IsOpsRunbook() {
+			// ops_runbook never enters profile:cat:* sensitive sections; it stays in Tools / on-demand recall.
+			itemCats = nil
+			itemSpace = ""
+		} else {
+			itemCats = slices.Clone(p.Categories)
+		}
 		out = append(out, profile.CandidateItem{
 			ID: p.ID, Facet: f, Text: text, Last: p.LastEvidence, Priority: 0, Pattern: true,
 			Weight:     weight,
-			Categories: slices.Clone(p.Categories), OriginSpace: p.OriginSpace, Subjects: slices.Clone(p.Subjects),
+			Categories: itemCats, OriginSpace: itemSpace, Subjects: slices.Clone(p.Subjects),
 		})
 		if len(p.Categories) == 0 && !p.IsOpsRunbook() {
 			covered[f] = true
