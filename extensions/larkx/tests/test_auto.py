@@ -107,6 +107,8 @@ class AutoTest(unittest.TestCase):
             "（今回のやり取りにはテキストの回答がありません）", "今回のやり取りはテキストの回答なしで止まりました：タイムアウト",
             "今回は回答が出ませんでした。理由：タイムアウト", "このコンピューターは Persona から削除されたため、回答できません。",
             "（这一轮没有文字回答）\n\nagent生成",
+            "This chat is gone (closed or deleted).", "这段对话不见了（被关掉或删掉了）。",
+            "このチャットは見つかりません（閉じられたか削除されました）。",
         )
         with mock.patch.object(self.hub, "log") as log:
             for n, text in enumerate(placeholders, 1):
@@ -807,7 +809,7 @@ class AutoTest(unittest.TestCase):
     def test_manifest_and_initialize_enable_the_settings(self):
         with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
             manifest = json.load(f)
-        self.assertEqual(manifest["version"], "0.5.1")
+        self.assertEqual(manifest["version"], "0.5.2")
         self.assertIn("models", manifest["permissions"]["hub"])
         settings = manifest["configuration"]["properties"]
         self.assertEqual(settings["auto_active_minutes"]["default"], 10)
