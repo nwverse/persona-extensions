@@ -680,7 +680,7 @@ class Connector:
         if not targets:
             return []
         try:
-            mention_parts(text, targets)
+            parse_markdown_rich_text(text, targets)
         except ValueError:
             return []
         return targets
