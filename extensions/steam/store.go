@@ -36,7 +36,6 @@ const (
 type steamStores struct {
 	prices   *PriceHistoryStore
 	playtime *PlaytimeSnapshotStore
-	backlog  *BacklogStore
 	cursors  *EventCursorStore
 }
 
@@ -44,7 +43,6 @@ func newSteamStores(dataDir string) steamStores {
 	return steamStores{
 		prices:   NewPriceHistoryStore(dataDir),
 		playtime: NewPlaytimeSnapshotStore(dataDir),
-		backlog:  NewBacklogStore(dataDir),
 		cursors:  NewEventCursorStore(dataDir),
 	}
 }
@@ -52,7 +50,6 @@ func newSteamStores(dataDir string) steamStores {
 func (s steamStores) clearMemory() {
 	s.prices.file.clearMemory()
 	s.playtime.file.clearMemory()
-	s.backlog.file.clearMemory()
 	s.cursors.file.clearMemory()
 }
 
@@ -493,6 +490,10 @@ const (
 	BacklogDropped   BacklogStatus = "dropped"
 )
 
+var backlogStatuses = [...]BacklogStatus{
+	BacklogUnplayed, BacklogPlaying, BacklogQueued, BacklogPaused, BacklogCompleted, BacklogDropped,
+}
+
 type BacklogEntry struct {
 	Status BacklogStatus `json:"status"`
 	Note   string        `json:"note,omitempty"`
@@ -513,14 +514,8 @@ func backlogKey(steamID string, appID uint32) (string, error) {
 	return steamID + "/" + appIDText(appID), nil
 }
 
-func (s *BacklogStore) Set(steamID string, appID uint32, entry BacklogEntry) error {
-	key, err := backlogKey(steamID, appID)
-	if err != nil {
-		return err
-	}
-	switch entry.Status {
-	case BacklogUnplayed, BacklogPlaying, BacklogQueued, BacklogPaused, BacklogCompleted, BacklogDropped:
-	default:
+func validateBacklogEntry(entry BacklogEntry) error {
+	if !slices.Contains(backlogStatuses[:], entry.Status) {
 		return errors.New("invalid Steam backlog status")
 	}
 	if !utf8.ValidString(entry.Note) || utf8.RuneCountInString(entry.Note) > maxBacklogNoteRunes {
@@ -534,11 +529,41 @@ func (s *BacklogStore) Set(steamID string, appID uint32, entry BacklogEntry) err
 			return fmt.Errorf("backlog tags must be nonblank UTF-8 strings up to %d characters", maxBacklogTagRunes)
 		}
 	}
-	entry.Tags = slices.Clone(entry.Tags)
+	return nil
+}
+
+func (s *BacklogStore) Set(steamID string, appID uint32, entry BacklogEntry) error {
+	if err := validateBacklogEntry(entry); err != nil {
+		return err
+	}
+	return s.edit(steamID, appID, func(BacklogEntry) (*BacklogEntry, error) { return &entry, nil })
+}
+
+// edit applies a partial change against the latest entry under the store's writer lock.
+// Returning a nil entry clears the annotation.
+func (s *BacklogStore) edit(steamID string, appID uint32, change func(BacklogEntry) (*BacklogEntry, error)) error {
+	key, err := backlogKey(steamID, appID)
+	if err != nil {
+		return err
+	}
 	return s.file.update(func(entries map[string]BacklogEntry) (bool, error) {
-		if _, exists := entries[key]; !exists && len(entries) >= maxBacklogEntries {
+		current, exists := entries[key]
+		next, err := change(current)
+		if err != nil {
+			return false, err
+		}
+		if next == nil {
+			delete(entries, key)
+			return exists, nil
+		}
+		if err := validateBacklogEntry(*next); err != nil {
+			return false, err
+		}
+		if !exists && len(entries) >= maxBacklogEntries {
 			return false, errors.New("Steam backlog store is full")
 		}
+		entry := *next
+		entry.Tags = slices.Clone(entry.Tags)
 		entries[key] = entry
 		return true, nil
 	})
@@ -577,15 +602,7 @@ func (s *BacklogStore) List(steamID string) (map[uint32]BacklogEntry, error) {
 }
 
 func (s *BacklogStore) Delete(steamID string, appID uint32) error {
-	key, err := backlogKey(steamID, appID)
-	if err != nil {
-		return err
-	}
-	return s.file.update(func(entries map[string]BacklogEntry) (bool, error) {
-		_, exists := entries[key]
-		delete(entries, key)
-		return exists, nil
-	})
+	return s.edit(steamID, appID, func(BacklogEntry) (*BacklogEntry, error) { return nil, nil })
 }
 
 // EventCursor identifies a successful delivery. Window can be a sale window or an update version.

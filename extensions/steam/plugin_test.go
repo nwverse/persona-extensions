@@ -178,7 +178,9 @@ func TestProtocolTools(t *testing.T) {
 	if err := h.Call("connector.tools.list", wire.ConnectorParams{Contribution: extensionID}, &list); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"steam_profile", "steam_recent_games", "steam_library", "steam_achievements", "steam_wishlist", "steam_achievement_hunter", "steam_game_news"}
+	want := []string{"steam_profile", "steam_recent_games", "steam_library", "steam_achievements", "steam_wishlist",
+		"steam_achievement_hunter", "steam_game_news",
+		"steam_backlog_summary", "steam_backlog_mark", "steam_tonight_pick"}
 	var names []string
 	for _, tool := range list.Tools {
 		names = append(names, tool.Name)
@@ -187,7 +189,7 @@ func TestProtocolTools(t *testing.T) {
 		}
 	}
 	if !slices.Equal(names, want) {
-		t.Fatalf("read tools %v, want %v", names, want)
+		t.Fatalf("Steam tools %v, want %v", names, want)
 	}
 
 	contains(t, toolAnswer(t, h, "steam_profile", "{}"), `"owned_game_count":3`, `"state":"online"`, `"playing":"Synthetic Adventure"`)
