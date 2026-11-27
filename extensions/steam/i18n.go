@@ -17,6 +17,7 @@ type text struct {
 	minutes, hoursMinutes, discount, atLeast, stale                     string
 	qrHint, keyMode, keySignOut                                         string
 	friendsPlaying, noFriendsPlaying, moreFriendsPlaying, unknownFriend string
+	invalidFriendSelection                                              string
 	states                                                              map[string]string
 	problems                                                            map[problem]string
 
@@ -61,6 +62,7 @@ var english = text{
 	keySignOut:     "To disconnect Web API key mode, clear the saved key in Steam's extension settings.",
 	friendsPlaying: "Friends in game", noFriendsPlaying: "No friends with visible in-game activity.",
 	moreFriendsPlaying: "More friends are playing.", unknownFriend: "Steam friend",
+	invalidFriendSelection: "Select a friend by 17-digit SteamID64 or exact nickname, or provide 1–5 distinct SteamID64s.",
 	states: map[string]string{
 		"offline": "Offline", "online": "Online", "busy": "Busy", "away": "Away",
 		"snooze": "Snoozing", "looking_to_trade": "Looking to trade", "looking_to_play": "Looking to play", "invisible": "Invisible",
@@ -108,12 +110,19 @@ var english = text{
 		problemStoreSearchFailed: "Steam Store search is unavailable and there is no usable cached result for these filters. Try again shortly.",
 		problemPartialLibrary:    "Steam returned only part of the library. Ownership is unknown for titles outside that snapshot.",
 
-		problemFriendsDisabled: "Friends Radar is off by default. Enable it in the Steam extension settings.",
-		problemFriendList:      "Steam did not share the friends list. Check Friends List visibility and the Web API key in the Steam extension settings.",
-		problemFriendListQR:    "Steam did not share the friends list with this Mobile QR session. Check Friends List visibility in Steam. Web API key mode can read a public list.",
-		problemFriendState:     "Steam did not share friend presence in Web API key mode. Check the key and profile visibility in Steam.",
-		problemFriendStateQR:   "Steam did not grant this Mobile QR session access to friend presence. Web API key mode can read public presence.",
-		problemFriendListCap:   "The friends radar checked up to 2,000 friends.",
+		problemFriendsDisabled:  "Friends Radar is off by default. Enable it in the Steam extension settings.",
+		problemFriendList:       "Steam did not share the friends list. Check Friends List visibility in Steam and the saved Web API key in the extension settings.",
+		problemFriendListQR:     "Steam did not share the friends list with this Mobile QR session. Check Friends List visibility in Steam. Web API key mode can read a public list.",
+		problemFriendState:      "Steam did not share friend presence in Web API key mode. Check the key and profile visibility in Steam.",
+		problemFriendStateQR:    "Steam did not grant this Mobile QR session access to friend presence. Web API key mode can read public presence.",
+		problemFriendListCap:    "The friends radar checked up to 2,000 friends.",
+		problemFriendUnverified: "The visible friends list did not verify one or more selected SteamIDs. Their libraries were skipped.",
+		problemFriendName:       "No visible friend has that exact nickname. Check the name or use their SteamID64.",
+		problemFriendNameDup:    "More than one visible friend uses that nickname. Select a friend by SteamID64.",
+		problemFriendLibrary:    "Steam did not share one or more selected friends' game libraries. Check their Game details visibility. The intersection uses the libraries Steam shared.",
+		problemFriendLibraryQR:  "Steam did not share a game library with this Mobile QR session. Its Game details may be private or restricted for this session.",
+		problemFriendLibraryCap: "The intersection uses up to 20,000 visible games per account. One or more libraries are incomplete.",
+		problemCoopStore:        "Some Store categories could not be checked. Games with unknown multiplayer support are included.",
 	},
 	backlog: backlogText{
 		title: "Backlog & local progress", annotation: "Local backlog annotation", status: "Status",
@@ -158,6 +167,7 @@ var chinese = text{
 	keySignOut:     "如需断开 Web API 密钥模式，请在 Steam 扩展设置中清除已保存的密钥。",
 	friendsPlaying: "好友在玩", noFriendsPlaying: "当前没有好友公开显示正在游玩。",
 	moreFriendsPlaying: "还有其他好友正在游玩。", unknownFriend: "Steam 好友",
+	invalidFriendSelection: "请用单个 17 位 SteamID64 或完整昵称指定好友，也可提供 1–5 个不重复的 SteamID64。",
 	states: map[string]string{
 		"offline": "离线", "online": "在线", "busy": "忙碌", "away": "离开",
 		"snooze": "暂离", "looking_to_trade": "想交易", "looking_to_play": "想玩游戏", "invisible": "隐身",
@@ -205,12 +215,19 @@ var chinese = text{
 		problemStoreSearchFailed: "Steam 商店搜索暂不可用，且这组筛选条件没有可用的缓存结果。请稍后重试。",
 		problemPartialLibrary:    "Steam 只返回了部分游戏库，无法确认快照以外游戏的拥有状态。",
 
-		problemFriendsDisabled: "好友开黑雷达默认关闭，请在 Steam 扩展设置中开启。",
-		problemFriendList:      "Steam 未共享好友列表。请检查 Steam 的好友列表隐私设置和扩展的 Web API 密钥。",
-		problemFriendListQR:    "Steam 未向此次手机扫码会话共享好友列表。请检查 Steam 的好友列表隐私设置。公开列表可通过 Web API 密钥模式读取。",
-		problemFriendState:     "Steam 未通过 Web API 密钥模式共享好友状态。请检查密钥和 Steam 资料的可见性。",
-		problemFriendStateQR:   "Steam 未授权此次手机扫码会话读取好友状态。公开状态可通过 Web API 密钥模式读取。",
-		problemFriendListCap:   "好友开黑雷达最多检查 2,000 位好友。",
+		problemFriendsDisabled:  "好友开黑雷达默认关闭，请在 Steam 扩展设置中开启。",
+		problemFriendList:       "Steam 未共享好友列表。请检查 Steam 的好友列表隐私设置和扩展的 Web API 密钥。",
+		problemFriendListQR:     "Steam 未向此次手机扫码会话共享好友列表。请检查 Steam 的好友列表隐私设置。公开列表可通过 Web API 密钥模式读取。",
+		problemFriendState:      "Steam 未通过 Web API 密钥模式共享好友状态。请检查密钥和 Steam 资料的可见性。",
+		problemFriendStateQR:    "Steam 未授权此次手机扫码会话读取好友状态。公开状态可通过 Web API 密钥模式读取。",
+		problemFriendListCap:    "好友开黑雷达最多检查 2,000 位好友。",
+		problemFriendUnverified: "可见的好友列表无法确认部分所选 SteamID 的好友身份，已跳过其游戏库。",
+		problemFriendName:       "可见好友中没有完全匹配的昵称。请检查昵称，或使用好友的 SteamID64。",
+		problemFriendNameDup:    "多位可见好友使用相同的昵称，请使用 SteamID64 指定好友。",
+		problemFriendLibrary:    "Steam 未共享部分所选好友的游戏库。请检查对方的「游戏详情」可见性。交集使用 Steam 已共享的游戏库。",
+		problemFriendLibraryQR:  "Steam 未向此次手机扫码会话共享某个游戏库。其「游戏详情」可能为私密，或此次会话权限受限。",
+		problemFriendLibraryCap: "每个账号最多使用 20,000 款可见游戏计算交集，部分游戏库数据不完整。",
+		problemCoopStore:        "暂时无法确认部分商店类别，结果保留联机支持情况未知的游戏。",
 	},
 	backlog: backlogText{
 		title: "吃灰盘点与标注", annotation: "本机游戏标注", status: "游玩状态",

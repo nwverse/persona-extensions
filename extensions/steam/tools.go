@@ -198,7 +198,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 		return a.callDiscoveryTool(ctx, name, raw)
 	}
 	t := textFor(a.locale)
-	if name == friendsRadarTool && !a.config.FriendsRadarEnabled {
+	if (name == friendsRadarTool || name == coopOverlapTool) && !a.config.FriendsRadarEnabled {
 		return wire.ConnectorCallResult{}, &ext.Error{Code: string(problemFriendsDisabled), Message: t.message(problemFriendsDisabled, false)}
 	}
 	d, ctx, cancel := a.readContext(ctx)
@@ -211,6 +211,15 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 			return wire.ConnectorCallResult{}, invalid(badPaging)
 		}
 		d.friendsRadar(ctx, out, t, args)
+	case coopOverlapTool:
+		var args coopOverlapArgs
+		if !decodeArgs(raw, &args) || !args.normalizeSelection() {
+			return wire.ConnectorCallResult{}, invalid(t.invalidFriendSelection)
+		}
+		if !args.valid() {
+			return wire.ConnectorCallResult{}, invalid(badPaging)
+		}
+		d.coopOverlap(ctx, out, t, args)
 	case "steam_profile":
 		var args struct{}
 		if !decodeArgs(raw, &args) {

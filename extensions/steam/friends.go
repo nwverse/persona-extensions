@@ -6,35 +6,55 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
 const (
-	friendsRadarTool = "steam_friends_radar"
-	friendListPath   = "/ISteamUser/GetFriendList/v1/"
-	friendTTL        = 90 * time.Second
-	friendBatchSize  = 100
-	maxFriends       = 2_000
-	pageFriendsShown = 5
+	friendsRadarTool  = "steam_friends_radar"
+	coopOverlapTool   = "steam_coop_overlap"
+	friendListPath    = "/ISteamUser/GetFriendList/v1/"
+	friendTTL         = 90 * time.Second
+	friendBatchSize   = 100
+	maxFriends        = 2_000
+	pageFriendsShown  = 5
+	maxOverlapFriends = 5
+	maxCoopScan       = 3 * storeBatchSize
 
-	problemFriendsDisabled problem = "friends_radar_disabled"
-	problemFriendList      problem = "friends_list_unavailable"
-	problemFriendListQR    problem = "qr_friends_list_unavailable"
-	problemFriendState     problem = "friends_presence_unavailable"
-	problemFriendStateQR   problem = "qr_friends_presence_unavailable"
-	problemFriendListCap   problem = "friends_list_truncated"
+	problemFriendsDisabled  problem = "friends_radar_disabled"
+	problemFriendList       problem = "friends_list_unavailable"
+	problemFriendListQR     problem = "qr_friends_list_unavailable"
+	problemFriendState      problem = "friends_presence_unavailable"
+	problemFriendStateQR    problem = "qr_friends_presence_unavailable"
+	problemFriendListCap    problem = "friends_list_truncated"
+	problemFriendUnverified problem = "friend_not_verified"
+	problemFriendName       problem = "friend_name_not_found"
+	problemFriendNameDup    problem = "friend_name_ambiguous"
+	problemFriendLibrary    problem = "friend_game_details_unavailable"
+	problemFriendLibraryQR  problem = "qr_game_details_unavailable"
+	problemFriendLibraryCap problem = "shared_library_truncated"
+	problemCoopStore        problem = "store_categories_unavailable"
 )
 
-var friendsTools = []wire.ConnectorTool{{
-	Name:        friendsRadarTool,
-	Description: "Read friends' visible presence and current games. The in_game_now groups cover the returned page. Use next_offset to read more.",
-	InputSchema: json.RawMessage(`{"type":"object","properties":{` + pageProperties + `,"online_only":{"type":"boolean","default":true},"in_game_only":{"type":"boolean","default":false}}}`),
-}}
+var friendsTools = []wire.ConnectorTool{
+	{
+		Name:        friendsRadarTool,
+		Description: "Read friends' visible presence and current games. The in_game_now groups cover the returned page. Use next_offset to read more.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{` + pageProperties + `,"online_only":{"type":"boolean","default":true},"in_game_only":{"type":"boolean","default":false}}}`),
+	},
+	{
+		Name:        coopOverlapTool,
+		Description: "Find games shared by the current account and all selected friends whose libraries Steam shares. Provide one friend selector and continue with next_offset. Check friend visibility and coop_support in the result.",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{` + pageProperties + `,"friend_steam_id":{"type":"string","pattern":"^[0-9]{17}$"},"friend_steam_ids":{"type":"array","description":"One to five distinct friend SteamID64 strings.","items":{"type":"string","pattern":"^[0-9]{17}$"}},"friend_query":{"type":"string","description":"An exact friend nickname, ignoring case."},"coop_only":{"type":"boolean","default":true,"description":"Keep multiplayer, co-op and games with unknown Store categories."}}}`),
+	},
+}
 
 type friendsRadarArgs struct {
 	listArgs
@@ -369,6 +389,9 @@ func groupCurrentGames(page []player) []currentFriendGame {
 
 func (d *steamData) friendsSection(ctx context.Context, t *text) wire.Section {
 	a := d.readFriendActivity(ctx)
+	if a.players == nil {
+		return wire.Section{Title: t.friendsPlaying, Items: []wire.Component{empty(t.message(a.issue, false))}}
+	}
 	section := wire.Section{Title: t.friendsPlaying, Footer: t.message(a.issue, false)}
 	if a.roster != nil && a.roster.truncated {
 		section.Footer = joinText(section.Footer, t.message(problemFriendListCap, false))
@@ -391,4 +414,329 @@ func (d *steamData) friendsSection(ctx context.Context, t *text) wire.Section {
 		section.Items = []wire.Component{empty(t.noFriendsPlaying)}
 	}
 	return section
+}
+
+type coopOverlapArgs struct {
+	listArgs
+	FriendID    *string  `json:"friend_steam_id"`
+	FriendIDs   []string `json:"friend_steam_ids"`
+	FriendQuery *string  `json:"friend_query"`
+	CoopOnly    *bool    `json:"coop_only"`
+}
+
+func (a *coopOverlapArgs) normalizeSelection() bool {
+	if a.FriendQuery != nil {
+		*a.FriendQuery = strings.TrimSpace(*a.FriendQuery)
+		return a.FriendID == nil && a.FriendIDs == nil && *a.FriendQuery != "" && utf8.RuneCountInString(*a.FriendQuery) <= nameRunes
+	}
+	if a.FriendID != nil {
+		if a.FriendIDs != nil {
+			return false
+		}
+		a.FriendIDs = []string{*a.FriendID}
+	}
+	if len(a.FriendIDs) < 1 || len(a.FriendIDs) > maxOverlapFriends {
+		return false
+	}
+	for i, id := range a.FriendIDs {
+		id = strings.TrimSpace(id)
+		if !validSteamID(id) || slices.Contains(a.FriendIDs[:i], id) {
+			return false
+		}
+		a.FriendIDs[i] = id
+	}
+	return true
+}
+
+func (d *steamData) findFriend(ctx context.Context, id string, roster *friendRoster, query string) (player, problem) {
+	if roster.truncated {
+		return player{}, problemFriendListCap
+	}
+	result := d.readFriendPresence(ctx, id, roster)
+	if result.Issue != "" {
+		return player{}, result.Issue
+	}
+	var match player
+	for _, p := range *result.Data {
+		if !strings.EqualFold(p.Name, query) {
+			continue
+		}
+		if match.SteamID != "" {
+			return player{}, problemFriendNameDup
+		}
+		match = p
+	}
+	if match.SteamID == "" {
+		return player{}, problemFriendName
+	}
+	return match, ""
+}
+
+const (
+	libraryUnverified  = "not_verified"
+	libraryUnavailable = "unavailable"
+	libraryHidden      = "private_or_unavailable"
+	libraryVisible     = "visible"
+)
+
+type overlapFriend struct {
+	SteamID    string `json:"steam_id"`
+	Name       string `json:"name,omitempty"`
+	Visibility string `json:"library_visibility"`
+}
+
+func (d *steamData) coopOverlap(ctx context.Context, out map[string]any, t *text, args coopOverlapArgs) {
+	account, roster := d.readFriendRoster(ctx)
+	describeReading(out, "friends_list", roster, t)
+	if roster.Data == nil {
+		return
+	}
+	var name string
+	if args.FriendQuery != nil {
+		p, issue := d.findFriend(ctx, account, roster.Data, *args.FriendQuery)
+		if issue != "" {
+			describeReading(out, "friend_selection", reading[player]{Issue: issue}, t)
+			return
+		}
+		args.FriendIDs, name = []string{p.SteamID}, p.Name
+	}
+	if roster.Data.truncated {
+		describeReading(out, "friends_list", reading[friendRoster]{Issue: problemFriendListCap}, t)
+	}
+	friends := make([]overlapFriend, len(args.FriendIDs))
+	verified := 0
+	for i, id := range args.FriendIDs {
+		f := overlapFriend{SteamID: id, Name: name, Visibility: libraryUnverified}
+		if slices.Contains(roster.Data.ids, id) {
+			f.Visibility = libraryUnavailable
+			verified++
+		}
+		friends[i] = f
+	}
+	out["friends"], out["included_friend_count"] = friends, 0
+	if verified < len(friends) {
+		describeReading(out, "friend_selection", reading[player]{Issue: problemFriendUnverified}, t)
+	}
+	if verified == 0 {
+		return
+	}
+	client, issue := d.readClient(ctx)
+	if issue != "" {
+		describeReading(out, "coop_overlap", reading[gameList]{Issue: issue}, t)
+		return
+	}
+	own, peers := client.overlapLibraries(ctx, account, friends)
+	describeReading(out, "library", own, t)
+	visible := make([]*gameList, 0, verified)
+	truncated := own.Data != nil && own.Data.Truncated
+	reported := make(map[problem]bool)
+	for i, read := range peers {
+		if read.Data != nil {
+			friends[i].Visibility = libraryVisible
+			visible = append(visible, read.Data)
+			truncated = truncated || read.Data.Truncated
+		}
+		if read.Issue == problemFriendLibrary || read.Issue == problemFriendLibraryQR {
+			friends[i].Visibility = libraryHidden
+		}
+		if read.Issue != "" && !reported[read.Issue] {
+			describeReading(out, "friend_library", read, t)
+			reported[read.Issue] = true
+		}
+	}
+	if truncated {
+		describeReading(out, "coop_overlap", reading[gameList]{Issue: problemFriendLibraryCap}, t)
+	}
+	out["included_friend_count"] = len(visible)
+	out["partial"] = truncated || own.Data == nil || len(visible) < len(friends)
+	if own.Data == nil || len(visible) == 0 {
+		return
+	}
+	shared := sharedGames(own.Data, visible)
+	page, next, categoryIssue := client.coopPage(ctx, shared, args, d.config.CountryCode, t.storeLanguage)
+	if categoryIssue != "" {
+		describeReading(out, "store_categories", reading[gameList]{Issue: problemCoopStore}, t)
+	}
+	out["available"], out["offset"], out["limit"] = true, args.Offset, args.limit()
+	out["games"], out["shared_count"] = page, len(shared)
+	if next < len(shared) {
+		out["next_offset"] = next
+	}
+}
+
+func (c steamClient) overlapLibraries(ctx context.Context, account string, friends []overlapFriend) (reading[gameList], []reading[gameList]) {
+	read := func(id string, friend bool) reading[gameList] {
+		list, issue := c.games(ctx, id, false)
+		if issue == problemGameDetails || issue == problemBadCall {
+			switch {
+			case c.access != "":
+				issue = problemFriendLibraryQR
+			case friend:
+				issue = problemFriendLibrary
+			}
+		}
+		return reading[gameList]{Data: list, Issue: issue}
+	}
+	// Read libraries directly. Snapshots and cache slots belong to the signed-in user's other reads.
+	var own reading[gameList]
+	peers := make([]reading[gameList], len(friends))
+	var reads sync.WaitGroup
+	reads.Go(func() { own = read(account, false) })
+	for i, f := range friends {
+		if f.Visibility != libraryUnverified {
+			reads.Go(func() { peers[i] = read(f.SteamID, true) })
+		}
+	}
+	reads.Wait()
+	return own, peers
+}
+
+type sharedGame struct {
+	AppID          uint32   `json:"appid"`
+	Name           string   `json:"name,omitempty"`
+	TotalPlaytime  uint64   `json:"total_playtime"`
+	EveryonePlayed bool     `json:"everyone_played"`
+	CoopSupport    string   `json:"coop_support"`
+	Categories     []string `json:"multiplayer_categories,omitempty"`
+}
+
+func sharedGames(own *gameList, peers []*gameList) []sharedGame {
+	common := make(map[uint32]sharedGame, len(own.Games))
+	for _, g := range own.Games {
+		common[g.AppID] = sharedGame{AppID: g.AppID, Name: g.Name, TotalPlaytime: uint64(g.PlaytimeForever), EveryonePlayed: g.PlaytimeForever > 0}
+	}
+	for _, library := range peers {
+		next := make(map[uint32]sharedGame, min(len(common), len(library.Games)))
+		for _, g := range library.Games {
+			match, found := common[g.AppID]
+			if !found {
+				continue
+			}
+			if match.Name == "" {
+				match.Name = g.Name
+			}
+			match.TotalPlaytime += uint64(g.PlaytimeForever)
+			match.EveryonePlayed = match.EveryonePlayed && g.PlaytimeForever > 0
+			next[g.AppID] = match
+		}
+		common = next
+	}
+	return slices.SortedFunc(maps.Values(common), func(a, b sharedGame) int {
+		if byTime := cmp.Compare(b.TotalPlaytime, a.TotalPlaytime); byTime != 0 {
+			return byTime
+		}
+		return cmp.Compare(a.AppID, b.AppID)
+	})
+}
+
+const (
+	coopSupported = "supported"
+	coopNotListed = "not_listed"
+	coopUnknown   = "unknown"
+)
+
+var multiplayerCategories = map[uint32]string{
+	1: "Multi-player", 9: "Co-op", 24: "Shared/Split Screen", 27: "Cross-Platform Multiplayer",
+	36: "Online PvP", 37: "Shared/Split Screen PvP", 38: "Online Co-op", 39: "Shared/Split Screen Co-op",
+	47: "LAN PvP", 48: "LAN Co-op", 49: "PvP",
+}
+
+type storeCoopSupport struct {
+	status     string
+	categories []string
+}
+
+func classifyPlayerCategories(ids []uint32) storeCoopSupport {
+	result := storeCoopSupport{status: coopUnknown}
+	singlePlayerOnly := len(ids) > 0
+	for _, id := range ids {
+		if label := multiplayerCategories[id]; label != "" && !slices.Contains(result.categories, label) {
+			result.categories = append(result.categories, label)
+		}
+		singlePlayerOnly = singlePlayerOnly && id == 2 // Single-player
+	}
+	switch {
+	case len(result.categories) > 0:
+		result.status = coopSupported
+	case singlePlayerOnly:
+		result.status = coopNotListed
+	}
+	return result
+}
+
+func (c steamClient) storeCoopCategories(ctx context.Context, games []sharedGame, country, language string) (map[uint32]storeCoopSupport, problem) {
+	if err := ctx.Err(); err != nil {
+		return nil, sanitizeError(err)
+	}
+	type appRef struct {
+		AppID uint32 `json:"appid"`
+	}
+	ids := make([]appRef, 0, len(games))
+	for _, game := range games {
+		ids = append(ids, appRef{AppID: game.AppID})
+	}
+	query, _ := json.Marshal(map[string]any{
+		"ids":     ids,
+		"context": map[string]string{"country_code": country, "language": language},
+	})
+	var reply struct {
+		Response *struct {
+			Items []struct {
+				AppID      uint32 `json:"appid"`
+				Success    int    `json:"success"`
+				Categories struct {
+					Players []uint32 `json:"supported_player_categoryids"`
+				} `json:"categories"`
+			} `json:"store_items"`
+		} `json:"response"`
+	}
+	if issue := c.get(ctx, apiBase+storeNamesPath, url.Values{"input_json": {string(query)}}, false, &reply); issue != "" {
+		return nil, issue
+	}
+	if reply.Response == nil {
+		return nil, problemResponse
+	}
+	result := make(map[uint32]storeCoopSupport, len(ids))
+	for _, item := range reply.Response.Items {
+		if item.Success == 1 && slices.Contains(ids, appRef{AppID: item.AppID}) {
+			result[item.AppID] = classifyPlayerCategories(item.Categories.Players)
+		}
+	}
+	return result, ""
+}
+
+func (c steamClient) coopPage(ctx context.Context, sorted []sharedGame, args coopOverlapArgs, country, language string) ([]sharedGame, int, problem) {
+	coopOnly := args.CoopOnly == nil || *args.CoopOnly
+	// The cursor counts examined entries in the raw intersection. A filtered page
+	// can continue even if every game in this call's Store budget was single-player.
+	limit, start := args.limit(), min(args.Offset, len(sorted))
+	scan := limit
+	if coopOnly {
+		scan = maxCoopScan
+	}
+	page := make([]sharedGame, 0, limit)
+	next := start
+	var issue problem
+	for batch := range slices.Chunk(sorted[start:min(len(sorted), start+scan)], storeBatchSize) {
+		var support map[uint32]storeCoopSupport
+		if issue == "" {
+			support, issue = c.storeCoopCategories(ctx, batch, country, language)
+		}
+		for _, g := range batch {
+			next++
+			metadata := support[g.AppID]
+			if metadata.status == "" {
+				metadata.status = coopUnknown
+			}
+			if coopOnly && metadata.status == coopNotListed {
+				continue
+			}
+			g.CoopSupport, g.Categories = metadata.status, metadata.categories
+			page = append(page, g)
+			if len(page) == limit {
+				return page, next, issue
+			}
+		}
+	}
+	return page, next, issue
 }
