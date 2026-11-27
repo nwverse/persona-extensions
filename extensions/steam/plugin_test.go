@@ -178,7 +178,7 @@ func TestProtocolTools(t *testing.T) {
 	if err := h.Call("connector.tools.list", wire.ConnectorParams{Contribution: extensionID}, &list); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"steam_profile", "steam_recent_games", "steam_library", "steam_achievements", "steam_wishlist"}
+	want := []string{"steam_profile", "steam_recent_games", "steam_library", "steam_achievements", "steam_wishlist", "steam_achievement_hunter"}
 	var names []string
 	for _, tool := range list.Tools {
 		names = append(names, tool.Name)

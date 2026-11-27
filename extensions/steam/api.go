@@ -381,37 +381,11 @@ func (c steamClient) achievements(ctx context.Context, id string, appID uint32, 
 	if c.access != "" {
 		return c.achievementTotals(ctx, id, appID, language)
 	}
-	var reply struct {
-		PlayerStats *struct {
-			Game         string `json:"gameName"`
-			Success      bool   `json:"success"`
-			Achievements []struct {
-				Achieved int `json:"achieved"`
-			} `json:"achievements"`
-		} `json:"playerstats"`
+	ps, issue := c.legacyPlayerAchievements(ctx, id, appID)
+	if issue != "" {
+		return nil, issue
 	}
-	params := url.Values{"steamid": {id}, "appid": {appIDText(appID)}}
-	switch p := c.get(ctx, apiBase+achievementsPath, params, true, &reply); p {
-	case "":
-	case problemDenied, problemMissing, problemBadCall:
-		return nil, problemAchievements
-	default:
-		return nil, p
-	}
-	if reply.PlayerStats == nil {
-		return nil, problemResponse
-	}
-	ps := reply.PlayerStats
-	if !ps.Success {
-		return nil, problemAchievements
-	}
-	progress := &achievementProgress{AppID: appID, Game: c.text(ps.Game), Total: len(ps.Achievements)}
-	for _, a := range ps.Achievements {
-		if a.Achieved == 1 {
-			progress.Unlocked++
-		}
-	}
-	return progress, ""
+	return ps.progress(appID), ""
 }
 
 func (c steamClient) achievementTotals(ctx context.Context, id string, appID uint32, language string) (*achievementProgress, problem) {

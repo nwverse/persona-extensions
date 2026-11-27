@@ -38,6 +38,7 @@ var tools = []wire.ConnectorTool{
 		Name: "steam_wishlist", Description: "Read the visible Steam wishlist with Store price and discount in the configured country. Use next_offset to read more; check prices_checked before interpreting the discount count.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + pageProperties + `}}`),
 	},
+	achievementHunterTool,
 }
 
 type listArgs struct {
@@ -172,6 +173,10 @@ func (d *steamData) toolAccount(ctx context.Context, out map[string]any, t *text
 }
 
 func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (wire.ConnectorCallResult, error) {
+	switch name {
+	case achievementHunterName:
+		return encodeSteamTool(a.achievementHunter(ctx, raw))
+	}
 	const badPaging = "Use an offset from 0 to 20000 and a limit from 1 to 50."
 	d, ctx, cancel := a.readContext(ctx)
 	defer cancel()
@@ -261,6 +266,13 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 	if issue := d.sessionIssue(); issue != "" {
 		out = map[string]any{"available": false}
 		describeReading(out, strings.TrimPrefix(name, "steam_"), reading[player]{Issue: issue}, t)
+	}
+	return encodeSteamTool(out, nil)
+}
+
+func encodeSteamTool(out any, issue error) (wire.ConnectorCallResult, error) {
+	if issue != nil {
+		return wire.ConnectorCallResult{}, issue
 	}
 	payload, err := json.Marshal(out)
 	if err != nil {

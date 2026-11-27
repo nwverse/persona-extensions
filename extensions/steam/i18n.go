@@ -67,6 +67,11 @@ var english = text{
 		problemAuthSave:           "Persona could not save the Steam sign-in. Try again when the Hub's secret store is available.",
 		problemAuthDelete:         "Persona could not delete the saved Steam sign-in. Try signing out again.",
 		problemAuthClearing:       "Persona is clearing the saved Steam sign-in. Try again in a moment.",
+
+		problemGlobalAchievements:     "Steam did not share global unlock rates for this game.",
+		problemAchievementSchema:      "Steam did not share this game's achievement names and hidden status.",
+		problemAchievementDetails:     "Steam did not share complete personal achievement details. Any global rankings are for all players.",
+		problemAchievementUnlockTimes: "Steam did not share timestamps for some unlocked achievements.",
 	},
 }
 
@@ -117,6 +122,11 @@ var chinese = text{
 		problemAuthSave:           "Persona 无法保存 Steam 登录，请在 Hub 密钥存储可用后重试。",
 		problemAuthDelete:         "Persona 无法删除已保存的 Steam 登录，请重试登出。",
 		problemAuthClearing:       "Persona 正在清除已保存的 Steam 登录，请稍后重试。",
+
+		problemGlobalAchievements:     "Steam 未共享这款游戏的全球成就达成率。",
+		problemAchievementSchema:      "Steam 未共享这款游戏的成就名称和隐藏状态。",
+		problemAchievementDetails:     "Steam 未共享完整的个人成就明细。全球榜单适用于所有玩家。",
+		problemAchievementUnlockTimes: "Steam 未共享部分已解锁成就的解锁时间。",
 	},
 }
 

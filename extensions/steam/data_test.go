@@ -72,7 +72,7 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 		wantHost := apiHost
 		method := http.MethodGet
 		switch req.URL.Path {
-		case vanityPath, playerPath, achievementsPath:
+		case vanityPath, playerPath, achievementsPath, keyAchievementSchema:
 			if access != "" {
 				t.Error("QR mode contacted a legacy endpoint")
 				return nil, fmt.Errorf("unexpected legacy endpoint")
@@ -84,6 +84,9 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 			wantToken = access != ""
 		case progressPath:
 			method, wantToken = http.MethodPost, true
+		case userAchievementsPath:
+			wantToken = true
+		case globalAchievementsPath, gameAchievementsPath:
 		case authBasePath + beginQRPath + "/v1/", authBasePath + pollQRPath + "/v1/":
 			method = http.MethodPost
 		case storeNamesPath:
