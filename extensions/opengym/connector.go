@@ -261,7 +261,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 	if s.Empty {
 		return "这个 openGym 账号还没有从手机同步过数据。", nil
 	}
-	loc := a.zone()
+	loc := a.currentZone()
 	switch name {
 	case toolSummary:
 		return a.summaryText(s, loc), nil
@@ -345,7 +345,8 @@ func (a *app) summaryText(s *snapshot, loc *time.Location) string {
 	if s.Me.can("bodyweight", "view") {
 		if bw, ok := st.latestWeight(); ok {
 			fmt.Fprintf(&b, "体重 %s（%s）", weight(bw.W, st.Unit), bw.D)
-			from := time.Date(now.Year(), now.Month(), now.Day(), 12, 0, 0, 0, loc).AddDate(0, 0, -30).Format(time.DateOnly)
+			localNow := now.In(loc)
+			from := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 12, 0, 0, 0, loc).AddDate(0, 0, -30).Format(time.DateOnly)
 			if old, ok := st.weightAround(from); ok && old.D != bw.D {
 				fmt.Fprintf(&b, "，30 天前 %s，变化 %s %s", weight(old.W, st.Unit), signed(bw.W-old.W), st.Unit)
 			}

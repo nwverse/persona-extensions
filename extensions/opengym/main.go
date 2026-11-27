@@ -94,6 +94,9 @@ type app struct {
 	syncMu  sync.Mutex // one sync at a time
 	writeMu sync.Mutex // one write at a time
 
+	doneMu sync.Mutex
+	done   map[string]writeReceipt
+
 	catalog catalogNames
 }
 
@@ -103,7 +106,17 @@ func newApp(logf func(string, ...any)) *app {
 	}
 	return &app{logf: logf, client: newClient(), now: time.Now, zone: func() *time.Location { return time.Local },
 		getenv: os.Getenv, catalogURL: defaultCatalog, every: defaultRefresh * time.Minute, names: true,
-		cfgErr: errNoServer}
+		cfgErr: errNoServer, done: map[string]writeReceipt{}}
+}
+
+func (a *app) currentZone() *time.Location {
+	a.mu.Lock()
+	z := a.zone
+	a.mu.Unlock()
+	if z != nil {
+		return z()
+	}
+	return time.Local
 }
 
 func main() {
@@ -187,6 +200,9 @@ func (a *app) configure(cfg config, token string) {
 	}
 	a.every = time.Duration(min(max(m, refreshFloor), refreshCeil)) * time.Minute
 	a.snap, a.lastErr, a.checked = nil, nil, time.Time{}
+	a.doneMu.Lock()
+	a.done = map[string]writeReceipt{}
+	a.doneMu.Unlock()
 }
 
 // poll checks the server soon after start and then every period, and the exercise names once a day, until ctx ends.
