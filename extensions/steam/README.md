@@ -27,6 +27,12 @@ Use `steam_store_tags` to find localized Store tags, `steam_store_search` to fil
 
 The **Steam game discovery** skill is an optional contribution. Enable it under **Settings › Extensions › Steam › Contributions**. Turning off **Steam game research tools and skill** hides the three tools and withdraws the skill from the assistant's next refresh.
 
+## Friends Radar
+
+**Friends Radar** is off by default. Enable it in **Settings › Extensions › Steam** to show **Friends in game** on the Steam page and expose `steam_friends_radar` and `steam_coop_overlap`. While it is off, the extension sends zero friend requests and adds zero friend tool definitions to assistant context.
+
+Web API key mode uses the account's publicly visible friends list and presence. Mobile QR uses the signed-in account's access token and reports any friend endpoints Steam restricts for that session. Shared library results use the friends and game details Steam makes visible to the current sign-in method. Friend lists and presence stay in memory for a 90-second freshness window. QR sign-out clears that cache, and shared library reads use request-local data. [Friends Radar inputs, paging and privacy](../../docs/extensions/steam.md#friends-radar)
+
 ## Token settings
 
 These runtime gates and budgets cover game research, update excerpts and the planned Inbox and memory features. Each disabled feature uses zero extra LLM tokens. Price and playtime observations use existing Steam reads. QR sessions keep their observations in memory until sign-out or restart. Web API key mode stores its observations in `steam-store-v1` under the extension data directory. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
