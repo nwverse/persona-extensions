@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
-from larkx_persona.connector import DM_UNKNOWN, KEEP_DAYS, Connector, mention_request  # noqa: E402
+from larkx_persona.connector import DM_UNKNOWN, KEEP_DAYS, Connector, _channel_routing, mention_request  # noqa: E402
 from larkx_persona.real import normalize  # noqa: E402
 from larkx_persona.store import Store  # noqa: E402
 from larkx_persona.wire import RpcError  # noqa: E402
@@ -1290,6 +1290,64 @@ class NormalizeTest(unittest.TestCase):
         self.assertEqual(image["media"], [{"kind": "image", "key": "k"}])
         document = normalize({"msg_type_name": "FILE", "content_data": {"key": "k", "name": "a.pdf"}}, self.key)
         self.assertEqual(document["media"], [{"kind": "file", "name": "a.pdf"}])
+
+    def test_routing_topic_id_extraction(self):
+        dm = normalize({"msg_id": "10", "chat_id": "c_dm", "chat_type": 1, "root_id": "9", "scope": "chat", "anchor": ""}, self.key)
+        self.assertEqual((dm["chat_kind"], dm["topic_id"]), ("dm", ""))
+
+        reg = normalize({"msg_id": "11", "chat_id": "g1", "chat_type": 2, "root_id": "0", "scope": "chat", "anchor": ""}, self.key)
+        self.assertEqual((reg["chat_kind"], reg["topic_id"]), ("group", ""))
+
+        reply = normalize({"msg_id": "12", "chat_id": "g1", "chat_type": 2, "root_id": "11", "scope": "topic", "anchor": "11"}, self.key)
+        self.assertEqual((reply["chat_kind"], reply["topic_id"]), ("group", "11"))
+
+        topic_group_root = normalize({"msg_id": "13", "chat_id": "g_topic", "chat_type": 3, "msg_type_name": "TEXT", "root_id": "0"}, self.key)
+        self.assertEqual((topic_group_root["chat_kind"], topic_group_root["topic_id"]), ("group", "13"))
+
+        dispatched_topic_root = normalize({"msg_id": "14", "chat_id": "g_topic2", "chat_type": 2, "scope": "topic", "anchor": "14"}, self.key)
+        self.assertEqual((dispatched_topic_root["chat_kind"], dispatched_topic_root["topic_id"]), ("group", "14"))
+
+        # Synthetic defensive fallback cases: pinned LarkAgentX (97ad48e) folds threadId into anchor and does not
+        # emit a top-level thread_id key, so these verify normalize() stays safe if a future payload/fixture adds one.
+        explicit_thread = normalize({"msg_id": "15", "chat_id": "g1", "chat_type": 2, "thread_id": "omt_99", "root_id": "11"}, self.key)
+        self.assertEqual((explicit_thread["chat_kind"], explicit_thread["topic_id"]), ("group", "omt_99"))
+
+        chat_scope_zero_root = normalize(
+            {"msg_id": "16", "chat_id": "g1", "chat_type": 2, "scope": "chat", "root_id": "0", "thread_id": "omt_99"}, self.key
+        )
+        self.assertEqual((chat_scope_zero_root["chat_kind"], chat_scope_zero_root["topic_id"]), ("group", "omt_99"))
+        self.assertEqual(_channel_routing(chat_scope_zero_root), {"chat_id": "g1", "chat_kind": "topic", "topic_id": "omt_99"})
+
+        chat_scope_empty_root = normalize(
+            {"msg_id": "17", "chat_id": "g1", "chat_type": 2, "scope": "chat", "root_id": "", "thread_id": "omt_100"}, self.key
+        )
+        self.assertEqual((chat_scope_empty_root["chat_kind"], chat_scope_empty_root["topic_id"]), ("group", "omt_100"))
+        self.assertEqual(_channel_routing(chat_scope_empty_root), {"chat_id": "g1", "chat_kind": "topic", "topic_id": "omt_100"})
+
+        dm_with_thread = normalize(
+            {"msg_id": "18", "chat_id": "c_dm", "chat_type": 1, "scope": "chat", "root_id": "9", "thread_id": "omt_99"}, self.key
+        )
+        self.assertEqual((dm_with_thread["chat_kind"], dm_with_thread["topic_id"]), ("dm", ""))
+        self.assertEqual(_channel_routing(dm_with_thread), {"chat_id": "c_dm", "chat_kind": "direct"})
+
+        # Regression: chat_type=3 topic-group root still gets msg_id even when scope="chat" and no root/thread IDs.
+        topic_group_chat_scope = normalize(
+            {"msg_id": "19", "chat_id": "g_topic", "chat_type": 3, "msg_type_name": "TEXT",
+             "scope": "chat", "root_id": "0", "thread_id": ""}, self.key
+        )
+        self.assertEqual((topic_group_chat_scope["chat_kind"], topic_group_chat_scope["topic_id"]), ("group", "19"))
+        self.assertEqual(_channel_routing(topic_group_chat_scope), {"chat_id": "g_topic", "chat_kind": "topic", "topic_id": "19"})
+
+        topic_group_system = normalize(
+            {"msg_id": "20", "chat_id": "g_topic", "chat_type": 3, "msg_type_name": "SYSTEM",
+             "scope": "chat", "root_id": "0", "thread_id": ""}, self.key
+        )
+        self.assertEqual((topic_group_system["chat_kind"], topic_group_system["topic_id"]), ("group", ""))
+
+        # When agent_group_topics is off (topics=False), group/topic messages suppress chat_kind and topic_id.
+        self.assertEqual(_channel_routing(reply, topics=False), {"chat_id": "g1"})
+        self.assertEqual(_channel_routing(topic_group_chat_scope, topics=False), {"chat_id": "g_topic"})
+        self.assertEqual(_channel_routing(dm_with_thread, topics=False), {"chat_id": "c_dm", "chat_kind": "direct"})
 
 
 if __name__ == "__main__":
