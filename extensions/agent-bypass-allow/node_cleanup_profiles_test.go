@@ -186,3 +186,103 @@ func TestNodeCleanupDoesNotFollowSettingsLink(t *testing.T) {
 		t.Fatal("cleanup followed an automatic profile's settings symlink")
 	}
 }
+
+func TestNodeCleanupRetainsAutomaticProfileAfterDiscoveryError(t *testing.T) {
+	root := t.TempDir()
+	personaHome := filepath.Join(root, "state", "persona")
+	profiles := filepath.Join(personaHome, "profiles")
+	profile := filepath.Join(profiles, "channel")
+	if err := os.MkdirAll(profile, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	n, _, cancel := profileCleanupNode(t, personaHome, []string{"~/.claude"})
+	settings := filepath.Join(profile, "settings.json")
+	if !hasHook(settings) {
+		t.Fatal("automatic profile hook was not installed")
+	}
+	if err := os.Chmod(profiles, 0o111); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(profiles, 0o700) })
+	if _, err := os.ReadDir(profiles); err == nil {
+		t.Fatal("test setup requires profile discovery to fail")
+	}
+
+	n.refresh()
+	cancel()
+	n.cleanup()
+	if err := os.Chmod(profiles, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if hasHook(settings) {
+		t.Fatal("cleanup lost an automatic profile after discovery failed")
+	}
+}
+
+func TestNodeCleanupRestoredExplicitDirAfterRefresh(t *testing.T) {
+	root := t.TempDir()
+	personaHome := filepath.Join(root, "state", "persona")
+	home := filepath.Join(root, "home", "me")
+	config := filepath.Join(home, ".claude")
+	n, _, cancel := profileCleanupNode(t, personaHome, []string{"~/.claude"})
+	settings := filepath.Join(config, "settings.json")
+	if !hasHook(settings) {
+		t.Fatal("explicit directory hook was not installed")
+	}
+	moved := filepath.Join(home, ".claude-away")
+	if err := os.Rename(config, moved); err != nil {
+		t.Fatal(err)
+	}
+	n.refresh()
+	if err := os.Rename(moved, config); err != nil {
+		t.Fatal(err)
+	}
+
+	cancel()
+	n.cleanup()
+	if hasHook(settings) {
+		t.Fatal("cleanup lost an explicit directory after a transient disappearance")
+	}
+}
+
+func TestNodeCleanupRestoredAgyDirAfterRefresh(t *testing.T) {
+	e := newAgyTestEnv(t, `{"toolPermission":"always-proceed"}`)
+	config, err := json.Marshal(map[string]any{"machines": []string{"m1"}, "agy_dirs": []string{e.gemini}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := &node{bin: "/opt/bin/" + currentExtensionID}
+	in := &ext.Init{}
+	in.Extension = &wire.ExtensionInfo{ID: currentExtensionID, DataDir: e.data}
+	in.InitializeParams.Config = config
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := false
+	t.Cleanup(func() {
+		if !finished {
+			cancel()
+			n.cleanup()
+		}
+	})
+	if _, err := n.init(ctx, in, nil); err != nil {
+		t.Fatal(err)
+	}
+	hooks := agyHooksPath(e.gemini)
+	if !hasAgyHook(hooks) {
+		t.Fatal("agy hook was not installed")
+	}
+	moved := e.gemini + "-away"
+	if err := os.Rename(e.gemini, moved); err != nil {
+		t.Fatal(err)
+	}
+	n.refresh()
+	if err := os.Rename(moved, e.gemini); err != nil {
+		t.Fatal(err)
+	}
+
+	cancel()
+	n.cleanup()
+	finished = true
+	if hasAgyHook(hooks) {
+		t.Fatal("cleanup lost an agy directory after a transient disappearance")
+	}
+}

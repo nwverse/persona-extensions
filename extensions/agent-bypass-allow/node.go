@@ -190,7 +190,15 @@ func (n *node) install(dirs []string) {
 		dirs = n.configured
 	}
 	configured := append([]string(nil), dirs...)
-	discovered := n.assistantProfiles()
+	discovered, discoveryErr := n.assistantProfiles()
+	var retained []dirState
+	if discoveryErr != nil {
+		for _, s := range n.dirs {
+			if s.auto {
+				retained = append(retained, s)
+			}
+		}
+	}
 	explicit := map[string]bool{}
 	for _, d := range configured {
 		if abs, err := expand(d); err == nil {
@@ -243,18 +251,24 @@ func (n *node) install(dirs []string) {
 		}
 		n.dirs = append(n.dirs, s)
 	}
+	// A transient discovery failure must not erase the cleanup paths for
+	// automatic profiles that were already installed.
+	n.dirs = append(n.dirs, retained...)
 }
 
 // assistantProfiles lists the current channel directories. ReadDir sorts them,
 // so status and upgrade order stay stable. A profiles directory that does not
 // exist yet is normal for a node whose assistant has not started.
-func (n *node) assistantProfiles() []string {
+func (n *node) assistantProfiles() ([]string, error) {
 	if n.profiles == "" {
-		return nil
+		return nil, nil
 	}
 	entries, err := os.ReadDir(n.profiles)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil
+		return nil, err
 	}
 	var dirs []string
 	for _, entry := range entries {
@@ -262,7 +276,7 @@ func (n *node) assistantProfiles() []string {
 			dirs = append(dirs, filepath.Join(n.profiles, entry.Name()))
 		}
 	}
-	return dirs
+	return dirs, nil
 }
 
 // realAssistantProfile revalidates an automatically discovered path at cleanup:
@@ -358,6 +372,52 @@ func (n *node) cleanup() {
 	if n.data != "" {
 		_ = os.Remove(filepath.Join(n.data, heartbeatFile))
 	}
+	// A refresh while a configured directory is temporarily absent leaves an
+	// error state without its internal cleanup path (and can drop the default
+	// AGY state entirely). Rebuild only configured paths that are accessible
+	// again; automatic profiles keep their stricter revalidation below.
+	type cleanupKey struct {
+		dir string
+		agy bool
+	}
+	configuredStates := map[cleanupKey]int{}
+	for i, s := range n.dirs {
+		if abs, err := expand(s.Dir); err == nil {
+			configuredStates[cleanupKey{dir: abs, agy: s.agy}] = i
+		}
+	}
+	backfill := func(d string, agy bool) {
+		abs, err := expand(d)
+		if err != nil || !isDir(abs) {
+			return
+		}
+		settings := settingsPath(abs)
+		if agy {
+			settings = agyHooksPath(abs)
+		}
+		key := cleanupKey{dir: abs, agy: agy}
+		if i, ok := configuredStates[key]; ok {
+			if n.dirs[i].settingsPath == "" {
+				n.dirs[i].settingsPath = settings
+				n.dirs[i].Settings = foldDisplayPath(abs, settings)
+			}
+			return
+		}
+		s := dirState{Dir: d, settingsPath: settings, agy: agy}
+		s.Settings = foldDisplayPath(abs, settings)
+		n.dirs = append(n.dirs, s)
+		configuredStates[key] = len(n.dirs) - 1
+	}
+	for _, d := range n.configured {
+		backfill(d, false)
+	}
+	agyDirs := n.agyConfigured
+	if len(agyDirs) == 0 {
+		agyDirs = []string{"~/.gemini"}
+	}
+	for _, d := range agyDirs {
+		backfill(d, true)
+	}
 	// A new profile may have been seeded by Persona after the last heartbeat.
 	// Merge current profiles with old states: a previously missing explicit
 	// directory has no settings path yet and must not suppress the cleanup.
@@ -367,7 +427,10 @@ func (n *node) cleanup() {
 			seen[abs] = i
 		}
 	}
-	for _, d := range n.assistantProfiles() {
+	// Discovery is best-effort during cleanup; retained automatic states are
+	// revalidated by automaticSettingsPath before anything is uninstalled.
+	discovered, _ := n.assistantProfiles()
+	for _, d := range discovered {
 		abs, err := expand(d)
 		if err != nil {
 			continue
