@@ -1,20 +1,25 @@
 # Steam
 
-Steam is a read-only Persona extension for player status, two weeks of playtime, the searchable game library, achievements and wishlist prices. Open **Personal › Steam** for details or use the Overview card and the five `steam_*` assistant tools.
+Steam is a read-only Persona extension for player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** for details or use the Overview card and the `steam_*` assistant tools.
 
 New installations use Steam Mobile QR by default. In **Settings › Extensions › Steam**, select **Sign In**, scan with Steam Guard in the Steam Mobile App, and approve the login on the phone. The Hub encrypts the refresh token in its connector secret store. The extension keeps the access token and QR account cache in memory.
 
 To use the read-only Web API key fallback, select **Web API key** and enter a SteamID64 or profile vanity name and a key. Existing installations with both values use this mode automatically. The optional Store country defaults to `US`. [Setup, permissions and sign-out](../../docs/extensions/steam.md)
 
+## Achievements and game updates
+
+- Ask `steam_achievement_hunter` for one game's AppID to find the most commonly unlocked achievements you still need and see your recent unlocks. If Steam supplies only counts or the public unlock rates, the tool shows the progress Steam shares and global rankings. Locked hidden achievements display their hidden status with their names and descriptions withheld.
+- Open **Personal › Steam › Recent official updates** to browse the latest headlines for your played games. Ask `steam_game_news` for a specific AppID or omit it to check up to four games by default. The tool uses recent playtime first and falls back to lifetime playtime if the recent list is empty or unavailable. [Tool arguments and limits](../../docs/extensions/steam.md#assistant-tools)
+
 ## Token settings
 
-These runtime gates and budgets apply to planned Steam features. Each disabled feature uses zero extra LLM tokens. Price and playtime observations use existing Steam reads. QR sessions keep their observations in memory until sign-out or restart. Web API key mode stores its observations in `steam-store-v1` under the extension data directory. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
+These runtime gates and budgets govern update excerpts and the planned Inbox, memory and discovery features. Each disabled feature uses zero extra LLM tokens. Price and playtime observations use existing Steam reads. QR sessions keep their observations in memory until sign-out or restart. Web API key mode stores its observations in `steam-store-v1` under the extension data directory. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
 
 | Setting | Default | Token impact |
 | --- | --- | --- |
 | `inbox_events_enabled` | Off | Allows Steam Inbox events that can trigger AI triage. |
 | `inbox_max_events_per_day` | 5 (1–50) | Caps daily emissions that can trigger triage. |
-| `patch_notes_summary_enabled` | Off | Allows a model to summarize major updates for frequently played games. |
+| `patch_notes_summary_enabled` | Off | Adds plain-text excerpts of up to 700 characters per post for assistant summaries. The default returns headline metadata only. |
 | `sale_roundup_enabled` | Off | Allows sale roundups that can trigger Inbox triage. Also requires Steam Inbox events. |
 | `memory_export_enabled` | Off | Allows the gaming profile to use assistant context via `memory_sources`. |
 | `memory_max_items` | 10 (1–30) | Caps profile items added to context. |
