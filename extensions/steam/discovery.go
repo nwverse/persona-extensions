@@ -22,28 +22,39 @@ import (
 const (
 	storeTagsTool   = "steam_store_tags"
 	storeSearchTool = "steam_store_search"
+	gameDetailsTool = "steam_game_details"
 
 	tagCatalogPath  = "/tagdata/populartags/"
 	storeSearchPath = "/search/results/"
+	appReviewsPath  = "/appreviews/"
+	reviewsAPIPath  = "/IUserReviewsService/GetAppReviews/v1/"
 
 	discoveryBudget      = 8 * time.Second
 	searchTimeout        = 3 * time.Second
 	accountLookupTimeout = 3 * time.Second
 	tagCatalogTimeout    = 1200 * time.Millisecond
+	legacyReviewTimeout  = time.Second
+	gameLookupTimeout    = 2500 * time.Millisecond
 	searchTTL            = 5 * time.Minute
 	searchMaxStaleAge    = 30 * time.Minute
 	tagCatalogTTL        = 8 * time.Hour
 	discoveryCacheSize   = 64
+	detailBatchLimit     = 10
+	detailConcurrency    = 4
 	searchTagLimit       = 8
+	detailTagLimit       = 8
 	tagNameRunes         = 60
 	tagCatalogBytes      = 128 << 10
 	searchResponseBytes  = 512 << 10
+	gameResponseBytes    = 512 << 10
+	reviewResponseBytes  = 128 << 10
 )
 
 const (
 	problemDiscoveryDisabled problem = "discovery_disabled"
 	problemDiscoveryTagArgs  problem = "invalid_store_tags_args"
 	problemDiscoverySearch   problem = "invalid_store_search_args"
+	problemDiscoveryDetails  problem = "invalid_game_details_args"
 	problemUnknownStoreTag   problem = "unknown_store_tag"
 	problemBuiltInTags       problem = "built_in_tags"
 	problemStoreSearchFailed problem = "store_search_unavailable"
@@ -51,6 +62,7 @@ const (
 )
 
 func discoveryTools(limit int) []wire.ConnectorTool {
+	const appID = `{"type":"integer","minimum":1,"maximum":4294967295}`
 	const language = `"language":{"type":"string","description":"Steam language code such as english or schinese. Defaults to the Hub locale."}`
 	resultLimit := fmt.Sprintf(`"limit":{"type":"integer","minimum":1,"maximum":%d,"default":%d}`, limit, limit)
 	return []wire.ConnectorTool{
@@ -72,6 +84,12 @@ func discoveryTools(limit int) []wire.ConnectorTool {
 				"sort":{"type":"string","enum":["relevance","reviews","price_asc","release_date"],"default":"relevance"},
 				"exclude_owned":{"type":"boolean","default":false,"description":"Exclude titles confirmed in the current library. Account flags are null when unknown."},
 				` + resultLimit + `}}`),
+		},
+		{
+			Name:        gameDetailsTool,
+			Description: "Read localized descriptions, tags and features, Steam Deck status, regional prices, and overall and rolling 30-day review statistics for a shortlist of games.",
+			InputSchema: json.RawMessage(fmt.Sprintf(`{"type":"object","properties":{
+				"appid":%s,"appids":{"type":"array","description":"Provide appid or a list of 1 to %d appids.", "items":%s},%s}}`, appID, min(limit, detailBatchLimit), appID, language)),
 		},
 	}
 }
@@ -179,6 +197,8 @@ func (a *app) callDiscoveryTool(ctx context.Context, name string, raw json.RawMe
 		err = a.discovery.listTags(ctx, raw, fallbackLanguage, limit, t, out)
 	case storeSearchTool:
 		err = a.searchStore(ctx, raw, country, fallbackLanguage, limit, t, out)
+	case gameDetailsTool:
+		err = a.discovery.gameDetails(ctx, raw, country, fallbackLanguage, min(limit, detailBatchLimit), t, out)
 	}
 	if err != nil {
 		return wire.ConnectorCallResult{}, err
@@ -686,4 +706,407 @@ func (d *steamData) discoveryWishIDs(ctx context.Context, id string) reading[map
 		}
 		return &ids, ""
 	})
+}
+
+type discoveryGame struct {
+	AppID     uint32             `json:"appid"`
+	URL       string             `json:"url"`
+	Details   *discoveryMetadata `json:"details,omitempty"`
+	Tags      []discoveryTag     `json:"tags,omitempty"`
+	SteamDeck string             `json:"steam_deck,omitempty"`
+	Overall   *discoveryReviews  `json:"overall_reviews,omitempty"`
+	Recent    *discoveryReviews  `json:"recent_30_days,omitempty"`
+	Warnings  []toolWarning      `json:"warnings,omitempty"`
+}
+
+type discoveryMetadata struct {
+	Name             string              `json:"name"`
+	Type             string              `json:"type,omitempty"`
+	ShortDescription string              `json:"short_description,omitempty"`
+	Genres           []string            `json:"genres,omitempty"`
+	Categories       []discoveryCategory `json:"categories,omitempty"`
+	Platforms        []string            `json:"platforms,omitempty"`
+	ReleaseDate      *discoveryRelease   `json:"release_date,omitempty"`
+	Features         *discoveryFeatures  `json:"features,omitempty"`
+	IsFree           bool                `json:"is_free"`
+	Price            *storePrice         `json:"price,omitempty"`
+}
+
+type discoveryCategory struct {
+	ID   uint32 `json:"id"`
+	Name string `json:"description"`
+}
+
+type discoveryRelease struct {
+	Date       string `json:"date"`
+	ComingSoon bool   `json:"coming_soon"`
+}
+
+type discoveryFeatures struct {
+	Controller        string `json:"controller_support,omitempty"`
+	SinglePlayer      bool   `json:"single_player"`
+	Multiplayer       bool   `json:"multiplayer"`
+	OnlineMultiplayer bool   `json:"online_multiplayer"`
+	LocalMultiplayer  bool   `json:"local_multiplayer"`
+	Coop              bool   `json:"coop"`
+	OnlineCoop        bool   `json:"online_coop"`
+	LocalCoop         bool   `json:"local_coop"`
+	LANCoop           bool   `json:"lan_coop"`
+}
+
+func (d *steamDiscovery) gameDetails(ctx context.Context, raw json.RawMessage, country, fallback string, limit int, t *text, out map[string]any) error {
+	var args struct {
+		AppID    *uint32  `json:"appid"`
+		AppIDs   []uint32 `json:"appids"`
+		Language string   `json:"language"`
+	}
+	language, validLanguage := "", false
+	if decodeArgs(raw, &args) {
+		language, validLanguage = discoveryLanguage(args.Language, fallback)
+	}
+	if !validLanguage || args.AppID != nil && args.AppIDs != nil {
+		return invalid(fmt.Sprintf(t.message(problemDiscoveryDetails, false), limit))
+	}
+	ids := args.AppIDs
+	if args.AppID != nil {
+		ids = []uint32{*args.AppID}
+	}
+	if len(ids) == 0 || len(ids) > limit || slices.Contains(ids, 0) {
+		return invalid(fmt.Sprintf(t.message(problemDiscoveryDetails, false), limit))
+	}
+	games := make([]discoveryGame, 0, len(ids))
+	selected := make([]uint32, 0, len(ids))
+	for _, id := range ids {
+		if !slices.Contains(selected, id) {
+			selected = append(selected, id)
+			games = append(games, discoveryGame{AppID: id, URL: storeLink(id)})
+		}
+	}
+	var browse map[uint32]discoveryBrowseItem
+	var browseIssue problem
+	var catalog reading[[]discoveryTag]
+	var reads sync.WaitGroup
+	reads.Go(func() {
+		browse, browseIssue = d.browseGames(ctx, selected, country, language)
+		for _, item := range browse {
+			if len(item.TagIDs) > 0 {
+				catalog = d.catalog(ctx, language)
+				break
+			}
+		}
+	})
+	workers := make(chan struct{}, detailConcurrency)
+	end := d.now().Unix()
+	for i := range games {
+		reads.Go(func() {
+			select {
+			case workers <- struct{}{}:
+				defer func() { <-workers }()
+				d.readGame(ctx, &games[i], country, language, end, t)
+			case <-ctx.Done():
+				games[i].warn("details", sanitizeError(ctx.Err()), t)
+			}
+		})
+	}
+	reads.Wait()
+
+	describeReading(out, "store_browse", reading[discoveryBrowseItem]{Issue: browseIssue}, t)
+	describeReading(out, "tags", catalog, t)
+	if catalog.Issue != "" && catalog.Data == nil {
+		describeReading(out, "tags", reading[[]discoveryTag]{Issue: problemBuiltInTags}, t)
+		out["tag_language"] = builtInTagLanguage(language)
+	}
+	tagNames := make(map[uint32]string)
+	if catalog.Data != nil {
+		for _, tag := range *catalog.Data {
+			tagNames[tag.ID] = tag.Name
+		}
+	}
+	for _, tag := range builtInTags(builtInTagLanguage(language)) {
+		if tagNames[tag.ID] == "" {
+			tagNames[tag.ID] = tag.Name
+		}
+	}
+	available := false
+	for i := range games {
+		g := &games[i]
+		store, found := browse[g.AppID]
+		if found {
+			g.SteamDeck = deckStatus(store.Platforms.SteamDeck)
+			for _, id := range store.TagIDs[:min(detailTagLimit, len(store.TagIDs))] {
+				if id != 0 && !slices.ContainsFunc(g.Tags, func(tag discoveryTag) bool { return id == tag.ID }) {
+					g.Tags = append(g.Tags, discoveryTag{id, tagNames[id]})
+				}
+			}
+		} else if browseIssue == "" {
+			g.warn("store_browse", problemMissing, t)
+		}
+		available = available || g.Details != nil || found || g.Overall != nil || g.Recent != nil
+	}
+	out["available"], out["games"], out["country_code"], out["language"] = available, games, country, language
+	return nil
+}
+
+func (g *discoveryGame) warn(dataset string, issue problem, t *text) {
+	if issue != "" {
+		g.Warnings = append(g.Warnings, toolWarning{Dataset: dataset, Code: issue, Message: t.message(issue, false)})
+	}
+}
+
+func (d *steamDiscovery) readGame(ctx context.Context, g *discoveryGame, country, language string, end int64, t *text) {
+	var detailsIssue, overallIssue, recentIssue problem
+	var reads sync.WaitGroup
+	reads.Go(func() { g.Details, detailsIssue = d.gameMetadata(ctx, g.AppID, country, language) })
+	reads.Go(func() { g.Overall, overallIssue = d.overallReviews(ctx, g.AppID, language) })
+	reads.Go(func() { g.Recent, recentIssue = d.gameReviews(ctx, g.AppID, language, end) })
+	reads.Wait()
+	dataset := "details"
+	if g.Details != nil {
+		dataset = "price"
+	}
+	g.warn(dataset, detailsIssue, t)
+	g.warn("overall_reviews", overallIssue, t)
+	g.warn("recent_30_days", recentIssue, t)
+}
+
+func (d *steamDiscovery) gameMetadata(ctx context.Context, id uint32, country, language string) (*discoveryMetadata, problem) {
+	appID := appIDText(id)
+	query := url.Values{"appids": {appID}, "cc": {country}, "l": {language}, "filters": {
+		"basic,genres,categories,release_date,platforms,price_overview",
+	}}
+	var reply map[string]struct {
+		Success *bool           `json:"success"`
+		Data    json.RawMessage `json:"data"`
+	}
+	if p := d.get(ctx, gameLookupTimeout, gameResponseBytes, storeBase+storePricesPath, query, &reply); p != "" {
+		return nil, p
+	}
+	item := reply[appID]
+	if item.Success == nil {
+		return nil, problemResponse
+	}
+	if !*item.Success {
+		return nil, problemMissing
+	}
+	var data struct {
+		AppID            uint32              `json:"steam_appid"`
+		Name             string              `json:"name"`
+		Type             string              `json:"type"`
+		ShortDescription string              `json:"short_description"`
+		Controller       string              `json:"controller_support"`
+		IsFree           bool                `json:"is_free"`
+		ReleaseDate      *discoveryRelease   `json:"release_date"`
+		Categories       []discoveryCategory `json:"categories"`
+		Genres           []struct {
+			Name string `json:"description"`
+		} `json:"genres"`
+		Platforms struct{ Windows, Mac, Linux bool }
+	}
+	if json.Unmarshal(item.Data, &data) != nil || data.AppID != id || strings.TrimSpace(data.Name) == "" {
+		return nil, problemResponse
+	}
+	game := &discoveryMetadata{
+		Name: d.client.text(data.Name), Type: cleanText(redactCredentials(data.Type), 20), IsFree: data.IsFree,
+		ShortDescription: shortStoreDescription(data.ShortDescription), ReleaseDate: data.ReleaseDate,
+	}
+	if game.ReleaseDate != nil {
+		game.ReleaseDate.Date = cleanText(redactCredentials(game.ReleaseDate.Date), 40)
+	}
+	for _, genre := range data.Genres[:min(8, len(data.Genres))] {
+		if name := cleanText(redactCredentials(genre.Name), tagNameRunes); name != "" {
+			game.Genres = append(game.Genres, name)
+		}
+	}
+	for _, category := range data.Categories[:min(24, len(data.Categories))] {
+		if category.Name = cleanText(redactCredentials(category.Name), tagNameRunes); category.ID != 0 && category.Name != "" {
+			game.Categories = append(game.Categories, category)
+		}
+	}
+	for _, platform := range []struct {
+		name      string
+		supported bool
+	}{{"windows", data.Platforms.Windows}, {"macos", data.Platforms.Mac}, {"linux", data.Platforms.Linux}} {
+		if platform.supported {
+			game.Platforms = append(game.Platforms, platform.name)
+		}
+	}
+	game.Features = storeFeatures(data.Categories, data.Controller)
+	price, valid := d.client.parsePrice(item.Data)
+	game.Price = price
+	if !valid {
+		return game, problemResponse
+	}
+	return game, ""
+}
+
+func shortStoreDescription(raw string) string {
+	tokens := html.NewTokenizer(strings.NewReader(raw))
+	var text strings.Builder
+	for kind := tokens.Next(); kind != html.ErrorToken; kind = tokens.Next() {
+		if kind == html.TextToken {
+			text.Write(tokens.Text())
+		} else {
+			text.WriteByte(' ')
+		}
+	}
+	return cleanText(redactCredentials(strings.Join(strings.Fields(text.String()), " ")), 500)
+}
+
+func storeFeatures(categories []discoveryCategory, controller string) *discoveryFeatures {
+	if categories == nil && controller == "" {
+		return nil
+	}
+	f := &discoveryFeatures{}
+	if controller == "full" || controller == "partial" {
+		f.Controller = controller
+	}
+	for _, category := range categories {
+		switch category.ID {
+		case 1, 27, 47: // Multi-player, cross-platform multiplayer, LAN PvP
+			f.Multiplayer = true
+		case 2:
+			f.SinglePlayer = true
+		case 9:
+			f.Coop = true
+		case 28:
+			f.Controller = "full"
+		case 18:
+			if f.Controller == "" {
+				f.Controller = "partial"
+			}
+		case 36, 38: // Online PvP / Co-op
+			f.OnlineMultiplayer = true
+			f.OnlineCoop = f.OnlineCoop || category.ID == 38
+		case 37, 39: // Shared/split-screen PvP / Co-op
+			f.LocalMultiplayer = true
+			f.LocalCoop = f.LocalCoop || category.ID == 39
+		case 48:
+			f.LANCoop = true
+		}
+	}
+	f.Coop = f.Coop || f.OnlineCoop || f.LocalCoop || f.LANCoop
+	f.Multiplayer = f.Multiplayer || f.Coop || f.OnlineMultiplayer || f.LocalMultiplayer
+	return f
+}
+
+type discoveryBrowseItem struct {
+	AppID     uint32   `json:"appid"`
+	Success   int      `json:"success"`
+	TagIDs    []uint32 `json:"tagids"`
+	Platforms struct {
+		SteamDeck int `json:"steam_deck_compat_category"`
+	} `json:"platforms"`
+}
+
+func (d *steamDiscovery) browseGames(ctx context.Context, apps []uint32, country, language string) (map[uint32]discoveryBrowseItem, problem) {
+	ids := make([]map[string]uint32, 0, len(apps))
+	for _, id := range apps {
+		ids = append(ids, map[string]uint32{"appid": id})
+	}
+	input, _ := json.Marshal(map[string]any{
+		"ids":          ids,
+		"context":      map[string]string{"country_code": country, "language": language},
+		"data_request": map[string]any{"include_tag_count": detailTagLimit, "include_platforms": true},
+	})
+	var reply struct {
+		Response struct {
+			Items []discoveryBrowseItem `json:"store_items"`
+		} `json:"response"`
+	}
+	if p := d.get(ctx, gameLookupTimeout, gameResponseBytes, apiBase+storeNamesPath, url.Values{"input_json": {string(input)}}, &reply); p != "" {
+		return nil, p
+	}
+	if reply.Response.Items == nil {
+		return nil, problemResponse
+	}
+	items := make(map[uint32]discoveryBrowseItem, len(apps))
+	for _, item := range reply.Response.Items {
+		if item.Success == 1 && slices.Contains(apps, item.AppID) {
+			items[item.AppID] = item
+		}
+	}
+	return items, ""
+}
+
+func deckStatus(category int) string {
+	switch category {
+	case 1:
+		return "unsupported"
+	case 2:
+		return "playable"
+	case 3:
+		return "verified"
+	default:
+		return "unknown"
+	}
+}
+
+type discoveryReviews struct {
+	Count           uint32   `json:"count"`
+	PositivePercent *float64 `json:"positive_percent,omitempty"`
+	Summary         string   `json:"summary,omitempty"`
+}
+
+type steamReviewSummary struct {
+	Total    *uint32 `json:"total_reviews"`
+	Positive *uint32 `json:"total_positive"`
+	Label    string  `json:"review_score_desc"`
+}
+
+func (s steamReviewSummary) stats() *discoveryReviews {
+	if s.Total == nil || s.Positive == nil && *s.Total > 0 || s.Positive != nil && *s.Positive > *s.Total {
+		return nil
+	}
+	out := &discoveryReviews{Count: *s.Total, Summary: cleanText(redactCredentials(s.Label), 80)}
+	if out.Count > 0 {
+		percent := math.Round(1000*float64(*s.Positive)/float64(out.Count)) / 10
+		out.PositivePercent = &percent
+	}
+	return out
+}
+
+func (d *steamDiscovery) overallReviews(ctx context.Context, appID uint32, language string) (*discoveryReviews, problem) {
+	var reply struct {
+		Success int                `json:"success"`
+		Summary steamReviewSummary `json:"query_summary"`
+	}
+	query := url.Values{"json": {"1"}, "filter": {"recent"}, "language": {"all"}, "l": {language},
+		"purchase_type": {"steam"}, "num_per_page": {"1"}}
+	if issue := d.get(ctx, legacyReviewTimeout, reviewResponseBytes, storeBase+appReviewsPath+appIDText(appID), query, &reply); issue == "" && reply.Success == 1 {
+		if stats := reply.Summary.stats(); stats != nil {
+			return stats, ""
+		}
+	}
+	// Valve deprecated the Store route. Use its official replacement on API
+	// failures or redirects, which the credential-safe HTTP client refuses.
+	return d.gameReviews(ctx, appID, language, 0)
+}
+
+func (d *steamDiscovery) gameReviews(ctx context.Context, appID uint32, language string, end int64) (*discoveryReviews, problem) {
+	input := map[string]any{
+		"appid": appID, "filter": 1, "languages": []string{"all"}, "num_per_page": 1, "display_language": language,
+	}
+	if end != 0 {
+		input["date_range_start"] = end - 30*24*60*60
+		input["date_range_end"] = end
+	}
+	payload, _ := json.Marshal(input)
+	var reply struct {
+		Response struct {
+			Summary  steamReviewSummary `json:"query_summary"`
+			Matching *uint32            `json:"total_matching"`
+		} `json:"response"`
+	}
+	query := url.Values{"input_json": {string(payload)}}
+	if p := d.get(ctx, gameLookupTimeout, reviewResponseBytes, apiBase+reviewsAPIPath, query, &reply); p != "" {
+		return nil, p
+	}
+	stats := reply.Response.Summary.stats()
+	if stats == nil && reply.Response.Matching != nil && *reply.Response.Matching == 0 && reply.Response.Summary.Total == nil {
+		stats = &discoveryReviews{}
+	}
+	if stats == nil || end != 0 && (reply.Response.Matching == nil || stats.Count != *reply.Response.Matching) {
+		return nil, problemResponse
+	}
+	return stats, ""
 }

@@ -241,6 +241,129 @@ func TestDiscoverySearchDegradesWithinBudget(t *testing.T) {
 	assertHidden(t, unavailable, "Fixture result")
 }
 
+func TestDiscoveryGameDetailsBatchAndReviewWindows(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	now, _ := syntheticClock()
+	h := startDiscoveryHost(t, f, `{"country_code":"GB","discovery_max_results":2}`, "zh-Hans", now)
+	f.reply(tagCatalogPath+"schinese", http.StatusOK, `[{"tagid":1664,"name":"解谜"}]`)
+	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			IDs []struct {
+				AppID uint32 `json:"appid"`
+			} `json:"ids"`
+			Context     map[string]string `json:"context"`
+			DataRequest map[string]any    `json:"data_request"`
+		}
+		if json.Unmarshal([]byte(r.URL.Query().Get("input_json")), &input) != nil ||
+			len(input.IDs) == 0 || len(input.IDs) > 2 || input.IDs[0].AppID != firstApp ||
+			input.Context["country_code"] != "GB" || input.Context["language"] != "schinese" ||
+			input.DataRequest["include_tag_count"] != float64(8) || input.DataRequest["include_platforms"] != true {
+			t.Errorf("incorrect metadata batch: %+v", input)
+		}
+		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[
+			{"appid":%d,"success":1,"tagids":[1664,777777],"platforms":{"steam_deck_compat_category":3}}
+		]}}`, firstApp)
+	})
+	f.handle(storePricesPath, func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		id := q.Get("appids")
+		if q.Get("cc") != "GB" || q.Get("l") != "schinese" || !strings.Contains(q.Get("filters"), "price_overview") {
+			t.Errorf("incorrect localized details request: %v", q)
+		}
+		if id == appIDText(secondApp) {
+			_, _ = fmt.Fprintf(w, `{%q:{"success":false}}`, id)
+			return
+		}
+		if id != appIDText(firstApp) {
+			t.Errorf("unexpected or unbounded appdetails request: %v", q)
+		}
+		description := "模拟 &amp; 联机<br>探索 " + strings.Repeat("试", 700) + "too long"
+		_, _ = fmt.Fprintf(w, `{%q:{"success":true,"data":{
+			"steam_appid":%d,"name":"合成冒险","type":"game","short_description":%q,"about_the_game":"unrequested long description",
+			"genres":[{"id":"25","description":"冒险"}],
+			"categories":[{"id":2,"description":"单人"},{"id":38,"description":"在线合作"},{"id":39,"description":"分屏合作"},{"id":28,"description":"完全支持手柄"}],
+			"platforms":{"windows":true,"mac":true,"linux":false},"release_date":{"date":"2026 年 6 月","coming_soon":false},
+			"price_overview":{"currency":"GBP","final":250,"final_formatted":"£2.50","discount_percent":75}
+		}}}`, id, firstApp, description)
+	})
+	f.handle(appReviewsPath+appIDText(firstApp), func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("json") != "1" || q.Get("language") != "all" || q.Get("num_per_page") != "1" || q.Get("purchase_type") != "steam" {
+			t.Errorf("incorrect Store reviews request: %v", q)
+		}
+		_, _ = fmt.Fprint(w, `{"success":1,"query_summary":{"total_reviews":100,"total_positive":91,"review_score_desc":"特别好评"},
+			"reviews":[{"review":"private raw review text","author":{"steamid":"synthetic-reviewer"}}]}`)
+	})
+	f.handle(appReviewsPath+appIDText(secondApp), func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, storeBase+"/", http.StatusFound)
+	})
+	f.handle(reviewsAPIPath, func(w http.ResponseWriter, r *http.Request) {
+		var input struct {
+			AppID           uint32   `json:"appid"`
+			Filter          int      `json:"filter"`
+			Start           int64    `json:"date_range_start"`
+			End             int64    `json:"date_range_end"`
+			NumPerPage      int      `json:"num_per_page"`
+			DisplayLanguage string   `json:"display_language"`
+			Languages       []string `json:"languages"`
+		}
+		if json.Unmarshal([]byte(r.URL.Query().Get("input_json")), &input) != nil || input.Filter != 1 ||
+			input.NumPerPage != 1 || input.DisplayLanguage != "schinese" || len(input.Languages) != 1 || input.Languages[0] != "all" {
+			t.Errorf("incorrect bounded review query: %+v", input)
+		}
+		if input.End == 0 {
+			if input.AppID != secondApp || input.Start != 0 {
+				t.Errorf("unexpected overall fallback: %+v", input)
+			}
+			_, _ = fmt.Fprint(w, `{"response":{"total_matching":8,"query_summary":{"total_reviews":8,"total_positive":6}}}`)
+			return
+		}
+		if input.End != now().Unix() || input.Start != input.End-int64((30*24*time.Hour)/time.Second) {
+			t.Errorf("reviews use the wrong time window: %+v", input)
+		}
+		if input.AppID == secondApp {
+			_, _ = fmt.Fprint(w, `{"response":{"total_matching":0,"query_summary":{"num_reviews":0}}}`)
+			return
+		}
+		_, _ = fmt.Fprint(w, `{"response":{"total_matching":9,"query_summary":{"total_reviews":9,"total_positive":7,"review_score_desc":"多半好评"},
+			"reviews":[{"review":"unrequested new review body"}]}}`)
+	})
+	raw := toolAnswer(t, h, gameDetailsTool, fmt.Sprintf(`{"appids":[%d,%d],"language":"zh-CN"}`, firstApp, secondApp))
+	contains(t, raw, `"available":true`, `"country_code":"GB"`, `"steam_deck":"verified"`, `"positive_percent":91`, `"positive_percent":77.8`,
+		`"recent_30_days":{"count":0}`, `"positive_percent":75`, `"online_coop":true`, `"local_coop":true`, `"controller_support":"full"`,
+		`"platforms":["windows","macos"]`, `"currency":"GBP"`, `"discount_percent":75`, "模拟", "联机 探索", "解谜", "特别好评", "Steam 未返回")
+	assertHidden(t, raw, "private raw review text", "synthetic-reviewer", "unrequested new review body", "unrequested long description", "too long", "<br>")
+	var out struct{ Games []discoveryGame }
+	if json.Unmarshal([]byte(raw), &out) != nil || len(out.Games) != 2 || out.Games[0].AppID != firstApp || out.Games[1].AppID != secondApp {
+		t.Fatalf("batch did not preserve the app order: %s", raw)
+	}
+	if f.hit(storeNamesPath) != 1 || f.hit(storePricesPath) != 2 || f.hit(reviewsAPIPath) != 3 {
+		t.Fatal("unexpected number of Store or review requests")
+	}
+	for _, invalidArgs := range []string{`{"appids":[1,2,3]}`, `{"appid":1,"appids":[2]}`, `{"appid":0}`, `{"appids":[-1]}`} {
+		var e *ext.Error
+		err := h.Call("connector.tools.call", wire.ConnectorCallParams{Name: gameDetailsTool, Args: json.RawMessage(invalidArgs)}, nil)
+		if !errors.As(err, &e) || e.Code != "invalid" {
+			t.Errorf("invalid details request accepted: %s: %v", invalidArgs, err)
+		}
+	}
+	if f.hit(storePricesPath) != 2 || f.hit(ownedPath) != 0 || f.hit(wishlistPath) != 0 {
+		t.Fatal("invalid inputs or public details touched unnecessary endpoints")
+	}
+	contains(t, toolAnswer(t, h, gameDetailsTool, fmt.Sprintf(`{"appid":%d}`, firstApp)), `"name":"合成冒险"`)
+}
+
+func TestDiscoveryDetailsAbsoluteBatchLimit(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	h := startDiscoveryHost(t, f, `{"discovery_max_results":50}`, "en", time.Now)
+	args := json.RawMessage(`{"appids":[1,2,3,4,5,6,7,8,9,10,11]}`)
+	var e *ext.Error
+	err := h.Call("connector.tools.call", wire.ConnectorCallParams{Name: gameDetailsTool, Args: args}, nil)
+	if !errors.As(err, &e) || e.Code != "invalid" || !strings.Contains(e.Message, "up to 10") {
+		t.Fatalf("absolute batch limit was bypassed: %v", err)
+	}
+}
+
 func TestDiscoveryDisabled(t *testing.T) {
 	f := newFakeSteam(t, time.Second)
 	h := startDiscoveryHost(t, f, `{"discovery_tools_enabled":false}`, "zh-Hans", time.Now)
@@ -251,7 +374,7 @@ func TestDiscoveryDisabled(t *testing.T) {
 	if len(list.Tools) != len(tools) {
 		t.Fatalf("disabled discovery changed the account tools: %v", list.Tools)
 	}
-	for _, name := range []string{"steam_store_tags", "steam_store_search"} {
+	for _, name := range []string{"steam_store_tags", "steam_store_search", "steam_game_details"} {
 		var out wire.ConnectorCallResult
 		err := h.Call("connector.tools.call", wire.ConnectorCallParams{
 			Contribution: extensionID, Name: name, Args: json.RawMessage(`{"unexpected":true}`),

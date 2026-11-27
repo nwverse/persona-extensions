@@ -184,7 +184,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 		return encodeSteamTool(a.achievementHunter(ctx, raw))
 	case gameNewsName:
 		return encodeSteamTool(a.gameNews(ctx, raw))
-	case storeTagsTool, storeSearchTool:
+	case storeTagsTool, storeSearchTool, gameDetailsTool:
 		if !a.config.AllowsDiscoveryTools() {
 			return wire.ConnectorCallResult{}, &ext.Error{
 				Code: string(problemDiscoveryDisabled), Message: textFor(a.locale).message(problemDiscoveryDisabled, false),
