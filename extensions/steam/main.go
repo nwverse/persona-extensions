@@ -83,7 +83,7 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 			}
 			return nil, nil
 		},
-		Namespaces: map[string]ext.Handler{"connector": a.connector, "auth": ext.AuthHandler(a)},
+		Namespaces: map[string]ext.Handler{"connector": a.connector, "auth": ext.AuthHandler(a), "memory": a.memoryEntries},
 		UI: map[string]ext.Page{
 			extensionID: {Render: a.render, Action: a.action},
 			summaryID:   {Render: a.card},

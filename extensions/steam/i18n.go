@@ -24,6 +24,7 @@ type text struct {
 	recentNews, noRecentNews string
 	backlog                  backlogText
 	recap                    recapText
+	memory                   memoryText
 
 	inboxPrice, inboxGiveaway, inboxRelease, inboxDemo, inboxRoundup string
 	inboxGiveawayHint, inboxReleaseHint, inboxDemoHint               string
@@ -35,6 +36,11 @@ type recapText struct {
 	topGames, addedTime, newGames, annotations     string
 	progress, backlog, movedInto, consumption      string
 	periods                                        map[recapPeriod]string
+}
+
+type memoryText struct {
+	favorites, genres, backlog, annotations, playing, recent string
+	milestone, completed, achievements, hours, separator     string
 }
 
 type backlogText struct {
@@ -74,6 +80,13 @@ var english = text{
 		window:     "Observed %s through %s (UTC).", topGames: "Most played in this period", addedTime: "Playtime added", newGames: "New in library",
 		annotations: "Current local annotations", progress: "Backlog progress", backlog: "Backlog", movedInto: "%d moved in", consumption: "Backlog started or completed",
 		periods: map[recapPeriod]string{recapMonth: "Monthly", recapQuarter: "Quarterly", recapYear: "Yearly", recapAll: "All observed history"},
+	},
+	memory: memoryText{
+		favorites: "Most-played Steam games include %s.", genres: "Frequently played Steam genres include %s, based on available Store details.",
+		backlog:     "Visible Steam library has %d waiting or paused, %d marked playing, %d completed, and %d dropped.",
+		annotations: "Local Steam annotations mark %d waiting or paused, %d playing, %d completed, and %d dropped.",
+		playing:     "Currently working through %s on Steam.", recent: "Recently played %s on Steam.",
+		milestone: "Steam milestone for %s (%s).", completed: "marked completed", achievements: "%d/%d achievements unlocked", hours: "%d h played", separator: ", ",
 	},
 	inboxPrice: "Wishlist price alert", inboxGiveaway: "100% off", inboxRelease: "Released on Steam", inboxDemo: "Demo available",
 	inboxRoundup: "Top wishlist deals", inboxGiveawayHint: "Check the Steam Store page to claim this limited-time offer.",
@@ -192,6 +205,13 @@ var chinese = text{
 		window:     "观测区间为 %s 至 %s（UTC）。", topGames: "周期内最常玩", addedTime: "新增游玩时长", newGames: "新入库游戏",
 		annotations: "当前本机标注", progress: "吃灰消化与进度", backlog: "待消化", movedInto: "%d 款移入", consumption: "吃灰消化率",
 		periods: map[recapPeriod]string{recapMonth: "月度", recapQuarter: "季度", recapYear: "年度", recapAll: "全部"},
+	},
+	memory: memoryText{
+		favorites: "Steam 最常玩的游戏包括 %s。", genres: "根据已有商店资料，Steam 常玩的游戏类型包括 %s。",
+		backlog:     "可见 Steam 游戏库中有 %d 款待玩或暂停、%d 款标注为正在推进、%d 款已通关、%d 款已搁置。",
+		annotations: "Steam 本机标注中有 %d 款待玩或暂停、%d 款正在推进、%d 款已通关、%d 款已搁置。",
+		playing:     "正在推进 Steam 游戏《%s》。", recent: "近两周玩过 Steam 游戏《%s》。",
+		milestone: "Steam 游戏《%s》的里程碑（%s）。", completed: "已标注通关", achievements: "已解锁 %d/%d 项成就", hours: "已玩 %d 小时", separator: "、",
 	},
 	inboxPrice: "愿望单价格提醒", inboxGiveaway: "喜加一", inboxRelease: "Steam 已发售", inboxDemo: "免费试玩已开放",
 	inboxRoundup: "愿望单大促精选", inboxGiveawayHint: "前往 Steam 商店页面查看并领取限时免费优惠。",

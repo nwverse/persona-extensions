@@ -29,6 +29,10 @@
       "agent_tools": ["steam_*"],
       "kinds": ["wishlist_price", "wishlist_giveaway", "wishlist_release", "wishlist_demo", "wishlist_sale_roundup"]
     }],
+    "memory_sources": [{
+      "id": "steam-gaming-profile",
+      "name": "Steam 游玩画像"
+    }],
     "ui": [
       {
         "id": "steam",
@@ -130,17 +134,26 @@
       },
       "memory_export_enabled": {
         "type": "boolean",
-        "title": "将游戏偏好导出到助手记忆",
-        "description": "允许通过 memory_sources 向助手提供个人游戏偏好。载入偏好时占用助手上下文 Token。默认关闭。",
+        "title": "将游玩画像导出到助手记忆",
+        "description": "允许 Persona 使用精简的 Steam 游玩画像。默认关闭，关闭时无导出条目、Steam 请求或额外上下文 Token。",
         "default": false
+      },
+      "memory_export_dimensions": {
+        "type": "array",
+        "title": "导出的游玩画像维度",
+        "description": "选择游玩偏好、近期活跃游戏、吃灰进度和里程碑。默认全选，取消全选即停止导出。",
+        "items": {"type": "string", "enum": ["playstyle", "active_games", "backlog_progress", "milestones"]},
+        "default": ["playstyle", "active_games", "backlog_progress", "milestones"],
+        "maxItems": 4,
+        "uniqueItems": true
       },
       "memory_max_items": {
         "type": "integer",
-        "title": "导出的游戏偏好条目上限",
-        "description": "开启记忆导出后，最多可导出的个人游戏偏好条目数。范围 1–30，默认 10。",
-        "default": 10,
+        "title": "导出的游玩画像条目上限",
+        "description": "画像导出的条目上限为 1–100，默认 20。全部条目正文共用 2,048 字节预算。",
+        "default": 20,
         "minimum": 1,
-        "maximum": 30
+        "maximum": 100
       },
       "discovery_tools_enabled": {
         "type": "boolean",

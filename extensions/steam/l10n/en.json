@@ -48,12 +48,17 @@
       "description": "When at least three wishlist games are discounted, replace their individual price alerts with one roundup. Requires Steam Inbox events. Off by default."
     },
     "memory_export_enabled": {
-      "title": "Export gaming preferences to assistant memory",
-      "description": "Share personal gaming preferences through memory_sources. Loading them into the assistant uses context tokens. Off by default."
+      "title": "Export gaming profile to assistant memory",
+      "description": "Let Persona use a compact Steam gaming profile. Turning this off returns no entries, makes zero Steam requests, and uses zero extra context tokens. Off by default."
+    },
+    "memory_export_dimensions": {
+      "title": "Gaming profile dimensions",
+      "description": "Choose the details to share. All are selected by default. Clear all selections to stop exporting.",
+      "choices": {"playstyle": "Game and genre preferences", "active_games": "Active games", "backlog_progress": "Backlog progress", "milestones": "Milestones"}
     },
     "memory_max_items": {
-      "title": "Gaming preference export limit",
-      "description": "Maximum number of personal gaming preference items exported when memory export is enabled. Range 1–30, default 10."
+      "title": "Gaming profile export limit",
+      "description": "Export up to this many gaming profile entries. Range 1–100, default 20. Entries share a 2,048-byte text budget."
     },
     "discovery_tools_enabled": {
       "title": "Steam game research tools and skill",

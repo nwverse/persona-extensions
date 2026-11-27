@@ -320,6 +320,7 @@ func (d *steamData) hunterPersonal(ctx context.Context, appID uint32, language s
 		r.progress.Issue = issue
 		return r
 	}
+	defer func() { d.rememberAchievement(id, r.progress.Data) }()
 	if c.access == "" {
 		r.legacy, r.progress.Issue = c.legacyPlayerAchievements(ctx, id, appID)
 		if r.legacy != nil && r.legacy.Achievements != nil {

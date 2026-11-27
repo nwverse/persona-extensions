@@ -33,6 +33,9 @@ func TestManifestAndTranslations(t *testing.T) {
 	if m.Contributes == nil || len(m.Contributes.Connectors) != 1 || len(m.Contributes.UI) != 2 {
 		t.Fatal("missing contribution declarations")
 	}
+	if sources := m.Contributes.MemorySources; len(sources) != 1 || sources[0].ID != memorySourceID || sources[0].Name == "" {
+		t.Fatalf("invalid memory source contribution: %+v", sources)
+	}
 	c := m.Contributes.Connectors[0]
 	if c.ID != extensionID || !slices.Equal(c.Capabilities, []string{"status", "tools", "events", "inbox", "fallback"}) ||
 		!slices.Equal(c.Hosts, []string{storeHost, "steamcommunity.com"}) || !slices.Equal(c.AgentTools, []string{"steam_*"}) ||
