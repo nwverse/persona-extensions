@@ -136,7 +136,7 @@ func suffixOf(p *Pattern) string {
 		return ""
 	}
 	body := strings.TrimSpace(p.Text)
-	if strings.Contains(body, x) || norm.Jaccard(body, x) >= 0.45 {
+	if strings.Contains(body, x) || norm.Jaccard(body, x) >= 0.45 || norm.Overlap(body, x) >= 0.55 {
 		return ""
 	}
 	if qb, qx := norm.Q(body), norm.Q(x); qx != "" && strings.Contains(qb, qx) {

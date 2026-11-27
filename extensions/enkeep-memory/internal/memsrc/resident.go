@@ -497,7 +497,7 @@ func redundantExceptionSuffix(body, suffix string) bool {
 	if qInner != "" && strings.Contains(qBody, qInner) {
 		return true
 	}
-	if norm.Jaccard(body, inner) >= 0.45 {
+	if norm.Jaccard(body, inner) >= 0.45 || norm.Overlap(body, inner) >= 0.55 {
 		return true
 	}
 	// Core phrase containment: if substantial clause(s) from inner already appear verbatim in body.
