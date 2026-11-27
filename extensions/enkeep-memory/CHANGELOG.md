@@ -1,5 +1,33 @@
 # enkeep-memory changelog
 
+## 0.4.0
+
+- **Four-tier source authority, six memory classes, and payload-first privacy (`daily/19`).**
+  - Introduced four-tier source authority (`T0`–`T3`), six `MemoryClass` categories, `OriginAssistantNote` (demoting
+    assistant reflection notes from standing privilege), `IsTrueUserOwned` as the single source of truth for user
+    ownership, and `ClassifyOpsRunbook` for separating operational runbooks from standing memory.
+  - Switched sensitivity tagging to payload-first classification (`PayloadCategories`), added cron boilerplate
+    pre-cleaning, removed legacy `rules_merge.*` and `Handwritten` standing privilege, and upgraded the daily
+    extraction prompt to `daily/19`.
+- **Entity governance, reversible graph resolution, and dual-lifecycle decay.**
+  - Added entity governance with prefix stripping, undirected `collaborates_with` relations, and sunsetting of
+    `about`/`same_circle`.
+  - Added reversible Tier 1/Tier 2 graph resolution (`resolve.go`) requiring strong naming/alias evidence with bounded
+    Tier 2 candidate pairs (`tier2MaxPairs=240`), plus dual-lifecycle decay for transient status (14/30d) and ops
+    runbooks (45/60d).
+- **L1 profile & contract synthesis, 4 KB three-section standing, and `state.json`-SSOT sensitive profile sections.**
+  - Added L1 event-shell stripping, `KindProfileCore`/`SyncProfileCore`, pre-routed chunked `SyncContracts`
+    (`<=35` candidates/batch, `contractMaxTokens=12000`) eliminating `max_tokens` JSON truncation, and structured
+    `Poles` tension reconciliation (`Reconcile`).
+  - Adopted a three-section + hot-slot 4 KB standing layout with clean blank-user cold-start fallback, and enforced
+    `state.json` as the single source of truth for profile sensitive sections—excluding `ops_runbook` entries and
+    tightening cross-word regexes with gender-neutral wording.
+- **Production migration CLI and review-bundle exporter.**
+  - Added `migrate-v04` for reversible in-place migration (Phase 0 atomic SHA-256 backup & byte-exact `-rollback`,
+    Phase 1 deterministic clean, Phase 2 rate-limited Haiku resolution/audit/routing, Phase 3 L1 & profile rebuild)
+    and `review-bundle` for exporting the 6-deliverable review package (PRs #1324, #1325, #1326, #1327, #1332, #1383,
+    #1396).
+
 ## 0.3.0
 
 - **Unified principle & contract aggregation architecture (L1).**
