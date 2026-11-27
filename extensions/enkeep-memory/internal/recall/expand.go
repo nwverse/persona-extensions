@@ -206,11 +206,42 @@ type matchedEntity struct {
 	exact  bool
 }
 
+// genericEntityStop lists generic common nouns and short ASCII tokens that must never trigger 1-hop entity expansion
+// (unified design §2.2: prevents false matches like "ST" inside "astergate", "Launch" inside "launcher", or "文档").
+var genericEntityStop = map[string]bool{
+	"文档": true, "系统": true, "模型": true, "任务": true, "测试": true, "配置": true, "工具": true,
+	"方案": true, "项目": true, "用户": true, "助手": true, "实验": true, "报告": true, "笔记": true,
+	"推送": true, "代码": true, "文件": true, "目录": true, "接口": true, "服务": true, "机器": true,
+	"launch": true, "push": true, "status": true, "config": true, "agent": true, "task": true,
+	"test": true, "doc": true, "docs": true, "file": true, "code": true, "repo": true,
+	"prompt": true, "session": true, "review": true, "model": true, "user": true, "system": true,
+}
+
+func isPureASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
+}
+
 func matchEntities(st *store.State, qq string, words []string) []matchedEntity {
 	var cands []matchedEntity
 	seen := map[string]bool{}
 	matches := func(nq string) (ok, exact bool) {
-		if utf8.RuneCountInString(nq) < 2 {
+		if utf8.RuneCountInString(nq) < 2 || genericEntityStop[nq] {
+			return false, false
+		}
+		if isPureASCII(nq) {
+			if len(nq) < 3 {
+				return false, false
+			}
+			// Pure ASCII entity names require exact or whole-token match so "st" never matches "astergate"
+			// and "launch" never matches "launcher".
+			if nq == qq || slices.Contains(words, nq) {
+				return true, true
+			}
 			return false, false
 		}
 		if nq == qq || slices.Contains(words, nq) {
@@ -351,8 +382,19 @@ func expandEntities(st *store.State, q Query, qq string, words []string) ([]Enti
 		}
 
 		// 1. Structural skeleton edges from st.Graph.
+		// Prune incoming depends_on fan-in edges when a shared hub (e.g. astergate) has >2 dependents so
+		// unrelated upstream projects do not flood the entity context.
 		if idx != nil && ent.nodeID != "" {
+			inDeps := 0
 			for _, ae := range idx.adj[ent.nodeID] {
+				if ae.edge.Predicate == "depends_on" && ent.norms[norm.Q(ae.edge.To)] && !ent.norms[norm.Q(ae.edge.From)] {
+					inDeps++
+				}
+			}
+			for _, ae := range idx.adj[ent.nodeID] {
+				if inDeps > 2 && ae.edge.Predicate == "depends_on" && ent.norms[norm.Q(ae.edge.To)] && !ent.norms[norm.Q(ae.edge.From)] {
+					continue
+				}
 				addEdge(ae.edge, ae.otherName)
 			}
 		}

@@ -114,6 +114,10 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Mode == "create" {
 		return a.createView(ctx, r, st)
 	}
+	now, err := timeInZone(r.TZ)
+	if err != nil {
+		return nil, err
+	}
 	if st.Mode == "detail" {
 		item, err := a.client.task(ctx, st.TaskID)
 		a.record(err)
@@ -124,17 +128,13 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if err != nil {
 			return nil, err
 		}
-		return detailView(r, st, item, data), nil
+		return detailView(r, st, item, data, now.Location()), nil
 	}
 	if st.View == "" {
 		st.View = "today"
 	}
 	items, err := a.client.tasks(ctx, "", map[bool]string{true: st.Query}[st.View == "search"], st.Pages+1)
 	a.record(err)
-	if err != nil {
-		return nil, err
-	}
-	now, err := timeInZone(r.TZ)
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +153,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		Type: wire.ComponentButton, Title: t.create, Action: &wire.Action{ID: "create", Push: &wire.Push{State: ext.EncodeState(pageState{Mode: "create", CreateID: randomID()}), Title: t.create}},
 	}}}
 	for _, item := range filtered {
-		section.Items = append(section.Items, taskRow(item, data))
+		section.Items = append(section.Items, taskRow(item, data, now.Location()))
 	}
 	if len(filtered) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noTasks})
@@ -176,14 +176,14 @@ func timeInZone(zone string) (time.Time, error) {
 	return time.Now().In(loc), nil
 }
 
-func taskRow(item task, data contextData) wire.Component {
+func taskRow(item task, data contextData, loc *time.Location) wire.Component {
 	parts := []string{}
 	if p, ok := data.Projects[item.ProjectID]; ok {
 		parts = append(parts, p.Name)
 	}
 	if item.Due != nil {
-		parts = append(parts, item.Due.Date)
-		if item.Due.Recurring {
+		parts = append(parts, item.Due.label(loc))
+		if item.Due.IsRecurring {
 			parts = append(parts, "↻")
 		}
 	}
@@ -194,15 +194,15 @@ func taskRow(item task, data contextData) wire.Component {
 		Subtitle: clipText(strings.Join(parts, " · "), 2000), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": item.ID}}}
 }
 
-func detailView(r *ext.UIRequest, st pageState, item task, data contextData) *wire.View {
+func detailView(r *ext.UIRequest, st pageState, item task, data contextData, loc *time.Location) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{{Type: wire.ComponentText, Text: item.Content}}
 	if p, ok := data.Projects[item.ProjectID]; ok {
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: t.project + ": " + p.Name, Style: wire.TextStyleSecondary})
 	}
 	if item.Due != nil {
-		due := t.due + ": " + item.Due.Date
-		if item.Due.Recurring {
+		due := t.due + ": " + item.Due.label(loc)
+		if item.Due.IsRecurring {
 			due += " · " + t.recurring
 		}
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: due})
