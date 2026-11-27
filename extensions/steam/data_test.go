@@ -86,7 +86,7 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 			method, wantToken = http.MethodPost, true
 		case userAchievementsPath:
 			wantToken = true
-		case globalAchievementsPath, gameAchievementsPath:
+		case globalAchievementsPath, gameAchievementsPath, newsForAppPath:
 		case authBasePath + beginQRPath + "/v1/", authBasePath + pollQRPath + "/v1/":
 			method = http.MethodPost
 		case storeNamesPath:

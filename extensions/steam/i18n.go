@@ -72,6 +72,7 @@ var english = text{
 		problemAchievementSchema:      "Steam did not share this game's achievement names and hidden status.",
 		problemAchievementDetails:     "Steam did not share complete personal achievement details. Any global rankings are for all players.",
 		problemAchievementUnlockTimes: "Steam did not share timestamps for some unlocked achievements.",
+		problemGameNews:               "Steam did not share news for this game.",
 	},
 }
 
@@ -127,6 +128,7 @@ var chinese = text{
 		problemAchievementSchema:      "Steam 未共享这款游戏的成就名称和隐藏状态。",
 		problemAchievementDetails:     "Steam 未共享完整的个人成就明细。全球榜单适用于所有玩家。",
 		problemAchievementUnlockTimes: "Steam 未共享部分已解锁成就的解锁时间。",
+		problemGameNews:               "Steam 未共享这款游戏的更新消息。",
 	},
 }
 

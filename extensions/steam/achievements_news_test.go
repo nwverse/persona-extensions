@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -157,6 +159,165 @@ func TestGlobalAchievementRequestRejectsRedirectsAndOversizedBodies(t *testing.T
 			c := steamClient{http: f.http}
 			if data, issue := c.globalAchievementRates(t.Context(), firstApp); data != nil || issue != problemResponse || f.hit(globalAchievementsPath) != 1 {
 				t.Fatalf("the %s global request should fail without following a redirect: %v, %s", name, data, issue)
+			}
+		})
+	}
+}
+
+func TestGameNewsOfficialFilteringAndMetadataOnly(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	f.handle("/ISteamNews/GetNewsForApp/v2/", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if q.Get("appid") != appIDText(firstApp) || q.Get("maxlength") != "1" || q.Get("count") == "" {
+			t.Error("metadata-only news did not ask Steam for the shortest blurb")
+		}
+		if feeds := q.Get("feeds"); feeds != "steam_community_announcements" && feeds != "" {
+			t.Error("news used an unexpected feed")
+		}
+		_, _ = fmt.Fprintf(w, `{"appnews":{"appid":%d,"newsitems":[
+			{"gid":"101","date":400,"title":"Patch 2 review","feedname":"Fixture Press","feedlabel":"Fixture Press",
+			 "url":"https://example.com/review","contents":"FULL_TEXT_SENTINEL"},
+			{"gid":"102","date":350,"title":"Community Update: Fan Art Roundup","feedname":"steam_community_announcements","contents":"FULL_TEXT_SENTINEL"},
+			{"gid":"103","date":220,"title":"A New Campaign","tags":["dlc"],"feedname":"steam_community_announcements","contents":"FULL_TEXT_SENTINEL"},
+			{"gid":"104","date":300,"title":"Major Update 2.0","feedname":"steam_community_announcements","feedlabel":"Community Announcements",
+			 "is_external_url":true,"url":"https://steamstore-a.akamaihd.net/news/externalpost/steam_community_announcements/104",
+			 "contents":{"unexpected":"FULL_TEXT_SENTINEL"}},
+			{"gid":"104","date":200,"title":"Duplicate Update","feedname":"steam_community_announcements","contents":"FULL_TEXT_SENTINEL"},
+			{"gid":"105","date":250,"title":"Hotfix","tags":["patchnotes"],"feedname":"steam_community_announcements","contents":"FULL_TEXT_SENTINEL"}]}}`, firstApp)
+	})
+	h := startTestHost(t, f, fixtureID, "GB", "")
+	assertMetadata := func(answer string, wantGIDs []string) {
+		t.Helper()
+		var got struct {
+			Available      bool                         `json:"available"`
+			SummaryEnabled *bool                        `json:"summary_enabled"`
+			Updates        []map[string]json.RawMessage `json:"updates"`
+		}
+		if err := json.Unmarshal([]byte(answer), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !got.Available || got.SummaryEnabled == nil || *got.SummaryEnabled || len(got.Updates) != len(wantGIDs) {
+			t.Fatalf("incorrect metadata-only response: %s", answer)
+		}
+		for i, item := range got.Updates {
+			if len(item) != 7 || string(item["gid"]) != fmt.Sprintf("%q", wantGIDs[i]) {
+				t.Fatalf("incorrect metadata or order at index %d: %v", i, item)
+			}
+			for _, field := range []string{"appid", "game_name", "gid", "title", "date", "feed_label", "url"} {
+				if _, ok := item[field]; !ok {
+					t.Errorf("missing required metadata field %s", field)
+				}
+			}
+		}
+		assertHidden(t, answer, "FULL_TEXT_SENTINEL", "Duplicate Update", `"excerpt":`, `"contents":`)
+	}
+	official := toolAnswer(t, h, "steam_game_news", fmt.Sprintf(`{"appid":%d}`, firstApp))
+	assertMetadata(official, []string{"104", "105", "103"})
+	contains(t, official, "Synthetic Adventure", "Community Announcements", storeBase+"/news/app/"+appIDText(firstApp)+"/view/104")
+	assertHidden(t, official, "Fixture Press", "Fan Art Roundup")
+	mixed := toolAnswer(t, h, "steam_game_news", fmt.Sprintf(`{"appid":%d,"official_only":false}`, firstApp))
+	assertMetadata(mixed, []string{"101", "102", "104", "105", "103"})
+	contains(t, mixed, "https://example.com/review", "Fixture Press")
+	if f.hit(playerPath) != 0 {
+		t.Fatal("an explicit AppID news request looked up the user's account")
+	}
+}
+
+func TestGameNewsSummaryCleansAndBoundsExcerpts(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	const visible = "Update & fixes"
+	markup := `[h2]Update &amp; fixes[/h2]<p>[url=https://example.com/noise]Read more[/url]</p>
+<script>scriptNoise</script><!-- commentNoise -->[img]{STEAM_CLAN_IMAGE}/imageNoise.jpg[/img]
+[previewyoutube=example;full][/previewyoutube][list][*][b]修复[/b][/list] ` + strings.Repeat("更", 900) + "tooLong"
+	f.handle("/ISteamNews/GetNewsForApp/v2/", func(w http.ResponseWriter, r *http.Request) {
+		if q := r.URL.Query(); q.Get("feeds") != "steam_community_announcements" || q.Get("maxlength") == "" || q.Get("maxlength") == "0" || q.Get("maxlength") == "1" {
+			t.Error("summary mode did not request a bounded official blurb")
+		}
+		_, _ = fmt.Fprintf(w, `{"appnews":{"appid":%d,"newsitems":[`, firstApp)
+		for i := range 23 {
+			if i > 0 {
+				_, _ = io.WriteString(w, ",")
+			}
+			encoded, _ := json.Marshal(markup)
+			_, _ = fmt.Fprintf(w, `{"gid":"%d","date":%d,"title":"Patch Notes","feedname":"steam_community_announcements","contents":%s}`, 100+i, 200+i, encoded)
+		}
+		_, _ = io.WriteString(w, "]}}")
+	})
+	h := exttest.StartWith(t, manifest, exttest.Serve(t, program(f.http, time.Now)), func(p *wire.InitializeParams) {
+		p.Config = json.RawMessage(`{"auth_mode":"qr","patch_notes_summary_enabled":true}`)
+		p.Hub.Locale = "en"
+	})
+	for _, limit := range []int{10, 20} {
+		args := fmt.Sprintf(`{"appid":%d,"limit":%d}`, firstApp, limit)
+		if limit == 10 {
+			args = fmt.Sprintf(`{"appid":%d}`, firstApp)
+		}
+		answer := toolAnswer(t, h, "steam_game_news", args)
+		var got struct {
+			SummaryEnabled bool `json:"summary_enabled"`
+			Updates        []struct {
+				Excerpt string
+				Date    int64
+			}
+		}
+		if err := json.Unmarshal([]byte(answer), &got); err != nil {
+			t.Fatal(err)
+		}
+		if !got.SummaryEnabled || len(got.Updates) != limit || got.Updates[0].Date != 222 {
+			t.Fatalf("summary mode or limits were incorrect: %t, %d items", got.SummaryEnabled, len(got.Updates))
+		}
+		for _, item := range got.Updates {
+			count := utf8.RuneCountInString(item.Excerpt)
+			if !strings.HasPrefix(item.Excerpt, visible+" Read more 修复 ") || !utf8.ValidString(item.Excerpt) || count < 600 || count > 800 {
+				t.Fatalf("excerpt was not cleaned and rune-bounded: %q", item.Excerpt)
+			}
+			assertHidden(t, item.Excerpt, "scriptNoise", "commentNoise", "imageNoise", "tooLong", "example.com", "[", "<")
+		}
+	}
+	if f.hit("/ISteamNews/GetNewsForApp/v2/") != 1 || f.hit(storeNamesPath) != 1 {
+		t.Fatal("repeated reads should reuse cached articles and the Store name")
+	}
+}
+
+func TestGameNewsRecentGamesAndLibraryFallback(t *testing.T) {
+	for _, fallback := range []bool{false, true} {
+		t.Run(fmt.Sprintf("library_fallback_%t", fallback), func(t *testing.T) {
+			f := newFakeSteam(t, time.Second)
+			if fallback {
+				f.reply(recentPath, http.StatusOK, `{"response":{"total_count":0}}`)
+			}
+			f.handle("/ISteamNews/GetNewsForApp/v2/", func(w http.ResponseWriter, r *http.Request) {
+				rawID := r.URL.Query().Get("appid")
+				if feeds := r.URL.Query().Get("feeds"); feeds != "steam_community_announcements" {
+					t.Error("automatic news did not request the official feed")
+				}
+				dates := map[string]int{appIDText(firstApp): 200, appIDText(secondApp): 300, appIDText(thirdApp): 400}
+				if dates[rawID] == 0 {
+					t.Error("news queried an unexpected AppID")
+				}
+				_, _ = fmt.Fprintf(w, `{"appnews":{"appid":%s,"newsitems":[{"gid":%q,"date":%d,"title":"Patch Notes","feedname":"steam_community_announcements"}]}}`,
+					rawID, rawID, dates[rawID])
+			})
+			h := startTestHost(t, f, fixtureID, "GB", "")
+			answer := toolAnswer(t, h, "steam_game_news", `{"games_limit":2,"limit":2}`)
+			var got struct {
+				Updates []struct {
+					AppID uint32
+				}
+			}
+			if err := json.Unmarshal([]byte(answer), &got); err != nil {
+				t.Fatal(err)
+			}
+			var ids []uint32
+			for _, item := range got.Updates {
+				ids = append(ids, item.AppID)
+			}
+			want, ownedReads := []uint32{secondApp, firstApp}, 0
+			if fallback {
+				want, ownedReads = []uint32{thirdApp, secondApp}, 1
+			}
+			if !slices.Equal(ids, want) || f.hit(ownedPath) != ownedReads || f.hit("/ISteamNews/GetNewsForApp/v2/") != 2 {
+				t.Fatalf("news should merge two selected games in date order: got %v, want %v", ids, want)
 			}
 		})
 	}

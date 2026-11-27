@@ -4,7 +4,9 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"html"
 	"net/url"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -42,6 +44,8 @@ type steamPublicData struct {
 	now     func() time.Time
 	rates   publicCache[uint32, map[string]float64]
 	schemas publicCache[achievementSchemaKey, achievementSchema]
+	news    publicCache[newsCacheKey, []gameNewsItem]
+	names   publicCache[storeNameKey, string]
 }
 
 // Public datasets use bounded, memory-only AppID caches. Each slot shares an
@@ -573,4 +577,322 @@ func (c steamClient) addPersonalAchievementRanks(out map[string]any, args listAr
 	if missingTimes {
 		describeReading(out, "achievement_timeline", reading[achievementState]{Issue: problemAchievementUnlockTimes}, t)
 	}
+}
+
+const (
+	gameNewsName     = "steam_game_news"
+	newsForAppPath   = "/ISteamNews/GetNewsForApp/v2/"
+	officialNewsFeed = "steam_community_announcements"
+	defaultNewsLimit = 10
+	maxNewsLimit     = 20
+	defaultNewsGames = 4
+	maxNewsGames     = 5
+	newsFetchCount   = 40
+	newsExcerptRunes = 700
+	newsTTL          = 10 * time.Minute
+
+	problemGameNews problem = "game_news_unavailable"
+)
+
+var gameNewsTool = wire.ConnectorTool{
+	Name:        gameNewsName,
+	Description: "Read Steam's latest official game updates, patches and DLC announcements for one AppID or the account's recent or most-played games. Text excerpts are available when AI update summaries are enabled in Steam settings. Set official_only to false to include other posts.",
+	InputSchema: json.RawMessage(`{"type":"object","properties":{
+		"appid":{"type":"integer","minimum":1,"maximum":4294967295},
+		"limit":{"type":"integer","minimum":1,"maximum":20,"default":10},
+		"games_limit":{"type":"integer","minimum":1,"maximum":5,"default":4,"description":"Number of games to check when AppID is omitted."},
+		"official_only":{"type":"boolean","default":true}}}`),
+}
+
+type newsCacheKey struct {
+	appID        uint32
+	officialOnly bool
+	summary      bool
+}
+
+type storeNameKey struct {
+	appID             uint32
+	country, language string
+}
+
+type steamNewsPost struct {
+	GID      string          `json:"gid"`
+	AppID    uint32          `json:"appid"`
+	Title    string          `json:"title"`
+	Date     int64           `json:"date"`
+	FeedName string          `json:"feedname"`
+	Label    string          `json:"feedlabel"`
+	URL      string          `json:"url"`
+	Tags     []string        `json:"tags"`
+	Contents json.RawMessage `json:"contents"`
+}
+
+type gameNewsItem struct {
+	AppID    uint32 `json:"appid"`
+	GameName string `json:"game_name"`
+	GID      string `json:"gid"`
+	Title    string `json:"title"`
+	Date     int64  `json:"date"`
+	Label    string `json:"feed_label"`
+	URL      string `json:"url"`
+	Excerpt  string `json:"excerpt,omitempty"`
+}
+
+var (
+	communityUpdate = regexp.MustCompile(`(?i)\bcommunity\s+update\b|社区更新`)
+	updateTitle     = regexp.MustCompile(`(?i)\b(?:patch(?:es|notes)?|hotfix(?:es)?|updates?|dlcs?|expansions?|release notes|changelog)\b|\bv\d+(?:\.\d+)+\b|補丁|补丁|更新|热修|熱修|资料片|資料片|扩展包|擴展包`)
+	htmlNoise       = regexp.MustCompile(`(?is)<!--.*?(?:-->|$)|<(?:script|style)\b[^>]*>.*?(?:</(?:script|style)\s*>|$)`)
+	htmlMarkup      = regexp.MustCompile(`(?is)</?[a-z][a-z0-9:_-]*(?:[^<>"']|"[^"]*"|'[^']*')*>`)
+	steamMedia      = regexp.MustCompile(`(?is)\[(?:img|previewyoutube|video|youtube)(?:=[^\]]*)?\].*?(?:\[/(?:img|previewyoutube|video|youtube)\]|$)`)
+	steamFormatting = regexp.MustCompile(`(?i)\[(?:/?(?:h[1-6]|b|i|u|s|spoiler|noparse|url|list|olist|quote|code|table|tr|th|td|hr|br|strike|p)(?:[= ][^\]]*)?|\*)\]`)
+)
+
+func (p steamNewsPost) isUpdate(title string) bool {
+	for _, tag := range p.Tags {
+		switch strings.ToLower(tag) {
+		case "patchnotes", "patch_notes", "hotfix", "majorupdate", "major_update", "regular_update", "update", "dlc", "expansion":
+			return true
+		}
+	}
+	return updateTitle.MatchString(communityUpdate.ReplaceAllString(title, ""))
+}
+
+func (c steamClient) newsExcerpt(body string) string {
+	body = html.UnescapeString(body)
+	body = htmlNoise.ReplaceAllString(body, " ")
+	body = htmlMarkup.ReplaceAllString(body, " ")
+	body = steamMedia.ReplaceAllString(body, " ")
+	body = steamFormatting.ReplaceAllString(body, " ")
+	return cleanText(strings.Join(strings.Fields(redactCredentials(body, c.key, c.access, c.refresh)), " "), newsExcerptRunes)
+}
+
+func (c steamClient) newsURL(raw string) string {
+	if len(raw) > 512 || redactCredentials(raw, c.key, c.access, c.refresh) != raw {
+		return ""
+	}
+	link, err := url.Parse(raw)
+	if err != nil || link.Scheme != "https" || link.Hostname() == "" || link.User != nil {
+		return ""
+	}
+	return link.String()
+}
+
+func (c steamClient) fetchGameNews(ctx context.Context, key newsCacheKey) (*[]gameNewsItem, problem) {
+	query := url.Values{"appid": {appIDText(key.appID)}, "count": {strconv.Itoa(newsFetchCount)}, "maxlength": {"1"}}
+	if key.officialOnly {
+		query.Set("feeds", officialNewsFeed)
+	}
+	if key.summary {
+		query.Set("maxlength", "2000")
+	}
+	var reply struct {
+		AppNews *struct {
+			AppID uint32          `json:"appid"`
+			Posts []steamNewsPost `json:"newsitems"`
+		} `json:"appnews"`
+	}
+	switch issue := c.get(ctx, apiBase+newsForAppPath, query, false, &reply); issue {
+	case "":
+	case problemBadCall, problemDenied, problemMissing:
+		return nil, problemGameNews
+	default:
+		return nil, issue
+	}
+	if reply.AppNews == nil || reply.AppNews.AppID != key.appID || reply.AppNews.Posts == nil {
+		return nil, problemResponse
+	}
+	posts := reply.AppNews.Posts[:min(len(reply.AppNews.Posts), newsFetchCount)]
+	items := make([]gameNewsItem, 0, len(posts))
+	for _, post := range posts {
+		gid, err := strconv.ParseUint(post.GID, 10, 64)
+		title := c.text(html.UnescapeString(post.Title))
+		if err != nil || gid == 0 || post.Date <= 0 || title == "" || (post.AppID != 0 && post.AppID != key.appID) {
+			continue
+		}
+		official := post.FeedName == officialNewsFeed
+		if key.officialOnly && (!official || !post.isUpdate(title)) {
+			continue
+		}
+		item := gameNewsItem{
+			AppID: key.appID, GID: strconv.FormatUint(gid, 10), Title: title, Date: post.Date, Label: c.text(post.Label),
+		}
+		if official {
+			item.URL = storeBase + "/news/app/" + appIDText(key.appID) + "/view/" + item.GID
+		} else {
+			item.URL = c.newsURL(post.URL)
+		}
+		// Steam sends full content for maxlength=0. Even when it returns more
+		// than requested, only summary mode decodes and stores a text excerpt.
+		if key.summary {
+			var body string
+			if json.Unmarshal(post.Contents, &body) == nil {
+				item.Excerpt = c.newsExcerpt(body)
+			}
+		}
+		items = append(items, item)
+	}
+	return &items, ""
+}
+
+type gameNewsOptions struct {
+	limit, gamesLimit int
+	officialOnly      bool
+	summary           bool
+}
+
+type gameNewsResult struct {
+	Available      bool           `json:"available"`
+	SummaryEnabled bool           `json:"summary_enabled"`
+	Updates        []gameNewsItem `json:"updates"`
+	Warnings       []toolWarning  `json:"warnings,omitempty"`
+}
+
+func newGameNewsResult(summary bool) gameNewsResult {
+	return gameNewsResult{SummaryEnabled: summary, Updates: []gameNewsItem{}}
+}
+
+func (r *gameNewsResult) warn(t *text, dataset string, issue problem, stale bool) {
+	if issue != "" {
+		r.Warnings = append(r.Warnings, toolWarning{dataset, issue, t.message(issue, stale), stale})
+	}
+}
+
+func (a *app) gameNews(parent context.Context, raw json.RawMessage) (gameNewsResult, error) {
+	var args struct {
+		AppID        *uint32 `json:"appid"`
+		Limit        *int    `json:"limit"`
+		GamesLimit   *int    `json:"games_limit"`
+		OfficialOnly *bool   `json:"official_only"`
+	}
+	if !decodeArgs(raw, &args) || (args.AppID != nil && *args.AppID == 0) {
+		return gameNewsResult{}, invalid("Provide a positive integer Steam AppID or omit it to read updates for played games.")
+	}
+	options := gameNewsOptions{
+		limit: defaultNewsLimit, gamesLimit: defaultNewsGames, officialOnly: args.OfficialOnly == nil || *args.OfficialOnly,
+		summary: a.config.TokenConfig.AllowsPatchNotesSummary(),
+	}
+	if args.Limit != nil {
+		options.limit = *args.Limit
+	}
+	if args.GamesLimit != nil {
+		options.gamesLimit = *args.GamesLimit
+	}
+	if options.limit < 1 || options.limit > maxNewsLimit || options.gamesLimit < 1 || options.gamesLimit > maxNewsGames {
+		return gameNewsResult{}, invalid("Use a news limit from 1 to 20 and a games_limit from 1 to 5.")
+	}
+	t := textFor(a.locale)
+	if args.AppID != nil {
+		ctx, cancel := context.WithTimeout(parent, readBudget)
+		defer cancel()
+		result := newGameNewsResult(options.summary)
+		a.publicData.collectGameNews(ctx, []game{{AppID: *args.AppID}}, options, a.config.CountryCode, t, &result)
+		return result, nil
+	}
+	d, ctx, cancel := a.readContext(parent)
+	defer cancel()
+	result := a.accountGameNews(ctx, d, t, options)
+	if issue := d.sessionIssue(); issue != "" {
+		result = newGameNewsResult(options.summary)
+		result.warn(t, "game_news", issue, false)
+	}
+	return result, nil
+}
+
+func (a *app) accountGameNews(ctx context.Context, d *steamData, t *text, options gameNewsOptions) gameNewsResult {
+	result := newGameNewsResult(options.summary)
+	var account reading[player]
+	if d.session == nil {
+		account = d.account(ctx, profileTTL, false)
+		if account.Stale {
+			result.warn(t, "profile", account.Issue, true)
+		}
+	}
+	if _, issue := d.readID(account); issue != "" {
+		result.warn(t, "game_news", issue, false)
+		return result
+	}
+	recent := d.recentGames(ctx, account, false)
+	result.warn(t, "recent_games", recent.Issue, recent.Stale)
+	var games []game
+	if recent.Data != nil {
+		games = recent.Data.Games[:min(len(recent.Data.Games), options.gamesLimit)]
+	}
+	if len(games) == 0 {
+		library := d.ownedGames(ctx, account, false)
+		result.warn(t, "library", library.Issue, library.Stale)
+		if library.Data != nil {
+			for _, g := range libraryGames(library.Data.Games, "", sortPlaytime) {
+				if len(games) == options.gamesLimit || g.PlaytimeForever == 0 {
+					break
+				}
+				games = append(games, g)
+			}
+		}
+		if len(games) == 0 {
+			result.Available = recent.Data != nil || library.Data != nil
+			return result
+		}
+	}
+	a.publicData.collectGameNews(ctx, games, options, d.config.CountryCode, t, &result)
+	return result
+}
+
+func (p *steamPublicData) collectGameNews(ctx context.Context, games []game, options gameNewsOptions,
+	country string, t *text, result *gameNewsResult) {
+	replies := make([]reading[[]gameNewsItem], len(games))
+	names := make([]string, len(games))
+	var reads sync.WaitGroup
+	for i, g := range games {
+		reads.Go(func() {
+			key := newsCacheKey{g.AppID, options.officialOnly, options.summary}
+			reply := p.news.slot(key, p.now).read(ctx, "", newsTTL, false, func(ctx context.Context) (*[]gameNewsItem, problem) {
+				return p.client.fetchGameNews(ctx, key)
+			})
+			replies[i] = reply
+			if reply.Data != nil && len(*reply.Data) > 0 {
+				names[i] = p.newsGameName(ctx, g, country, t)
+			}
+		})
+	}
+	reads.Wait()
+	for i, reply := range replies {
+		result.warn(t, "game_news/"+appIDText(games[i].AppID), reply.Issue, reply.Stale)
+		if reply.Data == nil {
+			continue
+		}
+		result.Available = true
+		for _, item := range *reply.Data {
+			item.GameName = names[i]
+			if !result.SummaryEnabled {
+				item.Excerpt = ""
+			}
+			result.Updates = append(result.Updates, item)
+		}
+	}
+	slices.SortStableFunc(result.Updates, func(a, b gameNewsItem) int { return cmp.Compare(b.Date, a.Date) })
+	seen := make(map[string]bool, len(result.Updates))
+	result.Updates = slices.DeleteFunc(result.Updates, func(item gameNewsItem) bool {
+		duplicate := seen[item.GID]
+		seen[item.GID] = true
+		return duplicate
+	})
+	result.Updates = result.Updates[:min(len(result.Updates), options.limit)]
+}
+
+func (p *steamPublicData) newsGameName(ctx context.Context, g game, country string, t *text) string {
+	if g.Name != "" {
+		return g.Name
+	}
+	key := storeNameKey{g.AppID, country, t.storeLanguage}
+	r := p.names.slot(key, p.now).read(ctx, "", profileTTL, false, func(ctx context.Context) (*string, problem) {
+		name := p.client.storeNames(ctx, []uint32{g.AppID}, country, t.storeLanguage)[g.AppID]
+		if name == "" {
+			return nil, problemResponse
+		}
+		return &name, ""
+	})
+	if r.Data != nil {
+		return *r.Data
+	}
+	return t.gameName(g.AppID, "")
 }
