@@ -45,6 +45,18 @@ var readTools = []tool{
 			"status": map[string]any{"type": "string", "enum": []string{statusWeak, statusShaky, statusSolid, statusNew}},
 			"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
 		})},
+	{Name: "study_map", Description: "The user's knowledge map: every knowledge point grouped by mastery level (weak, shaky, solid, new) with its mastery score, card count, recent accuracy and most frequent mistake. status keeps one level; topic drills into one knowledge point and lists its cards, weakest first (status then filters the cards). Use it to see where the user stands before a study_guide lesson or study_practice. Read-only.",
+		InputSchema: obj(nil, map[string]any{
+			"topic":  map[string]any{"type": "string", "minLength": 1, "maxLength": maxTopic},
+			"status": map[string]any{"type": "string", "enum": []string{statusWeak, statusShaky, statusSolid, statusNew}},
+			"limit":  map[string]any{"type": "integer", "minimum": 1, "maximum": 20},
+		})},
+	{Name: "study_guide", Description: "Write a guided lesson that walks the user through a knowledge point (topic) or a text they shared (text, with an optional title) in a few short sections: an intuition, an analogy, key points and one quick check question each. Give topic or text. The lesson follows the learner profile the user set, and for a topic it leans on what they recently got wrong. Present one section at a time and ask its check question before moving on. The extension's model writes the lesson; without one, a topic's own cards become the sections. It only stores the lesson in this extension's lesson cache; it schedules nothing and makes no cards.",
+		InputSchema: obj(nil, map[string]any{
+			"topic": map[string]any{"type": "string", "minLength": 1, "maxLength": maxTopic},
+			"text":  map[string]any{"type": "string", "minLength": 1, "maxLength": maxMaterial},
+			"title": map[string]any{"type": "string", "minLength": 1, "maxLength": 200},
+		})},
 	{Name: "study_practice", Description: "Make one guided-practice exercise for the user and return its id and question (with options for a choice question), but not its answer. kind: concept (explain or tell apart), cloze (fill in the blank), choice (multiple choice) or scenario (apply it to a new case); default concept. Give card for one card, topic for the weakest card of a knowledge point, or neither for the weakest card overall. The extension's model writes the exercise; without one the card's own question is used. It only stores the exercise in this extension's practice cache; it schedules nothing. Ask the question as given, then use study_hint when the user is stuck and study_check_answer with their answer.",
 		InputSchema: obj(nil, map[string]any{
 			"card":  map[string]any{"type": "string", "minLength": 1, "maxLength": 64},
@@ -150,7 +162,7 @@ func (a *app) connector(ctx context.Context, method string, raw json.RawMessage)
 
 func sourceLine(s Source) string {
 	kind := map[string]string{srcTopic: "知识库", srcNotion: "Notion", srcObsidian: "Obsidian", srcNotebookLM: "NotebookLM", srcManual: "手写",
-		srcLogseq: "Logseq", srcTutor: "辅导"}[s.Kind]
+		srcLogseq: "Logseq", srcTutor: "辅导", srcGuide: "精读"}[s.Kind]
 	if kind == "" {
 		kind = "其他"
 	}
@@ -176,6 +188,23 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 			return "", err
 		}
 		return exerciseText(e), nil
+	case "study_guide":
+		var in struct {
+			Topic string `json:"topic"`
+			Text  string `json:"text"`
+			Title string `json:"title"`
+		}
+		if err := decode(raw, &in); err != nil {
+			return "", err
+		}
+		if utf8.RuneCountInString(in.Text) > maxMaterial {
+			return "", fmt.Errorf("text is at most %d characters", maxMaterial)
+		}
+		g, err := a.guide(ctx, cleanTopic(in.Topic), in.Text, in.Title)
+		if err != nil {
+			return "", err
+		}
+		return guideText(g), nil
 	case "study_hint":
 		var in struct {
 			Exercise string `json:"exercise"`
@@ -284,6 +313,22 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 			in.Limit = 8
 		}
 		return weakPointsText(filterTopics(masteryByTopic(a.sched, a.st, now), in.Status, cleanTopic(in.Topic)), a.st, in.Limit), nil
+	case "study_map":
+		var in struct {
+			Topic  string `json:"topic"`
+			Status string `json:"status"`
+			Limit  int    `json:"limit"`
+		}
+		if err := decode(raw, &in); err != nil {
+			return "", err
+		}
+		if in.Status != "" && !validStatus(in.Status) {
+			return "", errors.New("status is weak, shaky, solid or new")
+		}
+		if in.Limit <= 0 || in.Limit > 20 {
+			in.Limit = 8
+		}
+		return mapText(masteryByTopic(a.sched, a.st, now), a.st, in.Status, cleanTopic(in.Topic), in.Limit), nil
 	}
 	return "", fmt.Errorf("unknown tool %q", name)
 }

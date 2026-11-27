@@ -23,6 +23,7 @@ const (
 	srcManual     = "manual"     // text handed over in a conversation
 	srcLogseq     = "logseq"     // a page or journal in the Logseq graph on the chosen computer
 	srcTutor      = "tutor"      // a reinforcement card drafted after a practice mistake or for a weak topic
+	srcGuide      = "guide"      // a card drafted from a guided lesson
 )
 
 const (
@@ -35,6 +36,7 @@ const (
 	maxTopic     = 80
 	maxAttempts  = 5000
 	maxExercises = 100
+	maxGuides    = 100
 )
 
 // Source says where a card or draft came from.
@@ -96,19 +98,21 @@ type state struct {
 	Reviews    []Review             `json:"reviews"`
 	Attempts   []Attempt            `json:"attempts,omitempty"`
 	Exercises  map[string]*Exercise `json:"exercises,omitempty"`
+	Guides     map[string]*Guide    `json:"guides,omitempty"`      // guided lessons, a cache like Exercises (0.3.0)
 	LastRemind string               `json:"last_remind,omitempty"` // YYYY-MM-DD of the last daily reminder check
 }
 
 func emptyState() state {
 	return state{Version: stateVersion, Cards: map[string]*Card{}, Drafts: []Draft{}, Reviews: []Review{},
-		Attempts: []Attempt{}, Exercises: map[string]*Exercise{}}
+		Attempts: []Attempt{}, Exercises: map[string]*Exercise{}, Guides: map[string]*Guide{}}
 }
 
 // clone deep-copies everything a later update may change in place, so a failed write leaves the old state whole.
 func (s state) clone() state {
 	out := state{Version: s.Version, LastRemind: s.LastRemind, Cards: make(map[string]*Card, len(s.Cards)),
 		Drafts: append([]Draft(nil), s.Drafts...), Reviews: append([]Review(nil), s.Reviews...),
-		Attempts: append([]Attempt(nil), s.Attempts...), Exercises: make(map[string]*Exercise, len(s.Exercises))}
+		Attempts: append([]Attempt(nil), s.Attempts...), Exercises: make(map[string]*Exercise, len(s.Exercises)),
+		Guides: make(map[string]*Guide, len(s.Guides))}
 	for id, c := range s.Cards {
 		cp := *c
 		out.Cards[id] = &cp
@@ -116,6 +120,10 @@ func (s state) clone() state {
 	for id, e := range s.Exercises {
 		cp := e.clone()
 		out.Exercises[id] = &cp
+	}
+	for id, g := range s.Guides {
+		cp := g.clone()
+		out.Guides[id] = &cp
 	}
 	if out.Drafts == nil {
 		out.Drafts = []Draft{}
@@ -162,6 +170,9 @@ func loadState(path string) (state, error) {
 	if s.Exercises == nil {
 		s.Exercises = map[string]*Exercise{}
 	}
+	if s.Guides == nil {
+		s.Guides = map[string]*Guide{} // a state written before 0.3.0 has none
+	}
 	for id, c := range s.Cards {
 		if c == nil || c.ID != id {
 			return state{}, errors.New("复习记录里有无效的卡片")
@@ -171,6 +182,14 @@ func loadState(path string) (state, error) {
 		if e == nil || e.ID != id || !e.valid() {
 			delete(s.Exercises, id) // an exercise is a cache: one that does not hold together is dropped, not trusted
 		}
+	}
+	for id, g := range s.Guides {
+		if g == nil || g.ID != id || !g.valid() || !g.tidy() {
+			delete(s.Guides, id) // a lesson is a cache too
+		}
+	}
+	for len(s.Guides) > maxGuides {
+		delete(s.Guides, s.oldestGuide())
 	}
 	s.Version = stateVersion
 	return s, nil
@@ -313,6 +332,33 @@ func (s *state) putExercise(e Exercise) {
 		}
 		delete(s.Exercises, oldest)
 	}
+}
+
+// putGuide stores a lesson, dropping the oldest beyond maxGuides.
+func (s *state) putGuide(g Guide) {
+	if s.Guides == nil {
+		s.Guides = map[string]*Guide{}
+	}
+	s.Guides[g.ID] = &g
+	// The lesson just stored stays, whatever the clock said when the others were made.
+	for len(s.Guides) > maxGuides {
+		delete(s.Guides, s.oldestGuideBut(g.ID))
+	}
+}
+
+func (s *state) oldestGuide() string { return s.oldestGuideBut("") }
+
+func (s *state) oldestGuideBut(keep string) string {
+	oldest := ""
+	for id, x := range s.Guides {
+		if id == keep {
+			continue
+		}
+		if oldest == "" || x.Created.Before(s.Guides[oldest].Created) || x.Created.Equal(s.Guides[oldest].Created) && id < oldest {
+			oldest = id
+		}
+	}
+	return oldest
 }
 
 func (s *state) logReview(r Review) {

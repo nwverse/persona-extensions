@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -155,14 +154,59 @@ var judgeSchema = json.RawMessage(`{"type":"object","additionalProperties":false
 	`"diagnosis":{"type":"string","maxLength":300},` +
 	`"feedback":{"type":"string","maxLength":800}}}`)
 
-// fenceTag is anything in untrusted text that looks like one of the prompts' own tags, opening or closing, in any
-// case and with any spacing.
-var fenceTag = regexp.MustCompile(`(?i)<\s*/?\s*(material|exercise|answer)\b`)
+// fenceTags are the tags the prompts fence untrusted text in.
+var fenceTags = []string{"material", "exercise", "answer", "learner_profile"}
+
+// tagNoise says whether r can sit inside a tag without changing what a model reads: spaces, controls, and the
+// characters that draw nothing (zero-width and format characters, combining marks, variation selectors, fillers).
+func tagNoise(r rune) bool {
+	switch r {
+	case 0x115F, 0x1160, 0x3164, 0xFFA0: // Hangul fillers
+		return true
+	}
+	return unicode.IsSpace(r) || unicode.In(r, unicode.Z, unicode.C, unicode.M)
+}
+
+// opensTag says whether the text after a "<" spells one of the prompts' own tags, opening or closing, in any case
+// and whatever spacing or invisible characters are put in between.
+func opensTag(rest []rune) bool {
+	const look = 96 // how far a disguised tag name may be spread
+	var name []rune
+	slash := false
+	for i := 0; i < len(rest) && i < look && len(name) < 16; i++ {
+		r := rest[i]
+		switch {
+		case tagNoise(r):
+		case r == '/' && !slash && len(name) == 0:
+			slash = true
+		case r >= 0xFF01 && r <= 0xFF5E: // full-width forms read as the plain letter
+			name = append(name, unicode.ToLower(r-0xFEE0))
+		case r == '_' || unicode.IsLetter(r):
+			name = append(name, unicode.ToLower(r))
+		default:
+			i = len(rest)
+		}
+		for _, tag := range fenceTags {
+			if string(name) == tag {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // fenced wraps untrusted text in a tag the prompts name. Tag-like text inside loses its "<", so it can neither close
 // the fence early nor open a fake one.
 func fenced(tag, s string) string {
-	s = fenceTag.ReplaceAllStringFunc(s, func(m string) string { return "‹" + m[1:] })
+	if strings.Contains(s, "<") {
+		in := []rune(s)
+		for i, r := range in {
+			if r == '<' && opensTag(in[i+1:]) {
+				in[i] = '‹'
+			}
+		}
+		s = string(in)
+	}
 	return "<" + tag + ">\n" + s + "\n</" + tag + ">"
 }
 
@@ -521,10 +565,7 @@ func (a *app) practice(ctx context.Context, cardID, topic, kind string) (Exercis
 			neighbours = append(neighbours, &cp)
 		}
 	}
-	var m modelAPI
-	if a.hub != nil {
-		m = a.hub
-	}
+	m := a.model()
 	a.mu.Unlock()
 
 	e := makeExercise(ctx, m, &card, neighbours, kind, now)
@@ -576,10 +617,7 @@ func (a *app) checkAnswer(ctx context.Context, id, answer string, hints int) (Ex
 		return e, nil
 	}
 	hints = max(hints, e.Served)
-	var m modelAPI
-	if a.hub != nil {
-		m = a.hub
-	}
+	m := a.model()
 	j := judge(ctx, m, e, answer, hints, a.now())
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -659,10 +697,7 @@ func (a *app) reinforce(ctx context.Context, exerciseID, topic string, n int) (i
 		a.mu.Unlock()
 		return 0, "", errors.New("说明要针对哪道题或哪个知识点")
 	}
-	var m modelAPI
-	if a.hub != nil {
-		m = a.hub
-	}
+	m := a.model()
 	a.mu.Unlock()
 
 	var cards []cardText

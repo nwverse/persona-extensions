@@ -26,6 +26,10 @@ type config struct {
 	Remind       bool     `json:"remind"`
 	RemindAt     string   `json:"remind_at"`
 	CardsPerNote int      `json:"cards_per_source"`
+	// The learner profile: how to explain, never what to teach (profile.go).
+	LearnerLevel     string `json:"learner_level"`
+	LearnerInterests string `json:"learner_interests"`
+	ExplainStyle     string `json:"explain_style"`
 }
 
 func defaults() config {
@@ -50,6 +54,13 @@ func (c *config) normalize() {
 	if strings.TrimSpace(c.FlashTag) == "" {
 		c.FlashTag = "flashcards"
 	}
+	if c.LearnerLevel = strings.ToLower(strings.TrimSpace(c.LearnerLevel)); learnerLevels[c.LearnerLevel] == "" {
+		c.LearnerLevel = ""
+	}
+	if c.ExplainStyle = strings.ToLower(strings.TrimSpace(c.ExplainStyle)); explainStyles[c.ExplainStyle] == "" {
+		c.ExplainStyle = ""
+	}
+	c.LearnerInterests = cleanInterests(c.LearnerInterests)
 }
 
 // hubAPI is what the program uses of the hub; *ext.Hub has all of it, and the tests give a fake.
@@ -188,11 +199,7 @@ func (a *app) generate(ctx context.Context, src Source, material, topic string) 
 	a.mu.Lock()
 	n := a.cfg.CardsPerNote
 	a.mu.Unlock()
-	var m modelAPI
-	if a.hub != nil {
-		m = a.hub
-	}
-	cards, err := makeCards(ctx, m, src.Title, material, n)
+	cards, err := makeCards(ctx, a.model(), src.Title, material, n)
 	if err != nil {
 		return 0, err
 	}

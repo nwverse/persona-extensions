@@ -2,7 +2,7 @@
 
 [Documentation](../README.md) · [Extension source](../../extensions/study/README.md)
 
-Study (学习) is a spaced-repetition companion and tutor for Persona. It makes question-and-answer cards from material you already have, schedules each review with FSRS, the scheduler used by Anki and Obsidian Spaced Repetition, scores how well you master each knowledge point, and runs guided practice on the weakest ones. Open **学习** in Persona to review the day's cards, look over cards waiting to be kept, see weak knowledge points, practise with the tutor, add cards from a source, or browse your collection.
+Study (学习) is a spaced-repetition companion and tutor for Persona. It makes question-and-answer cards from material you already have, schedules each review with FSRS, the scheduler used by Anki and Obsidian Spaced Repetition, scores how well you master each knowledge point, and runs guided practice on the weakest ones. Since 0.3.0 it also helps you understand material the first time: a guided lesson walks a knowledge point or a text section by section with a quick check in each, a knowledge map shows every knowledge point by mastery level, and an optional learner profile adapts the depth, examples and tone of everything the model writes. Open **学习** in Persona to review the day's cards, look over cards waiting to be kept, open the knowledge map or a guided lesson, see weak knowledge points, practise with the tutor, add cards from a source, or browse your collection.
 
 ## Where cards come from
 
@@ -15,6 +15,7 @@ Study (学习) is a spaced-repetition companion and tutor for Persona. It makes 
 | NotebookLM | The community [`notebooklm`](https://github.com/teng-lin/notebooklm-py) command line on the chosen computer | Flashcard and quiz artifacts you already generated in NotebookLM; they wait as drafts. |
 | Conversation | The assistant's `study_make_cards` action | Text or cards handed over in a chat, including documents and vocabulary the assistant read from a source you connected (see [Feishu documents and Relingo vocabulary](#feishu-documents-and-relingo-vocabulary)); they wait as drafts. |
 | Tutor | The `study_reinforce` action or **生成强化卡** on the page | Reinforcement cards that target a practice mistake or a weak knowledge point; they wait as drafts. |
+| Guided lesson | **做成待确认卡片** at the end of a lesson | One card for each section: its quick check, or its key points when it has none; they wait as drafts. |
 
 Drafts are kept or dropped on the page, one at a time or all at once. Importing the same note or artifact again does not duplicate cards: a card's identity is its source and question.
 
@@ -58,6 +59,24 @@ After a wrong or partial answer (and only then), **生成强化卡** drafts card
 
 Without a model, the card's own question is asked with hints cut from its answer, open answers are judged roughly by wording (and say so), and reinforcement turns the missed exercise itself into a card. The extension keeps the last 100 exercises and 5,000 practice answers.
 
+## Guided lessons
+
+**精读学习** turns one knowledge point, or a text you paste, into a short lesson of up to six sections that build on each other (the model is asked for three to six). Its start page lists your knowledge points weakest first (the 20 weakest; the rest are reached from the knowledge map), a form for a text of up to 12,000 characters with an optional title, and the last eight lessons. **先精读这个知识点** on a knowledge point of the knowledge map opens the same lesson.
+
+For a knowledge point the model gets its cards, weakest first (at most 12), with their mastery and up to eight recent practice mistakes, so the ideas behind those mistakes get a section of their own. For a text it gets the text. Either way the material is fenced as untrusted and the model is told to use only what it says.
+
+Each page is one section: **第 K / N 节** with the section's title, **一句话直觉** (the idea said plainly), **打个比方** (an analogy and where it stops holding, when an honest one exists), **要点** (one to five points in the material's own terms), and **随堂小测**, one quick question. Type an answer and **提交**, or **查看参考答案**. The answer is compared on the device, without the model: it counts as right when, ignoring case, spaces and punctuation, it is the reference answer or one of the other accepted wordings, or a short answer that contains one. The reference answer is shown either way. The quick check only confirms you followed the section: it is not graded, not recorded, and does not touch the review schedule. **下一节** and **上一节** move between sections.
+
+The last section offers **做成待确认卡片**, which drafts one card a section (its quick check as question and answer, or its key points when it has none); a question that already is a card or a draft is skipped, so pressing it twice adds nothing. Drafts wait in 待确认 like any other until you keep them. When the lesson is about a knowledge point that still has cards, **用深度辅导练这章** opens Tutor practice on it.
+
+A lesson written by the model for the same knowledge point or the same text in the last 24 hours is opened again instead of written anew. Without a model, or when the model fails, a knowledge point's own cards become the lesson, one card a section, weakest first, up to six: the question is the section's title and its quick check, the answer its point and reference answer. The page says so, and such a lesson offers no drafts, since it was made from cards that already exist. A text cannot be made into a lesson without a model. The extension keeps the last 100 lessons.
+
+## Knowledge map
+
+**知识地图** shows mastery as a tree. At the top are the number of knowledge points at each level (薄弱, 不稳, 掌握, 未学), the total of knowledge points and cards, and a filter by level. Below, the knowledge points are grouped by level, weak first, each with its level as a coloured badge, its score, card count, weak cards and recent accuracy, and the cause its recent practice mistakes most often had (常错在…). The page lists at most 100 knowledge points and says how many more there are; the filter narrows it down. The scores are the ones described under [Knowledge points and mastery](#knowledge-points-and-mastery); the map keeps no numbers of its own.
+
+Tapping a knowledge point drills into it: its mastery, number of cards and how many were studied, weak cards, recent accuracy, its cards by level, where they came from, and its mistakes by cause. Two buttons lead on: **先精读这个知识点** opens a guided lesson on it, and **针对弱点做 Tutor 练习** opens Tutor practice on it. Its cards follow, weakest first, with their score, lapses and practice mistakes (at most 40, filtered by level), each opening the card's page. **整张地图** goes back to the whole map.
+
 Every review is appended to a log kept beside the cards, so schedules can be refitted or exported later. The log keeps the most recent 20,000 reviews.
 
 ## Widget and reminder
@@ -68,10 +87,12 @@ With `remind` on, the extension sends one notification a day at `remind_at`, in 
 
 ## Assistant
 
-The quick prompts **考考我** (quiz the due cards one at a time), **深度辅导** (start from the weakest knowledge point and tutor with hints and diagnosis) and **Tutor 练习** (a quick run of mixed exercise kinds), with the `study-quiz` skill, drive these tools:
+The quick prompts **考考我** (quiz the due cards one at a time), **深度辅导** (start from the weakest knowledge point and tutor with hints and diagnosis), **Tutor 练习** (a quick run of mixed exercise kinds) and **精读薄弱点** (look at the knowledge map, then walk the weakest knowledge point section by section with a quick check in each), with the `study-quiz` skill, drive these tools:
 
 - `study_due`, `study_card`, `study_search`, `study_stats`: read-only. `study_due` lists questions without answers.
 - `study_weak_points`: read-only. Knowledge points weakest first with mastery, weakest cards and recent mistake causes; filter by `status` (`weak`, `shaky`, `solid`, `new`) or `topic`.
+- `study_map`: read-only. The knowledge map: every knowledge point grouped by level with its mastery, card count, recent accuracy and most frequent mistake; `status` keeps one level, `topic` drills into one knowledge point and lists its cards weakest first (`status` then filters the cards), `limit` (1 to 20, default 8) caps the list.
+- `study_guide`: writes a guided lesson for a `topic` or a `text` (with an optional `title`) and returns its id and sections, including each quick check and its answer, for the assistant to present one section at a time. A model-written lesson for the same material in the last 24 hours is reused; without a model a topic's cards become the sections. It only stores the lesson in the extension's lesson cache: it schedules nothing and makes no cards.
 - `study_practice`: makes one exercise (`kind`: `concept`, `cloze`, `choice`, `scenario`) for a `card`, the weakest card of a `topic`, or the weakest overall, and returns its question without the answer. It only stores the exercise in the extension's practice cache.
 - `study_hint`: hint level 1, 2 or 3 of an exercise; it only notes on the exercise how many hints were handed out.
 - `study_grade`: records your rating for a card.
@@ -107,6 +128,11 @@ Change these in **Settings › Extensions › 学习**:
 | `cards_per_source` | `8` | Most cards the model makes from one source (up to 20). |
 | `remind` | `true` | Send the daily reminder. |
 | `remind_at` | `20:00` | Time of the daily reminder, HH:MM. |
+| `learner_level` | empty | How deep to explain: `beginner` (intuition first, every term defined), `practical` (worked examples and when to use what) or `deep` (mechanisms, edge cases and trade-offs). Empty adds nothing. |
+| `learner_interests` | empty | Fields to draw examples and analogies from, such as 分布式系统、篮球、做饭; at most 200 characters. |
+| `explain_style` | empty | `balanced` (plain explanation with an example where it helps), `analogy` (an everyday comparison first, then the exact idea) or `rigorous` (precise definitions and conditions first, few metaphors). Empty adds nothing. |
+
+The last three are the learner profile. When any of them is set, it goes as a `<learner_profile>` block in front of the material of every model call: cards, guided lessons, exercises, judging and reinforcement cards. Unknown values of `learner_level` and `explain_style` are ignored; `learner_interests` is cut to one line of at most 200 characters with control characters and the prompts' fence tags removed, so it cannot end its block or open another. The prompts treat the profile as data about you, never as instructions, and use it only to choose depth, examples and tone: it must not drop, change or weaken any concept, fact or constraint of the material, and an analogy must not bring in a conclusion the material does not state or replace a standard term. With all three empty nothing is added, and the prompts are the same as in 0.2.0.
 
 The Notion integration secret is the optional `notion_secret`. Share the pages you want to study with the integration in Notion; the extension only reads.
 
@@ -133,4 +159,4 @@ Because the endpoints are unofficial, Google can change or block them at any tim
 
 ## Data and network
 
-Cards, drafts, the review log, practice answers and exercises are saved atomically to `study.json` in the extension data directory on the hub. Practice material, answers and the model's judgements go only to the hub's model (`models`). The hub program reaches only `api.notion.com`. The node program reaches NotebookLM's Google hosts, through the `notebooklm` command, and reads files only in the configured vault and graph.
+Cards, drafts, the review log, practice answers, exercises and guided lessons are saved atomically to `study.json` in the extension data directory on the hub. Practice material, lesson material, answers, the learner profile and the model's judgements go only to the hub's model (`models`). The hub program reaches only `api.notion.com`. The node program reaches NotebookLM's Google hosts, through the `notebooklm` command, and reads files only in the configured vault and graph.

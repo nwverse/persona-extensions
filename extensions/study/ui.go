@@ -36,6 +36,8 @@ const (
 	modeLogseq   = "logseq"
 	modeWeak     = "weak"
 	modeTutor    = "tutor"
+	modeGuide    = "guide"
+	modeMap      = "map"
 )
 
 type pageState struct {
@@ -51,6 +53,11 @@ type pageState struct {
 	Kind     string `json:"k,omitempty"` // the exercise kind (tutor)
 	Exercise string `json:"x,omitempty"` // the exercise on screen (tutor)
 	Hints    int    `json:"h,omitempty"` // hints shown for it
+	// The guided lesson: which one, the section on screen, and its quick question once answered or revealed.
+	Guide        string `json:"g,omitempty"`
+	Section      int    `json:"sec,omitempty"`
+	GuideChecked bool   `json:"gc,omitempty"`
+	GuideAns     string `json:"ga,omitempty"`
 }
 
 func readState(r *ext.UIRequest) (pageState, error) {
@@ -59,7 +66,8 @@ func readState(r *ext.UIRequest) (pageState, error) {
 	if err := r.DecodeState(&st); err != nil || len(st.Card) > 64 || utf8.RuneCountInString(st.Query) > 200 || len(st.Notebook) > 128 ||
 		utf8.RuneCountInString(st.NBTitle) > 300 ||
 		utf8.RuneCountInString(st.Topic) > maxTopic || len(st.Exercise) > 64 || st.Hints < 0 || st.Hints > maxHints || st.Done < 0 ||
-		(st.Status != "" && !validStatus(st.Status)) || (st.Kind != "" && !validKind(st.Kind)) {
+		(st.Status != "" && !validStatus(st.Status)) || (st.Kind != "" && !validKind(st.Kind)) ||
+		len(st.Guide) > 64 || st.Section < 0 || st.Section >= maxGuideSection || utf8.RuneCountInString(st.GuideAns) > maxCheckText {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -136,8 +144,10 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		st = pageState{}
 	case "go":
 		switch m := v["mode"]; m {
-		case modeReview, modeDrafts, modeTopics, modeNotion, modeObsidian, modeNLM, modeCards, modeWrite, modeLogseq, modeWeak:
+		case modeReview, modeDrafts, modeTopics, modeNotion, modeObsidian, modeNLM, modeCards, modeWrite, modeLogseq, modeWeak, modeGuide:
 			st = pageState{Mode: m}
+		case modeMap:
+			st = pageState{Mode: m, Topic: cleanTopic(v["topic"])}
 		case modeTutor:
 			if len(v["card"]) > 64 {
 				return nil, errors.New("卡片 ID 不对")
@@ -263,6 +273,62 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		st = pageState{Mode: modeWeak, Topic: cleanTopic(v["topic"])}
 	case "weak_topic":
 		st.Topic, st.Status = cleanTopic(v["topic"]), ""
+	case "guide_open", "guide_make":
+		topic, body, title := cleanTopic(v["topic"]), "", ""
+		if r.Action == "guide_make" {
+			topic, body, title = "", strings.TrimSpace(v["text"]), v["title"]
+			if body == "" {
+				return nil, errors.New("先贴一段要精读的材料")
+			}
+			if utf8.RuneCountInString(body) > maxGuideText {
+				return nil, fmt.Errorf("材料太长了，最多 %d 个字", maxGuideText)
+			}
+		} else if topic == "" {
+			return nil, errors.New("先选一个知识点")
+		}
+		g, err := a.guide(ctx, topic, body, title)
+		if err != nil {
+			return nil, err
+		}
+		st = pageState{Mode: modeGuide, Guide: g.ID}
+		if g.Plain {
+			toast = "模型暂时不可用，先按卡片带你过一遍"
+		}
+	case "guide_show":
+		if v["id"] == "" || len(v["id"]) > 64 {
+			return nil, errors.New("精读 ID 不对")
+		}
+		st = pageState{Mode: modeGuide, Guide: v["id"]}
+	case "guide_next", "guide_prev":
+		g, ok := a.guideByID(st.Guide)
+		if !ok {
+			return nil, errors.New("这份精读已经不在了，重新生成一份")
+		}
+		i := min(max(st.Section, 0), len(g.Sections)-1)
+		if r.Action == "guide_next" {
+			i = min(i+1, len(g.Sections)-1)
+		} else {
+			i = max(i-1, 0)
+		}
+		st.Section, st.GuideChecked, st.GuideAns = i, false, ""
+	case "guide_check":
+		answer := strings.TrimSpace(v["answer"])
+		if answer == "" {
+			return nil, errors.New("先写下你的回答；想不起来就点「查看参考答案」")
+		}
+		st.GuideChecked, st.GuideAns = true, clip(strings.Join(strings.Fields(answer), " "), maxCheckText)
+	case "guide_reveal":
+		st.GuideChecked, st.GuideAns = true, ""
+	case "guide_drafts":
+		n, err := a.guideDrafts(st.Guide)
+		if err != nil {
+			return nil, err
+		}
+		if n == 0 {
+			toast = "这份精读的卡片都已经有了"
+		} else {
+			st, toast = pageState{Mode: modeDrafts}, fmt.Sprintf("做了 %d 张卡片，确认一下", n)
+		}
 	case "tutor_kind":
 		if !validKind(v["kind"]) {
 			return nil, errors.New("unknown exercise kind")
@@ -408,6 +474,10 @@ func (a *app) view(ctx context.Context, st pageState, _ string) (*wire.View, err
 		v = a.weakView(st)
 	case modeTutor:
 		v = a.tutorView(st)
+	case modeGuide:
+		v = a.guideView(st)
+	case modeMap:
+		v = a.mapView(st)
 	default:
 		v = a.homeView(st)
 	}
@@ -450,12 +520,20 @@ func (a *app) homeView(_ pageState) *wire.View {
 	sections := []wire.Section{{Items: first}}
 	if s.Total > 0 {
 		sections = append(sections, wire.Section{Title: "深度辅导", Items: []wire.Component{
+			row("知识地图", "按掌握度分层看全部知识点，点进去看卡片和错因", "go", map[string]string{"mode": modeMap}),
+			row("精读学习", "一节一节讲：直觉、类比、要点，再来一道随堂小测", "go", map[string]string{"mode": modeGuide}),
 			row("薄弱知识点", a.weakSummary(), "go", map[string]string{"mode": modeWeak}),
 			row("Tutor 练习", "概念辨析、填空、选择、场景变式，一步步提示，答完诊断错因", "go", map[string]string{"mode": modeTutor}),
 		}})
 	}
 	if s.Drafts > 0 {
 		sections = append(sections, wire.Section{Items: []wire.Component{row(fmt.Sprintf("有 %d 张卡片等你确认", s.Drafts), "模型、NotebookLM 和辅导做的卡片，留下的才会排进复习", "go", map[string]string{"mode": modeDrafts})}})
+	}
+	if s.Total == 0 {
+		// A lesson can be made from a pasted text, which needs no cards.
+		sections = append(sections, wire.Section{Title: "深度辅导", Items: []wire.Component{
+			row("精读学习", "贴一段材料，一节一节讲：直觉、类比、要点，再来一道随堂小测", "go", map[string]string{"mode": modeGuide}),
+		}})
 	}
 	sections = append(sections, wire.Section{Title: "加卡片", Items: []wire.Component{
 		row("知识库主题", "从 Persona 记下的知识点做卡片", "go", map[string]string{"mode": modeTopics}),
