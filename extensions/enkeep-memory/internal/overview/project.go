@@ -539,14 +539,12 @@ func tags(st *store.State, p *Pattern, ids []string) (cats []string, space strin
 				if cn == "" || slices.Contains(e.CatsRemoved, cn) {
 					continue
 				}
-				if c.By == entry.ByUser {
-					topCats[cn] = true
-				} else if !workMethod && (c.By == entry.BySpaceDefault || slices.Contains(ownPayload, cn)) {
+				if c.By == entry.ByUser || !workMethod {
 					topCats[cn] = true
 				}
 			}
 			if !workMethod {
-				if cn := entry.CategoryOf(e.Sensitive); cn != "" && !slices.Contains(e.CatsRemoved, cn) && slices.Contains(ownPayload, cn) {
+				if cn := entry.CategoryOf(e.Sensitive); cn != "" && !slices.Contains(e.CatsRemoved, cn) {
 					topCats[cn] = true
 				}
 			}

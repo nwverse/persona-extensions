@@ -122,6 +122,10 @@ func (EntriesProvider) Items(st *store.State) []CandidateItem {
 		if targetFacet == entry.World {
 			weight += contactScore[e.Person] / 10
 		}
+		originSpace := e.OriginSpace
+		if len(cats) == 0 && entry.IsWorkMethodFacet(e.Facet) {
+			originSpace = ""
+		}
 		out = append(out, CandidateItem{
 			ID:          e.ID,
 			Facet:       targetFacet,
@@ -131,7 +135,7 @@ func (EntriesProvider) Items(st *store.State) []CandidateItem {
 			Priority:    grainRank(e),
 			Weight:      weight,
 			Categories:  cats,
-			OriginSpace: e.OriginSpace,
+			OriginSpace: originSpace,
 			Subjects:    collectEntrySubjects(st, e),
 			IsFocus:     e.Type == "current_focus",
 			Own:         own(e),
@@ -523,9 +527,11 @@ func BuildWith(st *store.State, src InputProvider, now time.Time, lang string) *
 				cats = append(cats, cn)
 			}
 		}
-		for _, c := range entry.SpaceDefaults(it.OriginSpace) {
-			if !slices.Contains(cats, c) {
-				cats = append(cats, c)
+		if !entry.IsWorkMethodFacet(it.Facet) {
+			for _, c := range entry.SpaceDefaults(it.OriginSpace) {
+				if !slices.Contains(cats, c) {
+					cats = append(cats, c)
+				}
 			}
 		}
 		sort.Strings(cats)

@@ -103,21 +103,22 @@ func TestPage(t *testing.T) {
 	}
 }
 
-// Entries from before the 0.2.0-beta.40 tagging rules are tagged here by the same rules, so the page stays tagged (an
-// untagged page would carry none of the entries anywhere): the old model label, the money and legal words when there
-// is no label, a class's members' categories and space. The state is not changed.
+// Legacy untagged entries are backfilled strictly by v0.4.0 Payload-First rules (never scanning raw ev.Quote, and
+// never propagating OriginSpace or model sensitivity onto work-methodology facets unless their own payload discloses
+// personal privacy). Non-work facets (persona/world) still inherit member space defaults and explicit labels.
 func TestBackfilledTags(t *testing.T) {
 	st := state()
 	st.Entries["i-stable"].Members = []string{"a1", "a2"}
 	st.Entries["a1"] = &entry.Entry{ID: "a1", Facet: entry.Interaction, Grain: entry.Action, Text: "a1", Status: entry.Retired, Tagged: true}
 	st.Entries["a2"] = &entry.Entry{ID: "a2", Facet: entry.Interaction, Grain: entry.Action, Text: "a2", Status: entry.Retired, OriginSpace: "health"}
+	st.Entries["p-space"] = &entry.Entry{ID: "p-space", Facet: entry.Persona, Grain: entry.Class, Text: "tracks sleep", Status: entry.Stable,
+		Count: 2, Last: "2026-10-01", Origin: entry.Behavior, Members: []string{"pa1"}}
+	st.Entries["pa1"] = &entry.Entry{ID: "pa1", Facet: entry.Persona, Grain: entry.Action, Text: "sleep log", Status: entry.Retired, OriginSpace: "health"}
 	st.Entries["w-old"] = &entry.Entry{ID: "w-old", Facet: entry.Workflow, Text: "renew the passport before the trip", Status: entry.Stable,
 		Count: 2, Last: "2026-10-01", Origin: entry.Behavior}
-	st.Entries["w-label"] = &entry.Entry{ID: "w-label", Facet: entry.Workflow, Text: "keeps the receipts", Status: entry.Stable,
-		Count: 2, Last: "2026-10-01", Origin: entry.Behavior, Sensitive: "emotion",
-		Evidence: []entry.Evidence{{Quote: "报销的发票都留着"}}}
-	st.Entries["w-money"] = &entry.Entry{ID: "w-money", Facet: entry.Workflow, Text: "pays the rent", Status: entry.Stable,
-		Count: 2, Last: "2026-10-01", Origin: entry.Behavior, Evidence: []entry.Evidence{{Quote: "每月转账交房租"}}}
+	st.Entries["w-quote-only"] = &entry.Entry{ID: "w-quote-only", Facet: entry.Workflow, Text: "keeps the receipts", Status: entry.Stable,
+		Count: 2, Last: "2026-10-01", Origin: entry.Behavior,
+		Evidence: []entry.Evidence{{Quote: "每月转账交房租，报销发票都留着"}}}
 	st.Entries["w-plain"] = &entry.Entry{ID: "w-plain", Facet: entry.Workflow, Text: "runs the gate before merging", Status: entry.Stable,
 		Count: 2, Last: "2026-10-01", Origin: entry.Behavior}
 	r, n, _ := Page(st, Params{Contribution: "memory", Limit: 200})
@@ -128,17 +129,20 @@ func TestBackfilledTags(t *testing.T) {
 	for _, e := range r.Entries {
 		got[e.ID] = e
 	}
-	if e := got["i-stable"]; e.OriginSpace != "health" || !slices.Equal(e.Categories, []string{"health"}) {
-		t.Errorf("class from its members: %+v", e)
+	// Work-methodology facet (interaction) does NOT inherit OriginSpace from a member.
+	if e := got["i-stable"]; e.OriginSpace != "" || len(e.Categories) != 0 {
+		t.Errorf("work-method class must not inherit member OriginSpace: %+v", e)
+	}
+	// Non-work facet (persona) DOES inherit member OriginSpace and space defaults.
+	if e := got["p-space"]; e.OriginSpace != "health" || !slices.Equal(e.Categories, []string{"health"}) {
+		t.Errorf("persona class from its members: %+v", e)
 	}
 	if e := got["w-old"]; !slices.Equal(e.Categories, []string{"legal_id"}) || e.OriginSpace != "" {
 		t.Errorf("legal words: %+v", e)
 	}
-	if e := got["w-label"]; !slices.Equal(e.Categories, []string{"emotion"}) {
-		t.Errorf("a label: the money words add nothing: %+v", e)
-	}
-	if e := got["w-money"]; !slices.Contains(e.Categories, "finance") {
-		t.Errorf("money words without a label: %+v", e)
+	// Raw ev.Quote is never scanned by backfill.
+	if e := got["w-quote-only"]; len(e.Categories) != 0 {
+		t.Errorf("raw ev.Quote must not taint workflow entry: %+v", e)
 	}
 	if e := got["w-plain"]; e.Categories != nil || e.OriginSpace != "" {
 		t.Errorf("general: %+v", e)
