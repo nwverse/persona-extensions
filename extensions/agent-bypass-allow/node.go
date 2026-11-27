@@ -423,6 +423,10 @@ func (n *node) cleanup() {
 	// directory has no settings path yet and must not suppress the cleanup.
 	seen := map[string]int{}
 	for i, s := range n.dirs {
+		// AGY and Claude can share a directory but have independent hooks.
+		if s.agy {
+			continue
+		}
 		if abs, err := expand(s.Dir); err == nil {
 			seen[abs] = i
 		}

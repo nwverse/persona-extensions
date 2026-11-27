@@ -286,3 +286,65 @@ func TestNodeCleanupRestoredAgyDirAfterRefresh(t *testing.T) {
 		t.Fatal("cleanup lost an agy directory after a transient disappearance")
 	}
 }
+
+func TestNodeCleanupDualUseProfileRemovesBothHooks(t *testing.T) {
+	root := t.TempDir()
+	home := filepath.Join(root, "home", "me")
+	t.Setenv("HOME", home)
+	personaHome := filepath.Join(root, "state", "persona")
+	data := filepath.Join(personaHome, "node-plugins", "agent-bypass-allow", "data")
+	profile := filepath.Join(personaHome, "profiles", "channel")
+	for _, dir := range []string{filepath.Join(home, ".claude"), data} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	config, err := json.Marshal(map[string]any{
+		"machines":    []string{"m1"},
+		"config_dirs": []string{"~/.claude"},
+		"agy_dirs":    []string{profile},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := &node{bin: "/opt/bin/" + currentExtensionID}
+	in := &ext.Init{}
+	in.Extension = &wire.ExtensionInfo{ID: currentExtensionID, DataDir: data}
+	in.InitializeParams.Config = config
+	ctx, cancel := context.WithCancel(context.Background())
+	finished := false
+	t.Cleanup(func() {
+		if !finished {
+			cancel()
+			n.cleanup()
+		}
+	})
+	if _, err := n.init(ctx, in, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	settings := filepath.Join(profile, "settings.json")
+	hooks := agyHooksPath(profile)
+	if err := os.MkdirAll(filepath.Dir(hooks), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installHookWith(settings, n.matcher, hookCommand(n.bin, profile, data)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := installAgyHookWith(hooks, n.agyMatcher, agyHookCommand(n.bin, profile, data)); err != nil {
+		t.Fatal(err)
+	}
+	if !hasHook(settings) || !hasAgyHook(hooks) {
+		t.Fatal("test setup did not install both hooks")
+	}
+
+	cancel()
+	n.cleanup()
+	finished = true
+	if hasAgyHook(hooks) {
+		t.Fatal("cleanup left the agy hook in a dual-use assistant profile")
+	}
+	if hasHook(settings) {
+		t.Fatal("cleanup left the Claude hook in a dual-use assistant profile")
+	}
+}
