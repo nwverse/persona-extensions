@@ -37,16 +37,16 @@ type snapshot struct {
 	wishlist reading[wishList]
 }
 
-func (a *app) snapshot(ctx context.Context, storeLanguage string, refresh, includeLibrary bool) snapshot {
-	s := snapshot{player: a.account(ctx, presenceTTL, refresh)}
-	if s.player.Data == nil || !s.player.Data.Public {
+func (d *steamData) snapshot(ctx context.Context, storeLanguage string, refresh, includeLibrary bool) snapshot {
+	s := snapshot{player: d.account(ctx, presenceTTL, refresh)}
+	if _, issue := d.readID(s.player); issue != "" {
 		return s
 	}
 	var reads sync.WaitGroup
-	reads.Go(func() { s.recent = a.recentGames(ctx, s.player, refresh) })
-	reads.Go(func() { s.wishlist = a.wishlist(ctx, s.player, storeLanguage, refresh) })
+	reads.Go(func() { s.recent = d.recentGames(ctx, s.player, refresh) })
+	reads.Go(func() { s.wishlist = d.wishlist(ctx, s.player, storeLanguage, refresh) })
 	if includeLibrary {
-		reads.Go(func() { s.library = a.ownedGames(ctx, s.player, refresh) })
+		reads.Go(func() { s.library = d.ownedGames(ctx, s.player, refresh) })
 	}
 	reads.Wait()
 	return s
@@ -62,6 +62,9 @@ func (a *app) viewText(r *ext.UIRequest) *text {
 func (a *app) viewQuery(value string) string {
 	if a.client.key != "" {
 		value = strings.ReplaceAll(value, a.client.key, "")
+	}
+	if a.qr != nil {
+		value = a.qr.redact(value)
 	}
 	return cleanText(value, maxQueryRunes)
 }
@@ -149,32 +152,50 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 }
 
 func (a *app) page(ctx context.Context, t *text, st pageState, refresh bool) *wire.View {
-	ctx, cancel := context.WithTimeout(ctx, readBudget)
+	d, ctx, cancel := a.readContext(ctx)
 	defer cancel()
-	if st.AppID != 0 {
-		return a.gameDetail(ctx, t, st)
+	if d.config.AuthMode == modeQR && d.setup != "" {
+		return unavailablePage(t, d.setup)
 	}
+	var view *wire.View
+	if st.AppID != 0 {
+		view = d.gameDetail(ctx, t, st)
+	} else {
+		view = d.overview(ctx, t, st, refresh)
+	}
+	if issue := d.sessionIssue(); issue != "" {
+		return unavailablePage(t, issue)
+	}
+	return view
+}
 
-	s := a.snapshot(ctx, t.storeLanguage, refresh, true)
+func unavailablePage(t *text, issue problem) *wire.View {
+	return &wire.View{Title: "Steam", Sections: []wire.Section{{Title: t.overview,
+		Items: []wire.Component{empty(t.message(issue, false)), button(t.refresh, "refresh")}}}}
+}
+
+func (d *steamData) overview(ctx context.Context, t *text, st pageState, refresh bool) *wire.View {
+	s := d.snapshot(ctx, t.storeLanguage, refresh, true)
 	view := &wire.View{Title: "Steam"}
 	profile := wire.Section{Title: t.overview}
-	if s.player.Data == nil {
-		profile.Items = []wire.Component{empty(t.message(s.player.Issue, false)), button(t.refresh, "refresh")}
-		view.Sections = []wire.Section{profile}
-		return view
-	}
-	p := s.player.Data
-	name := p.Name
-	if name == "" {
-		name = t.status
-	}
-	profile.Items = []wire.Component{{Type: wire.ComponentRow, Title: name, Subtitle: t.presence(p)}}
-	profile.Footer = t.message(s.player.Issue, s.player.Stale)
-	if !p.Public {
-		profile.Footer = joinText(profile.Footer, t.message(problemPrivate, false))
-		profile.Items = append(profile.Items, button(t.refresh, "refresh"))
-		view.Sections = []wire.Section{profile}
-		return view
+	if p := s.player.Data; p == nil {
+		if d.session == nil {
+			return unavailablePage(t, s.player.Issue)
+		}
+		profile.Items = []wire.Component{empty(t.message(s.player.Issue, false))}
+	} else {
+		name := p.Name
+		if name == "" {
+			name = t.status
+		}
+		profile.Items = []wire.Component{{Type: wire.ComponentRow, Title: name, Subtitle: t.presence(p)}}
+		profile.Footer = t.message(s.player.Issue, s.player.Stale)
+		if d.session == nil && !p.Public {
+			profile.Footer = joinText(profile.Footer, t.message(problemPrivate, false))
+			profile.Items = append(profile.Items, button(t.refresh, "refresh"))
+			view.Sections = []wire.Section{profile}
+			return view
+		}
 	}
 
 	profile.Items = append(profile.Items, wire.Component{Type: wire.ComponentStatGrid, Stats: []wire.Stat{
@@ -198,12 +219,15 @@ func (a *app) page(ctx context.Context, t *text, st pageState, refresh bool) *wi
 }
 
 func (a *app) card(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
-	ctx, cancel := context.WithTimeout(ctx, readBudget)
+	d, ctx, cancel := a.readContext(ctx)
 	defer cancel()
 	t := a.viewText(r)
-	s := a.snapshot(ctx, t.storeLanguage, false, false)
+	s := d.snapshot(ctx, t.storeLanguage, false, false)
+	if issue := d.sessionIssue(); issue != "" {
+		s = snapshot{player: reading[player]{Issue: issue}}
+	}
 	issue := s.player.Issue
-	if issue == "" && s.player.Data != nil && !s.player.Data.Public {
+	if issue == "" && d.session == nil && s.player.Data != nil && !s.player.Data.Public {
 		issue = problemPrivate
 	}
 	section := wire.Section{
@@ -319,15 +343,18 @@ func wishlistSection(t *text, r reading[wishList], st *pageState) wire.Section {
 	return section
 }
 
-func (a *app) gameDetail(ctx context.Context, t *text, st pageState) *wire.View {
+func (d *steamData) gameDetail(ctx context.Context, t *text, st pageState) *wire.View {
 	view := &wire.View{Title: t.details, State: ext.EncodeState(st)}
 	section := wire.Section{Items: []wire.Component{button(t.back, "back")}}
-	p := a.account(ctx, profileTTL, false)
+	var p reading[player]
+	if d.session == nil {
+		p = d.account(ctx, profileTTL, false)
+	}
 	var games reading[gameList]
 	if st.From == recentSection {
-		games = a.recentGames(ctx, p, false)
+		games = d.recentGames(ctx, p, false)
 	} else {
-		games = a.ownedGames(ctx, p, false)
+		games = d.ownedGames(ctx, p, false)
 	}
 	if games.Data == nil {
 		section.Items = append(section.Items, empty(t.message(games.Issue, games.Stale)))
@@ -351,7 +378,7 @@ func (a *app) gameDetail(ctx context.Context, t *text, st pageState) *wire.View 
 		wire.Component{Type: wire.ComponentStatGrid, Stats: stats},
 		wire.Component{Type: wire.ComponentLink, Title: t.store, URL: storeLink(game.AppID)},
 	)
-	progress := a.achievements(ctx, p, game.AppID)
+	progress := d.achievements(ctx, p, game.AppID, t.storeLanguage)
 	achievement := wire.Section{Title: t.achievements}
 	switch {
 	case progress.Data == nil:

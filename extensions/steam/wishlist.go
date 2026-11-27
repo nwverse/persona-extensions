@@ -22,7 +22,7 @@ func (c steamClient) wishlist(ctx context.Context, id, country, language string)
 			Items []wishItem `json:"items"`
 		} `json:"response"`
 	}
-	switch p := c.get(ctx, apiBase+wishlistPath, url.Values{"steamid": {id}}, false, &reply); p {
+	switch p := c.get(ctx, apiBase+wishlistPath, url.Values{"steamid": {id}}, c.access != "", &reply); p {
 	case "":
 	case problemDenied, problemMissing, problemBadCall:
 		return nil, problemWishlist

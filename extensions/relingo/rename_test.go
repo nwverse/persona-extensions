@@ -75,7 +75,7 @@ func TestEmbeddedManifestStripsPredecessor(t *testing.T) {
 	if err := json.Unmarshal(manifest, &identity); err != nil {
 		t.Fatal(err)
 	}
-	if identity.ID != "relingo" || identity.Version != "0.2.0" {
+	if identity.ID != "relingo" || identity.Version != "0.2.1" {
 		t.Fatalf("identity %+v", identity)
 	}
 }
