@@ -40,6 +40,7 @@ var tools = []wire.ConnectorTool{
 	},
 	achievementHunterTool,
 	gameNewsTool,
+	wishlistDealsTool,
 }
 
 type listArgs struct {
@@ -181,6 +182,8 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 		return encodeSteamTool(a.achievementHunter(ctx, raw))
 	case gameNewsName:
 		return encodeSteamTool(a.gameNews(ctx, raw))
+	case wishlistDealsName:
+		return encodeSteamTool(a.wishlistDeals(ctx, raw))
 	}
 	const badPaging = "Use an offset from 0 to 20000 and a limit from 1 to 50."
 	d, ctx, cancel := a.readContext(ctx)

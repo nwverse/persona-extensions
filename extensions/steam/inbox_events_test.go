@@ -575,3 +575,29 @@ func TestWishlistInboxQRLogoutDuringScan(t *testing.T) {
 		t.Fatalf("QR sign-in wrote wishlist snapshots to disk: %v, %v", entries, err)
 	}
 }
+
+func TestWishlistDealsToolWithoutInbox(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	dir := t.TempDir()
+	seedInboxWishlist(t, f,
+		inboxFixtureGame{firstApp, 300, 20, ""},
+		inboxFixtureGame{secondApp, -1, 0, `{"best_purchase_option":{"is_free_to_keep":true}}`},
+		inboxFixtureGame{thirdApp, 700, 0, ""},
+	)
+	at := fixtureObservationAt
+	requireStoreOK(t, NewPriceHistoryStore(dir).Observe(fixtureID, "US", at.Add(-time.Hour), map[uint32]PriceQuote{
+		firstApp: {Currency: "USD", Final: 400},
+	}))
+	h := startInboxTestHost(t, f, &app{}, func() time.Time { return at }, dir, "en", `"inbox_events_enabled":false`)
+	raw := toolAnswer(t, h, wishlistDealsName, `{"limit":1}`)
+	contains(t, raw, `"matched_count":2`, `"truncated":true`, `"giveaway":true`, storeLink(secondApp))
+	if strings.Contains(raw, storeLink(firstApp)) {
+		t.Fatal("on-demand deals exceeded the requested limit")
+	}
+	raw = toolAnswer(t, h, wishlistDealsName, `{"limit":2}`)
+	contains(t, raw, `"observed_new_low":true`, storeLink(firstApp))
+	assertHidden(t, raw, fixtureID, f.key)
+	if got := collectWishlistInbox(t, h); len(got) != 0 || hasEvent(h, "connector.changed") || f.hit(wishlistPath) != 2 {
+		t.Fatal("on-demand deals produced background activity")
+	}
+}

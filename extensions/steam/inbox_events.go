@@ -31,7 +31,14 @@ const (
 	wishlistReleaseKind  = "wishlist_release"
 	wishlistDemoKind     = "wishlist_demo"
 	wishlistRoundupKind  = "wishlist_sale_roundup"
+	wishlistDealsName    = "steam_wishlist_deals"
 )
+
+var wishlistDealsTool = wire.ConnectorTool{
+	Name:        wishlistDealsName,
+	Description: "Read current Steam wishlist discounts, target prices met, local price lows and limited-time giveaways in the configured region.",
+	InputSchema: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":50,"default":20}}}`),
+}
 
 type wishlistStoreItem struct {
 	AppID      uint32 `json:"appid"`
@@ -188,9 +195,10 @@ func (s *wishlistItemState) observeSale(at time.Time, selling, checked bool, end
 
 type wishlistDeal struct {
 	wishItem
-	Giveaway bool `json:"giveaway,omitempty"`
-	NewLow   bool `json:"observed_new_low,omitempty"`
-	Target   bool `json:"target_price_met,omitempty"`
+	Giveaway bool   `json:"giveaway,omitempty"`
+	NewLow   bool   `json:"observed_new_low,omitempty"`
+	Target   bool   `json:"target_price_met,omitempty"`
+	URL      string `json:"url,omitempty"`
 }
 
 func (d wishlistDeal) paidDiscount() bool {
@@ -610,4 +618,55 @@ func (a *app) collectWishlistInbox() wire.ConnectorCollectResult {
 		}
 	}
 	return out
+}
+
+func (a *app) wishlistDeals(ctx context.Context, raw json.RawMessage) (map[string]any, error) {
+	args := struct {
+		Limit int `json:"limit"`
+	}{Limit: defaultToolLimit}
+	if !decodeArgs(raw, &args) || args.Limit < 1 || args.Limit > maxToolLimit {
+		return nil, invalid("Use a limit from 1 to 50.")
+	}
+	d, ctx, cancel := a.readContext(ctx)
+	defer cancel()
+	t := textFor(a.locale)
+	out := map[string]any{"available": false, "country_code": d.config.CountryCode}
+	id, list, issue := d.readWishlistSignals(ctx, t)
+	if sessionIssue := d.sessionIssue(); sessionIssue != "" {
+		list, issue = nil, sessionIssue
+	}
+	describeReading(out, "wishlist", reading[wishList]{Issue: issue}, t)
+	if list == nil {
+		return out, nil
+	}
+	at := d.wishes.now().UTC()
+	quotes := wishlistQuotes(list)
+	histories, _ := d.stores.prices.Histories(id, d.config.CountryCode, slices.Collect(maps.Keys(quotes))...)
+	targets := d.config.wishlistTargets()
+	deals := make([]wishlistDeal, 0)
+	for _, item := range list.Items {
+		giveaway, _ := list.store[item.AppID].promotion(item.Price, at)
+		deal := wishlistDeal{wishItem: item, Giveaway: giveaway, URL: storeLink(item.AppID)}
+		if p := item.Price; p != nil && p.DiscountPercent < 100 {
+			deal.NewLow = wishlistNewLow(p, histories[item.AppID], time.Time{}, at)
+			target, ok := targets[wishlistTargetKey{item.AppID, p.Currency}]
+			deal.Target = ok && p.Final <= target
+		}
+		if deal.Giveaway || deal.NewLow || deal.Target || deal.paidDiscount() {
+			deals = append(deals, deal)
+		}
+	}
+	if ctx.Err() == nil {
+		d.recordSnapshot(func() { _ = d.stores.prices.Observe(id, d.config.CountryCode, at, quotes) })
+	}
+	if issue := d.sessionIssue(); issue != "" {
+		out = map[string]any{"available": false}
+		describeReading(out, "wishlist", reading[wishList]{Issue: issue}, t)
+		return out, nil
+	}
+	slices.SortFunc(deals, compareWishlistDeals)
+	out["available"], out["wishlist_count"], out["prices_checked"] = true, list.Total, list.Checked
+	out["matched_count"], out["truncated"] = len(deals), list.Total > len(list.Items) || len(deals) > args.Limit
+	out["deals"] = deals[:min(len(deals), args.Limit)]
+	return out, nil
 }

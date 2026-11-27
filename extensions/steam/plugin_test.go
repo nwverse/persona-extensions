@@ -181,7 +181,7 @@ func TestProtocolTools(t *testing.T) {
 	if err := h.Call("connector.tools.list", wire.ConnectorParams{Contribution: extensionID}, &list); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"steam_profile", "steam_recent_games", "steam_library", "steam_achievements", "steam_wishlist", "steam_achievement_hunter", "steam_game_news"}
+	want := []string{"steam_profile", "steam_recent_games", "steam_library", "steam_achievements", "steam_wishlist", "steam_achievement_hunter", "steam_game_news", wishlistDealsName}
 	var names []string
 	for _, tool := range list.Tools {
 		names = append(names, tool.Name)
@@ -218,6 +218,8 @@ func TestProtocolTools(t *testing.T) {
 		{gameNewsName, `{"limit":21}`},
 		{gameNewsName, `{"games_limit":6}`},
 		{gameNewsName, `{"summary_enabled":true}`},
+		{wishlistDealsName, `{"limit":51}`},
+		{wishlistDealsName, `{"steam_id":"another_account"}`},
 	} {
 		var e *ext.Error
 		err := h.Call("connector.tools.call", wire.ConnectorCallParams{Contribution: extensionID, Name: tc.name, Args: json.RawMessage(tc.args)}, nil)
