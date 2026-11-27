@@ -59,8 +59,8 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 			}
 			a.steamData = newSteamData(cfg, in.Secrets[keyName], dir, client, now)
 			a.locale = in.Hub.Locale
-			if a.setup == problemAuthRequired {
-				a.qr = newQRAuth(ctx, hub, client, now, a.config.CountryCode)
+			if a.config.AuthMode == modeQR {
+				a.qr = newQRAuth(ctx, hub, client, now, a.config)
 			}
 			return nil, nil
 		},

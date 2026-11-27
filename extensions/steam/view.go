@@ -154,6 +154,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 func (a *app) page(ctx context.Context, t *text, st pageState, refresh bool) *wire.View {
 	d, ctx, cancel := a.readContext(ctx)
 	defer cancel()
+	if d.config.AuthMode == modeQR && d.setup != "" {
+		return unavailablePage(t, d.setup)
+	}
 	var view *wire.View
 	if st.AppID != 0 {
 		view = d.gameDetail(ctx, t, st)

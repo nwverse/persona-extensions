@@ -70,7 +70,7 @@ func newAccountData(cfg config, client steamClient, dataDir string, now func() t
 // final response, even if the user signs in to a different account mid-call.
 func (a *app) readContext(parent context.Context) (*steamData, context.Context, func()) {
 	ctx, cancel := context.WithTimeout(parent, readBudget)
-	if a.qr == nil {
+	if a.qr == nil || a.setup != "" && a.setup != problemAuthRequired {
 		return a.steamData, ctx, cancel
 	}
 	if !a.qr.waitLoaded(ctx) {
@@ -105,7 +105,7 @@ func (d *steamData) sessionIssue() problem {
 	a := d.session.auth
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if d.session.currentLocked() {
+	if d.session.currentLocked() && a.sessionLocked() == d.session {
 		return ""
 	}
 	if a.issue == problemAuthExpired {

@@ -17,6 +17,7 @@ const (
 	qrStep        = "scan"
 	secretVersion = 1
 	refreshLead   = 30 * time.Second
+	maxJWTExpiry  = 253402300799 // Last Unix second representable in an RFC 3339 timestamp.
 )
 
 type steamSecret struct {
@@ -60,11 +61,11 @@ type authResultWait struct {
 }
 
 type qrAuth struct {
-	ctx     context.Context
-	hub     *ext.Hub
-	client  steamClient
-	now     func() time.Time
-	country string
+	ctx    context.Context
+	hub    *ext.Hub
+	client steamClient
+	now    func() time.Time
+	config config
 
 	loaded     chan struct{}
 	cancelLoad context.CancelFunc
@@ -80,9 +81,9 @@ type qrAuth struct {
 	storeMu sync.Mutex
 }
 
-func newQRAuth(ctx context.Context, hub *ext.Hub, client *http.Client, now func() time.Time, country string) *qrAuth {
+func newQRAuth(ctx context.Context, hub *ext.Hub, client *http.Client, now func() time.Time, cfg config) *qrAuth {
 	loadCtx, cancel := context.WithTimeout(ctx, httpTimeout)
-	a := &qrAuth{ctx: ctx, hub: hub, client: steamClient{http: client}, now: now, country: country,
+	a := &qrAuth{ctx: ctx, hub: hub, client: steamClient{http: client}, now: now, config: cfg,
 		loaded: make(chan struct{}), cancelLoad: cancel, issue: problemAuthRequired}
 	go a.restore(loadCtx)
 	return a
@@ -216,7 +217,7 @@ func (a *qrAuth) step(ctx context.Context, step string, t *text) wire.AuthPrompt
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	switch {
-	case a.session != nil:
+	case a.sessionLocked() != nil:
 		return wire.AuthPrompt{Done: true, Account: a.session.tokens.account()}
 	case a.clearing != nil:
 		return wire.AuthPrompt{Error: t.message(problemAuthClearing, false)}
@@ -357,7 +358,7 @@ func steamJWT(token string) (string, time.Time, bool) {
 		Subject string `json:"sub"`
 		Expiry  int64  `json:"exp"`
 	}
-	if err != nil || json.Unmarshal(data, &claims) != nil || !validSteamID(claims.Subject) || claims.Expiry <= 0 {
+	if err != nil || json.Unmarshal(data, &claims) != nil || !validSteamID(claims.Subject) || claims.Expiry <= 0 || claims.Expiry > maxJWTExpiry {
 		return "", time.Time{}, false
 	}
 	return claims.Subject, time.Unix(claims.Expiry, 0).UTC(), true
@@ -402,16 +403,24 @@ func (a *qrAuth) installLocked(t steamTokens) {
 	a.generation++
 	ctx, cancel := context.WithCancel(a.ctx)
 	s := &qrSession{auth: a, generation: a.generation, ctx: ctx, cancel: cancel, tokens: t}
-	s.reads = newAccountData(config{AuthMode: modeQR, SteamID: t.secret.SteamID, CountryCode: a.country}, a.client, "", a.now, s)
+	cfg := a.config
+	cfg.SteamID = t.secret.SteamID
+	s.reads = newAccountData(cfg, a.client, "", a.now, s)
 	a.session = s
 	a.issue = ""
 }
 
 func (a *qrAuth) sessionLocked() *qrSession {
 	s := a.session
-	if s != nil && s.refresh == nil && s.rotation == nil && !s.tokens.refreshExpiry.After(a.now()) {
-		a.clearLocked(problemAuthExpired)
-		return nil
+	if s != nil && s.refresh == nil {
+		expires := s.tokens.refreshExpiry
+		if s.rotation != nil {
+			expires = s.rotation.refreshExpiry
+		}
+		if !expires.After(a.now()) {
+			a.clearLocked(problemAuthExpired)
+			return nil
+		}
 	}
 	return s
 }
@@ -422,9 +431,12 @@ func (s *qrSession) currentLocked() bool {
 }
 
 func (s *qrSession) access(ctx context.Context) (steamTokens, problem) {
+	if err := ctx.Err(); err != nil {
+		return steamTokens{}, sanitizeError(err)
+	}
 	a := s.auth
 	a.mu.Lock()
-	if !s.currentLocked() {
+	if !s.currentLocked() || a.sessionLocked() != s {
 		a.mu.Unlock()
 		return steamTokens{}, problemCanceled
 	}
@@ -453,6 +465,9 @@ func (s *qrSession) access(ctx context.Context) (steamTokens, problem) {
 	}
 	if refresh.issue != "" {
 		return steamTokens{}, refresh.issue
+	}
+	if !s.tokens.accessExpiry.After(a.now()) {
+		return steamTokens{}, problemTimeout
 	}
 	return s.tokens, ""
 }
