@@ -178,7 +178,10 @@ func TestProtocolTools(t *testing.T) {
 	if err := h.Call("connector.tools.list", wire.ConnectorParams{Contribution: extensionID}, &list); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"steam_profile", "steam_recent_games", "steam_library", "steam_achievements", "steam_wishlist"}
+	want := []string{"steam_profile", "steam_recent_games", "steam_library", "steam_achievements", "steam_wishlist",
+		"steam_achievement_hunter", "steam_game_news",
+		"steam_backlog_summary", "steam_backlog_mark", "steam_tonight_pick",
+		"steam_store_tags", "steam_store_search", "steam_game_details"}
 	var names []string
 	for _, tool := range list.Tools {
 		names = append(names, tool.Name)
@@ -187,7 +190,7 @@ func TestProtocolTools(t *testing.T) {
 		}
 	}
 	if !slices.Equal(names, want) {
-		t.Fatalf("read tools %v, want %v", names, want)
+		t.Fatalf("Steam tools %v, want %v", names, want)
 	}
 
 	contains(t, toolAnswer(t, h, "steam_profile", "{}"), `"owned_game_count":3`, `"state":"online"`, `"playing":"Synthetic Adventure"`)
@@ -210,6 +213,11 @@ func TestProtocolTools(t *testing.T) {
 		{"steam_wishlist", `{"country_code":"JP"}`},
 		{"steam_achievements", `{"appid":0}`},
 		{"steam_achievements", `{"appid":4294967296}`},
+		{achievementHunterName, fmt.Sprintf(`{"appid":%d,"limit":51}`, firstApp)},
+		{gameNewsName, `{"appid":0}`},
+		{gameNewsName, `{"limit":21}`},
+		{gameNewsName, `{"games_limit":6}`},
+		{gameNewsName, `{"summary_enabled":true}`},
 	} {
 		var e *ext.Error
 		err := h.Call("connector.tools.call", wire.ConnectorCallParams{Contribution: extensionID, Name: tc.name, Args: json.RawMessage(tc.args)}, nil)
@@ -232,7 +240,8 @@ func TestDeclarativeViews(t *testing.T) {
 	v := viewAnswer(t, h, nav)
 	raw, _ := json.Marshal(v)
 	contains(t, string(raw), "Playing Synthetic Adventure", "2 h 10 min", "Fixture Pilot", "40% off", "$3.99")
-	if len(v.Sections) != 4 || v.Search == nil || v.Filter == nil || v.Sections[0].Items[1].Stats[1].Value != "3" {
+	if len(v.Sections) != 5 || v.Sections[4].Title != english.backlog.title ||
+		v.Search == nil || v.Filter == nil || v.Sections[0].Items[1].Stats[1].Value != "3" {
 		t.Fatal("navigation is missing a section or a display control")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "steam-cache-v1", "profile.json")); err != nil {

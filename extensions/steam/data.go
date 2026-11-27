@@ -29,6 +29,7 @@ type steamData struct {
 	library     *cacheSlot[gameList]
 	recent      *cacheSlot[gameList]
 	wishes      *cacheSlot[wishList]
+	wishIDs     *cacheSlot[map[uint32]struct{}]
 	stores      steamStores
 	lastAccount atomic.Pointer[reading[player]]
 }
@@ -62,6 +63,7 @@ func newAccountData(cfg config, client steamClient, dataDir string, now func() t
 		library: newSlot[gameList](cacheDir, "library", now, session),
 		recent:  newSlot[gameList](cacheDir, "recent", now, session),
 		wishes:  newSlot[wishList](cacheDir, "wishlist", now, session),
+		wishIDs: newSlot[map[uint32]struct{}]("", "", now, session),
 		stores:  newSteamStores(dataDir),
 	}
 }
@@ -132,6 +134,7 @@ func (d *steamData) clearLocked() {
 	d.library.clear()
 	d.recent.clear()
 	d.wishes.clear()
+	d.wishIDs.clear()
 	d.stores.clearMemory()
 }
 
@@ -161,9 +164,7 @@ func (d *steamData) account(ctx context.Context, ttl time.Duration, refresh bool
 	}()
 	id := d.config.SteamID
 	if !validSteamID(id) {
-		r := d.vanity.read(ctx, id, profileTTL, refresh, func(ctx context.Context) (*string, problem) {
-			return d.client.resolve(ctx, id)
-		})
+		r := d.resolveVanity(ctx, refresh)
 		if r.Data == nil {
 			return reading[player]{Issue: r.Issue}
 		}
@@ -176,6 +177,13 @@ func (d *steamData) account(ctx context.Context, ttl time.Duration, refresh bool
 		return p
 	}
 	return d.readPlayer(ctx, id, ttl, refresh)
+}
+
+func (d *steamData) resolveVanity(ctx context.Context, refresh bool) reading[string] {
+	name := d.config.SteamID
+	return d.vanity.read(ctx, name, profileTTL, refresh, func(ctx context.Context) (*string, problem) {
+		return d.client.resolve(ctx, name)
+	})
 }
 
 func (d *steamData) readPlayer(ctx context.Context, id string, ttl time.Duration, refresh bool) reading[player] {

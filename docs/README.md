@@ -21,7 +21,7 @@
 - [Weather](extensions/weather.md): Open-Meteo's current weather, next-24-hours line, 7-day forecast and air quality on the main navigation, with assistant tools, no key needed.
 - [Markets](extensions/markets.md): cryptocurrency (OKX) and A-share, Hong Kong and US stock (Tencent) watchlist on the main navigation, price and volume charts, assistant tools and rate limits.
 - [Binance](../extensions/binance/README.md): read-only Binance account, balance, position, order, trade and history tools, inbox alerts, phone-confirmed single spot / USDⓈ-M / COIN-M limit and market orders and cancels with configurable risk guards, and an optional isolated paper-trading mode (`paper-ledger.json`, zero exchange writes).
-- [Steam](extensions/steam.md) shows player status, recent playtime, the game library, achievements and wishlist prices after Steam Mobile QR sign-in or with a read-only Web API key.
+- [Steam](extensions/steam.md) researches Store games by tags, price, compatibility and reviews. Steam Mobile QR sign-in or a read-only Web API key provides the library, recent playtime, achievements and wishlist prices.
 - [Telegram](extensions/telegram.md): login, inbox, archives, network requirements, tools and the `tg` CLI.
 - [Telegram Bot](extensions/telegram-bot.md): personal BotFather bot channel (`telegrambot`) with 6-digit private-DM pairing, images/files, typing, pushes and optional HTTP(S) proxy.
 - [Discord](extensions/discord.md): your own bot as a read-only source: setting it up, what goes into the knowledge base and how nothing is skipped, the assistant tools, status, network and the sandbox.

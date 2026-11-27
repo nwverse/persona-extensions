@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"unicode/utf8"
 
@@ -17,7 +18,7 @@ const (
 	pageProperties   = `"offset":{"type":"integer","minimum":0,"maximum":20000,"default":0},"limit":{"type":"integer","minimum":1,"maximum":50,"default":20}`
 )
 
-var tools = []wire.ConnectorTool{
+var tools = append([]wire.ConnectorTool{
 	{
 		Name: "steam_profile", Description: "Read the signed-in or configured Steam player's profile, online or in-game state, and visible owned game count.",
 		InputSchema: json.RawMessage(`{"type":"object"}`),
@@ -38,7 +39,9 @@ var tools = []wire.ConnectorTool{
 		Name: "steam_wishlist", Description: "Read the visible Steam wishlist with Store price and discount in the configured country. Use next_offset to read more; check prices_checked before interpreting the discount count.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + pageProperties + `}}`),
 	},
-}
+	achievementHunterTool,
+	gameNewsTool,
+}, backlogTools...)
 
 type listArgs struct {
 	Offset int  `json:"offset"`
@@ -109,7 +112,10 @@ func (a *app) connector(ctx context.Context, method string, params json.RawMessa
 	case "status":
 		return a.status(ctx), nil
 	case "tools.list":
-		return wire.ConnectorTools{Tools: tools}, nil
+		if !a.config.AllowsDiscoveryTools() {
+			return wire.ConnectorTools{Tools: tools}, nil
+		}
+		return wire.ConnectorTools{Tools: slices.Concat(tools, discoveryTools(a.config.DiscoveryResultLimit()))}, nil
 	case "tools.call":
 		return a.callTool(ctx, call.Name, call.Args)
 	default:
@@ -173,6 +179,19 @@ func (d *steamData) toolAccount(ctx context.Context, out map[string]any, t *text
 
 func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (wire.ConnectorCallResult, error) {
 	const badPaging = "Use an offset from 0 to 20000 and a limit from 1 to 50."
+	switch name {
+	case achievementHunterName:
+		return encodeSteamTool(a.achievementHunter(ctx, raw))
+	case gameNewsName:
+		return encodeSteamTool(a.gameNews(ctx, raw))
+	case storeTagsTool, storeSearchTool, gameDetailsTool:
+		if !a.config.AllowsDiscoveryTools() {
+			return wire.ConnectorCallResult{}, &ext.Error{
+				Code: string(problemDiscoveryDisabled), Message: textFor(a.locale).message(problemDiscoveryDisabled, false),
+			}
+		}
+		return a.callDiscoveryTool(ctx, name, raw)
+	}
 	d, ctx, cancel := a.readContext(ctx)
 	defer cancel()
 	out := map[string]any{"available": false}
@@ -255,12 +274,23 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 			out["truncated"] = r.Data.Total > len(r.Data.Items)
 			setPage(out, "items", r.Data.Items, args)
 		}
+	case backlogSummaryTool, backlogMarkTool, tonightPickTool:
+		if err := a.callBacklogTool(ctx, d, t, name, raw, out); err != nil {
+			return wire.ConnectorCallResult{}, err
+		}
 	default:
-		return wire.ConnectorCallResult{}, invalid("Unknown Steam read tool.")
+		return wire.ConnectorCallResult{}, invalid("Unknown Steam tool.")
 	}
 	if issue := d.sessionIssue(); issue != "" {
 		out = map[string]any{"available": false}
 		describeReading(out, strings.TrimPrefix(name, "steam_"), reading[player]{Issue: issue}, t)
+	}
+	return encodeSteamTool(out, nil)
+}
+
+func encodeSteamTool(out any, issue error) (wire.ConnectorCallResult, error) {
+	if issue != nil {
+		return wire.ConnectorCallResult{}, issue
 	}
 	payload, err := json.Marshal(out)
 	if err != nil {

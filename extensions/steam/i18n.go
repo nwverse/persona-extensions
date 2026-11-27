@@ -18,6 +18,25 @@ type text struct {
 	qrHint, keyMode, keySignOut                                         string
 	states                                                              map[string]string
 	problems                                                            map[problem]string
+
+	recentNews, noRecentNews string
+	backlog                  backlogText
+}
+
+type backlogText struct {
+	title, annotation, status, note, tags, unmarked, overlap         string
+	save, clear, confirmClear, saved, cleared, accountChanged        string
+	activity                                                         map[string]string
+	statuses                                                         map[BacklogStatus]string
+	pickFamiliar, pickRecent, pickTime, pickPlaying, pickQueued      string
+	pickPaused, pickUnplayed, pickTried, pickLongTerm, pickCompleted string
+}
+
+func (t *backlogText) bucketTitle(bucket string) string {
+	if title := t.activity[bucket]; title != "" {
+		return title
+	}
+	return t.statuses[BacklogStatus(bucket)]
 }
 
 var english = text{
@@ -34,6 +53,7 @@ var english = text{
 	noWishes:    "The wishlist is empty.", noPrice: "No price listed in this region.", priceUnchecked: "Price unavailable.",
 	achievements: "Achievements", noAchievements: "Steam lists no achievements for this game.", unlocked: "%d of %d unlocked",
 	game: "App %d", playing: "Playing %s", unknown: "Status unavailable",
+	recentNews: "Recent official updates", noRecentNews: "No recent official game updates were found.",
 	minutes: "%d min", hoursMinutes: "%d h %d min", discount: "%d%% off", atLeast: "%d+", stale: "Showing cached data.",
 	qrHint:     "Open Steam Guard in the Steam Mobile App, scan the QR code, and approve the sign-in on your phone.",
 	keyMode:    "Web API key mode is managed in Steam's extension settings. Select Steam Mobile QR there to sign in by scanning.",
@@ -53,6 +73,7 @@ var english = text{
 		problemGameDetails:        "Steam did not share these games. Availability depends on the sign-in method and Steam privacy settings.",
 		problemAchievements:       "Steam did not share achievement progress. Availability depends on Steam privacy settings and whether the game supports achievements.",
 		problemWishlist:           "Steam did not share a wishlist. It may be private, empty or unavailable.",
+		problemMissing:            "Steam did not return this item for the selected Store country.",
 		problemRateLimited:        "Steam is rate limiting requests. Try again in a moment.",
 		problemTimeout:            "Steam took too long to respond. Try again in a moment.",
 		problemNetwork:            "Steam is temporarily unavailable. Try again in a moment.",
@@ -67,6 +88,42 @@ var english = text{
 		problemAuthSave:           "Persona could not save the Steam sign-in. Try again when the Hub's secret store is available.",
 		problemAuthDelete:         "Persona could not delete the saved Steam sign-in. Try signing out again.",
 		problemAuthClearing:       "Persona is clearing the saved Steam sign-in. Try again in a moment.",
+		problemBacklogStore:       "Persona could not access your local Steam backlog.",
+
+		problemGlobalAchievements:     "Steam did not share global unlock rates for this game.",
+		problemAchievementSchema:      "Steam did not share this game's achievement names and hidden status.",
+		problemAchievementDetails:     "Steam did not share complete personal achievement details. Any global rankings are for all players.",
+		problemAchievementUnlockTimes: "Steam did not share timestamps for some unlocked achievements.",
+		problemGameNews:               "Steam did not share news for this game.",
+
+		problemDiscoveryDisabled: "Steam game research is off (discovery_tools_enabled). You can enable it in Settings › Extensions › Steam.",
+		problemDiscoveryTagArgs:  "Use a Steam language code, a tag query of up to 100 characters and a limit from 1 to 50.",
+		problemDiscoverySearch:   "Use a valid search sort and language, up to eight tags, supported platforms and a nonnegative regional budget with up to two decimal places.",
+		problemDiscoveryDetails:  "Provide one appid or a list of up to %d positive appids, with an optional Steam language code.",
+		problemUnknownStoreTag:   "One or more Steam tags could not be resolved. Look up the exact names with steam_store_tags or use numeric tag IDs.",
+		problemBuiltInTags:       "Using the built-in list of common Steam tags.",
+		problemStoreSearchFailed: "Steam Store search is unavailable and there is no usable cached result for these filters. Try again shortly.",
+		problemPartialLibrary:    "Steam returned only part of the library. Ownership is unknown for titles outside that snapshot.",
+	},
+	backlog: backlogText{
+		title: "Backlog & local progress", annotation: "Local backlog annotation", status: "Status",
+		note: "Note", tags: "Tags", unmarked: "No local annotation", overlap: "A game can count in more than one category.",
+		save: "Save status locally", clear: "Clear local annotation", confirmClear: "Clear this game's local status, note and tags?",
+		saved: "Local Steam status saved.", cleared: "Local Steam annotation cleared.",
+		accountChanged: "Your Steam account changed. Reopen this game to edit its annotation.",
+		activity: map[string]string{
+			neverPlayed: "Never played", triedUnder2h: "Tried under 2 hours",
+			string(BacklogPlaying): "Playing or recently active", longTerm: "Played 20 hours or more",
+		},
+		statuses: map[BacklogStatus]string{
+			BacklogUnplayed: "Unplayed", BacklogPlaying: "Playing", BacklogQueued: "Queued",
+			BacklogPaused: "Paused", BacklogCompleted: "Completed", BacklogDropped: "Dropped",
+		},
+		pickFamiliar: "You have played it before.", pickRecent: "You played it in the last two weeks.",
+		pickTime: "Its recorded playtime fits your time budget.", pickPlaying: "You marked it as playing.",
+		pickQueued: "You queued it to play next.", pickPaused: "You marked it as paused.",
+		pickUnplayed: "An unopened game from your library.", pickTried: "You have spent under two hours on it.",
+		pickLongTerm: "You have spent at least 20 hours on it.", pickCompleted: "You previously marked it as completed.",
 	},
 }
 
@@ -84,6 +141,7 @@ var chinese = text{
 	noWishes:    "愿望单为空。", noPrice: "此地区没有挂牌价格。", priceUnchecked: "暂时无法获取价格。",
 	achievements: "成就", noAchievements: "Steam 没有列出这款游戏的成就。", unlocked: "已解锁 %d / %d",
 	game: "应用 %d", playing: "游戏中 · %s", unknown: "状态不可用",
+	recentNews: "近期官方更新", noRecentNews: "暂未找到近期官方游戏更新。",
 	minutes: "%d 分钟", hoursMinutes: "%d 小时 %d 分钟", discount: "优惠 %d%%", atLeast: "%d+", stale: "当前显示缓存数据。",
 	qrHint:     "在 Steam 手机 App 中打开 Steam 令牌，扫描二维码，并在手机上批准登录。",
 	keyMode:    "Web API 密钥在 Steam 扩展设置中管理。如需扫码，请在设置中选择 Steam 手机 App 扫码。",
@@ -103,6 +161,7 @@ var chinese = text{
 		problemGameDetails:        "Steam 未共享这些游戏。可见范围取决于登录方式和 Steam 隐私设置。",
 		problemAchievements:       "Steam 未共享成就进度。可见范围取决于 Steam 隐私设置及游戏是否支持成就。",
 		problemWishlist:           "Steam 未共享愿望单。愿望单可能为私密、为空或暂不可访问。",
+		problemMissing:            "Steam 未返回所选商店地区的此项目。",
 		problemRateLimited:        "Steam 正在限制请求频率，请稍后重试。",
 		problemTimeout:            "Steam 响应超时，请稍后重试。",
 		problemNetwork:            "Steam 暂时不可用，请稍后重试。",
@@ -117,6 +176,42 @@ var chinese = text{
 		problemAuthSave:           "Persona 无法保存 Steam 登录，请在 Hub 密钥存储可用后重试。",
 		problemAuthDelete:         "Persona 无法删除已保存的 Steam 登录，请重试登出。",
 		problemAuthClearing:       "Persona 正在清除已保存的 Steam 登录，请稍后重试。",
+		problemBacklogStore:       "Persona 无法访问本机 Steam 游戏标注。",
+
+		problemGlobalAchievements:     "Steam 未共享这款游戏的全球成就达成率。",
+		problemAchievementSchema:      "Steam 未共享这款游戏的成就名称和隐藏状态。",
+		problemAchievementDetails:     "Steam 未共享完整的个人成就明细。全球榜单适用于所有玩家。",
+		problemAchievementUnlockTimes: "Steam 未共享部分已解锁成就的解锁时间。",
+		problemGameNews:               "Steam 未共享这款游戏的更新消息。",
+
+		problemDiscoveryDisabled: "Steam 游戏调研已关闭（discovery_tools_enabled）。可在「设置 › 扩展 › Steam」开启。",
+		problemDiscoveryTagArgs:  "请使用 Steam 语言代码，输入最多 100 字的标签关键词，并将返回上限设为 1–50。",
+		problemDiscoverySearch:   "请使用有效的排序、语言和平台，提供最多 8 个标签，以及最多两位小数的非负地区预算。",
+		problemDiscoveryDetails:  "请提供一个 appid，或最多 %d 个正整数 appids，可选填 Steam 语言代码。",
+		problemUnknownStoreTag:   "无法识别一个或多个 Steam 标签。请用 steam_store_tags 查询准确名称，或直接提供标签 ID。",
+		problemBuiltInTags:       "当前使用内置的 Steam 常用标签。",
+		problemStoreSearchFailed: "Steam 商店搜索暂不可用，且这组筛选条件没有可用的缓存结果。请稍后重试。",
+		problemPartialLibrary:    "Steam 只返回了部分游戏库，无法确认快照以外游戏的拥有状态。",
+	},
+	backlog: backlogText{
+		title: "吃灰盘点与标注", annotation: "本机游戏标注", status: "游玩状态",
+		note: "备注", tags: "标签", unmarked: "暂无本机标注", overlap: "同一款游戏可能计入多个分类。",
+		save: "保存到本机", clear: "清除本机标注", confirmClear: "清除这款游戏的本机状态、备注和标签？",
+		saved: "已保存本机 Steam 游戏状态。", cleared: "已清除本机 Steam 游戏标注。",
+		accountChanged: "Steam 账号已切换，请重新打开游戏详情再编辑标注。",
+		activity: map[string]string{
+			neverPlayed: "从未打开", triedUnder2h: "试水不足 2 小时",
+			string(BacklogPlaying): "正在推进或近两周活跃", longTerm: "游玩至少 20 小时",
+		},
+		statuses: map[BacklogStatus]string{
+			BacklogUnplayed: "未玩", BacklogPlaying: "正在推进", BacklogQueued: "待玩",
+			BacklogPaused: "暂停", BacklogCompleted: "已通关", BacklogDropped: "已搁置",
+		},
+		pickFamiliar: "你之前玩过这款游戏。", pickRecent: "你在近两周玩过这款游戏。",
+		pickTime: "已有游玩时长在你今晚的时间预算内。", pickPlaying: "你把这款游戏标记为正在推进。",
+		pickQueued: "你已把这款游戏排入待玩清单。", pickPaused: "你把这款游戏标记为暂停。",
+		pickUnplayed: "游戏库里还没打开过的一款游戏。", pickTried: "你在这款游戏上试水不足两小时。",
+		pickLongTerm: "你已在这款游戏上投入至少 20 小时。", pickCompleted: "你之前把这款游戏标记为已通关。",
 	},
 }
 

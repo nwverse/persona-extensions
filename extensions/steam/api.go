@@ -58,6 +58,10 @@ func (c steamClient) get(ctx context.Context, target string, params url.Values, 
 }
 
 func (c steamClient) readJSON(ctx context.Context, target string, params, form url.Values, authenticated bool, out any) problem {
+	return c.readBoundedJSON(ctx, target, params, form, authenticated, maxAPIBytes, out)
+}
+
+func (c steamClient) readBoundedJSON(ctx context.Context, target string, params, form url.Values, authenticated bool, maxBytes int64, out any) problem {
 	method := http.MethodGet
 	var body io.Reader
 	if form != nil {
@@ -114,11 +118,14 @@ func (c steamClient) readJSON(ctx context.Context, target string, params, form u
 			}
 		}
 	}
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIBytes+1))
+	if resp.ContentLength > maxBytes {
+		return problemResponse
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxBytes+1))
 	if err != nil {
 		return sanitizeError(err)
 	}
-	if len(raw) > maxAPIBytes || json.Unmarshal(raw, out) != nil {
+	if int64(len(raw)) > maxBytes || json.Unmarshal(raw, out) != nil {
 		return problemResponse
 	}
 	return ""
@@ -381,37 +388,11 @@ func (c steamClient) achievements(ctx context.Context, id string, appID uint32, 
 	if c.access != "" {
 		return c.achievementTotals(ctx, id, appID, language)
 	}
-	var reply struct {
-		PlayerStats *struct {
-			Game         string `json:"gameName"`
-			Success      bool   `json:"success"`
-			Achievements []struct {
-				Achieved int `json:"achieved"`
-			} `json:"achievements"`
-		} `json:"playerstats"`
+	ps, issue := c.legacyPlayerAchievements(ctx, id, appID)
+	if issue != "" {
+		return nil, issue
 	}
-	params := url.Values{"steamid": {id}, "appid": {appIDText(appID)}}
-	switch p := c.get(ctx, apiBase+achievementsPath, params, true, &reply); p {
-	case "":
-	case problemDenied, problemMissing, problemBadCall:
-		return nil, problemAchievements
-	default:
-		return nil, p
-	}
-	if reply.PlayerStats == nil {
-		return nil, problemResponse
-	}
-	ps := reply.PlayerStats
-	if !ps.Success {
-		return nil, problemAchievements
-	}
-	progress := &achievementProgress{AppID: appID, Game: c.text(ps.Game), Total: len(ps.Achievements)}
-	for _, a := range ps.Achievements {
-		if a.Achieved == 1 {
-			progress.Unlocked++
-		}
-	}
-	return progress, ""
+	return ps.progress(appID), ""
 }
 
 func (c steamClient) achievementTotals(ctx context.Context, id string, appID uint32, language string) (*achievementProgress, problem) {

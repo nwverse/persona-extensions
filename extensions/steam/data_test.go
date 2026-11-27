@@ -72,7 +72,7 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 		wantHost := apiHost
 		method := http.MethodGet
 		switch req.URL.Path {
-		case vanityPath, playerPath, achievementsPath:
+		case vanityPath, playerPath, achievementsPath, keyAchievementSchema:
 			if access != "" {
 				t.Error("QR mode contacted a legacy endpoint")
 				return nil, fmt.Errorf("unexpected legacy endpoint")
@@ -84,14 +84,20 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 			wantToken = access != ""
 		case progressPath:
 			method, wantToken = http.MethodPost, true
+		case userAchievementsPath:
+			wantToken = true
+		case globalAchievementsPath, gameAchievementsPath, newsForAppPath:
 		case authBasePath + beginQRPath + "/v1/", authBasePath + pollQRPath + "/v1/":
 			method = http.MethodPost
-		case storeNamesPath:
-		case storePricesPath:
+		case storeNamesPath, reviewsAPIPath:
+		case storePricesPath, storeSearchPath:
 			wantHost = storeHost
 		default:
-			t.Error("attempted an unexpected outbound request or followed a redirect")
-			return nil, fmt.Errorf("unexpected outbound request")
+			if !strings.HasPrefix(req.URL.Path, tagCatalogPath) && !strings.HasPrefix(req.URL.Path, appReviewsPath) {
+				t.Error("attempted an unexpected outbound request or followed a redirect")
+				return nil, fmt.Errorf("unexpected outbound request")
+			}
+			wantHost = storeHost
 		}
 		if req.Method != method || req.URL.Scheme != "https" || req.URL.Host != wantHost {
 			t.Error("wrong method or origin for a Steam read")
@@ -296,8 +302,12 @@ func TestQRReadRoutes(t *testing.T) {
 	nav := wire.UIParams{Contribution: extensionID, Size: wire.SizeFull, Placement: wire.PlacementNavPage, UIVersion: 12, Locale: "en"}
 	view := viewAnswer(t, h, nav)
 	detail := act(t, h, nav, view, fmt.Sprintf("library-game-%d", firstApp), nil)
-	if len(detail.Sections) != 2 || detail.Sections[1].Items[0].Detail != "2 of 3 unlocked" {
+	if len(detail.Sections) != 3 || detail.Sections[1].Items[0].Detail != "2 of 3 unlocked" {
 		t.Fatal("the QR game detail did not draw achievement progress")
+	}
+	act(t, h, nav, detail, "backlog-save", map[string]string{"backlog_status": "queued"})
+	if got, ok, err := NewBacklogStore(dir).Get(fixtureID, firstApp); err != nil || !ok || got.Status != BacklogQueued {
+		t.Fatalf("the QR page did not persist the local status: %+v, %t, %v", got, ok, err)
 	}
 	f.reply(playerLinkPath, 200, fmt.Sprintf(`{"response":{"accounts":[{"public_data":{"steamid":%q,"persona_name":"Private QR Pilot","visibility_state":1}}]}}`, fixtureID))
 	f.handle(recentPath, func(w http.ResponseWriter, _ *http.Request) {
@@ -306,7 +316,7 @@ func TestQRReadRoutes(t *testing.T) {
 	})
 	f.reply(progressPath, 200, `{"response":{}}`)
 	view = act(t, h, nav, view, "refresh", nil)
-	if len(view.Sections) != 4 || view.Sections[0].Items[0].Subtitle != english.unknown ||
+	if len(view.Sections) != 5 || view.Sections[0].Items[0].Subtitle != english.unknown ||
 		view.Sections[1].Items[0].Title != english.message(problemGameDetails, false) ||
 		view.Sections[2].Items[0].Title != "Alpha Café" || view.Sections[3].Items[0].Title != "Synthetic Adventure" {
 		t.Fatal("missing presence or a denied dataset hid the remaining QR reads")
@@ -315,7 +325,7 @@ func TestQRReadRoutes(t *testing.T) {
 	f.reply(playerLinkPath, 200, `{"response":{"accounts":[]}}`)
 	f.reply(wishlistPath, http.StatusForbidden, "hidden")
 	prices := f.hit(storePricesPath)
-	if got := act(t, h, nav, view, "refresh", nil); len(got.Sections) != 4 || got.Sections[2].Items[0].Title != "Alpha Café" ||
+	if got := act(t, h, nav, view, "refresh", nil); len(got.Sections) != 5 || got.Sections[2].Items[0].Title != "Alpha Café" ||
 		got.Sections[3].Items[0].Title != english.message(problemWishlist, false) || f.hit(storePricesPath) != prices {
 		t.Fatal("library reads should use the signed-in SteamID even if the profile is unavailable")
 	}

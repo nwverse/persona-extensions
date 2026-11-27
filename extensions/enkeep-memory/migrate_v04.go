@@ -744,8 +744,8 @@ func RunMigrateV04Phase1(ctx context.Context, st *store.State, today string) (Mi
 			}
 		}
 
-		// Step 6: Payload-First sensitivity re-evaluation on work-methodology facets.
-		if entry.IsWorkMethodFacet(e.Facet) {
+		// Step 6: Payload-First sensitivity re-evaluation on work-methodology facets and ops_runbook entries.
+		if entry.IsWorkMethodFacet(e.Facet) || entry.IsOpsRunbookEntry(e) {
 			clearedCats, spaceCleared := reevalWorkSensitivity(e)
 			if len(clearedCats) > 0 {
 				rep.SensitiveWorkCleared++
@@ -848,14 +848,17 @@ func isCronWorkflowEntry(e *entry.Entry) bool {
 	return false
 }
 
-// reevalWorkSensitivity re-evaluates non-user sensitive tags on work-methodology facets strictly via PayloadCategories.
-// User-authored tags (ByUser) are preserved untouched.
+// reevalWorkSensitivity re-evaluates non-user sensitive tags on work-methodology facets strictly via PayloadCategories
+// (and clears all non-user sensitive tags on ops_runbook entries). User-authored tags (ByUser) are preserved untouched.
 func reevalWorkSensitivity(e *entry.Entry) (cleared []string, spaceCleared bool) {
 	beforeCats := e.Cats()
 	if len(beforeCats) == 0 && e.OriginSpace == "" {
 		return nil, false
 	}
-	ownCats := entry.PayloadCategories(e.Facet, e.PayloadTexts()...)
+	var ownCats []string
+	if !entry.IsOpsRunbookEntry(e) {
+		ownCats = entry.PayloadCategories(e.Facet, e.PayloadTexts()...)
+	}
 
 	// Preserve ByUser tags; rebuild non-user tags strictly from ownCats.
 	kept := make([]entry.Category, 0, len(e.Categories))
