@@ -302,10 +302,8 @@ func wishlistSection(t *text, r reading[wishList], st *pageState) wire.Section {
 			if row.Value == "" {
 				row.Value = fmt.Sprintf("%s %d.%02d", item.Price.Currency, item.Price.Final/100, item.Price.Final%100)
 			}
-			row.Subtitle = fmt.Sprintf(t.discount, item.Price.DiscountPercent)
-			if item.Price.DiscountPercent > 0 {
-				row.Badge = &wire.Badge{Text: row.Subtitle, Tone: wire.TonePositive}
-				row.Subtitle = ""
+			if discount := item.Price.DiscountPercent; discount > 0 {
+				row.Badge = &wire.Badge{Text: fmt.Sprintf(t.discount, discount), Tone: wire.TonePositive}
 			}
 		case item.PriceChecked:
 			row.Subtitle = t.noPrice

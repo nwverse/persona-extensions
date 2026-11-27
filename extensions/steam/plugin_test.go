@@ -266,6 +266,26 @@ func TestDeclarativeViews(t *testing.T) {
 	}
 }
 
+func TestWishlistRowShowsOnlyPositiveDiscount(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	h := startTestHost(t, f, fixtureID, "", "")
+	for _, tc := range []struct{ locale, discount string }{
+		{"en-US", "40% off"},
+		{"zh-Hans", "优惠 40%"},
+	} {
+		t.Run(tc.locale, func(t *testing.T) {
+			v := viewAnswer(t, h, wire.UIParams{Contribution: extensionID, Size: wire.SizeFull, Placement: wire.PlacementNavPage, UIVersion: 12, Locale: tc.locale})
+			rows := v.Sections[3].Items
+			if sale := rows[0]; sale.Value != "$3.99" || sale.Badge == nil || sale.Badge.Text != tc.discount {
+				t.Errorf("sale row should show the price and localized discount badge, got %q and %+v", sale.Value, sale.Badge)
+			}
+			if full := rows[1]; full.Value != "$6.99" || full.Subtitle != "" || full.Badge != nil {
+				t.Errorf("full-price row should show only the price, got %q, subtitle %q, and badge %+v", full.Value, full.Subtitle, full.Badge)
+			}
+		})
+	}
+}
+
 func TestHiddenAndPartialReads(t *testing.T) {
 	t.Run("private profile", func(t *testing.T) {
 		f := newFakeSteam(t, time.Second)

@@ -146,13 +146,13 @@ func (f *fakeSteam) seed() {
 		if q.Get("filters") != "price_overview" || q.Get("appids") != fmt.Sprintf("%d,%d,%d", firstApp, secondApp, thirdApp) {
 			f.t.Error("Store did not receive one batched price lookup")
 		}
-		currency, price := "USD", "$3.99"
+		currency, salePrice, fullPrice := "USD", "$3.99", "$6.99"
 		if cc := q.Get("cc"); cc == "GB" {
-			currency, price = "GBP", "£3.99"
+			currency, salePrice, fullPrice = "GBP", "£3.99", "£6.99"
 		} else if cc != "US" {
 			f.t.Error("Store did not receive a normalized country code")
 		}
-		_, _ = fmt.Fprintf(w, `{"%d":{"success":true,"data":{"price_overview":{"currency":%q,"final":399,"final_formatted":%q,"discount_percent":40}}},"%d":{"success":true,"data":[]},"%d":{"success":false}}`, firstApp, currency, price, secondApp, thirdApp)
+		_, _ = fmt.Fprintf(w, `{"%d":{"success":true,"data":{"price_overview":{"currency":%q,"final":399,"final_formatted":%q,"discount_percent":40}}},"%d":{"success":true,"data":{"price_overview":{"currency":%q,"final":699,"final_formatted":%q,"discount_percent":0}}},"%d":{"success":true,"data":[]}}`, firstApp, currency, salePrice, secondApp, currency, fullPrice, thirdApp)
 	})
 }
 
@@ -182,7 +182,7 @@ func TestSteamReads(t *testing.T) {
 	}
 	item := w.Data.Items[0]
 	if item.Name != "Synthetic Adventure" || item.Price == nil || item.Price.Currency != "GBP" || item.Price.Final != 399 ||
-		item.Price.DiscountPercent != 40 || w.Data.Items[1].Price != nil || !w.Data.Items[1].PriceChecked {
+		item.Price.DiscountPercent != 40 || w.Data.Items[2].Price != nil || !w.Data.Items[2].PriceChecked {
 		t.Fatalf("wishlist item %+v", item)
 	}
 }
