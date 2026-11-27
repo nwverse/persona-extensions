@@ -90,7 +90,7 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 		case authBasePath + beginQRPath + "/v1/", authBasePath + pollQRPath + "/v1/":
 			method = http.MethodPost
 		case storeNamesPath:
-		case storePricesPath:
+		case storePricesPath, storeSearchPath:
 			wantHost = storeHost
 		default:
 			if !strings.HasPrefix(req.URL.Path, tagCatalogPath) {

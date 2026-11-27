@@ -97,7 +97,11 @@ var english = text{
 
 		problemDiscoveryDisabled: "Steam game research is off (discovery_tools_enabled). You can enable it in Settings › Extensions › Steam.",
 		problemDiscoveryTagArgs:  "Use a Steam language code, a tag query of up to 100 characters and a limit from 1 to 50.",
+		problemDiscoverySearch:   "Use a valid search sort and language, up to eight tags, supported platforms and a nonnegative regional budget with up to two decimal places.",
+		problemUnknownStoreTag:   "One or more Steam tags could not be resolved. Look up the exact names with steam_store_tags or use numeric tag IDs.",
 		problemBuiltInTags:       "Using the built-in list of common Steam tags.",
+		problemStoreSearchFailed: "Steam Store search is unavailable and there is no usable cached result for these filters. Try again shortly.",
+		problemPartialLibrary:    "Steam returned only part of the library. Ownership is unknown for titles outside that snapshot.",
 	},
 	backlog: backlogText{
 		title: "Backlog & local progress", annotation: "Local backlog annotation", status: "Status",
@@ -179,7 +183,11 @@ var chinese = text{
 
 		problemDiscoveryDisabled: "Steam 游戏调研已关闭（discovery_tools_enabled）。可在「设置 › 扩展 › Steam」开启。",
 		problemDiscoveryTagArgs:  "请使用 Steam 语言代码，输入最多 100 字的标签关键词，并将返回上限设为 1–50。",
+		problemDiscoverySearch:   "请使用有效的排序、语言和平台，提供最多 8 个标签，以及最多两位小数的非负地区预算。",
+		problemUnknownStoreTag:   "无法识别一个或多个 Steam 标签。请用 steam_store_tags 查询准确名称，或直接提供标签 ID。",
 		problemBuiltInTags:       "当前使用内置的 Steam 常用标签。",
+		problemStoreSearchFailed: "Steam 商店搜索暂不可用，且这组筛选条件没有可用的缓存结果。请稍后重试。",
+		problemPartialLibrary:    "Steam 只返回了部分游戏库，无法确认快照以外游戏的拥有状态。",
 	},
 	backlog: backlogText{
 		title: "吃灰盘点与标注", annotation: "本机游戏标注", status: "游玩状态",

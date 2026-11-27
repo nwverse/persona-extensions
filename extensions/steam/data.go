@@ -29,6 +29,7 @@ type steamData struct {
 	library     *cacheSlot[gameList]
 	recent      *cacheSlot[gameList]
 	wishes      *cacheSlot[wishList]
+	wishIDs     *cacheSlot[map[uint32]struct{}]
 	stores      steamStores
 	lastAccount atomic.Pointer[reading[player]]
 }
@@ -62,6 +63,7 @@ func newAccountData(cfg config, client steamClient, dataDir string, now func() t
 		library: newSlot[gameList](cacheDir, "library", now, session),
 		recent:  newSlot[gameList](cacheDir, "recent", now, session),
 		wishes:  newSlot[wishList](cacheDir, "wishlist", now, session),
+		wishIDs: newSlot[map[uint32]struct{}]("", "", now, session),
 		stores:  newSteamStores(dataDir),
 	}
 }
@@ -132,6 +134,7 @@ func (d *steamData) clearLocked() {
 	d.library.clear()
 	d.recent.clear()
 	d.wishes.clear()
+	d.wishIDs.clear()
 	d.stores.clearMemory()
 }
 
