@@ -9,6 +9,10 @@ Water (喝水提醒) sends timed drink-water reminders without calling a model. 
 
 The package contains the `water` program, started with the hub. It keeps its own schedule and records in the extension data directory. No account is needed.
 
+## Move water tracking into Health
+
+Persona releases that include [nwverse/persona#14228](https://github.com/nwverse/persona/pull/14228) have water tracking built into **Health**. On iPhone or iPad, tap the migration card on the Health home to import this extension's records and settings and disable the extension. **Do not uninstall before migrating**; see the [migration guide](../../docs/extensions/water.md#move-water-tracking-into-health) for details.
+
 ## Shortcuts and Siri
 
 In Apple's **Shortcuts** app, add Persona's **Run Extension Action** and choose **记一杯水**. Leave the number empty to log one cup (`cup_ml`), or enter a whole number of milliliters from 1 to 3000. Each run logs a new drink, restarts the reminder interval, and requests a widget refresh. The result reports the amount and today's progress.

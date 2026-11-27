@@ -39,6 +39,8 @@ type secretUse struct {
 
 func (a *app) secrets(ctx context.Context, method string, raw json.RawMessage) (any, error) {
 	switch method {
+	case "store":
+		return a.store(ctx, raw)
 	case "describe":
 		var in wire.SecretsDescribeParams
 		if err := readSecrets(raw, &in, &in.Contribution); err != nil {

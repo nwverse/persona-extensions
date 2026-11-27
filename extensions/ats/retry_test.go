@@ -79,6 +79,34 @@ func TestErrorsARetryCannotFixEndTheTaskAfterOneAttempt(t *testing.T) {
 	}
 }
 
+func TestSessionStartFailureRetriesWithSelectedEngine(t *testing.T) {
+	r := newRig(t)
+	one := 1
+	task := r.enqueue(EnqueueInput{AgentType: AgentCodex, MaxRetries: &one})
+	r.tick()
+	r.hub.set("session-1", func(s *hubSession) { s.StartError = "engine unavailable" })
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateQueued || got.NotBefore == nil {
+		t.Fatalf("after the start failure: %+v", got)
+	}
+
+	r.now = got.NotBefore.Add(time.Second)
+	r.tick()
+	got = r.task(task.ID)
+	if got.State != StateRunning || got.AttemptNo != 2 || got.Exec == nil || got.Exec.SessionID != "session-2" {
+		t.Fatalf("retry did not start: %+v", got)
+	}
+	if len(r.hub.created) != 2 {
+		t.Fatalf("sessions started: %d", len(r.hub.created))
+	}
+	for i, req := range r.hub.created {
+		if req.AgentType != AgentCodex || req.Launcher != AgentCodex || req.PermissionMode != "plan" || got.Attempts[i].Harness != AgentCodex {
+			t.Errorf("attempt %d: request %+v attempt %+v", i+1, req, got.Attempts[i])
+		}
+	}
+}
+
 // failOnce runs a writable task's first attempt: the agent leaves work (committed or not), the acceptance
 // command fails, and the task waits for its second attempt.
 func failOnce(t *testing.T, r *rig, task *Task, commit bool) *Task {
@@ -169,7 +197,7 @@ func TestRetryOfAWritableTaskContinuesFromTheEarlierAttemptAndKnowsHowItEnded(t 
 			if first := r.hub.created[0].Prompt; strings.Contains(first, "This is attempt") {
 				t.Errorf("the first attempt's prompt talks of an earlier one:\n%s", first)
 			}
-			v := viewTask(got, false)
+			v := viewTask(got, promptNone)
 			if v.FailureReason != "" || v.NotBefore != nil {
 				t.Fatalf("the running attempt shows the earlier one's failure: %+v", v)
 			}
@@ -499,9 +527,37 @@ func TestTaskViewShowsTheFailureOnlyWhereItSaysSomething(t *testing.T) {
 		{state: StateNeedsInput, reason: false, notBefore: false},
 		{state: StateFailed, reason: true, notBefore: false},
 	} {
-		v := viewTask(&Task{State: tc.state, FailureReason: "task_failed", NotBefore: &soon}, false)
+		v := viewTask(&Task{State: tc.state, FailureReason: "task_failed", NotBefore: &soon}, promptNone)
 		if (v.FailureReason != "") != tc.reason || (v.NotBefore != nil) != tc.notBefore {
 			t.Errorf("%s: failure_reason %q not_before %v", tc.state, v.FailureReason, v.NotBefore)
 		}
+	}
+}
+
+// A retry is told how the acceptance command exited even when its output is long: the line is the first of the
+// report's message, and only the output under it is cut to its end.
+func TestRetryPromptKeepsTheExitCodeLineOfALongOutput(t *testing.T) {
+	task := &Task{ID: "task_1", Prompt: "Fix it", Acceptance: &AcceptanceSpec{Command: "make check"}}
+	output := strings.Repeat("ok  \tpkg\t0.1s\n", 300) + "--- FAIL: TestLogin\nFAIL"
+	prev := &EvidenceReport{AttemptNo: 1, ErrorClass: "task_failed", Message: "验收命令退出码 2\n" + output, Summary: "I changed login.go"}
+	p := buildPrompt(task, prepareResult{BaseSHA: "abc", Branch: "ats/task_1-2"}, false, prev, false)
+	_, note, _ := strings.Cut(p, "This is attempt 2")
+	if !strings.Contains(note, "    验收命令退出码 2\n    …") || !strings.Contains(note, "    --- FAIL: TestLogin\n    FAIL\n") || !strings.Contains(note, "    I changed login.go\n") {
+		t.Fatalf("the retry note: %s", note)
+	}
+	if n := len([]rune(note)); n > promptFailureRunes+800 {
+		t.Fatalf("the retry note is %d runes", n)
+	}
+
+	// A turn that ended in an error: the message is the agent's reply, and its summary is not said again.
+	prev = &EvidenceReport{AttemptNo: 1, ErrorClass: "task_failed", Message: "I could not find the repository", Summary: "I could not find the repository"}
+	p = buildPrompt(task, prepareResult{BaseSHA: "abc", Branch: "ats/task_1-2"}, false, prev, false)
+	// A short summary that happens to be a word of the output is still said.
+	prev = &EvidenceReport{AttemptNo: 1, ErrorClass: "task_failed", Message: "验收命令退出码 1\ndone 3 of 4\nFAIL", Summary: "done"}
+	if q := buildPrompt(task, prepareResult{BaseSHA: "abc", Branch: "ats/task_1-2"}, false, prev, false); !strings.Contains(q, "What that attempt's agent said at its end:\n    done\n") {
+		t.Fatalf("the summary is left out: %s", q)
+	}
+	if n := strings.Count(p, "I could not find the repository"); n != 1 || strings.Contains(p, "What that attempt's agent said") {
+		t.Fatalf("the reply is said %d times: %s", n, p)
 	}
 }

@@ -289,7 +289,7 @@ func (a *app) checkCards(t tr, st *store.State, s page) []wire.Section {
 			}
 		}
 		rows = append(rows, row(strings.Join(names, " + "), tally(t, marks), nil,
-			ext.Open("open:u7", "", page{Tab: tabCheck, Check: "u7", Sub: persons[0]}, strings.Join(names, " + "))))
+			ext.Open("open:u7:"+hashKey(persons[0]), "", page{Tab: tabCheck, Check: "u7", Sub: persons[0]}, strings.Join(names, " + "))))
 	}
 	var sum []string
 	for _, p := range []string{entry.PartFact, entry.PartUserEval, entry.PartInferred, entry.PartCommitment} {
@@ -326,7 +326,7 @@ func (a *app) checkSpeakers(t tr, st *store.State, s page) []wire.Section {
 			if !curate.LearnPeople(st, n) {
 				sub += t.s(" · 已停学闲聊里的人物和关系", " · not learning people from chit-chat")
 			}
-			rows = append(rows, row(t.sourceLabel(entry.SrcChat, n), sub, nil, ext.Open("open:u8", "", page{Tab: tabCheck, Check: "u8", Sub: n}, n)))
+			rows = append(rows, row(t.sourceLabel(entry.SrcChat, n), sub, nil, ext.Open("open:u8:"+hashKey(n), "", page{Tab: tabCheck, Check: "u8", Sub: n}, n)))
 		}
 		return []wire.Section{{Title: t.s("U8 说话人归属：每个来源 30 句", "U8 who said it: 30 lines a source"),
 			Footer: t.s("≥95% 算过；不过的来源先不从闲聊里学人物和关系（K16），有一句别人的话被算成你说的也不过。", "Passes at 95%; a source that fails stops teaching people and relations from chit-chat (K16), and so does one where someone else's line was put on you."), Items: rows}}

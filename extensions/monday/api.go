@@ -191,7 +191,7 @@ func (c *client) updateStatusColumn(ctx context.Context, boardID, itemID int64, 
 	if boardID <= 0 || itemID <= 0 {
 		return item{}, errors.New("board and item IDs must be positive")
 	}
-	valueObject, _ := json.Marshal(map[string]string{"label": label})
+	valueObject, _ := json.Marshal(map[string]map[string]string{columnID: {"label": label}})
 	valueString, _ := json.Marshal(string(valueObject))
 	query := fmt.Sprintf(`mutation { change_multiple_column_values(board_id: %d, item_id: %d, column_values: %s) { id name url column_values { id text value } } }`, boardID, itemID, valueString)
 	var out updatePage

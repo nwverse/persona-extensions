@@ -34,6 +34,10 @@ type Request struct {
 	MaxTokens int             //
 	Schema    json.RawMessage // the JSON schema of the answer
 	Timeout   int             // seconds for the whole call; 0: by tier (callTimeout)
+	// Models, when set, is the call's own chain of candidates in place of the route's (the primary models and the
+	// size's fallback): the periodic overview asks for named models only (internal/overview). A hub without
+	// "models" still runs the call on the purpose's model, as for every routed call.
+	Models []string
 }
 
 // Response is a call's answer and what it cost.
@@ -93,6 +97,9 @@ type Hub struct {
 	PauseBudget time.Duration
 	// Logf logs the waits; nil: the route's.
 	Logf func(format string, args ...any)
+	// Limit is the turn every call waits for (limit.go); nil: the process's shared limiter for calls to the hub, none
+	// for a test's own call.
+	Limit *Limiter
 	// call makes one model.complete and decodes its result into out (tests replace it); nil: H.Call.
 	call func(ctx context.Context, params, out any) error
 	// now and sleep are the clock and the wait (tests replace them); nil: time.Now, a timer that ends with ctx.
@@ -136,10 +143,27 @@ func (h Hub) Complete(ctx context.Context, r Request) (Response, error) {
 }
 
 func (h Hub) once(ctx context.Context, r Request) (Response, error) {
-	if h.Route.Enabled() {
+	if l := h.limiter(); l != nil {
+		release, err := l.Acquire(ctx)
+		if err != nil {
+			return Response{}, err
+		}
+		defer release()
+	}
+	if h.Route.Enabled() || h.Route != nil && len(r.Models) > 0 {
 		return h.Route.complete(ctx, r, h.chained, h.legacy)
 	}
 	return h.legacy(ctx, r)
+}
+
+func (h Hub) limiter() *Limiter {
+	if h.Limit != nil {
+		return h.Limit
+	}
+	if h.call == nil {
+		return shared
+	}
+	return nil
 }
 
 // legacy is the call on the purpose's model, as before routes.

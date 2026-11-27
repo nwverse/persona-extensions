@@ -73,13 +73,15 @@ func (c *client) get(ctx context.Context, path string, query url.Values, out any
 	}
 }
 
+const maxQueryChars = 500
+
 func (c *client) documents(ctx context.Context, query string, pageNumber int) (documentPage, error) {
 	if pageNumber < 1 || pageNumber > 100000 {
 		return documentPage{}, errors.New("invalid page number")
 	}
 	q := url.Values{"page": {strconv.Itoa(pageNumber)}, "page_size": {"25"}, "ordering": {"-added"}}
 	if query = strings.TrimSpace(query); query != "" {
-		if len([]rune(query)) > 500 {
+		if len([]rune(query)) > maxQueryChars {
 			return documentPage{}, errors.New("search query must be at most 500 characters")
 		}
 		q.Set("query", query)

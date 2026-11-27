@@ -612,8 +612,10 @@ func TestLongIDs(t *testing.T) {
 func TestHomeManyAreas(t *testing.T) {
 	f := newFakeHA(t)
 	var areas [][3]any
-	for i := range 70 {
-		areas = append(areas, [3]any{fmt.Sprintf("a%02d", i), fmt.Sprintf("区域 %02d", i), []string{}})
+	for i := range 70 { // a lamp each: an area with nothing in it is not listed (#923)
+		lamp := fmt.Sprintf("light.l%02d", i)
+		f.put(State{EntityID: lamp, State: "off", Attributes: map[string]any{"friendly_name": fmt.Sprintf("灯 %02d", i)}})
+		areas = append(areas, [3]any{fmt.Sprintf("a%02d", i), fmt.Sprintf("区域 %02d", i), []string{lamp}})
 	}
 	f.areas = areasJSON(areas)
 	a := newTestApp(t, f, Config{})

@@ -47,6 +47,11 @@ type Config struct {
 	BackfillDays          int      `json:"backfill_days"`            // the first-run replay's reach in days (4.1); 0: none
 	RerunRange            string   `json:"rerun_range"`              // "YYYY-MM-DD..YYYY-MM-DD": days to digest again with the current daily prompt, once each
 	StaleDays             int      `json:"stale_days"`               // 30
+	// ResidentBytes is the room the standing set is chosen for (0.2.0-beta.52): the hub's standing room for the
+	// extension, 1400 while the hub gives 1536 after its ledger; raise it when the hub gives more.
+	ResidentBytes int `json:"resident_bytes"` // 1400
+	// FastMinutes is how often the correction fast path looks at today's assistant conversations (RunFast); 0: off.
+	FastMinutes int `json:"fast_minutes"` // 10
 
 	// The model route (0.2.0-beta.30, docs/model-routes.md): "chain" tries ModelPrimary in order, then ModelLong for
 	// a call estimated above ModelLongAbove tokens (input and room for the answer), else ModelShort; "purpose" is the
@@ -78,7 +83,7 @@ func Defaults() Config {
 		Mode: "auto", ShadowDays: 14, DailyAt: "03:30", WeeklyAt: "05:30",
 		DailyTier: "small", WeeklyTier: "medium",
 		ActivityDays: 3, Tiers: true, EngagedDays: 30, NoiseMembers: 200, MentionWindow: 15, AdmitAllBelowTokens: 20000, AIMinRelevance: 60,
-		Graph: true, BackfillDays: DefaultBackfillDays, AutoApplyMinPrecision: 0.95, ProposalExpiryDays: 14, StaleDays: 30,
+		Graph: true, BackfillDays: DefaultBackfillDays, AutoApplyMinPrecision: 0.95, ProposalExpiryDays: 14, StaleDays: 30, ResidentBytes: 1400, FastMinutes: 10,
 		ModelRoute: "chain", ModelLong: "claude-sonnet-5-5",
 		ModelShort: "claude-haiku-5-5", ModelLongAbove: 16000, ModelTimeout: 180,
 	}

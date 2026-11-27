@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/url"
 	"regexp"
 	"strings"
@@ -13,27 +14,73 @@ import (
 
 // Weather (/v3/weather/weatherInfo, the weather allowance): the live report and AMap's forecast of today and the next
 // three days, for a Chinese city or district by its adcode. A name is turned into its adcode by geocoding (the LBS
-// allowance, cached for a month), so a question costs one weather request, or two with a forecast.
+// allowance, cached for a month), and a WGS-84 point or fixed place uses reverse geocoding or place lookup, so a
+// question costs one weather request, or two with a forecast.
 
 var adcodeRe = regexp.MustCompile(`^\d{6}$`)
 
 var weekdays = map[string]string{"1": "周一", "2": "周二", "3": "周三", "4": "周四", "5": "周五", "6": "周六", "7": "周日"}
 
-// adcode finds a city's adcode: as given, or by geocoding its name.
-func (a *app) adcode(ctx context.Context, city string) (string, error) {
-	if adcodeRe.MatchString(city) {
-		return city, nil
-	}
-	gs, err := a.geocode(ctx, city, "")
+func (a *app) adcodeForPoint(ctx context.Context, p point) (string, error) {
+	r, err := a.reverse(ctx, point{math.Round(p.Lat*1e4) / 1e4, math.Round(p.Lng*1e4) / 1e4}, false)
 	if err != nil {
 		return "", err
 	}
+	if ad := r.AddressComponent.V.AdCode.String(); adcodeRe.MatchString(ad) {
+		return ad, nil
+	}
+	return "", errors.New("高德不知道这个位置在哪个区县，查不了天气")
+}
+
+// adcode finds a city's adcode: as given, by fixed-place lookup, by WGS-84 coordinates, or by geocoding its name.
+// fixedLabel is non-empty when city matched a configured/saved fixed place name.
+func (a *app) adcode(ctx context.Context, city string) (ad string, fixedLabel string, err error) {
+	city = strings.TrimSpace(city)
+	if adcodeRe.MatchString(city) {
+		return city, "", nil
+	}
+	if p, ok := parseLatLng(city); ok {
+		ad, err := a.adcodeForPoint(ctx, p)
+		return ad, "", err
+	}
+	if fp, ok := a.matchFixedPlace(city); ok {
+		if fp.HasCoord {
+			ad, err := a.adcodeForPoint(ctx, fp.coord())
+			if err != nil {
+				return "", "", fmt.Errorf("常用地点「%s」查区划失败：%w", fp.Name, err)
+			}
+			return ad, fp.Name, nil
+		}
+		target := fp.Target
+		if target == "" {
+			target = fp.Name
+		}
+		if adcodeRe.MatchString(target) {
+			return target, fp.Name, nil
+		}
+		pl, err := a.locate(ctx, target, "")
+		if err != nil {
+			return "", "", fmt.Errorf("常用地点「%s」（%s）解析失败：%w", fp.Name, target, err)
+		}
+		if adcodeRe.MatchString(pl.adcode) {
+			return pl.adcode, fp.Name, nil
+		}
+		ad, err := a.adcodeForPoint(ctx, pl.at)
+		if err != nil {
+			return "", "", fmt.Errorf("常用地点「%s」查区划失败：%w", fp.Name, err)
+		}
+		return ad, fp.Name, nil
+	}
+	gs, err := a.geocode(ctx, city, "")
+	if err != nil {
+		return "", "", err
+	}
 	for _, g := range gs {
 		if ad := g.AdCode.String(); adcodeRe.MatchString(ad) {
-			return ad, nil
+			return ad, "", nil
 		}
 	}
-	return "", errNotFound{city}
+	return "", "", errNotFound{city}
 }
 
 func (a *app) weather(ctx context.Context, adcode string, forecastToo bool) (weatherAnswer, error) {
@@ -54,13 +101,13 @@ func (a *app) weather(ctx context.Context, adcode string, forecastToo bool) (wea
 
 func (a *app) toolWeather(ctx context.Context, in args) (string, error) {
 	if in.City == "" {
-		return "", errors.New("要给 city：城市或区县名。用户没说哪儿时，问用户，或用 list_places 看「家」在哪个城市")
+		return "", errors.New("要给 city：城市、区县名、6 位 adcode、WGS-84 坐标，或常用地点名（如「家」「公司」）。用户没说哪儿时，问用户，或用 amap_places / list_places 看「家」在哪里")
 	}
 	days := 3
 	if in.Days != nil {
 		days = max(0, min(*in.Days, 4))
 	}
-	ad, err := a.adcode(ctx, in.City)
+	ad, fixedLabel, err := a.adcode(ctx, in.City)
 	if err != nil {
 		return "", err
 	}
@@ -80,6 +127,9 @@ func (a *app) toolWeather(ctx context.Context, in args) (string, error) {
 		name = placeName(now.Lives[0].Province.String(), now.Lives[0].City.String())
 	} else if len(casts.Forecasts) > 0 {
 		name = placeName(casts.Forecasts[0].Province.String(), casts.Forecasts[0].City.String())
+	}
+	if fixedLabel != "" {
+		name = fixedLabel + "（" + name + "）"
 	}
 	b.WriteString(name + " 天气（中国气象局，经高德）：")
 	if len(now.Lives) > 0 {

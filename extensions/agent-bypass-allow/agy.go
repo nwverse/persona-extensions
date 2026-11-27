@@ -75,13 +75,13 @@ func installAgyHookWith(path, matcher, cmd string) (bool, error) {
 	}
 	return editSettings(path, true, func(top *jsonObject) (bool, error) {
 		changed := false
-		alreadyExact := false
+		installed := false
 		var keep []jsonMember
 		for _, m := range *top {
 			var spec jsonObject
 			if json.Unmarshal(m.Val, &spec) != nil {
 				if m.Key == currentExtensionID || m.Key == legacyExtensionID {
-					return false, fmt.Errorf("hooks.%s is not an object", m.Key)
+					return false, fmt.Errorf("%w: hooks.%s is not an object", errSettingsFormat, m.Key)
 				}
 				keep = append(keep, m)
 				continue
@@ -94,12 +94,32 @@ func installAgyHookWith(path, matcher, cmd string) (bool, error) {
 				keep = append(keep, m)
 				continue
 			}
+			if m.Key == currentExtensionID && !installed {
+				installed = true
+				var rest []json.RawMessage
+				if hasPre {
+					rest, _, _ = splitOurs(groups)
+				}
+				spec.remove("enabled")
+				if err := setAgyPreToolGroups(&spec, append(rest, wantGroup)); err != nil {
+					return false, err
+				}
+				b, err := marshalPlain(spec)
+				if err != nil {
+					return false, err
+				}
+				if !sameJSON(m.Val, b) {
+					changed = true
+					keep = append(keep, jsonMember{Key: m.Key, Val: b})
+				} else {
+					keep = append(keep, m)
+				}
+				continue
+			}
 			if !hasPre {
-				if m.Key == currentExtensionID || m.Key == legacyExtensionID {
-					if !agySpecHasEvents(&spec) {
-						changed = true
-						continue
-					}
+				if (m.Key == currentExtensionID || m.Key == legacyExtensionID) && !agySpecHasEvents(&spec) {
+					changed = true
+					continue
 				}
 				keep = append(keep, m)
 				continue
@@ -109,29 +129,11 @@ func installAgyHookWith(path, matcher, cmd string) (bool, error) {
 				keep = append(keep, m)
 				continue
 			}
-			if m.Key == currentExtensionID && len(rest) == 0 && len(ours) == 1 && !stripped && sameJSON(m.Val, wantSpec) {
-				alreadyExact = true
-				keep = append(keep, m)
-				continue
-			}
 			changed = true
 			if err := setAgyPreToolGroups(&spec, rest); err != nil {
 				return false, err
 			}
-			if m.Key == currentExtensionID {
-				spec.remove("enabled")
-				if err := setAgyPreToolGroups(&spec, append(rest, wantGroup)); err != nil {
-					return false, err
-				}
-				b, err := marshalPlain(spec)
-				if err != nil {
-					return false, err
-				}
-				alreadyExact = true
-				keep = append(keep, jsonMember{Key: m.Key, Val: b})
-				continue
-			}
-			if (m.Key == legacyExtensionID || len(spec) == 0) && !agySpecHasEvents(&spec) {
+			if (m.Key == currentExtensionID || m.Key == legacyExtensionID || len(spec) == 0) && !agySpecHasEvents(&spec) {
 				continue
 			}
 			b, err := marshalPlain(spec)
@@ -140,7 +142,7 @@ func installAgyHookWith(path, matcher, cmd string) (bool, error) {
 			}
 			keep = append(keep, jsonMember{Key: m.Key, Val: b})
 		}
-		if !alreadyExact {
+		if !installed {
 			keep = append(keep, jsonMember{Key: currentExtensionID, Val: wantSpec})
 			changed = true
 		}
@@ -232,7 +234,7 @@ func agyPreToolGroups(spec *jsonObject) ([]json.RawMessage, bool, error) {
 	}
 	var groups []json.RawMessage
 	if err := json.Unmarshal(raw, &groups); err != nil {
-		return nil, true, fmt.Errorf("PreToolUse is not a list: %w", err)
+		return nil, true, fmt.Errorf("%w: PreToolUse is not a list", errSettingsFormat)
 	}
 	return groups, true, nil
 }
@@ -372,6 +374,62 @@ func mapAgyToolInput(rawName string, rawArgs json.RawMessage) toolInput {
 		}
 	}
 	return in
+}
+
+// extractAgyCommandCwd reads run_command's per-call Cwd/cwd parameter and resolves it relative to baseCwd.
+// It returns invalid=true when Cwd is supplied with a non-string, conflicting, unresolvable, or
+// dangling-symlink value so the caller fails closed instead of evaluating against the session workspace.
+func extractAgyCommandCwd(rawName string, rawArgs json.RawMessage, baseCwd string) (cwd string, invalid bool) {
+	if rawName != "run_command" && rawName != "Bash" {
+		return "", false
+	}
+	if len(bytes.TrimSpace(rawArgs)) == 0 {
+		return "", false
+	}
+	var m map[string]any
+	if json.Unmarshal(rawArgs, &m) != nil {
+		return "", false
+	}
+	var resolved string
+	for _, k := range []string{"Cwd", "cwd"} {
+		v, ok := m[k]
+		if !ok || v == nil {
+			continue
+		}
+		s, ok := v.(string)
+		if !ok {
+			return "", true
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		if s == "~" || strings.HasPrefix(s, "~/") {
+			home, err := os.UserHomeDir()
+			if err != nil || home == "" || !filepath.IsAbs(home) {
+				return "", true
+			}
+			// Preserve .. components so physical() resolves symlinks before collapsing ..
+			s = home + strings.TrimPrefix(s, "~")
+		} else if strings.HasPrefix(s, "~") {
+			return "", true // ~user cannot be resolved safely
+		}
+		if !filepath.IsAbs(s) {
+			if baseCwd == "" || !filepath.IsAbs(baseCwd) {
+				return "", true
+			}
+			s = baseCwd + "/" + s
+		}
+		clean, ok := physical(s)
+		if !ok || danglingLink(clean) {
+			return "", true
+		}
+		if resolved != "" && resolved != clean {
+			return "", true
+		}
+		resolved = clean
+	}
+	return resolved, false
 }
 
 func normalizeAgyMode(mode string) string {
@@ -560,6 +618,7 @@ func parseHookRequest(a hookArgs, raw []byte) (hookInput, bool) {
 		if cwd == "" && len(p.WorkspacePaths) > 0 {
 			cwd = p.WorkspacePaths[len(p.WorkspacePaths)-1]
 		}
+		cmdCwd, cmdCwdInvalid := extractAgyCommandCwd(rawName, args, cwd)
 		return hookInput{
 			HookEventName:  "PermissionRequest",
 			SessionID:      toAgySessionID(p.SessionID),
@@ -571,6 +630,8 @@ func parseHookRequest(a hookArgs, raw []byte) (hookInput, bool) {
 			isAgy:          true,
 			kind:           kindAgyACP,
 			workspaces:     p.WorkspacePaths,
+			cmdCwd:         cmdCwd,
+			cmdCwdInvalid:  cmdCwdInvalid,
 			geminiDir:      geminiDir,
 			agyDir:         agyDir,
 			acpOption:      optID,
@@ -601,6 +662,7 @@ func parseHookRequest(a hookArgs, raw []byte) (hookInput, bool) {
 		if cwd == "" && len(probe.WorkspacePaths) > 0 {
 			cwd = probe.WorkspacePaths[len(probe.WorkspacePaths)-1]
 		}
+		cmdCwd, cmdCwdInvalid := extractAgyCommandCwd(tc.Name, tc.Args, cwd)
 		return hookInput{
 			HookEventName:  "PermissionRequest",
 			SessionID:      toAgySessionID(probe.ConversationID),
@@ -613,6 +675,8 @@ func parseHookRequest(a hookArgs, raw []byte) (hookInput, bool) {
 			isAgy:          true,
 			kind:           kindAgyPreTool,
 			workspaces:     probe.WorkspacePaths,
+			cmdCwd:         cmdCwd,
+			cmdCwdInvalid:  cmdCwdInvalid,
 			geminiDir:      geminiDir,
 			agyDir:         agyDir,
 		}, true
@@ -640,6 +704,7 @@ func parseHookRequest(a hookArgs, raw []byte) (hookInput, bool) {
 	req.ToolName = mapAgyToolName(rawTool)
 	if len(probe.ToolInputRaw) > 0 {
 		req.ToolInput = mapAgyToolInput(rawTool, probe.ToolInputRaw)
+		req.cmdCwd, req.cmdCwdInvalid = extractAgyCommandCwd(rawTool, probe.ToolInputRaw, req.Cwd)
 	}
 	if m := firstNonEmpty(req.PermissionMode, probe.PermissionModeCamel, probe.Mode, probe.AgentMode); m != "" {
 		req.PermissionMode = normalizeAgyMode(m)
@@ -682,12 +747,30 @@ func (req hookInput) auditConfigDir(a hookArgs) string {
 
 var agyAssistantDirName = regexp.MustCompile(`^assistant(-m-[0-9a-f]+)?$`)
 
+var agyConversationID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+
+var agyRuntimePackageHash = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+func realAgyPath(p string) (string, bool) {
+	if p == "" || !filepath.IsAbs(p) {
+		return "", false
+	}
+	clean, ok := physical(p)
+	if !ok || danglingLink(clean) {
+		return "", false
+	}
+	return resolve(clean, true), true
+}
+
 func isAgyAssistantDir(dir, home string) bool {
-	if dir == "" || home == "" || !filepath.IsAbs(dir) || !filepath.IsAbs(home) {
+	realDir, ok := realAgyPath(dir)
+	if !ok {
 		return false
 	}
-	realDir := resolve(filepath.Clean(dir), true)
-	realHome := resolve(filepath.Clean(home), true)
+	realHome, ok := realAgyPath(home)
+	if !ok {
+		return false
+	}
 	parent := filepath.Dir(realDir)
 	if filepath.Dir(parent) != realHome {
 		return false
@@ -699,16 +782,68 @@ func isAgyAssistantDir(dir, home string) bool {
 	return agyAssistantDirName.MatchString(filepath.Base(realDir))
 }
 
+// isAgyPersonaSupervisionDir says whether dir is this conversation's Persona supervision root.
+// Persona's ACP companion adds <agy dir>/persona-supervision/<conversation id> or
+// <agy dir>/antigravity-cli/persona-supervision/<conversation id> as an additional workspace root;
+// an arbitrary project or another session's directory remains an untrusted workspace.
+func isAgyPersonaSupervisionDir(dir string, req hookInput) bool {
+	id := strings.TrimPrefix(req.SessionID, "agy-")
+	if !agyConversationID.MatchString(id) {
+		return false
+	}
+	realDir, ok := realAgyPath(dir)
+	if !ok {
+		return false
+	}
+	realRoot, ok := realAgyPath(req.agyDir)
+	if !ok {
+		return false
+	}
+	rel, err := filepath.Rel(realRoot, realDir)
+	if err != nil || rel == "." {
+		return false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 2 {
+		return parts[0] == "persona-supervision" && parts[1] == id
+	}
+	return len(parts) == 3 && parts[0] == "antigravity-cli" && parts[1] == "persona-supervision" && parts[2] == id
+}
+
+// isAgyPersonaRuntimePackageDir says whether dir is exactly one versioned Persona Antigravity runtime package.
+// It is only an extra-workspace exemption: it neither proves an assistant session nor makes the package writable.
+func isAgyPersonaRuntimePackageDir(dir, home string) bool {
+	realDir, ok := realAgyPath(dir)
+	if !ok {
+		return false
+	}
+	realHome, ok := realAgyPath(home)
+	if !ok {
+		return false
+	}
+	rel, err := filepath.Rel(realHome, realDir)
+	if err != nil || rel == "." {
+		return false
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	return len(parts) == 4 &&
+		(parts[0] == ".persona" || parts[0] == ".jarvis") &&
+		parts[1] == "runtime-packages" &&
+		parts[2] == "persona-antigravity-runtime" &&
+		agyRuntimePackageHash.MatchString(parts[3])
+}
+
 func isAgyAssistantSession(req hookInput, getenv func(string) string) bool {
 	if getenv("PERSONA_GUEST") != "" || getenv("JARVIS_GUEST") != "" {
 		return false
 	}
 	hasEnv := getenv("PERSONA_ASSISTANT") == "1" || getenv("JARVIS_ASSISTANT") == "1"
 	hasBrainTranscript := false
-	if req.TranscriptPath != "" && filepath.IsAbs(req.TranscriptPath) && req.agyDir != "" && filepath.IsAbs(req.agyDir) {
-		realTranscript := resolve(filepath.Clean(req.TranscriptPath), true)
-		brainRoot := filepath.Join(resolve(filepath.Clean(req.agyDir), true), "brain")
-		hasBrainTranscript = realTranscript != brainRoot && within(realTranscript, brainRoot)
+	if realTranscript, ok := realAgyPath(req.TranscriptPath); ok {
+		if realAgyDir, ok := realAgyPath(req.agyDir); ok {
+			brainRoot := filepath.Join(realAgyDir, "brain")
+			hasBrainTranscript = realTranscript != brainRoot && within(realTranscript, brainRoot)
+		}
 	}
 	if !hasEnv && !hasBrainTranscript {
 		return false
@@ -717,20 +852,30 @@ func isAgyAssistantSession(req hookInput, getenv func(string) string) bool {
 	if err != nil || home == "" {
 		return false
 	}
-	realHome := resolve(filepath.Clean(home), true)
+	realHome, ok := realAgyPath(home)
+	if !ok {
+		return false
+	}
 	paths := req.workspaces
 	if len(paths) == 0 && req.Cwd != "" {
 		paths = []string{req.Cwd}
 	}
 	found := false
 	for _, p := range paths {
-		if strings.TrimSpace(p) == "" || !filepath.IsAbs(p) {
+		if strings.TrimSpace(p) == "" {
 			return false
 		}
-		if resolve(filepath.Clean(p), true) == realHome && len(paths) > 1 {
+		realP, ok := realAgyPath(p)
+		if !ok {
+			return false
+		}
+		if realP == realHome && len(paths) > 1 {
 			continue // companion.mjs may start agy acp in $HOME while opening the session in ~/.persona/assistant
 		}
 		if !isAgyAssistantDir(p, home) {
+			if isAgyPersonaSupervisionDir(p, req) || isAgyPersonaRuntimePackageDir(p, home) {
+				continue
+			}
 			return false
 		}
 		found = true

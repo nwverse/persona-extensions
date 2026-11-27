@@ -309,6 +309,23 @@ type Refusal struct {
 	Outcome string `json:"outcome"`
 }
 
+// SeedImport is one seed import that was written: when, from where, and what became of the items (counts only).
+type SeedImport struct {
+	At      string         `json:"at"`
+	Source  string         `json:"source"`
+	New     int            `json:"new"`
+	Merged  int            `json:"merged"`
+	Updated int            `json:"updated"`
+	Same    int            `json:"same"`
+	Skipped map[string]int `json:"skipped,omitempty"` // by reason: sensitive, secret, unconfirmed, empty, bad
+}
+
+// RerunBase is the usable entries when a batch of reruns was first queued.
+type RerunBase struct {
+	At     string   `json:"at"`
+	Usable []string `json:"usable"`
+}
+
 // Usage is tokens by day and step.
 type Usage struct {
 	Day   string `json:"day"`
@@ -354,37 +371,50 @@ type State struct {
 	RerunQueue []string `json:"rerun_queue,omitempty"`
 	// ForceReruns: days enkeep_rerun queued with force (0.2.0-beta.33): read again although they already carry the
 	// current prompt's marker (a unit lost to a model error, say). A day leaves the list once its daily run completes.
-	ForceReruns []string            `json:"force_reruns,omitempty"`
+	ForceReruns []string `json:"force_reruns,omitempty"`
+	// RerunBase is what the reruns' gain is counted from (0.2.0-beta.38, enkeep_rerun_status): the entries usable in
+	// the exits when the queue last went from empty to not empty.
+	RerunBase *RerunBase `json:"rerun_base,omitempty"`
+	// SeedImports are the seed imports written (enkeep_seed_import with apply, 0.2.0-beta.38), oldest first.
+	SeedImports []SeedImport        `json:"seed_imports,omitempty"`
 	Admitted    map[string][]string `json:"admitted,omitempty"` // day → units a daily run (not dry) admitted: what coverage may expect a digest for
 	// SeenSessions: the agent sessions (S3) a completed pass found in the hub's list, by "<machine>/<session>"
 	// (0.2.0-beta.34). A runtime lists only its recent sessions, so a rerun or replay of an older day would not find
 	// them there; the hub still forwards a session's items to its runtime, so a day up to the session's Last is read
 	// from these as well. Any runtime's sessions, not one's in particular.
 	SeenSessions map[string]*SeenSession `json:"seen_sessions,omitempty"`
+	// FastSeen: the correction fast path's place in today's assistant conversations (0.2.0-beta.52), by
+	// "<unit ref>@<day>": the last line it looked at. Older days are dropped; the daily pass reads every day whole.
+	FastSeen map[string]int `json:"fast_seen,omitempty"`
 	// SessionHistory: the days whose agent sessions the hub's session history (nwverse/persona#11529) could not
 	// list in full, by day, as the day's last completed pass found it: an older hub without history, or a machine or
 	// source that did not answer or vouch for the whole window. A day listed in full has no entry.
 	SessionHistory map[string]*HistoryRead `json:"session_history,omitempty"`
+	// Recall is where 0.2.0-beta.37 kept enkeep_recall's counts. Since beta.38 they are in recall.json beside the
+	// state (RecallLog), so that a call does not wait for a run's lock; OpenRecall moves these there once.
+	Recall map[string]*RecallDay `json:"recall,omitempty"`
 
 	// v4: every facet's entries in one structure (internal/entry), and what feeds and uses them. The event log is
 	// not here: it is append-only in events.jsonl (AppendEvents).
-	Entries       map[string]*entry.Entry         `json:"entries,omitempty"`
-	Tombstones    []entry.Tombstone               `json:"tombstones,omitempty"`
-	Types         map[entry.Facet][]entry.TypeDef `json:"types,omitempty"`
-	Contacts      map[string]*entry.Contact       `json:"contacts,omitempty"` // by "person:<id>"
-	PersonMerges  []entry.PersonMerge             `json:"person_merges,omitempty"`
-	Rhythm        map[string]*people.Rhythm       `json:"rhythm,omitempty"` // by "person:<id>": direct-chat rhythm (P9)
-	Corrections   []entry.Correction              `json:"corrections,omitempty"`
-	Digs          []entry.Dig                     `json:"digs,omitempty"`
-	Sources       map[string]*entry.SourceStatus  `json:"sources,omitempty"` // by source code + "/" + name
-	SpeakerChecks []entry.SpeakerCheck            `json:"speaker_checks,omitempty"`
-	Switches      map[string]entry.SwitchSetting  `json:"switches,omitempty"`
-	Onboarding    *entry.Onboarding               `json:"onboarding,omitempty"`
-	Exits         *entry.Exits                    `json:"exits,omitempty"`
-	Readings      []entry.Reading                 `json:"readings,omitempty"`
-	ActiveDays    []string                        `json:"active_days,omitempty"` // sorted days with any source data
-	Cursors       map[string]string               `json:"cursors,omitempty"`     // per source: where incremental reading resumes
-	Backfill      *Backfill                       `json:"backfill,omitempty"`
+	Entries    map[string]*entry.Entry         `json:"entries,omitempty"`
+	Tombstones []entry.Tombstone               `json:"tombstones,omitempty"`
+	Types      map[entry.Facet][]entry.TypeDef `json:"types,omitempty"`
+	// RulesMerged names the set of rules the rule merge last looked at (curate/rules_merge.go, 0.2.6).
+	RulesMerged   string                         `json:"rules_merged,omitempty"`
+	Contacts      map[string]*entry.Contact      `json:"contacts,omitempty"` // by "person:<id>"
+	PersonMerges  []entry.PersonMerge            `json:"person_merges,omitempty"`
+	Rhythm        map[string]*people.Rhythm      `json:"rhythm,omitempty"` // by "person:<id>": direct-chat rhythm (P9)
+	Corrections   []entry.Correction             `json:"corrections,omitempty"`
+	Digs          []entry.Dig                    `json:"digs,omitempty"`
+	Sources       map[string]*entry.SourceStatus `json:"sources,omitempty"` // by source code + "/" + name
+	SpeakerChecks []entry.SpeakerCheck           `json:"speaker_checks,omitempty"`
+	Switches      map[string]entry.SwitchSetting `json:"switches,omitempty"`
+	Onboarding    *entry.Onboarding              `json:"onboarding,omitempty"`
+	Exits         *entry.Exits                   `json:"exits,omitempty"`
+	Readings      []entry.Reading                `json:"readings,omitempty"`
+	ActiveDays    []string                       `json:"active_days,omitempty"` // sorted days with any source data
+	Cursors       map[string]string              `json:"cursors,omitempty"`     // per source: where incremental reading resumes
+	Backfill      *Backfill                      `json:"backfill,omitempty"`
 	// ModelPause: the model could not be called for a day's pass; the day is kept to run again and passes wait
 	// until NextTry. Cleared by the next pass that reaches the model.
 	ModelPause *ModelPause `json:"model_pause,omitempty"`
@@ -583,6 +613,21 @@ func (s *Store) Unlock() { s.mu.Unlock() }
 
 // TryLock takes the lock only if nobody holds it.
 func (s *Store) TryLock() bool { return s.mu.TryLock() }
+
+// LockWithin takes the lock if it frees within d (polling); false when a run still holds it. A tool the hub calls
+// waits only seconds for an answer, while a daily pass holds the lock for its whole run.
+func (s *Store) LockWithin(d time.Duration) bool {
+	end := time.Now().Add(d)
+	for {
+		if s.mu.TryLock() {
+			return true
+		}
+		if !time.Now().Before(end) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
 
 // Save writes the state atomically. Call it with the lock held.
 func (s *Store) Save() error {
@@ -868,4 +913,15 @@ func (s *Store) Events() ([]entry.Event, error) {
 		out = append(out, e)
 	}
 	return out, nil
+}
+
+// RecallDays is how many days of enkeep_recall counts are kept.
+const RecallDays = 30
+
+// RecallDay is one day's enkeep_recall counts.
+type RecallDay struct {
+	Calls    int            `json:"calls"`
+	Empty    int            `json:"empty"`
+	Facets   map[string]int `json:"facets,omitempty"`
+	Statuses map[string]int `json:"statuses,omitempty"`
 }

@@ -4,6 +4,16 @@
 
 Water (喝水提醒) reminds you to drink water and records each drink without calling a model or using an account. Open **喝水** in Persona to see today's progress, add a cup or another amount, undo today's entries, and compare daily totals for the last 7 or 30 days.
 
+## Move water tracking into Health
+
+Persona releases that include [nwverse/persona#14228](https://github.com/nwverse/persona/pull/14228) have built-in water logging, reminders and widgets in **Health**. On iPhone or iPad, open the Health home and tap the migration card above **Today**. It appears when this extension is enabled, or is installed and has not been migrated. Nothing moves until you tap the card.
+
+Migration imports all existing records and saved settings, then disables this extension without uninstalling it; its data directory is retained. Built-in reminders are enabled only if the extension's reminders were enabled. **Do not uninstall before migrating:** uninstalling deletes the extension's data directory.
+
+Replace extension widgets and watch-face complications with the built-in Health versions, and recreate shortcuts made with **Run Extension Action** using the built-in water action. Keeping both reminder systems enabled causes duplicate reminders. If you enable the extension again, the migration card returns; migrating again adds only new records without duplicating previously imported ones.
+
+Web-only and Android-only users do not see the migration card and can continue using this extension. Migrating from an iPhone or iPad disables the extension for the hub, so its Android page also disappears. The extension remains available for people who still need it.
+
 ## Settings
 
 Change these in **Settings › Extensions › 喝水提醒**:

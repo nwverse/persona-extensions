@@ -179,3 +179,20 @@ func TestWeakOwner(t *testing.T) {
 		t.Error("a full kb.owner keeps groups")
 	}
 }
+
+// Group chats: words in a quote block, a reply lead or a referenced message are not the sender's (design v2 §4.2).
+func TestGroupOwnText(t *testing.T) {
+	body := "这个先别合\n- - - - - - - -\n「占位同事：今天就合进去吧」"
+	if own := GroupOwnText(body); own != "这个先别合" {
+		t.Fatalf("own %q", own)
+	}
+	if !QuotedIn("group", body, "今天就合进去吧") || QuotedIn("group", body, "这个先别合") {
+		t.Fatal("quoted part")
+	}
+	if !QuotedIn("group", "> 占位同事：周五上线\n周五不行，下周一", "周五上线") {
+		t.Fatal("quote line")
+	}
+	if QuotedIn("dm", body, "今天就合进去吧") {
+		t.Fatal("a direct chat has no quote blocks here")
+	}
+}

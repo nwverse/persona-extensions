@@ -40,6 +40,10 @@ personad extension market add github:nwverse/persona-extensions
 
 bypass 扩展的源码现已更名为 `agent-bypass-allow`（原 `claude-bypass-allow`）。同市场更新需要明确确认身份变更，并保留已安装的设置、规则和数据。请先等安装包和目录发布，并升级 hub 与节点；不要用卸载重装来迁移。见[扩展说明](docs/extensions/agent-bypass-allow.md#upgrading-from-the-former-id)（英文）。
 
+### 喝水与内置健康
+
+包含 [nwverse/persona#14228](https://github.com/nwverse/persona/pull/14228) 的 Persona 版本已在「健康」内置喝水记录、提醒和小组件。在 iPhone 或 iPad 的健康主页点迁移卡，即可导入喝水扩展的记录和设置，并停用扩展。**请先迁移再卸载**，卸载会删除扩展数据。迁移后请把扩展小组件、表盘圆环和快捷指令换成内置功能；两套提醒都开启会重复提醒。只用网页或安卓的用户可继续使用扩展。详见[迁移说明](docs/extensions/water.md#move-water-tracking-into-health)（英文）。
+
 ## 文档与贡献
 
 以下详细文档默认使用英文：

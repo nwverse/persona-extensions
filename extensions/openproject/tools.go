@@ -33,7 +33,7 @@ var actionTools = []tool{
 		InputSchema: map[string]any{"type": "object", "required": []string{"project_href", "type_href", "subject"}, "properties": map[string]any{
 			"project_href": map[string]any{"type": "string", "pattern": "^/api/v3/projects/[0-9]+$"},
 			"type_href":    map[string]any{"type": "string", "pattern": "^/api/v3/types/[0-9]+$"},
-			"subject":      map[string]any{"type": "string", "minLength": 1, "maxLength": 500}, "description": map[string]any{"type": "string", "maxLength": 30000},
+			"subject":      map[string]any{"type": "string", "minLength": 1, "maxLength": maxSubjectChars}, "description": map[string]any{"type": "string", "maxLength": 30000},
 			"start_date": map[string]any{"type": "string", "format": "date"}, "due_date": map[string]any{"type": "string", "format": "date"},
 		}}},
 }

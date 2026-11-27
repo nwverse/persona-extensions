@@ -14,6 +14,27 @@ equally; none may be left out to make room for another:
 Keep what changes something the assistant does or knows; leave out what is only true. Most units give a few items or
 none; an empty list is a good answer.
 
+What matters most is what reaches furthest and holds longest: how the user thinks, decides and reacts, and the
+principle behind a choice, which will decide situations the assistant has not seen yet. An operational detail of one
+task (where a file goes, which page to open first, a time agreed once) matters least. When the lines show both, give
+the way of thinking or the principle first; give the detail only when the assistant will need it again.
+
+Look first for the user's own thinking moves, wherever the lines show them, also when they are not about the AI (a
+recap of a negotiation, a review of a plan, a reading of a chart):
+- how they check whether something is true: ask where a claim comes from and go back to the first-hand source, mark
+  their own view as a hunch and ask for data to test it, take an over-precise number as a sign of a weak claim;
+- how they find the holes: look for a contradiction, an over-strong premise or circular reasoning, ask what breaks
+  when a premise falls, question the premise of a two-option question instead of picking one, ask what a limit or a
+  safeguard really prevents;
+- how they keep to the goal: stop detail that does not change the conclusion, settle the direction before the
+  strategy, name the main contradiction among several threads first, judge a result by its purpose, not by "no
+  error";
+- how they weigh cost and effect, and what they keep for themself and what they hand over (decide the direction
+  themself, leave the steps to others).
+Write the move itself, so that it holds in another domain ("遇到看起来奇怪的限制时，先追问它防住了什么"), not the episode
+("用户问 10 MiB 上限为什么合理"). How to use one machine, path or command is a tools observation at most, never
+interaction or judgement.
+
 ## Input
 
 - day, chat, chat_name, kind (dm | group | mail | assistant | agent | doc | meeting | about | memory | …), source:
@@ -22,7 +43,12 @@ none; an empty list is a good answer.
   assistant's memory file about the user).
 - owner_names: names the user goes by.
 - lines: the lines of the day, each with its number n, speaker and text, and who when it is known:
-  - speaker "我" (who "self") is the user.
+  - speaker "我" (who "self") is the user. A "我" line whose text starts with "[转达原话]" is the user's words that a
+    task prompt or a relay carried verbatim and that were checked against what the user really said: it counts as
+    the user's own line (quote it without the mark).
+  - speakers "Persona", "测试提示", "粘贴材料" and "其他会话" are text typed into a session that is not the user's: a task
+    prompt, a relay, a test probe, pasted material, another session's message. Never the user's words, even when it
+    says what the user wants.
   - speaker "助手" is the AI assistant; "我·代写" is text posted under the user's name that an agent wrote. Neither is
     ever the user's words.
   - who "person:<id>" is a person the knowledge base knows; who "" or absent on another person's line means the
@@ -66,6 +92,17 @@ decision, commitment or evaluation cites the line of the person who made it. Giv
 other teams' business that does not touch the user, one-off actions ("merged it"), passing states ("the build is
 red"), money notices (bank, payroll, balance, card, transfer) and anything that is only a name.
 
+### What counts, facet by facet (all six equally)
+
+| facet | counts | does not count (counter-example) |
+|---|---|---|
+| interaction | how the user wants the AI to ask, report, take on work or keep quiet, and the user's corrections of the AI ("别每步都问我，做完再报") | a correction of one answer only ("this number is wrong"), a task request ("look this up") |
+| tools | a way to use a machine, tool, model or service, a pitfall with its way round, a boundary ("connect through the jump-host alias; the default port is closed") | the state or usage of a machine ("disk is 80% full"), that something was upgraded |
+| judgement | the user's choice at a fork, with what was turned down ("ship behind a flag rather than wait for the full review") | a request with no choice in it, an opinion on a topic, a bare "ok" to someone else's proposal |
+| workflow | the steps of a kind of task as the user does them ("before a release: gate, privacy scan, then merge") | someone else's steps, a one-off arrangement ("let's meet at 3 today") |
+| world | a fact about the user's world that matters in a month, and a line for the card of someone the user deals with ("the gate runner belongs to the platform team") | news, bot pushes, passing states ("the build is red"), money notices |
+| persona | the user as a person: role, what they push forward, goals, values, preferences, in the user's own words | another person's view of the user, the state of the user's machines or projects, an interest seen once worded as a trait |
+
 ### observations (one concrete thing seen, for one facet)
 Each observation is one thing seen in this unit, for one facet. Every observation has text: one sentence that stands
 on its own, also when the facet's fields (situation, choice, pitfall…) are filled; the fields do not replace it. Fill
@@ -106,7 +143,13 @@ security controls is never an approach or a fix, whoever used it: at most write 
 what to keep within), or nothing. A plain fact about a machine, tool or service (its state, its capacity, how much of something
 was used, that it was upgraded) is not a tools observation: it is a world fact about that object, or nothing.
 
-**judgement** (the user's default choice at a fork). From the user's own lines only. One fork and one choice: the
+**judgement** (the user's default choice at a fork, and how the user decides and thinks). From the user's own lines only.
+Besides a choice at a fork, a judgement is also a way of deciding or thinking that the user's words show directly
+(set dimension): how they decide, settle, delegate or stop (decision); how they break a problem down, check a claim,
+question an assumption or go back to the source (thinking); how they react to a mistake, an evasive answer, flattery
+or going round in circles, and how strongly (reaction); what they notice or ignore and what makes them switch
+(attention); how they phrase a request, leave things out, set a constraint or follow up (communication). Such an
+observation needs no rejected option; its choice is what the user does, its situation when. One fork and one choice: the
 user weighed options, picked, rejected, delegated, stopped, widened or narrowed scope, set a bar, settled a conflict,
 decided what to spend (time, money, risk) or what to accept from a person or an AI. type: the kind of fork in a few
 words of the target language (open: name it from the data). situation: the kind of situation that called for a
@@ -144,7 +187,8 @@ type: the dimension of the card line (role, responsibility, collaboration, respo
 interests, …). Never write a card line for the user (that is persona), and never for someone whose lines all have no
 who.
 
-**persona** (the user as a person). From the user's own lines, the user's "about me" notes, or the assistant's memory
+**persona** (the user as a person). A way of thinking that is about the user rather than about one choice (what
+they value, how they react, what they pay attention to) may be persona with a dimension. From the user's own lines, the user's "about me" notes, or the assistant's memory
 file: role and responsibilities, abilities and weak spots (as the user puts them), situation and what they are pushing
 forward now, goals, what they value, how they like to communicate, and in chit-chat their preferences, habits and
 opinions. type: a short key (role, responsibility, ability, situation, current_work, goal, values, communication,
@@ -160,6 +204,10 @@ trait.
 - sensitive: emotion, finance, health or family when the content is in one of these categories, else empty. Label it
   honestly; a program decides what is kept.
 - scope: global, or the project, runtime (an assistant or agent product), machine or tool it holds for.
+  A rule or a choice that holds only for one person, project, machine or chat hangs on it: give that project,
+  machine or tool in scope, and that person or project by the name known_entities gives in impact.object (a choice
+  about how to deal with one person is moment reply_person or dispatch with that person as the object). Make it global
+  only when the lines show it holds across them.
 - impact: what the assistant does differently for knowing it.
   - moment: one of every_turn (whenever the assistant speaks), ask_user (when it asks the user something),
     report (when it reports back), dispatch (when it sends work to an agent), task_start (when a kind of task starts),
@@ -174,6 +222,18 @@ trait.
   - Typical moments: interaction every_turn, ask_user or report; tools use_object or task_start; judgement ask_user or
     dispatch; workflow task_start or dispatch; people reply_person or kb_lookup (never every_turn for user_eval or
     inferred); persona every_turn or reply_person.
+- reach: how far it reaches: one_off (this once only), task_kind (every task of this kind), project (throughout
+  this project), cross_project (across projects and kinds of situation), every_turn (whenever the assistant speaks).
+- horizon: how long it holds: days, weeks, months, lasting (the user said it holds from now on, or it is what they
+  value). Judge both from the lines: a rule stated "以后都这样" is lasting; a choice made for this release is weeks.
+- principle: for interaction, judgement, workflow and persona, the reason behind the choice that would decide other
+  situations too, in one sentence of the target language ("宁可慢一步也要能回滚", "结论要能追到一手来源"), not the action
+  again. Use the user's words when they give the reason; when they do not and the same lines show it, write it and
+  set principle_inferred true; when the lines do not show it, leave it empty. Never a motive the lines do not show,
+  never a psychological reading ("because they feel insecure").
+- dimension and hint: for a way of thinking (see judgement), its dimension (decision, thinking, reaction,
+  attention, communication) and hint, the behaviour in 2 to 8 words ("举证责任交还 AI", "先复述后评判"). Describe the
+  behaviour, never label the person ("严谨型人格").
 - evidence: the lines it rests on (see Rules).
 - confidence: high when a line states it plainly, medium when implied, low when a guess (prefer leaving it out).
 
@@ -218,9 +278,19 @@ pleasantry ("thanks, boss", "master", "sir") is not a relation.
   context, not anyone's position.
 - One-off arrangements are not habits; a question is not a position; a request with no choice in it is not a
   judgement.
+- The text, situation, choice and principle of interaction, judgement, workflow and persona say no date, no
+  weekday, no "yesterday" or "this week", and no other unit: what spans days or chats is put together later. A
+  project or a tool may be named in scope and object; name it in the text only when the point is about that project.
+- An observation that is one_off and has no principle is not worth an entry: leave it out (the lines stay in the
+  record and can be looked up).
+- When the user goes against what they did elsewhere, do not write "X unless W": write in exception the situation in
+  which they do the other thing ("在…时，…"), so both ends are kept with when each holds.
+- Relationships, family and spiritual practice: only what the user plainly states (who, where, what happened, what
+  they said they will do); no reading of feelings, relationship quality or motives.
 - Money notices (bank, payroll, balance, card, transfer, payment) are never items, whoever wrote them.
 - Never put a secret (password, token, API key, private key, connection string with a password) into any field.
 - At most 12 observations and 8 facts for a unit; prefer fewer, stronger ones. Cover every facet the lines support;
-  do not spend the whole budget on one facet.
+  do not spend the whole budget on one facet, and never on facts while the user's own lines show how they think or
+  decide.
 
 Answer with JSON only, matching the schema.

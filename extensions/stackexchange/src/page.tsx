@@ -1,5 +1,5 @@
 import { Button, Field, Link, Loading, Markdown, Section, Text, View, type CallbackAction, type NativeAction, type Node } from "@persona/extension/ui";
-import { clip, oneLine, queryText, questionID, ReadError, selectedAnswer, siteID, sites, siteIDs, tagText, type Question, type SearchResult, type Site } from "./model.ts";
+import { clip, clipMarkdown, oneLine, queryText, questionID, ReadError, selectedAnswer, siteID, sites, siteIDs, tagText, titleText, type Question, type SearchResult, type Site } from "./model.ts";
 import { errorText, fmt, textsFor } from "./i18n.ts";
 import { budget, checkSignal, type StackExchange } from "./service.ts";
 export interface PageState { q: string; site: Site; tag: string; found: boolean; question?: Question }
@@ -9,7 +9,7 @@ function questionState(value: unknown, site: Site): Question | undefined {
   if (value == null) return undefined;
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new ReadError("invalid");
   const raw = value as Record<string, unknown>, id = questionID(raw.id);
-  const candidate: Question = { id, title: queryText(raw.title), url: "", score: 0, answerCount: 0, tags: [], license: "CC BY-SA 4.0", author: "" };
+  const candidate: Question = { id, title: titleText(raw.title), url: "", score: 0, answerCount: 0, tags: [], license: "CC BY-SA 4.0", author: "" };
   const url = new URL(candidate.url = typeof raw.url === "string" ? raw.url : "");
   if (url.protocol !== "https:" || url.hostname !== sites[site].host || url.username || url.password || url.port || url.pathname !== `/questions/${id}` && !url.pathname.startsWith(`/questions/${id}/`)) throw new ReadError("invalid");
   candidate.url = url.href;
@@ -69,14 +69,14 @@ export async function loadPage(service: StackExchange, state: PageState, refresh
     if (state.question.answerCount === 0) return { kind: "no-answer" };
     const result = await service.answers(state.question.id, state.site, refresh, request.signal), answer = selectedAnswer(result.answers);
     return { kind: "answer", question: state.question, body: answer.body, accepted: answer.accepted, id: answer.id, url: answer.url, author: answer.author, license: answer.license, stale: result.stale, quotaRemaining: result.quotaRemaining };
-  } catch (error) { checkSignal(signal); return { kind: "error", error }; }
+  } catch (error) { checkSignal(signal); return { kind: "error", error: request.signal.aborted && request.signal.reason instanceof ReadError ? request.signal.reason : error }; }
   finally { request.dispose(); }
 }
 export interface PageProps { service: StackExchange; state: PageState; loaded: Loaded; locale?: string; uiVersion?: number; action?: (id: string, next?: PageState, title?: string) => NativeAction | CallbackAction }
 export function page(props: PageProps): Node {
   const { service, state, loaded, uiVersion = 0 } = props, t = textsFor(props.locale ?? service.locale), siteName = sites[state.site].name;
   const act = (id: string, next?: PageState, title?: string) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "answers", state: encodeState(next), ...(title ? { title } : {}) } } : { id });
-  const text = (key: string, value: string, style: "body" | "caption" | "secondary" = "secondary") => <Text key={key} text={clip(value || t.unknown, 2800)} style={style} />;
+  const text = (key: string, value: string, style: "body" | "caption" | "secondary" = "secondary") => <Text key={key} text={clip(value || t.unknown, 2000)} style={style} />;
   const search = <Section key="stackexchange-search" title={t.search}>
     <Field key="stackexchange-query" name="query" label={t.search} kind="text" placeholder={t.searchHint} value={state.q} />
     <Field key="stackexchange-site" name="site" label={t.site} kind="choice" value={state.site} choices={siteIDs.map(id => ({ value: id, title: sites[id].name }))} />
@@ -91,7 +91,7 @@ export function page(props: PageProps): Node {
   if (loaded.kind === "no-answer") return <View key="stackexchange" title={state.question?.title ?? t.title} state={encodeState(state)}>{search}<Section key="stackexchange-no-answer">{text("stackexchange-no-answer-text", t.noAnswer, "body")}{state.question ? <Link key="stackexchange-question-link" title={fmt(t.openQuestion, { site: siteName })} url={state.question.url} /> : null}</Section>{footer}{attribution}</View>;
   if (loaded.kind === "answer") return <View key="stackexchange" title={loaded.question.title} state={encodeState(state)}>
     <Section key="stackexchange-answer-heading" title={loaded.accepted ? t.accepted : t.highest} footer={[fmt(t.score, { count: loaded.question.score }), fmt(t.answers, { count: loaded.question.answerCount })].join(" · ")}>
-      <Markdown key="stackexchange-answer-body" text={loaded.body} />
+      <Markdown key="stackexchange-answer-body" text={clipMarkdown(loaded.body, 20_000)} />
       {text("stackexchange-answer-author", fmt(t.by, { author: loaded.author, license: loaded.license }), "caption")}
       <Link key="stackexchange-answer-link" title={fmt(t.openAnswer, { site: siteName })} url={loaded.url} />
     </Section>

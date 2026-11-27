@@ -41,6 +41,89 @@ func TestTasksAreReadOnlyUnlessTheyAskToWrite(t *testing.T) {
 	}
 }
 
+func TestNormalizeAgentType(t *testing.T) {
+	for raw, want := range map[string]string{
+		"": AgentClaude, "  ": AgentClaude, "Claude": AgentClaude,
+		"codex": AgentCodex, "  CoDeX  ": AgentCodex, "custom_engine": "custom_engine",
+	} {
+		if got, err := NormalizeAgentType(raw); err != nil || got != want {
+			t.Errorf("NormalizeAgentType(%q) = %q, %v; want %q", raw, got, err, want)
+		}
+	}
+	for _, raw := range []string{"bad engine", "1codex", "codex;rm", strings.Repeat("a", 33)} {
+		if _, err := NormalizeAgentType(raw); err == nil {
+			t.Errorf("NormalizeAgentType(%q) accepted an unsupported engine", raw)
+		}
+	}
+}
+
+func TestAgentTypePersistsAcrossLeasesAndRetries(t *testing.T) {
+	dir := t.TempDir()
+	q, err := NewQueue(dir, DefaultQueueConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := mustEnqueue(t, q, EnqueueInput{AgentType: AgentCodex})
+	if task.AgentType != AgentCodex {
+		t.Fatalf("new task engine: %q", task.AgentType)
+	}
+
+	q, err = NewQueue(dir, DefaultQueueConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := q.GetTask(task.ID)
+	if err != nil || stored.AgentType != AgentCodex {
+		t.Fatalf("reloaded task: %+v %v", stored, err)
+	}
+	_, first, err := q.LeaseTask(task.ID, "dispatcher", testMachine, testStart)
+	if err != nil || first.Harness != AgentCodex {
+		t.Fatalf("first attempt: %+v %v", first, err)
+	}
+	after, err := q.CompleteAttempt(CompleteAttemptInput{TaskID: task.ID, FenceToken: first.FenceToken, WorkerID: "dispatcher",
+		Outcome: StateFailed, ErrorClass: "infra_error", Message: "connection reset", Now: testStart.Add(time.Second)})
+	if err != nil || after.State != StateQueued || after.NotBefore == nil {
+		t.Fatalf("retryable failure: %+v %v", after, err)
+	}
+	_, second, err := q.LeaseTask(task.ID, "dispatcher", testMachine, after.NotBefore.Add(time.Second))
+	if err != nil || second.Harness != AgentCodex {
+		t.Fatalf("second attempt: %+v %v", second, err)
+	}
+	got, _ := q.GetTask(task.ID)
+	if len(got.Attempts) != 2 || got.Attempts[0].Harness != AgentCodex || got.Attempts[1].Harness != AgentCodex {
+		t.Fatalf("stored attempt engines: %+v", got.Attempts)
+	}
+}
+
+func TestLegacyTaskWithoutAgentTypeUsesClaude(t *testing.T) {
+	q := newTestQueue(t, DefaultQueueConfig())
+	task := mustEnqueue(t, q, EnqueueInput{})
+	q.mu.Lock()
+	q.tasks[task.ID].AgentType = ""
+	saveErr := q.saveLocked()
+	q.mu.Unlock()
+	if saveErr != nil {
+		t.Fatal(saveErr)
+	}
+	raw, err := os.ReadFile(q.dataFile)
+	if err != nil || strings.Contains(string(raw), `"agent_type"`) {
+		t.Fatalf("legacy fixture still has agent_type: %v\n%s", err, raw)
+	}
+
+	legacy, err := NewQueue(filepath.Dir(q.dataFile), DefaultQueueConfig())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := legacy.GetTask(task.ID)
+	if err != nil || stored.AgentType != "" || viewTask(stored, promptNone).AgentType != AgentClaude {
+		t.Fatalf("legacy task view: %+v %v", stored, err)
+	}
+	_, att, err := legacy.LeaseTask(task.ID, "dispatcher", testMachine, testStart)
+	if err != nil || att.Harness != AgentClaude {
+		t.Fatalf("legacy attempt: %+v %v", att, err)
+	}
+}
+
 func TestALateReportOfAnOldAttemptIsRefused(t *testing.T) {
 	cfg := DefaultQueueConfig()
 	cfg.RetryBaseDelay = time.Second

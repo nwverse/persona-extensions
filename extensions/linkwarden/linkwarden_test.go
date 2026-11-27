@@ -48,7 +48,7 @@ func newFakeLinkwarden(t *testing.T) *fakeLinkwarden {
 		case "/links/101":
 			fmt.Fprint(w, `{"response":{"id":101,"name":"Reading with context","url":"https://example.com/article","description":"A saved article","note":"Why this matters","collection":{"id":5,"name":"Research"}}}`)
 		case "/links/101/highlights":
-			fmt.Fprint(w, `{"response":[{"id":11,"linkId":101,"text":"A highlighted passage","note":"A note"}]}`)
+			fmt.Fprint(w, `{"response":[{"id":11,"linkId":101,"text":"A highlighted passage","comment":"A note"}]}`)
 		case "/links":
 			var in map[string]any
 			_ = json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&in)

@@ -71,7 +71,9 @@ class Plugin:
             backend = self.make_backend(data_dir, config.get("region") or "feishu")
             self.connector = Connector(backend, Store(os.path.join(data_dir, "larkx.db")), Hub(self.peer),
                                        config.get("triage_rules") or "", config.get("agent_reply_suffix") or "")
+            self.connector.inbox_triage_chats = frozenset(config.get("inbox_triage_chats") or ())
             self.connector.mention = config.get("agent_mention", True) is not False
+            self.connector.topics = config.get("agent_group_topics", True) is not False
             self.connector.start()
         return {"protocol": PROTOCOL, "id": self.manifest["id"], "version": self.manifest["version"], "contributes": self.manifest["contributes"]}
 
@@ -96,5 +98,6 @@ def main():
     plugin = Plugin(manifest, make_backend)
     plugin.peer = Peer(stdin, stdout, plugin.handle)
     plugin.peer.serve()
-    # The hub closed stdin: stop here, whatever the listening threads are doing.
-    os._exit(0)
+    # The hub closed stdin: let history writes finish before the data directory is cleaned up.
+    if plugin.connector is not None:
+        plugin.connector.close()

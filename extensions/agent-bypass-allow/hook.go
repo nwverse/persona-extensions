@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"io"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -49,12 +51,14 @@ type hookInput struct {
 	TranscriptPath string    `json:"transcript_path"`
 	ToolInput      toolInput `json:"tool_input"`
 
-	isAgy      bool
-	kind       hookKind
-	workspaces []string
-	geminiDir  string
-	agyDir     string
-	acpOption  string
+	isAgy         bool
+	kind          hookKind
+	workspaces    []string
+	cmdCwd        string
+	cmdCwdInvalid bool
+	geminiDir     string
+	agyDir        string
+	acpOption     string
 }
 
 // toolInput is what the hook reads of each allowed tool's input.
@@ -133,7 +137,7 @@ func runHook(a hookArgs, in io.Reader, out io.Writer, now time.Time) {
 	}
 	call := req.summary()
 	appendAudit(filepath.Join(a.Data, auditFile), auditEntry{
-		At: now.UTC().Format(time.RFC3339), Session: req.SessionID, Agent: req.AgentID, Cwd: req.Cwd, Tool: req.ToolName,
+		At: now.UTC().Format(time.RFC3339), Session: req.SessionID, Agent: req.AgentID, Cwd: cmp.Or(req.cmdCwd, req.Cwd), Tool: req.ToolName,
 		Command: redact(call), Length: utf8.RuneCountInString(call), ConfigDir: req.auditConfigDir(a),
 		Note: redact(strings.Join(notes, "; ")),
 	})
@@ -193,7 +197,10 @@ func refuse(a hookArgs, req hookInput, now time.Time) (string, []string) {
 	if why != "" || req.ToolName != "Bash" {
 		return why, nil
 	}
-	g := newGuardWithWorkspaces(req.Cwd, req.workspaces, readOptions(a.Data).AllowDestructive)
+	if req.cmdCwdInvalid {
+		return "invalid command cwd", nil
+	}
+	g := newGuardForCommand(req.Cwd, req.workspaces, req.cmdCwd, readOptions(a.Data).AllowDestructive)
 	if why := g.personOnly(req.ToolInput.Command); why != "" {
 		return "only a person approves this: " + why, nil
 	}
@@ -269,11 +276,40 @@ func readOptions(data string) options {
 	return o
 }
 
+func lockAudit(lockPath string, exclusive bool) func() {
+	flag := os.O_RDONLY
+	how := syscall.LOCK_SH
+	if exclusive {
+		flag = os.O_CREATE | os.O_RDWR
+		how = syscall.LOCK_EX
+	}
+	lf, err := os.OpenFile(lockPath, flag, 0o600)
+	if err != nil {
+		return func() {}
+	}
+	for {
+		err = syscall.Flock(int(lf.Fd()), how)
+		if err != syscall.EINTR {
+			break
+		}
+	}
+	if err != nil {
+		_ = lf.Close()
+		return func() {}
+	}
+	return func() {
+		_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+		_ = lf.Close()
+	}
+}
+
 func appendAudit(path string, e auditEntry) {
 	b, err := marshalPlain(e) // && and > as they are, for whoever reads the file
 	if err != nil {
 		return
 	}
+	unlock := lockAudit(path+".lock", true)
+	defer unlock()
 	if st, err := os.Stat(path); err == nil && st.Size() > auditKeep {
 		_ = os.Rename(path, path+".1")
 	}
@@ -287,6 +323,8 @@ func appendAudit(path string, e auditEntry) {
 
 // readAudit is the newest n entries, newest first.
 func readAudit(dir string, n int) []auditEntry {
+	unlock := lockAudit(filepath.Join(dir, auditFile+".lock"), false)
+	defer unlock()
 	var all []auditEntry
 	for _, name := range []string{auditFile + ".1", auditFile} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
@@ -296,6 +334,9 @@ func readAudit(dir string, n int) []auditEntry {
 		for _, line := range strings.Split(string(b), "\n") {
 			var e auditEntry
 			if json.Unmarshal([]byte(line), &e) == nil && e.At != "" {
+				if strings.TrimSpace(e.Command) == "" {
+					e.Command = cmp.Or(strings.TrimSpace(e.Tool), "-")
+				}
 				all = append(all, e)
 			}
 		}

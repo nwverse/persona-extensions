@@ -32,16 +32,19 @@ export async function loadPage(service: FoodFacts, state: PageState, refresh: bo
   const request = budget(signal, service.limits.page);
   try {
     if (!state.found) return { kind: "empty" };
-    if (/^[0-9]{8,14}$/.test(state.q)) return { kind: "result", result: { products: [await service.product(state.q, refresh, request.signal)], total: 1, at: service.now() } };
+    if (/^[0-9]{8,14}$/.test(state.q)) {
+      const found = await service.productResult(state.q, refresh, request.signal);
+      return { kind: "result", result: { products: [found.product], total: 1, at: found.at, ...(found.stale ? { stale: found.stale } : {}) } };
+    }
     return { kind: "result", result: await service.search(state.q, 12, refresh, request.signal) };
-  } catch (error) { checkSignal(signal); return { kind: "error", error }; }
+  } catch (error) { checkSignal(signal); return { kind: "error", error: !(error instanceof ReadError) && request.signal.aborted && request.signal.reason instanceof ReadError ? request.signal.reason : error }; }
   finally { request.dispose(); }
 }
 export interface PageProps { service: FoodFacts; state: PageState; loaded: Loaded; locale?: string; uiVersion?: number; action?: (id: string, next?: PageState, title?: string) => NativeAction | CallbackAction }
 export function page(props: PageProps): Node {
   const { service, state, loaded, uiVersion = 0 } = props, t = textsFor(props.locale ?? service.locale);
   const act = (id: string, next?: PageState, title?: string) => props.action?.(id, next, title) ?? (next && uiVersion >= 3 ? { id, push: { ui: "products", state: encodeState(next), ...(title ? { title } : {}) } } : { id });
-  const text = (key: string, value: string, style: "body" | "caption" | "secondary" = "secondary") => <Text key={key} text={clip(value || t.unknown, 2800)} style={style} />;
+  const text = (key: string, value: string, style: "body" | "caption" | "secondary" = "secondary") => <Text key={key} text={clip(value || t.unknown, 2000)} style={style} />;
   const search = <Section key="foodfacts-search" title={t.search}><Field key="foodfacts-query" name="query" label={t.search} kind="text" placeholder={t.searchHint} value={state.q} /><Button key="foodfacts-submit" title={t.searchAction} action={act("search")} /></Section>;
   const attribution = <Section key="foodfacts-attribution">{text("foodfacts-license", t.attribution, "caption")}</Section>;
   if (loaded.kind === "loading") return <View key="foodfacts" title={t.search} state={encodeState(state)}>{search}<Section key="foodfacts-loading"><Loading key="foodfacts-loading-indicator" title={t.loading} /></Section>{attribution}</View>;

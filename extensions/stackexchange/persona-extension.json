@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "stackexchange",
   "name": "Stack Exchange",
-  "version": "0.1.1",
+  "version": "0.1.4",
   "icon": "assets/icon.png",
   "description": "Search developer questions on Stack Overflow and selected Stack Exchange sites. Read accepted or highly voted answers with code, attribution and original links. Anonymous, read-only public API access.",
   "publisher": "nwverse",
@@ -21,7 +21,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/stackexchange.mjs",
-      "sha256": "adefd27bf313264c41e9994c5125f19e5c8d2b6557e555727cfe5e7b5106d6a7"
+      "sha256": "3634f9cce9ae63e4549066cecc146b3707de696ecbec8741e6077acfefc0ad70"
     }
   },
   "contributes": {

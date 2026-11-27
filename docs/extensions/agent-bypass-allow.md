@@ -96,7 +96,7 @@ In a session that Persona started, Persona's hook also receives each `Permission
 Persona's main and supervisor conversations do not run in `bypassPermissions`, so each `Write` or `Edit` of the assistant's own files (charters, plans, notes) puts a card in front of you. Persona's "Always allow in this session" lasts one conversation only. The `assistant_writes` setting (off by default) lets the hook answer those calls too, independently of the bypass rules above. With it on, the hook allows a call only if all of these hold:
 
 - The tool is `Write` or `Edit`, and the mode is not `plan`. `MultiEdit`, `NotebookEdit`, Bash (which includes deletion), MCP tools and network writes are not touched by this setting.
-- The call comes from a Persona assistant conversation. For Claude Code, both signals must be present: the hook's environment has `PERSONA_ASSISTANT=1` (or the old name `JARVIS_ASSISTANT=1`), which Persona's node sets only on the Claude Code processes it starts for the assistant, and the conversation's `transcript_path` is in the project of the assistant's directory (`…-persona-assistant…` or `…-jarvis-assistant…`). Claude Code names that project after the directory the process started in; a later `cd` does not change it. For `agy`, Persona's ACP companion runs conversations inside a shared `agy acp` process with transcripts under `<agy dir>/brain/<id>/`, so the session's workspace directories (`workspacePaths` / `cwd`) must resolve to `~/.persona/assistant` or `~/.jarvis/assistant` (or a manager's `assistant-m-<hex>`), with no other project workspace attached. An ordinary agent in another project, or Persona's health space (`…-persona-health`), is never treated as the assistant. Guest conversations (`PERSONA_GUEST` set) never count.
+- The call comes from a Persona assistant conversation. For Claude Code, both signals must be present: the hook's environment has `PERSONA_ASSISTANT=1` (or the old name `JARVIS_ASSISTANT=1`), which Persona's node sets only on the Claude Code processes it starts for the assistant, and the conversation's `transcript_path` is in the project of the assistant's directory (`…-persona-assistant…` or `…-jarvis-assistant…`). Claude Code names that project after the directory the process started in; a later `cd` does not change it. For `agy`, Persona's ACP companion runs conversations inside a shared `agy acp` process with transcripts under `<agy dir>/brain/<id>/`, so the session's workspace directories (`workspacePaths` / `cwd`) must resolve to `~/.persona/assistant` or `~/.jarvis/assistant` (or a manager's `assistant-m-<hex>`), with no other project workspace attached. ACP [`additionalDirectories`](https://agentclientprotocol.com/protocol/v1/session-setup) can add session-scoped data roots without changing the primary workspace: version 0.2.34 ignores only `<agy dir>/persona-supervision/<conversation id>` or `<agy dir>/antigravity-cli/persona-supervision/<conversation id>` when that path belongs to the current conversation, and an exact `~/.persona/runtime-packages/persona-antigravity-runtime/<64 lowercase hex>` or `~/.jarvis/runtime-packages/persona-antigravity-runtime/<64 lowercase hex>` directory after symlinks and `..` are resolved. A runtime package directory is only an extra-workspace exemption: it does not qualify as the required assistant workspace or become a writable directory. An unrelated project, a directory outside `<agy dir>`, another data path inside it, another conversation's supervision root, an ordinary agent in another project, or Persona's health space (`…-persona-health`) is never treated as the assistant. Guest conversations (`PERSONA_GUEST` set) never count.
 - The file's absolute path, with symlinks and `..` resolved, is strictly inside one of the `assistant_write_dirs` (defaults `~/.jarvis/assistant` and `~/.persona/assistant`, also resolved), and not under that directory's `.claude`, `.gemini`, `.agents`, `.agent`, `_agents`, `_agent` or `.git`, and not its `.mcp.json`, `hooks.json` or `mcp_config.json`. Those would let a conversation change its own settings, skills, hooks or MCP servers.
 - The extension's program is running, and no `ask` or `deny` rule of yours could be about the call. A rule for `Edit` counts for `Write` too, as Claude Code applies it.
 
@@ -125,6 +125,29 @@ For Claude Code, the program adds one group to `hooks.PermissionRequest` in `<co
 {"matcher": "Bash|Read|Glob|Grep|LS|NotebookRead|Agent|Task", "hooks": [{"type": "command", "timeout": 10,
   "command": "'<package>/bin/agent-bypass-allow-<platform>' hook --config-dir '<config dir>' --data '<data dir>' --persona-extension=claude-bypass-allow"}]}
 ```
+
+For agy, [`PreToolUse` and `PostToolUse`](https://www.antigravity.google/docs/hooks) use matcher groups containing a `hooks` handler list. Non-tool events such as `PreInvocation` and `Stop` instead contain flat command handlers; that intentional difference is preserved when the extension edits a shared file. With `assistant_writes` on, the installed entry has this shape:
+
+```json
+{
+  "sample-hook": {
+    "PreToolUse": [
+      {
+        "matcher": "run_command|read_file|view_file|find_by_name|grep_search|list_dir|invoke_subagent|write_file|write_to_file|edit_file|replace_file_content",
+        "hooks": [
+          {
+            "type": "command",
+            "timeout": 10,
+            "command": "'<package>/bin/sample-hook-<platform>' hook --gemini-dir '<gemini dir>' --data '<data dir>' --persona-extension=sample-owner"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+The agy hook accepts the documented camelCase `toolCall` payload with no `hookEventName`, including `TargetFile` for `write_to_file` and `replace_file_content`, and answers `{"decision":"auto_approve"}` only after the same policy checks.
 
 The trailing `--persona-extension=claude-bypass-allow` tag is a stable hook-ownership marker, not the extension's public identity. Version 0.2.24 keeps generating it so the old 0.2.23 binary can replace or remove the hook after rollback; both old and new marker suffixes are recognized. A mixed group is reduced to one owned hook without touching another tool's entries. Other keys and other tools' hooks keep their order and values, and the file keeps its indent. Before each change, it copies the previous file to `settings.json.claude-bypass-allow.bak`. A file that is not a JSON object is left alone and reported as an error. A session that was already running when you turned a computer on may not pick up the hook until it restarts.
 

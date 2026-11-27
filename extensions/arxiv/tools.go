@@ -19,7 +19,7 @@ type tool struct {
 var readTools = []tool{
 	{Name: "arxiv_search", Description: "Search arXiv papers by topic or show recent submissions with the official Atom API. Returns title, authors, abstract, category, arXiv ID and next offset.",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
-			"query": map[string]any{"type": "string", "maxLength": 200}, "recent": map[string]any{"type": "boolean"}, "start": map[string]any{"type": "integer", "minimum": 0},
+			"query": map[string]any{"type": "string", "maxLength": maxQueryChars}, "recent": map[string]any{"type": "boolean"}, "start": map[string]any{"type": "integer", "minimum": 0},
 		}}},
 	{Name: "arxiv_paper", Description: "Read one arXiv paper by exact ID using id_list. Returns title, authors, abstract, category and original arXiv link; no PDF or source attachment is downloaded.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"paper_id"}, "properties": map[string]any{"paper_id": map[string]any{"type": "string", "minLength": 1, "maxLength": 100}}}},

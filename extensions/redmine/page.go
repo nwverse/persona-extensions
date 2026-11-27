@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -26,7 +27,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.IssueID < 0 || st.Offset < 0 || st.ProjectID < 0 || len(st.ProjectName) > 1000 || len(st.DraftID) > 128 || len(st.Subject) > 600 || len(st.Description) > 31000 {
+	if err := r.DecodeState(&st); err != nil || st.IssueID < 0 || st.Offset < 0 || st.ProjectID < 0 || len(st.ProjectName) > 1000 || len(st.DraftID) > 128 || utf8.RuneCountInString(st.Subject) > maxSubjectChars || len(st.Description) > 31000 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil

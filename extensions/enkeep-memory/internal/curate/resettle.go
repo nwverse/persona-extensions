@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"time"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -44,7 +45,17 @@ func (r ResettleReport) Changed() int {
 // Resettle settles every entry again as of today on the real active days; apply=false changes nothing, not even the
 // event log. It is idempotent: a second call finds nothing to move. It takes the store's lock.
 func (c *Curator) Resettle(today string, apply bool) (ResettleReport, error) {
-	c.St.Lock()
+	return c.ResettleWithin(today, apply, 0)
+}
+
+// ResettleWithin is Resettle waiting at most wait for the store's lock (0: as long as it takes); ErrBusy when a run
+// holds it longer.
+func (c *Curator) ResettleWithin(today string, apply bool, wait time.Duration) (ResettleReport, error) {
+	if wait <= 0 {
+		c.St.Lock()
+	} else if !c.St.LockWithin(wait) {
+		return ResettleReport{}, ErrBusy
+	}
 	defer c.St.Unlock()
 	r := ResettleReport{AsOf: today, Applied: apply, ActiveDays: len(c.St.S.ActiveDays)}
 	r.Before, r.StableBefore = statusCounts(c.St.S)
@@ -104,7 +115,7 @@ func emptyActiveDays(s *store.State) []string {
 			continue
 		}
 		runs[r.Period] = true
-		if r.Counts["model_calls"] > 0 {
+		if r.Counts["model_calls"]+r.Counts["digested"]+r.Counts["digest_unchanged"]+r.Counts["digest_replayed"] > 0 {
 			called[r.Period] = true
 		}
 	}

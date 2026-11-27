@@ -29,7 +29,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Page < 0 || len(st.Query) > 250 || len(st.EntityID) > 128 || len(st.EntityTypeID) > 128 || len(st.LocationID) > 128 || len(st.DraftID) > 128 || len(st.Name) > 300 || len(st.Description) > 1100 || st.Quantity < 0 || st.Quantity > 1000000 {
+	if err := r.DecodeState(&st); err != nil || st.Page < 0 || len([]rune(st.Query)) > maxQueryChars || len(st.EntityID) > 128 || len(st.EntityTypeID) > 128 || len(st.LocationID) > 128 || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len([]rune(st.Description)) > maxDescriptionChars || st.Quantity < 0 || st.Quantity > 1000000 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -50,7 +50,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Page = strings.TrimSpace(clipText(r.Values["q"], 200)), 1
+		st.Query, st.Page = strings.TrimSpace(clipText(r.Values["q"], maxQueryChars)), 1
 	case "more":
 		st.Page, err = strconv.Atoi(r.Values["page"])
 		if err != nil || st.Page < 2 {
@@ -76,6 +76,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			return nil, errors.New("a valid item name, description, quantity, type and location are required")
 		}
 		st.Name, st.Description, st.Quantity, st.Mode = in.Name, in.Description, in.Quantity, "review-create"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("item draft exceeds page state limit")
+		}
 	case "confirm-create":
 		in := createArgs{EntityTypeID: st.EntityTypeID, LocationID: st.LocationID, Name: st.Name, Description: st.Description, Quantity: st.Quantity}
 		if err := in.validate(); err != nil || st.Mode != "review-create" || st.DraftID == "" {
@@ -159,7 +162,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"page": fmt.Sprint(page.Page + 1)}}}
 	}
-	create, err := a.createChoices(ctx)
+	create, err := a.createChoices(ctx, r.Locale)
 	if err != nil {
 		return nil, err
 	}
@@ -167,8 +170,8 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	return v, nil
 }
 
-func (a *app) createChoices(ctx context.Context) (wire.Section, error) {
-	t := textsFor("en")
+func (a *app) createChoices(ctx context.Context, locale string) (wire.Section, error) {
+	t := textsFor(locale)
 	types, err := a.client.entityTypes(ctx)
 	if err != nil {
 		return wire.Section{}, err
@@ -221,6 +224,20 @@ func createView(r *ext.UIRequest, st pageState) *wire.View {
 	}}}}
 }
 
+const (
+	maxViewItems        = 250
+	maxDescriptionItems = 120
+)
+
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
+}
+
 func detailView(r *ext.UIRequest, st pageState, item entity) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(fmt.Sprintf("%g · %s · %s", item.Quantity, item.AssetID, locationName(item)), 1800)}, {Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}}}
@@ -230,11 +247,15 @@ func detailView(r *ext.UIRequest, st pageState, item entity) *wire.View {
 		}
 	}
 	v := &wire.View{Title: clipText(item.Name, 1800), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.inventory, Items: items}}}
+	used := len(items)
 	if item.Description != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Description, 12000))})
+		desc := capComponents(textComponents(clipText(item.Description, 12000)), maxDescriptionItems)
+		used += len(desc)
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: desc})
 	}
 	if item.Notes != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.notes, Items: textComponents(clipText(item.Notes, 12000))})
+		notes := capComponents(textComponents(clipText(item.Notes, 12000)), maxViewItems-used)
+		v.Sections = append(v.Sections, wire.Section{Title: t.notes, Items: notes})
 	}
 	return v
 }

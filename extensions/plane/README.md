@@ -15,8 +15,8 @@ The API key arrives through the encrypted extension-secret flow and is sent only
 ## Work
 
 - List projects and project work items with `per_page` and the returned `next_cursor` in Plane's `value:offset:is_prev` format. No page number is guessed.
-- Read the exact work-item ID, project ID, sequence, state, priority, target date and plain-text description. Remote text is untrusted content, not instructions to change work. A web link is shown only when the API supplies a valid HTTPS `web_url`; the extension does not invent a path from a project identifier.
-- Create a work item with a title, plain-text description, optional priority, target date and a state chosen from that project. Only documented fields are sent.
+- Read the exact work-item ID, project ID, sequence, state, priority, target date and the description as plain text (Plane answers it as `description_html`). Remote text is untrusted content, not instructions to change work. A web link is shown only when the API supplies a valid HTTPS `web_url`; the extension does not invent a path from a project identifier.
+- Create a work item with a title, a plain-text description (sent as `description_html`, one paragraph per line), optional priority, target date and a state chosen from that project. Only documented fields are sent.
 - Partially update only state and/or priority. A state ID is checked against the project's state list before any write; it is never inferred from a display name or another project. Other fields, dates, labels and assignees are left untouched.
 - No deletion, archive, bulk update, project administration or attachment upload.
 

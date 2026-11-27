@@ -18,6 +18,8 @@ import (
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/kbsrc"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/model"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/overview"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/schema"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -25,24 +27,34 @@ import (
 )
 
 type app struct {
-	mu        sync.Mutex
-	c         *curate.Curator
-	hub       *ext.Hub
-	running   string // the run in progress, if any
-	lastErr   string
-	paused    []string     // a.tried keys of passes that found the model unavailable: tried again after the pause
-	tried     []string     // days a daily run started since this process did
-	member    bool         // a member hub of a group: the curator runs only on the centre
-	changed   int          // kb.changed events since start
-	dataDir   string       // the extension's data directory (trials leave their report there)
-	lastTrial string       // the last trial's summary (dryrun_hub.go)
-	source    kbsrc.Source // tests can inject a source before init; production uses the hub
-	hubAPI    hubapi.Hub   // the hub beyond the knowledge base: the assistant's runtime, the weekly report's notify
-	hubLoc    *time.Location
-	rt        string // the assistant's runtime, cached (page_v4.go)
-	rtAt      time.Time
-	exitDir   string       // where the exit files are when not in the store's directory (the page subcommand)
-	route     *model.Route // the model route; nil: every call on the purpose's model (model_route "purpose")
+	mu            sync.Mutex
+	c             *curate.Curator
+	hub           *ext.Hub
+	running       string // the run in progress, if any
+	lastErr       string
+	paused        []string     // a.tried keys of passes that found the model unavailable: tried again after the pause
+	tried         []string     // days a daily run started since this process did
+	member        bool         // a member hub of a group: the curator runs only on the centre
+	changed       int          // kb.changed events since start
+	dataDir       string       // the extension's data directory (trials leave their report there)
+	lastTrial     string       // the last trial's summary (dryrun_hub.go)
+	source        kbsrc.Source // tests can inject a source before init; production uses the hub
+	hubAPI        hubapi.Hub   // the hub beyond the knowledge base: the assistant's runtime, the weekly report's notify
+	hubLoc        *time.Location
+	rt            string // the assistant's runtime, cached (page_v4.go)
+	rtAt          time.Time
+	exitDir       string              // where the exit files are when not in the store's directory (the page subcommand)
+	route         *model.Route        // the model route; nil: every call on the purpose's model (model_route "purpose")
+	recalls       *store.RecallLog    // the old enkeep_recall's counts (recall.json, up to 0.2.0-beta.43), with their own lock
+	marksMu       sync.Mutex          // the queued marks' file (marks.go)
+	rerunsMu      sync.Mutex          // the queued reruns' file (rerun_queue.go)
+	done          []doneWrite         // the last actions.do answers by request id (tools.go doOnce)
+	ov            *overview.Holder    // the periodic overview's state (overview_app.go); nil: off
+	lastFast      time.Time           // the correction fast path's last look (curate.RunFast)
+	readOnly      bool                // the page subcommand draws views without changing state
+	pendingShown  map[string]struct{} // proposal ids displayed while the store lock was busy
+	flushingShown bool                // one background worker is waiting to flush pendingShown
+	shownWG       sync.WaitGroup      // tracks any active flushPendingShown worker
 }
 
 func newApp() *app { return &app{} }
@@ -101,15 +113,31 @@ func (a *app) init(ctx context.Context, in *ext.Init, hub *ext.Hub) (map[string]
 	route := cfg.Route()
 	if route != nil {
 		route.Stats = model.OpenStats(dir, time.Now())
+		route.Stats.Loc = loc // the cost lines' days are the hub's
 		route.Logf = func(f string, args ...any) { log.Printf(f, args...) }
 		a.route = route
 	}
 	a.c = &curate.Curator{Src: src, Model: model.Hub{H: hub, Extension: info.ID, Route: route}, St: st, Cfg: cfg, Loc: loc,
 		Lang: in.Hub.Locale, Extension: info.ID, Logf: func(f string, args ...any) { log.Printf(f, args...) }, Live: &curate.Live{},
-		Collect: collect, Hub: a.hubAPI, Cards: curate.PeopleCards{}}
-	st.Lock() // nothing runs yet: the health page's first snapshot
+		Collect: collect, Hub: a.hubAPI, Cards: curate.PeopleCards{},
+		// Four calls at once in the daily pass: what the project's limit allows (model.LimitConcurrent, design v2
+		// §4.7); every call still waits for a turn of the shared limiter, reruns behind the scheduled passes.
+		Workers: model.LimitConcurrent}
+	a.openOverview(st.Dir) // before the first snapshot: its light refresh runs on every one
+	st.Lock()              // nothing runs yet: the health page's first snapshot
+	a.recalls = store.OpenRecall(st.Dir, st.S.Recall)
+	st.S.Recall = nil // moved to recall.json; dropped from state.json at its next save
+	if prev, err := profile.Load(st.Dir); err == nil && prev == nil && len(st.S.Entries) > 0 {
+		lang := cfg.Language
+		if lang == "" {
+			lang = in.Hub.Locale
+		}
+		_ = profile.Save(st.Dir, profile.BuildWith(st.S, a.c.ProfileInput, time.Now(), lang))
+	}
 	a.c.Publish()
 	st.Unlock()
+	go a.applyMarks(context.WithoutCancel(ctx)) // marks a pass's run left queued when the process stopped
+	go a.applyReruns()                          // rerun requests a pass's run left queued when the process stopped
 	go a.recover(ctx)
 	go a.migrate(ctx)
 	if !a.member {
@@ -145,6 +173,22 @@ func (a *app) schedule(ctx context.Context) {
 	}
 }
 
+// fast runs the correction fast path (curate.RunFast) when no other run is in progress, holding the run slot while
+// it does.
+func (a *app) fast(ctx context.Context) {
+	a.mu.Lock()
+	if a.running != "" {
+		a.mu.Unlock()
+		return
+	}
+	a.running = "fast"
+	a.mu.Unlock()
+	if _, err := a.c.RunFast(ctx); err != nil {
+		log.Printf("enkeep-memory: fast path: %v", err)
+	}
+	a.finishRun(nil)
+}
+
 func (a *app) tick(ctx context.Context) {
 	c := a.c
 	nowFn := c.Now
@@ -177,6 +221,42 @@ func (a *app) tick(ctx context.Context) {
 		a.start(ctx, "daily", yesterday)
 		return
 	}
+	// The weekly pass, once due, goes before the reruns (design v2 §4.7: reruns are the low-priority queue; a long
+	// backfill must not hold the week's consolidation back).
+	monday := now.AddDate(0, 0, -int((now.Weekday()+6)%7))
+	lastWeek := curate.ISOWeek(monday.AddDate(0, 0, -1).Format("2006-01-02"))
+	weeklyDue := now.Weekday() != time.Monday || !now.Before(at(c.Cfg.WeeklyAt))
+	if weeklyDue && !a.ran("weekly", lastWeek) {
+		a.start(ctx, "weekly", lastWeek)
+		return
+	}
+	// The periodic overview (overview_app.go): the week's cross-event synthesis once the week's pass has run, and on
+	// the first Monday of a month the month's consolidation; before the report, which carries them, and the reruns.
+	if weeklyDue && a.ran("weekly", lastWeek) && a.overviewDue(lastWeek) {
+		a.start(ctx, kindOverview, lastWeek)
+		return
+	}
+	if weeklyDue {
+		if month := a.monthDue(monday, lastWeek); month != "" {
+			a.start(ctx, kindOverviewMonth, month)
+			return
+		}
+	}
+	// The weekly report to the user, once the week's pass has run (weekly_report.go): not held back by reruns either.
+	if err := a.weeklyTick(ctx, time.Now()); err != nil {
+		log.Printf("enkeep-memory: weekly report: %v", err)
+	}
+	// The correction fast path (curate.RunFast): every fast_minutes, before the reruns (they are the low-priority
+	// queue; a correction is wanted in this hour, not after a backfill).
+	// It runs here, in the tick, when nothing else does: a look that finds nothing costs no model call and must not
+	// take a tick from the reruns.
+	if every := time.Duration(c.Cfg.FastMinutes) * time.Minute; every > 0 && nowFn().Sub(a.lastFast) >= every {
+		a.lastFast = nowFn()
+		a.fast(ctx)
+	}
+	// Merge any enkeep_rerun requests persisted while a previous pass held the lock before choosing the next day
+	// (so force-queued days jump ahead before the next normal day starts).
+	a.applyReruns()
 	// rerun_range: only completed local days are rerun, one at a time with the current daily prompt. An early daily
 	// must not suppress the formal pass after the day ends. Each day runs only once per prompt.
 	// The days asked for by the enkeep_rerun tool (State.RerunQueue) run the same way.
@@ -206,17 +286,6 @@ func (a *app) tick(ctx context.Context) {
 			return
 		}
 	}
-	monday := now.AddDate(0, 0, -int((now.Weekday()+6)%7))
-	lastWeek := curate.ISOWeek(monday.AddDate(0, 0, -1).Format("2006-01-02"))
-	weeklyDue := now.Weekday() != time.Monday || !now.Before(at(c.Cfg.WeeklyAt))
-	if weeklyDue && !a.ran("weekly", lastWeek) {
-		a.start(ctx, "weekly", lastWeek)
-		return
-	}
-	// The weekly report to the user, once the week's pass has run (weekly_report.go).
-	if err := a.weeklyTick(ctx, time.Now()); err != nil {
-		log.Printf("enkeep-memory: weekly report: %v", err)
-	}
 	// After the days of rerun_range are digested with the current prompt, their judgements are filed once.
 	if len(days) > 0 && a.reran(days[len(days)-1]) && !a.synthAfterDaily(days[len(days)-1]) && !a.attempted("synth@"+days[len(days)-1]) {
 		a.start(ctx, "synth", days[len(days)-1])
@@ -244,10 +313,18 @@ func (a *app) pruneRerunQueue() {
 		return
 	}
 	a.c.St.Lock()
-	defer a.c.St.Unlock()
 	a.c.St.S.RerunQueue = slices.DeleteFunc(a.c.St.S.RerunQueue, func(d string) bool { return slices.Contains(done, d) })
 	if err := a.c.St.Save(); err != nil {
 		log.Printf("enkeep-memory: rerun queue: %v", err)
+	}
+	a.c.St.Unlock()
+	// Days were read again: every entry's status is settled again as of today, counting only the days really
+	// read (design v2 §11.3 and D.5, E4: resettle after the reruns, not only at the end of the batch, so the long
+	// backfill never leaves entries dormant on days still waiting); what enkeep_resettle applies. Idempotent.
+	if r, err := a.c.Resettle(a.localDay(), true); err != nil {
+		log.Printf("enkeep-memory: resettle after the reruns: %v", err)
+	} else {
+		log.Printf("enkeep-memory: resettled after the reruns: %d entr(ies) moved", r.Changed())
 	}
 }
 
@@ -319,7 +396,7 @@ func triedKey(kind, period string) string {
 	switch kind {
 	case "daily":
 		return period
-	case "synth", "backfill":
+	case "synth", "backfill", kindOverview, kindOverviewMonth, kindBacktest, kindAudit:
 		return kind + "@" + period
 	}
 	return kind + " " + period
@@ -391,8 +468,23 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 	if kind == "backfill" {
 		a.tried = append(a.tried, "backfill@"+period)
 	}
+	if strings.HasPrefix(kind, kindOverview) {
+		a.tried = append(a.tried, kind+"@"+period)
+	}
 	a.mu.Unlock()
-	prompt := map[string]string{"daily": schema.DailyPrompt, "backfill": schema.DailyPrompt, "weekly": schema.WeeklyPrompt, "synth": schema.SynthPrompt}[kind]
+	// A rerun (a past day read again, its synthesis, the first-run replay) is counted apart in the cost line and waits
+	// behind the scheduled passes for a model turn (model.Limiter).
+	nowFn := a.c.Now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	yesterday := nowFn().In(a.c.Loc).AddDate(0, 0, -1).Format("2006-01-02")
+	rerun := kind == "backfill" || kind == "synth" || kind == "daily" && period != yesterday
+	if rerun {
+		ctx = model.WithPriority(model.WithClass(ctx, model.ClassRerun), model.PriorityLow)
+	}
+	prompt := map[string]string{"daily": schema.DailyPrompt, "backfill": schema.DailyPrompt, "weekly": schema.WeeklyPrompt, "synth": schema.SynthPrompt,
+		kindOverview: overview.Prompt, kindOverviewMonth: overview.Prompt, kindBacktest: overview.Prompt, kindAudit: overview.Prompt}[kind]
 	log.Printf("enkeep-memory: %s %s starts (prompt=%s ruleset=%s)", kind, period, prompt, schema.Ruleset)
 	go func() {
 		var err error
@@ -407,34 +499,39 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 				}
 				// A day queued with force is done once its daily run completes.
 				a.c.St.S.ForceReruns = slices.DeleteFunc(a.c.St.S.ForceReruns, func(d string) bool { return d == period })
+				if !rerun {
+					a.costLine(period) // the day's cost line in the run log
+				}
 				err = a.c.St.Save()
+				a.c.Publish() // enkeep_rerun_status reads the snapshot: the day shows done at once
 				a.c.St.Unlock()
 			}
 		} else if kind == "synth" {
 			_, err = a.c.RunSynth(ctx, period, false)
+		} else if strings.HasPrefix(kind, kindOverview) {
+			err = a.runOverview(ctx, kind, period)
 		} else {
 			_, err = a.c.RunWeekly(ctx, period, false)
 			if days, werr := curate.WeekDays(period); err == nil && werr == nil {
 				_, err = a.c.RunSynth(ctx, days[6], false) // the week's judgements, filed under patterns
 			}
 		}
-		a.mu.Lock()
-		a.running = ""
-		a.lastErr = ""
-		if errors.Is(err, curate.ErrModelDown) {
-			a.paused = append(a.paused, triedKey(kind, period)) // tried again after the pause, not only at the next start
-		}
-		if errors.Is(err, model.ErrPaused) {
-			// The hub held the model's connection (busy or quota): the day waits for the hold to let go and runs
-			// again; not a failed run (the page says it waits, State.ModelPause).
-			log.Printf("enkeep-memory %s %s: waits for the hub's hold: %v", kind, period, err)
-			err = nil
-		}
-		if err != nil {
-			a.lastErr = kind + " " + period + "：" + err.Error()
-			log.Printf("enkeep-memory %s %s: %v", kind, period, err)
-		}
-		a.mu.Unlock()
+		a.finishRun(func() {
+			a.lastErr = ""
+			if errors.Is(err, curate.ErrModelDown) {
+				a.paused = append(a.paused, triedKey(kind, period)) // tried again after the pause, not only at the next start
+			}
+			if errors.Is(err, model.ErrPaused) {
+				// The hub held the model's connection (busy or quota): the day waits for the hold to let go and runs
+				// again; not a failed run (the page says it waits, State.ModelPause).
+				log.Printf("enkeep-memory %s %s: waits for the hub's hold: %v", kind, period, err)
+				err = nil
+			}
+			if err != nil {
+				a.lastErr = kind + " " + period + "：" + err.Error()
+				log.Printf("enkeep-memory %s %s: %v", kind, period, err)
+			}
+		})
 		a.badge()
 		if a.hub != nil {
 			_ = a.hub.Invalidate("enkeep-memory")
@@ -442,6 +539,22 @@ func (a *app) start(ctx context.Context, kind, period string) bool {
 		}
 	}()
 	return true
+}
+
+// costLine writes the cost of the calendar day period (in the hub's time zone), the total and the reruns' total
+// into the run log, as notes of the day's daily run (design v2 §4.7). The store's lock is held by the caller.
+func (a *app) costLine(period string) {
+	if a.route == nil || a.route.Stats == nil {
+		return
+	}
+	lines := a.route.Stats.Snapshot().CostLines(period)
+	for i := len(a.c.St.S.Runs) - 1; i >= 0; i-- {
+		if r := a.c.St.S.Runs[i]; r.Kind == "daily" && r.Period == period && !r.DryRun {
+			r.Notes = append(r.Notes, lines...)
+			log.Printf("enkeep-memory: %s", strings.Join(lines, " "))
+			return
+		}
+	}
 }
 
 // publish takes a new snapshot for the pages after the user changed something. A run that took the lock meanwhile
@@ -452,6 +565,90 @@ func (a *app) publish() {
 	}
 	a.c.Publish()
 	a.c.St.Unlock()
+}
+
+// markShown records displayed proposals' first-shown date without blocking a UI render on a running pass.
+// When the store lock is free it persists synchronously; when a run holds the lock it deduplicates the ids so
+// finishRun flushes them before clearing a.running; if another holder briefly owns the lock while idle, at most
+// one background worker waits to flush the queue once the lock frees.
+func (a *app) markShown(ids []string) {
+	if len(ids) == 0 || a.readOnly || a.c == nil || a.c.St == nil {
+		return
+	}
+	if a.c.TryMarkShown(ids) {
+		return
+	}
+	a.mu.Lock()
+	if a.pendingShown == nil {
+		a.pendingShown = map[string]struct{}{}
+	}
+	for _, id := range ids {
+		a.pendingShown[id] = struct{}{}
+	}
+	if a.running != "" || a.flushingShown {
+		a.mu.Unlock()
+		return
+	}
+	queued := a.takePendingShownLocked()
+	a.mu.Unlock()
+	if a.c.TryMarkShown(queued) {
+		return
+	}
+	a.mu.Lock()
+	for _, id := range queued {
+		a.pendingShown[id] = struct{}{}
+	}
+	if a.running != "" || a.flushingShown {
+		a.mu.Unlock()
+		return
+	}
+	a.flushingShown = true
+	a.shownWG.Add(1)
+	a.mu.Unlock()
+	go a.flushPendingShown()
+}
+
+func (a *app) flushPendingShown() {
+	defer a.shownWG.Done()
+	for {
+		a.mu.Lock()
+		if len(a.pendingShown) == 0 || a.running != "" {
+			a.flushingShown = false
+			a.mu.Unlock()
+			return
+		}
+		ids := a.takePendingShownLocked()
+		a.mu.Unlock()
+		a.c.MarkShown(ids)
+	}
+}
+
+// finishRun flushes any proposals shown while the run held the store lock, then clears a.running and applies fn under a.mu.
+func (a *app) finishRun(fn func()) {
+	for {
+		a.mu.Lock()
+		if len(a.pendingShown) > 0 && a.c != nil && a.c.St != nil {
+			ids := a.takePendingShownLocked()
+			a.mu.Unlock()
+			a.c.MarkShown(ids)
+			continue
+		}
+		a.running = ""
+		if fn != nil {
+			fn()
+		}
+		a.mu.Unlock()
+		return
+	}
+}
+
+func (a *app) takePendingShownLocked() []string {
+	ids := make([]string, 0, len(a.pendingShown))
+	for id := range a.pendingShown {
+		ids = append(ids, id)
+	}
+	clear(a.pendingShown)
+	return ids
 }
 
 func (a *app) badge() {
@@ -494,6 +691,11 @@ func (a *app) event(ctx context.Context, method string, params json.RawMessage) 
 		a.mu.Lock()
 		a.changed++
 		a.mu.Unlock()
+	case hubapi.LedgerChanged:
+		// An owner's "wrong" mark on a ledger entry (persona #13106): a hint only. The next read of the ledger leaves the
+		// entry out, so its quote no longer verifies anything. Subscribed once a hub with the ledger is deployed (the
+		// manifest cannot name the event before: a hub that does not know it refuses the manifest).
+		a.c.LedgerChanged()
 	}
 	return nil, nil
 }

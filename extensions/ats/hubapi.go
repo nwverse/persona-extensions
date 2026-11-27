@@ -23,6 +23,9 @@ type hubMachine struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Online bool   `json:"online"`
+	// OS is darwin, linux or windows ("" not known yet); Trust is "pending" until the owner confirms the computer.
+	OS    string `json:"os,omitempty"`
+	Trust string `json:"trust,omitempty"`
 }
 
 // hubSession is what the dispatcher reads of a session in the hub's list.
@@ -55,6 +58,7 @@ type sessionRequest struct {
 	MachineID      string `json:"machine_id"`
 	Cwd            string `json:"cwd"`
 	AgentType      string `json:"agent_type"`
+	Launcher       string `json:"launcher,omitempty"`
 	Prompt         string `json:"prompt"`
 	PermissionMode string `json:"permission_mode"`
 	Model          string `json:"model,omitempty"`
@@ -80,17 +84,38 @@ type nodeCaller interface {
 }
 
 type hubClient struct {
-	mu     sync.Mutex
-	url    string
-	token  string
-	client *http.Client
+	mu              sync.Mutex
+	url             string
+	token           string
+	client          *http.Client
+	syncStartClient *http.Client
+}
+
+func sessionStartTimeout(agentType string) time.Duration {
+	if agentType != "" && agentType != AgentClaude {
+		// The hub waits up to 100 seconds for synchronous engines such as Codex.
+		return 110 * time.Second
+	}
+	return 30 * time.Second
 }
 
 func newHubClient(hubURL, token string) *hubClient {
-	return &hubClient{url: strings.TrimRight(hubURL, "/"), token: token, client: &http.Client{Timeout: 20 * time.Second}}
+	return &hubClient{url: strings.TrimRight(hubURL, "/"), token: token,
+		client: &http.Client{Timeout: 20 * time.Second}, syncStartClient: &http.Client{Timeout: sessionStartTimeout(AgentCodex)}}
+}
+
+func (c *hubClient) sessionClientFor(agentType string) *http.Client {
+	if agentType != "" && agentType != AgentClaude {
+		return c.syncStartClient
+	}
+	return c.client
 }
 
 func (c *hubClient) do(ctx context.Context, method, path string, body, out any) error {
+	return c.doWithClient(ctx, c.client, method, path, body, out)
+}
+
+func (c *hubClient) doWithClient(ctx context.Context, client *http.Client, method, path string, body, out any) error {
 	c.mu.Lock()
 	base, token := c.url, c.token
 	c.mu.Unlock()
@@ -113,7 +138,7 @@ func (c *hubClient) do(ctx context.Context, method, path string, body, out any) 
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	resp, err := c.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return err
 	}
@@ -148,7 +173,7 @@ func (c *hubClient) CreateSession(ctx context.Context, req sessionRequest) (stri
 	var out struct {
 		Session hubSession `json:"session"`
 	}
-	if err := c.do(ctx, http.MethodPost, "/api/v1/sessions", req, &out); err != nil {
+	if err := c.doWithClient(ctx, c.sessionClientFor(req.AgentType), http.MethodPost, "/api/v1/sessions", req, &out); err != nil {
 		return "", err
 	}
 	if out.Session.SessionID == "" {

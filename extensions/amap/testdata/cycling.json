@@ -16,6 +16,7 @@
       "orientation": "东北",
       "road_name": "",
       "step_distance": 193,
+      "polyline": "121.504262,31.237643;121.505500,31.238900",
       "cost": {
        "duration": "70"
       }
@@ -25,6 +26,7 @@
       "orientation": "东南",
       "road_name": "",
       "step_distance": 12,
+      "polyline": "121.505500,31.238900;121.490000,31.234000",
       "cost": {
        "duration": "4"
       }
@@ -34,6 +36,7 @@
       "orientation": "东北",
       "road_name": "",
       "step_distance": 117,
+      "polyline": "121.490000,31.234000;121.475142,31.229105",
       "cost": {
        "duration": "42"
       }

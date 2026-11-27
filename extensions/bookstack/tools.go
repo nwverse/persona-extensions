@@ -16,7 +16,7 @@ type tool struct {
 }
 
 var idSchema = map[string]any{"type": "integer", "minimum": 1}
-var textSchema = map[string]any{"type": "string", "maxLength": 200}
+var textSchema = map[string]any{"type": "string", "maxLength": maxQueryChars}
 
 var readTools = []tool{
 	{Name: "bookstack_books", Description: "List visible BookStack books with count/offset pagination. Returns exact book IDs for page listing and creation.",
@@ -32,11 +32,11 @@ var readTools = []tool{
 var actionTools = []tool{
 	{Name: "bookstack_create_page", Description: "Create a Markdown page in a specific BookStack book after explicit confirmation. Book must be selected by exact ID; no chapter, images or permissions are changed.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"book_id", "name", "markdown"}, "properties": map[string]any{
-			"book_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": 255}, "markdown": map[string]any{"type": "string", "minLength": 1, "maxLength": 60000},
+			"book_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxTitleChars}, "markdown": map[string]any{"type": "string", "minLength": 1, "maxLength": 60000},
 		}}},
 	{Name: "bookstack_update_page", Description: "Replace a page's Markdown source after explicit confirmation. Only Markdown and optionally title are sent; page is not moved, deleted or converted from HTML.",
 		InputSchema: map[string]any{"type": "object", "required": []string{"page_id", "markdown"}, "properties": map[string]any{
-			"page_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": 255}, "markdown": map[string]any{"type": "string", "minLength": 1, "maxLength": 60000},
+			"page_id": idSchema, "name": map[string]any{"type": "string", "minLength": 1, "maxLength": maxTitleChars}, "markdown": map[string]any{"type": "string", "minLength": 1, "maxLength": 60000},
 		}}},
 }
 
@@ -53,6 +53,14 @@ func decode(raw json.RawMessage, out any) error {
 		return errors.New("invalid arguments: trailing JSON value")
 	}
 	return nil
+}
+
+// idText is a related object's id as BookStack answers it: the integer, or "none" for null.
+func idText(id *int64) string {
+	if id == nil {
+		return "none"
+	}
+	return fmt.Sprint(*id)
 }
 
 func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (string, error) {
@@ -86,7 +94,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		}
 		var b strings.Builder
 		for _, item := range page.Data {
-			fmt.Fprintf(&b, "- Page #%d: %s\n  Book ID: %d | chapter ID: %v | draft: %v | updated: %s\n", item.ID, clipText(item.Name, 500), item.BookID, item.ChapterID, item.Draft, item.UpdatedAt)
+			fmt.Fprintf(&b, "- Page #%d: %s\n  Book ID: %d | chapter ID: %v | draft: %v | updated: %s\n", item.ID, clipText(item.Name, 500), item.BookID, idText(item.ChapterID), item.Draft, item.UpdatedAt)
 		}
 		return listText(&b, len(page.Data), "No pages in this book.", in.Offset+len(page.Data), len(page.Data) == 50), nil
 	case "bookstack_search":

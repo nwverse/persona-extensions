@@ -29,7 +29,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.WorkspaceGID) > 40 || len(st.TaskGID) > 40 || len(st.WorkspaceName) > 1000 || len(st.DraftID) > 128 || len(st.Name) > 600 || len(st.Notes) > 11000 || len(st.ProjectGID) > 40 || len(st.Offset) > 2048 || len(st.History) > 10 {
+	if err := r.DecodeState(&st); err != nil || len(st.WorkspaceGID) > 40 || len(st.TaskGID) > 40 || len([]rune(st.WorkspaceName)) > maxWorkspaceNameChars || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len(st.Notes) > 11000 || len(st.ProjectGID) > 40 || len(st.Offset) > 2048 || len(st.History) > 10 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -53,7 +53,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if err := validGID(r.Values["gid"]); err != nil {
 			return nil, err
 		}
-		if r.Values["name"] == "" || len(r.Values["name"]) > 500 {
+		if r.Values["name"] == "" || len([]rune(r.Values["name"])) > maxWorkspaceNameChars {
 			return nil, errors.New("invalid workspace name")
 		}
 		st = pageState{Mode: "tasks", WorkspaceGID: r.Values["gid"], WorkspaceName: r.Values["name"]}

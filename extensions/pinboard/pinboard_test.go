@@ -71,10 +71,10 @@ func newFakePinboard(t *testing.T) *fakePinboard {
 			f.adds++
 			f.mu.Unlock()
 			if bad {
-				_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]string{"code": "something went wrong"}})
+				_ = json.NewEncoder(w).Encode(map[string]string{"result_code": "something went wrong"})
 				return
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"result": map[string]string{"code": "done"}})
+			_ = json.NewEncoder(w).Encode(map[string]string{"result_code": "done"})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

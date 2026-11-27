@@ -377,3 +377,24 @@ func TestRouteNotOfferedThenNonconforming(t *testing.T) {
 		t.Fatalf("stats %+v", s)
 	}
 }
+
+// A call that names its own models (the periodic overview's) sends only those, never the route's primary.
+func TestRouteRequestModels(t *testing.T) {
+	rt, _ := testRoute(t)
+	f := &fakeHub{answers: answers{"flash": ok("flash"), "small": ok("small"), "big": ok("big")}}
+	r := shortReq
+	r.Models = []string{"big", "small"}
+	resp, err := Hub{Route: rt, call: f.call}.Complete(context.Background(), r)
+	if err != nil || resp.Model != "big" {
+		t.Fatalf("%+v %v", resp, err)
+	}
+	if joined(f.calls) != "[big small]" {
+		t.Fatalf("calls %s", joined(f.calls))
+	}
+	// A route without models of its own still takes the request's.
+	f2 := &fakeHub{answers: answers{"small": ok("small")}}
+	r.Models = []string{"small"}
+	if _, err := (Hub{Route: &Route{}, call: f2.call}).Complete(context.Background(), r); err != nil || joined(f2.calls) != "[small]" {
+		t.Fatalf("calls %s %v", joined(f2.calls), err)
+	}
+}

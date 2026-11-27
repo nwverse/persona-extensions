@@ -71,6 +71,9 @@ class FixtureBackend:
     def create_chat(self, user):
         return "c_" + user
 
+    def own_chat(self):
+        return "c_me"
+
     def search(self, query):
         return [{"type": "user", "id": "u_a", "title": "示例联系人"}]
 
@@ -82,6 +85,12 @@ class FixtureBackend:
 
     def user_name(self, user, chat):
         return {"u_a": "示例联系人", "u_b": "示例同事"}.get(user)
+
+    def chat_members(self, chat, limit=100):
+        return [
+            {"id": "7001", "name": "示例同事", "real_name": "示例同事", "kind": "user"},
+            {"id": "7002", "name": "示例机器人", "real_name": "示例机器人", "kind": "bot"},
+        ][:limit]
 
     def download(self, msg_id, chat, key, most):
         return "image/png", b"\x89PNG\r\n\x1a\n"

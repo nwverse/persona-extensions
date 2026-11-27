@@ -67,14 +67,16 @@ func newTestRepo(t *testing.T) (root, repo string) {
 
 // fakeHub is the hub the dispatcher sees: sessions the test moves by hand.
 type fakeHub struct {
-	mu         sync.Mutex
-	machines   []hubMachine
-	sessions   map[string]*hubSession
-	replies    map[string]string
-	created    []sessionRequest
-	interrupts []string
-	attached   []string
-	createErr  error
+	mu              sync.Mutex
+	machines        []hubMachine
+	sessions        map[string]*hubSession
+	replies         map[string]string
+	created         []sessionRequest
+	requests        []sessionRequest
+	interrupts      []string
+	attached        []string
+	createErr       error
+	onCreateSession func(sessionRequest)
 	// interactions are the pending cards; interactionsErr makes the list fail; interactionCalls counts the asks.
 	interactions     []hubInteraction
 	interactionsErr  error
@@ -94,9 +96,17 @@ func (f *fakeHub) Machines(context.Context) ([]hubMachine, error) {
 
 func (f *fakeHub) CreateSession(_ context.Context, req sessionRequest) (string, error) {
 	f.mu.Lock()
+	hook := f.onCreateSession
+	f.requests = append(f.requests, req)
+	createErr := f.createErr
+	f.mu.Unlock()
+	if hook != nil {
+		hook(req)
+	}
+	f.mu.Lock()
 	defer f.mu.Unlock()
-	if f.createErr != nil {
-		return "", f.createErr
+	if createErr != nil {
+		return "", createErr
 	}
 	f.created = append(f.created, req)
 	id := fmt.Sprintf("session-%d", len(f.created))
@@ -160,16 +170,18 @@ func (f *fakeHub) turnEnds(id, updatedAt, reply string) {
 
 // localNodes calls the node worker in process, through the same JSON the hub would carry.
 type localNodes struct {
-	worker *nodeWorker
-	mu     sync.Mutex
-	calls  []string
-	fail   map[string]error
+	worker       *nodeWorker
+	mu           sync.Mutex
+	calls        []string
+	fail         map[string]error
+	afterPrepare func()
 }
 
 func (l *localNodes) Call(ctx context.Context, machine, method string, params, out any) error {
 	l.mu.Lock()
 	l.calls = append(l.calls, method)
 	err := l.fail[method]
+	afterPrepare := l.afterPrepare
 	l.mu.Unlock()
 	if err != nil {
 		return err
@@ -186,7 +198,13 @@ func (l *localNodes) Call(ctx context.Context, machine, method string, params, o
 	if err != nil {
 		return err
 	}
-	return json.Unmarshal(raw, out)
+	if err := json.Unmarshal(raw, out); err != nil {
+		return err
+	}
+	if method == "ats.prepare" && afterPrepare != nil {
+		afterPrepare()
+	}
+	return nil
 }
 
 // todoServer is the hub's to-do API as far as the outcome write-back uses it.

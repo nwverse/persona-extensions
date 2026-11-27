@@ -115,3 +115,105 @@ func TestProtectedDeletionTargetsEvenWithOverride(t *testing.T) {
 		}
 	}
 }
+
+func TestProtectedTargetsBareGlobsCdNestedAndFindFollow(t *testing.T) {
+	b := newBox(t)
+	if err := os.Symlink(b.home, filepath.Join(b.tmp, "home-link")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/", filepath.Join(b.project, "-x")); err != nil {
+		t.Fatal(err)
+	}
+	homeParent := filepath.Dir(b.home)
+	homeBase := filepath.Base(b.home)
+	for _, c := range []struct {
+		name    string
+		cwd     string
+		command string
+	}{
+		{"bare star in HOME", b.home, `rm -rf *`},
+		{"bare star in root", "/", `rm -rf *`},
+		{"bare dotstar in HOME", b.home, `rm -rf .*`},
+		{"cd root then bare star", b.project, `cd / && rm -rf *`},
+		{"bare cd to HOME then dot", b.project, `cd && rm -rf .`},
+		{"bare cd to HOME then star", b.project, `cd && rm -rf *`},
+		{"cd -- parent of HOME then remove HOME", b.project, `cd -- ` + homeParent + ` && rm -rf ` + homeBase},
+		{"cd -LP parent of HOME then remove HOME", b.project, `cd -LP ` + homeParent + ` && rm -rf ` + homeBase},
+		{"cd -- bare then cd .. then remove HOME", b.project, `cd -- && cd .. && rm -rf ` + homeBase},
+		{"eval cd root then bare star", b.project, `eval 'cd /' && rm -rf *`},
+		{"dashdash operand pointing at root", b.project, `rm -rf -- -x/*`},
+		{"env -C root then bare star", b.project, `env -C / rm -rf *`},
+		{"env --chdir=root then bare star", b.project, `env --chdir=/ rm -rf *`},
+		{"env -C root nested bash bare star", b.project, `env -C / bash -c 'rm -rf *'`},
+		{"sudo -D root then bare star", b.project, `sudo -D / rm -rf *`},
+		{"sudo env assign before -D root then bare star", b.project, `sudo FOO=1 -D / rm -rf *`},
+		{"nested bash dot in HOME", b.home, `bash -c 'rm -rf .'`},
+		{"nested bash star in HOME", b.home, `bash -c 'rm -rf *'`},
+		{"cd root then nested bash dot", b.project, `cd / && bash -c 'rm -rf .'`},
+		{"find -L symlink to HOME", b.project, `find -L {tmp}/home-link -delete`},
+		{"find -H symlink to HOME", b.project, `find -H {tmp}/home-link -delete`},
+		{"find -Lx symlink to HOME", b.project, `find -Lx {tmp}/home-link -delete`},
+		{"find -Hx symlink to HOME", b.project, `find -Hx {tmp}/home-link -delete`},
+		{"find -follow symlink to HOME", b.project, `find {tmp}/home-link -follow -delete`},
+		{"find -x root delete", b.project, `find -x / -delete`},
+		{"find -- root delete", b.project, `find -- / -delete`},
+		{"find -f root delete", b.project, `find -f / -delete`},
+		{"find -f dash-prefixed symlink dir to root", b.project, `find -f -x/ -delete`},
+		{"find -H -f dash-prefixed symlink to root", b.project, `find -H -f -x -delete`},
+		{"find -E root delete", b.project, `find -E / -delete`},
+		{"find -s root delete", b.project, `find -s / -delete`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, override := range []bool{false, true} {
+				g := newGuard(c.cwd, override)
+				if why := g.personOnly(b.cmd(c.command)); why == "" {
+					t.Errorf("override=%v: %q in cwd=%s was allowed", override, c.command, c.cwd)
+				}
+			}
+		})
+	}
+	// Ordinary relative subdirectory deletion inside nested bash in HOME remains allowed under override.
+	if why := newGuard(b.home, true).personOnly(`bash -c 'rm -rf notes'`); why != "" {
+		t.Errorf("ordinary nested override target in HOME: %s", why)
+	}
+	// find <scratch> -name '*.tmp' -delete in cwd=$HOME must NOT treat -name's glob pattern as "." in $HOME.
+	for _, override := range []bool{false, true} {
+		if why := newGuard(b.home, override).personOnly(b.cmd(`find {tmp}/cache -name '*.tmp' -delete`)); why != "" {
+			t.Errorf("override=%v: find scratch -name '*.tmp' -delete in HOME got %q, want allow", override, why)
+		}
+	}
+}
+
+func TestParserAnsiCAndAttachedDynamicGuards(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		command string
+		allow   bool
+	}{
+		{"ansi-c escaped quote before zsh eval", `a='$'; b='(rm -rf /)'; x="$a$b"; echo $'\'' && echo ${(e)x}`, false},
+		{"ansi-c escaped backslash before quote", `echo $'\\' && echo ${(e)x}`, false},
+		{"ansi-c literal zsh eval", `echo $'${(e)x}'`, true},
+		{"attached sh -c dynamic", `cmd='rm -rf /'; sh -c"$cmd"`, false},
+		{"empty-quote prefixed sh -c dynamic", `cmd='rm -rf /'; sh -c "''$cmd"`, false},
+		{"empty-quote attached sh -c dynamic", `cmd='rm -rf /'; sh -c"''$cmd"`, false},
+		{"attached zsh -c indirection", `k=c; c='rm -rf /'; zsh -c"${(P)k}"`, false},
+		{"empty-quote zsh -c indirection", `k=c; c='rm -rf /'; zsh -c"''${(P)k}"`, false},
+		{"attached env -S dynamic", `cmd='rm -rf /'; env -S"$cmd"`, false},
+		{"separate env -S dynamic", `cmd='rm -rf /'; env -S "$cmd"`, false},
+		{"attached env --split-string dynamic", `cmd='rm -rf /'; env --split-string="$cmd"`, false},
+		{"abbreviated env --split dynamic", `cmd='rm -rf /'; env --split="$cmd"`, false},
+		{"abbreviated env --split static rm", `env --split='rm -rf /'`, false},
+		{"separate env --split-string dynamic", `cmd='rm -rf /'; env --split-string "$cmd"`, false},
+		{"env -a before -S dynamic", `cmd='rm -rf /'; env -a x -S "$cmd"`, false},
+		{"env -S underscore space escape dynamic", `cmd=rm; env -S "FOO=1\_$cmd\_-rf\_/"`, false},
+		{"env -S underscore space escape static rm", `env -S 'rm\_-rf\_/'`, false},
+		{"env -S non-dynamic command with var arg", `env -S "printf %s $HOME"`, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			why := newGuard("/tmp", false).personOnly(c.command)
+			if (why == "") != c.allow {
+				t.Errorf("%q: why=%q, want allow=%v", c.command, why, c.allow)
+			}
+		})
+	}
+}

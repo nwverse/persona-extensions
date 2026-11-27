@@ -10,11 +10,14 @@ package export
 const (
 	// Exit A: the per-turn block appended to the assistant's CLAUDE.md / AGENTS.md (H1, kind "instructions").
 	InstructionsPath = "assistant/instructions.md"
-	// Exit B: skills (H1, skills with source "data"): one directory per skill, each with SKILL.md.
-	SkillsDir      = "assistant/skills"
-	ToolsSkill     = "enkeep-machines-and-tools" // ② every stable entry, by object
-	WorkflowPrefix = "enkeep-ways-of-working-"   // ④ one skill per task type: ways-of-working-<slug>
-	// Exit D: agent project context (H4, kind "project_context"): one file per project slug.
+	// Exit B: skills (H1, skills with source "data"): one directory per skill, each with SKILL.md. Only look-up
+	// handbooks stay skills (0.2.0-beta.37): the ways-of-working skills ("enkeep-ways-of-working-<slug>") were loaded
+	// no time at all; their entries go to exit A, exit D or enkeep_recall, and an upgrade removes the old directories
+	// (write drops every file no longer made).
+	SkillsDir  = "assistant/skills"
+	ToolsSkill = "enkeep-machines-and-tools" // ② every stable entry, by object
+	// Exit D: agent project context (H4, kind "project_context"): one file per knowledge-base project, named by the
+	// project's id in the knowledge base, which is the slug the hub looks the file up by (kb.Slug).
 	ProjectsDir = "agent/projects"
 	// Exit E: inbox triage and drafting (H5, kind "inbox_context"), and the lines a draft must never contain.
 	InboxContextPath = "inbox/context.md"
@@ -33,14 +36,17 @@ const (
 	NeverQuoteMax   = 64 * 1024
 )
 
-// Section budgets of exit A, in bytes.
-var SectionBudget = map[string]int{
-	"interaction": 1843, // ① ≤1.8 KB
-	"tools":       205,  // ② one index line
-	"judgement":   1536, // ③ ≤1.5 KB
-	"workflow":    922,  // ④ abstract and the most used class only
-	"world":       614,  // ⑤ open commitments: titles and due dates
-	"persona":     922,  // ⑥ about the user
+// Section shares of exit A, in percent of what the title and the fixed lines leave of InstructionsMax
+// (0.2.0-beta.37, docs/exits.md): each section with content first gets its share; what an empty or short section
+// leaves goes to the next sections that still have lines, in order. Shares, not byte counts from any one user's
+// entries, so a new user's block grows the same way.
+var SectionShare = map[string]int{
+	"interaction": 22, // ① the rules that hold across projects
+	"tools":       8,  // ② the index line of the machines-and-tools skill
+	"judgement":   22, // ③ default judgements with their fork
+	"workflow":    18, // ④ ways of working that hold across projects
+	"world":       12, // ⑤ open commitments, the names index
+	"persona":     18, // ⑥ about the user
 }
 
 // Section order of exit A. People (⑤′) never go into exit A.

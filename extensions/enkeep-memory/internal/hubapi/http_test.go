@@ -55,6 +55,15 @@ func (f *fakeHub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			{"id": "2", "seq": 2, "ts": t("3"), "role": "assistant", "kind": "fold", "fold": fold},
 			{"id": "5", "seq": 5, "ts": t("3"), "role": "assistant", "kind": "text", "text": "done"},
 		}}
+	case "/api/v1/sessions/m1/s-raw/items":
+		// A hub answering from its conversation history with after_seq: the work comes unfolded.
+		body = map[string]any{"items": []map[string]any{
+			{"id": "1", "seq": 1, "ts": t("3"), "role": "user", "kind": "text", "text": "fix the build of project-x"},
+			{"id": "2", "seq": 2, "ts": t("3"), "role": "assistant", "kind": "tool_use", "tool_name": "Bash", "tool_input": map[string]any{"command": "make"}},
+			{"id": "3", "seq": 3, "ts": t("3"), "role": "user", "kind": "tool_result", "text": "error", "is_error": true},
+			{"id": "4", "seq": 4, "ts": t("3"), "role": "assistant", "kind": "tool_use", "tool_name": "Edit", "tool_input": map[string]any{"file_path": "/repo/a.go"}},
+			{"id": "5", "seq": 5, "ts": t("3"), "role": "assistant", "kind": "text", "text": "fixed"},
+		}}
 	case "/api/v1/interactions/history":
 		if f.paged {
 			// An extension's token: the private and health cards are left out but still take their place, so the first
@@ -133,27 +142,33 @@ func newHTTP(t *testing.T, f *fakeHub) *HTTP {
 	return &HTTP{Base: srv.URL, Token: "tok-placeholder"}
 }
 
-func TestHTTPSessionsDropHealth(t *testing.T) {
+// Every space is read, the health space's too (0.2.0-beta.40): each session carries its space.
+func TestHTTPSessionsEverySpace(t *testing.T) {
 	f := &fakeHub{}
 	h := newHTTP(t, f)
 	ss, err := h.Sessions(context.Background(), time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
+	spaces := map[string]string{}
 	for _, s := range ss {
-		if s.ID == "s-health" {
-			t.Fatal("a health space session was listed")
-		}
+		spaces[s.ID] = s.Space
 	}
-	if len(ss) != 2 {
+	if len(ss) != 3 || spaces["s-health"] != "health" || spaces["s-main"] != "" || spaces["s-work"] != "" {
 		t.Fatalf("sessions: %+v", ss)
 	}
 	if q := f.asked("/api/v1/sessions"); len(q) == 0 || q[0].Get("limit") == "" {
 		t.Errorf("the paged list was not asked: %v", q)
 	}
-	items, err := h.Items(context.Background(), "m1", "s-health", ItemsQuery{Fold: true})
-	if err != nil || len(items) != 0 || len(f.asked("/api/v1/sessions/m1/s-health/items")) != 0 {
-		t.Errorf("a health space session's items were read: %v %v", items, err)
+	_, _ = h.Items(context.Background(), "m1", "s-health", ItemsQuery{Fold: true})
+	if len(f.asked("/api/v1/sessions/m1/s-health/items")) != 1 {
+		t.Error("a health space session's items were not asked")
+	}
+	// A card from it carries the space.
+	since := time.Date(2026, 11, 3, 0, 0, 0, 0, time.UTC)
+	cs, _ := h.Interactions(context.Background(), InteractionsQuery{Since: since, Before: since.AddDate(0, 0, 1)})
+	if len(cs) != 2 || cs[1].Question != "health one" || cs[1].Space != "health" || cs[0].Space != "" {
+		t.Errorf("cards with their space: %+v", cs)
 	}
 }
 
@@ -206,8 +221,8 @@ func TestHTTPInteractionsFiltered(t *testing.T) {
 	if !errors.As(err, &w) || w.Change != "H3" {
 		t.Fatalf("a range without H3: want WaitingHub H3, got %v", err)
 	}
-	if len(cs) != 1 || cs[0].Question != "which option?" {
-		t.Fatalf("private, health space and out-of-range cards must be dropped: %+v", cs)
+	if len(cs) != 2 || cs[0].Question != "which option?" || cs[1].Question != "health one" {
+		t.Fatalf("private and out-of-range cards must be dropped, the health space's kept: %+v", cs)
 	}
 	c := cs[0]
 	if len(c.Options) != 2 || c.Recommend != "A (Recommended)" || len(c.Answers) != 1 || c.Answers[0] != "B" || c.AnsweredBy != "user" ||
@@ -250,8 +265,8 @@ func TestHTTPTodosAboutNotify(t *testing.T) {
 	f := &fakeHub{}
 	h := newHTTP(t, f)
 	ts, err := h.Todos(context.Background(), time.Time{})
-	if err != nil || len(ts) != 1 || !ts[0].Done || ts[0].Reason != "merged" {
-		t.Fatalf("to-dos (health-only dropped): %+v %v", ts, err)
+	if err != nil || len(ts) != 2 || !ts[0].Done || ts[0].Reason != "merged" || ts[1].Title != "health todo" {
+		t.Fatalf("to-dos (the health space's kept): %+v %v", ts, err)
 	}
 	ds, err := h.TodoDecisions(context.Background(), "t1")
 	if err != nil || len(ds) != 1 || ds[0].Choice != "main" || ds[0].By != "card" {
@@ -299,5 +314,38 @@ func TestHTTPMemories(t *testing.T) {
 	ms, err := h.Memories(context.Background(), true)
 	if err != nil || len(ms) != 1 || !ms[0].Truncated || ms[0].Type != "feedback" || !ms[0].Created.IsZero() {
 		t.Fatalf("entries: %v %+v", err, ms)
+	}
+}
+
+// A page asked folded that comes back unfolded (the hub's history page with after_seq) is folded here, as the hub
+// would: one fold from the first call through the last, with its calls, files, errors and tools; a segment is not.
+func TestHTTPItemsFoldsUnfoldedWork(t *testing.T) {
+	h := newHTTP(t, &fakeHub{})
+	items, err := h.Items(context.Background(), "m1", "s-raw", ItemsQuery{Fold: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var folds []*Fold
+	for _, it := range items {
+		if it.Kind == KindToolUse || it.Kind == KindToolResult {
+			t.Fatalf("unfolded work left: %+v", it)
+		}
+		if it.Kind == KindFold {
+			folds = append(folds, it.Fold)
+		}
+	}
+	if len(folds) != 1 || folds[0].From != 2 || folds[0].To != 4 || folds[0].Calls != 2 || folds[0].Errors != 1 ||
+		len(folds[0].Files) != 1 || !folds[0].Known {
+		t.Fatalf("folds %+v", folds)
+	}
+	seg, _ := h.Items(context.Background(), "m1", "s-raw", ItemsQuery{From: 2, Through: 4})
+	n := 0
+	for _, it := range seg {
+		if it.Kind == KindToolUse {
+			n++
+		}
+	}
+	if n != 2 {
+		t.Errorf("a segment stays unfolded: %d calls", n)
 	}
 }
