@@ -130,8 +130,8 @@ func TestSteamToolFeatureGateMatrix(t *testing.T) {
 				}
 				listed[tool.Name] = true
 			}
-			if !listed[wishlistDealsName] {
-				t.Fatal("the on-demand wishlist deals tool should always be listed")
+			if !listed[wishlistDealsName] || !listed[playtimeRecapName] {
+				t.Fatal("the on-demand wishlist deals and recap tools should always be listed")
 			}
 			for _, group := range []struct {
 				names    []string
@@ -253,7 +253,7 @@ func TestProtocolTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []string{"steam_profile", "steam_recent_games", "steam_library", "steam_achievements", "steam_wishlist",
-		"steam_achievement_hunter", "steam_game_news", wishlistDealsName,
+		"steam_achievement_hunter", "steam_game_news", wishlistDealsName, playtimeRecapName,
 		"steam_backlog_summary", "steam_backlog_mark", "steam_tonight_pick",
 		"steam_store_tags", "steam_store_search", "steam_game_details"}
 	var names []string
