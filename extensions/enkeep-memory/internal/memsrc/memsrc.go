@@ -1056,10 +1056,11 @@ func workStandingSet(st *store.State, extras []Extra, room int) map[string]stand
 			hotCands = append(hotCands, hc)
 			continue
 		}
-		// Cold-start L0 fallback: T0 SelfReport/FromOnboarding or T1 eligible entries for any section lacking L1.
+		// Cold-start L0 fallback (v0.4.0 §1.7): T0 SelfReport/FromOnboarding or high-confidence T1 stable entries
+		// (Count >= 2 for Persona/Interaction, or entry.ColdStartEligible) for any section lacking L1.
 		coldOK := entry.ColdStartEligible(e) ||
-			(e.Facet == entry.Persona && (e.Status == entry.Stable || entry.IsTrueUserOwned(e))) ||
-			(e.Facet == entry.Interaction && e.Status == entry.Stable && !entry.IsOpsRunbookEntry(e))
+			(e.Facet == entry.Persona && (entry.IsTrueUserOwned(e) || (e.Status == entry.Stable && e.Count >= 2))) ||
+			(e.Facet == entry.Interaction && (entry.IsTrueUserOwned(e) || (e.Status == entry.Stable && e.Count >= 2)) && !entry.IsOpsRunbookEntry(e))
 		if !coldOK {
 			continue
 		}

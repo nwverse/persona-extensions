@@ -394,12 +394,23 @@ func ResidentWithin(cands []Candidate, total, most int) []Candidate {
 		}
 	}
 
-	// Output order: Hot Slot -> Section 1 (Profile) -> Section 2 (Principles) -> Section 3 (Contracts).
+	// Output order: Hot Slot -> L1 sections (Profile -> Principles -> Contracts) -> Cold-start L0 fallback sections.
 	out := make([]Candidate, 0, len(hotChosen)+len(profChosen)+len(princChosen)+len(contChosen))
 	out = append(out, hotChosen...)
-	out = append(out, profChosen...)
-	out = append(out, princChosen...)
-	out = append(out, contChosen...)
+	for _, sec := range [][]Candidate{profChosen, princChosen, contChosen} {
+		for _, c := range sec {
+			if c.L1 {
+				out = append(out, c)
+			}
+		}
+	}
+	for _, sec := range [][]Candidate{profChosen, princChosen, contChosen} {
+		for _, c := range sec {
+			if !c.L1 {
+				out = append(out, c)
+			}
+		}
+	}
 	return out
 }
 
