@@ -376,6 +376,18 @@ func (s *PriceHistoryStore) Histories(steamID, country string, appIDs ...uint32)
 	return out, err
 }
 
+func wishlistQuotes(list *wishList) map[uint32]PriceQuote {
+	quotes := make(map[uint32]PriceQuote, len(list.Items))
+	for _, item := range list.Items {
+		if item.PriceChecked && item.Price != nil {
+			quotes[item.AppID] = PriceQuote{
+				Currency: item.Price.Currency, Final: item.Price.Final, DiscountPercent: item.Price.DiscountPercent,
+			}
+		}
+	}
+	return quotes
+}
+
 // PlaytimeSnapshot holds library-wide minutes and counts from a complete library observation.
 type PlaytimeSnapshot struct {
 	At             time.Time `json:"at"`
@@ -383,6 +395,18 @@ type PlaytimeSnapshot struct {
 	TwoWeekMinutes uint64    `json:"two_week_minutes"`
 	OwnedGames     uint32    `json:"owned_games"`
 	UnplayedGames  uint32    `json:"unplayed_games"`
+}
+
+func snapshotPlaytime(list *gameList, at time.Time) PlaytimeSnapshot {
+	snapshot := PlaytimeSnapshot{At: at, OwnedGames: uint32(list.Total)}
+	for _, game := range list.Games {
+		snapshot.TotalMinutes += uint64(game.PlaytimeForever)
+		snapshot.TwoWeekMinutes += uint64(game.Playtime2Weeks)
+		if game.PlaytimeForever == 0 {
+			snapshot.UnplayedGames++
+		}
+	}
+	return snapshot
 }
 
 type PlaytimeSnapshotStore struct {

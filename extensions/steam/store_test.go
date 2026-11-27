@@ -1,7 +1,9 @@
 package main
 
 import (
+	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -375,5 +377,95 @@ func TestSnapshotStoreConcurrentHandles(t *testing.T) {
 	requireStoreOK(t, err)
 	if len(entries) != writers {
 		t.Fatalf("concurrent updates kept %d of %d entries", len(entries), writers)
+	}
+}
+
+func TestSteamReadsRecordFreshSnapshots(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	dir := t.TempDir()
+	now := fixtureObservationAt
+	d := f.data(dir, fixtureID, "US", func() time.Time { return now })
+	f.reply(ownedPath, http.StatusOK, fmt.Sprintf(`{"response":{"game_count":3,"games":[{"appid":%d,"playtime_forever":230,"playtime_2weeks":20},{"appid":%d,"playtime_forever":70,"playtime_2weeks":30},{"appid":%d}]}}`, firstApp, secondApp, thirdApp))
+	p := d.account(t.Context(), profileTTL, false)
+	if got := d.ownedGames(t.Context(), p, false); got.Issue != "" || got.Data == nil {
+		t.Fatalf("owned games read failed: %+v", got)
+	}
+	if got := d.wishlist(t.Context(), p, "english", false); got.Issue != "" || got.Data == nil {
+		t.Fatalf("wishlist read failed: %+v", got)
+	}
+	prices := NewPriceHistoryStore(dir)
+	playtime := NewPlaytimeSnapshotStore(dir)
+	want := PlaytimeSnapshot{At: now, TotalMinutes: 300, TwoWeekMinutes: 50, OwnedGames: 3, UnplayedGames: 1}
+	checkPlaytime := func() {
+		t.Helper()
+		got, err := playtime.History(fixtureID)
+		requireStoreOK(t, err)
+		if !reflect.DeepEqual(got, []PlaytimeSnapshot{want}) {
+			t.Fatalf("saved playtime %+v, want %+v", got, want)
+		}
+	}
+	checkPlaytime()
+	checkPrice := func(appID, final uint32, at time.Time) {
+		t.Helper()
+		if got := priceHistoryFor(t, prices, fixtureID, "US", appID); got.Latest.Final != final || !got.Latest.At.Equal(at) {
+			t.Fatalf("saved price for %d: %+v", appID, got)
+		}
+	}
+	checkPrice(firstApp, 399, now)
+	checkPrice(secondApp, 699, now)
+	if got := priceHistoryFor(t, prices, fixtureID, "US", thirdApp); !got.Latest.At.IsZero() {
+		t.Fatalf("an unpriced game was stored as a price observation: %+v", got)
+	}
+
+	now = now.Add(time.Minute)
+	d.ownedGames(t.Context(), p, false)
+	d.wishlist(t.Context(), p, "english", false)
+	for _, path := range []string{ownedPath, wishlistPath, storePricesPath, storeNamesPath} {
+		if hits := f.hit(path); hits != 1 {
+			t.Fatalf("%s received %d requests for one fresh read and one cache hit", path, hits)
+		}
+	}
+	if f.hit(recentPath) != 0 {
+		t.Fatal("recording library playtime made an extra recent-games request")
+	}
+	checkPlaytime()
+	checkPrice(firstApp, 399, fixtureObservationAt)
+
+	f.reply(ownedPath, http.StatusTooManyRequests, "fixture rate limit")
+	f.reply(storePricesPath, http.StatusServiceUnavailable, "fixture Store outage")
+	if got := d.ownedGames(t.Context(), p, true); !got.Stale || got.Issue != problemRateLimited {
+		t.Fatalf("expected library fallback: %+v", got)
+	}
+	if got := d.wishlist(t.Context(), p, "english", true); !got.Stale || got.Issue != problemNetwork {
+		t.Fatalf("expected wishlist fallback: %+v", got)
+	}
+	checkPlaytime()
+	checkPrice(firstApp, 399, fixtureObservationAt)
+
+	now = now.Add(time.Minute)
+	f.reply(ownedPath, http.StatusOK, fmt.Sprintf(`{"response":{"game_count":3,"games":[{"appid":%d,"playtime_forever":250}]}}`, firstApp))
+	f.reply(storePricesPath, http.StatusOK, fmt.Sprintf(`{"%d":{"success":true,"data":{"price_overview":{"currency":"USD","final":199,"discount_percent":80}}},"%d":{"success":true,"data":{"price_overview":{"currency":"USD","final":1,"discount_percent":101}}},"%d":{"success":false}}`, firstApp, secondApp, thirdApp))
+	if got := d.ownedGames(t.Context(), p, true); got.Issue != "" || got.Data == nil || !got.Data.Truncated {
+		t.Fatalf("expected a readable but incomplete library: %+v", got)
+	}
+	if got := d.wishlist(t.Context(), p, "english", true); !got.Stale || got.Issue != problemResponse {
+		t.Fatalf("expected a fallback after the partial Store response: %+v", got)
+	}
+	checkPlaytime()
+	checkPrice(firstApp, 199, now)
+	checkPrice(secondApp, 699, fixtureObservationAt)
+}
+
+func TestSteamSnapshotWriteFailureLeavesReadsAvailable(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	dir := t.TempDir()
+	requireStoreOK(t, os.WriteFile(filepath.Join(dir, storeDirectory), []byte("fixture blocking the store directory"), 0o600))
+	d := f.data(dir, fixtureID, "US", func() time.Time { return fixtureObservationAt })
+	p := d.account(t.Context(), profileTTL, false)
+	if got := d.ownedGames(t.Context(), p, false); got.Issue != "" || got.Data == nil || got.Data.Total != 3 {
+		t.Fatalf("local write failure affected the owned games result: %+v", got)
+	}
+	if got := d.wishlist(t.Context(), p, "english", false); got.Issue != "" || got.Data == nil || got.Data.Checked != 3 {
+		t.Fatalf("local write failure affected the wishlist result: %+v", got)
 	}
 }

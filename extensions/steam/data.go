@@ -28,6 +28,8 @@ type steamData struct {
 	library     *cacheSlot[gameList]
 	recent      *cacheSlot[gameList]
 	wishes      *cacheSlot[wishList]
+	prices      *PriceHistoryStore
+	playtime    *PlaytimeSnapshotStore
 	lastAccount atomic.Pointer[reading[player]]
 }
 
@@ -42,18 +44,21 @@ func newSteamData(cfg config, key, dir string, httpClient *http.Client, now func
 			setup = problemKey
 		}
 	}
+	var cacheDir string
 	if dir != "" {
-		dir = filepath.Join(dir, "steam-cache-v1")
+		cacheDir = filepath.Join(dir, "steam-cache-v1")
 	}
 	return &steamData{
-		client:  steamClient{http: httpClient, key: key},
-		config:  cfg,
-		setup:   setup,
-		vanity:  newSlot[string](dir, "vanity", now),
-		profile: newSlot[player](dir, "profile", now),
-		library: newSlot[gameList](dir, "library", now),
-		recent:  newSlot[gameList](dir, "recent", now),
-		wishes:  newSlot[wishList](dir, "wishlist", now),
+		client:   steamClient{http: httpClient, key: key},
+		config:   cfg,
+		setup:    setup,
+		vanity:   newSlot[string](cacheDir, "vanity", now),
+		profile:  newSlot[player](cacheDir, "profile", now),
+		library:  newSlot[gameList](cacheDir, "library", now),
+		recent:   newSlot[gameList](cacheDir, "recent", now),
+		wishes:   newSlot[wishList](cacheDir, "wishlist", now),
+		prices:   NewPriceHistoryStore(dir),
+		playtime: NewPlaytimeSnapshotStore(dir),
 	}
 }
 
@@ -108,8 +113,13 @@ func (d *steamData) ownedGames(ctx context.Context, p reading[player], refresh b
 	if issue := publicProfile(p); issue != "" {
 		return reading[gameList]{Issue: issue}
 	}
-	return d.library.read(ctx, p.Data.SteamID, libraryTTL, refresh, func(ctx context.Context) (*gameList, problem) {
-		return d.client.games(ctx, p.Data.SteamID, false)
+	id := p.Data.SteamID
+	return d.library.read(ctx, id, libraryTTL, refresh, func(ctx context.Context) (*gameList, problem) {
+		list, issue := d.client.games(ctx, id, false)
+		if issue == "" && list != nil && !list.Truncated && !p.Stale {
+			_ = d.playtime.Record(id, snapshotPlaytime(list, d.library.now()))
+		}
+		return list, issue
 	})
 }
 
@@ -128,7 +138,11 @@ func (d *steamData) wishlist(ctx context.Context, p reading[player], language st
 	}
 	id, country := p.Data.SteamID, d.config.CountryCode
 	return d.wishes.read(ctx, id+"/"+country+"/"+language, wishlistTTL, refresh, func(ctx context.Context) (*wishList, problem) {
-		return d.client.wishlist(ctx, id, country, language)
+		list, issue := d.client.wishlist(ctx, id, country, language)
+		if list != nil && issue != problemCanceled && !p.Stale {
+			_ = d.prices.Observe(id, country, d.wishes.now(), wishlistQuotes(list))
+		}
+		return list, issue
 	})
 }
 
