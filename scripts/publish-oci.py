@@ -310,6 +310,9 @@ def source_inventory():
     inventory = []
     for extension_id in manifests.ids():
         entry = {"manifest": manifests.packaged(extension_id), "tags": manifests.tags(extension_id)}
+        translations = manifests.l10n(extension_id)
+        if translations:
+            entry["l10n"] = translations
         predecessor = manifests.replaces(extension_id)
         if predecessor != "":
             entry["replaces"] = predecessor
@@ -335,6 +338,10 @@ def desired_entries(body, mode):
         if old and old["manifest"]["version"] == m["version"]:
             if old["manifest"] != m:
                 raise ValueError("same-version manifest changed; bump version before publishing")
+            if old.get("l10n") != owned.get("l10n"):
+                # Translations ship inside the package (l10n/…), so a catalog-only update would advertise text the
+                # installed package does not have. Only a new version rebuilds the archive.
+                raise ValueError("l10n changed without a version bump; bump the version so the package carries it")
             if catalog.entry_inventory(old) != owned:
                 result.append(dict(copy.deepcopy(owned), packages=copy.deepcopy(old["packages"])))
             continue

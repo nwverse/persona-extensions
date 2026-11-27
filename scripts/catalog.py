@@ -37,13 +37,84 @@ def valid_extension_id(value):
     return isinstance(value, str) and len(value) <= 32 and re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value) is not None
 
 
-def source_entry(source):
-    """Project author metadata into an inventory entry without changing runtime manifests."""
+# The hub's translation limits (persona server/internal/extension/l10n.go and wire.StringMost).
+TRANSLATION_NAME_MOST, TRANSLATION_TEXT_MOST = 40, 2000
+
+
+def validate_translation(value):
+    """Check one language's translation the way the hub does: a translation that does not check out is dropped there
+    (the market then shows the manifest's text), so it must fail here instead of shipping. Keys the hub does not know
+    are ignored there and here, so a later hub may read more."""
+    def text(where, v):
+        # JSON null unmarshals into a Go string as "", which the hub accepts.
+        if v is None:
+            return
+        if not isinstance(v, str) or len(v) > TRANSLATION_TEXT_MOST:
+            raise ValueError("%s: must be a string of at most %d characters" % (where, TRANSLATION_TEXT_MOST))
+
+    def field(where, v):
+        if v is None:
+            return
+        if not isinstance(v, dict):
+            raise ValueError("%s: must be an object" % where)
+        for name in ("title", "description", "confirm"):
+            if name in v:
+                text(where + "." + name, v[name])
+        if "choices" in v:
+            if not isinstance(v["choices"], dict):
+                raise ValueError(where + ".choices: must be an object")
+            for key, choice in v["choices"].items():
+                text(where + ".choices." + key, choice)
+        if "properties" in v:
+            if not isinstance(v["properties"], dict):
+                raise ValueError(where + ".properties: must be an object")
+            for key, sub in v["properties"].items():
+                field(where + ".properties." + key, sub)
+
+    if not isinstance(value, dict):
+        raise ValueError("translation must be a JSON object")
+    if "name" in value:
+        name = value["name"]
+        if name is None:
+            name = ""
+        if not isinstance(name, str):
+            raise ValueError("name: must be a string")
+        if name != "" and not 0 < len(name.strip()) <= TRANSLATION_NAME_MOST:
+            raise ValueError("name: 1 to %d characters" % TRANSLATION_NAME_MOST)
+    if "description" in value:
+        text("description", value["description"])
+    for part in ("configuration", "secrets"):
+        if part not in value:
+            continue
+        group = value[part]
+        if not isinstance(group, dict):
+            raise ValueError(part + ": must be an object")
+        for key, entry in group.items():
+            if part == "configuration":
+                field(part + "." + key, entry)
+                continue
+            if entry is None:
+                continue
+            if not isinstance(entry, dict):
+                raise ValueError(part + "." + key + ": must be an object")
+            for name in ("title", "description"):
+                if name in entry:
+                    text(part + "." + key + "." + name, entry[name])
+    return value
+
+
+def source_entry(source, l10n=None):
+    """Project author metadata into an inventory entry without changing runtime manifests.
+
+    l10n is the package's translations by language (scripts/manifest.py l10n): a hub shows them in the market before
+    downloading anything. Empty means none."""
     manifest = dict(source)
     tags = manifest.pop("tags", [])
     has_predecessor = "replaces" in manifest
     predecessor = manifest.pop("replaces", None)
     entry = {"manifest": manifest, "tags": tags}
+    if l10n:
+        entry["l10n"] = l10n
     if "icon" in manifest:
         icon = manifest.pop("icon")
         if not valid_icon_path(icon):
@@ -59,6 +130,8 @@ def source_entry(source):
 def entry_inventory(entry):
     """The exact source-owned fields covered by generation provenance."""
     result = {"manifest": entry["manifest"], "tags": entry.get("tags", [])}
+    if "l10n" in entry:
+        result["l10n"] = entry["l10n"]
     if "replaces" in entry:
         result["replaces"] = entry["replaces"]
     if "icon" in entry:
