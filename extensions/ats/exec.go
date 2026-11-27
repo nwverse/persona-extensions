@@ -20,6 +20,7 @@ func (q *Queue) UpdateExec(taskID string, fence int, now time.Time, fn func(e *E
 	if !isActiveState(t.State) || t.FenceToken != fence || len(t.Attempts) == 0 {
 		return nil, ErrStaleAttempt
 	}
+	prev := cloneTask(t)
 	if t.Exec == nil {
 		t.Exec = &Execution{PhaseSince: now.UTC()}
 	}
@@ -35,6 +36,7 @@ func (q *Queue) UpdateExec(taskID string, fence int, now time.Time, fn func(e *E
 	t.State = state
 	t.Attempts[len(t.Attempts)-1].State = state
 	if err := q.saveLocked(); err != nil {
+		q.tasks[taskID] = prev
 		return nil, err
 	}
 	return cloneTask(t), nil

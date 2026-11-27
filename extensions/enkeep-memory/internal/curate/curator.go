@@ -153,6 +153,11 @@ func (c *Curator) ownerNames(ctx context.Context) []string {
 // from the start of the day to now, and kb.day says whether the chat had messages that day. Other kinds count only
 // when they changed within the day.
 func (c *Curator) units(ctx context.Context, day string) ([]Unit, error) {
+	return c.unitsWhere(ctx, day, nil)
+}
+
+// unitsWhere is units, only those keep (by kind and id) wants read; nil: every one.
+func (c *Curator) unitsWhere(ctx context.Context, day string, keep func(kind, id string) bool) ([]Unit, error) {
 	start, err := time.ParseInLocation("2006-01-02", day, c.Loc)
 	if err != nil {
 		return nil, err
@@ -167,7 +172,7 @@ func (c *Curator) units(ctx context.Context, day string) ([]Unit, error) {
 	for _, e := range entries {
 		kind := e.Kind
 		byDay := kind == "chats" || srcs.DayKind(kind) // read with Day: listed whenever active since the day began
-		if kind == "" || !slices.Contains(unitKinds, kind) || (!byDay && !e.Updated.Before(end)) {
+		if kind == "" || !slices.Contains(unitKinds, kind) || (!byDay && !e.Updated.Before(end)) || (keep != nil && !keep(kind, e.ID)) {
 			continue
 		}
 		u, ok, err := c.unit(ctx, kind, e, day)
@@ -235,9 +240,19 @@ func (c *Curator) unit(ctx context.Context, kind string, e wire.KBEntry, day str
 		return Unit{}, false, err
 	}
 	for _, m := range r.Messages {
+		// A sent-as-user message that the user later recalled is no longer evidence of anything.
+		if !m.RecalledAt.IsZero() {
+			continue
+		}
 		// A line under the user's name that an agent wrote is not the user's: it is relabelled here, once, so the
 		// triage, the checks and the prompts all see it as someone else's.
-		u.Lines = append(u.Lines, voice.Relabel(norm.Parse(m.N, m.Text)))
+		l := voice.Relabel(norm.Parse(m.N, m.Text))
+		// With sent.read, the hub marks archived messages Persona sent in the user's name: keep them as context
+		// under Ghost so AI-drafted sends are never taken for the user's own words.
+		if m.SentBy != "" && l.Speaker == norm.Me {
+			l.Speaker = voice.Ghost
+		}
+		u.Lines = append(u.Lines, l)
 	}
 	if isCode(u.Meta) {
 		u.Lines = voice.AgentThread(u.Lines)

@@ -5,15 +5,16 @@ import "testing"
 // Synthetic texts only: the shapes of a task prompt, a relay, a probe and a paste.
 func TestClassify(t *testing.T) {
 	for text, want := range map[string]string{
-		"部署验证：请只回复 OK，不要调用任何工具。":                                         Test,
-		"Deployment check: reply only with OK, do not call any tools.":   Test,
-		"<persona-context kind=\"context\">…</persona-context>\n把占位服务升级": Persona,
-		"（占位主管经主对话转）把占位服务升级到最新":                                          Persona,
-		"做完后\n\nPersona task handoffs: use task_spawn …":                 Persona,
-		"<cross-session-message from=\"x\">请看一下</cross-session-message>": Persona,
-		"这个方案先别上线，等周五评审完再说":                                              None,
-		"只回复要点就行，别写长文":                                                   None, // a fixed answer alone is not a probe
-		"测试一下这个接口为什么超时":                                                  None,
+		"部署验证：请只回复 OK，不要调用任何工具。":                                              Test,
+		"Deployment check: reply only with OK, do not call any tools.":        Test,
+		"<persona-context kind=\"context\">…</persona-context>\n把占位服务升级":      Persona,
+		"（占位主管经主对话转）把占位服务升级到最新":                                               Persona,
+		"做完后\n\nPersona task handoffs: use task_spawn …":                      Persona,
+		"修一下门禁。\n\nKeep hub credentials private. For task work, never read …": Persona,
+		"<cross-session-message from=\"x\">请看一下</cross-session-message>":      Persona,
+		"这个方案先别上线，等周五评审完再说":                                                   None,
+		"只回复要点就行，别写长文":                                                        None, // a fixed answer alone is not a probe
+		"测试一下这个接口为什么超时":                                                       None,
 	} {
 		if got := Classify(text); got != want {
 			t.Errorf("Classify(%q) = %q, want %q", text, got, want)

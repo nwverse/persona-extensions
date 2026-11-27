@@ -342,7 +342,7 @@ func TestOffloadInventoryCap(t *testing.T) {
 func TestOffloadUnknownMachineAndLocale(t *testing.T) {
 	a := offloadApp(t, newFakeBox())
 	ghost := personaMachine{ID: "ghost-7", Name: "Ghost"}
-	for loc, want := range map[string]string{"en": "is not one of the computers", "zh-Hans": "不在 Disklessly 管理的电脑里", "zh-CN": "不在", "ja-JP": "管理するコンピュータではありません", "fr": "is not one of the computers", "": "is not one of the computers"} {
+	for loc, want := range map[string]string{"en": "is not one of the computers", "zh-Hans": "不在 Disklessly 管的电脑里", "zh-CN": "不在", "ja-JP": "管理するコンピュータではありません", "fr": "is not one of the computers", "": "is not one of the computers"} {
 		inv := call(t, a, "inventory", map[string]any{"locale": loc, "machine": ghost})
 		if inv["state"] != invUnavailable || !strings.Contains(inv["detail"].(string), want) || !strings.Contains(inv["detail"].(string), "Ghost") {
 			t.Errorf("%q: %v %v", loc, inv["state"], inv["detail"])
@@ -358,6 +358,14 @@ func TestOffloadUnknownMachineAndLocale(t *testing.T) {
 	}
 	if _, err := a.offload(context.Background(), "nope", nil); !isCode(err, "unknown_method") {
 		t.Fatalf("unknown method: %v", err)
+	}
+	// A wrong action tells a protocol caller the two values it accepts, in every language.
+	for _, loc := range []string{"en", "zh-Hans", "ja-JP"} {
+		_, err := a.offload(context.Background(), "run", mustJSON(map[string]any{"action": "move", "locale": loc, "paths": []string{"/x"}, "machine": ghost}))
+		var e *ext.Error
+		if !errors.As(err, &e) || e.Code != "invalid_params" || !strings.Contains(e.Message, "offload") || !strings.Contains(e.Message, "restore") {
+			t.Errorf("%s: bad action: %v", loc, err)
+		}
 	}
 	// Every key has all three languages.
 	for k := range offloadText[locEN] {
@@ -816,5 +824,121 @@ func TestOffloadAnswersFitTheSchemaBounds(t *testing.T) {
 	}
 	if it := back.Items[0]; n(it.Name) != 200 || n(it.Group) != 200 || it.ID != "session:"+strings.Repeat("x", 150) || it.Bytes != 7 {
 		t.Fatalf("item %+v", it)
+	}
+}
+
+func TestOffloadInventoryUnescapesFoundationPlaceholderPaths(t *testing.T) {
+	home := t.TempDir()
+	sd := filepath.Join(home, "state")
+	repo := filepath.Join(home, "repo")
+	for _, d := range []string{filepath.Join(sd, "files"), filepath.Join(repo, "manifests"), filepath.Join(home, "Movies")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(p, body string) {
+		t.Helper()
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	escapeSlashes := func(s string) string { return strings.ReplaceAll(s, "/", `\/`) }
+
+	ph := filepath.Join(home, "Movies", "Raw.disklessly")
+	// Foundation JSONEncoder escapes '/' as '\/' by default in offloaded.json, placeholders, and status.
+	write(filepath.Join(sd, "files", "offloaded.json"), "[\n  {\n    \"createdAt\" : \"2026-08-01T00:00:00Z\",\n    \"id\" : \"f1\",\n    \"kind\" : \"folder\",\n    \"name\" : \"Raw\",\n    \"placeholderPath\" : \""+escapeSlashes(ph)+"\",\n    \"size\" : 9000000\n  }\n]\n")
+	write(ph, "{\n  \"kind\" : \"folder\",\n  \"originalPath\" : \""+escapeSlashes(filepath.Join(home, "Movies", "Raw"))+"\",\n  \"storedSize\" : 8000000\n}\n")
+
+	cli := filepath.Join(home, "disklessly")
+	write(cli, `#!/bin/sh
+[ "$1" = --json ] && shift
+case "$1" in
+  version) echo "disklessly 0.3.2" ;;
+  status) printf '{"repoPath":"%s","apps":{}}\n' "$REPO_ESC" ;;
+  list) echo '[]' ;;
+  data) echo '{"ok":true,"apps":[]}' ;;
+  *) echo '{"ok":false}'; exit 1 ;;
+esac
+`)
+	if err := os.Chmod(cli, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("/bin/sh", "-c", inventoryScript())
+	cmd.Env = []string{
+		"HOME=" + home,
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+		"DISKLESSLY_BIN=" + cli,
+		"DISKLESSLY_STATE_DIR=" + sd,
+		"REPO_ESC=" + escapeSlashes(repo),
+	}
+	raw, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v\n%s", err, raw)
+	}
+	sections := splitSections(string(raw))
+	pr := parseProbe(sections)
+	items, partial := parseInventory(sections, pr, nil, t0)
+	if partial || len(items) != 1 {
+		t.Fatalf("expected 1 offloaded file item from escaped JSON paths, got %d (partial=%v): %+v\nraw:\n%s", len(items), partial, items, raw)
+	}
+	if it := items[0]; it.ID != "file:f1" || it.StubPath != ph || it.OriginPath != filepath.Join(home, "Movies", "Raw") || it.StoredBytes != 8000000 || !it.Restorable {
+		t.Fatalf("unexpected item: %+v", it)
+	}
+}
+
+func TestCheckOffloadPathsEnforcesRedlinesOnMacOSApps(t *testing.T) {
+	home := t.TempDir()
+	sd := filepath.Join(home, "state")
+	dirs := []string{
+		filepath.Join(home, "Applications", "Tool.app"),
+		filepath.Join(home, "Applications", "Xcode.app", "Contents", "Applications", "Simulator.app"),
+		filepath.Join(home, "Library", "Application Support", "Vendor", "Helper.app"),
+		filepath.Join(home, ".Trash", "Old.app"),
+		filepath.Join(home, ".ssh", "Secret.app"),
+		filepath.Join(sd, "Internal.app"),
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	run := func(_ context.Context, _ *Machine, script string, _ time.Duration) (string, error) {
+		cmd := exec.Command("/bin/sh", "-c", script)
+		cmd.Env = []string{"HOME=" + home, "PATH=/usr/bin:/bin:/usr/sbin:/sbin", "DISKLESSLY_STATE_DIR=" + sd}
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+	checks, err := checkOffloadPaths(context.Background(), run, &Machine{ID: "mac"}, "darwin-arm64", offloadKinds, dirs, "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"", "inside_app", "app_managed", "app_managed", "credentials", "own_data"}
+	var got []string
+	for _, c := range checks {
+		got = append(got, c.Code)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("codes = %q, want %q", got, want)
+	}
+	if code := appOffloadPolicy("/Applications/Tool.app", home, []string{sd}); code != "" {
+		t.Fatalf("/Applications/Tool.app got %q, want allowed", code)
+	}
+	if code := appOffloadPolicy("/Applications/Xcode.app/Contents/Applications/Simulator.app", home, []string{sd}); code != "inside_app" {
+		t.Fatalf("nested /Applications app got %q, want inside_app", code)
+	}
+	if code := appOffloadPolicy("/opt/Tool.app", home, []string{sd}); code != "outside_home" {
+		t.Fatalf("/opt/Tool.app got %q, want outside_home", code)
+	}
+}
+
+func TestUnixTimestampsClampedNonNegative(t *testing.T) {
+	if got := unixText("1969-12-31T23:59:59Z"); got != 0 {
+		t.Fatalf("unixText pre-epoch = %d, want 0", got)
+	}
+	if got := unixOf(json.RawMessage(`-2000000000`)); got != 0 {
+		t.Fatalf("unixOf negative = %d, want 0", got)
+	}
+	if got := unixOf(json.RawMessage(`"1969-01-01T00:00:00Z"`)); got != 0 {
+		t.Fatalf("unixOf pre-epoch string = %d, want 0", got)
 	}
 }

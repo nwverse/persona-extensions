@@ -15,7 +15,7 @@ Read this before installing:
 
 ## Send real mentions
 
-`larkx_send` accepts `mentions: [{id, name}]` using the exact person and numeric id returned by `larkx_search`; write `@name` literally in `text` for each target. It builds a rich-text AT element and the notification user-id list, so the target gets a real mention rather than plain text. Without `mentions`, an @name stays ordinary text and the original send path is unchanged. Assistant replies resolve only known recent chat participants' exact names to their real ids; unknown names are never guessed.
+`larkx_send` accepts `mentions: [{id, name}]` using the exact person or bot and numeric id returned by `larkx_members` or `larkx_search`; write `@name` literally in `text` for each target. It builds a rich-text AT element and the notification user-id list, so the target gets a real mention rather than plain text. Without `mentions`, an @name stays ordinary text and the original send path is unchanged. Assistant replies resolve exact names from the chat's member/bot roster (via `PullChatChattersRequest`) as well as recent senders and historical mentions; unknown or ambiguous names are never guessed.
 
 ## Invoke the assistant by mentioning yourself
 

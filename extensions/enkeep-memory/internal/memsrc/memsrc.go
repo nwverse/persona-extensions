@@ -12,12 +12,16 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/curate"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/entry"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/export"
+	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/norm"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/profile"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/recall"
 	"github.com/nwverse/persona-extensions/extensions/enkeep-memory/internal/store"
@@ -40,6 +44,8 @@ type Params struct {
 	Contribution string `json:"contribution"`
 	Limit        int    `json:"limit"`
 	After        string `json:"after,omitempty"`
+	// ResidentBytes is the room the standing set is chosen for (the resident_bytes setting; 0: ResidentBytes).
+	ResidentBytes int `json:"-"`
 }
 
 // Result is one page (wire.MemoryEntriesResult).
@@ -79,13 +85,30 @@ type item struct {
 	standing bool
 	rank     int
 	last     string
+	text     string // a curated entry's line as answered, when not its recall line (standing, or with its quote)
 }
 
-// Extra is an entry made elsewhere in the extension (the periodic overview's patterns, internal/overview), answered
-// beside the curated ones in the same order: Last is its newest evidence day.
+// Extra is an entry made elsewhere in the extension (the periodic overview's L1 principles and contracts,
+// internal/overview), answered beside the curated ones in the same order: Last is its newest evidence day.
 type Extra struct {
 	Entry Entry
 	Last  string
+	// Score and Kind (entry.KindRules or KindUnderstanding) make it a candidate for the standing set; Kind "" never
+	// stands. Entry.Standing is decided here, not by the maker.
+	Score int
+	Kind  string
+	// Evidence are the curated entries it rests on: a pattern resting mostly on template lines never stands.
+	Evidence []string
+	// L1 metadata for three-bucket standing selection (unified design §2.1).
+	L1Kind     string   // "contract" or "principle"
+	Hard       bool     // contract: hard rule
+	Polarity   string   // contract: act / check / communicate / route
+	Dimension  string   // principle: decision / thinking / reaction / attention / communication
+	Group      string   // normalized "<facet>:<rule_type>" (empty for generic types)
+	Quotes     int      // distinct normalised user quotes (tie-breaker)
+	Body       string   // core statement without prefix/suffix (clipped first when over budget)
+	Suffix     string   // "（例外：…）" or "（两端：…）" (never clipped)
+	CoveredIDs []string // L0 entries covered by this L1 contract (used to retire absorbed hot-slot entries)
 }
 
 func (it item) id() string {
@@ -119,21 +142,33 @@ func before(a, b key) bool {
 	return a.I < b.I
 }
 
-// weakPredicates are low-value relation triples (e.g. "A depends on B", "A works with B") that crowd memory.entries
-// without actionable guidance. They stay in state and are only filtered at the memory.entries outlet unless the user
-// explicitly pinned, edited or confirmed them.
-var weakPredicates = map[string]bool{
-	"about":             true,
-	"allocated":         true,
-	"assigned":          true,
-	"blocked_by":        true,
-	"collaborates_with": true,
-	"depends_on":        true,
-	"member_of":         true,
-	"same_circle":       true,
-	"serves":            true,
-	"waiting_on":        true,
+// Relation predicates, in three kinds (0.2.0, design l0-leverage §13; the collaboration gap analysis §4.4):
+//   - the skeleton (assigned, depends_on, member_of, collaborates_with, with owns, role and reports_to): who is
+//     responsible for what, which team, what depends on what, who works with whom. Never standing (a world entry has
+//     no standing kind), but ranked by its score in recall and fed to the overview and the evaluations like any entry;
+//   - noise (about, same_circle): "X is about Y", a shared circle; ranked last, kept out of Pool;
+//   - passing edges (waiting_on, blocked_by, allocated, serves): what holds now; weak only once stale, when last seen
+//     more than staleDays ago.
+//
+// Up to beta.52 all ten were weak alike. Nothing is deleted from state; user-pinned, user-edited or user-confirmed
+// entries are never weak.
+var noisePredicates = map[string]bool{
+	"about":       true,
+	"same_circle": true,
 }
+
+var passingPredicates = map[string]bool{
+	"allocated":  true,
+	"blocked_by": true,
+	"serves":     true,
+	"waiting_on": true,
+}
+
+// staleDays is how long a passing edge stays strong after it was last seen.
+const staleDays = 14
+
+// nowFn is the clock IsWeakRelation reads a passing edge's age by (tests set it).
+var nowFn = time.Now
 
 // substantiveWorldTypes are world-facet types that carry durable project/ownership/decision value over transient status.
 var substantiveWorldTypes = map[string]bool{
@@ -158,13 +193,22 @@ func userConfirmedRight(e *entry.Entry) bool {
 	return false
 }
 
-// IsWeakRelation says whether e is a low-value relation triple excluded from memory.entries. Nothing is deleted from
-// state; user-pinned, user-edited or user-confirmed entries are always kept.
+// IsWeakRelation says whether e is a low-value relation triple: a noise edge, or a passing edge not seen for
+// staleDays (see noisePredicates). Weak triples are answered by memory.entries ranked last and kept out of Pool. The
+// skeleton edges are never weak.
 func IsWeakRelation(e *entry.Entry) bool {
 	if e == nil || e.Facet != entry.World || e.Predicate == "" {
 		return false
 	}
-	if !weakPredicates[strings.ToLower(strings.TrimSpace(e.Predicate))] {
+	p := strings.ToLower(strings.TrimSpace(e.Predicate))
+	switch {
+	case noisePredicates[p]:
+	case passingPredicates[p]:
+		last, err := time.Parse("2006-01-02", e.Last)
+		if err == nil && nowFn().Sub(last) <= staleDays*24*time.Hour {
+			return false
+		}
+	default:
 		return false
 	}
 	if e.Pinned || (e.User != nil && strings.TrimSpace(e.User.Text) != "") || userConfirmedRight(e) {
@@ -177,7 +221,14 @@ func IsWeakRelation(e *entry.Entry) bool {
 // marked wrong), never a card's evaluation or inference about a person, never a low-value weak relation triple, and
 // not life content when the user chose "work only". The same gate as enkeep_recall's, without its category look-up:
 // grading by category is the hub's.
-func Pool(st *store.State, e *entry.Entry) bool {
+func Pool(st *store.State, e *entry.Entry) bool { return pool(st, e) && !IsWeakRelation(e) }
+
+// Pageable is what memory.entries answers: the pool, and the weak relation triples too, ranked last (0.2.0-beta.52:
+// the hub reads every page now, nwverse/persona#15170, so they no longer crowd the first thousand; the record is kept
+// whole and recalled on demand).
+func Pageable(st *store.State, e *entry.Entry) bool { return pool(st, e) }
+
+func pool(st *store.State, e *entry.Entry) bool {
 	if !e.Live() {
 		return false
 	}
@@ -189,9 +240,6 @@ func Pool(st *store.State, e *entry.Entry) bool {
 		}
 	}
 	if e.Facet == entry.People && (e.Part == entry.PartUserEval || e.Part == entry.PartInferred || e.Inferred) {
-		return false
-	}
-	if IsWeakRelation(e) {
 		return false
 	}
 	if e.Domain == entry.Life && st.Onboarding != nil && st.Onboarding.Use == entry.Work {
@@ -214,10 +262,48 @@ func Status(e *entry.Entry) string {
 	return "candidate"
 }
 
-// Rank orders entries by usefulness (0 to 1000, pinned 1000) so the hub's bounded memory.entries fetch (at most 1000
-// entries, re-sorted by standing then rank) keeps the highest-value rules, judgements, workflows, tools, persona and
-// substantive people/world entries first.
+// Rank orders entries by how much they matter (0.2.0-beta.52: entry.Score, 0 to 891; pinned 1000), not by how new they
+// are: recall and hand-offs take the highest first. Entity-anchored active local rules keep high recall rank (750–891)
+// without entering standing (unified design §2.2). A weak relation triple ranks last. The standing set has its own
+// ranks above every other (Resident).
 func Rank(e *entry.Entry) int {
+	if e.Pinned {
+		return 1000
+	}
+	r := entry.Score(e) * 9
+	if IsWeakRelation(e) {
+		r = min(r, 9)
+	} else if entityAnchoredRule(e) && Status(e) == "active" {
+		r = max(r, 750)
+	}
+	return max(0, min(891, r))
+}
+
+// entityAnchoredRule says whether e is a rule or decision explicitly anchored to a person, project, machine or tool
+// (non-global scope, impact.object, or object), so it stays out of global standing while ranking high in recall.
+func entityAnchoredRule(e *entry.Entry) bool {
+	if e == nil {
+		return false
+	}
+	switch e.Facet {
+	case entry.Interaction, entry.Tools, entry.Judgement, entry.Workflow:
+	default:
+		return false
+	}
+	if strings.TrimSpace(e.Impact.Object) != "" || strings.TrimSpace(e.Object) != "" {
+		return true
+	}
+	for _, sc := range e.Scopes {
+		if sc.Kind != entry.ScopeGlobal && strings.TrimSpace(sc.Name) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// LegacyRank is Rank before 0.2.0-beta.52 (facet, grain and count, ties broken by the newest), kept for the hard
+// evaluation's baseline arm (hardeval): the order memory.entries answered in up to beta.49.
+func LegacyRank(e *entry.Entry) int {
 	if e.Pinned {
 		return 1000
 	}
@@ -227,7 +313,7 @@ func Rank(e *entry.Entry) int {
 		score = 400
 	case entry.People:
 		score = 200
-	default: // World and any other facet
+	default:
 		typ := strings.ToLower(strings.TrimSpace(e.Type))
 		pred := strings.ToLower(strings.TrimSpace(e.Predicate))
 		switch {
@@ -347,9 +433,11 @@ func backfill(st *store.State, e *entry.Entry, depth int) ([]string, string) {
 	return cats, space
 }
 
-// Subjects are the names whose mention brings the entry in: the person of a card, its object, its scopes' names.
+// Subjects are the names whose mention brings the entry in: the person of a card, its object, the person or project
+// its impact is for, its scopes' names, skeleton endpoints, occasion words, and 1-hop skeleton neighbors (up to MaxSubjects).
 func Subjects(st *store.State, e *entry.Entry) []string {
 	var out []string
+	var entityNames []string
 	add := func(s string) {
 		s = strings.TrimSpace(s)
 		if s == "" || len(out) >= MaxSubjects || slices.Contains(out, s) {
@@ -357,17 +445,85 @@ func Subjects(st *store.State, e *entry.Entry) []string {
 		}
 		out = append(out, clip(s, MaxSubject))
 	}
-	if k := st.Contacts[e.Person]; e.Person != "" && k != nil && k.Manual != "removed" {
-		add(k.Name)
+	addEntity := func(s string) {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		if strings.HasPrefix(s, "person:") && st != nil {
+			if k := st.Contacts[s]; k != nil && k.Manual != "removed" && k.Name != "" {
+				s = k.Name
+			} else {
+				s = strings.TrimPrefix(s, "person:")
+			}
+		} else {
+			for _, p := range []string{"project:", "system:", "object:"} {
+				s = strings.TrimPrefix(s, p)
+			}
+		}
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return
+		}
+		add(s)
+		if !slices.Contains(entityNames, s) {
+			entityNames = append(entityNames, s)
+		}
 	}
-	add(e.Object)
+	if st != nil && e.Person != "" {
+		if k := st.Contacts[e.Person]; k != nil && k.Manual != "removed" {
+			addEntity(k.Name)
+		}
+	}
+	addEntity(e.Object)
+	// The person or project a rule is for (impact.object, design l0-leverage §13: rules hang on entities): mentioning
+	// them brings the rule in. A kind of task named there is a short phrase too and does no harm.
+	if o := strings.TrimSpace(e.Impact.Object); utf8.RuneCountInString(o) <= 24 {
+		addEntity(o)
+	}
 	for _, sc := range e.Scopes {
 		if sc.Kind != entry.ScopeGlobal {
-			add(sc.Name)
+			addEntity(sc.Name)
+		}
+	}
+	if e.Facet == entry.World && entry.IsSkeletonPredicate(e.Predicate) {
+		addEntity(e.Subject)
+		addEntity(e.Target)
+	}
+	// The occasion a rule is for (0.2.6): decisions_query matches its tag's words as substrings of the text, the
+	// subjects, the facet and the categories, so "派活" or "汇报" in a tag brings the rules for that moment in.
+	if entry.KindOf(e) == entry.KindRules || e.Facet == entry.Workflow {
+		for _, w := range momentWords[e.Impact.Moment] {
+			add(w)
+		}
+		if g := GroupOf(st, e); g != "" && !genericTypes[e.Type] {
+			add(strings.TrimPrefix(g, string(e.Facet)+":"))
+		}
+	}
+	// 1-hop skeleton neighbors (unified design §2.2): for entity-anchored rules, attach up to 4 structural
+	// 1-hop neighbor names from the entity graph so querying a related project/person/repo surfaces the rule.
+	if st != nil && st.Graph != nil && len(entityNames) > 0 && len(out) < MaxSubjects &&
+		(entityAnchoredRule(e) || (e.Facet == entry.World && entry.IsSkeletonPredicate(e.Predicate))) {
+		for _, nb := range recall.SkeletonNeighbors(st, entityNames, 4) {
+			add(nb)
 		}
 	}
 	return out
 }
+
+// momentWords are the words a query for an occasion would use, in both languages.
+var momentWords = map[string][]string{
+	"ask_user":     {"提问", "问用户", "ask"},
+	"report":       {"汇报", "report"},
+	"dispatch":     {"派活", "dispatch"},
+	"task_start":   {"开工", "task"},
+	"reply_person": {"回复", "reply"},
+	"use_object":   {"工具", "tool"},
+	"review":       {"评审", "review"},
+}
+
+// genericTypes name no occasion: a correction can be of anything.
+var genericTypes = map[string]bool{"": true, "correction": true, "preference": true, "纠正": true}
 
 // Counts summarises a source's pool: entries, active, standing, and Backfilled: read before the 0.2.0-beta.40 tagging
 // rules and tagged by them now (Tags).
@@ -398,11 +554,17 @@ func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (
 	limit := min(max(p.Limit, 1), MaxLimit)
 	var all []item
 	var n Counts
+	stand := standingSet(st, extras, p.ResidentBytes)
 	for _, e := range st.Entries {
-		if !Pool(st, e) || !idRe.MatchString(e.ID) || strings.TrimSpace(recall.Line(e)) == "" {
+		if !Pageable(st, e) || !idRe.MatchString(e.ID) || strings.TrimSpace(recall.Line(e)) == "" {
 			continue
 		}
-		it := item{e: e, standing: export.Usable(st, e), rank: Rank(e), last: e.Last}
+		it := item{e: e, rank: Rank(e), last: e.Last}
+		if c, ok := stand[e.ID]; ok {
+			it.standing, it.rank, it.text = true, c.rank, c.text
+		} else if q := Quote(e); q != "" {
+			it.text = clip(strings.TrimSpace(recall.Line(e)), MaxText-utf8.RuneCountInString(q)-1) + " " + q
+		}
 		all = append(all, it)
 		n.Entries++
 		if Status(e) == "active" {
@@ -446,6 +608,10 @@ func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (
 		}
 		e.Subjects = subj
 		e.Rank = min(max(e.Rank, 0), 1000)
+		e.Standing = false
+		if c, ok := stand[e.ID]; ok {
+			e.Standing, e.Rank, e.Text = true, c.rank, c.text
+		}
 		if e.Status == "" {
 			e.Status = "active"
 		}
@@ -490,9 +656,9 @@ func PageWith(st *store.State, sum *profile.Summary, extras []Extra, p Params) (
 	return res, n, nil
 }
 
-// profileItems converts a profile summary into memory.entries items. General overview and six-facet summaries carry no
-// sensitive categories and are standing; sensitive category summaries carry their exact categories and origin_space and
-// are never standing so the hub's scene filter gates them.
+// profileItems converts a profile summary into memory.entries items. Profile summaries (general overview, six-facet
+// summaries, and sensitive category summaries) are never standing (unified design §2.1): they stay in the recallable
+// pool for on-demand lookup and UI views, with sensitive summaries carrying their exact categories and origin_space.
 func profileItems(sum *profile.Summary) []item {
 	if sum == nil || sum.SourceCount == 0 {
 		return nil
@@ -512,7 +678,7 @@ func profileItems(sum *profile.Summary) []item {
 			Text:     clip(text, MaxText),
 			Facet:    string(entry.Persona),
 			Status:   "active",
-			Standing: true,
+			Standing: false, // longer than the hub's standing room (1536 bytes): recalled, never standing (beta.52)
 			Rank:     995,
 			Subjects: []string{"用户侧写", "我是怎样的人", "关于我", "profile", "summary"},
 		}
@@ -619,7 +785,11 @@ func entryOf(st *store.State, it item) Entry {
 		return *it.x
 	}
 	e := it.e
-	x := Entry{ID: e.ID, Text: clip(strings.TrimSpace(recall.Line(e)), MaxText), Status: Status(e), Standing: it.standing,
+	text := it.text
+	if text == "" {
+		text = strings.TrimSpace(recall.Line(e))
+	}
+	x := Entry{ID: e.ID, Text: clip(text, MaxText), Status: Status(e), Standing: it.standing,
 		Rank: it.rank, Subjects: Subjects(st, e)}
 	if f := string(e.Facet); facetRe.MatchString(f) {
 		x.Facet = f
@@ -638,4 +808,174 @@ func clip(s string, n int) string {
 	}
 	r := []rune(s)
 	return string(r[:n])
+}
+
+// standing is one entry of the standing set: its rank and its line.
+type standing struct {
+	rank int
+	text string
+}
+
+// standingCache keeps the last standing set: the hub reads memory.entries a page at a time (a hundred pages and
+// more), all of one snapshot; the set is worked out once per snapshot and its extras. A new snapshot (after a run, a
+// mark, a delete: the light refresh) is a new state and works it out again.
+var standingCache struct {
+	sync.Mutex
+	st  *store.State
+	key string
+	set map[string]standing
+}
+
+// standingSet is the standing set of st and the overview's extras (Resident), by id.
+func standingSet(st *store.State, extras []Extra, room int) map[string]standing {
+	var kb strings.Builder
+	kb.WriteString(strconv.Itoa(room) + "|")
+	kb.WriteString(nowFn().Format("2006-01-02") + "|")
+	for _, x := range extras {
+		kb.WriteString(x.Entry.ID)
+		kb.WriteString(strconv.Itoa(x.Score))
+		kb.WriteString(x.L1Kind)
+		kb.WriteString(x.Polarity)
+		kb.WriteString(x.Dimension)
+		kb.WriteString(x.Entry.Text)
+		kb.WriteString(x.Body)
+		kb.WriteString(x.Suffix)
+	}
+	key := strconv.Itoa(len(st.Entries)) + "|" + kb.String()
+	standingCache.Lock()
+	defer standingCache.Unlock()
+	if standingCache.st == st && standingCache.key == key {
+		return standingCache.set
+	}
+	set := workStandingSet(st, extras, room)
+	standingCache.st, standingCache.key, standingCache.set = st, key, set
+	return set
+}
+
+// ResidentMostFor is how many lines a room holds: ResidentMost for the default, one more per 120 bytes beyond it.
+func ResidentMostFor(room int) int {
+	if room <= ResidentBytes {
+		return ResidentMost
+	}
+	return ResidentMost + (room-ResidentBytes)/120
+}
+
+func workStandingSet(st *store.State, extras []Extra, room int) map[string]standing {
+	var cands []Candidate
+	tpl := entry.TemplateQuotes(st.Entries)
+	now := nowFn()
+
+	// Collect L1 candidates and track which L0 entries are already absorbed by a live L1 contract.
+	absorbed := map[string]bool{}
+	var contractTexts []string
+	hasL1Contract, hasL1Principle := false, false
+	l1LatestDay := ""
+	for _, x := range extras {
+		e := x.Entry
+		if x.Kind == "" || len(e.Categories) > 0 || e.OriginSpace != "" || st.Entries[e.ID] != nil || !idRe.MatchString(e.ID) ||
+			entry.TemplateBacked(st.Entries, x.Evidence, tpl) {
+			continue
+		}
+		if x.Last > l1LatestDay {
+			l1LatestDay = x.Last
+		}
+		bucket := BucketPrinciple
+		maxBytes := PrincipleTextMost
+		if x.L1Kind == BucketContract || (x.L1Kind == "" && x.Kind == entry.KindRules) {
+			bucket = BucketContract
+			maxBytes = ContractTextMost
+		}
+		prefix := StandingPrefix(bucket, x.Hard, x.Polarity)
+		text := ""
+		if strings.TrimSpace(x.Body) != "" {
+			text = FormatResidentLine(prefix+strings.TrimSpace(x.Body), x.Suffix, maxBytes)
+		} else {
+			text = FormatResidentLine(prefix+strings.TrimSpace(e.Text), "", maxBytes)
+		}
+		if text == "" {
+			continue
+		}
+		quotes := x.Quotes
+		if quotes <= 0 {
+			quotes = len(x.Evidence)
+		}
+		cands = append(cands, Candidate{
+			ID:        e.ID,
+			Text:      text,
+			Kind:      x.Kind,
+			Bucket:    bucket,
+			Facet:     e.Facet,
+			L1:        true,
+			Hard:      x.Hard,
+			Score:     x.Score,
+			Days:      quotes,
+			Last:      x.Last,
+			Polarity:  x.Polarity,
+			Dimension: x.Dimension,
+			Group:     x.Group,
+		})
+		if bucket == BucketContract {
+			hasL1Contract = true
+			for _, id := range x.Evidence {
+				absorbed[id] = true
+			}
+			for _, id := range x.CoveredIDs {
+				absorbed[id] = true
+			}
+			contractTexts = append(contractTexts, text)
+		} else {
+			hasL1Principle = true
+		}
+	}
+
+	// Collect Bucket 0 (Hot Slot: Pinned + active Fast-Path + unabsorbed post-L1 high-certainty rules) and, only when
+	// a main bucket has zero qualified L1 candidates, cold-start L0 fallback candidates for that bucket.
+	for _, e := range st.Entries {
+		if !idRe.MatchString(e.ID) {
+			continue
+		}
+		hc, ok := HotSlotCandidate(st, e, tpl, now)
+		if !ok && hasL1Contract && l1LatestDay != "" {
+			hc, ok = UnabsorbedRuleHotCandidate(st, e, tpl, l1LatestDay, now)
+		}
+		if ok {
+			if !hc.Pinned {
+				if absorbed[e.ID] || slices.ContainsFunc(contractTexts, func(t string) bool { return norm.Jaccard(t, hc.Text) >= sameRule }) {
+					continue // absorbed by L1 contract
+				}
+			}
+			cands = append(cands, hc)
+			continue
+		}
+		if hasL1Contract && hasL1Principle {
+			continue
+		}
+		if !entry.ColdStartEligible(e) {
+			continue
+		}
+		c, ok := CuratedCandidate(st, e, tpl)
+		if !ok {
+			continue
+		}
+		if c.Bucket == BucketContract && hasL1Contract {
+			continue
+		}
+		if c.Bucket == BucketPrinciple && hasL1Principle {
+			continue
+		}
+		cands = append(cands, c)
+	}
+
+	out := map[string]standing{}
+	hotIdx, standIdx := 0, 0
+	for _, c := range ResidentWithin(cands, room, ResidentMostFor(room)) {
+		if c.Bucket == BucketHot {
+			out[c.ID] = standing{rank: rankHot - hotIdx, text: c.Text}
+			hotIdx++
+		} else {
+			out[c.ID] = standing{rank: rankStand - standIdx, text: c.Text}
+			standIdx++
+		}
+	}
+	return out
 }

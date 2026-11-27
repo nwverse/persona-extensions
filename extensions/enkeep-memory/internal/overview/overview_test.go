@@ -300,7 +300,8 @@ func TestCounterUnanswered(t *testing.T) {
 }
 
 // Privacy: a pattern resting on health-tagged evidence is answered as ov:cat:health:…, not standing, with its
-// categories; a general one as ov:pattern:…, standing, ranked between the scattered entries and the profile summary.
+// categories; a general one as ov:pattern:…, ranked between the scattered entries and the profile summary, with a
+// score and a side for the standing set (memsrc decides whether it stands: never the maker, 0.2.0-beta.52).
 func TestExitsPrivacy(t *testing.T) {
 	st := fixture()
 	s := newState()
@@ -308,20 +309,22 @@ func TestExitsPrivacy(t *testing.T) {
 		t.Fatal(err)
 	}
 	ex := Exits(s)
-	var general, health *memsrc.Entry
+	var general, health *memsrc.Extra
 	for i := range ex {
-		x := &ex[i].Entry
+		x := &ex[i]
 		switch {
-		case strings.HasPrefix(x.ID, "ov:pattern:"):
+		case strings.HasPrefix(x.Entry.ID, "ov:pattern:"):
 			general = x
-		case strings.HasPrefix(x.ID, "ov:cat:health:"):
+		case strings.HasPrefix(x.Entry.ID, "ov:cat:health:"):
 			health = x
 		}
 	}
-	if general == nil || !general.Standing || general.Rank < rankBottom || general.Rank > rankTop || len(general.Categories) != 0 {
+	if general == nil || general.Entry.Standing || general.Entry.Rank < rankBottom || general.Entry.Rank > rankTop ||
+		len(general.Entry.Categories) != 0 || general.Kind == "" || general.Score <= 0 {
 		t.Fatalf("general %+v", general)
 	}
-	if health == nil || health.Standing || health.Rank != rankCat || !slices.Contains(health.Categories, entry.CatHealth) {
+	if health == nil || health.Entry.Standing || health.Kind != "" || health.Entry.Rank != rankCat ||
+		!slices.Contains(health.Entry.Categories, entry.CatHealth) {
 		t.Fatalf("health %+v", health)
 	}
 	// The report and the summary never quote it.
@@ -604,7 +607,166 @@ func TestOverviewBackedProvider(t *testing.T) {
 	if !found || strings.Contains(sum.Overview, "rests after heavy days") {
 		t.Fatalf("judgement section %+v", sum.Sections)
 	}
+	// What the user is doing now stays, though its facet has a pattern: the recent highlights come from it.
+	st.Entries["n1"] = &entry.Entry{ID: "n1", Facet: entry.Persona, Grain: entry.Action, Type: "current_work", Text: "writing the migration plan",
+		Status: entry.Stable, Origin: entry.Behavior, Tagged: true, First: "2026-11-20", Last: "2026-11-20", Count: 2,
+		Evidence: []entry.Evidence{{Source: entry.SrcAssistant, Ref: "unit/n1", Day: "2026-11-20", Who: entry.WhoSelf, Role: "user", Quote: "q"}}}
+	s.Patterns["ov:persona0001"] = &Pattern{ID: "ov:persona0001", Facet: "persona", Lifecycle: Core, Text: "asks why"}
+	if !slices.ContainsFunc(prov.Items(st), func(it profile.CandidateItem) bool { return it.ID == "n1" }) {
+		t.Fatal("the current work was dropped with its facet's scattered entries")
+	}
+	if sum := profile.BuildWith(st, prov, now, "zh-Hans"); !slices.ContainsFunc(sum.Recent, func(r string) bool { return strings.Contains(r, "migration plan") }) {
+		t.Fatalf("recent %v", sum.Recent)
+	}
+	delete(st.Entries, "n1")
 	if base := (OverviewBackedProvider{}).Items(st); len(base) != len(profile.EntriesProvider{}.Items(st)) {
 		t.Fatal("no overview state: not the curated entries")
+	}
+}
+
+// A contradiction is kept as its two poles, each in its situation; a blank pole is dropped, at most two stay.
+func TestPolesText(t *testing.T) {
+	ps := cleanPoles([]Pole{{When: "a deadline is near", Choice: "ship the smaller cut"}, {When: " ", Choice: "x"},
+		{When: "the design is open", Choice: "explore widely"}, {When: "third", Choice: "dropped"}})
+	if len(ps) != 2 || ps[1].When != "the design is open" {
+		t.Fatalf("poles %+v", ps)
+	}
+	txt := Text(&Pattern{Facet: "judgement", Text: "weighs speed against breadth", Poles: ps})
+	if !strings.Contains(txt, "两端：a deadline is near时，ship the smaller cut；the design is open时，explore widely") {
+		t.Errorf("text %q", txt)
+	}
+}
+
+// A pattern scores by multi-dimensional leverage (unified design §2.1): cross-scene/user-owned/check hard contracts
+// score highest with progressive CoveredIDs weight, single-scene non-owned contracts are capped at 70, regular
+// contracts and principles reward spread/owned/decision-attention/judgement-workflow/poles, and unused patterns score 0.
+func TestPatternScoreScale(t *testing.T) {
+	hard := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, Hard: true, Polarity: PolarityCheck,
+		ViolationCount: 5, ScenesCount: 3, UniqueQuotes: 6, CoveredIDs: []string{"i-hand"}}
+	if s := Score(hard); s != 80+20+18+12+15+6 {
+		t.Errorf("hard contract score = %d, want %d", s, 151)
+	}
+	multiOwned := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, Hard: true, Polarity: PolarityRoute,
+		ViolationCount: 1, ScenesCount: 1, UniqueQuotes: 6, CoveredIDs: []string{"h1", "h2", "h3", "h4", "h5", "h6"}}
+	if s := Score(multiOwned); s != 80+4+6+12+30 {
+		t.Errorf("multi-owned hard contract score = %d, want %d", s, 132)
+	}
+	narrowHard := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, Hard: true, ViolationCount: 10, ScenesCount: 1, UniqueQuotes: 10}
+	if s := Score(narrowHard); s != 70 {
+		t.Errorf("single-scene non-owned hard contract score = %d, want 70 cap", s)
+	}
+	reg := &Pattern{Facet: "interaction", Kind: KindContract, Lifecycle: Core, ScenesCount: 3, UniqueQuotes: 4, ActiveWeeks: []string{"w1", "w2"}}
+	if s := Score(reg); s != 30+18+8+8 {
+		t.Errorf("regular contract score = %d, want %d", s, 64)
+	}
+	prin := &Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, Dimension: "decision", ScenesCount: 5, UniqueQuotes: 10,
+		ActiveWeeks: []string{"w1", "w2", "w3", "w4", "w5"}, Exception: "only for hotfixes", CoveredIDs: []string{"j-hand"}}
+	if s := Score(prin); s != 30+25+20+15+10+18+8+6 {
+		t.Errorf("principle score = %d, want %d", s, 132)
+	}
+	if Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, Dimension: "decision", ScenesCount: 2}) <=
+		Score(&Pattern{Facet: "persona", Kind: KindPrinciple, Lifecycle: Core, Dimension: "thinking", ScenesCount: 2}) {
+		t.Error("actionable decision/judgement principle not above static persona/thinking observation")
+	}
+	if Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Core, ScenesCount: 2}) <=
+		Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Scoped, ScenesCount: 2}) {
+		t.Error("core not above scoped")
+	}
+	if Score(&Pattern{Facet: "judgement", Kind: KindPrinciple, Lifecycle: Candidate, ScenesCount: 9}) != 0 {
+		t.Error("an unused pattern scored")
+	}
+}
+
+// Audit quotes sample round-robin across EvidenceIDs so one large class cannot crowd out the others.
+func TestAuditQuotesRoundRobin(t *testing.T) {
+	var all []*entry.Entry
+	var bigMembers []*entry.Entry
+	for i := 0; i < 10; i++ {
+		a := action(fmt.Sprintf("big%d", i), entry.Workflow, "alpha", entry.SrcAssistant, "2026-11-10", fmt.Sprintf("big quote %d", i))
+		all = append(all, a)
+		bigMembers = append(bigMembers, a)
+	}
+	big := class("cbig", entry.Workflow, "big class", bigMembers...)
+	other := action("other1", entry.Workflow, "beta", entry.SrcAgent, "2026-11-18", "second evidence quote")
+	all = append(all, big, other)
+	st := state(all...)
+	p := &Pattern{ID: "ov:rr", Facet: string(entry.Workflow), EvidenceIDs: []string{"cbig", "other1"}}
+	qs := quotes(st, p, 4)
+	if len(qs) != 4 {
+		t.Fatalf("got %d quotes: %v", len(qs), qs)
+	}
+	if !slices.ContainsFunc(qs, func(s string) bool { return strings.Contains(s, "second evidence quote") }) {
+		t.Fatalf("second evidence id crowded out: %v", qs)
+	}
+}
+
+// Hard holdout drops strawman distractors and easy candidates a no-memory model gets right in both orders.
+func TestHoldoutHardFilter(t *testing.T) {
+	st := fixture()
+	s := newState()
+	if _, err := runner(&fakeModel{}).Weekly(context.Background(), st, s, "2026-W47", ""); err != nil {
+		t.Fatal(err)
+	}
+	// Strawman distractor: filtered out before any model call.
+	straw := action("qstraw", entry.Judgement, "alpha", entry.SrcAsk, "2026-11-24", "check logs")
+	straw.Situation, straw.Choice, straw.Rejected = "a service fails", "inspect logs before restarting", "blindly ignore errors and restart"
+	// Easy question: fake model answers right without memory in both orders -> dropped by filterHard.
+	easy := action("qeasy", entry.Judgement, "alpha", entry.SrcAsk, "2026-11-24", "easy choice")
+	easy.Situation, easy.Choice, easy.Rejected = "picking a colour", "choose obvious option", "choose odd option"
+	// Hard question: fake model only gets it right when memory mentions "pilot".
+	hard := action("qhard", entry.Judgement, "alpha", entry.SrcAsk, "2026-11-25", "pilot rollout")
+	hard.Situation, hard.Choice, hard.Rejected = "rolling out a change", "pilot with a small batch first", "roll out to all users at once"
+	st.Entries["qstraw"], st.Entries["qeasy"], st.Entries["qhard"] = straw, easy, hard
+
+	m := &fakeModel{predict: func(in predictInput) predictOutput {
+		var o predictOutput
+		for _, q := range in.Questions {
+			pick := "B"
+			switch {
+			case strings.Contains(q.A, "obvious"):
+				pick = "A"
+			case strings.Contains(q.B, "obvious"):
+				pick = "B"
+			case strings.Contains(in.Memory, "pilot"):
+				if strings.Contains(q.A, "pilot") {
+					pick = "A"
+				} else {
+					pick = "B"
+				}
+			}
+			o.Answers = append(o.Answers, struct {
+				ID   string `json:"id"`
+				Pick string `json:"pick"`
+			}{q.ID, pick})
+		}
+		return o
+	}}
+	h, err := runner(m).Holdout(context.Background(), st, s, "2026-W48", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.N != 1 || h.DroppedEasy != 1 || h.Candidates != 2 {
+		t.Fatalf("expected 1 hard question (1 dropped easy, 2 scanned, strawman excluded): %+v", h)
+	}
+	if h.Rate[ArmOverview] != 1 || h.Rate[ArmNone] != 0 {
+		t.Fatalf("unexpected rates: %+v", h)
+	}
+}
+
+func TestEnrichSubjects(t *testing.T) {
+	p := &Pattern{
+		ID: "ov:tp1", Facet: string(entry.Tools), Lifecycle: Core,
+		Text:      "用 task_plan 派运维写操作时，带 supervisor 并设 user_requested=true，估时间不按人工期。",
+		Exception: "涉及 1Password 时改用 secret_env",
+		Subjects:  []string{"existing-tag"},
+	}
+	got := EnrichSubjects(p)
+	if len(got) > memsrc.MaxSubjects {
+		t.Fatalf("enriched subjects exceeded MaxSubjects: %d %v", len(got), got)
+	}
+	for _, want := range []string{"existing-tag", "task_plan", "1Password", "派活", "排期", "密钥", "工具"} {
+		if !slices.Contains(got, want) {
+			t.Errorf("missing expected enriched subject %q in %v", want, got)
+		}
 	}
 }

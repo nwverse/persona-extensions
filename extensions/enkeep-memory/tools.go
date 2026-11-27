@@ -92,8 +92,14 @@ var readTools = []tool{
 		"facet by lifecycle (core_stable, scoped, candidate, drifting, era_closed, retired), the last weekly and monthly " +
 		"passes (model calls, what they made or moved), the forward checks (the patterns predicting a week's real choices " +
 		"against the scattered entries and no memory), the last blind spot check, the weekly report's push, and how many " +
-		"overview entries memory.entries answers. Read-only.",
-		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}}},
+		"overview entries memory.entries answers. Optional from/to (YYYY-MM-DD) also report per-contract violation " +
+		"recurrences (including unabsorbed Fast-Path hot-slot entries) and rate per 100 ask/decision cards in that window; " +
+		"optional query filters contracts by substring or ID. Read-only.",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+			"from":  map[string]any{"type": "string", "pattern": `^\d{4}-\d{2}-\d{2}$`, "description": "optional window start YYYY-MM-DD for per-contract violation readings"},
+			"to":    map[string]any{"type": "string", "pattern": `^\d{4}-\d{2}-\d{2}$`, "description": "optional window end YYYY-MM-DD for per-contract violation readings"},
+			"query": map[string]any{"type": "string", "description": "optional substring or contract ID filter for violation readings"},
+		}}},
 }
 
 var writeTools = []tool{
@@ -470,10 +476,15 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		}
 		return a.c.Seeds(exits.Usable).Text(), nil
 	case "enkeep_overview_status":
-		if err := strictDecode(raw, &struct{}{}); err != nil {
+		var in struct {
+			From  string `json:"from"`
+			To    string `json:"to"`
+			Query string `json:"query"`
+		}
+		if err := strictDecode(raw, &in); err != nil {
 			return "", err
 		}
-		return a.overviewStatus(), nil
+		return a.overviewStatusRange(strings.TrimSpace(in.From), strings.TrimSpace(in.To), strings.TrimSpace(in.Query)), nil
 	case "enkeep_overview_run":
 		kind, period, err := overviewArgs(raw)
 		if err != nil {
@@ -501,9 +512,13 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		if err := strictDecode(raw, &in); err != nil {
 			return "", err
 		}
-		r, err := a.c.QueueRerunWithin(strings.TrimSpace(in.From), strings.TrimSpace(in.To), a.localDay(), in.Force, toolWait)
+		from, to, today := strings.TrimSpace(in.From), strings.TrimSpace(in.To), a.localDay()
+		r, err := a.c.QueueRerunWithin(from, to, today, in.Force, toolWait)
+		if errors.Is(err, curate.ErrBusy) {
+			return a.queueRerun(from, to, today, in.Force)
+		}
 		if err != nil {
-			return "", a.busy(err)
+			return "", err
 		}
 		var b strings.Builder
 		if r.Force {
@@ -538,6 +553,14 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		}
 		if len(p.Forced) > 0 {
 			fmt.Fprintf(&b, " Queued with force (read again although already read with this prompt), waiting: %s.", span(p.Forced))
+		}
+		if pendN, pendF := a.pendingRerunDays(); len(pendN) > 0 || len(pendF) > 0 {
+			if len(pendN) > 0 {
+				fmt.Fprintf(&b, " Pending queue (joins after current run): %s.", span(pendN))
+			}
+			if len(pendF) > 0 {
+				fmt.Fprintf(&b, " Pending force queue (joins at front after current run): %s.", span(pendF))
+			}
 		}
 		if pr := p.Running; pr != nil {
 			fmt.Fprintf(&b, " Running now: %s %s", pr.Kind, pr.Period)

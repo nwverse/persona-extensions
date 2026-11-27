@@ -127,124 +127,128 @@ func (a *app) read() (*store.State, func()) {
 
 func (a *app) listPage(s page) *wire.View {
 	c := a.c
-	st, done := a.read()
-	defer done()
 	v := &wire.View{Title: "enkeep 记忆"}
-	head := wire.Section{}
-	if c.Cfg.Shadow(st.Installed, time.Now()) {
-		head.Items = append(head.Items, secondary(fmt.Sprintf("影子期（前 %d 天）：只提议、不改知识库。点「对」「不对」帮它校准，各类提议的准确率够了再开自动合入。", c.Cfg.ShadowDays)))
-	}
-	if p, ok := c.Live.Progress(); ok {
-		head.Items = append(head.Items, wire.Component{Type: wire.ComponentText, Text: progressText(p, time.Now()) + "。下面是上次整理完的结果，跑完会更新。", Tone: wire.ToneCaution})
-	}
-	a.mu.Lock()
-	if a.running != "" && !strings.HasPrefix(a.running, "daily") && !strings.HasPrefix(a.running, "weekly") {
-		head.Items = append(head.Items, secondary("正在运行："+a.running))
-	}
-	if a.lastErr != "" {
-		head.Items = append(head.Items, wire.Component{Type: wire.ComponentText, Text: "上次运行出错：" + a.lastErr, Tone: wire.ToneDanger})
-	}
-	a.mu.Unlock()
-	if len(head.Items) > 0 {
-		v.Sections = append(v.Sections, head)
-	}
-	const reviewPerPage = 100
 	var rows []wire.Component
 	sectionTitle := ""
-	switch s.Tab {
-	case "review":
-		var pending []*store.Proposal
-		for _, p := range st.Proposals {
-			if p.Status != "pending" && p.Status != "later" && p.Status != "blocked" && p.Status != "held" && !(p.Status == "auto" && !p.Acked) {
-				continue
+	var shown []string
+	func() {
+		st, done := a.read()
+		defer done()
+		head := wire.Section{}
+		if c.Cfg.Shadow(st.Installed, time.Now()) {
+			head.Items = append(head.Items, secondary(fmt.Sprintf("影子期（前 %d 天）：只提议、不改知识库。点「对」「不对」帮它校准，各类提议的准确率够了再开自动合入。", c.Cfg.ShadowDays)))
+		}
+		if p, ok := c.Live.Progress(); ok {
+			head.Items = append(head.Items, wire.Component{Type: wire.ComponentText, Text: progressText(p, time.Now()) + "。下面是上次整理完的结果，跑完会更新。", Tone: wire.ToneCaution})
+		}
+		a.mu.Lock()
+		if a.running != "" && !strings.HasPrefix(a.running, "daily") && !strings.HasPrefix(a.running, "weekly") {
+			head.Items = append(head.Items, secondary("正在运行："+a.running))
+		}
+		if a.lastErr != "" {
+			head.Items = append(head.Items, wire.Component{Type: wire.ComponentText, Text: "上次运行出错：" + a.lastErr, Tone: wire.ToneDanger})
+		}
+		a.mu.Unlock()
+		if len(head.Items) > 0 {
+			v.Sections = append(v.Sections, head)
+		}
+		const reviewPerPage = 100
+		switch s.Tab {
+		case "review":
+			var pending []*store.Proposal
+			for _, p := range st.Proposals {
+				if p.Status != "pending" && p.Status != "later" && p.Status != "blocked" && p.Status != "held" && !(p.Status == "auto" && !p.Acked) {
+					continue
+				}
+				pending = append(pending, p)
 			}
-			pending = append(pending, p)
-		}
-		from := 0
-		fmt.Sscan(s.Sub, &from)
-		from = max(0, min(from, len(pending)))
-		to := min(len(pending), from+reviewPerPage)
-		var shown []string
-		for _, p := range pending[from:to] {
-			title := short(p.Title, 60)
-			if title == "" {
-				title = p.ID
+			from := 0
+			fmt.Sscan(s.Sub, &from)
+			from = max(0, min(from, len(pending)))
+			to := min(len(pending), from+reviewPerPage)
+			for _, p := range pending[from:to] {
+				title := short(p.Title, 60)
+				if title == "" {
+					title = p.ID
+				}
+				rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: title, Subtitle: curate.ProposalKinds[p.Kind].Title + " · " + p.ID,
+					Badge: &wire.Badge{Text: statusLabel[p.Status], Tone: riskTone[p.Risk]}, Action: ext.Open("open:"+p.ID, "", page{Tab: s.Tab, Open: p.ID}, p.ID)})
+				if p.Shown == "" {
+					shown = append(shown, p.ID)
+				}
 			}
-			rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: title, Subtitle: curate.ProposalKinds[p.Kind].Title + " · " + p.ID,
-				Badge: &wire.Badge{Text: statusLabel[p.Status], Tone: riskTone[p.Risk]}, Action: ext.Open("open:"+p.ID, "", page{Tab: s.Tab, Open: p.ID}, p.ID)})
-			shown = append(shown, p.ID)
-		}
-		if to < len(pending) {
-			rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: fmt.Sprintf("后面 %d 条", len(pending)-to),
-				Action: ext.Open("open:review:more", "", page{Tab: s.Tab, Sub: fmt.Sprint(to)}, "待确认")})
-		}
-		if len(pending) > reviewPerPage || from > 0 {
-			sectionTitle = fmt.Sprintf("第 %d–%d 条，共 %d 条", from+1, to, len(pending))
-		}
-		go c.MarkShown(shown) // expiry counts from the day a proposal was first shown
-	case "fact", "practice", "knowledge":
-		class := s.Tab
-		if class == "knowledge" {
-			class = "" // knowledge and practices share a tab
-		}
-		for _, it := range st.ItemsBy(class, func(it *store.Item) bool {
-			return it.Status != "merged" && it.Status != "rejected" && (s.Tab != "knowledge" || it.Class != store.Fact)
-		}) {
-			if len(rows) >= 100 {
-				break
+			if to < len(pending) {
+				rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: fmt.Sprintf("后面 %d 条", len(pending)-to),
+					Action: ext.Open("open:review:more", "", page{Tab: s.Tab, Sub: fmt.Sprint(to)}, "待确认")})
 			}
-			sub := fmt.Sprintf("%s · %d 个来源", it.LastSeen, it.Sources)
-			if len(it.Flags) > 0 {
-				sub += " · 有标记"
+			if len(pending) > reviewPerPage || from > 0 {
+				sectionTitle = fmt.Sprintf("第 %d–%d 条，共 %d 条", from+1, to, len(pending))
 			}
-			rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: short(it.Claim, 60), Subtitle: sub,
-				Badge: &wire.Badge{Text: statusLabel[it.Status]}, Action: ext.Open("open:"+it.ID, "", page{Tab: s.Tab, Open: it.ID}, short(it.Claim, 20))})
-		}
-	case "graph":
-		type nn struct {
-			n *store.Node
-			k int
-		}
-		var ns []nn
-		for _, n := range st.Graph.Nodes {
-			if n.MergedInto != "" {
-				continue
+		case "fact", "practice", "knowledge":
+			class := s.Tab
+			if class == "knowledge" {
+				class = "" // knowledge and practices share a tab
 			}
-			k := len(st.Graph.About(n.ID, func(x *store.Assertion) bool { return x.Status == "active" || x.Status == "candidate" }))
-			if k > 0 {
-				ns = append(ns, nn{n, k})
-			}
-		}
-		sort.Slice(ns, func(i, j int) bool { return ns[i].k > ns[j].k || (ns[i].k == ns[j].k && ns[i].n.ID < ns[j].n.ID) })
-		for _, x := range ns {
-			if len(rows) >= 100 {
-				break
-			}
-			rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: x.n.Name, Subtitle: fmt.Sprintf("%s · %d 条关系", x.n.Type, x.k),
-				Action: ext.Open("open:"+x.n.ID, "", page{Tab: s.Tab, Open: x.n.ID}, x.n.Name)})
-		}
-	case "memory":
-		for _, f := range entry.Facets {
-			for _, e := range curate.EntriesOf(st, f, func(e *entry.Entry) bool { return e.Grain != entry.Action }) {
-				if len(rows) >= 200 {
+			for _, it := range st.ItemsBy(class, func(it *store.Item) bool {
+				return it.Status != "merged" && it.Status != "rejected" && (s.Tab != "knowledge" || it.Class != store.Fact)
+			}) {
+				if len(rows) >= 100 {
 					break
 				}
-				rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: short(e.Shown(), 60),
-					Subtitle: fmt.Sprintf("%s · %s · %d 次 · %d 个活跃天", f, e.Grain, e.Count, len(e.ActiveDays)),
-					Badge:    &wire.Badge{Text: statusLabel[string(e.Status)]}, Action: ext.Open("open:"+e.ID, "", page{Tab: s.Tab, Open: "e:" + e.ID}, short(e.Shown(), 20))})
+				sub := fmt.Sprintf("%s · %d 个来源", it.LastSeen, it.Sources)
+				if len(it.Flags) > 0 {
+					sub += " · 有标记"
+				}
+				rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: short(it.Claim, 60), Subtitle: sub,
+					Badge: &wire.Badge{Text: statusLabel[it.Status]}, Action: ext.Open("open:"+it.ID, "", page{Tab: s.Tab, Open: it.ID}, short(it.Claim, 20))})
+			}
+		case "graph":
+			type nn struct {
+				n *store.Node
+				k int
+			}
+			var ns []nn
+			for _, n := range st.Graph.Nodes {
+				if n.MergedInto != "" {
+					continue
+				}
+				k := len(st.Graph.About(n.ID, func(x *store.Assertion) bool { return x.Status == "active" || x.Status == "candidate" }))
+				if k > 0 {
+					ns = append(ns, nn{n, k})
+				}
+			}
+			sort.Slice(ns, func(i, j int) bool { return ns[i].k > ns[j].k || (ns[i].k == ns[j].k && ns[i].n.ID < ns[j].n.ID) })
+			for _, x := range ns {
+				if len(rows) >= 100 {
+					break
+				}
+				rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: x.n.Name, Subtitle: fmt.Sprintf("%s · %d 条关系", x.n.Type, x.k),
+					Action: ext.Open("open:"+x.n.ID, "", page{Tab: s.Tab, Open: x.n.ID}, x.n.Name)})
+			}
+		case "memory":
+			for _, f := range entry.Facets {
+				for _, e := range curate.EntriesOf(st, f, func(e *entry.Entry) bool { return e.Grain != entry.Action }) {
+					if len(rows) >= 200 {
+						break
+					}
+					rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: short(e.Shown(), 60),
+						Subtitle: fmt.Sprintf("%s · %s · %d 次 · %d 个活跃天", f, e.Grain, e.Count, len(e.ActiveDays)),
+						Badge:    &wire.Badge{Text: statusLabel[string(e.Status)]}, Action: ext.Open("open:"+e.ID, "", page{Tab: s.Tab, Open: "e:" + e.ID}, short(e.Shown(), 20))})
+				}
+			}
+		case "judgement":
+			rows = a.judgementRows(st, v)
+		case "rules":
+			rows = a.ruleRows(st)
+		case "reports":
+			for i := len(st.Runs) - 1; i >= 0 && len(rows) < 30; i-- {
+				r := st.Runs[i]
+				rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: map[string]string{"daily": "日级", "weekly": "周级"}[r.Kind] + " " + r.Period,
+					Subtitle: fmt.Sprintf("约 %d token", r.Tokens), Action: ext.Open("open:"+r.ID, "", page{Tab: s.Tab, Open: r.ID}, r.Period)})
 			}
 		}
-	case "judgement":
-		rows = a.judgementRows(st, v)
-	case "rules":
-		rows = a.ruleRows(st)
-	case "reports":
-		for i := len(st.Runs) - 1; i >= 0 && len(rows) < 30; i-- {
-			r := st.Runs[i]
-			rows = append(rows, wire.Component{Type: wire.ComponentRow, Title: map[string]string{"daily": "日级", "weekly": "周级"}[r.Kind] + " " + r.Period,
-				Subtitle: fmt.Sprintf("约 %d token", r.Tokens), Action: ext.Open("open:"+r.ID, "", page{Tab: s.Tab, Open: r.ID}, r.Period)})
-		}
-	}
+	}()
+	a.markShown(shown) // expiry counts from the day a proposal was first shown
 	if len(rows) == 0 {
 		rows = append(rows, wire.Component{Type: wire.ComponentEmpty, Title: "这里还没有东西"})
 	}

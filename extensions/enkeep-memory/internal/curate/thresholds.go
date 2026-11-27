@@ -82,8 +82,8 @@ type Decision struct {
 //     active days; self-reported, first-run and hand-written entries start stable;
 //   - shifting: counter-examples are ≥25% of the chances in the last 20 active days (shown, not exported);
 //   - dormant: quiet for 90 active days for one-off entries, or 180 active days for established/durable entries; an
-//     entry the user confirmed or pinned is not put to sleep but asked about once (the "ask" result, for the weekly
-//     report);
+//     entry the user confirmed or pinned, and a stable rooted one (entry.Rooted: a core principle), is not put to
+//     sleep but asked about once (the "ask" result, for the weekly report);
 //   - candidate otherwise.
 //
 // Retired entries and user-pinned ones keep what they have. ask says the weekly report should ask the user about it.
@@ -113,6 +113,11 @@ func Settle(s *store.State, e *entry.Entry, t Tally, today string) (d Decision, 
 	if quietDays(s, e.Last, today) >= limit {
 		if confirmed || e.Origin != entry.Behavior {
 			return Decision{e.Status, "quiet, confirmed: ask once"}, !slices.Contains(e.Flags, flagAskedDormant)
+		}
+		// A core principle (evidence in four ISO weeks, or a lasting cross-project principle) is not said again and
+		// again: quiet days alone do not put it to sleep; the user is asked once, as for a confirmed one.
+		if e.Status == entry.Stable && entry.Rooted(e, tallyDays(t)) {
+			return Decision{e.Status, "quiet, rooted: ask once"}, !slices.Contains(e.Flags, flagAskedDormant)
 		}
 		return Decision{entry.Dormant, fmt.Sprintf("quiet for %d active days", limit)}, false
 	}
@@ -225,3 +230,12 @@ func dormantLimit(e *entry.Entry, t Tally) int {
 
 // flagAskedDormant: the weekly report has asked the user once whether a quiet, confirmed entry still holds.
 const flagAskedDormant = "asked_dormant"
+
+// tallyDays are the days of t's own occurrences, for entry.Rooted.
+func tallyDays(t Tally) []string {
+	out := make([]string, 0, len(t.For))
+	for _, o := range t.For {
+		out = append(out, o.day)
+	}
+	return out
+}

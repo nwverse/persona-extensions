@@ -11,7 +11,7 @@ import (
 
 // OverviewBackedProvider feeds the profile summary (internal/profile) from the overview: the used patterns of a facet
 // come first, and for a facet with a general pattern they stand in for the scattered actions, classes and abstracts
-// they were made from. A pinned entry, a current focus, a categorised entry (it goes to its own sensitive section)
+// they were made from. A pinned entry, a current focus, what the user is doing now (the recent highlights' source), a categorised entry (it goes to its own sensitive section)
 // and the world facet's people and projects are kept as they are; a facet with no used pattern falls back to the
 // curated entries (profile.EntriesProvider).
 type OverviewBackedProvider struct {
@@ -46,13 +46,10 @@ func (o OverviewBackedProvider) Items(st *store.State) []profile.CandidateItem {
 		if len(p.Categories) == 0 && p.OriginSpace != "" && f != entry.Interaction && f != entry.Persona {
 			continue
 		}
-		text := strings.TrimSpace(p.Text)
-		if x := strings.TrimSpace(p.Exception); x != "" && !strings.Contains(text, x) {
-			text += "（例外：" + x + "）"
-		}
+		text := strings.TrimSpace(p.Text) + suffixOf(p)
 		out = append(out, profile.CandidateItem{
 			ID: p.ID, Facet: f, Text: text, Last: p.LastEvidence, Priority: 0, Pattern: true,
-			Weight:     patternWeight + p.ScenesCount*p.SourcesCount,
+			Weight:     patternWeight + Score(p)*10 + p.ScenesCount*p.SourcesCount,
 			Categories: slices.Clone(p.Categories), OriginSpace: p.OriginSpace, Subjects: slices.Clone(p.Subjects),
 		})
 		if len(p.Categories) == 0 {
@@ -60,7 +57,7 @@ func (o OverviewBackedProvider) Items(st *store.State) []profile.CandidateItem {
 		}
 	}
 	for _, it := range base {
-		if covered[it.Facet] && it.Facet != entry.World && !it.Pinned && !it.IsFocus && len(it.Categories) == 0 {
+		if covered[it.Facet] && it.Facet != entry.World && !it.Pinned && !it.IsFocus && !it.Own && len(it.Categories) == 0 {
 			continue
 		}
 		out = append(out, it)

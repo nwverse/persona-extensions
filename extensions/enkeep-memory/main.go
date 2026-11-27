@@ -64,6 +64,13 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "hardeval" {
+		if err := hardevalCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "enkeep-memory hardeval:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "dryrun" {
 		if err := dryrun(os.Args[2:]); err != nil {
 			fmt.Fprintln(os.Stderr, "enkeep-memory dryrun:", err)

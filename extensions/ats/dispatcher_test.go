@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -352,7 +353,7 @@ func TestRestartPicksTheAttemptUpWhereItWas(t *testing.T) {
 	if got.State != StateRunning || got.AttemptNo != 1 || got.Exec.SessionID != "session-1" {
 		t.Fatalf("after the restart: %s attempt %d exec %+v", got.State, got.AttemptNo, got.Exec)
 	}
-	if got.AgentType != "" || got.Attempts[0].Harness != "" || viewTask(got, false).AgentType != AgentClaude {
+	if got.AgentType != "" || got.Attempts[0].Harness != "" || viewTask(got, promptNone).AgentType != AgentClaude {
 		t.Fatalf("legacy engine fields changed after the restart: %+v", got)
 	}
 	if len(r.hub.created) != 1 {
@@ -458,5 +459,163 @@ func TestBlockedReason(t *testing.T) {
 		if got != want || blocked != (want != "") {
 			t.Errorf("%q: %q %v", reply, got, blocked)
 		}
+	}
+}
+
+func TestCreateSessionFailureCleansUpBranchAndRecordsNoPhantomArtifacts(t *testing.T) {
+	r := newRig(t)
+	one := 1
+	r.hub.createErr = errors.New("hub unavailable")
+	task := r.enqueue(EnqueueInput{Title: "Writable task", PermissionProfile: PermissionDefault, MaxRetries: &one})
+
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateQueued || got.NotBefore == nil || got.FailureReason != "infra_error" {
+		t.Fatalf("after CreateSession failure: state %s not_before %v reason %s", got.State, got.NotBefore, got.FailureReason)
+	}
+	if branches := runGit(t, r.repo, "branch", "--list", "ats/*"); branches != "" {
+		t.Fatalf("leaked untouched branch after CreateSession failure: %q", branches)
+	}
+	key, err := attemptKey(task.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(r.worker.worktree(key)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("leaked worktree after CreateSession failure: %v", err)
+	}
+	if kinds := artifactKinds(got); len(kinds) != 0 {
+		t.Fatalf("fabricated artifacts after CreateSession failure: %+v", got.Reports[0].Artifacts)
+	}
+
+	// Retry after CreateSession failure must start fresh from base, not pretend to resume a phantom commit.
+	r.hub.createErr = nil
+	r.now = got.NotBefore.Add(time.Second)
+	r.tick()
+	if len(r.hub.created) != 1 {
+		t.Fatalf("retry sessions started: %d", len(r.hub.created))
+	}
+	if strings.Contains(r.hub.created[0].Prompt, "continue from it") {
+		t.Fatalf("retry prompt falsely claimed to resume a commit:\n%s", r.hub.created[0].Prompt)
+	}
+}
+
+func TestCancelDuringCreateSessionInterruptsSessionAndReleasesWorktree(t *testing.T) {
+	r := newRig(t)
+	task := r.enqueue(EnqueueInput{Title: "Cancel during start", PermissionProfile: PermissionDefault})
+	var wt string
+	r.hub.onCreateSession = func(req sessionRequest) {
+		wt = req.Cwd
+		if _, err := r.d.cancel(context.Background(), task.ID); err != nil {
+			t.Errorf("cancel during CreateSession: %v", err)
+		}
+	}
+
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateCanceled || got.Exec != nil {
+		t.Fatalf("after cancel during CreateSession: state %s exec %+v", got.State, got.Exec)
+	}
+	if !slices.Equal(r.hub.interrupts, []string{"session-1"}) {
+		t.Fatalf("leaked live session (interrupts=%v, want [session-1])", r.hub.interrupts)
+	}
+	if len(r.hub.attached) != 0 {
+		t.Fatalf("attached canceled session to to-do: %v", r.hub.attached)
+	}
+	if wt == "" {
+		t.Fatal("CreateSession was not invoked with a worktree path")
+	}
+	if _, err := os.Stat(wt); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("leaked worktree %s: %v", wt, err)
+	}
+	if branches := runGit(t, r.repo, "branch", "--list", "ats/*"); branches != "" {
+		t.Fatalf("leaked branch: %q", branches)
+	}
+}
+
+func TestCancelDuringPrepareReleasesWorktreeWithoutStartingSession(t *testing.T) {
+	r := newRig(t)
+	task := r.enqueue(EnqueueInput{Title: "Cancel during prepare", PermissionProfile: PermissionDefault})
+	r.nodes.afterPrepare = func() {
+		if _, err := r.d.cancel(context.Background(), task.ID); err != nil {
+			t.Errorf("cancel during prepare: %v", err)
+		}
+	}
+
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateCanceled || got.Exec != nil {
+		t.Fatalf("after cancel during prepare: state %s exec %+v", got.State, got.Exec)
+	}
+	if len(r.hub.requests) != 0 || len(r.hub.created) != 0 {
+		t.Fatalf("started session for canceled task: requests=%d created=%d", len(r.hub.requests), len(r.hub.created))
+	}
+	key, err := attemptKey(task.ID, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(r.worker.worktree(key)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("leaked worktree after cancel during prepare: %v", err)
+	}
+	if branches := runGit(t, r.repo, "branch", "--list", "ats/*"); branches != "" {
+		t.Fatalf("leaked branch after cancel during prepare: %q", branches)
+	}
+}
+
+func TestCancelAlreadyTerminalTaskIsNoop(t *testing.T) {
+	r := newRig(t)
+	task := r.enqueue(EnqueueInput{Title: "Already finished"})
+	r.tick()
+	r.hub.turnEnds("session-1", "u1", "Done.")
+	r.tick()
+	r.tick()
+	if got := r.task(task.ID); got.State != StateSucceeded {
+		t.Fatalf("expected succeeded, got %s", got.State)
+	}
+	callsBefore := len(r.nodes.calls)
+	interruptsBefore := len(r.hub.interrupts)
+	got, err := r.d.cancel(context.Background(), task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.State != StateSucceeded {
+		t.Fatalf("terminal state changed to %s", got.State)
+	}
+	if len(r.nodes.calls) != callsBefore || len(r.hub.interrupts) != interruptsBefore {
+		t.Fatalf("cancel on terminal task ran cleanup: node calls %d->%d interrupts %d->%d",
+			callsBefore, len(r.nodes.calls), interruptsBefore, len(r.hub.interrupts))
+	}
+}
+
+func TestUpdateExecRollsBackInMemoryStateOnSaveError(t *testing.T) {
+	r := newRig(t)
+	task := r.enqueue(EnqueueInput{Title: "Save error rollback"})
+	_, att, err := r.q.LeaseTask(task.ID, "dispatcher", testMachine, r.now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.q.UpdateExec(task.ID, att.FenceToken, r.now, func(e *Execution) {
+		e.MachineID, e.Phase = testMachine, PhasePreparing
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Point dataFile at a nonexistent parent directory so saveLocked fails deterministically.
+	origFile := r.q.dataFile
+	r.q.mu.Lock()
+	r.q.dataFile = filepath.Join(t.TempDir(), "missing", "sub", "queue.json")
+	r.q.mu.Unlock()
+	_, err = r.q.UpdateExec(task.ID, att.FenceToken, r.now, func(e *Execution) {
+		e.Phase, e.SessionID = PhaseWorking, "session-unsaved"
+	})
+	r.q.mu.Lock()
+	r.q.dataFile = origFile
+	r.q.mu.Unlock()
+	if err == nil {
+		t.Fatal("expected UpdateExec to fail when queue file cannot be saved")
+	}
+
+	got := r.task(task.ID)
+	if got.Exec == nil || got.Exec.Phase != PhasePreparing || got.Exec.SessionID != "" {
+		t.Fatalf("UpdateExec left dirty in-memory state after save failure: %+v", got.Exec)
 	}
 }

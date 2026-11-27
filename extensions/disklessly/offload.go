@@ -368,7 +368,7 @@ cat "$SD/files/offloaded.json" 2>/dev/null | tr '\n' ' '; echo
 echo "@@SECTION:INV_LINKED"
 cat "$SD/linked-bundles.json" 2>/dev/null | tr '\n' ' '; echo
 echo "@@SECTION:INV_PH"
-grep -o '"placeholderPath" *: *"[^"]*"' "$SD/files/offloaded.json" 2>/dev/null | sed 's/^"placeholderPath" *: *"//; s/"$//' | head -n 5000 | while IFS= read -r p; do
+grep -o '"placeholderPath" *: *"[^"]*"' "$SD/files/offloaded.json" 2>/dev/null | sed 's/^"placeholderPath" *: *"//; s/"$//; s#\\/#/#g' | head -n 5000 | while IFS= read -r p; do
   [ -f "$p" ] || continue
   printf '%s\t%s\n' "$p" "$(head -c 16384 "$p" | tr '\n\t' '  ')"
 done
@@ -667,6 +667,9 @@ func unixOf(raw json.RawMessage) int64 {
 		if f < 1e9 {
 			f += 978307200
 		}
+		if f < 0 {
+			return 0
+		}
 		return int64(f)
 	}
 	var str string
@@ -678,7 +681,9 @@ func unixOf(raw json.RawMessage) int64 {
 
 func unixText(s string) int64 {
 	if t, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(s)); err == nil {
-		return t.Unix()
+		if u := t.Unix(); u > 0 {
+			return u
+		}
 	}
 	return 0
 }
@@ -935,6 +940,37 @@ func offloadPolicy(p, home string, own []string) string {
 	return ""
 }
 
+// appOffloadPolicy enforces the same sensitive-location redlines as offloadPolicy for macOS .app bundles while still
+// allowing top-level apps under /Applications and $HOME/Applications.
+func appOffloadPolicy(p, home string, own []string) string {
+	inApps := strings.HasPrefix(p, "/Applications/")
+	inHome := home != "" && strings.HasPrefix(p, home+"/")
+	if !inApps && !inHome {
+		return "outside_home"
+	}
+	parts := strings.Split(strings.TrimPrefix(p, "/"), "/")
+	for _, c := range parts[:len(parts)-1] {
+		if strings.EqualFold(path.Ext(c), ".app") {
+			return "inside_app"
+		}
+	}
+	if inHome {
+		rest := strings.Split(strings.TrimPrefix(p, home+"/"), "/")
+		switch rest[0] {
+		case "Library", ".Trash", "Public":
+			return "app_managed"
+		case ".ssh", ".gnupg", ".aws", ".kube", ".password-store", ".docker":
+			return "credentials"
+		}
+	}
+	for _, o := range own {
+		if o != "" && (p == o || strings.HasPrefix(p, o+"/") || strings.HasPrefix(o, p+"/")) {
+			return "own_data"
+		}
+	}
+	return ""
+}
+
 // validPath reports an absolute, clean path a shell line can carry.
 func validPath(p string) bool {
 	return strings.HasPrefix(p, "/") && path.Clean(p) == p && p != "/" && !strings.ContainsAny(p, "\x00\r\n")
@@ -997,8 +1033,8 @@ func checkOffloadPaths(ctx context.Context, runner Runner, m *Machine, platform 
 						c.Code = "app_platform"
 					case stub:
 						c.Code = "already_offloaded"
-					case !strings.HasPrefix(c.Path, "/Applications/") && (home == "" || !strings.HasPrefix(c.Path, home+"/")):
-						c.Code = "outside_home"
+					default:
+						c.Code = appOffloadPolicy(c.Path, home, own)
 					}
 				case taken:
 					c.Code = "placeholder_taken"
@@ -1267,8 +1303,8 @@ func (a *app) startOffloadJob(p offloadParams, loc string, t *offloadTarget, rou
 		}
 	}
 	runner, streamer := a.run(), a.stream()
-	label := map[string]string{"offload": "正在把所选内容上云", "restore": "正在从云端取回所选内容"}[action]
-	kind := map[string]string{"offload": jobOffload, "restore": jobRestore}[action]
+	label := map[string]string{"offload": "正在把选中的内容搬到网盘", "restore": "正在从网盘拿回选中的内容"}[action]
+	kind := map[string]string{"offload": jobFileOffload, "restore": jobFileRestore}[action]
 	a.offloadMu().Lock()
 	if a.offloadData.jobs == nil {
 		a.offloadData.jobs = map[string]*offloadJob{}
@@ -1529,7 +1565,7 @@ func (a *app) runOffloadJob(ctx context.Context, runner Runner, streamer StreamR
 	if j.action == "restore" && slices.ContainsFunc(j.items, func(it offloadJobItem) bool { return it.restore.how == "session" && it.Status == "done" }) {
 		_, _ = RefreshColdIndex(ctx, runner, sc.st, sc.m, now)
 	}
-	verb := map[string]string{"offload": "上云", "restore": "取回"}[j.action]
+	verb := map[string]string{"offload": "搬到网盘", "restore": "拿回来"}[j.action]
 	switch {
 	case canceled:
 		finish(ojCanceled, otr(loc, "canceled"))

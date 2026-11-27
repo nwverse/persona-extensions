@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -579,6 +580,27 @@ type TaskFilter struct {
 	Difficulty string
 	Machine    string
 	Limit      int
+	// After is the cursor (taskCursor) of the last task of the page before: the list goes on after its place.
+	After string
+}
+
+// ErrBadCursor is ListTasks's answer to an After that is not a cursor.
+var ErrBadCursor = errors.New("after is not the next of a page")
+
+// taskCursor is a task's place in the list: when it was submitted, then its id, which is the list's order. A
+// place holds whatever became of the task since (it started, finished or was pruned), so the next page is found
+// without the task.
+func taskCursor(t *Task) string {
+	return strconv.FormatInt(t.SubmittedAt.UnixNano(), 10) + "-" + t.ID
+}
+
+func parseTaskCursor(s string) (submitted time.Time, id string, err error) {
+	ns, id, ok := strings.Cut(s, "-")
+	n, perr := strconv.ParseInt(ns, 10, 64)
+	if !ok || perr != nil || id == "" {
+		return time.Time{}, "", ErrBadCursor
+	}
+	return time.Unix(0, n), id, nil
 }
 
 // storeVersion is the layout of queue-state.json. Version 1 (0.3.0) had no version field and no exec records;
@@ -1201,6 +1223,13 @@ func isRetryableErrorClass(errClass string) bool {
 
 // CancelTask cancels a queued or running task.
 func (q *Queue) CancelTask(taskID string, now time.Time) (*Task, error) {
+	_, after, _, err := q.cancelTaskWithSnapshot(taskID, now)
+	return after, err
+}
+
+// cancelTaskWithSnapshot cancels a non-terminal task and returns its pre-cancel snapshot atomically under q.mu.
+// When the task is already terminal, canceled is false and no state changes are made.
+func (q *Queue) cancelTaskWithSnapshot(taskID string, now time.Time) (before, after *Task, canceled bool, err error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 
@@ -1211,11 +1240,13 @@ func (q *Queue) CancelTask(taskID string, now time.Time) (*Task, error) {
 	}
 	t, ok := q.tasks[taskID]
 	if !ok {
-		return nil, ErrTaskNotFound
+		return nil, nil, false, ErrTaskNotFound
 	}
 	if t.IsTerminal() {
-		return cloneTask(t), nil
+		snap := cloneTask(t)
+		return snap, cloneTask(t), false, nil
 	}
+	before = cloneTask(t)
 	if len(t.Attempts) > 0 {
 		att := &t.Attempts[len(t.Attempts)-1]
 		if isActiveState(att.State) {
@@ -1228,9 +1259,10 @@ func (q *Queue) CancelTask(taskID string, now time.Time) (*Task, error) {
 	t.NotBefore = nil
 	t.FinishedAt = &now
 	if err := q.saveLocked(); err != nil {
-		return nil, err
+		q.tasks[taskID] = before
+		return nil, nil, false, err
 	}
-	return cloneTask(t), nil
+	return before, cloneTask(t), true, nil
 }
 
 // RetryTask resets a failed or canceled task back to the queued state so it can be scheduled again.
@@ -1341,6 +1373,21 @@ func (q *Queue) ListTasks(f TaskFilter) ([]*Task, error) {
 		}
 		return out[i].ID > out[j].ID
 	})
+
+	if f.After != "" {
+		at, id, err := parseTaskCursor(f.After)
+		if err != nil {
+			return nil, err
+		}
+		// The first task after the cursor's place, in the order of the sort above.
+		i := slices.IndexFunc(out, func(t *Task) bool {
+			return t.SubmittedAt.Before(at) || (t.SubmittedAt.Equal(at) && t.ID < id)
+		})
+		if i < 0 {
+			i = len(out)
+		}
+		out = out[i:]
+	}
 
 	limit := f.Limit
 	if limit <= 0 {

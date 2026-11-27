@@ -48,6 +48,12 @@ func (a *app) profileCard(t tr, st *store.State) wire.Section {
 	}
 }
 
+// Points shown under a facet's description, and the characters of a point's one-line title.
+const (
+	profilePointsShown = 4
+	profilePointTitle  = 26
+)
+
 // profilePage renders the mobile-friendly user profile summary subpage (Open: "profile").
 func (a *app) profilePage(t tr, st *store.State, sum *profile.Summary) *wire.View {
 	if sum == nil {
@@ -117,12 +123,22 @@ func (a *app) profilePage(t tr, st *store.State, sum *profile.Summary) *wire.Vie
 			if sec.Summary != "" {
 				items = append(items, text(sec.Summary))
 			}
-			for _, pt := range sec.Points {
+			// The description above carries the facet; the points under it are its sources, one short line each (a
+			// row's title is one line on a phone): a cross-event pattern opens the periodic overview, an entry its page.
+			for i, pt := range sec.Points {
+				if i >= profilePointsShown {
+					break
+				}
 				sub := ""
 				if pt.Last != "" {
 					sub = t.s("最近 ", "last ") + pt.Last
 				}
-				items = append(items, row(pt.Text, sub, nil, ext.Open("open:"+pt.ID, "", page{Tab: tabFacets, Facet: string(sec.Facet), Open: "e:" + pt.ID}, short(pt.Text, 20))))
+				act := ext.Open("open:"+pt.ID, "", page{Tab: tabFacets, Facet: string(sec.Facet), Open: "e:" + pt.ID}, short(pt.Text, 20))
+				if pt.Pattern {
+					sub = strings.TrimSuffix(t.s("跨事模式 · ", "Cross-event pattern · ")+sub, " · ")
+					act = ext.Open("open:ov:"+pt.ID, "", page{Tab: tabStart, Open: "overview"}, t.s("定期总览", "Periodic overview"))
+				}
+				items = append(items, row(short(pt.Text, profilePointTitle), sub, nil, act))
 			}
 		}
 		items = append(items, row(

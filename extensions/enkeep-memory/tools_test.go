@@ -400,7 +400,7 @@ func TestToolSplit(t *testing.T) {
 }
 
 // While a pass holds the store's lock (a daily run holds it for tens of minutes), the tools answer at once: the status
-// from the pages' snapshot, mark_wrong queued and applied when the lock frees, rerun and resettle "busy".
+// from the pages' snapshot, mark_wrong and rerun queued and applied when the lock frees, resettle "busy".
 func TestToolsWhileAPassRuns(t *testing.T) {
 	a, st := toolApp(t)
 	toolWait = 100 * time.Millisecond
@@ -429,8 +429,23 @@ func TestToolsWhileAPassRuns(t *testing.T) {
 	if err != nil || !strings.Contains(text, "1 waiting") || !strings.Contains(text, "Running now: daily 2026-11-08") || !strings.Contains(text, "State as of") {
 		t.Fatalf("status during a run: %q %v", text, err)
 	}
-	if _, err = quick("enkeep_rerun", map[string]any{"from": "2026-11-02", "to": "2026-11-02"}); err == nil || !strings.Contains(err.Error(), "busy: daily 2026-11-08") {
-		t.Fatalf("rerun during a run: %v", err)
+	// Invalid rerun arguments still fail immediately even while busy.
+	if _, err = quick("enkeep_rerun", map[string]any{"from": "2026-11-08", "to": "2026-11-09"}); err == nil {
+		t.Fatal("rerun accepted today while busy")
+	}
+	// Valid rerun (normal and force) returns Queued instead of busy, persists reruns-queue.json, and shows in status.
+	text, err = quick("enkeep_rerun", map[string]any{"from": "2026-11-02", "to": "2026-11-03"})
+	if err != nil || !strings.Contains(text, "Queued 2 day(s)") || !strings.Contains(text, "daily 2026-11-08 is running") {
+		t.Fatalf("rerun during a run: %q %v", text, err)
+	}
+	text, err = quick("enkeep_rerun", map[string]any{"from": "2026-11-05", "to": "2026-11-06", "force": true})
+	if err != nil || !strings.Contains(text, "Queued 2 day(s) with force") || !strings.Contains(text, "daily 2026-11-08 is running") {
+		t.Fatalf("force rerun during a run: %q %v", text, err)
+	}
+	status, err := quick("enkeep_rerun_status", map[string]any{})
+	if err != nil || !strings.Contains(status, "Pending queue (joins after current run): 2026-11-02, 2026-11-03") ||
+		!strings.Contains(status, "Pending force queue (joins at front after current run): 2026-11-05, 2026-11-06") {
+		t.Fatalf("status with pending reruns: %q %v", status, err)
 	}
 	if _, err = quick("enkeep_resettle_preview", map[string]any{}); err == nil || !strings.Contains(err.Error(), "busy") {
 		t.Fatalf("resettle during a run: %v", err)
@@ -442,7 +457,7 @@ func TestToolsWhileAPassRuns(t *testing.T) {
 	if !st.S.Entries["i-0000000001"].Live() {
 		t.Fatal("marked while the run held the lock")
 	}
-	// the pass ends: the queued mark is applied
+	// the pass ends: both queued marks and queued reruns are applied without disturbing already-queued days
 	a.mu.Lock()
 	a.running = ""
 	a.mu.Unlock()
@@ -451,13 +466,18 @@ func TestToolsWhileAPassRuns(t *testing.T) {
 	for {
 		st.Lock()
 		live := st.S.Entries["i-0000000001"].Live()
+		rq := slices.Clone(st.S.RerunQueue)
+		fq := slices.Clone(st.S.ForceReruns)
 		st.Unlock()
-		_, qerr := os.Stat(filepath.Join(st.Dir, marksFile))
-		if !live && os.IsNotExist(qerr) {
+		_, merr := os.Stat(filepath.Join(st.Dir, marksFile))
+		_, rerr := os.Stat(filepath.Join(st.Dir, rerunsFile))
+		if !live && os.IsNotExist(merr) && os.IsNotExist(rerr) &&
+			slices.Equal(rq, []string{"2026-11-01", "2026-11-02", "2026-11-03"}) &&
+			slices.Equal(fq, []string{"2026-11-05", "2026-11-06"}) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("queued mark not applied: live=%v queue=%v", live, qerr)
+			t.Fatalf("queued writes not applied: live=%v marks=%v reruns=%v rq=%v fq=%v", live, merr, rerr, rq, fq)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -467,4 +487,143 @@ func TestToolsWhileAPassRuns(t *testing.T) {
 	if v[len(v)-1].By != "assistant" || v[len(v)-1].Note == "" {
 		t.Fatalf("queued verdict: %+v", v)
 	}
+}
+
+func TestQueuedMarksDoNotBlockSecondCall(t *testing.T) {
+	toolWait = 100 * time.Millisecond
+	t.Cleanup(func() { toolWait = 5 * time.Second })
+
+	t.Run("second call while applyMarks waits for store lock", func(t *testing.T) {
+		a, st := toolApp(t)
+		a.c.Live = &curate.Live{}
+		st.Lock()
+		st.S.Entries = map[string]*entry.Entry{
+			"i-0000000001": {
+				ID: "i-0000000001", Facet: entry.Interaction, Text: "first rule",
+				Status: entry.Stable, Count: 2, First: "2026-11-01", Last: "2026-11-05",
+			},
+			"i-0000000002": {
+				ID: "i-0000000002", Facet: entry.Interaction, Text: "second rule",
+				Status: entry.Stable, Count: 2, First: "2026-11-02", Last: "2026-11-05",
+			},
+		}
+		if err := st.Save(); err != nil {
+			st.Unlock()
+			t.Fatal(err)
+		}
+		a.c.Publish()
+		locked := true
+		unlock := func() {
+			if locked {
+				locked = false
+				st.Unlock()
+			}
+		}
+		defer unlock()
+
+		// First call queues and spawns applyMarks, which blocks on st.Lock().
+		if text, err := call(t, a, "enkeep_mark_wrong", map[string]any{"ids": []string{"i-0000000001"}, "reason": "first reason"}); err != nil || !strings.Contains(text, "Queued") {
+			t.Fatalf("first mark_wrong: %q %v", text, err)
+		}
+		// Give applyMarks time to enter its wait for st.Lock().
+		time.Sleep(50 * time.Millisecond)
+
+		// Second call while st.Lock() is still held must return Queued promptly instead of deadlocking on marksMu.
+		type res struct {
+			text string
+			err  error
+		}
+		ch := make(chan res, 1)
+		go func() {
+			txt, err := call(t, a, "enkeep_mark_wrong", map[string]any{"ids": []string{"i-0000000002"}, "reason": "second reason"})
+			ch <- res{txt, err}
+		}()
+		select {
+		case r := <-ch:
+			if r.err != nil || !strings.Contains(r.text, "Queued") {
+				t.Fatalf("second mark_wrong: %q %v", r.text, r.err)
+			}
+		case <-time.After(1 * time.Second):
+			unlock()
+			<-ch
+			t.Fatal("second enkeep_mark_wrong blocked waiting for marksMu while applyMarks held it across st.Lock()")
+		}
+
+		// Release the store lock and verify both queued marks are applied and the queue file is drained.
+		unlock()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			st.Lock()
+			live1 := st.S.Entries["i-0000000001"].Live()
+			live2 := st.S.Entries["i-0000000002"].Live()
+			st.Unlock()
+			_, merr := os.Stat(filepath.Join(st.Dir, marksFile))
+			if !live1 && !live2 && os.IsNotExist(merr) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("both queued marks not applied: live1=%v live2=%v marks=%v", live1, live2, merr)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
+
+	t.Run("first call before snapshot published does not deadlock on Curator.Read", func(t *testing.T) {
+		a, st := toolApp(t)
+		a.c.Live = &curate.Live{} // no Publish yet: Snapshot() is nil
+		st.Lock()
+		st.S.Entries = map[string]*entry.Entry{
+			"i-0000000001": {
+				ID: "i-0000000001", Facet: entry.Interaction, Text: "first rule",
+				Status: entry.Stable, Count: 2, First: "2026-11-01", Last: "2026-11-05",
+			},
+		}
+		if err := st.Save(); err != nil {
+			st.Unlock()
+			t.Fatal(err)
+		}
+		locked := true
+		unlock := func() {
+			if locked {
+				locked = false
+				st.Unlock()
+			}
+		}
+		defer unlock()
+
+		type res struct {
+			text string
+			err  error
+		}
+		ch := make(chan res, 1)
+		go func() {
+			txt, err := call(t, a, "enkeep_mark_wrong", map[string]any{"ids": []string{"i-0000000001"}, "reason": "early reason"})
+			ch <- res{txt, err}
+		}()
+		select {
+		case r := <-ch:
+			if r.err != nil || !strings.Contains(r.text, "Queued") {
+				t.Fatalf("early mark_wrong: %q %v", r.text, r.err)
+			}
+		case <-time.After(1 * time.Second):
+			unlock()
+			<-ch
+			t.Fatal("enkeep_mark_wrong blocked on st.Lock() via Curator.Read when snapshot was nil")
+		}
+		unlock()
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			st.Lock()
+			live := st.S.Entries["i-0000000001"].Live()
+			st.Unlock()
+			_, merr := os.Stat(filepath.Join(st.Dir, marksFile))
+			if !live && os.IsNotExist(merr) {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("early queued mark not applied: live=%v marks=%v", live, merr)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+	})
 }

@@ -136,6 +136,8 @@ const (
 	SrcChat      = "S8"  // connected message sources: chats, mail, code, docs, meetings, events (kb.read)
 	SrcKB        = "S9"  // the knowledge base's people, projects, relations and kb.owner
 	SrcRecording = "S11" // recordings, minutes and day reviews (kb.read recordings)
+	SrcLedger    = "S12" // assistant structured ledger entries (assistant.entries.read)
+	SrcSent      = "S13" // sent-as-user provenance on archived chats (sent.read)
 )
 
 // Who a line is by, after speaker resolution (3.2).
@@ -306,6 +308,10 @@ type Entry struct {
 
 	Flags   []string `json:"flags,omitempty"`
 	Updated string   `json:"updated"`
+
+	// Leverage is how far and how long the entry reaches, and the principle behind it, as the daily pass read them
+	// (daily/17, leverage.go). Absent on entries read before; the score falls back to the other fields then.
+	Leverage *Leverage `json:"leverage,omitempty"`
 }
 
 // Shown is the text the user sees: their own version when they wrote one.

@@ -34,7 +34,9 @@ func newFake(t *testing.T, h func(w http.ResponseWriter, r *http.Request, body m
 			return
 		}
 		var body map[string]any
-		if b, _ := io.ReadAll(r.Body); len(b) > 0 {
+		b, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(b)) // a CDN upload's handler reads the picture
+		if len(b) > 0 && r.Header.Get("Content-Type") == "application/json" {
 			if err := json.Unmarshal(b, &body); err != nil {
 				t.Errorf("request body is not JSON: %s", b)
 			}
@@ -222,6 +224,8 @@ func TestGetUpdates(t *testing.T) {
 						"ref_msg": map[string]any{"title": "引用", "message_item": map[string]any{"type": 1, "text_item": map[string]any{"text": "原文"}}}},
 					map[string]any{"type": 3, "voice_item": map[string]any{"text": "语音转写", "media": map[string]any{"encrypt_query_param": "q", "aes_key": "k"}}},
 					map[string]any{"type": 2, "image_item": map[string]any{"aeskey": "00112233445566778899aabbccddeeff", "media": map[string]any{"full_url": "https://novac2c.cdn.weixin.qq.com/x"}}},
+					map[string]any{"type": 4, "file_item": map[string]any{"file_name": "report.pdf", "len": "123", "media": map[string]any{"encrypt_query_param": "fq", "aes_key": "file-key"}}},
+					map[string]any{"type": 5, "video_item": map[string]any{"media": map[string]any{"encrypt_query_param": "vq", "aes_key": "video-key"}}},
 				}},
 			map[string]any{"client_id": "c-1", "from_user_id": "x", "context_token": "CT2", "item_list": []any{}},
 			map[string]any{"message_id": "7", "from_user_id": "bot@im", "context_token": "CT", "message_type": 2},
@@ -240,7 +244,9 @@ func TestGetUpdates(t *testing.T) {
 	if m.ID != "message:42" || m.From != "owner@im" || m.ContextToken != "CT" || m.Text != "你好\n语音转写" || m.Quote != "引用\n原文" || m.At != 1000 {
 		t.Errorf("message %+v", m)
 	}
-	if len(m.Media) != 2 || m.Media[0].Kind != MediaVoice || m.Media[1].Kind != MediaImage || m.Media[1].KeyHex == "" {
+	if len(m.Media) != 4 || m.Media[0].Kind != MediaVoice || m.Media[1].Kind != MediaImage || m.Media[1].KeyHex == "" ||
+		m.Media[2] != (Media{Kind: MediaFile, Query: "fq", KeyB64: "file-key", FileName: "report.pdf", Size: 123}) ||
+		m.Media[3] != (Media{Kind: MediaVideo, Query: "vq", KeyB64: "video-key"}) {
 		t.Errorf("media %+v", m.Media)
 	}
 	if p.Messages[1].ID != "client:c-1" {
@@ -248,6 +254,137 @@ func TestGetUpdates(t *testing.T) {
 	}
 	if _, err := c.GetUpdates(context.Background(), "C1"); CodeOf(err) != CodeReplaced || Retryable(err) {
 		t.Errorf("replaced: %v", err)
+	}
+}
+
+func TestDecodeVoiceMetadataAndTranscriptFlag(t *testing.T) {
+	m := wireMessage{
+		MessageID: json.RawMessage(`1001`), FromUserID: "owner@im", ContextToken: "CT",
+		Items: []wireItem{
+			{
+				Type: itemVoice,
+				VoiceItem: &struct {
+					Media         *wireMedia `json:"media"`
+					EncodeType    int        `json:"encode_type"`
+					BitsPerSample int        `json:"bits_per_sample"`
+					SampleRate    int        `json:"sample_rate"`
+					PlayTime      int        `json:"playtime"`
+					Text          string     `json:"text"`
+				}{
+					Media:         &wireMedia{EncryptQueryParam: "vq1", AESKey: "vk1"},
+					EncodeType:    VoiceEncodeSILK,
+					BitsPerSample: 16,
+					SampleRate:    24000,
+					PlayTime:      3200,
+					Text:          "转写文本",
+				},
+			},
+			{
+				Type: itemVoice,
+				VoiceItem: &struct {
+					Media         *wireMedia `json:"media"`
+					EncodeType    int        `json:"encode_type"`
+					BitsPerSample int        `json:"bits_per_sample"`
+					SampleRate    int        `json:"sample_rate"`
+					PlayTime      int        `json:"playtime"`
+					Text          string     `json:"text"`
+				}{
+					Media:         &wireMedia{EncryptQueryParam: "vq2", AESKey: "vk2"},
+					EncodeType:    VoiceEncodePCM,
+					BitsPerSample: 16,
+					SampleRate:    16000,
+					PlayTime:      1500,
+					Text:          "  \t\n ",
+				},
+			},
+		},
+	}
+	got, ok := decode(m)
+	if !ok {
+		t.Fatal("decode failed")
+	}
+	if got.Text != "转写文本" {
+		t.Fatalf("text = %q, want only non-whitespace transcript", got.Text)
+	}
+	if len(got.Media) != 2 {
+		t.Fatalf("media count = %d, want 2", len(got.Media))
+	}
+	if !got.Media[0].Transcribed || got.Media[0].EncodeType != VoiceEncodeSILK || got.Media[0].SampleRate != 24000 ||
+		got.Media[0].BitsPerSample != 16 || got.Media[0].PlayTime != 3200 {
+		t.Errorf("transcribed voice media = %+v", got.Media[0])
+	}
+	if got.Media[1].Transcribed || got.Media[1].EncodeType != VoiceEncodePCM || got.Media[1].SampleRate != 16000 ||
+		got.Media[1].BitsPerSample != 16 || got.Media[1].PlayTime != 1500 {
+		t.Errorf("untranscribed voice media = %+v", got.Media[1])
+	}
+}
+
+func TestDownloadVoiceSizeLimits(t *testing.T) {
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	atLimit, err := EncryptECB(make([]byte, MaxMedia), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	overLimit, err := EncryptECB(make([]byte, MaxMedia+1), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	downloads := map[string][]byte{"at": atLimit, "over": overLimit}
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		_, _ = w.Write(downloads[r.URL.Query().Get("encrypted_query_param")])
+	})
+	c := f.client("BT", "")
+	key64 := base64.StdEncoding.EncodeToString(key)
+
+	got, err := c.Download(context.Background(), Media{Kind: MediaVoice, Query: "at", KeyB64: key64})
+	if err != nil || len(got) != MaxMedia {
+		t.Fatalf("voice at MaxMedia: len=%d err=%v", len(got), err)
+	}
+	got, err = c.Download(context.Background(), Media{Kind: MediaVoice, Query: "over", KeyB64: key64})
+	if err == nil || CodeOf(err) != CodeBadResponse || !errors.Is(err, ErrMediaTooLarge) || got != nil {
+		t.Fatalf("voice over MaxMedia: len=%d err=%v, want ErrMediaTooLarge", len(got), err)
+	}
+}
+
+func TestDecodeSvrIDAndIncompleteQuote(t *testing.T) {
+	m := wireMessage{MessageID: json.RawMessage(`9007199254740993`), FromUserID: "owner@im", ContextToken: "CT", Items: []wireItem{{
+		Type: itemText, TextItem: &struct {
+			Text string `json:"text"`
+		}{Text: "reply"},
+	}}}
+	m.Items[0].RefMsg = &struct {
+		Title       string           `json:"title"`
+		MessageItem *wireItem        `json:"message_item"`
+		SvrID       json.RawMessage  `json:"svr_id"`
+		PartialText *wirePartialText `json:"partial_text"`
+	}{Title: "title", SvrID: json.RawMessage(`"4242"`)}
+	got, ok := decode(m)
+	if !ok || got.SvrID != "9007199254740993" || got.QuoteID != "4242" || got.Quote != "title" {
+		t.Fatalf("decoded ID-only quote = %+v, %v", got, ok)
+	}
+	m.Items[0].RefMsg.MessageItem = &wireItem{Type: itemText, TextItem: &struct {
+		Text string `json:"text"`
+	}{Text: "inline original"}}
+	got, ok = decode(m)
+	if !ok || got.QuoteID != "" || got.Quote != "title\ninline original" {
+		t.Fatalf("decoded inline quote = %+v, %v", got, ok)
+	}
+	m.Items[0].RefMsg.MessageItem = nil
+	m.Items[0].RefMsg.SvrID = json.RawMessage(`9007199254740994`)
+	got, ok = decode(m)
+	if !ok || got.QuoteID != "9007199254740994" {
+		t.Fatalf("decoded numeric svr_id = %+v, %v", got, ok)
+	}
+}
+
+func TestSendTextWithIDKeepsLargeServerID(t *testing.T) {
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ret":0,"message_id":18446744073709551615}`))
+	})
+	id, err := f.client("BT", "").SendTextWithID(context.Background(), "owner@im", "CT", "cid", "回答")
+	if err != nil || id != "18446744073709551615" {
+		t.Fatalf("server id = %q, error = %v", id, err)
 	}
 }
 
@@ -313,6 +450,48 @@ func TestSendTextAndTyping(t *testing.T) {
 	}
 }
 
+// A photo sent as the original (12 MiB here) is downloaded; a picture past MaxPicture is refused once decrypted (its
+// ciphertext still fits under the read limit). Only received pictures get the larger limit: the same 12 MiB, or 8 MiB
+// and one byte, is refused as a voice message, and the 12 MiB photo is not uploaded as an answer's picture.
+func TestDownloadTakesAnOriginalPhoto(t *testing.T) {
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	original := bytes.Repeat([]byte{0xab}, 12<<20)
+	plains := map[string][]byte{
+		"photo":      original,
+		"big":        bytes.Repeat([]byte{0xab}, MaxPicture+1),
+		"voice-over": bytes.Repeat([]byte{0xab}, 8<<20+1),
+	}
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		plain, ok := plains[r.URL.Query().Get("encrypted_query_param")]
+		if r.URL.Path != "/c2c/download" || !ok {
+			t.Errorf("unexpected request %s", r.URL)
+			return
+		}
+		enc, err := EncryptECB(plain, key)
+		if err != nil {
+			t.Error(err)
+		}
+		_, _ = w.Write(enc)
+	})
+	c := f.client("BT", "")
+	ctx, keyHex := context.Background(), hex.EncodeToString(key)
+	got, err := c.Download(ctx, Media{Kind: MediaImage, Query: "photo", KeyHex: keyHex})
+	if err != nil || !bytes.Equal(got, original) {
+		t.Fatalf("a 12 MiB original: %d bytes, %v", len(got), err)
+	}
+	if _, err := c.Download(ctx, Media{Kind: MediaImage, Query: "big", KeyHex: keyHex}); !errors.Is(err, ErrMediaTooLarge) {
+		t.Fatalf("a picture past MaxPicture: %v", err)
+	}
+	for _, q := range []string{"photo", "voice-over"} {
+		if _, err := c.Download(ctx, Media{Kind: MediaVoice, Query: q, KeyHex: keyHex}); !errors.Is(err, ErrMediaTooLarge) {
+			t.Fatalf("voice %s past 8 MiB: %v", q, err)
+		}
+	}
+	if _, err := c.UploadImage(ctx, "peer@im.wechat", original); CodeOf(err) != CodeProtocol {
+		t.Fatalf("uploading the 12 MiB photo: %v", err)
+	}
+}
+
 func TestDownload(t *testing.T) {
 	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
 	plain := []byte("picture bytes, not a multiple of sixteen")
@@ -328,9 +507,9 @@ func TestDownload(t *testing.T) {
 	})
 	c := f.client("BT", "")
 	for _, m := range []Media{
-		{Query: "Q", KeyHex: hex.EncodeToString(key)},
-		{Query: "Q", KeyB64: base64.StdEncoding.EncodeToString(key)},
-		{Query: "Q", KeyB64: base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(key)))},
+		{Kind: MediaFile, Query: "Q", KeyHex: hex.EncodeToString(key)},
+		{Kind: MediaVideo, Query: "Q", KeyB64: base64.StdEncoding.EncodeToString(key)},
+		{Kind: MediaFile, Query: "Q", KeyB64: base64.StdEncoding.EncodeToString([]byte(hex.EncodeToString(key)))},
 	} {
 		got, err := c.Download(context.Background(), m)
 		if err != nil || !bytes.Equal(got, plain) {
@@ -345,6 +524,41 @@ func TestDownload(t *testing.T) {
 	}
 	if _, err := DecryptECB(enc[:16], key); err == nil {
 		t.Error("bad padding accepted")
+	}
+}
+
+func TestDownloadFileAndVideoSizeLimits(t *testing.T) {
+	key, _ := hex.DecodeString("00112233445566778899aabbccddeeff")
+	tests := []struct {
+		name, query string
+		kind        MediaKind
+		size        int
+		ok          bool
+	}{
+		{name: "file at the message budget", query: "at", kind: MediaFile, size: 40 << 20, ok: true},
+		{name: "one byte over", query: "over", kind: MediaFile, size: 40<<20 + 1},
+		{name: "video over the picture limit", query: "video", kind: MediaVideo, size: 9 << 20, ok: true},
+	}
+	downloads := map[string][]byte{}
+	for _, tt := range tests {
+		enc, err := EncryptECB(make([]byte, tt.size), key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		downloads[tt.query] = enc
+	}
+	f := newFake(t, func(w http.ResponseWriter, r *http.Request, _ map[string]any) {
+		_, _ = w.Write(downloads[r.URL.Query().Get("encrypted_query_param")])
+	})
+	c := f.client("BT", "")
+	for _, tt := range tests {
+		got, err := c.Download(context.Background(), Media{Kind: tt.kind, Query: tt.query, KeyB64: base64.StdEncoding.EncodeToString(key)})
+		if tt.ok && (err != nil || len(got) != tt.size) {
+			t.Errorf("%s: decrypted %d bytes, want %d; error=%v", tt.name, len(got), tt.size, err)
+		}
+		if !tt.ok && (err == nil || CodeOf(err) != CodeBadResponse || got != nil) {
+			t.Errorf("%s: decrypted %d bytes, error=%v; want media-too-large rejection", tt.name, len(got), err)
+		}
 	}
 }
 
@@ -377,5 +591,24 @@ func TestChunk(t *testing.T) {
 	}
 	if !strings.Contains(strings.Join(joined, ""), "end") {
 		t.Error("lost the end")
+	}
+}
+
+// getuploadurl's full upload URL is taken only on a Tencent HTTPS origin; otherwise the picture goes to the CDN's
+// upload with the encrypted parameter, and with neither there is nowhere to upload.
+func TestUploadURL(t *testing.T) {
+	if got, err := uploadURL("https://upload.weixin.qq.com/c2c/upload?x=1", "", "FK"); err != nil || got != "https://upload.weixin.qq.com/c2c/upload?x=1" {
+		t.Errorf("Tencent full URL: %q %v", got, err)
+	}
+	for _, bad := range []string{"http://upload.weixin.qq.com/x", "https://evil.example/x", "https://u:p@upload.weixin.qq.com/x", "https://upload.weixin.qq.com:8443/x"} {
+		if _, err := uploadURL(bad, "P", "FK"); CodeOf(err) != CodeProtocol {
+			t.Errorf("%s: %v", bad, err)
+		}
+	}
+	if got, err := uploadURL("", "a+b/c", "FK"); err != nil || got != "https://novac2c.cdn.weixin.qq.com/c2c/upload?encrypted_query_param=a%2Bb%2Fc&filekey=FK" {
+		t.Errorf("param: %q %v", got, err)
+	}
+	if _, err := uploadURL("", "", "FK"); CodeOf(err) != CodeBadResponse {
+		t.Errorf("neither: %v", err)
 	}
 }

@@ -223,6 +223,19 @@ func (d *dispatcher) prepare(ctx context.Context, t *Task, att Attempt) bool {
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: classIf(permanent, "rejected", "infra_error"), message: "准备工作目录失败：" + msg})
 		return true
 	}
+	updated, err := d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(e *Execution) {
+		e.Worktree, e.Branch, e.BaseSHA = ws.Path, ws.Branch, ws.BaseSHA
+	})
+	if err != nil {
+		// The attempt is no longer active (for example canceled during ats.prepare): release the worktree
+		// and untouched branch without starting an agent session.
+		t.Exec.Worktree, t.Exec.Branch, t.Exec.BaseSHA = ws.Path, ws.Branch, ws.BaseSHA
+		d.cleanup(context.WithoutCancel(ctx), t, att.AttemptNo, true)
+		return false
+	}
+	t = updated
+	e = t.Exec
+
 	mode := "plan"
 	if !readonly {
 		mode = cfg.writeMode()
@@ -240,13 +253,16 @@ func (d *dispatcher) prepare(ctx context.Context, t *Task, att Attempt) bool {
 	})
 	cancel()
 	if err != nil {
-		t.Exec.Worktree = ws.Path
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "infra_error", message: "启动 Agent 会话失败：" + err.Error()})
 		return true
 	}
 	if _, err := d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(e *Execution) {
 		e.Phase, e.Worktree, e.Branch, e.BaseSHA, e.SessionID = PhaseWorking, ws.Path, ws.Branch, ws.BaseSHA, sid
 	}); err != nil {
+		// The attempt is no longer active (for example canceled while CreateSession was in flight):
+		// interrupt the live session and release the worktree and branch instead of leaking them.
+		t.Exec.Worktree, t.Exec.Branch, t.Exec.BaseSHA, t.Exec.SessionID = ws.Path, ws.Branch, ws.BaseSHA, sid
+		d.cleanup(context.WithoutCancel(ctx), t, att.AttemptNo, true)
 		return false
 	}
 	if todo := t.TodoID(); todo != "" {
@@ -318,7 +334,9 @@ func errorClassInWords(class string) string {
 }
 
 const (
-	promptFailureRunes = 1500
+	// promptFailureRunes is how much of the earlier attempt's report a retry is told: its first line (how the
+	// acceptance command ended) and the end of the output. The agent can run the command again for the rest.
+	promptFailureRunes = 800
 	summaryRunes       = 1200
 )
 
@@ -388,10 +406,12 @@ func buildPrompt(t *Task, ws prepareResult, readonly bool, prev *EvidenceReport,
 			attempt = t.Attempts[n-1].AttemptNo
 		}
 		fmt.Fprintf(&b, "\n---\nThis is attempt %d of this task. Attempt %d did not succeed: %s.\n", attempt, prev.AttemptNo, errorClassInWords(prev.ErrorClass))
-		if msg := tailRunes(prev.Message, promptFailureRunes); msg != "" {
+		msg := outputEnd(prev.Message, promptFailureRunes)
+		if msg != "" {
 			fmt.Fprintf(&b, "How it ended (the end of the output):\n%s\n", indentBlock(msg))
 		}
-		if sum := strings.TrimSpace(prev.Summary); sum != "" {
+		// A turn that ended in an error reports the agent's reply as its message: not said twice.
+		if sum := strings.TrimSpace(prev.Summary); sum != "" && !strings.HasSuffix(msg, sum) {
 			fmt.Fprintf(&b, "What that attempt's agent said at its end:\n%s\n", indentBlock(sum))
 		}
 		switch {
@@ -788,13 +808,12 @@ func (d *dispatcher) cleanup(ctx context.Context, t *Task, attempt int, interrup
 
 // cancel cancels a task from the queue page: the queue first, then what its attempt holds.
 func (d *dispatcher) cancel(ctx context.Context, taskID string) (*Task, error) {
-	before, err := d.q.GetTask(taskID)
+	before, t, canceled, err := d.q.cancelTaskWithSnapshot(taskID, d.now())
 	if err != nil {
 		return nil, err
 	}
-	t, err := d.q.CancelTask(taskID, d.now())
-	if err != nil {
-		return nil, err
+	if !canceled {
+		return t, nil
 	}
 	if before.Exec != nil && len(before.Attempts) > 0 {
 		d.cleanup(ctx, before, before.Attempts[len(before.Attempts)-1].AttemptNo, true)

@@ -139,7 +139,11 @@ func TestMainPageAndCardDuringARun(t *testing.T) {
 	}
 	st.Lock()
 	if p := st.S.Proposal(prop); p == nil || p.Status != "pending" {
+		st.Unlock()
 		t.Fatalf("the change refused during the run was made: %+v", p)
+	} else if p.Shown == "" {
+		st.Unlock()
+		t.Fatalf("proposal %s displayed during the run was not marked shown before the run finished", prop)
 	}
 	st.Unlock()
 	res := within(t, "a change", func() (any, error) { return a.homeAction(ctx, uiReq(page{Tab: "review", Open: prop}, "later")) })
@@ -150,6 +154,55 @@ func TestMainPageAndCardDuringARun(t *testing.T) {
 	done()
 	if p := snap.Proposal(prop); p == nil || p.Status != "later" {
 		t.Fatalf("the snapshot after the change: %+v", p)
+	}
+}
+
+func TestReviewTabMarksShownWhenLockHeldOutsideRun(t *testing.T) {
+	a := v4App(t)
+	a.c.St.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			a.c.St.Unlock()
+		}
+		a.shownWG.Wait()
+	}()
+	a.c.St.S.Proposals = append(a.c.St.S.Proposals, &store.Proposal{
+		ID:     "K-0001",
+		Kind:   "pin_fact",
+		Title:  "Synthetic proposal for project-x",
+		Risk:   "low",
+		Status: "pending",
+	})
+	a.c.Publish()
+	// Keep the store lock held while no curation run owns a.running (e.g. startup recovery/migration).
+	ctx := context.Background()
+	for i := 0; i < 5; i++ {
+		within(t, "review tab while store locked", func() (any, error) {
+			return a.home(ctx, uiReq(page{Tab: tabReview}, ""))
+		})
+	}
+	a.mu.Lock()
+	flushing := a.flushingShown
+	queued := len(a.pendingShown)
+	a.mu.Unlock()
+	if !flushing {
+		t.Fatal("expected single deduplicated background flusher while store lock is held outside a run")
+	}
+	// The worker may already have popped K-0001 and be waiting on c.St.Lock(), so pendingShown holds 0 or 1 entry.
+	if queued > 1 {
+		t.Fatalf("expected deduplicated pendingShown queue, got %d entries", queued)
+	}
+	locked = false
+	a.c.St.Unlock()
+	a.shownWG.Wait()
+
+	reopened, err := store.Open(a.c.St.Dir)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	if p := reopened.S.Proposal("K-0001"); p == nil || p.Shown == "" {
+		t.Fatalf("proposal K-0001 was not marked shown after store lock released: %+v", p)
 	}
 }
 

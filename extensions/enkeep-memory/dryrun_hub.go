@@ -81,13 +81,13 @@ func (a *app) startTrial(ctx context.Context, day string) bool {
 	a.mu.Unlock()
 	go func() {
 		summary, err := a.dryRunDaily(ctx, day)
-		a.mu.Lock()
-		a.running, a.lastErr, a.lastTrial = "", "", summary
-		if err != nil {
-			a.lastErr = "试跑 " + day + "：" + err.Error()
-			log.Printf("enkeep-memory trial %s: %v", day, err)
-		}
-		a.mu.Unlock()
+		a.finishRun(func() {
+			a.lastErr, a.lastTrial = "", summary
+			if err != nil {
+				a.lastErr = "试跑 " + day + "：" + err.Error()
+				log.Printf("enkeep-memory trial %s: %v", day, err)
+			}
+		})
 		if a.hub != nil {
 			_ = a.hub.Invalidate("enkeep-memory-health")
 		}

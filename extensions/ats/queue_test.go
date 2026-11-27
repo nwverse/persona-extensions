@@ -115,7 +115,7 @@ func TestLegacyTaskWithoutAgentTypeUsesClaude(t *testing.T) {
 		t.Fatal(err)
 	}
 	stored, err := legacy.GetTask(task.ID)
-	if err != nil || stored.AgentType != "" || viewTask(stored, false).AgentType != AgentClaude {
+	if err != nil || stored.AgentType != "" || viewTask(stored, promptNone).AgentType != AgentClaude {
 		t.Fatalf("legacy task view: %+v %v", stored, err)
 	}
 	_, att, err := legacy.LeaseTask(task.ID, "dispatcher", testMachine, testStart)
