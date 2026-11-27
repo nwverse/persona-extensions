@@ -13,7 +13,7 @@ import (
 )
 
 const connectorID = "shortcut"
-const pageUI = "stories"
+const pageUI = "shortcut"
 
 type app struct {
 	mu       sync.RWMutex

@@ -16,7 +16,7 @@ The official TypeScript SDK also owns one standalone authoring oracle, `sdk/ts/s
 extensions/<id>/           Manifest, source, tests and dependencies for one extension
   persona-extension.json   The only manifest, including the market tags
   go.mod, go.sum           The extension's own Go module (program extensions only)
-pluginkit/                 Quota, UI and inbox helpers for the existing extension APIs (own module)
+pluginkit/                 Quota, UI and inbox helpers, and the spaces kernel and file store (pluginkit/spaces) shared by spaces and household (own module)
 tools/                     Repository-level Go tests, such as every manifest against the SDK schema (own module)
 sdk/go/                    Synced copy of the official Persona Go SDK; do not hand-edit
 sdk/VERSION                Upstream source revision and sync ownership
@@ -25,7 +25,7 @@ docs/                      Human-maintained English guides and references
 persona-extensions.json    Single signed envelope: raw UTF-8 payload plus embedded signatures
 ```
 
-The SDK implements the process protocol; `pluginkit` preserves the helpers used by existing extensions. See [reference](reference.md) for schema and configuration details.
+The SDK implements the process protocol; `pluginkit` holds the helpers used by existing extensions and the spaces kernel that spaces and household share. See [reference](reference.md) for schema and configuration details.
 
 ## Add a program extension
 
@@ -41,11 +41,21 @@ The SDK implements the process protocol; `pluginkit` preserves the helpers used 
    go mod edit -require=github.com/nwverse/persona-extensions/pluginkit@v0.0.0 -replace=github.com/nwverse/persona-extensions/pluginkit=../../pluginkit
    go mod tidy
    ```
+   Add an official square `assets/icon.png` (at least 256 × 256) or safe SVG, declare its relative `icon` path, include the upstream notice in `assets/LICENSE`, and add its provenance and trademark owner to [icon-sources.json](../icon-sources.json). Every official extension must have an attributed icon once that registry is present. Prefer PNG for clients without SVG decoders; transparent padding or vector rasterization must be recorded without changing the original mark. Keep source-only `icon`, `tags` and `replaces` out of runtime manifest responses; Go programs can use `pluginkit.PackagedManifest`.
 3. In `runtime.command`, list the program path for each supported platform: `linux-amd64`, `linux-arm64`, `darwin-arm64` and `darwin-amd64`. Use `bin/<id>-<platform>` paths. The package ships compiled programs; the hub installs no runtime.
 4. Test the manifest against the program's advertised contributions and exercise the process protocol with the official SDK's `exttest` helpers. Follow the existing [LINUX DO tests](../extensions/linuxdo/plugin_test.go) or [Telegram tests](../extensions/telegram/plugin_test.go).
 5. Run the affected local tests, lint and builds before preparing a pull request, then merge after that verification passes. Hosted CI runs on trusted `main` pushes and explicit dispatch, but is not a PR merge gate. A version bump selects work for automatic versions-phase publication after cutover and a signed catalog artifact for its separate reviewed PR; see [releases](releases.md#automated-releases).
 
 See the [local reference](reference.md) and published SDK schemas for the process contract. For runtime-free extensions and packs, start with [starter-kit and starter-pack](extensions/starter-kit.md): omit `runtime`, provide the manifest and contribution files, and use the same packaging script. It skips compilation when there is no runtime and omits an empty `bin/` directory.
+
+## Add a Python extension
+
+An extension whose program is Python, such as [Feishu through LarkAgentX](extensions/larkx.md). Follow steps 1, 2 (without the Go module), 4 and 5 above, with these differences:
+
+- Add a `requirements.txt` next to the manifest; its presence is what makes the extension a Python one. It lists what the program installs on first start, every package pinned with `==` and the `--hash=sha256:` of each of its files, the transitive ones too, so `pip install --require-hashes` installs exactly what the release names.
+- `runtime.command` is the string `bin/<id>`, not a platform map: nothing is compiled. The launcher puts `src/` on the path and starts the program, which must answer the handshake with nothing installed; dependencies go into the extension's data directory after it.
+- The program lives in `src/`. `scripts/package.sh` copies `bin/`, `src/`, `requirements.txt` and any `assistant/`, `skills/` and `assets/`; tests, caches (`__pycache__`, `*.pyc`) and editor leftovers stay out, files are 0644 and launchers 0755. Code without a license that permits redistribution never goes into the repository or the package.
+- Tests are `tests/test_*.py` with the standard library only, run from the extension's directory with `python3 -I -B -m unittest discover -s tests`; `scripts/ci.sh` runs them (step `python`) without installing `requirements.txt`. Use fakes for the network and the third-party code.
 
 ## Tests and packaging
 
@@ -62,7 +72,7 @@ A resident Persona node probes test listeners with an unauthenticated `GET /`. C
 scripts/ci.sh
 ```
 
-`scripts/ci.sh` checks local documentation links and their regression tests, the repository layout (`scripts/check-layout.py`: no package-manager file at the root, every Go extension its own module, no compiled program committed under `extensions/`), manifests (`scripts/manifest.py check`), Go formatting, the copied SDK's vet and full test suite, then for every other module (`scripts/check-layout.py modules`: `pluginkit`, `tools` and each extension) that `go mod tidy` has nothing to change, `go vet` and Go tests with the race detector (`go test -race`, which needs cgo and a C compiler), builds for every platform declared by each manifest, the single embedded catalog signature, and synthetic OCI publisher/identity/public-gate tests. It packages extensions locally and never publishes; publication arguments are rejected. Publication is separate and remains blocked until the cleaned repository completes cutover.
+`scripts/ci.sh` checks local documentation links and their regression tests, the repository layout (`scripts/check-layout.py`: no package-manager file at the root, every Go extension its own module, no compiled program committed under `extensions/`), manifests (`scripts/manifest.py check`, including that a hub accepts each `configuration`, mirrored from the hub's form subset in `scripts/config_form.py`), Go formatting, the copied SDK's vet and full test suite, then for every other module (`scripts/check-layout.py modules`: `pluginkit`, `tools` and each extension) that `go mod tidy` has nothing to change, `go vet` and Go tests with the race detector (`go test -race`, which needs cgo and a C compiler), builds for every platform declared by each manifest, the single embedded catalog signature, and synthetic OCI publisher/identity/public-gate tests. It packages extensions locally and never publishes; publication arguments are rejected. Publication is separate and remains blocked until the cleaned repository completes cutover.
 
 The copied SDK is a module of its own like the others; to run only that part:
 
@@ -81,7 +91,7 @@ go -C extensions/telegram test ./...
 scripts/package.sh linuxdo
 ```
 
-Packaging produces `dist/<id>-<version>.tar.gz` and a SHA-256 file. It includes both manifest names and any `skills/` or `assistant/` directories the extension ships. Files a manifest references (skill directories, instruction prompts, assistant skills, instructions and gates) must therefore live under `skills/` or `assistant/`; `scripts/manifest.py check` fails when one is elsewhere or missing. Every manifest, including those of extensions without a program, is also validated against the SDK `Manifest` schema as committed and as packaged, by `go -C tools test ./...`. Archives omit macOS AppleDouble metadata and extended attributes, which otherwise can hide the manifest from the hub's package reader.
+Packaging produces `dist/<id>-<version>.tar.gz` and a SHA-256 file. It includes both manifest names and any `skills/`, `assistant/`, `looks/` or `assets/` directories the extension ships. Contribution references must live under their corresponding packaged directory; `icon` lives under `assets/`, including its license notice. `scripts/manifest.py check` fails when a referenced file is elsewhere, missing, unsafe or lacks icon provenance. Every manifest, including those of extensions without a program, is also validated against the unchanged SDK `Manifest` schema after projecting source-only metadata, by `go -C tools test ./...`. Archives omit macOS AppleDouble metadata and extended attributes, which otherwise can hide the manifest from the hub's package reader.
 
 See [installation](installation.md#install-a-local-package) to install the package on a hub. Extension tests use fake services; running them does not require real account credentials.
 
@@ -90,6 +100,8 @@ See [installation](installation.md#install-a-local-package) to install the packa
 Each new executable source migration registers `extensions/<id>/source-rebuild.json` and commits its expected import-free bundle under `source-reference/`. The reference is a byte-comparison fixture, not a released default package. The profile names its source build script, generated bundle/archive, and the extension/SDK paths inside the standalone authoring archive. See the [LinuxDo profile](../extensions/linuxdo/source-rebuild.json).
 
 [The source rebuild job](../.github/workflows/ci.yml) runs every registered profile on its own fresh GitHub-hosted runner, with pinned Node, no restored dependency cache and no HOME substitution. [The driver](../scripts/source-rebuild.py) copies only tracked extension and official SDK authoring inputs into a new tree, excluding the reference bundle; installs locked public dependencies; builds; and compares the result **byte-for-byte** with the committed reference. It then extracts the produced authoring archive into another new directory and independently installs and rebuilds it, repeating the same byte comparison. Archive traversal, links, special files, duplicate files and excessive size fail before extraction.
+
+A source bundle embeds the extension's `persona-extension.json`, so a manifest change (a version bump, a capability) needs the reference regenerated in the same PR: `npm ci --ignore-scripts` in `sdk/ts` and the extension, `npm run build:source` with Node 22 or 24, then copy the profile's `output` over its `bundle`. `source-rebuild.py plan` (run by `scripts/ci.sh`) fails when the reference does not embed the manifest's version; only the hosted job compares the whole bundle, so dispatch a checks-only run on the branch (`gh workflow run ci.yml --ref <branch> -f phase=check`) before merging such a change. `scripts/ci.sh` refuses to start on another Node major.
 
 For explicit checks-only dispatches, `CI required` includes profile discovery and every source-rebuild matrix result. It is not a PR merge gate. New source authoring still cannot omit a rebuild profile. The pre-existing Hacker News and Showcase examples are not part of the new migration batch and supply no fresh-HOME proof unless they register a profile; their separate acceptance gates are not waived. [Pure guard regressions](../scripts/test-source-rebuild.py) run locally and in CI without executing a local standalone rebuild.
 

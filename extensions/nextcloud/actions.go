@@ -9,6 +9,8 @@ import (
 	"unicode"
 )
 
+const maxNameBytes = 250
+
 type createArgs struct {
 	Path string `json:"path"`
 	Text string `json:"text"`
@@ -17,6 +19,12 @@ type createArgs struct {
 func (in createArgs) validate() error {
 	if !validRemotePath(in.Path) || !strings.HasSuffix(strings.ToLower(in.Path), ".md") || strings.TrimSpace(in.Text) == "" || len(in.Text) > 30000 {
 		return errors.New("a new safe relative .md path and nonempty text of at most 30000 UTF-8 bytes are required")
+	}
+	// Nextcloud verifies every segment of a path it writes and refuses one longer than 250 bytes.
+	for _, part := range strings.Split(in.Path, "/") {
+		if len(part) > maxNameBytes {
+			return errors.New("every file and folder name in the path must be at most 250 UTF-8 bytes")
+		}
 	}
 	if strings.ContainsFunc(in.Text, func(r rune) bool { return unicode.IsControl(r) && r != '\n' && r != '\t' }) {
 		return errors.New("note text contains unsupported control characters")

@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"cmp"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -13,6 +18,10 @@ import (
 )
 
 const stateFile = "disklessly_state.json"
+
+// coldDir holds one cold-index file per machine, so the state file stays small and a catalog is
+// read only by the views and tools that use it.
+const coldDir = "disklessly_cold"
 
 // store keeps the State in <dir>/disklessly_state.json, shared between the extension the hub runs
 // and `disklessly mcp` the assistant runs. Every read reloads the file; every write holds an exclusive
@@ -22,8 +31,42 @@ type store struct {
 	dir     string
 	homeDir string
 	mem     []byte
+	memCold map[string][]byte
 	seen    stamp
-	now     func() time.Time
+	// coldCache keeps parsed cold indexes by file stamp; callers get clones.
+	coldCache   map[string]coldCached
+	now         func() time.Time
+	shellChecks map[string]shellCheckResult
+}
+
+type shellCheckResult struct {
+	ok bool
+	at time.Time
+}
+
+// Cache the read-only echo probe across renders, including failures so a refresh
+// cannot repeatedly block on an unavailable host. No shell output means no management.
+func (s *store) checkShell(m *Machine) bool {
+	key := connectionKey(cmp.Or(m.Hostname, m.Host), m.Port, m.User)
+	now := s.now()
+	if old, ok := s.shellChecks[key]; ok && now.Sub(old.at) < time.Minute {
+		return old.ok
+	}
+	const marker = "disklessly-shell-probe"
+	out, err := DefaultRunner(context.Background(), m, "echo "+marker+"\n", 5*time.Second)
+	ok := false
+	if err == nil {
+		for _, line := range strings.Split(out, "\n") {
+			if strings.TrimSpace(line) == marker {
+				ok = true
+			}
+		}
+	}
+	if s.shellChecks == nil {
+		s.shellChecks = map[string]shellCheckResult{}
+	}
+	s.shellChecks[key] = shellCheckResult{ok, now}
+	return ok
 }
 
 type stamp struct {
@@ -38,6 +81,127 @@ func newStore(dir string) *store {
 
 func (s *store) path() string { return filepath.Join(s.dir, stateFile) }
 
+type coldCached struct {
+	at  stamp
+	raw []byte
+	cat *ColdCatalog
+}
+
+func (s *store) coldPath(id string) string {
+	return filepath.Join(s.dir, coldDir, url.PathEscape(id)+".json")
+}
+
+func cloneCold(c *ColdCatalog) *ColdCatalog {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	cp.Entries = slices.Clone(c.Entries)
+	cp.Missing = slices.Clone(c.Missing)
+	cp.Unchecked = slices.Clone(c.Unchecked)
+	cp.checked = nil
+	return &cp
+}
+
+// loadCold reads machine id's cold index (nil when there is none or it cannot be read; a
+// refresh rebuilds it).
+func (s *store) loadCold(id string) *ColdCatalog {
+	var raw []byte
+	var at stamp
+	if s.dir == "" {
+		raw = s.memCold[id]
+	} else {
+		fi, err := os.Stat(s.coldPath(id))
+		if err != nil {
+			return nil
+		}
+		at = stamp{fi.ModTime(), fi.Size()}
+		if c, ok := s.coldCache[id]; ok && c.at == at {
+			return cloneCold(c.cat)
+		}
+		if raw, err = os.ReadFile(s.coldPath(id)); err != nil {
+			return nil
+		}
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	var c ColdCatalog
+	if json.Unmarshal(raw, &c) != nil {
+		return nil
+	}
+	if s.coldCache == nil {
+		s.coldCache = map[string]coldCached{}
+	}
+	s.coldCache[id] = coldCached{at: at, raw: raw, cat: &c}
+	return cloneCold(&c)
+}
+
+// saveCold writes the cold indexes st loaded or set, when they changed, and removes dropped ones.
+func (s *store) saveCold(st *State) error {
+	for id := range st.coldGone {
+		if _, ok := st.Cold[id]; ok {
+			continue
+		}
+		delete(s.coldCache, id)
+		if s.dir == "" {
+			delete(s.memCold, id)
+		} else if err := os.Remove(s.coldPath(id)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	for id, c := range st.Cold {
+		if c == nil {
+			continue
+		}
+		raw, err := json.Marshal(c)
+		if err != nil {
+			return err
+		}
+		if old, ok := s.coldCache[id]; ok && bytes.Equal(old.raw, raw) {
+			continue
+		}
+		at := stamp{}
+		if s.dir == "" {
+			if s.memCold == nil {
+				s.memCold = map[string][]byte{}
+			}
+			s.memCold[id] = raw
+		} else {
+			if err := writeFileAtomic(filepath.Join(s.dir, coldDir), filepath.Base(s.coldPath(id)), raw); err != nil {
+				return err
+			}
+			if fi, err := os.Stat(s.coldPath(id)); err == nil {
+				at = stamp{fi.ModTime(), fi.Size()}
+			}
+		}
+		if s.coldCache == nil {
+			s.coldCache = map[string]coldCached{}
+		}
+		s.coldCache[id] = coldCached{at: at, raw: raw, cat: cloneCold(c)}
+	}
+	return nil
+}
+
+func writeFileAtomic(dir, name string, raw []byte) error {
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, name+".*.tmp")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	_, err = tmp.Write(raw)
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), filepath.Join(dir, name))
+	}
+	return err
+}
+
 // read runs f on the current state; f must not retain st after returning.
 func (s *store) read(f func(st *State)) error {
 	s.mu.Lock()
@@ -51,9 +215,9 @@ func (s *store) read(f func(st *State)) error {
 }
 
 // update runs f on the current state under an exclusive file lock and saves it when f returns nil.
+// The file lock is taken before the in-process mutex, so renders (read) of this process are not
+// held up while another process (disklessly mcp) holds the file lock.
 func (s *store) update(f func(st *State, now time.Time) error) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.dir != "" {
 		if err := os.MkdirAll(s.dir, 0o700); err != nil {
 			return err
@@ -67,6 +231,8 @@ func (s *store) update(f func(st *State, now time.Time) error) error {
 			return err
 		}
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	st, err := s.load()
 	if err != nil {
 		return err
@@ -112,7 +278,7 @@ func (s *store) load() (*State, error) {
 			return nil, err
 		}
 	}
-	st := &State{}
+	st := &State{coldLoad: s.loadCold, shellCheck: s.checkShell}
 	if len(raw) > 0 {
 		if err := json.Unmarshal(raw, st); err != nil {
 			return nil, fmt.Errorf("%s 无法读取（文件保持原样）：%v", s.path(), err)
@@ -127,6 +293,9 @@ func (s *store) load() (*State, error) {
 }
 
 func (s *store) save(st *State) error {
+	if err := s.saveCold(st); err != nil {
+		return err
+	}
 	raw, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err

@@ -38,11 +38,15 @@ const (
 	MReply     = "inbox.reply"
 	MTools     = "tools.list"
 	MCall      = "tools.call"
-	MActions   = "actions.list"
-	MDescribe  = "actions.describe"
-	MDo        = "actions.do" // only once the hub's gate let it through
-	MThread    = "thread.page"
-	MMedia     = "thread.media"
+	// The catalog (connector.Catalog): its sources, and a call of one of their tools (wire.ConnectorCatalogCallParams →
+	// CallResult).
+	MCatalog     = "catalog.list"
+	MCatalogCall = "catalog.call"
+	MActions     = "actions.list"
+	MDescribe    = "actions.describe"
+	MDo          = "actions.do" // only once the hub's gate let it through
+	MThread      = "thread.page"
+	MMedia       = "thread.media"
 	// The knowledge base's items (connector.Items) and an archived message's attachment (connector.ArchiveMedia).
 	MItems        = "items.list"
 	MDocTitle     = "items.doc_title"
@@ -323,6 +327,42 @@ func (s *server) handle(ctx context.Context, method string, params json.RawMessa
 		}
 		text, err := t.Call(ctx, p.Name, p.Args)
 		return CallResult{Text: text}, err
+	case MCatalog:
+		cat, ok := connector.As[connector.Catalog](c)
+		if !ok {
+			return nil, noCapability(c, "catalog")
+		}
+		sources, err := cat.Catalog(ctx)
+		if err != nil {
+			return nil, err
+		}
+		out := wire.ConnectorCatalog{Sources: sources}
+		if err := wire.CheckConnectorCatalog(out); err != nil {
+			return nil, err
+		}
+		return out, nil
+	case MCatalogCall:
+		cat, ok := connector.As[connector.Catalog](c)
+		if !ok {
+			return nil, noCapability(c, "catalog")
+		}
+		var p connector.CatalogQuery
+		if err := json.Unmarshal(params, &p); err != nil {
+			return nil, err
+		}
+		// The same admission as the hub's: only a tool the current catalog lists as read-only is run.
+		sources, err := cat.Catalog(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if !inCatalog(sources, p.Source, p.Tool) {
+			return nil, &ext.Error{Code: wire.ConnectorErrorCodeNotReadOnly, Message: "the source and tool must be in the read-only catalog"}
+		}
+		if len(p.Args) == 0 {
+			p.Args = json.RawMessage(`{}`)
+		}
+		text, err := cat.CatalogCall(ctx, p)
+		return CallResult{Text: text}, err
 	case MActions:
 		a, ok := connector.As[connector.Actions](c)
 		if !ok {
@@ -496,15 +536,16 @@ func (s *server) watch(e connector.Events) {
 	}
 }
 
-// doneMost is how many writes the program remembers by request id.
+// doneMost is how many completed write results the program remembers by request id.
 const doneMost = 256
 
 // writes runs each write (actions.do) once by its request id: the same id again answers what the first run did,
-// waiting for it if it is still running.
+// waiting for it if it is still running. Running writes stay pinned; only completed results use the bounded LRU.
 type writes struct {
-	mu    sync.Mutex
-	runs  map[string]*write
-	order []string
+	mu      sync.Mutex
+	running map[string]*write
+	done    map[string]*write
+	order   []string // completed request ids, least recently used first
 }
 
 type write struct {
@@ -515,25 +556,45 @@ type write struct {
 
 func (w *writes) do(id string, run func() (CallResult, error)) (CallResult, error) {
 	w.mu.Lock()
-	if prev, ok := w.runs[id]; ok {
+	if prev, ok := w.running[id]; ok {
 		w.mu.Unlock()
 		<-prev.done
 		return prev.res, prev.err
 	}
-	if w.runs == nil {
-		w.runs = map[string]*write{}
+	if prev, ok := w.done[id]; ok {
+		for i, cached := range w.order {
+			if cached == id {
+				copy(w.order[i:], w.order[i+1:])
+				w.order[len(w.order)-1] = id
+				break
+			}
+		}
+		w.mu.Unlock()
+		return prev.res, prev.err
+	}
+	if w.running == nil {
+		w.running = map[string]*write{}
 	}
 	cur := &write{done: make(chan struct{})}
-	w.runs[id] = cur
+	w.running[id] = cur
+	w.mu.Unlock()
+	res, err := run()
+	w.mu.Lock()
+	cur.res, cur.err = res, err
+	delete(w.running, id)
+	if w.done == nil {
+		w.done = map[string]*write{}
+	}
+	w.done[id] = cur
 	w.order = append(w.order, id)
 	if len(w.order) > doneMost {
-		delete(w.runs, w.order[0])
+		delete(w.done, w.order[0])
+		w.order[0] = ""
 		w.order = w.order[1:]
 	}
-	w.mu.Unlock()
-	cur.res, cur.err = run()
 	close(cur.done)
-	return cur.res, cur.err
+	w.mu.Unlock()
+	return res, err
 }
 
 // ManifestOf is c's manifest on the wire.
@@ -557,6 +618,18 @@ func (m Manifest) Of() connector.Manifest {
 		out.Capabilities = append(out.Capabilities, connector.Capability(cp))
 	}
 	return out
+}
+
+// inCatalog says whether the catalog lists tool in source as read-only.
+func inCatalog(sources []connector.CatalogSource, source, tool string) bool {
+	for _, s := range sources {
+		for _, t := range s.Tools {
+			if s.ID == source && t.Name == tool && t.ReadOnly {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func noCapability(c connector.Connector, what string) error {

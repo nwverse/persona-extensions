@@ -23,23 +23,25 @@ type fakeChatGPT struct {
 	t   *testing.T
 	srv *httptest.Server
 
-	mu        sync.Mutex
-	approved  bool          // the user entered the device code
-	access    string        // the access token in force
-	refresh   string        // the refresh token in force (each works once)
-	ttl       time.Duration // how long an access token lasts
-	serial    int
-	refreshes int
-	used      map[string]bool // refresh tokens already spent
-	refuse401 int             // answer this many backend calls 401 even with the right token
-	sse       bool            // MCP answers as an event stream
-	calls     []fakeCall      // tools/call, in order
-	installed map[string]bool
-	connected map[string]bool  // apps connected (else their tools are synthetic links)
-	badBundle bool             // the plugin package holds a path out of it
-	extra     []map[string]any // more marketplace plugins (load more, screenshots)
-	failList  bool             // the marketplace listing answers 500
-	asked     []string         // backend paths asked, in order
+	mu             sync.Mutex
+	approved       bool          // the user entered the device code
+	access         string        // the access token in force
+	refresh        string        // the refresh token in force (each works once)
+	ttl            time.Duration // how long an access token lasts
+	serial         int
+	refreshes      int
+	used           map[string]bool // refresh tokens already spent
+	refuse401      int             // answer this many backend calls 401 even with the right token
+	sse            bool            // MCP answers as an event stream
+	calls          []fakeCall      // tools/call, in order
+	results        map[string]any  // tools/call results that replace a tool's usual one, by tool name
+	installed      map[string]bool
+	connected      map[string]bool  // apps connected (else their tools are synthetic links)
+	badBundle      bool             // the plugin package holds a path out of it
+	extra          []map[string]any // more marketplace plugins (load more, screenshots)
+	failList       bool             // the marketplace listing answers 500
+	asked          []string         // backend paths asked, in order
+	onCodeExchange func()           // optional test hook called before responding to authorization_code exchange
 }
 
 type fakeCall struct {
@@ -120,8 +122,14 @@ func (f *fakeChatGPT) serve(w http.ResponseWriter, r *http.Request) {
 	case r.Method == "POST" && r.URL.Path == "/oauth/token":
 		_ = r.ParseForm()
 		f.mu.Lock()
-		defer f.mu.Unlock()
+		onExchange := f.onCodeExchange
+		f.mu.Unlock()
+		if r.Form.Get("grant_type") == "authorization_code" && onExchange != nil {
+			onExchange()
+		}
+		f.mu.Lock()
 		if r.Form.Get("client_id") != clientID {
+			f.mu.Unlock()
 			writeJSON(w, 400, map[string]string{"error": "invalid_client"})
 			return
 		}
@@ -129,20 +137,27 @@ func (f *fakeChatGPT) serve(w http.ResponseWriter, r *http.Request) {
 		case "authorization_code":
 			if r.Form.Get("code") != "code_example" || r.Form.Get("code_verifier") != "verifier_example" ||
 				r.Form.Get("redirect_uri") != f.srv.URL+"/deviceauth/callback" {
+				f.mu.Unlock()
 				writeJSON(w, 400, map[string]string{"error": "invalid_grant"})
 				return
 			}
-			writeJSON(w, 200, f.issueLocked())
+			tok := f.issueLocked()
+			f.mu.Unlock()
+			writeJSON(w, 200, tok)
 		case "refresh_token":
 			rt := r.Form.Get("refresh_token")
 			if rt != f.refresh || f.used[rt] {
+				f.mu.Unlock()
 				writeJSON(w, 400, map[string]string{"error": "invalid_grant", "error_description": "refresh token already used"})
 				return
 			}
 			f.used[rt] = true
 			f.refreshes++
-			writeJSON(w, 200, f.issueLocked())
+			tok := f.issueLocked()
+			f.mu.Unlock()
+			writeJSON(w, 200, tok)
 		default:
+			f.mu.Unlock()
 			writeJSON(w, 400, map[string]string{"error": "unsupported_grant_type"})
 		}
 	case strings.HasPrefix(r.URL.Path, "/bundles/"):
@@ -341,13 +356,16 @@ func (f *fakeChatGPT) mcp(w http.ResponseWriter, r *http.Request) {
 	case "tools/call":
 		f.mu.Lock()
 		f.calls = append(f.calls, fakeCall{Name: req.Params.Name, Args: req.Params.Arguments})
+		override, overridden := f.results[req.Params.Name]
 		f.mu.Unlock()
-		switch req.Params.Name {
-		case "example_mail.search_messages":
+		switch {
+		case overridden:
+			result = override
+		case req.Params.Name == "example_mail.search_messages":
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": `{"messages":[{"subject":"Example subject"}]}`}}}
-		case "example_mail.send_message":
+		case req.Params.Name == "example_mail.send_message":
 			result = map[string]any{"structuredContent": map[string]any{"sent": true, "id": "msg_example"}}
-		case "example_broker.get_positions":
+		case req.Params.Name == "example_broker.get_positions":
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "no positions"}}}
 		default:
 			result = map[string]any{"isError": true, "content": []any{map[string]any{"type": "text", "text": "Unknown tool"}}}

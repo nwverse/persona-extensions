@@ -30,7 +30,7 @@ test("source artifact and package have verified identity and no runtime imports"
   const bytes = await readFile("build/package/" + manifest.runtime.source.bundle);
   assert.equal(manifest.id, "wiktionary"); assert.equal(manifest.runtime.mode, "deno"); assert.equal(manifest.runtime.command, undefined);
   assert.equal(manifest.runtime.source.sha256, createHash("sha256").update(bytes).digest("hex"));
-  assert.equal(manifest.contributes.ui[0].id, "lookup"); assert.equal(manifest.contributes.connectors[0].capabilities.includes("actions"), false);
+  assert.equal(manifest.contributes.ui[0].id, "wiktionary"); assert.equal(manifest.contributes.connectors[0].capabilities.includes("actions"), false);
   assert.deepEqual(manifest.permissions.network, ["en.wiktionary.org", "zh.wiktionary.org", "ja.wiktionary.org"]);
   assert.ok(bytes.length > 0 && bytes.length < (8 << 20));
   const bundle = await import(pathToFileURL(resolve("build/wiktionary.mjs")).href);
@@ -57,7 +57,7 @@ test("dictionary lookup, grouped definitions and navigation use native server ho
   try {
     for (const version of [1, 3, 5]) {
       const session = `dictionary-${version}`;
-      await h.call("ui.page.mount", { session, params: { contribution: "lookup", locale: "en", ui_version: version } });
+      await h.call("ui.page.mount", { session, params: { contribution: "wiktionary", locale: "en", ui_version: version } });
       let snapshot = await settled(h, session, "dictionary-welcome-text");
       const button = snapshot.view.sections[0].items.find(item => item.key === "dictionary-submit");
       assert.ok(button && "action" in button && button.action?.submit === true, "lookup submits current field values");
@@ -75,7 +75,7 @@ test("dictionary lookup, grouped definitions and navigation use native server ho
 test("shared connector tools and cache, trusted tickets and replay controls", async () => {
   const h = await setup();
   try {
-    await h.call("ui.page.mount", { session: "owned", params: { contribution: "lookup", locale: "en", ui_version: 5 } });
+    await h.call("ui.page.mount", { session: "owned", params: { contribution: "wiktionary", locale: "en", ui_version: 5 } });
     const snapshot = await settled(h, "owned", "dictionary-welcome-text"), event = interaction(snapshot, "dictionary-submit", { word: "hello" });
     assert.ok((await h.call("ui.page.event", { session: "owned", interaction: event })).error);
     const accepted = (await h.call("ui.page.event", { session: "owned", ticket: "host-ticket", interaction: event })).result;
@@ -88,7 +88,7 @@ test("shared connector tools and cache, trusted tickets and replay controls", as
     assert.equal((await h.call("connector.tools.call", { name: "wiktionary_lookup", args: { word: "hello" } })).result.text.includes("Interjection"), true);
     assert.equal(h.fixture.hits.get("/api/rest_v1/page/definition/hello"), 1);
     await h.call("ui.page.dispose", { session: "owned" });
-    const remount: Snapshot = (await h.call("ui.page.mount", { session: "new", params: { contribution: "lookup", ui_version: 5 } })).result;
+    const remount: Snapshot = (await h.call("ui.page.mount", { session: "new", params: { contribution: "wiktionary", ui_version: 5 } })).result;
     assert.notEqual(remount.generation, snapshot.generation);
     assert.equal((await h.call("ui.page.event", { session: "new", ticket: "host-ticket", interaction: event })).result.status, "ambiguous");
   } finally { h.p.close(); }
@@ -97,11 +97,98 @@ test("shared connector tools and cache, trusted tickets and replay controls", as
 test("invalid state cannot trigger arbitrary requests; pure snapshots are supported", async () => {
   const h = await setup();
   try {
-    await h.call("ui.page.mount", { session: "bad", params: { contribution: "lookup", locale: "zh-Hans", ui_version: 1, state: "not-json" } });
+    await h.call("ui.page.mount", { session: "bad", params: { contribution: "wiktionary", locale: "zh-Hans", ui_version: 1, state: "not-json" } });
     await settled(h, "bad", "查词典");
     const local = new h.bundle.Wiktionary(h.fixture.fetch, {}, { locale: "en", now: () => h.fixture.clock, limits: { gap: 0 } });
     const pure = h.bundle.snapshotPage(local);
-    const view = await pure.render({ contribution: "lookup", locale: "en", ui_version: 1, hub: {}, state: h.bundle.encodeState({ q: "hello", found: true }) });
+    const view = await pure.render({ contribution: "wiktionary", locale: "en", ui_version: 1, hub: {}, state: h.bundle.encodeState({ q: "hello", found: true }) });
     assert.ok(JSON.stringify(view).includes("A greeting said when meeting someone."));
+  } finally { h.p.close(); }
+});
+
+test("large multilingual entries stay within CheckView item, text, key, URL, and frame budgets", async () => {
+  const h = await setup();
+  try {
+    const huge: Record<string, unknown> = {};
+    for (let lang = 0; lang < 20; lang++) {
+      const code = `l${lang}`;
+      huge[code] = [
+        {
+          partOfSpeech: `Noun-${"x".repeat(140)}`,
+          language: `Lang ${lang}`,
+          definitions: Array.from({ length: 10 }, (_, d) => ({
+            definition: d === 0 && lang === 0 ? "A".repeat(2500) : `Definition ${lang}-${d}`,
+            examples: [`Example ${lang}-${d}-0`, `Example ${lang}-${d}-1`],
+          })),
+        },
+      ];
+    }
+    h.fixture.put("/api/rest_v1/page/definition/100%25", huge);
+    await h.call("ui.page.mount", { session: "huge", params: { contribution: "wiktionary", locale: "en", tz: "", ui_version: 7, state: h.bundle.encodeState({ q: "100%", found: true }) } });
+    const snapshot = await settled(h, "huge", "dictionary-open");
+    const totalItems = snapshot.view.sections.reduce((sum, s) => sum + s.items.length, 0);
+    assert.ok(totalItems <= 300, `expected <= 300 items, got ${totalItems}`);
+    for (const section of snapshot.view.sections) {
+      assert.ok(section.items.length > 0, `empty section ${section.key}`);
+      if (section.key) assert.ok(Array.from(section.key).length <= 128, `section key too long: ${section.key.length}`);
+      for (const item of section.items) {
+        if (item.key) assert.ok(Array.from(item.key).length <= 128, `item key too long: ${item.key.length}`);
+        if (item.type === "text") assert.ok(Array.from(item.text).length <= 2000, `text too long: ${Array.from(item.text).length}`);
+        if (item.type === "link") assert.equal(item.url, "https://en.wiktionary.org/wiki/100%25");
+      }
+    }
+    await h.call("ui.page.dispose", { session: "huge" });
+
+    // Multi-byte huge definitions (< 2 MiB response limit, > 1 MiB unbudgeted) stay within Renderer 1 MiB frameBytes.
+    const emojiHeavy: Record<string, unknown> = {};
+    for (let lang = 0; lang < 15; lang++) {
+      emojiHeavy[`e${lang}`] = [{
+        partOfSpeech: "Noun",
+        language: `E${lang}`,
+        definitions: Array.from({ length: 12 }, () => ({ definition: "😀".repeat(2000), examples: [] })),
+      }];
+    }
+    h.fixture.put("/api/rest_v1/page/definition/emoji", emojiHeavy);
+    await h.call("ui.page.mount", { session: "emoji", params: { contribution: "wiktionary", locale: "en", tz: "Invalid/Zone", ui_version: 7, state: h.bundle.encodeState({ q: "emoji", found: true }) } });
+    const emojiSnap = await settled(h, "emoji", "dictionary-open");
+    assert.ok(new TextEncoder().encode(JSON.stringify(emojiSnap)).byteLength < (1 << 20));
+    await h.call("ui.page.dispose", { session: "emoji" });
+  } finally { h.p.close(); }
+});
+
+test("manual refresh does not disable caching for subsequent lookups in the same session", async () => {
+  const h = await setup();
+  try {
+    h.fixture.put("/api/rest_v1/page/definition/world", {
+      en: [{ partOfSpeech: "Noun", language: "English", definitions: [{ definition: "The Earth." }] }],
+    });
+    await h.call("ui.page.mount", { session: "cache", params: { contribution: "wiktionary", locale: "en", ui_version: 5 } });
+    let snapshot = await settled(h, "cache", "dictionary-welcome-text");
+    await h.call("ui.page.event", { session: "cache", ticket: "host-ticket", interaction: interaction(snapshot, "dictionary-submit", { word: "hello" }) });
+    snapshot = await settled(h, "cache", "A greeting said when meeting someone.");
+    assert.equal(h.fixture.hits.get("/api/rest_v1/page/definition/hello"), 1);
+
+    // Click Refresh once -> forces a fresh fetch (hit 2).
+    await h.call("ui.page.event", { session: "cache", ticket: "host-ticket", interaction: interaction(snapshot, "dictionary-refresh") });
+    await until(async () => h.fixture.hits.get("/api/rest_v1/page/definition/hello") ?? 0, count => count === 2);
+    snapshot = await settled(h, "cache", "A greeting said when meeting someone.");
+
+    // Look up a second word, then return to hello -> must hit cache (still 2 hits).
+    await h.call("ui.page.event", { session: "cache", ticket: "host-ticket", interaction: interaction(snapshot, "dictionary-submit", { word: "world" }) });
+    snapshot = await settled(h, "cache", "The Earth.");
+    assert.equal(h.fixture.hits.get("/api/rest_v1/page/definition/world"), 1);
+
+    await h.call("ui.page.event", { session: "cache", ticket: "host-ticket", interaction: interaction(snapshot, "dictionary-submit", { word: "hello" }) });
+    await settled(h, "cache", "A greeting said when meeting someone.");
+    assert.equal(h.fixture.hits.get("/api/rest_v1/page/definition/hello"), 2);
+    await h.call("ui.page.dispose", { session: "cache" });
+  } finally { h.p.close(); }
+});
+
+test("RPC tool calls validate unknown tool names before args and reject non-object args", async () => {
+  const h = await setup();
+  try {
+    assert.equal((await h.call("connector.tools.call", { name: "nonexistent", args: [] })).error.code, "unknown_method");
+    assert.equal((await h.call("connector.tools.call", { name: "wiktionary_lookup", args: [] })).error.code, "invalid");
   } finally { h.p.close(); }
 });

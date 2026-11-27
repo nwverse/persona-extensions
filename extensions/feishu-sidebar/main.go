@@ -1,5 +1,5 @@
-// Command feishu-sidebar is a Persona extension (extensions/feishu-sidebar) that opens the user's Persona web from
-// a Feishu sidebar (docs/extensions/feishu-sidebar.md):
+// Command feishu-sidebar is a Persona extension (extensions/feishu-sidebar) that opens the user's Persona web in
+// Feishu's desktop navigation (docs/extensions/feishu-sidebar.md):
 //
 //   - ui (nav_page "feishu-sidebar"): a page that shows the Feishu applink for the hub's public address and the
 //     default path from the settings, to open in Feishu or copy; when the address is not set, it says what to do.
@@ -12,11 +12,14 @@ import (
 	_ "embed"
 	"encoding/json"
 
+	"github.com/nwverse/persona-extensions/pluginkit"
 	"github.com/nwverse/persona/sdk/go/ext"
 )
 
 //go:embed persona-extension.json
-var manifest []byte
+var authorManifest []byte
+
+var manifest = pluginkit.PackagedManifest(authorManifest)
 
 // about is the manifest's id and version.
 var about = func() (m struct{ ID, Version string }) {

@@ -76,6 +76,16 @@ type SearchHit struct {
 	Files      []string          `json:"files,omitempty"`
 	Snippets   []EvidenceSnippet `json:"snippets"`
 	Correlated []CorrelatedRef   `json:"correlated,omitempty"`
+	// Location of a session hit: 本地 (live transcript) or 已上云 (moved to the cloud by disklessly; restorable by
+	// entry id to original_path).
+	Location     string `json:"location,omitempty"`
+	EntryID      string `json:"entry_id,omitempty"`
+	OriginalPath string `json:"original_path,omitempty"`
+	// Machine and MachineName name the computer that holds the session (the hub's own computer when Machine is
+	// empty); Cached marks a hit found in the hub's synced copy of an offline computer's index.
+	Machine     string `json:"machine,omitempty"`
+	MachineName string `json:"machine_name,omitempty"`
+	Cached      bool   `json:"cached,omitempty"`
 }
 
 // GroupSummary holds aggregated counts produced by `group_by`.
@@ -95,9 +105,15 @@ type ExecutionResult struct {
 	Hits            []*SearchHit   `json:"hits"`
 	TotalMatches    int            `json:"total_matches"`
 	ScannedSessions int            `json:"scanned_sessions"`
-	ScannedFiles    int            `json:"scanned_files"`
-	TotalDurationMs int64          `json:"total_duration_ms"`
-	RanAt           time.Time      `json:"ran_at"`
+	ScannedArchived int            `json:"scanned_archived_sessions,omitempty"`
+	// ScannedUnconfirmed of ScannedArchived have no confirmed cloud copy; ArchivedOmitted were beyond the cap.
+	ScannedUnconfirmed int       `json:"scanned_unconfirmed_sessions,omitempty"`
+	ArchivedOmitted    int       `json:"archived_omitted,omitempty"`
+	ScannedFiles       int       `json:"scanned_files"`
+	TotalDurationMs    int64     `json:"total_duration_ms"`
+	RanAt              time.Time `json:"ran_at"`
+	// Machines is how each computer of a cross-computer search answered (empty for a search of one computer).
+	Machines []MachineRun `json:"machines,omitempty"`
 }
 
 // CompileInput specifies either a raw Search-as-Code program, a recipe + query override, or a natural language query.
@@ -112,6 +128,10 @@ type CompileInput struct {
 	Since        string
 	ExcludeTools *bool
 	Limit        int
+	// Machine narrows the search to computers whose id or name matches; ProjectKey to projects whose route key
+	// (routeKey) is exactly this.
+	Machine    string
+	ProjectKey string
 }
 
 var knownOps = []string{
@@ -168,7 +188,7 @@ func CompileProgram(in CompileInput) (SearchProgram, error) {
 			if in.Query != "" && !looksLikePipelineCode(in.Query) {
 				title = "搜索 · " + clipRunes(in.Query, 40)
 			} else {
-				title = "代码化搜索流水线"
+				title = "自己写的搜索步骤"
 			}
 		}
 		return SearchProgram{
@@ -217,21 +237,21 @@ func parsePipelineCode(code string) ([]StepSpec, error) {
 		}
 	}
 	if len(rawSteps) == 0 {
-		return nil, fmt.Errorf("未包含任何算子步骤")
+		return nil, fmt.Errorf("一个搜索步骤都没有")
 	}
 	if len(rawSteps) > maxSteps {
-		return nil, fmt.Errorf("算子步骤不能超过 %d 步（当前 %d 步）", maxSteps, len(rawSteps))
+		return nil, fmt.Errorf("最多 %d 步，现在写了 %d 步", maxSteps, len(rawSteps))
 	}
 
 	var steps []StepSpec
 	for i, raw := range rawSteps {
 		m := callStepRe.FindStringSubmatch(raw)
 		if m == nil {
-			return nil, fmt.Errorf("第 %d 步 %q 语法无效，应为 op(key=\"value\") 格式", i+1, raw)
+			return nil, fmt.Errorf("第 %d 步 %q 写法不对，应该像 limit(n=\"20\") 这样", i+1, raw)
 		}
 		op := m[1]
 		if !slices.Contains(knownOps, op) {
-			return nil, fmt.Errorf("第 %d 步包含未知算子 %q（可用算子：%s）", i+1, op, strings.Join(knownOps, ", "))
+			return nil, fmt.Errorf("第 %d 步 %q 不认识（能用的步骤：%s）", i+1, op, strings.Join(knownOps, ", "))
 		}
 		argsBody := strings.TrimSpace(m[2])
 		args := map[string]string{}
@@ -252,7 +272,7 @@ func parsePipelineCode(code string) ([]StepSpec, error) {
 				case "scan_sessions":
 					args["query"] = val
 				default:
-					return nil, fmt.Errorf("第 %d 步 %q 参数格式错误，请使用 key=\"value\"", i+1, raw)
+					return nil, fmt.Errorf("第 %d 步 %q 括号里的写法不对，应该像 n=\"20\" 这样", i+1, raw)
 				}
 			} else {
 				for _, am := range matches {
@@ -270,7 +290,7 @@ func parsePipelineCode(code string) ([]StepSpec, error) {
 
 func validateSteps(steps []StepSpec) error {
 	if len(steps) == 0 {
-		return fmt.Errorf("搜索流水线不能为空")
+		return fmt.Errorf("搜索步骤不能是空的")
 	}
 	hasSource := false
 	for i, s := range steps {
@@ -279,28 +299,28 @@ func validateSteps(steps []StepSpec) error {
 			hasSource = true
 			if s.Op == "scan_sessions" {
 				if sc := s.Args["scope"]; sc != "" && !isValidScope(sc) {
-					return fmt.Errorf("第 %d 步 scan_sessions 的 scope=%q 无效", i+1, sc)
+					return fmt.Errorf("第 %d 步 scan_sessions 的范围 scope=%q 不存在（可选：%s）", i+1, sc, strings.Join(scopes, ", "))
 				}
 			}
 		case "match_regex":
 			pat := s.Args["pattern"]
 			if pat == "" {
-				return fmt.Errorf("第 %d 步 match_regex 缺少 pattern 参数", i+1)
+				return fmt.Errorf("第 %d 步 match_regex 没写要匹配的规则 pattern", i+1)
 			}
 			if _, err := regexp.Compile("(?i)" + pat); err != nil {
-				return fmt.Errorf("第 %d 步 match_regex 正则无效：%v", i+1, err)
+				return fmt.Errorf("第 %d 步 match_regex 的规则写得不对：%v", i+1, err)
 			}
 		case "limit":
 			if nStr := s.Args["n"]; nStr != "" {
 				n, err := strconv.Atoi(nStr)
 				if err != nil || n < 1 || n > maxLimitCap {
-					return fmt.Errorf("第 %d 步 limit(n=%s) 必须是 1 到 %d 之间的整数", i+1, nStr, maxLimitCap)
+					return fmt.Errorf("第 %d 步 limit(n=%s) 要写 1 到 %d 之间的整数", i+1, nStr, maxLimitCap)
 				}
 			}
 		}
 	}
 	if !hasSource {
-		return fmt.Errorf("搜索流水线必须包含至少一个数据源算子（scan_sessions 或 scan_files）")
+		return fmt.Errorf("至少要有一步说明搜哪里：scan_sessions（搜聊天）或 scan_files（搜代码文件夹）")
 	}
 	return nil
 }
@@ -337,6 +357,12 @@ func applyOverrides(steps []StepSpec, in CompileInput, scope string) []StepSpec 
 			if in.Since != "" {
 				args["since"] = in.Since
 			}
+			if in.Machine != "" {
+				args["machine"] = in.Machine
+			}
+			if in.ProjectKey != "" {
+				args["project_key"] = in.ProjectKey
+			}
 		}
 		if s.Op == "limit" && in.Limit > 0 {
 			args["n"] = strconv.Itoa(min(in.Limit, maxLimitCap))
@@ -352,6 +378,7 @@ func compileNaturalLanguage(in CompileInput, scope string) (SearchProgram, error
 	harness := strings.TrimSpace(in.Harness)
 	model := strings.TrimSpace(in.Model)
 	since := strings.TrimSpace(in.Since)
+	machine := strings.TrimSpace(in.Machine)
 	regexPat := ""
 	groupField := "project"
 	correlateBy := "file"
@@ -386,6 +413,9 @@ func compileNaturalLanguage(in CompileInput, scope string) (SearchProgram, error
 				continue
 			case "since", "after":
 				since = v
+				continue
+			case "machine", "host", "computer":
+				machine = v
 				continue
 			case "regex", "re":
 				regexPat = v
@@ -436,6 +466,12 @@ func compileNaturalLanguage(in CompileInput, scope string) (SearchProgram, error
 	if since != "" {
 		scanArgs["since"] = since
 	}
+	if machine != "" {
+		scanArgs["machine"] = machine
+	}
+	if in.ProjectKey != "" {
+		scanArgs["project_key"] = in.ProjectKey
+	}
 
 	steps := []StepSpec{{Op: "scan_sessions", Args: scanArgs}}
 
@@ -453,7 +489,7 @@ func compileNaturalLanguage(in CompileInput, scope string) (SearchProgram, error
 
 	if regexPat != "" {
 		if _, err := regexp.Compile("(?i)" + regexPat); err != nil {
-			return SearchProgram{}, fmt.Errorf("regex:%s 正则表达式无效：%v", regexPat, err)
+			return SearchProgram{}, fmt.Errorf("regex:%s 的规则写得不对：%v", regexPat, err)
 		}
 		steps = append(steps, StepSpec{Op: "match_regex", Args: map[string]string{"pattern": regexPat}})
 	}
@@ -470,11 +506,11 @@ func compileNaturalLanguage(in CompileInput, scope string) (SearchProgram, error
 	}
 	steps = append(steps, StepSpec{Op: "limit", Args: map[string]string{"n": strconv.Itoa(lim)}})
 
-	title := "全量会话检索"
+	title := "最近的聊天"
 	if cleanQuery != "" {
 		title = "搜索 · " + clipRunes(cleanQuery, 40)
 	} else if scope == "errors" {
-		title = "报错与异常会话检索"
+		title = "最近出现报错的聊天"
 	}
 
 	return SearchProgram{
@@ -514,7 +550,7 @@ func formatStepCall(s StepSpec) string {
 				return 0
 			case "scope", "glob":
 				return 1
-			case "project", "by", "field", "n":
+			case "project", "machine", "by", "field", "n":
 				return 2
 			default:
 				return 3
@@ -539,8 +575,14 @@ func formatStepCall(s StepSpec) string {
 
 // ExecuteProgram runs a compiled SearchProgram against the local session transcripts and repository files.
 func ExecuteProgram(st *State, prog SearchProgram, now time.Time) *ExecutionResult {
-	startAll := time.Now()
 	sessions, stats := loadSessions(st)
+	return executeSessions(st, sessions, stats, prog, now)
+}
+
+// executeSessions runs prog over the given sessions (this computer's, or a synced index of another one) and the
+// repository directories of st.
+func executeSessions(st *State, sessions []*SessionRecord, stats SourceStats, prog SearchProgram, now time.Time) *ExecutionResult {
+	startAll := time.Now()
 	var repoDirs []string
 	if st != nil {
 		repoDirs = st.RepoDirs
@@ -550,6 +592,20 @@ func ExecuteProgram(st *State, prog SearchProgram, now time.Time) *ExecutionResu
 	var traces []StepTrace
 	var groups []GroupSummary
 	scannedFiles := 0
+
+	// A route pins its scan_sessions steps to one project (pinProgram); then every other operator (correlate's
+	// candidates, where, exclude_tools) sees only that project's sessions too, so nothing of another project
+	// reaches the result.
+	if key := pinnedProjectKey(prog); key != "" {
+		keep := projectsForKey(sessions, key)
+		var in []*SessionRecord
+		for _, s := range sessions {
+			if keep[s.Project] {
+				in = append(in, s)
+			}
+		}
+		sessions = in
+	}
 
 	for idx, step := range prog.Steps {
 		stepStart := time.Now()
@@ -565,9 +621,11 @@ func ExecuteProgram(st *State, prog SearchProgram, now time.Time) *ExecutionResu
 			working = append(working, hits...)
 			q := step.Args["query"]
 			sc := cmp.Or(step.Args["scope"], "conversation")
-			note = fmt.Sprintf("扫描 %d 个会话，范围 %s", len(sessions), sc)
+			note = fmt.Sprintf("读了 %d 段聊天", len(sessions))
+			note += coldNote(stats.ArchivedSessions, stats.UnconfirmedSessions, stats.ArchivedOmitted)
+			note += "，搜：" + cmp.Or(scopeLabels[sc], sc)
 			if q != "" {
-				note += fmt.Sprintf("，查询 %q", clipRunes(q, 28))
+				note += fmt.Sprintf("，找「%s」", clipRunes(q, 28))
 			}
 
 		case "scan_files":
@@ -575,40 +633,40 @@ func ExecuteProgram(st *State, prog SearchProgram, now time.Time) *ExecutionResu
 			fHits, fScanned := scanRepoFiles(repoDirs, step.Args["pattern"], step.Args["glob"])
 			scannedFiles += fScanned
 			working = append(working, fHits...)
-			note = fmt.Sprintf("扫描 %d 个本地代码/文档文件", fScanned)
+			note = fmt.Sprintf("读了 %d 个代码和文档文件", fScanned)
 
 		case "where":
 			working = evalWhere(working, sessions, step.Args, now)
-			note = "按附加条件过滤命中集"
+			note = "按条件筛掉不相关的"
 
 		case "exclude_tools":
 			working = evalExcludeTools(working, sessions, prog.Query)
-			note = "剥离 tool_use / tool_result 噪音，仅保留对话与有效异常证据"
+			note = "去掉命令和工具输出，只留对话和报错"
 
 		case "match_regex":
 			pat := step.Args["pattern"]
 			working = evalMatchRegex(working, pat)
-			note = fmt.Sprintf("正则过滤 /%s/i", clipRunes(pat, 32))
+			note = fmt.Sprintf("只留符合规则 /%s/ 的（不分大小写）", clipRunes(pat, 32))
 
 		case "correlate":
 			by := cmp.Or(step.Args["by"], "file")
 			corrCount := evalCorrelate(working, sessions, by)
-			note = fmt.Sprintf("按 %s 跨会话关联，发现 %d 条上下文引用", by, corrCount)
+			note = fmt.Sprintf("按%s找相关的其他聊天，找到 %d 处", groupFieldLabel(cmp.Or(by, "file")), corrCount)
 
 		case "dedup":
 			by := cmp.Or(step.Args["by"], "session")
 			working = evalDedup(working, by)
-			note = fmt.Sprintf("按 %s 去重合并", by)
+			note = fmt.Sprintf("按%s去掉重复的", dedupLabel(by))
 
 		case "group_by":
 			field := cmp.Or(step.Args["field"], "project")
 			groups = evalGroupBy(working, field)
-			note = fmt.Sprintf("按 %s 聚合为 %d 个分组", field, len(groups))
+			note = fmt.Sprintf("按%s分成 %d 组", groupFieldLabel(field), len(groups))
 
 		case "rank":
 			by := cmp.Or(step.Args["by"], "relevance_freshness")
 			evalRank(working, by, now)
-			note = fmt.Sprintf("按 %s 综合打分排序", by)
+			note = fmt.Sprintf("按%s排序", rankLabel(by))
 
 		case "limit":
 			n, err := strconv.Atoi(step.Args["n"])
@@ -618,7 +676,7 @@ func ExecuteProgram(st *State, prog SearchProgram, now time.Time) *ExecutionResu
 			if len(working) > n {
 				working = working[:n]
 			}
-			note = fmt.Sprintf("截取 Top %d 条结果", n)
+			note = fmt.Sprintf("最多留 %d 条", n)
 		}
 
 		dur := time.Since(stepStart)
@@ -640,16 +698,31 @@ func ExecuteProgram(st *State, prog SearchProgram, now time.Time) *ExecutionResu
 
 	totalDur := time.Since(startAll)
 	return &ExecutionResult{
-		Program:         prog,
-		StepTraces:      traces,
-		Groups:          groups,
-		Hits:            working,
-		TotalMatches:    len(working),
-		ScannedSessions: stats.TotalSessions,
-		ScannedFiles:    scannedFiles,
-		TotalDurationMs: max(totalDur.Milliseconds(), 1),
-		RanAt:           now.UTC(),
+		Program:            prog,
+		StepTraces:         traces,
+		Groups:             groups,
+		Hits:               working,
+		TotalMatches:       len(working),
+		ScannedSessions:    stats.TotalSessions,
+		ScannedArchived:    stats.ArchivedSessions,
+		ScannedUnconfirmed: stats.UnconfirmedSessions,
+		ArchivedOmitted:    stats.ArchivedOmitted,
+		ScannedFiles:       scannedFiles,
+		TotalDurationMs:    max(totalDur.Milliseconds(), 1),
+		RanAt:              now.UTC(),
 	}
+}
+
+// pinnedProjectKey is the project_key a route pinned the program's scan_sessions steps to ("" when none).
+func pinnedProjectKey(prog SearchProgram) string {
+	for _, s := range prog.Steps {
+		if s.Op == "scan_sessions" {
+			if k := strings.TrimSpace(s.Args["project_key"]); k != "" {
+				return k
+			}
+		}
+	}
+	return ""
 }
 
 func evalScanSessions(sessions []*SessionRecord, args map[string]string, now time.Time) []*SearchHit {
@@ -658,12 +731,24 @@ func evalScanSessions(sessions []*SessionRecord, args map[string]string, now tim
 	project := strings.ToLower(strings.TrimSpace(args["project"]))
 	harness := strings.ToLower(strings.TrimSpace(args["harness"]))
 	model := strings.ToLower(strings.TrimSpace(args["model"]))
+	machine := strings.TrimSpace(args["machine"])
+	pinned := strings.TrimSpace(args["project_key"])
+	var pinnedProjects map[string]bool
+	if pinned != "" {
+		pinnedProjects = projectsForKey(sessions, pinned)
+	}
 	sinceTime := parseSince(args["since"], now)
 	terms := splitQueryTerms(query)
 
 	var hits []*SearchHit
 	for _, s := range sessions {
 		if project != "" && !strings.Contains(strings.ToLower(s.Project), project) && !strings.Contains(strings.ToLower(s.CWD), project) {
+			continue
+		}
+		if pinned != "" && !pinnedProjects[s.Project] {
+			continue
+		}
+		if machine != "" && !machineMatches(machine, s.Machine, s.MachineName) {
 			continue
 		}
 		if harness != "" && !strings.Contains(strings.ToLower(s.Harness), harness) {
@@ -747,23 +832,28 @@ func evalScanSessions(sessions []*SessionRecord, args map[string]string, now tim
 		}
 
 		hits = append(hits, &SearchHit{
-			ID:         "session:" + s.SessionID,
-			SourceKind: "session",
-			SessionID:  s.SessionID,
-			Title:      s.Title,
-			Project:    s.Project,
-			CWD:        s.CWD,
-			Branch:     s.Branch,
-			Harness:    s.Harness,
-			Model:      s.Model,
-			UpdatedAt:  s.UpdatedAt,
-			Score:      score,
-			TurnCount:  s.TurnCount,
-			ToolCalls:  s.ToolCalls,
-			ErrorCount: s.ErrorCount,
-			ErrorKind:  firstErrKind,
-			Files:      slices.Clone(s.Files),
-			Snippets:   snippets,
+			ID:           "session:" + s.SessionID,
+			SourceKind:   "session",
+			SessionID:    s.SessionID,
+			Title:        s.Title,
+			Project:      s.Project,
+			CWD:          s.CWD,
+			Branch:       s.Branch,
+			Harness:      s.Harness,
+			Model:        s.Model,
+			UpdatedAt:    s.UpdatedAt,
+			Score:        score,
+			TurnCount:    s.TurnCount,
+			ToolCalls:    s.ToolCalls,
+			ErrorCount:   s.ErrorCount,
+			ErrorKind:    firstErrKind,
+			Files:        slices.Clone(s.Files),
+			Snippets:     snippets,
+			Location:     sessionLocation(s),
+			EntryID:      s.EntryID,
+			OriginalPath: archivedPath(s),
+			Machine:      s.Machine,
+			MachineName:  s.MachineName,
 		})
 	}
 	return hits
@@ -811,11 +901,15 @@ func evalWhere(hits []*SearchHit, sessions []*SessionRecord, args map[string]str
 	model := strings.ToLower(strings.TrimSpace(args["model"]))
 	role := strings.ToLower(strings.TrimSpace(args["role"]))
 	hasErr := strings.ToLower(strings.TrimSpace(args["has_error"]))
+	machine := strings.TrimSpace(args["machine"])
 	sinceTime := parseSince(args["since"], now)
 
 	var out []*SearchHit
 	for _, h := range hits {
 		if project != "" && !strings.Contains(strings.ToLower(h.Project), project) {
+			continue
+		}
+		if machine != "" && !machineMatches(machine, h.Machine, h.MachineName) {
 			continue
 		}
 		if harness != "" && !strings.Contains(strings.ToLower(h.Harness), harness) {
@@ -1069,6 +1163,8 @@ func evalGroupBy(hits []*SearchHit, field string) []GroupSummary {
 			key = cmp.Or(h.Model, "unknown")
 		case "error_kind":
 			key = cmp.Or(h.ErrorKind, "no_error")
+		case "machine":
+			key = machineLabel(h.Machine, h.MachineName)
 		case "role":
 			if len(h.Snippets) > 0 {
 				key = h.Snippets[0].Role
@@ -1200,4 +1296,12 @@ func parseSince(raw string, now time.Time) time.Time {
 
 func oneLine(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// archivedPath is the original transcript path of an archived (已上云) session, empty for a live one.
+func archivedPath(s *SessionRecord) string {
+	if s.Archived {
+		return s.FilePath
+	}
+	return ""
 }

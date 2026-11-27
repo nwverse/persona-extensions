@@ -12,7 +12,7 @@ import (
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	"github.com/nwverse/persona-extensions/extensions/spaces/internal/kernel"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
 )
 
 // Limits of the screens. A wire string holds at most maxText runes; a row's title at most maxTitle.
@@ -76,7 +76,7 @@ func (c *ctx) typePage(t *kernel.Type) (*wire.View, error) {
 	}
 	v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{
 		button("新建"+t.Name, &wire.Action{ID: "fold:new"}, wire.ButtonRoleNormal),
-		button("结构", ext.Open("schema:"+t.Key, "", state{S: c.sp.ID, D: t.Key}, "结构"), wire.ButtonRoleNormal),
+		button("分类设置", ext.Open("schema:"+t.Key, "", state{S: c.sp.ID, D: t.Key}, "分类设置"), wire.ButtonRoleNormal),
 	}})
 	return v, nil
 }
@@ -185,7 +185,7 @@ func (c *ctx) boardGroup(t *kernel.Type, view kernel.View) string {
 // else the time of the last change.
 func (c *ctx) feedKey(t *kernel.Type, view kernel.View) string {
 	if len(view.Sort) > 0 {
-		if p, ok := c.sp.Field(t, view.Sort[0].By); ok {
+		if p, ok := c.fieldOf(t, view.Sort[0].By); ok {
 			if k, ok := kernel.KindOf(p.Kind); ok && isDate(k, &p) {
 				return view.Sort[0].By
 			}
@@ -282,7 +282,7 @@ func columnSection(key string, g kernel.Group, found bool, rows func([]*kernel.E
 
 // enumOf are the enumerable values of a field of the type, in order; nil when the field is not enumerable.
 func (c *ctx) enumOf(t *kernel.Type, key string) []string {
-	p, ok := c.sp.Field(t, key)
+	p, ok := c.fieldOf(t, key)
 	if !ok {
 		return nil
 	}
@@ -293,13 +293,14 @@ func (c *ctx) enumOf(t *kernel.Type, key string) []string {
 	return k.Enum(&p)
 }
 
-// tableSections is the table: its columns and the page's cells, the aggregates as caption; then the same entities
-// as rows, so that each one stays reachable (a table has no row actions).
+// tableSections is the table: its columns and the page's cells; the view's aggregates are the stats above it, so the
+// table has no caption. Then the same entities as compact rows, title and status only, so that each one stays
+// reachable (a table has no row actions).
 func (c *ctx) tableSections(t *kernel.Type, pg page) []wire.Section {
 	keys := t.Columns()
 	cols := []wire.TableColumn{}
 	for _, key := range keys {
-		p, _ := c.sp.Field(t, key)
+		p, _ := c.fieldOf(t, key)
 		align := ""
 		if k, ok := kernel.KindOf(p.Kind); ok && k.Num != nil {
 			align = wire.TableAlignEnd
@@ -308,23 +309,20 @@ func (c *ctx) tableSections(t *kernel.Type, pg page) []wire.Section {
 	}
 	set := pg.entities()
 	rows := [][]string{}
+	opens := []wire.Component{}
 	for _, e := range set {
 		cells := []string{}
 		for _, key := range keys {
 			cells = append(cells, dashIfEmpty(cut(c.w.Text(e, key), maxText)))
 		}
 		rows = append(rows, cells)
-	}
-	var parts []string
-	for _, a := range pg.res.Aggs {
-		parts = append(parts, a.Name+" "+textOr(a.Text, "—"))
-	}
-	table := wire.Component{
-		Type: wire.ComponentTable, Columns: cols, Rows: rows, Caption: cut(strings.Join(parts, " · "), maxText),
+		r := c.row(e, false)
+		r.Subtitle, r.Value = "", ""
+		opens = append(opens, r)
 	}
 	return []wire.Section{
-		{Items: []wire.Component{table}},
-		{Title: "打开", Items: c.rows(set, false)},
+		{Items: []wire.Component{{Type: wire.ComponentTable, Columns: cols, Rows: rows}}},
+		{Title: "点开查看", Items: opens},
 	}
 }
 
@@ -361,7 +359,7 @@ func (c *ctx) progressLabel(t *kernel.Type, e *kernel.Entity) string {
 	if pr := t.CardOrDefault().Progress; pr != nil {
 		// A share with no total would only repeat the percentage beside it, so it is named instead.
 		if pr.Over == "" {
-			if p, ok := c.sp.Field(t, pr.Of); ok {
+			if p, ok := c.fieldOf(t, pr.Of); ok {
 				return p.Name
 			}
 		} else if of := c.w.Text(e, pr.Of); of != "" {
@@ -436,10 +434,12 @@ func (c *ctx) emptyRows(t *kernel.Type) wire.Section {
 	if c.st.Q != "" {
 		return wire.Section{Items: []wire.Component{{
 			Type: wire.ComponentEmpty, Title: "没有找到「" + c.st.Q + "」",
+			Detail: "换个词再搜，或者清空搜索框看全部" + t.Name,
 		}}}
 	}
 	return wire.Section{Items: []wire.Component{{
 		Type: wire.ComponentEmpty, Title: "还没有" + t.Name,
+		Detail: cut("点下面的按钮写下第一条；也可以跟助手说「在「"+c.sp.Name+"」里记一条"+t.Name+"：……」。", maxText),
 		Button: &wire.EmptyButton{Title: "新建" + t.Name, Action: wire.Action{ID: "fold:new"}},
 	}}}
 }
@@ -447,8 +447,9 @@ func (c *ctx) emptyRows(t *kernel.Type) wire.Section {
 // quickAdd is the fold that adds an entity: one title and a primary create. The entity starts at the first stage.
 func (c *ctx) quickAdd(t *kernel.Type) wire.Section {
 	return wire.Section{Items: []wire.Component{
-		{Type: wire.ComponentField, Name: "title", Label: "标题", Kind: wire.FieldKindText, Placeholder: "写下一条" + t.Name},
-		button("创建", &wire.Action{ID: "add", Submit: true}, wire.ButtonRoleNormal),
+		{Type: wire.ComponentField, Name: "title", Label: "标题", Kind: wire.FieldKindText, Placeholder: "新的" + t.Name + "叫什么"},
+		caption("先写标题就行，其他内容添加后点开这一条再填。"),
+		button("添加", &wire.Action{ID: "add", Submit: true}, wire.ButtonRoleNormal),
 	}}
 }
 
@@ -522,7 +523,7 @@ func (c *ctx) pillText(t *kernel.Type, e *kernel.Entity) string {
 // named puts the property's name before a value that says nothing alone: a bare number or a yes/no. A value with a
 // unit, an option, a date or a record's title reads well without it.
 func (c *ctx) named(t *kernel.Type, key, text string) string {
-	p, ok := c.sp.Field(t, key)
+	p, ok := c.fieldOf(t, key)
 	k, known := kernel.KindOf(p.Kind)
 	if !ok || !known || k.Num == nil || k.Refs != nil || p.Unit != "" || strings.HasSuffix(text, "%") {
 		return text

@@ -12,7 +12,7 @@ test("legacy JSON callback values are decoded before searching or navigation", (
 });
 
 import assert from "node:assert/strict";
-import { articleURL, configFrom, dateAt, feedPath, languageFor, parseArticle, parseFeed, parseSearch, plain, ReadError, searchPath, titleKey } from "../src/model.ts";
+import { articleURL, clip, configFrom, dateAt, feedPath, languageFor, parseArticle, parseFeed, parseSearch, plain, ReadError, searchPath, summaryPath, titleKey } from "../src/model.ts";
 import { syntheticArticle, feed } from "./fixtures.ts";
 test("configuration and language selection are bounded", () => {
   assert.deepEqual(configFrom(undefined), {}); assert.deepEqual(configFrom({ language: "auto" }), { language: "auto" });
@@ -35,9 +35,25 @@ test("HTML snippets stay plain data with bounded entities", () => {
 test("titles cannot select another URL authority", () => {
   assert.equal(titleKey("Hello world"), "Hello_world");
   assert.equal(articleURL("en", "Hello world"), "https://en.wikipedia.org/wiki/Hello_world");
-  for (const title of ["a#fragment", "a?query", "a<b", "x".repeat(256)]) assert.throws(() => titleKey(title), ReadError);
+  for (const title of ["a#fragment", "a<b", "a[b]", "a|b", "C&amp;A", "x".repeat(256)]) assert.throws(() => titleKey(title), ReadError);
+  // MediaWiki titles may hold ? and a plain &: searching "What Is Life" or "C++" answers such titles.
+  assert.equal(titleKey("What Is Life?"), "What_Is_Life?");
+  assert.equal(titleKey("AT&T"), "AT&T");
+  assert.equal(summaryPath("What Is Life?"), "/api/rest_v1/page/summary/What_Is_Life%3F");
+  assert.equal(summaryPath("AT&T"), "/api/rest_v1/page/summary/AT%26T");
+  assert.equal(articleURL("en", "Johnson & Johnson"), "https://en.wikipedia.org/wiki/Johnson_%26_Johnson");
+  assert.deepEqual(parseSearch({ pages: [{ key: "C&A", title: "C&A" }, { key: "What_Is_Life?", title: "What Is Life?" }] }, "en").map(article => article.title), ["C&A", "What_Is_Life?"]);
   assert.equal(titleKey("A normal title"), "A_normal_title");
   assert.equal(articleURL("en", "https://evil.invalid"), "https://en.wikipedia.org/wiki/https%3A//evil.invalid");
+});
+test("a feed without a section its wiki or day lacks reads that section as empty", () => {
+  const without = (key: string) => Object.fromEntries(Object.entries(feed).filter(([name]) => name !== key));
+  const japanese = parseFeed(without("onthisday"), "ja", "2026-11-09", 0); // ja.wikipedia has no onthisday
+  assert.deepEqual(japanese.events, []);
+  assert.equal(japanese.popular.length, 1);
+  const early = parseFeed(without("mostread"), "en", "2026-11-09", 0); // today's feed before its most-read counts
+  assert.deepEqual(early.popular, []);
+  assert.equal(early.events.length, 1);
 });
 test("public request paths reject malformed dates, queries and service responses", () => {
   assert.equal(feedPath("2026-11-09"), "/api/rest_v1/feed/featured/2026/11/09");
@@ -48,4 +64,36 @@ test("public request paths reject malformed dates, queries and service responses
   for (const value of [null, [], {}, { mostread: {} }, { mostread: { articles: [] }, onthisday: null }, { mostread: { articles: [null] }, onthisday: [] }]) assert.throws(() => parseFeed(value, "en", "2026-11-09", 0), ReadError);
   assert.throws(() => parseArticle(syntheticArticle("Bad", { titles: { canonical: 1 } }), "en"), ReadError);
   assert.throws(() => parseFeed({ ...feed, mostread: { articles: [syntheticArticle(), syntheticArticle()] } }, "en", "2026-11-09", 0), ReadError);
+});
+test("transition preserves colons in article titles", () => {
+  const initial = readState(undefined);
+  const next = transition(initial, "article:2001:_A_Space_Odyssey");
+  assert.equal(next.v, "article");
+  assert.equal(next.a, "2001:_A_Space_Odyssey");
+  const prefixed = transition(initial, "article:Wikipedia:About:_Overview");
+  assert.equal(prefixed.v, "article");
+  assert.equal(prefixed.a, "Wikipedia:About:_Overview");
+});
+test("clip bounds output to most code points and handles edge limits", () => {
+  assert.equal(Array.from(clip("abcdef", 5)).length, 5);
+  assert.equal(clip("abcdef", 5), "abcd…");
+  assert.equal(clip("😀😃😄😁😆", 3), "😀😃…");
+  assert.equal(clip("hello", 1), "h");
+  assert.equal(clip("hello", 0.5), "");
+  assert.equal(clip("hello", 0), "");
+  assert.equal(clip("hello", -1), "");
+  assert.equal(clip("hello", Number.NaN), "");
+  // UTF-8 byte bound matches MediaWiki (255 bytes) and keeps encoded articleURL well under 2000 runes.
+  const cjk255Bytes = "中".repeat(85);
+  assert.equal(titleKey(cjk255Bytes), cjk255Bytes);
+  assert.ok(Array.from(articleURL("zh", cjk255Bytes)).length <= 2000);
+  assert.throws(() => titleKey("中".repeat(86)), ReadError);
+});
+test("parseArticle reports malformed upstream titles as bad_answer", () => {
+  for (const bad of [
+    syntheticArticle("Bad", { titles: { canonical: 1 } }),
+    syntheticArticle("Bad", { titles: { canonical: "a#fragment" } }),
+  ]) {
+    assert.throws(() => parseArticle(bad, "en"), (error: unknown) => error instanceof ReadError && error.code === "bad_answer");
+  }
 });

@@ -86,10 +86,10 @@ func (c *client) get(ctx context.Context, path string, query url.Values, out any
 
 func (c *client) streams(ctx context.Context) ([]stream, error) {
 	var out struct {
-		Streams []stream `json:"streams"`
+		Subscriptions []stream `json:"subscriptions"`
 	}
 	err := c.get(ctx, "/users/me/subscriptions", nil, &out)
-	return out.Streams, err
+	return out.Subscriptions, err
 }
 
 func (c *client) topics(ctx context.Context, streamID int64) ([]topic, error) {
@@ -99,9 +99,11 @@ func (c *client) topics(ctx context.Context, streamID int64) ([]topic, error) {
 	var out struct {
 		Topics []topic `json:"topics"`
 	}
-	err := c.get(ctx, "/users/me/subscriptions/"+fmt.Sprint(streamID)+"/topics", nil, &out)
+	err := c.get(ctx, "/users/me/"+fmt.Sprint(streamID)+"/topics", nil, &out)
 	return out.Topics, err
 }
+
+const maxTopicChars = 500
 
 func (c *client) messages(ctx context.Context, streamID int64, topicName string, anchor int64, firstUnread bool) (messagePage, error) {
 	if anchor < 0 {
@@ -112,7 +114,7 @@ func (c *client) messages(ctx context.Context, streamID int64, topicName string,
 		narrow = append(narrow, map[string]any{"operator": "stream", "operand": streamID})
 	}
 	if topicName != "" {
-		if len([]rune(topicName)) > 500 || strings.ContainsAny(topicName, "\x00\r\n") {
+		if len([]rune(topicName)) > maxTopicChars || strings.ContainsAny(topicName, "\x00\r\n") {
 			return messagePage{}, errors.New("invalid topic name")
 		}
 		narrow = append(narrow, map[string]any{"operator": "topic", "operand": topicName})

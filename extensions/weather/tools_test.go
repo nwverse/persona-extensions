@@ -17,7 +17,7 @@ func callTool(t *testing.T, a *app, name, args string) (string, error) {
 }
 
 func TestToolList(t *testing.T) {
-	if len(tools) != 3 {
+	if len(tools) != 4 {
 		t.Fatalf("%d tools", len(tools))
 	}
 	names := []string{}
@@ -27,7 +27,7 @@ func TestToolList(t *testing.T) {
 			t.Fatalf("tool %+v", tool)
 		}
 	}
-	if names[0] != "weather_now" || names[1] != "weather_forecast" || names[2] != "weather_air" {
+	if names[0] != "weather_now" || names[1] != "weather_forecast" || names[2] != "weather_air" || names[3] != "weather_pollen" {
 		t.Fatalf("tools %v", names)
 	}
 }
@@ -144,5 +144,28 @@ func TestToolFailureIsNotZero(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "读不懂") {
 		t.Fatalf("error %v", err)
+	}
+}
+
+// A city configured by name is searched once and keeps the name it was written with (#493).
+func TestConfiguredNameIsLookedUp(t *testing.T) {
+	f := newFakeSite(t)
+	sample(t, f)
+	a := testApp(t, f, `{"cities": ["上海", "Peking"]}`)
+	for range 2 {
+		out, err := callTool(t, a, "weather_now", `{"city": "Peking"}`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(out, "Peking") {
+			t.Fatalf("written name missing in %q", out)
+		}
+	}
+	if n := f.hit("/v1/search"); n != 1 {
+		t.Fatalf("searched %d times, want once", n)
+	}
+	// The default city written by name is not searched.
+	if _, err := callTool(t, a, "weather_now", ""); err != nil || f.hit("/v1/search") != 1 {
+		t.Fatalf("default city: %v, %d searches", err, f.hit("/v1/search"))
 	}
 }

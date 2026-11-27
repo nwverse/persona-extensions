@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -80,6 +81,31 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+// maxViewPullRequests keeps the accumulated list within the SDK's component limit.
+const maxViewPullRequests = 250
+
+// collectPullRequests reads pages from start 0 through start so that Load more extends the list instead of
+// replacing it, and reports whether Bitbucket has more pull requests that the cap still leaves room to show.
+func (a *app) collectPullRequests(ctx context.Context, project, repo string, start int) ([]pullRequest, bool, error) {
+	var out []pullRequest
+	more := false
+	for pos := 0; pos <= start && len(out) < maxViewPullRequests; pos += 50 {
+		page, err := a.client.pullRequests(ctx, project, repo, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, page.Values...)
+		more = !page.IsLastPage && page.NextPageStart != nil
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewPullRequests {
+		out = out[:maxViewPullRequests]
+	}
+	return out, more && len(out) < maxViewPullRequests, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" {
@@ -100,14 +126,14 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		}
 		return detailView(r, st, item, activities), nil
 	}
-	page, err := a.client.pullRequests(ctx, st.Project, st.Repo, st.Start)
+	items, more, err := a.collectPullRequests(ctx, st.Project, st.Repo, st.Start)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
 	v := &wire.View{Title: t.reviews, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}}
-	section := wire.Section{Title: fmt.Sprintf(t.results, len(page.Values))}
-	for _, item := range page.Values {
+	section := wire.Section{Title: fmt.Sprintf(t.results, len(items))}
+	for _, item := range items {
 		if st.Query != "" && !strings.Contains(strings.ToLower(item.Title), strings.ToLower(st.Query)) {
 			continue
 		}
@@ -116,11 +142,17 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noPRs})
 	}
-	if !page.IsLastPage && page.NextPageStart != nil {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v.Sections = []wire.Section{section}
 	return v, nil
+}
+
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
 func detailView(r *ext.UIRequest, st pageState, item pullRequest, activities []activity) *wire.View {
@@ -129,7 +161,7 @@ func detailView(r *ext.UIRequest, st pageState, item pullRequest, activities []a
 		{Type: wire.ComponentText, Text: item.Title},
 		{Type: wire.ComponentText, Text: t.author + ": " + item.Author.User.DisplayName + " · " + item.FromRef.DisplayID + " → " + item.ToRef.DisplayID},
 	}
-	if len(item.Links.Self) > 0 {
+	if len(item.Links.Self) > 0 && httpsLink(item.Links.Self[0].Href) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.openPR, URL: item.Links.Self[0].Href})
 	}
 	items = append(items,
@@ -138,14 +170,19 @@ func detailView(r *ext.UIRequest, st pageState, item pullRequest, activities []a
 		wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}},
 	)
 	v := &wire.View{Title: fmt.Sprintf("PR #%d", item.ID), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.reviews, Items: items}}}
+	used := len(items)
 	if item.Description != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: textComponents(item.Description)})
+		description := capComponents(textComponents(item.Description), maxDescriptionItems)
+		used += len(description)
+		v.Sections = append(v.Sections, wire.Section{Title: t.description, Items: description})
 	}
 	if len(item.Reviewers) > 0 {
 		section := wire.Section{Title: t.reviewers}
 		for _, reviewer := range item.Reviewers {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Title: reviewer.User.DisplayName, Subtitle: fmt.Sprintf("approved=%v · %s", reviewer.Approved, reviewer.Status)})
 		}
+		section.Items = section.Items[:min(len(section.Items), maxReviewerItems)]
+		used += len(section.Items)
 		v.Sections = append(v.Sections, section)
 	}
 	if len(activities) > 0 {
@@ -157,9 +194,30 @@ func detailView(r *ext.UIRequest, st pageState, item pullRequest, activities []a
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: activity.Comment.Author.DisplayName, Style: wire.TextStyleSecondary})
 			section.Items = append(section.Items, textComponents(activity.Comment.Text)...)
 		}
-		v.Sections = append(v.Sections, section)
+		if len(section.Items) > 0 {
+			section.Items = capComponents(section.Items, maxViewItems-used)
+			v.Sections = append(v.Sections, section)
+		}
 	}
 	return v
+}
+
+const (
+	// maxViewItems keeps the pull request view within the SDK's 300 component limit, whatever the pull request holds.
+	maxViewItems = 250
+	// maxDescriptionItems and maxReviewerItems leave the comments room when the description or the reviewers are many.
+	maxDescriptionItems = 100
+	maxReviewerItems    = 20
+)
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func textComponents(text string) []wire.Component {

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 
@@ -58,9 +59,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if err != nil || id <= 0 {
 			return nil, errors.New("invalid link ID")
 		}
-		st.LinkID, st.Mode = id, "detail"
+		st.LinkID, st.Mode, st.DraftID = id, "detail", randomID()
 	case "back":
-		st.Mode, st.LinkID = "list", 0
+		st.Mode, st.LinkID, st.DraftID = "list", 0, ""
 	case "save-form":
 		st.Mode, st.DraftID = "save", randomID()
 	case "review-save":
@@ -116,6 +117,9 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if err != nil {
 			return nil, err
 		}
+		if st.DraftID == "" {
+			st.DraftID = randomID()
+		}
 		return detailView(r, st, item, highlights), nil
 	}
 	items, err := a.client.search(ctx, st.Query, st.CollectionID)
@@ -125,17 +129,29 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	}
 	v := &wire.View{Title: t.links, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}}
 	if collections, err := a.client.collections(ctx); err == nil {
+		// A drop-down has at most 100 choices: the first collections, and the one being looked at in the last place
+		// when it is beyond them.
 		choices := []wire.Choice{{Value: "0", Title: t.all}}
+		selected := st.CollectionID == 0
 		for _, c := range collections {
-			choices = append(choices, wire.Choice{Value: strconv.FormatInt(c.ID, 10), Title: c.Name})
+			choice := wire.Choice{Value: strconv.FormatInt(c.ID, 10), Title: c.Name}
+			switch {
+			case len(choices) < maxFilterChoices:
+				choices = append(choices, choice)
+			case c.ID == st.CollectionID:
+				choices[len(choices)-1] = choice
+			}
+			selected = selected || c.ID == st.CollectionID
 		}
-		v.Filter = &wire.Filter{Name: "collection", Title: t.collections, Value: strconv.FormatInt(st.CollectionID, 10), Choices: choices, Action: wire.Action{ID: "collection"}}
+		if selected {
+			v.Filter = &wire.Filter{Name: "collection", Title: t.collections, Value: strconv.FormatInt(st.CollectionID, 10), Choices: choices, Action: wire.Action{ID: "collection"}}
+		}
 	}
 	section := wire.Section{Title: fmt.Sprintf(t.results, len(items)), Items: []wire.Component{{
 		Type: wire.ComponentButton, Title: t.save, Action: &wire.Action{ID: "save-form", Push: &wire.Push{State: ext.EncodeState(pageState{Mode: "save", DraftID: randomID()}), Title: t.save}},
 	}}}
-	for _, item := range items {
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "link-" + strconv.FormatInt(item.ID, 10), Title: clipText(item.Name, 2000), Subtitle: item.URL, Action: &wire.Action{ID: "detail", Values: map[string]string{"id": strconv.FormatInt(item.ID, 10)}}})
+	for _, item := range items[:min(len(items), maxViewLinks)] {
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "link-" + strconv.FormatInt(item.ID, 10), Title: clipText(linkTitle(item), 2000), Subtitle: clipText(item.URL, 2000), Action: &wire.Action{ID: "detail", Values: map[string]string{"id": strconv.FormatInt(item.ID, 10)}}})
 	}
 	if len(items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noLinks})
@@ -144,23 +160,42 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	return v, nil
 }
 
+const (
+	// maxFilterChoices is the most choices a filter has.
+	maxFilterChoices = 100
+	// maxViewLinks and maxViewItems keep the list and detail views within the SDK's 300 component limit.
+	maxViewLinks        = 250
+	maxViewItems        = 250
+	maxNoteItems        = 40
+	maxDescriptionItems = 80
+)
+
 func detailView(r *ext.UIRequest, st pageState, item link, highlights []highlight) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{}
-	if item.URL != "" {
+	if httpsLink(item.URL) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: item.URL})
 	}
-	if item.Collection != nil {
+	if item.Collection != nil && strings.TrimSpace(item.Collection.Name) != "" {
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: item.Collection.Name, Style: wire.TextStyleSecondary})
 	}
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.archive, Action: &wire.Action{ID: "archive", Confirm: t.archive + "\n" + item.Name}})
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
-	v := &wire.View{Title: clipText(item.Name, 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
+	v := &wire.View{Title: clipText(linkTitle(item), 2000), State: ext.EncodeState(st), Sections: []wire.Section{{Title: t.read, Items: items}}}
+	used := len(items)
 	if item.Note != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: textComponents(item.Note)})
+		note := capComponents(textComponents(item.Note), maxNoteItems)
+		if len(note) > 0 {
+			used += len(note)
+			v.Sections = append(v.Sections, wire.Section{Title: t.note, Items: note})
+		}
 	}
 	if item.Description != "" {
-		v.Sections = append(v.Sections, wire.Section{Title: t.read, Items: textComponents(item.Description)})
+		desc := capComponents(textComponents(item.Description), maxDescriptionItems)
+		if len(desc) > 0 {
+			used += len(desc)
+			v.Sections = append(v.Sections, wire.Section{Title: t.read, Items: desc})
+		}
 	}
 	if len(highlights) > 0 {
 		section := wire.Section{Title: t.highlights}
@@ -168,9 +203,25 @@ func detailView(r *ext.UIRequest, st pageState, item link, highlights []highligh
 			section.Items = append(section.Items, textComponents(h.Text)...)
 			section.Items = append(section.Items, textComponents(h.Note)...)
 		}
-		v.Sections = append(v.Sections, section)
+		section.Items = capComponents(section.Items, maxViewItems-used)
+		if len(section.Items) > 0 {
+			v.Sections = append(v.Sections, section)
+		}
 	}
 	return v
+}
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if n <= 0 {
+		return nil
+	}
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func saveView(r *ext.UIRequest, st pageState) *wire.View {
@@ -184,9 +235,26 @@ func saveView(r *ext.UIRequest, st pageState) *wire.View {
 func reviewSaveView(r *ext.UIRequest, st pageState) *wire.View {
 	t := textsFor(r.Locale)
 	return &wire.View{Title: t.review, State: ext.EncodeState(st), Sections: []wire.Section{{Items: []wire.Component{
-		{Type: wire.ComponentText, Text: st.SaveURL},
+		{Type: wire.ComponentText, Text: clipText(st.SaveURL, 2000)},
 		{Type: wire.ComponentButton, Title: t.confirm, Action: &wire.Action{ID: "save", Confirm: t.save + "\n" + st.SaveURL}},
 	}}}}
+}
+
+// linkTitle is what a link is called: its name, else its description, else its address, as Linkwarden shows it. A link
+// not named yet, or from a page without a title, has an empty name, and a row needs a title.
+func linkTitle(item link) string {
+	for _, s := range []string{item.Name, item.Description, item.URL} {
+		if s = strings.TrimSpace(s); s != "" {
+			return s
+		}
+	}
+	return "#" + strconv.FormatInt(item.ID, 10)
+}
+
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
 }
 
 func textComponents(text string) []wire.Component {

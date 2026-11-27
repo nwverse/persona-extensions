@@ -1,0 +1,40 @@
+import { callback, useLoadEffect, useState, type Node } from "@persona/extension/ui";
+import { imageTransition, encodeState, loadPage, page, readState, transition, type Loaded, type PageState } from "./page.tsx";
+import type { DockerHub } from "./service.ts";
+export interface RootOptions { service: DockerHub; locale?: string; uiVersion?: number; state?: unknown }
+function sameState(a: PageState, b: PageState): boolean {
+  return a.q === b.q && a.found === b.found && a.image?.name === b.image?.name;
+}
+export function Root(options: RootOptions): Node {
+  const [view, setView] = useState(() => ({ state: readState(options.state), refresh: 0 }));
+  const { state, refresh } = view;
+  const [result, setResult] = useState<{ service: DockerHub; identity: string; loaded: Loaded } | undefined>(undefined);
+  const identity = JSON.stringify([state, refresh]);
+  useLoadEffect(async signal => {
+    const loaded = await loadPage(options.service, state, refresh > 0, signal);
+    if (!signal.aborted) setResult(previous => previous?.service === options.service && previous.identity === identity && JSON.stringify(previous.loaded) === JSON.stringify(loaded)
+      ? previous : { service: options.service, identity, loaded });
+  }, [options.service, identity]);
+  const loaded = result?.service === options.service && result.identity === identity ? result.loaded : { kind: "loading" } as const;
+  return page({ ...options, state, loaded,
+    action: (id, next, title) => {
+      if (next && (options.uiVersion ?? 0) >= 3) {
+        const push = { ui: "dockerhub", state: encodeState(next), ...(title ? { title } : {}) };
+        return callback(() => ({ push }), { push });
+      }
+      return callback(values => {
+        if (id === "refresh") setView(previous => ({ state: previous.state, refresh: previous.refresh + 1 }));
+        else if (id.startsWith("image:")) {
+          if (loaded.kind !== "results") return;
+          setView(previous => {
+            const nextState = imageTransition(previous.state, loaded.result, id);
+            return sameState(nextState, previous.state) ? previous : { state: nextState, refresh: 0 };
+          });
+        } else setView(previous => {
+          const nextState = transition(previous.state, id, values);
+          return sameState(nextState, previous.state) ? previous : { state: nextState, refresh: 0 };
+        });
+      }, { submit: true });
+    } });
+}
+export function root(options: RootOptions): Node { return <Root key="dockerhub-root" {...options} />; }

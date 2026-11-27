@@ -19,11 +19,14 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nwverse/persona-extensions/pluginkit"
 	"github.com/nwverse/persona/sdk/go/ext"
 )
 
 //go:embed persona-extension.json
-var manifest []byte
+var authorManifest []byte
+
+var manifest = pluginkit.PackagedManifest(authorManifest)
 
 var about = func() (m struct{ ID, Version string }) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
@@ -37,7 +40,10 @@ const usage = `disklessly: Persona Disklessly machine disk watermark, cache clea
   disklessly                   the extension (started by the Persona hub; protocol on stdin / stdout)
   disklessly mcp [--data DIR]  the MCP server for the assistant on stdin / stdout (tools:
                                disklessly_machines_status, disklessly_scan, disklessly_history,
-                               disklessly_clean, disklessly_machine_upsert, disklessly_machine_delete)
+                               disklessly_sessions_search, disklessly_sessions_status,
+                               disklessly_clean, disklessly_machine_upsert, disklessly_machine_delete,
+                               disklessly_sessions_offload, disklessly_sessions_restore,
+                               disklessly_cli_install, disklessly_files_offload)
   disklessly manifest          print persona-extension.json
 
 The MCP server finds the data in --data, else PERSONA_DISKLESSLY_DATA, else the directory the hub's
@@ -65,23 +71,32 @@ func main() {
 }
 
 type app struct {
-	mu     sync.Mutex
-	store  *store
-	runner Runner
-	stop   chan struct{}
-	now    func() time.Time
+	mu       sync.Mutex
+	store    *store
+	runner   Runner
+	streamer StreamRunner
+	hub      *ext.Hub
+	stop     chan struct{}
+	now      func() time.Time
+	// jobs are the background cold-session jobs (refresh, restore, offload, copy-install).
+	jobs coldJobs
+	// offloadData is the disk_offload point's inventories and jobs (offload.go).
+	offloadData offloadState
 }
 
 func newApp(dir string) *app {
-	return &app{store: newStore(dir), runner: DefaultRunner, now: time.Now}
+	return &app{store: newStore(dir), runner: DefaultRunner, streamer: DefaultStreamRunner, now: time.Now}
 }
 
 func program(a *app) ext.Program {
 	return ext.Program{
 		ID: about.ID, Version: about.Version, Manifest: manifest, Init: a.init,
+		// The disk_offload point: Persona's usage map lists what is offloaded and moves items to the cloud.
+		Namespaces: map[string]ext.Handler{offloadNamespace: a.offload},
 		UI: map[string]ext.Page{
-			pageUI: {Render: a.render, Action: a.action},
-			cardUI: {Render: a.card},
+			pageUI:     {Render: a.render, Action: a.action},
+			cardUI:     {Render: a.card},
+			sessionsUI: {Render: a.renderSessions, Action: a.actionSessions},
 		},
 	}
 }
@@ -101,6 +116,7 @@ func (a *app) init(_ context.Context, in *ext.Init, hub *ext.Hub) (map[string]an
 		close(a.stop)
 	}
 	a.stop = make(chan struct{})
+	a.hub = hub
 	go watch(a.store, hub, a.stop)
 	return nil, nil
 }
@@ -118,6 +134,21 @@ func (a *app) run() Runner {
 		return DefaultRunner
 	}
 	return a.runner
+}
+
+func (a *app) stream() StreamRunner {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.streamer == nil {
+		return DefaultStreamRunner
+	}
+	return a.streamer
+}
+
+func (a *app) hubRef() *ext.Hub {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.hub
 }
 
 func watch(s *store, hub *ext.Hub, stop chan struct{}) {

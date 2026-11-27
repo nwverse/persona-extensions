@@ -14,14 +14,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nwverse/persona-extensions/extensions/spaces/internal/kernel"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
 )
 
 //go:embed *.json
 var bundles embed.FS
 
 // order is the fixed order of the templates; the bundle of a key is the file key + ".json".
-var order = []string{"project", "reading", "inventory", "blank"}
+var order = []string{"project", "reading", "inventory", "travel", "habit", "people", "subscription", "blank"}
 
 // all are the decoded templates. A bundle that does not load is a programming error, caught by the tests.
 var all = mustLoad(bundles, order)
@@ -49,7 +49,8 @@ type Sample struct {
 	From   string         `json:"from,omitempty"`
 }
 
-// All returns the templates in their fixed order: project, reading, inventory, blank.
+// All returns the templates in their fixed order: project, reading, inventory, travel, habit, people, subscription,
+// blank.
 func All() []Template { return slices.Clone(all) }
 
 // Get returns the template with the key.

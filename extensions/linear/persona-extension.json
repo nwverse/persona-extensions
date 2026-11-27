@@ -2,7 +2,8 @@
   "manifest_version": 1,
   "id": "linear",
   "name": "Linear 工作项",
-  "version": "0.1.1",
+  "version": "0.1.2",
+  "icon": "assets/icon.png",
   "description": "在 Persona 里处理 Linear 工作：分配给我的进行中事项，按团队的工作流看状态和优先级，读详情与讨论；新建、修改状态/负责人和发评论前在手机上确认。个人 API key 加密存在 hub，不执行任意 GraphQL。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/linear/README.md",
@@ -22,7 +23,7 @@
       "hosts": ["linear.app"], "agent_tools": ["linear_*"],
       "confirm_always": ["linear_create", "linear_update", "linear_comment"]
     }],
-    "ui": [{"id": "issues", "title": "工作项", "placement": "nav_page", "icon": "list"}]
+    "ui": [{"id": "linear", "title": "工作项", "placement": "nav_page", "icon": "list"}]
   },
   "secrets": [{
     "name": "api_key", "title": "Linear 个人 API Key",

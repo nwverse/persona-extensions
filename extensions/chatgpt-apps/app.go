@@ -10,12 +10,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nwverse/persona-extensions/pluginkit"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
 //go:embed persona-extension.json
-var manifest []byte
+var authorManifest []byte
+
+var manifest = pluginkit.PackagedManifest(authorManifest)
 
 // connectorID is the connector's id: its tools are named chatgpt_*.
 const connectorID = "chatgpt"
@@ -37,6 +40,11 @@ type App struct {
 	now  func() time.Time
 	// loadTimeout is how long a call waits for the tokens to come from the hub after a start.
 	loadTimeout time.Duration
+	// answerMost is the most of one ChatGPT answer read (maxAnswer; tests make it small).
+	answerMost int64
+	// Optional test hooks (set before Start; nil in production).
+	beforeCompleteLogin func()
+	afterPoll           func()
 
 	mu      sync.Mutex
 	ctx     context.Context // the program's, from Init
@@ -47,6 +55,7 @@ type App struct {
 	tok     *tokens       // nil: not signed in
 	expired bool          // the last sign-in stopped working (refresh refused)
 	login   *deviceLogin  // the sign-in in progress, if any
+	authGen uint64        // monotonic counter for local auth mutations (guards late loadTokens)
 
 	refreshMu sync.Mutex // one refresh at a time: a refresh token works once
 
@@ -70,6 +79,7 @@ func newApp(ep endpoints) *App {
 		http:        &http.Client{Timeout: 110 * time.Second}, // HTTPS_PROXY from the environment: the hub's egress
 		now:         time.Now,
 		loadTimeout: 8 * time.Second,
+		answerMost:  maxAnswer,
 		text:        zhHans,
 		loaded:      make(chan struct{}),
 		plugins:     map[string]pluginDetail{},
@@ -90,10 +100,10 @@ func (a *App) program() ext.Program {
 			ext.ConnectorNamespace: ext.Methods{
 				"status":           ext.Method(a.status),
 				"tools.list":       ext.Method(func(context.Context, wire.ConnectorParams) (wire.ConnectorTools, error) { return readTools(), nil }),
-				"tools.call":       ext.Method(a.callRead),
+				"tools.call":       ext.Method(whole(a.callRead)),
 				"actions.list":     ext.Method(func(context.Context, wire.ConnectorParams) (wire.ConnectorTools, error) { return writeTools(), nil }),
 				"actions.describe": ext.Method(a.describe),
-				"actions.do":       ext.Method(a.do),
+				"actions.do":       ext.Method(whole(a.do)),
 			}.For(connectorID),
 		},
 		UI: map[string]ext.Page{uiPlugins: a.pluginsPage()},
@@ -142,7 +152,9 @@ func (a *App) loadTokens(ctx context.Context) {
 		return
 	}
 	a.mu.Lock()
-	a.tok = t
+	if a.authGen == 0 {
+		a.tok = t
+	}
 	a.mu.Unlock()
 }
 

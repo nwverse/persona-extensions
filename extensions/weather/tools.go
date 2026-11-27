@@ -36,12 +36,18 @@ var tools = []Tool{
 		Description: "查一个城市的空气质量：AQI（欧洲空气质量指数）、PM2.5、PM10，带等级说明。用户问空气质量、雾霾、能不能户外活动时用它。",
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
 			"city": cityParam}}},
+	{Name: "weather_pollen",
+		Description: "查一个城市未来几小时的花粉浓度和空气质量趋势。花粉只覆盖欧洲花粉季；没有数据时明确说明，不把无数据当作零，也不提供医疗或用药建议。",
+		InputSchema: map[string]any{"type": "object", "properties": map[string]any{
+			"city":  cityParam,
+			"hours": map[string]any{"type": "integer", "minimum": 1, "maximum": 24, "description": "未来几小时，默认 12"}}}},
 }
 
 func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (string, error) {
 	var args struct {
-		City string `json:"city"`
-		Days int    `json:"days"`
+		City  string `json:"city"`
+		Days  int    `json:"days"`
+		Hours int    `json:"hours"`
 	}
 	if len(raw) > 0 && string(raw) != "null" {
 		if err := json.Unmarshal(raw, &args); err != nil {
@@ -59,6 +65,12 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 		return a.toolForecast(ctx, args.City, days)
 	case "weather_air":
 		return a.toolAir(ctx, args.City)
+	case "weather_pollen":
+		hours := 12
+		if args.Hours > 0 {
+			hours = min(args.Hours, 24)
+		}
+		return a.toolPollen(ctx, args.City, hours)
 	}
 	return "", fmt.Errorf("没有工具 %s", name)
 }
@@ -66,7 +78,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (s
 // resolveCity finds the city to read: a configured one by name, the default when the name is empty, or a search.
 func (a *app) resolveCity(ctx context.Context, name string) (City, error) {
 	if c, ok := cityByName(a.cities, name); ok {
-		return c, nil
+		return a.locate(ctx, c)
 	}
 	rd, err := a.read(ctx, a.client.geo, geoURL(name), cacheFor)
 	if err != nil {
@@ -91,7 +103,15 @@ func (a *app) readForecast(ctx context.Context, c City, fresh time.Duration) (fo
 
 // readAir reads and parses a city's air quality.
 func (a *app) readAir(ctx context.Context, c City, fresh time.Duration) (air, reading, error) {
-	rd, err := a.read(ctx, a.client.air, airURL(c), fresh)
+	return a.readAirPath(ctx, c, airURL(c), fresh)
+}
+
+func (a *app) readAirOutlook(ctx context.Context, c City, fresh time.Duration) (air, reading, error) {
+	return a.readAirPath(ctx, c, airOutlookURL(c), fresh)
+}
+
+func (a *app) readAirPath(ctx context.Context, c City, path string, fresh time.Duration) (air, reading, error) {
+	rd, err := a.read(ctx, a.client.air, path, fresh)
 	if err != nil {
 		return air{}, reading{}, err
 	}
@@ -119,12 +139,16 @@ func (a *app) toolNow(ctx context.Context, name string) (string, error) {
 	u, w := a.cfg.tempUnit(), a.cfg.windUnit()
 	cur := f.Current
 	var b strings.Builder
+	desc, icon := wmoOptional(cur.WeatherCode)
 	fmt.Fprintf(&b, "%s 当前（%s）：%s，体感 %s，%s%s\n", c.Name, curTime(cur.Time),
-		fmtTemp(cur.Temperature, u), fmtTemp(cur.Apparent, u), wmoText(cur.WeatherCode), iconOf(cur.WeatherCode))
-	fmt.Fprintf(&b, "湿度 %.0f%%", cur.Humidity)
-	if cur.WindSpeed > 0 {
-		fmt.Fprintf(&b, "，%s %s", windDir(cur.WindDirection), fmtWind(cur.WindSpeed, w))
-	} else {
+		tempText(cur.Temperature, u), tempText(cur.Apparent, u), desc, icon)
+	fmt.Fprintf(&b, "湿度 %s", percentText(cur.Humidity))
+	switch {
+	case !cur.WindSpeed.OK:
+		b.WriteString("，风未知")
+	case cur.WindSpeed.Value > 0:
+		fmt.Fprintf(&b, "，%s %s", windDirLabel(cur.WindDirection), fmtWind(cur.WindSpeed.Value, w))
+	default:
 		b.WriteString("，无风")
 	}
 	if hi, lo, ok := f.todayHighLow(); ok {
@@ -154,8 +178,9 @@ func (a *app) toolForecast(ctx context.Context, name string, days int) (string, 
 		if !d.date.IsZero() {
 			date = d.date.Format("01-02")
 		}
-		fmt.Fprintf(&b, "\n- %s %s：%s，%s ~ %s，降水概率 %.0f%%", d.weekday(), date,
-			wmoText(d.code), fmtTemp(d.min, u), fmtTemp(d.max, u), d.precip)
+		desc, _ := wmoOptional(d.code)
+		fmt.Fprintf(&b, "\n- %s %s：%s，%s ~ %s，降水概率 %s", d.weekday(), date,
+			desc, tempText(d.min, u), tempText(d.max, u), percentText(d.precip))
 	}
 	return b.String(), nil
 }
@@ -182,6 +207,42 @@ func (a *app) toolAir(ctx context.Context, name string) (string, error) {
 	if q.Current.PM10 != nil {
 		fmt.Fprintf(&b, "，PM10 %s µg/m³", trimZero(*q.Current.PM10))
 	}
+	return b.String(), nil
+}
+
+func (a *app) toolPollen(ctx context.Context, name string, hours int) (string, error) {
+	c, err := a.resolveCity(ctx, name)
+	if err != nil {
+		return "", err
+	}
+	q, _, err := a.readAirOutlook(ctx, c, cacheFor)
+	if err != nil {
+		return "", err
+	}
+	points := q.outlook()
+	if len(points) > hours {
+		points = points[:hours]
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s 花粉与空气质量趋势（欧洲花粉季；无数据不等于零）：", c.Name)
+	found := false
+	for _, point := range points {
+		var parts []string
+		for _, item := range point.Pollen {
+			parts = append(parts, fmt.Sprintf("%s %s grains/m³", pollenLabel(item.Species), trimZero(item.Value)))
+		}
+		if len(parts) > 0 {
+			found = true
+			fmt.Fprintf(&b, "\n- %s：%s", point.At.Format("01-02 15:00"), strings.Join(parts, "，"))
+		}
+		if point.AQI != nil {
+			fmt.Fprintf(&b, "\n  AQI %.0f（%s）", *point.AQI, aqiLevel(*point.AQI))
+		}
+	}
+	if !found {
+		b.WriteString("\n当前没有花粉数据；仅在 Europe 花粉季提供，不能将无数据解释为浓度为零。")
+	}
+	b.WriteString("\n数据：Open-Meteo / CAMS ENSEMBLE；仅供参考，不作医疗或用药建议。")
 	return b.String(), nil
 }
 

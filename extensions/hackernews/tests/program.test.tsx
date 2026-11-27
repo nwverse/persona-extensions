@@ -10,7 +10,7 @@ import { Fixture } from "./fixtures.ts";
 async function setup() {
   const bundle = await import(pathToFileURL(resolve("build/hackernews.mjs")).href);
   assert.equal(bundle.default.id, "hackernews");
-  assert.equal(bundle.default.version, "0.1.2");
+  assert.equal(bundle.default.version, JSON.parse(await readFile("persona-extension.json", "utf8")).version);
   assert.equal(bundle.default.fetch, undefined);
   const fixture = new Fixture();
   const frames: any[] = [];
@@ -54,7 +54,7 @@ test("bundled component page preserves requested UI version and server-owned sto
   try {
     for (const version of [1, 3, 5]) {
       const session = `version-${version}`;
-      await h.call("ui.page.mount", { session, params: { contribution: "stories", locale: "en", ui_version: version } });
+      await h.call("ui.page.mount", { session, params: { contribution: "hackernews", locale: "en", ui_version: version } });
       let snapshot: Snapshot = (await until(() => h.call("ui.page.snapshot", { session }), frame => JSON.stringify(frame.result).includes("Synthetic Rust article"))).result;
       const picker = snapshot.view.sections[0].items[0];
       assert.equal(picker.type, version < 2 ? "row" : "segmented");
@@ -73,7 +73,7 @@ test("bundled component page preserves requested UI version and server-owned sto
 test("resuming a cached page does not publish an unchanged effect result over a saved callback", async () => {
   const h = await setup();
   try {
-    await h.call("ui.page.mount", { session: "cached", params: { contribution: "stories", locale: "en", ui_version: 1 } });
+    await h.call("ui.page.mount", { session: "cached", params: { contribution: "hackernews", locale: "en", ui_version: 1 } });
     await until(() => h.call("ui.page.snapshot", { session: "cached" }), frame => JSON.stringify(frame.result).includes("Synthetic Rust article"));
     await h.call("ui.page.suspend", { session: "cached" });
     const resumed: Snapshot = (await h.call("ui.page.resume", { session: "cached" })).result;
@@ -88,16 +88,16 @@ test("resuming a cached page does not publish an unchanged effect result over a 
 test("actual separately bundled Program shares service/cache across native sessions, connector, tools and snapshots", async () => {
   const h = await setup();
   try {
-    assert.deepEqual((await h.call("ui.page.supported")).result, { contributions: ["stories"] });
-    assert.equal((await h.call("ui.render", { contribution: "stories", ui_version: 5 })).error.code, "unsupported");
-    await h.call("ui.page.mount", { session: "owned", params: { contribution: "stories", locale: "en", ui_version: 6 } });
+    assert.deepEqual((await h.call("ui.page.supported")).result, { contributions: ["hackernews"] });
+    assert.equal((await h.call("ui.render", { contribution: "hackernews", ui_version: 5 })).error.code, "unsupported");
+    await h.call("ui.page.mount", { session: "owned", params: { contribution: "hackernews", locale: "en", ui_version: 6 } });
     let snapshot: Snapshot = (await until(() => h.call("ui.page.snapshot", { session: "owned" }), frame => JSON.stringify(frame.result).includes("Synthetic Rust article"))).result;
     assert.ok(h.frames.some(frame => frame.event === "ui.page.snapshot"));
     const tool = await h.call("connector.tools.call", { contribution: "hackernews", name: "hn_stories", args: {} });
     assert.ok(tool.result.text.includes("Synthetic Rust article"));
     assert.equal((await h.call("connector.status", { contribution: "hackernews" })).result.state, "ok");
     for (const version of [1, 3, 5]) {
-      const view = (await h.call("ui.render", { contribution: "stories-snapshot", locale: "en", ui_version: version, placement: "widget", size: "large" })).result;
+      const view = (await h.call("ui.render", { contribution: "hackernews-snapshot", locale: "en", ui_version: version, placement: "widget", size: "large" })).result;
       assert.ok(JSON.stringify(view).includes("Synthetic Rust article"));
     }
     assert.equal(h.fixture.hits.get("/topstories.json"), 1);
@@ -114,7 +114,7 @@ test("actual separately bundled Program shares service/cache across native sessi
     snapshot = (await h.call("ui.page.resume", { session: "owned" })).result;
     assert.equal(snapshot.generation, accepted.snapshot.generation);
     await h.call("ui.page.dispose", { session: "owned" });
-    const remount = (await h.call("ui.page.mount", { session: "new-owned", params: { contribution: "stories", locale: "en", ui_version: 6 } })).result;
+    const remount = (await h.call("ui.page.mount", { session: "new-owned", params: { contribution: "hackernews", locale: "en", ui_version: 6 } })).result;
     assert.notEqual(remount.generation, snapshot.generation);
     assert.equal((await h.call("ui.page.event", { session: "new-owned", ticket: "host-ticket", interaction: event })).result.status, "ambiguous");
   } finally { h.p.close(); }

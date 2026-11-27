@@ -13,7 +13,7 @@ import (
 )
 
 const connectorID = "asana"
-const pageUI = "tasks"
+const pageUI = "asana"
 
 type app struct {
 	mu       sync.RWMutex

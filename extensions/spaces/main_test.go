@@ -16,10 +16,10 @@ import (
 	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	"github.com/nwverse/persona-extensions/extensions/spaces/internal/kernel"
 	"github.com/nwverse/persona-extensions/extensions/spaces/internal/mcp"
-	"github.com/nwverse/persona-extensions/extensions/spaces/internal/store"
 	"github.com/nwverse/persona-extensions/extensions/spaces/internal/ui"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/store"
 )
 
 // TestMain keeps the locator file, which Init writes, out of the real configuration directory.
@@ -284,5 +284,28 @@ func TestProgramInitAndUI(t *testing.T) {
 	}
 	if res == nil || res.View == nil {
 		t.Fatalf("action without a change should answer the view, got %+v", res)
+	}
+}
+
+// TestUITitlesDiffer keeps the page and the overview card apart in the hub's list of contribution switches, which
+// names each by its title: the card is 「空间 · 概况」, the page 「空间」.
+func TestUITitlesDiffer(t *testing.T) {
+	var m struct {
+		Contributes struct {
+			UI []struct{ ID, Title string }
+		}
+	}
+	if err := json.Unmarshal(authorManifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	byTitle := map[string]string{}
+	for _, u := range m.Contributes.UI {
+		if other, ok := byTitle[u.Title]; ok {
+			t.Errorf("%s and %s are both titled %q", other, u.ID, u.Title)
+		}
+		byTitle[u.Title] = u.ID
+	}
+	if byTitle["空间"] != ui.PageUI || byTitle["空间 · 概况"] != ui.CardUI {
+		t.Fatalf("titles %v, want the page 空间 and the card 空间 · 概况", byTitle)
 	}
 }

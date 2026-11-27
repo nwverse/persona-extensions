@@ -8,7 +8,7 @@ The connector moved from the built-in host implementation without changing behav
 
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |
-| `connectors` | `telegram` | Login, status, tools, actions/events, inbox, archives and conversation threads. The app supports pagination; images and avatars are proxied through the hub and fetched from their data center. Read-only assistant tools are `telegram_chats`, `telegram_messages` and `telegram_search`. |
+| `connectors` | `telegram` | Login, status, tools, actions/events, inbox, archives and conversation threads. The app supports pagination; images and avatars are proxied through the hub and fetched from their data center. Read-only assistant tools are `telegram_chats`, `telegram_messages` and `telegram_search`. The `catalog` capability offers every read tool to Persona's source subscriptions (source `telegram`, the names without `telegram_`); there `messages` and `search` answer JSON, `messages` with one item per message (`id` the chat's key and the message's id, the chat as `thread` and `title`, `sender`, `time`, the text as `body`), so a subscription follows them message by message. The other tools answer as they do for the assistant. |
 | Connector `cli` | `tg` | The assistant's node exposes `tg` on its `PATH` via `personad tool --cli telegram` while the connector is logged in. `telegram_cli` only parses commands; unlisted connector tools perform reads/writes. Writes pass through `connector_gate` and require phone confirmation by default. |
 | `assistant` | `telegram` skill | The shipped [skill](../../extensions/telegram/skills/telegram/SKILL.md) tells the assistant how to use `tg`. If the hub still supplies a built-in skill with the same name, that one takes precedence. |
 
@@ -26,6 +26,8 @@ The [manifest](../../extensions/telegram/persona-extension.json) defines `triage
 - Set: the hub's triage model applies these rules to classify Telegram items as action, information-only or noise.
 
 Every item carries `extra.rule_tier: action` as a fallback (`fallback` capability). Items continue arriving as requiring attention if the model is unavailable. Installing the extension does not require configuring the information-filtering model first.
+
+Every item names its conversation's picture in `avatar` (0.1.27, nwverse/persona#10923): the other person's in a direct message, the group's for a mention, the same `a.<peer>.<photo>` media ref its conversation page uses. The hub draws it on the Inbox row through its avatars route, finding the picture from the conversations listed, so the row needs no page opened. A conversation without a picture sends none and its row keeps the initial; a hub without the avatars route ignores the field.
 
 ## Network and sandbox
 

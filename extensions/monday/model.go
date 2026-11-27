@@ -49,6 +49,15 @@ type itemPage struct {
 	} `json:"boards"`
 }
 
+type itemByIDPage struct {
+	Items []struct {
+		item
+		Board struct {
+			ID int64 `json:"id,string"`
+		} `json:"board"`
+	} `json:"items"`
+}
+
 type createPage struct {
 	CreateItem item `json:"create_item"`
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"sort"
 	"strings"
@@ -136,6 +137,51 @@ func (r *Registry) skip(e string, states map[string]State) string {
 	if !ok {
 		return ""
 	}
+	if why := re.left(); why != "" {
+		return why
+	}
+	d, _, _ := strings.Cut(e, ".")
+	if re.DeviceID == "" || !slices.Contains(accessoryDomains, d) {
+		return ""
+	}
+	accessory := func(sib string) string {
+		name := sib
+		if s, ok := states[sib]; ok {
+			name = s.Name()
+		}
+		return fmt.Sprintf("是「%s」（%s）的附属开关", name, sib)
+	}
+	for _, sib := range r.ByDevice[re.DeviceID] {
+		sd, _, _ := strings.Cut(sib, ".")
+		if sib == e || !slices.Contains(mainDomains, sd) || sd == d {
+			continue
+		}
+		// a sibling that is itself a setting is not what the device is: a Xiaomi wall switch's indicator LED is a
+		// config light, and its relays are the device
+		if r.Entities[sib].left() != "" {
+			continue
+		}
+		return accessory(sib)
+	}
+	// Xiaomi Home names an entity after its MIoT property (<…>_<property>_p_<siid>_<piid>) and registers a wall
+	// switch's settings (anti-flicker…) with no category: on a device whose switch drives its power (the property
+	// on), the device's other switches are settings of it
+	if re.Platform == "xiaomi_home" && d == "switch" && !miotPower.MatchString(e) {
+		for _, sib := range r.ByDevice[re.DeviceID] {
+			if strings.HasPrefix(sib, "switch.") && miotPower.MatchString(sib) && r.Entities[sib].left() == "" {
+				return accessory(sib)
+			}
+		}
+	}
+	return ""
+}
+
+// miotPower is a Xiaomi Home switch entity of the MIoT property on: what turns the device, or one of its channels,
+// on and off.
+var miotPower = regexp.MustCompile(`_on_p_\d+_\d+$`)
+
+// left says why an entity is never a target by its registry entry alone ("": it may be).
+func (re RegEntity) left() string {
 	switch {
 	case re.EntityCategory == "config":
 		return "设备的配置项"
@@ -145,21 +191,6 @@ func (r *Registry) skip(e string, states map[string]State) string {
 		return "在 Home Assistant 里隐藏了"
 	case re.DisabledBy != nil && *re.DisabledBy != "":
 		return "在 Home Assistant 里停用了"
-	}
-	d, _, _ := strings.Cut(e, ".")
-	if re.DeviceID == "" || !slices.Contains(accessoryDomains, d) {
-		return ""
-	}
-	for _, sib := range r.ByDevice[re.DeviceID] {
-		sd, _, _ := strings.Cut(sib, ".")
-		if sib == e || !slices.Contains(mainDomains, sd) || sd == d {
-			continue
-		}
-		name := sib
-		if s, ok := states[sib]; ok {
-			name = s.Name()
-		}
-		return fmt.Sprintf("是「%s」（%s）的附属开关", name, sib)
 	}
 	return ""
 }

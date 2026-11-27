@@ -1,13 +1,14 @@
-// Bypass auto-allow (docs/extensions/agent-bypass-allow.md): Claude Code in bypassPermissions mode still stops on some
-// Bash calls (its bypass-immune safety checks, mostly an rm whose target it cannot resolve), and an unattended agent
-// waits there for a person. On the computers you pick, this extension gives Claude Code a PermissionRequest hook that
-// allows those calls, and only those: Bash, in a bypassPermissions session, not about one of your own ask or deny rules.
+// Bypass auto-allow (docs/extensions/agent-bypass-allow.md): Claude Code and Antigravity CLI (agy) in bypass mode
+// still stop on some calls, and an unattended agent waits there for a person. On the computers you pick, this
+// extension installs a local hook (PermissionRequest for Claude Code, PreToolUse for agy) that allows those calls,
+// and only those: Bash, the read-only tools and subagents, in a bypassPermissions / always-proceed session, not about
+// one of your own ask or deny rules.
 //
 // One program, three roles:
 //
 //	agent-bypass-allow hub     the hub's: the extension's page (hub.go)
 //	agent-bypass-allow node    each computer's: installs and removes the hook, keeps its heartbeat (node.go)
-//	agent-bypass-allow hook …  what Claude Code runs on PermissionRequest (hook.go)
+//	agent-bypass-allow hook …  what Claude Code and agy run before prompting (hook.go)
 package main
 
 import (
@@ -33,6 +34,7 @@ func packagedManifest(raw []byte) []byte {
 	}
 	delete(fields, "tags")
 	delete(fields, "replaces")
+	delete(fields, "icon")
 	out, err := json.Marshal(fields)
 	if err != nil {
 		panic("cannot encode embedded extension manifest")
@@ -52,6 +54,8 @@ func main() {
 		fs := flag.NewFlagSet("hook", flag.ContinueOnError)
 		var a hookArgs
 		fs.StringVar(&a.ConfigDir, "config-dir", "", "the Claude config directory the entry is in")
+		fs.StringVar(&a.GeminiDir, "gemini-dir", "", "the Gemini/Antigravity config directory the entry is in")
+		fs.StringVar(&a.AgyDir, "agy-dir", "", "the Antigravity CLI settings directory")
 		fs.StringVar(&a.Data, "data", "", "the node program's data directory")
 		fs.String("persona-extension", "", "the entry's tag")
 		fs.SetOutput(os.Stderr)

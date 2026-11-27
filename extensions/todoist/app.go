@@ -15,7 +15,7 @@ import (
 
 const (
 	connectorID = "todoist"
-	pageUI      = "tasks"
+	pageUI      = "todoist"
 )
 
 type app struct {

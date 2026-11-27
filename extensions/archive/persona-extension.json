@@ -2,7 +2,8 @@
   "manifest_version": 1,
   "id": "archive",
   "name": "Internet Archive 馆藏检索",
-  "version": "0.1.0",
+  "version": "0.1.4",
+  "icon": "assets/icon.png",
   "description": "按标题、作者或主题搜索 Internet Archive 馆藏，查看类型、年份、下载量和原始条目。内容由 hub 通过公开 API 获取，无需账号。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/archive/README.md",
@@ -19,7 +20,7 @@
     "source": {
       "entry": "src/index.ts",
       "bundle": "build/archive.mjs",
-      "sha256": "e2de48d06cdd53dc3123fb0ad4bceb1ac56ba52c59e0f88c2ca22970b0a19ae6"
+      "sha256": "2aeae10a5392b8e9165742b41b663ee51cb6b0320eaba0ed3706136f4231ce17"
     }
   },
   "contributes": {

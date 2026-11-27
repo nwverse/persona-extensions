@@ -7,8 +7,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -214,10 +216,44 @@ func texts(v *wire.View) string {
 			for _, s := range it.Series {
 				fmt.Fprintf(&b, " <series %d>", len(s.Points))
 			}
+			if it.Icon != "" {
+				fmt.Fprintf(&b, " icon=%s/%s", it.Icon, it.IconColor)
+			}
+			if it.Control != nil {
+				b.WriteString(" " + controlText(it.Control))
+			}
 			b.WriteString("\n")
+			for _, st := range it.Stats {
+				fmt.Fprintf(&b, "  stat %s=%s|%s|%s\n", st.Label, st.Value, st.Detail, st.Tone)
+			}
+			for _, t := range it.Tiles {
+				fmt.Fprintf(&b, "  tile %s|%s|%s icon=%s/%s", t.Title, t.Subtitle, t.Value, t.Icon, t.Color)
+				if t.Active {
+					b.WriteString(" active")
+				}
+				if t.Badge != nil {
+					fmt.Fprintf(&b, " [%s %s]", t.Badge.Text, t.Badge.Tone)
+				}
+				if t.Control != nil {
+					b.WriteString(" " + controlText(t.Control))
+				}
+				if t.Action != nil {
+					fmt.Fprintf(&b, " →%s", t.Action.ID)
+				}
+				b.WriteString("\n")
+			}
 		}
 	}
 	return b.String()
+}
+
+// controlText is a control as the tests read it: ctl(switch on:light.x true →ctl:power), ctl(slider bri:light.x 50 1–100).
+func controlText(c *wire.RowControl) string {
+	val := strconv.FormatBool(c.On)
+	if c.Kind != "switch" {
+		val = fmt.Sprintf("%g %g–%g step %g %s", *c.Value, *c.Min, *c.Max, *c.Step, c.Unit)
+	}
+	return fmt.Sprintf("ctl(%s %s %s →%s %s)", c.Kind, c.Name, val, c.Action.ID, c.Action.Values["entity"])
 }
 
 func req(state any, action string, values map[string]string) *ext.UIRequest {
@@ -233,6 +269,9 @@ func check(t *testing.T, v *wire.View) string {
 	t.Helper()
 	raw, _ := json.Marshal(v)
 	if err := exttest.CheckView(raw, false); err != nil {
+		t.Fatalf("the hub would refuse the view: %v\n%s", err, texts(v))
+	}
+	if err := wire.CheckView(v); err != nil { // the hub's own check: keys and names once, controls, tiles
 		t.Fatalf("the hub would refuse the view: %v\n%s", err, texts(v))
 	}
 	return texts(v)
@@ -263,24 +302,43 @@ func TestPage(t *testing.T) {
 	f := newFakeHA(t)
 	a := newTestApp(t, f, Config{})
 
-	// the overview: areas with what is on, alarms first; a hidden area nowhere
+	// the overview (an app before UI version 6): the home's figures, what needs a look, the devices (a light's row
+	// turns it on or off), then the areas, those with something going on first; a hidden area nowhere, a fridge's
+	// temperature not a room's
 	v, _ := a.render(context.Background(), req(nil, "", nil))
 	got := check(t, v)
-	contains(t, got, "[search", "[filter area=\"\" 4 choices]", `[tabs tab="home" home=家 log=动态 auto=自动化]`, "## 报警", "厨房漏水|传感器 · 厨房|", "[有水 danger]",
-		"row 客厅|客厅灯、空调（制冷）|27.5°||| [2 开着 positive] →area:living", "row 卧室|都关着|||", "→area:bedroom")
-	if strings.Contains(got, "别处") {
-		t.Errorf("a hidden area shows:\n%s", got)
+	contains(t, got, "[search", "[filter area=\"\" 4 choices]", `[tabs tab="home" home=家 log=动态 auto=自动化]`,
+		"stat 开着=2|1 灯 · 1 空调|positive", "stat 温度=27.5°|客厅|", "stat 需注意=2|1 报警 · 1 离线|danger",
+		"## 需要注意 · 2", "row 漏水|厨房|||| [有水 danger] →open:binary_sensor.leak", "row 风扇插座|客厅|||| [离线 caution] →open:switch.fan_plug",
+		"## 设备 · 3", "segmented ||toggle||| →pick", "row 客厅灯|客厅 · 亮度 50%|||| [开 positive] →do:light.living|turn_off",
+		"row 空调|客厅 · 室温 27.5° · 设定 26°|||| [制冷 positive] →open:climate.living_ac", "row 卧室灯|卧室|||| [关 neutral] →do:light.bed|turn_on",
+		"## 区域 · 3", "row 厨房||||| [有水 danger] →area:kitchen", "row 客厅|1 灯、1 空调开着|27.5°||| [1 离线 caution] →area:living",
+		"row 卧室|2 个设备|||| →area:bedroom")
+	if strings.Contains(got, "别处") || strings.Contains(got, "冷冻") || strings.Contains(got, "入户门锁") {
+		t.Errorf("a hidden area, a fridge or a lock among the devices:\n%s", got)
 	}
-	if len(v.Sections) == 0 || !strings.HasPrefix(v.Sections[0].Title, "报警 · ") {
-		t.Errorf("the alarms come first:\n%s", got)
+	if len(v.Sections) < 2 || v.Sections[0].Items[0].Type != "stat_grid" || !strings.HasPrefix(v.Sections[1].Title, "需要注意 · ") {
+		t.Errorf("the figures, then what needs a look:\n%s", got)
+	}
+	// the overview's rows switch and open like an area's
+	res, _ := act(t, a, pageState{}, "do:light.bed|turn_on", nil)
+	if f.lastCall() != "light.turn_on [light.bed] {}" || !strings.Contains(res.Toast, "好了：卧室灯：开") {
+		t.Fatalf("the overview's row: %q %q", f.lastCall(), res.Toast)
+	}
+	act(t, a, pageState{}, "do:light.bed|turn_off", nil)
+	if res, _ := act(t, a, pageState{}, "pick", map[string]string{"pick": "open"}); !strings.Contains(texts(res.View), "row 客厅灯|客厅 · 亮度 50%|||| [开 positive] →open:light.living") {
+		t.Errorf("点按查看 on the overview:\n%s", texts(res.View))
 	}
 
-	// an area: a section per kind of device, a light turned off from its row, offline ones behind a row; sensors on
-	// the other tab
+	// an area: the way back, its figures, a section per kind of device, a light turned off from its row, offline ones
+	// behind a row; sensors on the other tab
 	res, st := act(t, a, pageState{}, "area:living", nil)
 	got = texts(res.View)
-	if len(res.View.Sections) == 0 || len(res.View.Sections[0].Items) == 0 || res.View.Sections[0].Items[0].Type != "stat_grid" {
-		t.Errorf("the area's figures:\n%s", got)
+	if len(res.View.Sections) < 2 || res.View.Sections[0].Items[0].Type != "breadcrumb" || res.View.Sections[1].Items[0].Type != "stat_grid" {
+		t.Errorf("the way back, then the area's figures:\n%s", got)
+	}
+	if res, home := act(t, a, st, "home", nil); home.Area != "" || !strings.Contains(texts(res.View), "## 区域 · 3") {
+		t.Errorf("back to the overview: %+v", home)
 	}
 	contains(t, got, "segmented", "## 点按设备", "## 灯 · 1", "row 客厅灯|亮度 50%|", "[开 positive] →do:light.living|turn_off",
 		"## 空调/温控 · 1", "row 空调|室温 27.5° · 设定 26°|", "[制冷 positive] →open:climate.living_ac", "还有 1 个离线的", "→pick")
@@ -380,7 +438,8 @@ func TestNotAdmin(t *testing.T) {
 	a := newTestApp(t, f, Config{})
 	v, _ := a.render(context.Background(), req(nil, "", nil))
 	got := check(t, v)
-	contains(t, got, "不是 Home Assistant 的管理员", "## 类型 · ", "row 灯|客厅灯、", "→area:@light", "[filter area=\"\"")
+	contains(t, got, "不是 Home Assistant 的管理员", "## 类型 · 4", "row 灯|2 开着|||| →area:@light", "row 门锁|1 个设备|||| →area:@lock",
+		"stat 温度=27.5°||", "[filter area=\"\"")
 	if strings.Contains(got, "不认这个令牌") {
 		t.Fatalf("a valid token reads as refused:\n%s", got)
 	}
@@ -487,6 +546,133 @@ func TestActions(t *testing.T) {
 	if _, err := connector(t, a, "actions.do", map[string]any{"contribution": id, "name": secureAction, "args": args}); err == nil {
 		t.Fatal("do without a request id")
 	}
+}
+
+func TestActionsConcurrentDuplicateRequest(t *testing.T) {
+	f := newFakeHA(t)
+	a := newTestApp(t, f, Config{})
+	var posts atomic.Int32
+	started, release := make(chan struct{}), make(chan struct{})
+	f.more = func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/services/light/toggle" {
+			return false
+		}
+		if posts.Add(1) == 1 {
+			close(started)
+			<-release
+		}
+		fmt.Fprint(w, `[]`)
+		return true
+	}
+
+	raw, _ := json.Marshal(map[string]any{"contribution": id, "name": callAction,
+		"args": map[string]any{"entity_id": "light.living", "service": "toggle"}, "request_id": "concurrent"})
+	type result struct {
+		text string
+		err  error
+	}
+	call := func(ctx context.Context) result {
+		out, err := a.connector(ctx, "actions.do", raw)
+		if err != nil {
+			return result{err: err}
+		}
+		m, ok := out.(map[string]any)
+		if !ok {
+			return result{err: fmt.Errorf("unexpected actions.do result %T", out)}
+		}
+		text, _ := m["text"].(string)
+		return result{text: text}
+	}
+	first := make(chan result, 1)
+	go func() { first <- call(context.Background()) }()
+	<-started
+
+	// Filling the completed-result cache must neither evict the in-flight request nor block on its service call.
+	for i := range actionDoneMost {
+		id := fmt.Sprintf("other-%d", i)
+		_, err := a.do(context.Background(), id, actionWriteFunc(func(context.Context, *app) (string, error) {
+			return id, nil
+		}))
+		if err != nil {
+			t.Fatalf("write %s: %v", id, err)
+		}
+	}
+
+	// The context reports when the retry starts waiting for the first run. On the old implementation, the HTTP
+	// transport observes it instead, after the retry has already passed the completed-result check.
+	waiting := &observedContext{Context: context.Background(), observed: make(chan struct{})}
+	retry := make(chan result, 1)
+	go func() { retry <- call(waiting) }()
+	<-waiting.observed
+	close(release)
+
+	gotFirst, gotRetry := <-first, <-retry
+	if gotFirst.err != nil || gotRetry.err != nil {
+		t.Fatalf("concurrent calls: first %v, retry %v", gotFirst.err, gotRetry.err)
+	}
+	if gotFirst.text == "" || gotFirst.text != gotRetry.text {
+		t.Fatalf("different results: first %q, retry %q", gotFirst.text, gotRetry.text)
+	}
+	if n := posts.Load(); n != 1 {
+		t.Fatalf("the same request made %d service POSTs, want 1", n)
+	}
+	if got := call(context.Background()); got.err != nil || got.text != gotFirst.text || posts.Load() != 1 {
+		t.Fatalf("completed retry: %+v, %d POSTs", got, posts.Load())
+	}
+}
+
+func TestActionsResultLRU(t *testing.T) {
+	a := newApp(t.Logf)
+	calls := 0
+	w := actionWriteFunc(func(context.Context, *app) (string, error) {
+		calls++
+		return fmt.Sprintf("call-%d", calls), nil
+	})
+	run := func(id string) string {
+		t.Helper()
+		out, err := a.do(context.Background(), id, w)
+		if err != nil {
+			t.Fatalf("do %s: %v", id, err)
+		}
+		return out.(map[string]any)["text"].(string)
+	}
+	for i := range actionDoneMost {
+		run(fmt.Sprintf("r-%d", i))
+	}
+	if got := run("r-0"); got != "call-1" || calls != actionDoneMost {
+		t.Fatalf("completed hit: %q, %d calls", got, calls)
+	}
+	run(fmt.Sprintf("r-%d", actionDoneMost)) // r-0 was just used, so r-1 is now the oldest.
+	if got := run("r-1"); got != fmt.Sprintf("call-%d", actionDoneMost+2) {
+		t.Fatalf("least recently used result was not rerun: %q", got)
+	}
+	if got := run("r-0"); got != "call-1" {
+		t.Fatalf("recently used result was evicted: %q", got)
+	}
+	a.doneMu.Lock()
+	results, order := len(a.done), len(a.doneOrder)
+	a.doneMu.Unlock()
+	if results != actionDoneMost || order != actionDoneMost {
+		t.Fatalf("completed cache has %d results and %d order entries, want %d", results, order, actionDoneMost)
+	}
+}
+
+type actionWriteFunc func(context.Context, *app) (string, error)
+
+func (f actionWriteFunc) run(ctx context.Context, a *app) (string, error) { return f(ctx, a) }
+func (actionWriteFunc) summary(*app) string                               { return "" }
+func (actionWriteFunc) visible() string                                   { return "" }
+func (actionWriteFunc) pin() string                                       { return "" }
+
+type observedContext struct {
+	context.Context
+	once     sync.Once
+	observed chan struct{}
+}
+
+func (c *observedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
 }
 
 func TestTools(t *testing.T) {

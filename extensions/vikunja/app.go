@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "vikunja"
-const pageUI = "tasks"
+const pageUI = "vikunja"
 
 type app struct {
 	mu       sync.RWMutex

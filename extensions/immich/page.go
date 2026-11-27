@@ -15,18 +15,19 @@ import (
 )
 
 type pageState struct {
-	Mode     string `json:"m,omitempty"`
-	View     string `json:"v,omitempty"`
-	Query    string `json:"q,omitempty"`
-	Cursor   string `json:"c,omitempty"`
-	AssetID  string `json:"i,omitempty"`
-	DraftID  string `json:"d,omitempty"`
-	Favorite bool   `json:"f,omitempty"`
+	Mode     string   `json:"m,omitempty"`
+	View     string   `json:"v,omitempty"`
+	Query    string   `json:"q,omitempty"`
+	Cursor   string   `json:"c,omitempty"`
+	Pages    []string `json:"p,omitempty"`
+	AssetID  string   `json:"i,omitempty"`
+	DraftID  string   `json:"d,omitempty"`
+	Favorite bool     `json:"f,omitempty"`
 }
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.Query) > 250 || len(st.Cursor) > 4096 || len(st.AssetID) > 128 || len(st.DraftID) > 128 || len(st.View) > 30 || len(st.Mode) > 30 {
+	if err := r.DecodeState(&st); err != nil || len([]rune(st.Query)) > maxQueryChars || len(st.Cursor) > 4096 || len(st.Pages) >= maxViewPages || len(st.AssetID) > 128 || len(st.DraftID) > 128 || len(st.View) > 30 || len(st.Mode) > 30 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -50,9 +51,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if r.Values["view"] != "favorites" && r.Values["view"] != "search" && r.Values["view"] != "smart" {
 			return nil, errors.New("invalid library view")
 		}
-		st.View, st.Cursor = r.Values["view"], ""
+		st.View, st.Cursor, st.Pages = r.Values["view"], "", nil
 	case "search":
-		st.Query, st.Cursor = strings.TrimSpace(clipText(r.Values["q"], 200)), ""
+		st.Query, st.Cursor, st.Pages = strings.TrimSpace(clipText(r.Values["q"], maxQueryChars)), "", nil
 		if st.Query == "" {
 			st.View = "favorites"
 		} else if st.View != "smart" {
@@ -62,6 +63,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if r.Values["cursor"] == "" || r.Values["cursor"] != st.Cursor {
 			return nil, errors.New("invalid next cursor")
 		}
+		st.Pages = append(st.Pages, st.Cursor)
 	case "detail":
 		if !validAssetID(r.Values["id"]) {
 			return nil, errors.New("invalid asset ID")
@@ -90,6 +92,36 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+const (
+	maxViewRecords = 250
+	maxViewPages   = 10
+)
+
+// collectAssets reads the first page and then the pages at the cursors in Pages, so that Load more answers the whole
+// list, longer. It stops at maxViewRecords to keep the view within the SDK's component limit, and the response it
+// returns carries a NextCursor only while another page can be loaded.
+func (a *app) collectAssets(ctx context.Context, st pageState) (searchResponse, error) {
+	var out searchResponse
+	for _, cursor := range append([]string{""}, st.Pages...) {
+		if len(out.Assets.Items) >= maxViewRecords {
+			break
+		}
+		batch, err := a.client.search(ctx, st.Query, st.View == "favorites", cursor)
+		if err != nil {
+			return searchResponse{}, err
+		}
+		out.Assets.Items = append(out.Assets.Items, batch.Assets.Items...)
+		out.Assets.NextCursor = batch.Assets.NextCursor
+	}
+	if len(out.Assets.Items) > maxViewRecords {
+		out.Assets.Items = out.Assets.Items[:maxViewRecords]
+	}
+	if len(out.Assets.Items) >= maxViewRecords || len(st.Pages)+1 >= maxViewPages {
+		out.Assets.NextCursor = nil
+	}
+	return out, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -115,7 +147,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.View == "smart" {
 		page, err = a.client.smartSearch(ctx, st.Query)
 	} else {
-		page, err = a.client.search(ctx, st.Query, st.View == "favorites", st.Cursor)
+		page, err = a.collectAssets(ctx, st)
 	}
 	a.record(err)
 	if err != nil {

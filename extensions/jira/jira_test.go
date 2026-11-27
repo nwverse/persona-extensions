@@ -42,7 +42,12 @@ func newFakeJira(t *testing.T) *fakeJira {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/search/jql":
-			fmt.Fprint(w, `{"issues":[{"id":"10001","key":"ENG-123","self":"https://jira.example.com/browse/ENG-123","fields":{"summary":"Review reading context","status":{"id":"2","name":"In Progress"},"assignee":{"accountId":"user-1","displayName":"Example User"},"project":{"id":"project-eng","key":"ENG","name":"Engineering"},"priority":{"id":"2","name":"High"},"issuetype":{"id":"task","name":"Task"},"updated":"2026-11-09T10:00:00Z"}}],"total":1,"startAt":0,"maxResults":50}`)
+			// Like Jira Cloud's enhanced search: no total, startAt ignored, pages by nextPageToken.
+			if r.URL.Query().Get("nextPageToken") == "page-2" {
+				fmt.Fprint(w, `{"issues":[{"id":"10003","key":"ENG-125","self":"https://jira.example.com/browse/ENG-125","fields":{"summary":"Second page issue","status":{"id":"1","name":"To Do"},"project":{"id":"project-eng","key":"ENG","name":"Engineering"},"priority":{"id":"3","name":"Medium"},"issuetype":{"id":"task","name":"Task"},"updated":"2026-11-08T10:00:00Z"}}],"isLast":true}`)
+				break
+			}
+			fmt.Fprint(w, `{"issues":[{"id":"10001","key":"ENG-123","self":"https://jira.example.com/browse/ENG-123","fields":{"summary":"Review reading context","status":{"id":"2","name":"In Progress"},"assignee":{"accountId":"user-1","displayName":"Example User"},"project":{"id":"project-eng","key":"ENG","name":"Engineering"},"priority":{"id":"2","name":"High"},"issuetype":{"id":"task","name":"Task"},"updated":"2026-11-09T10:00:00Z"}}],"nextPageToken":"page-2","isLast":false}`)
 		case "/issue/ENG-123":
 			fmt.Fprint(w, `{"id":"10001","key":"ENG-123","self":"https://jira.example.com/browse/ENG-123","fields":{"summary":"Review reading context","description":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Keep the original context"}]}]},"status":{"id":"2","name":"In Progress"},"assignee":{"accountId":"user-1","displayName":"Example User"},"project":{"id":"project-eng","key":"ENG","name":"Engineering"},"priority":{"id":"2","name":"High"},"issuetype":{"id":"task","name":"Task"},"updated":"2026-11-09T10:00:00Z","comment":{"comments":[{"id":"comment-1","body":{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Please preserve it"}]}]},"author":{"accountId":"user-2","displayName":"Reviewer"},"created":"2026-11-09T11:00:00Z"}],"total":1}}}`)
 		case "/project":
@@ -52,6 +57,14 @@ func newFakeJira(t *testing.T) *fakeJira {
 		case "/issue":
 			var in map[string]any
 			_ = json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&in)
+			// Jira Cloud's REST v3 takes the description as an Atlassian Document, not a string.
+			if fields, _ := in["fields"].(map[string]any); fields["description"] != nil {
+				if err := checkADF(fields["description"]); err != nil {
+					w.WriteHeader(http.StatusBadRequest)
+					fmt.Fprint(w, `{"errorMessages":[],"errors":{"description":"The description must be an Atlassian Document: `+err.Error()+`"}}`)
+					break
+				}
+			}
 			f.mu.Lock()
 			f.creates = append(f.creates, in)
 			f.mu.Unlock()
@@ -59,6 +72,12 @@ func newFakeJira(t *testing.T) *fakeJira {
 		case "/issue/ENG-123/comment":
 			var in map[string]any
 			_ = json.NewDecoder(io.LimitReader(r.Body, 65536)).Decode(&in)
+			// Jira Cloud's REST v3 takes the comment body as an Atlassian Document, not a string.
+			if err := checkADF(in["body"]); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				fmt.Fprint(w, `{"errorMessages":["The comment body must be an Atlassian Document: `+err.Error()+`"],"errors":{}}`)
+				break
+			}
 			f.mu.Lock()
 			f.comments = append(f.comments, in)
 			f.mu.Unlock()
@@ -118,7 +137,7 @@ func TestInstanceURLValidation(t *testing.T) {
 
 func TestAssignedFixedQueryAndRichComments(t *testing.T) {
 	f := newFakeJira(t)
-	text, err := f.app().callTool(t.Context(), "jira_assigned", json.RawMessage(`{"query":"reading","start_at":0}`))
+	text, err := f.app().callTool(t.Context(), "jira_assigned", json.RawMessage(`{"query":"reading"}`))
 	if err != nil || !strings.Contains(text, "ENG-123") || !strings.Contains(text, "In Progress") {
 		t.Fatalf("%v %s", err, text)
 	}
@@ -154,7 +173,7 @@ func TestCommentReplayAndInvalidWrites(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(f.comments) != 1 || f.comments[0]["body"] != "Keep context" {
+	if len(f.comments) != 1 || adfText(f.comments[0]["body"]) != "Keep context" {
 		t.Fatal(f.comments)
 	}
 	for _, tc := range []struct{ name, args string }{
@@ -234,23 +253,49 @@ func TestLocalizedViewsAndCreateReview(t *testing.T) {
 	}
 }
 
-func TestPaginationAndReceiptConflict(t *testing.T) {
+// /search/jql answers no total and ignores startAt; it pages with nextPageToken, as the fake does. The page's Load more
+// extends the view with the second page, and jira_assigned's page_token reaches it.
+func TestPaginationFollowsNextPageToken(t *testing.T) {
 	f := newFakeJira(t)
 	a := f.app()
-	if _, err := a.callTool(t.Context(), "jira_assigned", json.RawMessage(`{"start_at":50}`)); err != nil {
+	rows := func(s wire.Section) (keys []string) {
+		for _, c := range s.Items {
+			if c.Type == wire.ComponentRow {
+				keys = append(keys, c.Key)
+			}
+		}
+		return keys
+	}
+	r := &ext.UIRequest{UIParams: wire.UIParams{Locale: "en", UIVersion: 6}}
+	v, err := a.render(t.Context(), r)
+	if err != nil {
 		t.Fatal(err)
 	}
-	f.mu.Lock()
-	found := false
-	for _, path := range f.paths {
-		if strings.Contains(path, "startAt=50") {
-			found = true
-		}
+	more := v.Sections[0].More
+	if more == nil || more.Action.Values["token"] != "page-2" {
+		t.Fatalf("no Load more for the next page: %+v", v.Sections[0])
 	}
-	f.mu.Unlock()
-	if !found {
-		t.Fatal("startAt was not forwarded")
+	r.State, r.Action, r.Values = v.State, more.Action.ID, more.Action.Values
+	res, err := a.action(t.Context(), r)
+	if err != nil || res.View == nil {
+		t.Fatalf("%v %+v", err, res)
 	}
+	if s := res.View.Sections[0]; s.More != nil || !slices.Equal(rows(s), []string{"issue-ENG-123", "issue-ENG-125"}) {
+		t.Fatalf("second page: %v, more %+v", rows(s), s.More)
+	}
+	text, err := a.callTool(t.Context(), "jira_assigned", nil)
+	if err != nil || !strings.Contains(text, `page_token "page-2"`) {
+		t.Fatalf("%v %s", err, text)
+	}
+	text, err = a.callTool(t.Context(), "jira_assigned", json.RawMessage(`{"page_token":"page-2"}`))
+	if err != nil || !strings.Contains(text, "ENG-125") || strings.Contains(text, "ENG-123") || strings.Contains(text, "page_token") {
+		t.Fatalf("%v %s", err, text)
+	}
+}
+
+func TestReceiptConflict(t *testing.T) {
+	f := newFakeJira(t)
+	a := f.app()
 	args := []byte(`{"project_id":"project-eng","issuetype_id":"task","summary":"Persistent issue"}`)
 	if _, err := a.doAction(t.Context(), "create-1", "jira_create", args); err != nil {
 		t.Fatal(err)
@@ -262,7 +307,7 @@ func TestPaginationAndReceiptConflict(t *testing.T) {
 
 func TestDetailBoundsAndNoConfig(t *testing.T) {
 	var item issue
-	item.Key, item.Self = "ENG-123", "https://jira.example.com/browse/ENG-123"
+	item.Key, item.URL = "ENG-123", "https://jira.example.com/browse/ENG-123"
 	item.Fields.Summary = "Task"
 	item.Fields.Description = json.RawMessage(`{"type":"doc","content":[{"type":"paragraph","content":[{"type":"text","text":"Details"}]}]}`)
 	v := detailView(&ext.UIRequest{UIParams: wire.UIParams{Locale: "en", UIVersion: 6}}, pageState{IssueKey: "ENG-123", Mode: "detail"}, item)

@@ -25,7 +25,7 @@ token to the configured instance. Redirects are not followed.
 
 - The fixed query is `assignee = currentUser() AND resolution = Unresolved ORDER BY updated
   DESC`, so ordinary search text cannot become an unreviewed JQL operation.
-- See project, workflow status, priority, assignee, issue key and API `startAt` pagination.
+- See project, workflow status, priority, assignee, issue key and pagination with the API's `nextPageToken`.
 - Open an issue for its description and comments. Atlassian document paragraphs/text are
   flattened into untrusted text; no embedded instruction is executed.
 - `jira_projects` resolves accessible project and issue-type IDs. Creating with a type that
@@ -35,6 +35,12 @@ token to the configured instance. Redirects are not followed.
 
 - `jira_create`: create with project, issue type, summary and optional description/assignee.
 - `jira_comment`: add an explicitly supplied comment body to an existing issue.
+- A description and a comment are sent as Atlassian Documents, the form Jira Cloud's REST v3
+  takes for them: each line of the text is a paragraph with one text node, a blank line is an
+  empty paragraph, and nothing is parsed, so Markdown stays literal text.
+- A description or comment is at most 32,767 characters, the limit Jira enforces by
+  default (`jira.text.field.character.limit`) and the fixed limit on Jira Cloud. A longer
+  text is refused before any request is sent.
 - The page's create form shows the selected project/type and summary in a review step
   before confirmed creation. No bulk edit, deletion or arbitrary workflow mutation is
   included.

@@ -5,6 +5,15 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 step() { printf '\n== %s\n' "$*"; }
 
+# The source profiles' bundle checks refuse every Node but 22 and 24 (hosted CI uses 24.11.1): stop here rather than
+# at the build step, where the checks after it would be left unrun.
+step node
+node_version=$(node -p process.versions.node 2>/dev/null || echo none)
+case "${node_version%%.*}" in
+  22|24) echo "node $node_version" ;;
+  *) echo "ci: failed; Node 22 or 24 is required (the source profiles' bundle checks refuse others), found $node_version" >&2; exit 1 ;;
+esac
+
 step workflow
 python3 -I scripts/test-ci-policy.py
 go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/ci.yml
@@ -17,13 +26,21 @@ step layout
 python3 -I scripts/check-layout.py
 python3 -I scripts/test-layout.py
 
+# Each source profile's committed reference bundle embeds its current manifest (the hosted rebuild compares it byte
+# for byte; this catches a manifest changed without regenerating it).
+step sources
+python3 -I scripts/test-source-rebuild.py
+python3 -I scripts/source-rebuild.py plan
+
 step manifests
 scripts/manifest.py check
 python3 -I scripts/test-manifest.py
+python3 -I scripts/test-config-form.py
+python3 -I scripts/test-icons.py
 
 step gofmt
 bad=$(gofmt -l . | grep -v '^dist/' || true)
-[ -z "$bad" ] || { echo "not gofmt'ed:"; echo "$bad"; exit 1; }
+[ -z "$bad" ] || { echo "not gofmt'ed:"; echo "$bad"; printf '%s\n' "$bad" | xargs -r gofmt -d; exit 1; }
 
 # The copied SDK is checked as it comes from upstream; its go.mod is upstream's too, so no tidiness check.
 step sdk
@@ -45,6 +62,15 @@ for m in $modules; do go -C "$m" vet ./...; done
 step test
 for m in $modules; do go -C "$m" test -race ./...; done
 
+step python
+# Each Python extension (a requirements.txt next to its manifest) runs its own tests with unittest and the standard
+# library only: what the program installs on first start is not needed by its tests.
+for id in $(scripts/manifest.py ids); do
+  [ -f "extensions/$id/requirements.txt" ] || continue
+  (cd "extensions/$id" && python3 -I -B -m unittest discover -s tests)
+  echo "$id: python tests ok"
+done
+
 step build
 for id in $(scripts/manifest.py ids); do
   scripts/package.sh "$id" >/dev/null
@@ -61,6 +87,7 @@ scripts/sign-index.py verify
 python3 -I scripts/test-sign-index.py
 
 step publisher
+python3 -I scripts/test-downloads.py
 python3 -I scripts/test-oci.py
 python3 -I scripts/test-publish-oci.py
 python3 -I scripts/test-publication-regressions.py

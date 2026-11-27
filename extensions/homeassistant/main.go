@@ -26,11 +26,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/nwverse/persona-extensions/pluginkit"
 	"github.com/nwverse/persona/sdk/go/ext"
 )
 
 //go:embed persona-extension.json
-var manifest []byte
+var authorManifest []byte
+
+var manifest = pluginkit.PackagedManifest(authorManifest)
 
 const (
 	id     = "homeassistant" // the connector's id and the extension's
@@ -64,11 +67,20 @@ type app struct {
 	tz       *time.Location
 	dataDir  string
 	hub      *hubAPI
+	rpc      invalidator // the hub's connection: ui.invalidate (nil in tests)
 	watch    *watcher
+	marks    irMarks    // remotes marked off without sending (irmarks.go)
+	scene    sceneCache // cached RoomPlan scan, home3d.json fixes and rendered posters (scene.go)
+	// actions.do runs each request id once. In-flight calls stay pinned in running; only completed successful
+	// answers occupy the bounded done LRU.
+	doneMu    sync.Mutex
+	running   map[string]*actionRun
+	done      map[string]string
+	doneOrder []string
 }
 
 func newApp(logf func(string, ...any)) *app {
-	a := &app{logf: logf, ha: newHA("", "", false)}
+	a := &app{logf: logf, ha: newHA("", "", false), done: map[string]string{}}
 	a.watch = newWatcher(a)
 	return a
 }
@@ -93,10 +105,15 @@ func (a *app) hubAPI() *hubAPI {
 func (a *app) program() ext.Program {
 	return ext.Program{ID: id, Version: version, Manifest: manifest, Init: a.init,
 		Namespaces: map[string]ext.Handler{"connector": a.connector},
-		UI:         map[string]ext.Page{pageUI: {Render: a.render, Action: a.action}}}
+		UI:         map[string]ext.Page{pageUI: {Render: a.render, Action: a.action, Image: a.image}}}
 }
 
-func (a *app) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]any, error) {
+// invalidator asks the apps to draw a page again (ext.Hub).
+type invalidator interface {
+	Invalidate(contribution string) error
+}
+
+func (a *app) init(ctx context.Context, in *ext.Init, rpc *ext.Hub) (map[string]any, error) {
 	var cfg Config
 	if err := in.Config(&cfg); err != nil {
 		return nil, fmt.Errorf("config: %w", err)
@@ -108,8 +125,15 @@ func (a *app) init(ctx context.Context, in *ext.Init, _ *ext.Hub) (map[string]an
 	}
 	a.dataDir = in.Info().DataDir
 	a.hub = &hubAPI{url: in.Hub.URL, token: in.Hub.Token, scopes: in.Hub.Scopes, http: &http.Client{Timeout: 20 * time.Second}}
+	if rpc != nil {
+		a.rpc = rpc
+	}
 	a.mu.Unlock()
 	a.watch.load(a.dataDir)
+	a.marks.load(a.dataDir, a.logf)
+	if a.hasScene() {
+		a.watch.poke()
+	}
 	go a.warm(ctx)
 	go a.watch.run(ctx)
 	return nil, nil

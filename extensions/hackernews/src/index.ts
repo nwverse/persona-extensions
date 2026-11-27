@@ -1,4 +1,5 @@
 import { componentPage, type Program } from "@persona/extension";
+import { id, version } from "../persona-extension.json";
 import type { FetchAdapter } from "@persona/extension/ui";
 import { HackerNews } from "./service.ts";
 import { connector } from "./tools.ts";
@@ -24,12 +25,12 @@ export function createProgram(fetch: FetchAdapter = (input, init) => globalThis.
     return service;
   };
   return {
-    id: "hackernews", version: "0.1.2",
+    id, version,
     init: init => { service = new HackerNews(fetch, (init.config ?? {}) as Config); },
     namespaces: { connector: (method, params) => connector(current())(method, params) },
     ui: {
-      stories: componentPage(req => root({ service: current(), state: req.state, locale: req.locale, uiVersion: req.ui_version })),
-      "stories-snapshot": {
+      hackernews: componentPage(req => root({ service: current(), state: req.state, locale: req.locale, uiVersion: req.ui_version })),
+      "hackernews-snapshot": {
         render: req => snapshotPage(current()).render(req),
         action: req => snapshotPage(current()).action!(req),
       },

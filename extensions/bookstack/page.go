@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -27,9 +28,13 @@ type pageState struct {
 	Markdown   string `json:"c,omitempty"`
 }
 
+// maxBookNameChars is the longest book name BookStack accepts; the page checks the name of a book it opens and keeps in
+// its state against it.
+const maxBookNameChars = 255
+
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.BookID < 0 || st.PageID < 0 || st.Offset < 0 || st.SearchPage < 0 || len(st.BookName) > 1000 || len(st.DraftID) > 128 || len(st.Name) > 300 || len(st.Markdown) > 65000 || len(st.Search) > 250 {
+	if err := r.DecodeState(&st); err != nil || st.BookID < 0 || st.PageID < 0 || st.Offset < 0 || st.SearchPage < 0 || len([]rune(st.BookName)) > maxBookNameChars || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxTitleChars || utf8.RuneCountInString(st.Markdown) > maxMarkdownChars || len([]rune(st.Search)) > maxQueryChars {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -50,12 +55,12 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Search, st.SearchPage, st.Mode = clipText(r.Values["q"], 200), 1, "search"
+		st.Search, st.SearchPage, st.Mode = clipText(r.Values["q"], maxQueryChars), 1, "search"
 	case "more-search":
 		st.SearchPage++
 	case "book":
 		id, err := strconv.ParseInt(r.Values["id"], 10, 64)
-		if err != nil || id <= 0 || r.Values["name"] == "" || len(r.Values["name"]) > 255 {
+		if err != nil || id <= 0 || r.Values["name"] == "" || len([]rune(r.Values["name"])) > maxBookNameChars {
 			return nil, errors.New("invalid book")
 		}
 		st = pageState{Mode: "pages", BookID: id, BookName: r.Values["name"]}
@@ -81,19 +86,33 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 			st.DraftID = randomID()
 		}
 	case "back":
-		st.Mode, st.PageID, st.DraftID, st.Name, st.Markdown = "pages", 0, "", "", ""
+		switch {
+		case st.BookID > 0:
+			st.Mode = "pages"
+		case st.Search != "":
+			st.Mode = "search"
+		default:
+			st.Mode = ""
+		}
+		st.PageID, st.DraftID, st.Name, st.Markdown = 0, "", "", ""
 	case "review-create":
 		in := createArgs{BookID: st.BookID, Name: r.Values["name"], Markdown: r.Values["markdown"]}
 		if err := in.validate(); err != nil {
 			return nil, err
 		}
 		st.Name, st.Markdown, st.Mode = in.Name, in.Markdown, "review-create"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("page draft exceeds page state limit")
+		}
 	case "review-edit":
 		in := updateArgs{PageID: st.PageID, Name: r.Values["name"], Markdown: r.Values["markdown"]}
 		if err := in.validate(); err != nil {
 			return nil, err
 		}
 		st.Name, st.Markdown, st.Mode = in.Name, in.Markdown, "review-edit"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("page draft exceeds page state limit")
+		}
 	case "confirm-create":
 		raw, _ := json.Marshal(createArgs{BookID: st.BookID, Name: st.Name, Markdown: st.Markdown})
 		out, err := a.doAction(ctx, "ui-create:"+st.DraftID, "bookstack_create_page", raw)
@@ -113,6 +132,29 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	v, err := a.page(ctx, r, st)
 	return &wire.ActionResult{View: v}, err
+}
+
+const maxViewRecords = 250
+
+// collectBatches accumulates a whole UI view through the current batch, capped so extra actions fit the view limit.
+func collectBatches[T any](start, current, step int, fetch func(int) (listPage[T], error)) ([]T, bool, error) {
+	var out []T
+	last := 0
+	for pos := start; pos <= current && len(out) < maxViewRecords; pos += step {
+		page, err := fetch(pos)
+		if err != nil {
+			return nil, false, err
+		}
+		last = len(page.Data)
+		out = append(out, page.Data...)
+		if last < 50 {
+			break
+		}
+	}
+	if len(out) > maxViewRecords {
+		out = out[:maxViewRecords]
+	}
+	return out, last == 50 && len(out) < maxViewRecords, nil
 }
 
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
@@ -139,6 +181,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 				return nil, err
 			}
 		}
+		item.URL = pageLink(a.client.base, st.PageID)
 		st.DraftID = randomID()
 		return detailView(r, st, item, text), nil
 	}
@@ -146,13 +189,15 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if err := validID(st.BookID); err != nil {
 			return nil, err
 		}
-		page, err := a.client.pages(ctx, st.BookID, st.Offset)
+		items, more, err := collectBatches(st.Offset%50, st.Offset, 50, func(offset int) (listPage[page], error) {
+			return a.client.pages(ctx, st.BookID, offset)
+		})
 		a.record(err)
 		if err != nil {
 			return nil, err
 		}
-		section := wire.Section{Title: fmt.Sprintf(t.pages, len(page.Data))}
-		for _, item := range page.Data {
+		section := wire.Section{Title: fmt.Sprintf(t.pages, len(items))}
+		for _, item := range items {
 			if item.ID <= 0 || item.Name == "" {
 				continue
 			}
@@ -161,7 +206,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noPages})
 		}
-		if len(page.Data) == 50 {
+		if more {
 			section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 		}
 		v := &wire.View{Title: clipText(st.BookName, 1800), State: ext.EncodeState(st), Sections: []wire.Section{section, {Title: t.pages, Items: []wire.Component{
@@ -173,13 +218,15 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if st.Mode != "" {
 		return nil, errors.New("invalid knowledge view")
 	}
-	page, err := a.client.books(ctx, st.Offset)
+	items, more, err := collectBatches(st.Offset%50, st.Offset, 50, func(offset int) (listPage[book], error) {
+		return a.client.books(ctx, offset)
+	})
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
 	section := wire.Section{Title: t.books}
-	for _, item := range page.Data {
+	for _, item := range items {
 		if item.ID <= 0 || item.Name == "" {
 			continue
 		}
@@ -188,7 +235,7 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noBooks})
 	}
-	if len(page.Data) == 50 {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v := &wire.View{Title: t.knowledge, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Search, Action: wire.Action{ID: "search"}}, Sections: []wire.Section{section}}
@@ -200,13 +247,15 @@ func (a *app) searchView(ctx context.Context, r *ext.UIRequest, st pageState) (*
 	if st.SearchPage < 1 {
 		st.SearchPage = 1
 	}
-	page, err := a.client.search(ctx, st.Search, st.SearchPage)
+	items, more, err := collectBatches(1, st.SearchPage, 1, func(pageNumber int) (listPage[searchResult], error) {
+		return a.client.search(ctx, st.Search, pageNumber)
+	})
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
-	section := wire.Section{Title: fmt.Sprintf(t.pages, len(page.Data))}
-	for _, item := range page.Data {
+	section := wire.Section{Title: fmt.Sprintf(t.pages, len(items))}
+	for _, item := range items {
 		if item.ID <= 0 || item.Name == "" {
 			continue
 		}
@@ -221,7 +270,7 @@ func (a *app) searchView(ctx context.Context, r *ext.UIRequest, st pageState) (*
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noPages})
 	}
-	if len(page.Data) == 50 {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more-search"}}
 	}
 	return &wire.View{Title: t.search, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Value: st.Search, Action: wire.Action{ID: "search"}}, Sections: []wire.Section{section, {Items: []wire.Component{{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "books"}}}}}}, nil
@@ -257,8 +306,15 @@ func detailView(r *ext.UIRequest, st pageState, item page, text string) *wire.Vi
 	if link := safePageLink(item.URL); link != "" {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
-	if item.Markdown != "" && len(item.Markdown) <= 10000 {
-		items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.edit, Action: &wire.Action{ID: "edit", Push: &wire.Push{Title: t.edit, State: ext.EncodeState(pageState{Mode: "edit", BookID: item.BookID, PageID: item.ID, Name: item.Name, Markdown: item.Markdown, DraftID: randomID()})}}})
+	if item.Markdown != "" && utf8.RuneCountInString(item.Markdown) <= 10000 {
+		bookID := st.BookID
+		if bookID == 0 && st.Search == "" {
+			bookID = item.BookID
+		}
+		pushState := ext.EncodeState(pageState{Mode: "edit", BookID: bookID, BookName: st.BookName, Search: st.Search, SearchPage: st.SearchPage, PageID: item.ID, Name: item.Name, Markdown: item.Markdown, DraftID: randomID()})
+		if len(pushState) <= wire.StateMost {
+			items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.edit, Action: &wire.Action{ID: "edit", Push: &wire.Push{Title: t.edit, State: pushState}}})
+		}
 	} else if item.Markdown == "" {
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: t.noMarkdown, Style: wire.TextStyleSecondary})
 	}

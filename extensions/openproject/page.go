@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -31,7 +32,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.WorkID < 0 || st.Offset < 0 || len(st.ProjectHref) > 100 || len(st.ProjectName) > 1000 || len(st.TypeHref) > 100 || len(st.TypeName) > 500 || len(st.DraftID) > 128 || len(st.Subject) > 600 || len(st.Description) > 31000 || len(st.StartDate) > 20 || len(st.DueDate) > 20 {
+	if err := r.DecodeState(&st); err != nil || st.WorkID < 0 || st.Offset < 0 || len(st.ProjectHref) > 100 || utf8.RuneCountInString(st.ProjectName) > maxSubjectChars || len(st.TypeHref) > 100 || utf8.RuneCountInString(st.TypeName) > maxSubjectChars || len(st.DraftID) > 128 || utf8.RuneCountInString(st.Subject) > maxSubjectChars || utf8.RuneCountInString(st.Description) > maxDescriptionChars || len(st.StartDate) > 20 || len(st.DueDate) > 20 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -63,18 +64,34 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		st = pageState{Mode: "projects"}
 	case "create":
 		if st.Mode != "review-create" {
-			st = pageState{Mode: "create", ProjectHref: st.ProjectHref, ProjectName: st.ProjectName, TypeHref: st.TypeHref, TypeName: st.TypeName, DraftID: randomID()}
+			projectHref, projectName := st.ProjectHref, st.ProjectName
+			if r.Values["project_href"] != "" || r.Values["project_name"] != "" {
+				projectHref = r.Values["project_href"]
+				projectName = clipText(strings.TrimSpace(r.Values["project_name"]), maxSubjectChars)
+			}
+			typeHref, typeName := st.TypeHref, st.TypeName
+			if r.Values["type_href"] != "" || r.Values["type_name"] != "" {
+				typeHref = r.Values["type_href"]
+				typeName = clipText(strings.TrimSpace(r.Values["type_name"]), maxSubjectChars)
+			}
+			if !projectHrefPattern.MatchString(projectHref) || !typeHrefPattern.MatchString(typeHref) {
+				return nil, errors.New("project and type must be exact numeric HAL links from OpenProject discovery")
+			}
+			st = pageState{Mode: "create", ProjectHref: projectHref, ProjectName: projectName, TypeHref: typeHref, TypeName: typeName, DraftID: randomID()}
 		} else {
 			st.Mode = "create"
 		}
 	case "back":
-		st.Mode, st.WorkID, st.DraftID, st.Subject, st.Description = "", 0, "", "", ""
+		st = pageState{Offset: st.Offset}
 	case "review-create":
 		in := createArgs{ProjectHref: st.ProjectHref, TypeHref: st.TypeHref, Subject: r.Values["subject"], Description: r.Values["description"], StartDate: r.Values["start_date"], DueDate: r.Values["due_date"]}
 		if err := in.validate(); err != nil {
 			return nil, err
 		}
 		st.Subject, st.Description, st.StartDate, st.DueDate, st.Mode = in.Subject, in.Description, in.StartDate, in.DueDate, "review-create"
+		if len(ext.EncodeState(st)) > wire.StateMost {
+			return nil, errors.New("work package draft exceeds page state limit")
+		}
 	case "confirm-create":
 		raw, _ := json.Marshal(createArgs{ProjectHref: st.ProjectHref, TypeHref: st.TypeHref, Subject: st.Subject, Description: st.Description, StartDate: st.StartDate, DueDate: st.DueDate})
 		out, err := a.doAction(ctx, "ui-create:"+st.DraftID, "openproject_create_work_package", raw)
@@ -112,8 +129,11 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 			if !item.Active || item.Name == "" {
 				continue
 			}
+			if len(section.Items) >= maxViewWorkPackages {
+				break
+			}
 			typeChoice := defaultType(types.Embedded.Elements)
-			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "project-" + fmt.Sprint(item.ID), Title: clipText(item.Name, 1800), Subtitle: clipText(typeChoice.Name, 500), Action: &wire.Action{ID: "create", Values: map[string]string{"project_href": item.Links.Self.Href, "project_name": item.Name, "type_href": typeChoice.Links.Self.Href, "type_name": typeChoice.Name}}})
+			section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Key: "project-" + fmt.Sprint(item.ID), Title: clipText(item.Name, 1800), Subtitle: clipText(typeChoice.Name, 500), Action: &wire.Action{ID: "create", Values: map[string]string{"project_href": item.Links.Self.Href, "project_name": clipText(item.Name, maxSubjectChars), "type_href": typeChoice.Links.Self.Href, "type_name": clipText(typeChoice.Name, maxSubjectChars)}}})
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noProjects})
@@ -137,13 +157,13 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		return nil, err
 	}
 	st.Offset = max(1, st.Offset)
-	page, err := a.client.workPackages(ctx, me.ID, st.Offset)
+	items, more, err := a.collectWorkPackages(ctx, me.ID, st.Offset)
 	a.record(err)
 	if err != nil {
 		return nil, err
 	}
 	section := wire.Section{Title: t.work}
-	for _, item := range page.Embedded.Elements {
+	for _, item := range items {
 		if item.ID <= 0 || item.Subject == "" {
 			continue
 		}
@@ -152,13 +172,38 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	if len(section.Items) == 0 {
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noWork})
 	}
-	if page.Links.NextByOffset.Href != "" {
+	if more {
 		section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more"}}
 	}
 	v := &wire.View{Title: t.work, State: ext.EncodeState(st), Sections: []wire.Section{section, {Title: t.work, Items: []wire.Component{
 		{Type: wire.ComponentButton, Title: t.create, Action: &wire.Action{ID: "projects", Push: &wire.Push{Title: t.projects, State: ext.EncodeState(pageState{Mode: "projects"})}}},
 	}}}}
 	return v, nil
+}
+
+// maxViewWorkPackages keeps the accumulated list within the SDK's component limit.
+const maxViewWorkPackages = 250
+
+// collectWorkPackages reads pages 1 through page so that Load more extends the list instead of replacing it,
+// and reports whether OpenProject has more work packages that the cap still leaves room to show.
+func (a *app) collectWorkPackages(ctx context.Context, userID int64, page int) ([]workPackage, bool, error) {
+	var out []workPackage
+	more := false
+	for pos := 1; pos <= page && len(out) < maxViewWorkPackages; pos++ {
+		batch, err := a.client.workPackages(ctx, userID, pos)
+		if err != nil {
+			return nil, false, err
+		}
+		out = append(out, batch.Embedded.Elements...)
+		more = batch.Links.NextByOffset.Href != ""
+		if !more {
+			break
+		}
+	}
+	if len(out) > maxViewWorkPackages {
+		out = out[:maxViewWorkPackages]
+	}
+	return out, more && len(out) < maxViewWorkPackages, nil
 }
 
 func (a *app) createView(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {

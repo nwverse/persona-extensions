@@ -88,6 +88,8 @@ func (c *client) do(ctx context.Context, method, path string, in, out any) error
 	}
 }
 
+const maxQueryChars = 200
+
 func (c *client) search(ctx context.Context, query string, favoritesOnly bool, cursor string) (searchResponse, error) {
 	if cursor != "" && len(cursor) > 4096 {
 		return searchResponse{}, errors.New("invalid search cursor")
@@ -97,7 +99,7 @@ func (c *client) search(ctx context.Context, query string, favoritesOnly bool, c
 		body["filter"] = map[string]any{"isFavorite": map[string]bool{"eq": true}}
 	} else {
 		query = strings.TrimSpace(query)
-		if query == "" || len([]rune(query)) > 200 {
+		if query == "" || len([]rune(query)) > maxQueryChars {
 			return searchResponse{}, errors.New("search requires at most 200 characters")
 		}
 		body["filter"] = map[string]any{"originalFileName": map[string]string{"like": query}}
@@ -112,7 +114,7 @@ func (c *client) search(ctx context.Context, query string, favoritesOnly bool, c
 
 func (c *client) smartSearch(ctx context.Context, query string) (searchResponse, error) {
 	query = strings.TrimSpace(query)
-	if query == "" || len([]rune(query)) > 200 {
+	if query == "" || len([]rune(query)) > maxQueryChars {
 		return searchResponse{}, errors.New("smart search requires at most 200 characters")
 	}
 	var out searchResponse
@@ -142,6 +144,25 @@ func (c *client) album(ctx context.Context, id string) (album, error) {
 	var out album
 	err := c.do(ctx, http.MethodGet, "/albums/"+id, nil, &out)
 	return out, err
+}
+
+// albumAssetsMost is how many of an album's assets immich_album reads.
+const albumAssetsMost = 100
+
+// albumAssets reads the first assets of an album. Immich 3 does not send them with the album (GET /albums/{id}); they
+// are found by searching with the album's ID.
+func (c *client) albumAssets(ctx context.Context, id string) ([]asset, error) {
+	if !validAssetID(id) {
+		return nil, errors.New("invalid Immich album ID")
+	}
+	body := map[string]any{
+		"size": albumAssetsMost, "withExif": true, "withPeople": true,
+		"orderBy": map[string]string{"field": "fileCreatedAt", "direction": "desc"},
+		"filter":  map[string]any{"albumIds": map[string][]string{"any": {id}}},
+	}
+	var out searchResponse
+	err := c.do(ctx, http.MethodPost, "/search/metadata", body, &out)
+	return out.Assets.Items, err
 }
 
 func (c *client) favorite(ctx context.Context, id string, favorite bool) error {

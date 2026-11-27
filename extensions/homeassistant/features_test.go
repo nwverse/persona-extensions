@@ -1065,9 +1065,13 @@ func TestPageDevices(t *testing.T) {
 
 	v, _ := a.render(context.Background(), req(nil, "", nil))
 	got := check(t, v)
-	contains(t, got, "row 客厅|客厅灯、吸顶灯|27.5°||| [4 开着 positive]")
-	if strings.Contains(got, "辅光") || strings.Contains(got, "通电默认") {
-		t.Errorf("a device's settings counted as on:\n%s", got)
+	contains(t, got, "stat 开着=4|2 灯 · 1 开关 · 1 空调|positive", "row 吸顶灯|客厅|||| [开 positive] →do:light.ceiling|turn_off",
+		"row 插座|客厅|||| [开 positive] →do:switch.living_plug|turn_off", "row 客厅|2 灯、1 开关、1 空调开着|27.5°||| [1 离线 caution]",
+		"row 卧室|2 个设备|湿度 60%|")
+	for _, no := range []string{"辅光", "通电默认", "藏起来的开关", "地图", "勿扰"} {
+		if strings.Contains(got, no) {
+			t.Errorf("%s on the overview:\n%s", no, got)
+		}
 	}
 
 	res, st := act(t, a, pageState{}, "area:living", nil)
@@ -1088,7 +1092,7 @@ func TestPageDevices(t *testing.T) {
 	// the light opened: its device's settings folded into one row, unfolded on a tap
 	res, st = act(t, a, st, "open:light.ceiling", nil)
 	got = texts(res.View)
-	contains(t, got, "header 客厅吸顶灯||||| {开 positive} (类型=灯) (区域=客厅) (变更=01-02 11:04)", "row 「吸顶灯」的设置和其他项 · 2|吸顶灯 辅光开关、吸顶灯 厂商自定义 通电默认状态|", "→sub")
+	contains(t, got, "header 客厅吸顶灯||||| {开 positive} (类型=灯) (区域=客厅) (变更=01-02 11:04)", "row 「吸顶灯」的设置和其他项 · 2|辅光开关、厂商自定义 通电默认状态|", "→sub")
 	res, _ = act(t, a, st, "sub", nil)
 	contains(t, texts(res.View), "## 「吸顶灯」的设置和其他项 · 2", "row 吸顶灯 厂商自定义 通电默认状态|设置 · 开关|", "→open:switch.ceiling_power_default", "收起")
 

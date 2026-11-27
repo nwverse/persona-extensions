@@ -1,6 +1,10 @@
 package main
 
-import "testing"
+import (
+	"encoding/json"
+	"math"
+	"testing"
+)
 
 func TestCityValid(t *testing.T) {
 	valid := []City{
@@ -97,10 +101,54 @@ func TestInitReadsConfigAndFallsBack(t *testing.T) {
 }
 
 func TestWindDir(t *testing.T) {
-	cases := map[float64]string{0: "北风", 45: "东北风", 90: "东风", 135: "东南风", 180: "南风", 225: "西南风", 270: "西风", 315: "西北风", 337.5: "北风", 22: "北风"}
+	cases := map[float64]string{
+		0: "北风", 45: "东北风", 90: "东风", 135: "东南风", 180: "南风", 225: "西南风", 270: "西风", 315: "西北风",
+		337.5: "北风", 22: "北风", 360: "北风", 405: "东北风",
+		-45: "西北风", -90: "西风", -360: "北风", -1e-20: "北风",
+	}
 	for deg, want := range cases {
 		if got := windDir(deg); got != want {
 			t.Errorf("windDir(%v) = %q, want %q", deg, got, want)
 		}
+	}
+	for _, deg := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
+		if got := windDir(deg); got != "风" {
+			t.Errorf("windDir(%v) = %q, want %q", deg, got, "风")
+		}
+	}
+}
+
+// A city is written as its name, or its name and "latitude,longitude" for an ambiguous one (#493); the default city's
+// own name needs no search.
+func TestCitiesWrittenAsText(t *testing.T) {
+	for in, want := range map[string]City{
+		"上海":                        defaultCity,
+		" Springfield 39.80,-89.64": {Name: "Springfield", Latitude: 39.80, Longitude: -89.64},
+		"北京 39.9, 116.4":            {Name: "北京", Latitude: 39.9, Longitude: 116.4},
+		"Tokyo":                     {Name: "Tokyo", lookup: true},
+		"New York":                  {Name: "New York", lookup: true},
+		"Route 66":                  {Name: "Route 66", lookup: true},
+	} {
+		if got := cityFromText(in); got != want {
+			t.Errorf("%q: %+v, want %+v", in, got, want)
+		}
+	}
+	// Out of range is written but unusable, and named on the page.
+	good, bad := cleanCities([]City{cityFromText("Nowhere 120,10"), cityFromText("")})
+	if len(good) != 1 || good[0] != defaultCity || len(bad) != 2 {
+		t.Fatalf("good %+v bad %+v", good, bad)
+	}
+}
+
+// The setting reads strings and, from before 0.3.0, objects, in one list.
+func TestCitiesSettingReadsBothShapes(t *testing.T) {
+	var cfg Config
+	if err := json.Unmarshal([]byte(`{"cities": ["上海", "Tokyo", {"name": "大阪", "latitude": 34.69, "longitude": 135.5, "timezone": "Asia/Tokyo"}]}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	cs := cfg.cities()
+	if len(cs) != 3 || cs[0] != defaultCity || cs[1] != (City{Name: "Tokyo", lookup: true}) ||
+		cs[2] != (City{Name: "大阪", Latitude: 34.69, Longitude: 135.5, Timezone: "Asia/Tokyo"}) {
+		t.Fatalf("cities %+v", cs)
 	}
 }

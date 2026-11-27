@@ -15,7 +15,7 @@ import (
 )
 
 const connectorID = "karakeep"
-const pageUI = "bookmarks"
+const pageUI = "karakeep"
 
 type app struct {
 	mu       sync.RWMutex

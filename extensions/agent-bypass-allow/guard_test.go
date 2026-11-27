@@ -133,6 +133,7 @@ func TestPersonOnly(t *testing.T) {
 		`RM -rf "$t"`, "cd view && /bin/Rm -f sub/*", "sudo RM -rf /var/x", "SUDO rm -rf /var/x", "Git reset --hard",
 		"CHMOD 777 ~/.ssh", "/bin/R? -rf v", "BASH -c 'rm -rf v'", `PSQL -c "DROP TABLE users"`, "MKFS.ext4 /dev/sdb1",
 		"ſudo rm -rf /var/x", "ſhred ~/f", "/bin/ſh -c 'rm -rf v'", "\u212Aubectl delete ns x",
+		`eval "$(ssh-agent -s)"`,
 		"CSH -c 'rm -rf v'", "/bin/Tcsh -c 'rm -rf v'", "PWSH -c 'rm -rf v'", "SUDO -s <<EOF\nrm -rf v\nEOF",
 		"Doas -s <<EOF\nrm -rf v\nEOF", "Git -C d clean -fd", "GIT --namespace n reset --hard", "Git -c alias.x=clean x -fdx",
 	}
@@ -148,7 +149,7 @@ func TestPersonOnly(t *testing.T) {
 		"gh pr create --title t", "gh pr merge 3 --squash", "gh api repos/o/r/pulls", "gh api repos/o/r/collaborators",
 		"gh issue create -t x -b y", "make build", "mkdir -p a/b", "cp a b", "rsync -a src/ dst/",
 		"python3 -c 'print(1)'", "curl -s https://example.com", "docker ps", "kubectl get pods", "npm run format",
-		"grep -rn armed .", "cat firmware.bin | head", "echo hello >> out.txt", "make 2>&1 | tail", "ls > /dev/null",
+		"grep -rn armed .", "cat firmware.bin | head", "echo hello >> /tmp/out.txt", "make 2>&1 | tail", "ls > /dev/null",
 		"git commit -m 'drop rm wrapper'", "git commit -m 'Fix dd parsing'", "gh pr create --title x --body 'We delete the old cache'",
 		"cd /tmp/rm && ls", "kubectl get rolebinding -A", "aws s3 ls", "terraform plan", "docker compose down",
 		"bash -c 'go test ./...'", "find . -name '*.go'",
@@ -165,8 +166,7 @@ func TestPersonOnly(t *testing.T) {
 		"ssh host ls -la", "ssh host git status", "ssh host kubectl get pods", "ssh -p 2222 user@host docker ps",
 		"ssh user@host", "ssh host git push origin feat/x", "ssh host kubectl apply -f app.yaml",
 		"ssh -L 8080:localhost:80 -N host", "ssh host 'echo chmod 755 in text'",
-		// benign words after the other wrappers still go through (eval "$(ssh-agent)" is a common shell init line)
-		"eval echo hi", "busybox ls -la", "busybox true", "autossh -M 0 host", `eval "$(ssh-agent -s)"`,
+		"eval echo hi", "busybox ls -la", "busybox true", "autossh -M 0 host",
 		"toybox ls -la", "torsocks curl -s https://example.com", "proxychains curl -s https://example.com",
 		"proxychains4 curl -s https://example.com", "firejail ls -la", "bwrap --ro-bind / / -- ls -la",
 		// git options that are not shortenings of a destructive one, and a checkout of one branch or commit
@@ -192,6 +192,41 @@ func TestPersonOnly(t *testing.T) {
 		"export GIT_SSH_COMMAND='ssh -i k'; git fetch", "GIT_SSH_COMMAND+=' -v' git fetch",
 		// a heredoc fed to sudo without its shell options is data, and a benign command in another shell still goes
 		"sudo -u me cat <<EOF\nrm x\nEOF", "sudo -g staff -E cat <<EOF\nrm x\nEOF", "csh -c 'ls -la'", "tcsh <<EOF\necho hi\nEOF",
+	}
+	for _, c := range goes {
+		if why := personOnly(c); why != "" {
+			t.Errorf("%q: %s, should go through", c, why)
+		}
+	}
+}
+
+func TestAppendDestinations(t *testing.T) {
+	stays := []string{
+		"echo x >> out.txt",
+		"echo x >> ~/.bashrc",
+		"echo x 2>> ~/.bashrc",
+		"echo x &>> ~/.bashrc",
+		"echo x >> ~/.ssh/authorized_keys",
+		"echo x 2>> ~/.ssh/authorized_keys",
+		"echo x &>> ~/.ssh/authorized_keys",
+		"printf x | tee -a ~/.bashrc",
+		"printf x | tee --append ~/.ssh/authorized_keys",
+		"printf x | tee -ia ~/.bashrc",
+	}
+	for _, c := range stays {
+		if personOnly(c) == "" {
+			t.Errorf("%q should stay with a person", c)
+		}
+		if why := newGuard("", true).personOnly(c); why != "" {
+			t.Errorf("%q: %s, allow_destructive should let it through", c, why)
+		}
+	}
+	goes := []string{
+		"echo x >> /tmp/append.log",
+		"echo x 2>> /tmp/append.log",
+		"echo x &>> /tmp/append.log",
+		"printf x | tee -a /tmp/append.log",
+		"printf x | tee --append /tmp/append.log",
 	}
 	for _, c := range goes {
 		if why := personOnly(c); why != "" {
@@ -376,14 +411,86 @@ func TestBraceExpandBounded(t *testing.T) {
 		strings.Repeat("A", 50000) + "{1..4096}",
 		strings.Repeat("{a,b}", 30),
 		"{rm,x} -rf " + strings.Repeat("{a,b}", 30),
+		"MKFS." + strings.Repeat("a", 50000) + " /dev/sdb1",
 	} {
 		start := time.Now()
 		why := personOnly(c)
 		if d := time.Since(start); d > 2*time.Second {
 			t.Errorf("%.20q…: %v", c, d)
 		}
-		if strings.HasPrefix(c, "{rm") && why == "" {
+		if (strings.HasPrefix(c, "{rm") || strings.HasPrefix(c, "MKFS.")) && why == "" {
 			t.Errorf("%.20q… should stay with a person", c)
+		}
+	}
+}
+
+func TestDeepNestingFailsClosed(t *testing.T) {
+	// 3 levels of shell nesting ending in a 4th recursive construct must fail closed, even with allow_destructive on.
+	nest3 := func(inner string) string {
+		// depth 0 -> depth 1 -> depth 2 -> depth 3 evaluates inner
+		return `bash -c "sh -c 'bash -c \"` + inner + `\"'"`
+	}
+	blocked := []struct {
+		name string
+		cmd  string
+		want string
+	}{
+		{"4-layer shell rm -rf /", `bash -c 'sh -c "bash -c '\''sh -c \"rm -rf /\"'\''"'`, tooDeepReason},
+		{"4-layer shell chmod", `bash -c 'sh -c "bash -c '\''sh -c \"chmod 777 /etc/passwd\"'\''"'`, tooDeepReason},
+		{"4-layer shell git push --force", `bash -c 'sh -c "bash -c '\''sh -c \"git push --force origin main\"'\''"'`, tooDeepReason},
+		{"4-layer single-word sh -c passwd", `bash -c 'sh -c "bash -c '\''sh -c passwd'\''"'`, tooDeepReason},
+		{"4-layer env -S", `bash -c 'sh -c "bash -c '\''env -S rm\\_/-rf'\''"'`, tooDeepReason},
+		{"4-layer ssh -o ProxyCommand", `bash -c 'sh -c "bash -c '\''ssh -o ProxyCommand=\"rm -rf /\" host'\''"'`, tooDeepReason},
+		{"4-layer sftp -D", `bash -c 'sh -c "bash -c '\''sftp -D \"rm -rf /\"'\''"'`, tooDeepReason},
+		{"4-layer command substitution rm", `bash -c 'sh -c "bash -c '\''echo \"\$(rm -rf /)\"'\''"'`, tooDeepReason},
+		{"4-layer backtick substitution rm", "bash -c 'sh -c \"bash -c '\\''echo \\\"\\`rm -rf /\\`\\\"'\\''\"'", tooDeepReason},
+		{"4-layer command substitution benign inner", `bash -c 'sh -c "bash -c '\''echo \"\$(echo hi)\"'\''"'`, tooDeepReason},
+		{"4-layer backtick substitution benign inner", "bash -c 'sh -c \"bash -c '\\''echo \\\"\\`echo hi\\`\\\"'\\''\"'", tooDeepReason},
+		{"4-layer commandVars", `bash -c 'sh -c "bash -c '\''GIT_SSH_COMMAND=\"rm -rf /\" git fetch'\''"'`, tooDeepReason},
+		{"4-layer export commandVars", `bash -c 'sh -c "bash -c '\''export GIT_EDITOR=\"rm -rf /\"'\''"'`, tooDeepReason},
+		{"4-layer declare commandVars", `bash -c 'sh -c "bash -c '\''declare -x GIT_PAGER=\"rm -rf /\"'\''"'`, tooDeepReason},
+		{"4-layer git -c bang alias", `bash -c 'sh -c "bash -c '\''git -c alias.x=\"!rm -rf /\" x'\''"'`, tooDeepReason},
+		{"4-layer git -c core.sshCommand", `bash -c 'sh -c "bash -c '\''git -c core.sshCommand=\"rm -rf /\" fetch'\''"'`, tooDeepReason},
+		{"4-layer attached git -c command", `bash -c 'sh -c "bash -c '\''git -ccore.pager=\"rm -rf /\" log'\''"'`, tooDeepReason},
+		{"4-layer attached git -c alias", `bash -c 'sh -c "bash -c '\''git -calias.x=clean x'\''"'`, "git alias: x"},
+		{"4-layer git bisect run", `bash -c 'sh -c "bash -c '\''git bisect run \"rm -rf /\"'\''"'`, tooDeepReason},
+		{"4-layer git submodule foreach", `bash -c 'sh -c "bash -c '\''git submodule foreach \"rm -rf /\"'\''"'`, tooDeepReason},
+		{"4-layer git rebase -x", `bash -c 'sh -c "bash -c '\''git rebase -x \"rm -rf /\" HEAD~1'\''"'`, tooDeepReason},
+		{"5-layer command substitution", `echo "$(echo "$(echo "$(echo "$(rm -rf /)")")")"`, ""},
+		{"nested env -S inside 3 shells", nest3(`env -S ls`), tooDeepReason},
+		{"single-word bash -c brace rm at depth 0", `bash -c '{rm,-rf,/}'`, "protected deletion target: rm"},
+		{"single-word sh -c passwd at depth 0", `sh -c passwd`, "permission change: passwd"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, allowDestructive := range []bool{false, true} {
+				g := newGuard("/tmp", allowDestructive)
+				why := g.personOnly(tc.cmd)
+				if why == "" {
+					t.Fatalf("allowDestructive=%v: %q was allowed, want %q", allowDestructive, tc.cmd, tc.want)
+				}
+				if tc.want != "" && why != tc.want {
+					t.Errorf("allowDestructive=%v: personOnly(%q) = %q, want %q", allowDestructive, tc.cmd, why, tc.want)
+				}
+			}
+		})
+	}
+
+	// Ordinary non-nested commands and <=3-layer benign commands with no further recursion remain allowed.
+	allowed := []string{
+		`ls -la`,
+		`go test ./...`,
+		`git -c user.name=Alice status`,
+		`ssh -c aes128-ctr host`,
+		`bash -c 'sh -c "bash -c '\''ls -la'\''"'`,
+		`bash -c 'sh -c "bash -c '\''git -c user.name=Alice status'\''"'`,
+		`bash -c 'sh -c "bash -c '\''grep sh foo.txt'\''"'`,
+		`bash -c 'sh -c "bash -c '\''GIT_PAGER= git log'\''"'`,
+		`echo "$(echo "$(echo hi)")"`,
+	}
+	for _, cmd := range allowed {
+		if why := personOnly(cmd); why != "" {
+			t.Errorf("benign command %q unexpectedly blocked: %s", cmd, why)
 		}
 	}
 }

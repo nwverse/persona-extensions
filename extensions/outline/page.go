@@ -26,7 +26,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len(st.Query) > 250 || len(st.DocumentID) > 128 || len(st.CollectionID) > 128 || len(st.Title) > 150 || len(st.Text) > 11000 || len(st.DraftID) > 128 {
+	if err := r.DecodeState(&st); err != nil || st.Offset < 0 || len([]rune(st.Query)) > maxQueryChars || len(st.DocumentID) > 128 || len(st.CollectionID) > 128 || len([]rune(st.Title)) > 150 || len(st.Text) > 11000 || len(st.DraftID) > 128 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -47,7 +47,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Offset = strings.TrimSpace(clipText(r.Values["q"], 200)), 0
+		st.Query, st.Offset = strings.TrimSpace(clipText(r.Values["q"], maxQueryChars)), 0
 	case "more":
 		st.Offset = intFromString(r.Values["offset"])
 		if st.Offset <= 0 {
@@ -94,6 +94,34 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	return &wire.ActionResult{View: v}, err
 }
 
+// maxViewRecords is half the SDK's component limit: a result renders a row and a context line.
+const maxViewRecords = 125
+
+// collectResults reads the batches from the start through the one at offset so that Load more answers the whole list,
+// longer. It stops at maxViewRecords to keep the view within the SDK's component limit, and reports whether another
+// batch can be loaded and where it starts.
+func (a *app) collectResults(ctx context.Context, query string, offset int) ([]searchResult, int, bool, error) {
+	var out []searchResult
+	next, more := 0, false
+	for pos := 0; len(out) < maxViewRecords; pos = next {
+		page, err := a.client.search(ctx, query, pos)
+		if err != nil {
+			return nil, 0, false, err
+		}
+		out = append(out, page.Data...)
+		if next, more, err = nextOffset(page.Pagination); err != nil {
+			return nil, 0, false, err
+		}
+		if !more || pos >= offset {
+			break
+		}
+	}
+	if len(out) > maxViewRecords {
+		out = out[:maxViewRecords]
+	}
+	return out, next, more && len(out) < maxViewRecords, nil
+}
+
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.View, error) {
 	t := textsFor(r.Locale)
 	if a.client.base == "" || a.client.token == "" {
@@ -137,12 +165,12 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.searchHint})
 		v = &wire.View{Title: t.knowledge, State: ext.EncodeState(st), Search: &wire.Search{Placeholder: t.search, Action: wire.Action{ID: "search"}}}
 	} else {
-		page, err := a.client.search(ctx, st.Query, st.Offset)
+		results, next, more, err := a.collectResults(ctx, st.Query, st.Offset)
 		a.record(err)
 		if err != nil {
 			return nil, err
 		}
-		for _, result := range page.Data {
+		for _, result := range results {
 			item := result.Document
 			if !validDocumentID(item.ID) || item.Title == "" || item.ArchivedAt != "" || item.DeletedAt != "" {
 				continue
@@ -154,10 +182,6 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 		}
 		if len(section.Items) == 0 {
 			section.Items = append(section.Items, wire.Component{Type: wire.ComponentEmpty, Title: t.noDocuments})
-		}
-		next, more, err := nextOffset(page.Pagination)
-		if err != nil {
-			return nil, err
 		}
 		if more {
 			section.More = &wire.More{Title: t.more, Action: wire.Action{ID: "more", Values: map[string]string{"offset": fmt.Sprint(next)}}}

@@ -15,7 +15,7 @@ The key arrives through the encrypted extension-secret flow and is sent only in 
 
 - List open assigned issues with `assigned_to_id=me`, `status_id=open`, `limit=50`, `offset` and `sort=updated_on:desc`. Pagination uses the response's `total_count`, not guessed page numbers.
 - Read issue ID, project, tracker, status, priority, description and journals with `include=journals`. Remote text is untrusted content, not instructions to create or modify work.
-- Browse visible projects and create an issue with `project_id`, `subject` and `description`. The project is read first to validate access.
+- Browse visible projects and create an issue with `project_id`, `subject` (at most 255 characters, the limit Redmine enforces) and `description`. The project is read first to validate access.
 - No deletion, arbitrary filters, custom-field updates, attachments, watchers or project administration.
 
 Before a write, the extension stores its normalized operation and request ID in `write-receipts.json` in its own data directory (`0600`, without the API key). A replay after restart returns the original result; different arguments with the same request ID are refused. Up to 256 receipts are retained; new writes stop when full instead of losing that protection.

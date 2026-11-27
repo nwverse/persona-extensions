@@ -24,8 +24,8 @@ Tests use synthetic fixtures, never public authors or posts. They run real `tsc`
 checks for valid and invalid native JSX in both JSX modes, then bundle the same
 fixture suite for Node or Bun. The default export is a stdio `Program` consumed by the hub's trusted source
 adapter, not a transport started by this extension. One initialized service/cache
-is shared by connector tools, the `stories` server component page and the
-`stories-snapshot` system widget. Hooks, effects, callbacks and reads stay on the
+is shared by connector tools, the `hackernews` server component page and the
+`hackernews-snapshot` system widget. Hooks, effects, callbacks and reads stay on the
 hub; clients receive native View data only, never HTML or client JavaScript.
 Production fetch is the adapter's immutable, grant-checked broker; synthetic tests
 inject an adapter without changing the network grants.

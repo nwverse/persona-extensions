@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"math"
 	"strings"
 	"sync"
 	"time"
@@ -47,8 +48,30 @@ func (a *app) init(_ context.Context, in *ext.Init, _ *ext.Hub) (map[string]any,
 		return nil, fmt.Errorf("config: %w", err)
 	}
 	a.cfg = cfg
-	a.cities, a.badCities = cleanCities(cfg.Cities)
+	a.cities, a.badCities = cleanCities(cfg.cities())
 	return nil, nil
+}
+
+// locate is c with its point: a city written by name only is searched for (the answer is cached like any read), and
+// keeps the name it was written with.
+func (a *app) locate(ctx context.Context, c City) (City, error) {
+	if !c.lookup {
+		return c, nil
+	}
+	rd, err := a.read(ctx, a.client.geo, geoURL(c.Name), cacheFor)
+	if err != nil {
+		return City{}, err
+	}
+	g, err := parseGeo(rd.body)
+	if err != nil {
+		return City{}, err
+	}
+	hit, err := g.best()
+	if err != nil {
+		return City{}, err
+	}
+	hit.Name = c.Name
+	return hit, nil
 }
 
 // freshness is how old an answer may be: a refresh asks for a new one, but not within refreshFloor of the last.
@@ -141,8 +164,23 @@ func locFor(c City) *time.Location {
 	return time.Local
 }
 
+// windDirLabel names an optional wind direction, falling back to generic "风" when direction is unavailable.
+func windDirLabel(dir nullableFloat) string {
+	if !dir.OK {
+		return "风"
+	}
+	return windDir(dir.Value)
+}
+
 // windDir names a wind direction in degrees (0 is north) as a compass point.
 func windDir(deg float64) string {
+	if math.IsNaN(deg) || math.IsInf(deg, 0) {
+		return "风"
+	}
+	deg = math.Mod(deg, 360)
+	if deg < 0 {
+		deg += 360
+	}
 	names := [...]string{"北风", "东北风", "东风", "东南风", "南风", "西南风", "西风", "西北风"}
 	idx := int((deg+22.5)/45) % 8
 	return names[idx]

@@ -2,13 +2,18 @@ dist/
 __pycache__/
 # `go build` inside an extension's directory leaves the program there under the extension's id.
 /extensions/*/hackernews
+/extensions/*/household
 /extensions/*/linuxdo
 /extensions/*/markets
+/extensions/*/onepassword
 /extensions/*/sentry
 /extensions/*/showcase
 /extensions/*/spaces
 /extensions/*/v2ex
 /extensions/*/termwise
+/extensions/*/relingo
 /extensions/*/weather
 # personad extension test / dev build the program where the manifest says (bin/…).
 /extensions/*/bin/
+# A Python extension's launcher is source, not a build output.
+!/extensions/larkx/bin/

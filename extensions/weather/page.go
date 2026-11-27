@@ -3,8 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -23,8 +25,11 @@ func (a *app) readState(r *ext.UIRequest) pageState {
 	if r.DecodeState(&st) != nil {
 		st = pageState{}
 	}
+	st.City = strings.TrimSpace(st.City)
 	if st.City != "" {
-		if _, ok := cityByName(a.cities, st.City); !ok {
+		if c, ok := cityByName(a.cities, st.City); ok {
+			st.City = c.Name
+		} else {
 			st.City = ""
 		}
 	}
@@ -48,14 +53,22 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	defer cancel()
 	st := a.readState(r)
 	refresh := false
-	switch r.Action {
-	case "city":
-		if name := r.Values["city"]; name != "" {
-			if _, ok := cityByName(a.cities, name); ok {
-				st.City = name
+	switch {
+	case r.Action == "city":
+		if name := strings.TrimSpace(r.Values["city"]); name != "" {
+			if c, ok := cityByName(a.cities, name); ok {
+				st.City = c.Name
 			}
 		}
-	case "refresh":
+	case strings.HasPrefix(r.Action, "city:"):
+		if name := strings.TrimSpace(r.Values["city"]); name != "" {
+			if c, ok := cityByName(a.cities, name); ok {
+				st.City = c.Name
+			}
+		} else if idx, err := strconv.Atoi(strings.TrimPrefix(r.Action, "city:")); err == nil && idx >= 0 && idx < len(a.cities) {
+			st.City = a.cities[idx].Name
+		}
+	case r.Action == "refresh":
 		refresh = true
 	}
 	return &wire.ActionResult{View: a.page(ctx, r, st, refresh)}, nil
@@ -69,12 +82,31 @@ func button(title, id string) wire.Component {
 	return wire.Component{Type: wire.ComponentButton, Title: title, Action: &wire.Action{ID: id}}
 }
 
-// picker chooses the city when there are several: a segmented control, or a row each before UI version 2.
+const (
+	segmentedMaxChoices = 5
+	segmentedMaxRunes   = 12
+)
+
+// segmentedFits reports whether cities fit within wire.ComponentSegmented limits (2 to 5 choices, each label at most 12 runes).
+func segmentedFits(cities []City) bool {
+	if len(cities) < 2 || len(cities) > segmentedMaxChoices {
+		return false
+	}
+	for _, c := range cities {
+		if utf8.RuneCountInString(c.Name) > segmentedMaxRunes {
+			return false
+		}
+	}
+	return true
+}
+
+// picker chooses the city when there are several: a segmented control when UI version >= 2 and every city fits
+// segmented limits, or a row each otherwise.
 func (a *app) picker(r *ext.UIRequest, st pageState) wire.Section {
 	if len(a.cities) <= 1 {
 		return wire.Section{}
 	}
-	if r.UIVersion >= 2 {
+	if r.UIVersion >= 2 && segmentedFits(a.cities) {
 		seg := wire.Component{Type: wire.ComponentSegmented, Name: "city", Value: a.selected(st).Name, Action: &wire.Action{ID: "city"}}
 		for _, c := range a.cities {
 			seg.Choices = append(seg.Choices, wire.Choice{Value: c.Name, Title: c.Name})
@@ -82,8 +114,12 @@ func (a *app) picker(r *ext.UIRequest, st pageState) wire.Section {
 		return wire.Section{Items: []wire.Component{seg}}
 	}
 	sec := wire.Section{Title: "城市"}
-	for _, c := range a.cities {
-		it := wire.Component{Type: wire.ComponentRow, Title: c.Name, Action: &wire.Action{ID: "city", Values: map[string]string{"city": c.Name}}}
+	for i, c := range a.cities {
+		it := wire.Component{
+			Type:   wire.ComponentRow,
+			Title:  c.Name,
+			Action: &wire.Action{ID: fmt.Sprintf("city:%d", i), Values: map[string]string{"city": c.Name}},
+		}
 		if c.Name == a.selected(st).Name {
 			it.Badge = &wire.Badge{Text: "正在看", Tone: wire.TonePositive}
 		}
@@ -95,17 +131,24 @@ func (a *app) picker(r *ext.UIRequest, st pageState) wire.Section {
 // page is the weather for one city; what went wrong is drawn, with a way to try again, never as a page of zeros.
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, refresh bool) *wire.View {
 	c := a.selected(st)
-	loc := locFor(c)
 	v := &wire.View{Title: "天气", State: ext.EncodeState(st), RefreshAfter: 600}
 	if p := a.picker(r, st); len(p.Items) > 0 {
 		v.Sections = append(v.Sections, p)
 	}
 	if len(a.badCities) > 0 {
 		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{
-			text(clip("这些城市没填对，没有读："+badCityNames(a.badCities)+"。要写名字、纬度（-90 到 90）、经度（-180 到 180）", 1900), wire.TextStyleSecondary)}})
+			text(clip("这些城市没填对，没有读："+badCityNames(a.badCities)+"。每项写一个城市名；重名的在后面写上「纬度,经度」，纬度 -90 到 90、经度 -180 到 180", 1900), wire.TextStyleSecondary)}})
 	}
 
 	u, w := a.cfg.tempUnit(), a.cfg.windUnit()
+	located, err := a.locate(ctx, c)
+	if err != nil {
+		v.Sections = append(v.Sections, wire.Section{Title: c.Name, Items: []wire.Component{
+			text(clip(oneLine(err.Error())+"。换个写法，或在名字后写上「纬度,经度」", 1900), wire.TextStyleSecondary), button("重试", "refresh")}})
+		return v
+	}
+	c = located
+	loc := locFor(c)
 	f, rd, err := a.readForecast(ctx, c, freshness(refresh))
 	if err != nil {
 		v.Sections = append(v.Sections, wire.Section{Title: c.Name, Items: []wire.Component{
@@ -125,6 +168,9 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, refresh 
 	}
 
 	v.Sections = append(v.Sections, a.airSection(ctx, c, freshness(refresh)))
+	v.Sections = append(v.Sections, a.airOutlookSection(ctx, c, freshness(refresh)))
+	v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{
+		text("天气与空气质量：Open-Meteo；CAMS ENSEMBLE 数据提供方。花粉仅在欧洲花粉季提供，空白表示无数据，不代表浓度为零；信息仅供参考，不作医疗或用药建议。", wire.TextStyleCaption)}})
 
 	tail := wire.Section{}
 	if !rd.at.IsZero() {
@@ -139,16 +185,19 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, refresh 
 // and today's high and low beside it.
 func (a *app) nowSection(c City, f forecast, u temperatureUnit, w windUnit) wire.Section {
 	cur := f.Current
-	desc, icon := wmo(cur.WeatherCode)
-	big := wire.Component{Type: wire.ComponentMetric, Label: "现在", Value: icon + " " + fmtTemp(cur.Temperature, u), Detail: desc}
+	desc, icon := wmoOptional(cur.WeatherCode)
+	big := wire.Component{Type: wire.ComponentMetric, Label: "现在", Value: icon + " " + tempText(cur.Temperature, u), Detail: desc}
 
 	stats := []wire.Stat{
-		{Label: "体感", Value: fmtTemp(cur.Apparent, u)},
-		{Label: "湿度", Value: fmt.Sprintf("%.0f%%", cur.Humidity)},
+		{Label: "体感", Value: tempText(cur.Apparent, u)},
+		{Label: "湿度", Value: percentText(cur.Humidity)},
 	}
-	if cur.WindSpeed > 0 {
-		stats = append(stats, wire.Stat{Label: windDir(cur.WindDirection), Value: fmtWind(cur.WindSpeed, w)})
-	} else {
+	switch {
+	case !cur.WindSpeed.OK:
+		stats = append(stats, wire.Stat{Label: "风", Value: "未知"})
+	case cur.WindSpeed.Value > 0:
+		stats = append(stats, wire.Stat{Label: windDirLabel(cur.WindDirection), Value: fmtWind(cur.WindSpeed.Value, w)})
+	default:
 		stats = append(stats, wire.Stat{Label: "风", Value: "无风"})
 	}
 	if hi, lo, ok := f.todayHighLow(); ok {
@@ -175,14 +224,14 @@ func (a *app) hoursSection(hours []hourPoint, u temperatureUnit) wire.Section {
 func (a *app) forecastSection(ds []day, u temperatureUnit) wire.Section {
 	sec := wire.Section{Title: "7 天预报"}
 	for _, d := range ds {
-		desc, icon := wmo(d.code)
+		desc, icon := wmoOptional(d.code)
 		title := d.weekday()
 		if title == "" {
 			title = d.date.Format("01-02")
 		}
 		row := wire.Component{Type: wire.ComponentRow,
-			Title:    fmt.Sprintf("%s %s %s / %s", title, icon, fmtTemp(d.max, u), fmtTemp(d.min, u)),
-			Subtitle: fmt.Sprintf("%s · 降水概率 %.0f%%", desc, d.precip)}
+			Title:    fmt.Sprintf("%s %s %s / %s", title, icon, tempText(d.max, u), tempText(d.min, u)),
+			Subtitle: fmt.Sprintf("%s · 降水概率 %s", desc, percentText(d.precip))}
 		sec.Items = append(sec.Items, row)
 	}
 	if len(sec.Items) == 0 {
@@ -213,6 +262,45 @@ func (a *app) airSection(ctx context.Context, c City, fresh time.Duration) wire.
 			text("这个城市没有空气质量数据", wire.TextStyleSecondary)}}
 	}
 	return wire.Section{Title: "空气质量", Items: []wire.Component{{Type: wire.ComponentStatGrid, Stats: stats}}}
+}
+
+// airOutlookSection keeps the optional hourly outlook separate from the existing current-air-quality card.
+func (a *app) airOutlookSection(ctx context.Context, c City, fresh time.Duration) wire.Section {
+	q, _, err := a.readAirOutlook(ctx, c, fresh)
+	if err != nil {
+		return wire.Section{Title: "花粉与空气质量趋势", Items: []wire.Component{
+			text(clip(oneLine(err.Error()), 1900), wire.TextStyleSecondary)}}
+	}
+	hours := q.outlook()
+	sec := wire.Section{Title: "花粉与空气质量趋势"}
+	var pollenStats []wire.Stat
+	if len(hours) > 0 {
+		for _, item := range hours[0].Pollen {
+			pollenStats = append(pollenStats, wire.Stat{Label: pollenLabel(item.Species), Value: trimZero(item.Value) + " grains/m³"})
+		}
+	}
+	if len(pollenStats) > 0 {
+		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentStatGrid, Stats: pollenStats})
+	} else {
+		sec.Items = append(sec.Items, text("花粉仅在欧洲花粉季提供；当前没有花粉数据。无数据不等于浓度为零。", wire.TextStyleSecondary))
+	}
+	for _, point := range hours[:min(6, len(hours))] {
+		var parts []string
+		if point.AQI != nil {
+			parts = append(parts, fmt.Sprintf("AQI %.0f（%s）", *point.AQI, aqiLevel(*point.AQI)))
+		}
+		if point.PM25 != nil {
+			parts = append(parts, "PM2.5 "+trimZero(*point.PM25)+" µg/m³")
+		}
+		if point.PM10 != nil {
+			parts = append(parts, "PM10 "+trimZero(*point.PM10)+" µg/m³")
+		}
+		if len(parts) == 0 {
+			parts = append(parts, "暂无空气质量数据")
+		}
+		sec.Items = append(sec.Items, wire.Component{Type: wire.ComponentRow, Title: point.At.Format("01-02 15:00"), Subtitle: strings.Join(parts, " · ")})
+	}
+	return sec
 }
 
 // badCityNames lists the unusable cities in words.

@@ -23,7 +23,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.Query) > 150 || len(st.Path) > 550 || len(st.DraftID) > 128 || len(st.Text) > 11000 || len(st.Mode) > 30 {
+	if err := r.DecodeState(&st); err != nil || len([]rune(st.Query)) > maxQueryChars || len(st.Path) > 550 || len(st.DraftID) > 128 || len(st.Text) > 11000 || len(st.Mode) > 30 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -44,7 +44,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	}
 	switch r.Action {
 	case "search":
-		st.Query, st.Mode = strings.TrimSpace(clipText(r.Values["q"], 100)), ""
+		st.Query, st.Mode = strings.TrimSpace(clipText(r.Values["q"], maxQueryChars)), ""
 	case "detail":
 		if !validRemotePath(r.Values["path"]) {
 			return nil, errors.New("invalid file path")

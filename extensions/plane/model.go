@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"html"
+	"regexp"
 	"strings"
 )
 
@@ -64,8 +66,34 @@ type page[T any] struct {
 	TotalResults    int    `json:"total_results"`
 }
 
+var (
+	htmlBreak  = regexp.MustCompile(`(?i)</(p|div|li|h[1-6]|blockquote|pre)>|<br\s*/?>`)
+	htmlTag    = regexp.MustCompile(`<[^>]*>`)
+	blankLines = regexp.MustCompile(`\n{3,}`)
+)
+
+// plainFromHTML is the text of a description_html: paragraphs and breaks become line breaks, other tags go.
+func plainFromHTML(markup string) string {
+	text := html.UnescapeString(htmlTag.ReplaceAllString(htmlBreak.ReplaceAllString(markup, "\n"), ""))
+	return strings.TrimSpace(blankLines.ReplaceAllString(text, "\n\n"))
+}
+
+// htmlFromPlain is a plain-text description as description_html, one paragraph per line.
+func htmlFromPlain(text string) string {
+	var b strings.Builder
+	for _, line := range strings.Split(strings.ReplaceAll(text, "\r\n", "\n"), "\n") {
+		b.WriteString("<p>" + html.EscapeString(line) + "</p>")
+	}
+	return b.String()
+}
+
+// itemDescription is the description as text. Plane's work item API answers description_html; the other two fields are
+// read when an answer has them.
 func itemDescription(item workItem) string {
 	if text := strings.TrimSpace(item.DescriptionStripped); text != "" {
+		return text
+	}
+	if text := plainFromHTML(item.DescriptionHTML); text != "" {
 		return text
 	}
 	return item.Description

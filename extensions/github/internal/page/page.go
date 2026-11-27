@@ -133,6 +133,15 @@ func (p *Page) Render(ctx context.Context, r *ext.UIRequest) (*wire.View, error)
 // asked to draw it again once it is done.
 func (p *Page) view(ctx context.Context, r *ext.UIRequest, s state, fresh bool) *wire.View {
 	key := fmt.Sprintf("%d\x00%t\x00%s", r.UIVersion, fresh, ext.EncodeState(s))
+	req := *r
+	return p.within(ctx, key, ID, func(bctx context.Context) *wire.View { return p.draw(bctx, &req, s, fresh) },
+		func() *wire.View { return loadingView(r, s) })
+}
+
+// within is what draw draws, within the page's budget: one draw at a time for each key (a second ask waits for the
+// first), and one that takes longer is loading now and goes on in the background, the apps then asked to draw ui
+// (the contribution that asked) again.
+func (p *Page) within(ctx context.Context, key, ui string, draw func(context.Context) *wire.View, loading func() *wire.View) *wire.View {
 	p.mu.Lock()
 	if p.building == nil {
 		p.building = map[string]*build{}
@@ -146,12 +155,11 @@ func (p *Page) view(ctx context.Context, r *ext.UIRequest, s state, fresh bool) 
 	if !ok {
 		b = &build{done: make(chan struct{})}
 		p.building[key] = b
-		req := *r
 		go func() {
 			// Not the call's context: what is read goes on after the hub stops waiting, so the next draw has it.
 			bctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 3*time.Minute)
 			defer cancel()
-			v := p.draw(bctx, &req, s, fresh)
+			v := draw(bctx)
 			p.mu.Lock()
 			b.view, b.at = v, time.Now()
 			p.mu.Unlock()
@@ -173,9 +181,9 @@ func (p *Page) view(ctx context.Context, r *ext.UIRequest, s state, fresh bool) 
 	}
 	go func() { // tell the app once it is done
 		<-b.done
-		p.invalidate()
+		p.invalidateUI(ui)
 	}()
-	return loadingView(r, s)
+	return loading()
 }
 
 // loadingView is the page while what it shows is still being read from GitHub.
@@ -341,12 +349,15 @@ func (p *Page) link(q string) (state, string, bool) {
 }
 
 // invalidate has the apps draw the page again (what was being read came).
-func (p *Page) invalidate() {
+func (p *Page) invalidate() { p.invalidateUI(ID) }
+
+// invalidateUI has the apps draw ui (the page or the card) again.
+func (p *Page) invalidateUI(ui string) {
 	p.mu.Lock()
 	hub := p.hub
 	p.mu.Unlock()
 	if hub != nil {
-		_ = hub.Invalidate(ID)
+		_ = hub.Invalidate(ui)
 	}
 }
 
@@ -520,7 +531,7 @@ func badgeOf(e github.Entry) *wire.Badge {
 	switch {
 	case e.Draft:
 		return &wire.Badge{Text: "草稿", Tone: wire.ToneNeutral}
-	case e.CI == "FAILURE" || e.CI == "ERROR":
+	case ciFailed(e):
 		return &wire.Badge{Text: "CI 失败", Tone: wire.ToneDanger}
 	case e.Decision == "CHANGES_REQUESTED":
 		return &wire.Badge{Text: "要求修改", Tone: wire.ToneCaution}
@@ -557,10 +568,7 @@ func filter(entries []github.Entry, q string) []github.Entry {
 func (p *Page) setBadge(n int) {
 	text := ""
 	if n > 0 {
-		text = strconv.Itoa(n)
-		if n >= 30 {
-			text = "30+"
-		}
+		text = many(n)
 	}
 	p.mu.Lock()
 	hub, same := p.hub, p.badge == text
@@ -588,6 +596,14 @@ func (p *Page) KeepBadge(ctx context.Context, hub *ext.Hub, interval time.Durati
 			p.setBadge(len(entries))
 		}
 	}
+}
+
+// many is a list's length as a count: a list holds at most 30 rows, so 30 is "30+".
+func many(n int) string {
+	if n >= 30 {
+		return "30+"
+	}
+	return strconv.Itoa(n)
 }
 
 func (p *Page) clock(r *ext.UIRequest, at time.Time) string {

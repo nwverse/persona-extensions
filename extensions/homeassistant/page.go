@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -17,11 +18,12 @@ import (
 )
 
 // The page (ui contribution "home", a nav_page), three tabs:
-//   - 家: the alarms, then every area, the busiest first, each with what is on and its air. An area opens on its
-//     figures (temperature, humidity, what is on and offline), its devices (one row each; a device's settings,
-//     diagnostics and accessory switches are folded into it), sensors or everything. A light or a switch turns on and off from its row; a
-//     search finds any entity; an entity opens on its header, its progress bars and controls, the rest of its
-//     device, its last 24 hours and its attributes.
+//   - 家: the overview (home.go): the home's figures, what needs a look, the devices with their switches and dials,
+//     and the areas, those with something going on first. An area opens on its figures (temperature, humidity, what
+//     is on and offline), its devices (one tile or row each; a device's settings, diagnostics and accessory switches
+//     are folded into it), sensors or everything. A light or a switch turns on and off from its tile's switch (UI
+//     version 6) or its row; a search finds any entity; an entity opens on its header, its progress bars and
+//     controls, the rest of its device, its last 24 hours and its attributes.
 //   - 动态: the logbook of the last two hours, a section per day, devices by default (全部 adds sensors and people),
 //     clock and diagnostic sensors left out.
 //   - 自动化: the automations, scripts and scenes, when each last ran, run and switched from their rows (each asks
@@ -42,6 +44,10 @@ type pageState struct {
 	Sub     bool   `json:"s,omitempty"`  // the rest of the open entity's device, unfolded
 	Attrs   bool   `json:"at,omitempty"` // the open entity's attributes, unfolded
 	LogAll  bool   `json:"la,omitempty"` // 动态 shows every change, not only devices'
+	All     bool   `json:"qa,omitempty"` // 家 lists every device, not only those on and the first few
+	Rooms   bool   `json:"r,omitempty"`  // 家 lists the quiet areas one by one
+	Lost    bool   `json:"lo,omitempty"` // 家 lists the devices offline one by one
+	SC      string `json:"sc,omitempty"` // a shortcut's form (shortcuts.go): its script's key, new or not
 }
 
 const (
@@ -66,7 +72,7 @@ var quickDomains = []string{"light", "switch", "fan", "input_boolean", "humidifi
 var rowServices = map[string][]string{
 	"light": {"turn_on", "turn_off"}, "switch": {"turn_on", "turn_off"}, "fan": {"turn_on", "turn_off"},
 	"input_boolean": {"turn_on", "turn_off"}, "humidifier": {"turn_on", "turn_off"},
-	"script": {"turn_on", "turn_off"}, "scene": {"turn_on"},
+	"script": {"turn_on", "turn_off"}, "scene": {"turn_on"}, "button": {"press"},
 }
 
 func (st *pageState) clean() {
@@ -79,6 +85,9 @@ func (st *pageState) clean() {
 	st.Q = clip(strings.TrimSpace(st.Q), 40)
 	if !entityRE.MatchString(st.Entity) {
 		st.Entity = ""
+	}
+	if !shortcutKeyRE.MatchString(st.SC) {
+		st.SC = ""
 	}
 }
 
@@ -100,9 +109,16 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if arg == "" {
 			arg = r.Values["tab"]
 		}
+		if room, ok := strings.CutPrefix(arg, roomTab); ok { // a room's tab (roomTabs)
+			st = pageState{Area: room, Kind: st.Kind}
+			break
+		}
 		st = pageState{Tab: arg, Kind: st.Kind}
 		st.clean()
 	case "area":
+		if arg == "" {
+			arg = r.Values["area"] // an area id too long for the action's id (areaAction)
+		}
 		st = pageState{Area: arg, Kind: st.Kind}
 	case "filter": // the area filter next to the search box
 		st.Area, st.Entity = r.Values["area"], ""
@@ -122,6 +138,12 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		st.clean()
 	case "offline":
 		st.Offline = !st.Offline
+	case "more":
+		st.All = !st.All
+	case "rooms":
+		st.Rooms = !st.Rooms
+	case "lost":
+		st.Lost = !st.Lost
 	case "pick":
 		if v, ok := r.Values["pick"]; ok {
 			st.Pick = v == "open"
@@ -139,6 +161,9 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 	case "attrs":
 		st.Attrs = !st.Attrs
 	case "open":
+		if arg == "" {
+			arg = r.Values["entity"] // an entity id too long for the action's id (openAction)
+		}
 		if entityRE.MatchString(arg) {
 			st.Entity, st.Sub, st.Attrs = arg, false, false
 		}
@@ -155,9 +180,43 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if h, _, _ := a.client(); h != nil {
 			h.tryAgain()
 		}
+	case "alloff": // 全关 (scenesRow): the area's lights, switches and fans that are on, or the home's
+		msg, err := a.allOff(ctx, r.Values["area"])
+		if err != nil {
+			toast = err.Error()
+		} else {
+			toast = msg
+		}
+		fresh = 0
+	case "sc": // a shortcut (shortcuts.go): run, save (the form, submitted) or delete
+		return a.shortcutAction(ctx, r, st, arg)
 	case "do": // a row's own call: a light or a switch on or off, a script or a scene run
 		eid, svc, _ := strings.Cut(arg, "|")
+		if arg == "" { // an entity id too long for the action's id (rowDo)
+			eid, svc = r.Values["entity"], r.Values["service"]
+		}
 		msg, err := a.rowCall(ctx, eid, svc)
+		if err != nil {
+			toast = err.Error()
+		} else {
+			toast = msg
+		}
+		fresh = 0
+	case "irmark": // 标记为已关 on a remote's tile (irmarks.go): nothing is sent
+		if arg == "" {
+			arg = r.Values["entity"]
+		}
+		msg, err := a.markRemoteOff(ctx, arg)
+		if err != nil {
+			toast = err.Error()
+		} else {
+			toast = msg
+		}
+		fresh = 0
+	case "ctl": // a switch, a slider or a stepper of the overview or an area (controlOf): the entity and its value
+		eid := r.Values["entity"]
+		name, _ := controlOf(arg, eid)
+		msg, err := a.setControl(ctx, eid, arg, r.Values[name])
 		if err != nil {
 			toast = err.Error()
 		} else {
@@ -186,11 +245,99 @@ func (a *app) rowCall(ctx context.Context, eid, svc string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if _, ok := hm.ByID[eid]; !ok || !hm.visible(eid) {
+	s, ok := hm.ByID[eid]
+	if !ok || !hm.visible(eid) {
 		return "", errNoEntity
 	}
-	return a.tap(ctx, eid, "svc", svc, nil)
+	msg, err := a.tap(ctx, eid, "svc", svc, nil)
+	if err == nil && d == "button" { // a remote's button (remoteTile) has no state to tell: say what was sent
+		msg = "已发送「" + buttonWord(hm.named(a.pageRegistry(ctx)), s) + "」"
+	}
+	return msg, err
 }
+
+// setControl runs a control's change on eid: power (a switch: turn_on or turn_off), bri (a light's brightness in
+// percent), pct (a fan's speed), temp (a climate's target temperature), pos (a cover's position), ir (a remote's
+// switch: its 开机 or 关机 pressed, remotePower). Only on an entity the page shows, that the control is drawn for (its
+// domain and what it declares it can do), of a domain the settings allow, with a value in its range; never a lock or an alarm panel (canWrite: those go through their own page, which
+// asks first), nor a garage door, a gate or a door's position.
+func (a *app) setControl(ctx context.Context, eid, kind, value string) (string, error) {
+	if !entityRE.MatchString(eid) {
+		return "", errUnknownOp
+	}
+	if kind == "ir" {
+		return a.remotePower(ctx, eid, value)
+	}
+	hm, err := a.home(ctx, statesFor)
+	if err != nil {
+		return "", err
+	}
+	s, ok := hm.ByID[eid]
+	if !ok || !hm.visible(eid) {
+		return "", errNoEntity
+	}
+	d := s.Domain()
+	number := func(lo, hi float64) (float64, error) {
+		v, err := strconv.ParseFloat(strings.TrimSpace(value), 64)
+		if err != nil || math.IsNaN(v) || math.IsInf(v, 0) || v < lo || v > hi {
+			return 0, fmt.Errorf("要在 %s 到 %s 之间", tidy(lo), tidy(hi))
+		}
+		return v, nil
+	}
+	c := call{Domain: d, Entities: []string{eid}, Data: map[string]any{}}
+	switch {
+	case kind == "power" && slices.Contains(powerDomains, d) && switchable(s):
+		switch value {
+		case "true":
+			c.Service = "turn_on"
+		case "false":
+			c.Service = "turn_off"
+		default:
+			return "", errUnknownOp
+		}
+	case kind == "bri" && dimmable(s):
+		v, err := number(1, 100)
+		if err != nil {
+			return "", err
+		}
+		c.Service, c.Data["brightness_pct"] = "turn_on", int(math.Round(v))
+	case kind == "pct" && d == "fan" && features(s)&fanSetSpeed != 0:
+		v, err := number(0, 100)
+		if err != nil {
+			return "", err
+		}
+		c.Service, c.Data["percentage"] = "set_percentage", int(math.Round(v))
+	case kind == "temp" && d == "climate":
+		t, ok := s.num("temperature") // a single target (not a range, not off): what the stepper is drawn for
+		if !ok {
+			return "", errUnknownOp
+		}
+		v, err := number(math.Min(s.attrNum("min_temp", 7), t), math.Max(s.attrNum("max_temp", 35), t))
+		if err != nil {
+			return "", err
+		}
+		c.Service, c.Data["temperature"] = "set_temperature", v
+	case kind == "pos" && positionable(s):
+		v, err := number(0, 100)
+		if err != nil {
+			return "", err
+		}
+		c.Service, c.Data["position"] = "set_cover_position", int(math.Round(v))
+	default:
+		return "", errUnknownOp
+	}
+	if err := a.canWrite(d, false); err != nil {
+		return "", err
+	}
+	text, err := a.run(ctx, c)
+	if err != nil {
+		return "", err
+	}
+	_, now, _ := strings.Cut(text, "现在：")
+	return "好了：" + clip(now, 80), nil
+}
+
+var errUnknownOp = errors.New("不认识的操作")
 
 // tap runs a control of an entity: svc (a button: service|data), opt (a select's option), num (a number's value),
 // hvac (a climate's mode).
@@ -201,6 +348,14 @@ func (a *app) tap(ctx context.Context, eid, kind, arg string, values map[string]
 	d, _, _ := strings.Cut(eid, ".")
 	if err := a.canWrite(d, slices.Contains(secureDomains, d)); err != nil {
 		return "", err
+	}
+	// the open entity comes back in the page's state: only one the page would show (not in a hidden area)
+	hm, err := a.home(ctx, statesFor)
+	if err != nil {
+		return "", err
+	}
+	if _, ok := hm.ByID[eid]; !ok || !hm.visible(eid) {
+		return "", errNoEntity
 	}
 	var service string
 	data := map[string]any{}
@@ -247,6 +402,11 @@ func (a *app) tap(ctx context.Context, eid, kind, arg string, values map[string]
 }
 
 func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh time.Duration) *wire.View {
+	return a.pageWith(ctx, r, st, fresh, nil)
+}
+
+// pageWith is page with a shortcut's form showing draft (a save that was refused) instead of the shortcut's own.
+func (a *app) pageWith(ctx context.Context, r *ext.UIRequest, st pageState, fresh time.Duration, draft *shortcutDraft) *wire.View {
 	v := &wire.View{Title: "家", RefreshAfter: refreshList}
 	hm, err := a.home(ctx, fresh)
 	if err != nil {
@@ -260,12 +420,23 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh ti
 		st.Area = ""
 	}
 	reg := a.pageRegistry(ctx)
+	hm = hm.named(reg)
+	if st.SC != "" {
+		a.shortcutPage(ctx, hm, reg, st, draft, v)
+		v.State = ext.EncodeState(st)
+		return v
+	}
+	if r.UIVersion >= 6 && st.Entity == "" && st.Tab == "" && st.Area == "" && st.Q == "" {
+		hm.Shortcuts = a.shortcuts(ctx, hm)
+	}
+	rooms := roomTabs(r, hm, reg)
+	tabbed := st.Area != "" && slices.ContainsFunc(rooms, func(ar *Area) bool { return ar.ID == st.Area })
 	if st.Entity == "" {
-		renderTabs(r, st, v, alarmCount(hm))
+		renderTabs(r, st, v, alarmCount(hm, reg), rooms)
 	}
 	if r.UIVersion >= 3 && st.Entity == "" && st.Tab == "" {
 		v.Search = &wire.Search{Placeholder: "搜设备、传感器：客厅灯、空调、温度", Value: st.Q, Action: wire.Action{ID: "search"}}
-		if len(hm.Areas) >= 1 && len(hm.Areas) <= 19 {
+		if len(hm.Areas) >= 1 && len(hm.Areas) <= 19 && len(rooms) == 0 { // room tabs are the filter
 			f := &wire.Filter{Name: "area", Title: "区域", Value: st.Area, Action: wire.Action{ID: "filter"},
 				Choices: []wire.Choice{{Value: "", Title: "全部区域"}}}
 			if hm.ByType {
@@ -287,9 +458,9 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState, fresh ti
 	case st.Q != "":
 		a.searchPage(r, hm, st, v)
 	case st.Area == "":
-		a.homePage(r, hm, reg, v)
+		a.homePage(r, hm, reg, st, v)
 	default:
-		a.roomPage(r, hm, reg, st, v)
+		a.roomPage(r, hm, reg, st, v, tabbed)
 	}
 	v.State = ext.EncodeState(st)
 	return v
@@ -319,6 +490,9 @@ func (hm *home) visible(e string) bool { return !hm.Hidden[e] || hm.AreaOf[e] !=
 // more are left.
 func shortName(hm *home, s State) string {
 	n := s.Name()
+	if dn, ok := hm.Names[s.EntityID]; ok {
+		n = dn
+	}
 	if area := hm.areaName(s.EntityID); area != "" && !hm.ByType && strings.HasPrefix(n, area) {
 		if rest := strings.TrimSpace(strings.TrimPrefix(n, area)); utf8.RuneCountInString(rest) >= 2 {
 			return rest
@@ -394,71 +568,6 @@ func inKind(kind string, s State) bool {
 	return true
 }
 
-func (a *app) areaPage(r *ext.UIRequest, hm *home, reg *Registry, st pageState, v *wire.View) {
-	ar := hm.areaByID(st.Area)
-	v.Title = ar.Name
-	v.Sections = append(v.Sections, crumbs(r, []wire.Crumb{{Title: "家", Action: &wire.Action{ID: "home"}}, {Title: ar.Name}}, "home"))
-	if r.UIVersion >= 2 {
-		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{{Type: "segmented", Name: "kind", Value: st.Kind,
-			Choices: kinds, Action: &wire.Action{ID: "kind"}}}})
-	} else {
-		var rows []wire.Component
-		for _, k := range kinds {
-			c := wire.Component{Type: "row", Title: k.Title, Action: &wire.Action{ID: "kind:" + k.Value}}
-			if k.Value == st.Kind {
-				c.Badge = &wire.Badge{Text: "正在看", Tone: "positive"}
-			}
-			rows = append(rows, c)
-		}
-		v.Sections = append(v.Sections, wire.Section{Items: rows})
-	}
-	if st.Kind == "devices" {
-		a.devicesList(r, hm, reg, ar, st, v)
-		v.Sections = append(v.Sections, footer())
-		return
-	}
-	var shown []State
-	offline, diag := 0, 0
-	for _, e := range ar.Entities {
-		s, ok := hm.ByID[e]
-		if !ok || !inKind(st.Kind, s) {
-			continue
-		}
-		if st.Kind == "sensors" && reg != nil && reg.Entities[e].EntityCategory == "diagnostic" { // signal, IP, uptime
-			diag++
-			continue
-		}
-		if s.Unavailable() && !st.Offline {
-			offline++
-			continue
-		}
-		shown = append(shown, s)
-	}
-	sort.SliceStable(shown, func(i, j int) bool { // by domain in deviceDomains' order, then name
-		di, dj := domainRank(shown[i].Domain()), domainRank(shown[j].Domain())
-		if di != dj {
-			return di < dj
-		}
-		return shown[i].Name() < shown[j].Name()
-	})
-	sec := wire.Section{Title: fmt.Sprintf("%s · %d", kindTitle(st.Kind), len(shown))}
-	for i, s := range shown {
-		if i == rowsMost {
-			sec.Footer = fmt.Sprintf("只列前 %d 个，用搜索找别的", rowsMost)
-			break
-		}
-		sec.Items = append(sec.Items, entityRow(hm, s, false))
-	}
-	if len(shown) == 0 {
-		sec.Items = append(sec.Items, emptyItem(r, "这里没有"+kindTitle(st.Kind), "用上面的搜索找别的"))
-	}
-	if diag > 0 && sec.Footer == "" {
-		sec.Footer = fmt.Sprintf("另有 %d 个诊断项（信号、IP 之类）在「全部」里", diag)
-	}
-	sec.Items = append(sec.Items, offlineRow(offline, st.Offline)...)
-	v.Sections = append(v.Sections, sec, footer())
-}
-
 func offlineRow(offline int, showing bool) []wire.Component {
 	switch {
 	case offline > 0:
@@ -467,79 +576,6 @@ func offlineRow(offline int, showing bool) []wire.Component {
 		return []wire.Component{{Type: "row", Title: "不列离线的", Action: &wire.Action{ID: "offline"}}}
 	}
 	return nil
-}
-
-// devicesList is an area's devices, a section per kind (灯, 开关, 空调…): a light's or a switch's row turns it on or
-// off (st.Pick: opens it), the rest open.
-func (a *app) devicesList(r *ext.UIRequest, hm *home, reg *Registry, ar *Area, st pageState, v *wire.View) {
-	var shown []devRow
-	offline := 0
-	for _, dr := range deviceRows(hm, reg, ar) {
-		if dr.s.Unavailable() && !st.Offline {
-			offline++
-			continue
-		}
-		shown = append(shown, dr)
-	}
-	sort.SliceStable(shown, func(i, j int) bool {
-		di, dj := domainRank(shown[i].s.Domain()), domainRank(shown[j].s.Domain())
-		if di != dj {
-			return di < dj
-		}
-		return shortName(hm, shown[i].s) < shortName(hm, shown[j].s)
-	})
-	if r.UIVersion >= 2 {
-		on := 0
-		for _, dr := range shown {
-			if stateTone(dr.s) == "positive" {
-				on++
-			}
-		}
-		stats := []wire.Stat{
-			{Label: "设备", Value: strconv.Itoa(len(shown) + offline)},
-			{Label: "开着", Value: strconv.Itoa(on), Tone: toneWhen(on > 0, "positive")},
-		}
-		if offline > 0 {
-			stats = append(stats, wire.Stat{Label: "离线", Value: strconv.Itoa(offline), Tone: "caution"})
-		}
-		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{{Type: "stat_grid", Stats: stats}}})
-	}
-	quick, n := false, 0
-	for i := 0; i < len(shown); {
-		d := shown[i].s.Domain()
-		j := i
-		for j < len(shown) && shown[j].s.Domain() == d {
-			j++
-		}
-		sec := wire.Section{Title: fmt.Sprintf("%s · %d", domainName(d), j-i)}
-		for _, r := range shown[i:j] {
-			if n == rowsMost {
-				sec.Footer = fmt.Sprintf("只列前 %d 个，用搜索找别的", rowsMost)
-				break
-			}
-			row, q := a.deviceRow(hm, r, st.Pick)
-			quick = quick || q
-			sec.Items = append(sec.Items, row)
-			n++
-		}
-		if len(sec.Items) > 0 {
-			v.Sections = append(v.Sections, sec)
-		}
-		i = j
-	}
-	if len(shown) == 0 && offline == 0 {
-		v.Sections = append(v.Sections, wire.Section{Items: []wire.Component{emptyItem(r, "这里没有设备", "看看「传感器」「全部」，或者搜索")}})
-	}
-	more := offlineRow(offline, st.Offline)
-	switch {
-	case st.Pick:
-		more = append(more, wire.Component{Type: "row", Title: "改回点一下就开关", Subtitle: "现在点设备是打开它", Action: &wire.Action{ID: "pick"}})
-	case quick:
-		more = append(more, wire.Component{Type: "row", Title: "调亮度、看设备的设置", Subtitle: "点这里，再点设备就是打开它", Action: &wire.Action{ID: "pick"}})
-	}
-	if len(more) > 0 {
-		v.Sections = append(v.Sections, wire.Section{Items: more})
-	}
 }
 
 // deviceRow is a device's row: its name, what matters (亮度, 室温 and 设定, 开度) and how many settings it holds, its
@@ -553,8 +589,8 @@ func (a *app) deviceRow(hm *home, r devRow, open bool) (wire.Component, bool) {
 	if r.folded > 0 {
 		sub = append(sub, fmt.Sprintf("另有 %d 项", r.folded))
 	}
-	row := wire.Component{Type: "row", Key: s.EntityID, Title: clip(shortName(hm, s), 80), Subtitle: strings.Join(sub, " · "),
-		Action: &wire.Action{ID: "open:" + s.EntityID}}
+	row := wire.Component{Type: "row", Key: ref("", s.EntityID), Title: clip(shortName(hm, s), 80), Subtitle: strings.Join(sub, " · "),
+		Action: openAction(s.EntityID)}
 	if text := stateText(s); text != "" {
 		row.Badge = &wire.Badge{Text: clip(text, 12), Tone: stateTone(s)}
 	}
@@ -567,7 +603,7 @@ func (a *app) deviceRow(hm *home, r devRow, open bool) (wire.Component, bool) {
 		if s.State == "on" {
 			svc = "turn_off"
 		}
-		row.Action.ID = "do:" + s.EntityID + "|" + svc
+		row.Action = rowDo(s.EntityID, svc)
 	}
 	return row, true
 }
@@ -603,8 +639,8 @@ func entityRow(hm *home, s State, withArea bool) wire.Component {
 			sub = append(sub, n)
 		}
 	}
-	row := wire.Component{Type: "row", Key: s.EntityID, Title: clip(s.Name(), 80), Subtitle: strings.Join(sub, " · "),
-		Action: &wire.Action{ID: "open:" + s.EntityID}}
+	row := wire.Component{Type: "row", Key: ref("", s.EntityID), Title: clip(s.Name(), 80), Subtitle: strings.Join(sub, " · "),
+		Action: openAction(s.EntityID)}
 	text := stateText(s)
 	switch {
 	case text == "":
@@ -635,7 +671,7 @@ func entityPath(hm *home, st *pageState, name string) []wire.Crumb {
 	}
 	path := []wire.Crumb{{Title: "家", Action: &wire.Action{ID: "home"}}}
 	if ar := hm.AreaOf[st.Entity]; ar != nil {
-		act := &wire.Action{ID: "area:" + ar.ID}
+		act := areaAction(ar.ID)
 		if st.Area == ar.ID {
 			act = back // keeps the area's tab, offline rows and pick
 		}

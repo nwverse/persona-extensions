@@ -15,17 +15,20 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/nwverse/persona-extensions/pluginkit"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	"github.com/nwverse/persona-extensions/extensions/spaces/internal/kernel"
 	"github.com/nwverse/persona-extensions/extensions/spaces/internal/mcp"
-	"github.com/nwverse/persona-extensions/extensions/spaces/internal/store"
 	"github.com/nwverse/persona-extensions/extensions/spaces/internal/ui"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/store"
 )
 
 //go:embed persona-extension.json
-var manifest []byte
+var authorManifest []byte
+
+var manifest = pluginkit.PackagedManifest(authorManifest)
 
 // watchEvery is how often the program asks the store whether another process changed the data file.
 const watchEvery = 2 * time.Second
@@ -43,7 +46,7 @@ then the default one under the user's configuration directory.
 `
 
 // errNotInitialized answers a UI request that arrives before the hub initialized the program.
-var errNotInitialized = errors.New("空间：扩展还没有初始化")
+var errNotInitialized = errors.New("空间还在启动，请过几秒再打开这个页面")
 
 func main() {
 	log.SetFlags(0)

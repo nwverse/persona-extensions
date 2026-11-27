@@ -257,10 +257,10 @@ func (a *app) createView(ctx context.Context, r *ext.UIRequest, st pageState) (*
 		projects = append(projects, wire.Choice{Value: p.ID, Title: clipText(p.Name, 80)})
 	}
 	items := []wire.Component{
-		{Type: wire.ComponentField, Name: "content", Label: t.detail},
-		{Type: wire.ComponentField, Name: "description", Label: t.description},
-		{Type: wire.ComponentField, Name: "labels", Label: t.labels, Placeholder: "research, planning"},
-		{Type: wire.ComponentField, Name: "due_date", Label: t.due, Placeholder: "YYYY-MM-DD"},
+		{Type: wire.ComponentField, Kind: "text", Name: "content", Label: t.detail},
+		{Type: wire.ComponentField, Kind: "text", Name: "description", Label: t.description},
+		{Type: wire.ComponentField, Kind: "text", Name: "labels", Label: t.labels, Placeholder: "research, planning"},
+		{Type: wire.ComponentField, Kind: "text", Name: "due_date", Label: t.due, Placeholder: "YYYY-MM-DD"},
 		{Type: wire.ComponentField, Name: "priority", Kind: "choice", Label: t.priority, Value: "4", Choices: []wire.Choice{{Value: "1", Title: "1"}, {Value: "2", Title: "2"}, {Value: "3", Title: "3"}, {Value: "4", Title: "4"}}},
 	}
 	if len(projects) > 0 {

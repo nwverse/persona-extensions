@@ -13,7 +13,7 @@ import (
 )
 
 const connectorID = "clickup"
-const pageUI = "tasks"
+const pageUI = "clickup"
 
 type app struct {
 	mu       sync.RWMutex

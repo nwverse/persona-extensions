@@ -15,7 +15,7 @@ import (
 )
 
 const connectorID = "bitbucket"
-const pageUI = "reviews"
+const pageUI = "bitbucket"
 
 type app struct {
 	mu       sync.RWMutex

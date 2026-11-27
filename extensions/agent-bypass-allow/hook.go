@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"cmp"
 	"encoding/json"
 	"io"
 	"net"
@@ -9,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -21,11 +23,14 @@ import (
 //     tools and Agent): never one that writes files, publishes, or comes from an MCP server;
 //   - for Bash, the command is not one that stays with a person (guard.go): deletion, overwriting data, a forced
 //     push, a permission change. A deletion or overwrite whose targets are all scratch (scratch.go) goes through,
-//     and with the allow_destructive setting every deletion and overwrite does;
+//     and the allow_destructive setting permits other deletions and overwrites, not protected deletion targets;
 //   - the node program is running (its heartbeat file is fresh): an extension that was switched off, stopped or
 //     uninstalled without the chance to remove the entry allows nothing;
 //   - no ask or deny rule of the user's that the hook can read could be about the call (rules.go): those prompts are
 //     the user's own and stay.
+//
+// The one exception to the first rule is the assistant_writes setting (assistant.go): Write and Edit from Persona's
+// assistant conversations, into its listed directories, in any mode but plan.
 //
 // It never fails the call: a hook that cannot read its input or write its log stays silent.
 
@@ -35,7 +40,7 @@ const (
 	heartbeatFresh = 5 * time.Minute
 )
 
-// hookInput is the part of Claude Code's PermissionRequest input the hook reads.
+// hookInput is the normalized permission request read from Claude Code or Antigravity CLI (agy).
 type hookInput struct {
 	HookEventName  string    `json:"hook_event_name"`
 	SessionID      string    `json:"session_id"`
@@ -43,7 +48,17 @@ type hookInput struct {
 	PermissionMode string    `json:"permission_mode"`
 	ToolName       string    `json:"tool_name"`
 	AgentID        string    `json:"agent_id"`
+	TranscriptPath string    `json:"transcript_path"`
 	ToolInput      toolInput `json:"tool_input"`
+
+	isAgy         bool
+	kind          hookKind
+	workspaces    []string
+	cmdCwd        string
+	cmdCwdInvalid bool
+	geminiDir     string
+	agyDir        string
+	acpOption     string
 }
 
 // toolInput is what the hook reads of each allowed tool's input.
@@ -92,34 +107,44 @@ func (req hookInput) summary() string {
 // hookArgs are the flags the entry passes: where its files are.
 type hookArgs struct {
 	ConfigDir string // the Claude config directory the entry is in (its settings hold the user's rules)
+	GeminiDir string // the Gemini/Antigravity config directory the entry is in
+	AgyDir    string // the Antigravity CLI settings directory
 	Data      string // the node program's data directory: heartbeat and audit log
+
+	getenv func(string) string // the hook's environment (assistant.go); nil is os.Getenv
 }
 
 // allowOutput is Claude Code's answer for a PermissionRequest that lets the call run.
 const allowOutput = `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
 
-// runHook answers one PermissionRequest: in is what Claude Code wrote, out where the answer goes.
+// runHook answers one permission request: in is what the agent wrote, out where the answer goes.
 func runHook(a hookArgs, in io.Reader, out io.Writer, now time.Time) {
 	raw, err := io.ReadAll(io.LimitReader(in, 4<<20))
 	if err != nil {
 		return
 	}
-	var req hookInput
-	if json.Unmarshal(raw, &req) != nil {
+	req, ok := parseHookRequest(a, raw)
+	if !ok {
 		return
 	}
 	why, notes := refuse(a, req, now)
 	if why != "" {
 		return
 	}
+	reply := req.allowReply()
+	if reply == "" {
+		return
+	}
 	call := req.summary()
 	appendAudit(filepath.Join(a.Data, auditFile), auditEntry{
-		At: now.UTC().Format(time.RFC3339), Session: req.SessionID, Agent: req.AgentID, Cwd: req.Cwd, Tool: req.ToolName,
-		Command: redact(call), Length: utf8.RuneCountInString(call), ConfigDir: a.ConfigDir,
+		At: now.UTC().Format(time.RFC3339), Session: req.SessionID, Agent: req.AgentID, Cwd: cmp.Or(req.cmdCwd, req.Cwd), Tool: req.ToolName,
+		Command: redact(call), Length: utf8.RuneCountInString(call), ConfigDir: req.auditConfigDir(a),
 		Note: redact(strings.Join(notes, "; ")),
 	})
-	tellNode(raw)
-	_, _ = io.WriteString(out, allowOutput+"\n")
+	if !req.isAgy {
+		tellNode(raw)
+	}
+	_, _ = io.WriteString(out, reply+"\n")
 }
 
 // nodeSockets are where Persona's node listens for its hooks on this computer (node.sock in its home directory, the
@@ -161,11 +186,21 @@ func tellNode(input []byte) {
 // refuse says why the hook leaves req to Claude Code ("" lets it allow), and for an allowed Bash command, the
 // deletions and overwrites in it that went through and why (scratch targets, or the setting).
 func refuse(a hookArgs, req hookInput, now time.Time) (string, []string) {
+	if isAssistantWriteTool(req.ToolName) { // only ever with the assistant_writes setting (assistant.go)
+		why, note := refuseAssistantWrite(a, req, readOptions(a.Data), now)
+		if why != "" {
+			return why, nil
+		}
+		return "", []string{note}
+	}
 	why := refuseWhy(a, req, now)
 	if why != "" || req.ToolName != "Bash" {
 		return why, nil
 	}
-	g := newGuard(req.Cwd, readOptions(a.Data).AllowDestructive)
+	if req.cmdCwdInvalid {
+		return "invalid command cwd", nil
+	}
+	g := newGuardForCommand(req.Cwd, req.workspaces, req.cmdCwd, readOptions(a.Data).AllowDestructive)
 	if why := g.personOnly(req.ToolInput.Command); why != "" {
 		return "only a person approves this: " + why, nil
 	}
@@ -185,7 +220,7 @@ func refuseWhy(a hookArgs, req hookInput, now time.Time) string {
 	case a.Data == "" || !alive(filepath.Join(a.Data, heartbeatFile), now):
 		return "the node program is not running"
 	}
-	if r := matchingRule(userRules(a.ConfigDir, req.Cwd), req.ToolName, req.ToolInput.Command); r != "" {
+	if r := matchingRule(userRulesFor(a, req), req.ToolName, req.ToolInput.Command); r != "" {
 		return "a rule of the user's: " + r
 	}
 	return ""
@@ -224,7 +259,9 @@ type auditEntry struct {
 const optionsFile = "options.json"
 
 type options struct {
-	AllowDestructive bool `json:"allow_destructive"`
+	AllowDestructive   bool     `json:"allow_destructive"`
+	AssistantWrites    bool     `json:"assistant_writes,omitempty"`
+	AssistantWriteDirs []string `json:"assistant_write_dirs,omitempty"`
 }
 
 func readOptions(data string) options {
@@ -239,11 +276,40 @@ func readOptions(data string) options {
 	return o
 }
 
+func lockAudit(lockPath string, exclusive bool) func() {
+	flag := os.O_RDONLY
+	how := syscall.LOCK_SH
+	if exclusive {
+		flag = os.O_CREATE | os.O_RDWR
+		how = syscall.LOCK_EX
+	}
+	lf, err := os.OpenFile(lockPath, flag, 0o600)
+	if err != nil {
+		return func() {}
+	}
+	for {
+		err = syscall.Flock(int(lf.Fd()), how)
+		if err != syscall.EINTR {
+			break
+		}
+	}
+	if err != nil {
+		_ = lf.Close()
+		return func() {}
+	}
+	return func() {
+		_ = syscall.Flock(int(lf.Fd()), syscall.LOCK_UN)
+		_ = lf.Close()
+	}
+}
+
 func appendAudit(path string, e auditEntry) {
 	b, err := marshalPlain(e) // && and > as they are, for whoever reads the file
 	if err != nil {
 		return
 	}
+	unlock := lockAudit(path+".lock", true)
+	defer unlock()
 	if st, err := os.Stat(path); err == nil && st.Size() > auditKeep {
 		_ = os.Rename(path, path+".1")
 	}
@@ -257,6 +323,8 @@ func appendAudit(path string, e auditEntry) {
 
 // readAudit is the newest n entries, newest first.
 func readAudit(dir string, n int) []auditEntry {
+	unlock := lockAudit(filepath.Join(dir, auditFile+".lock"), false)
+	defer unlock()
 	var all []auditEntry
 	for _, name := range []string{auditFile + ".1", auditFile} {
 		b, err := os.ReadFile(filepath.Join(dir, name))
@@ -266,6 +334,9 @@ func readAudit(dir string, n int) []auditEntry {
 		for _, line := range strings.Split(string(b), "\n") {
 			var e auditEntry
 			if json.Unmarshal([]byte(line), &e) == nil && e.At != "" {
+				if strings.TrimSpace(e.Command) == "" {
+					e.Command = cmp.Or(strings.TrimSpace(e.Tool), "-")
+				}
 				all = append(all, e)
 			}
 		}

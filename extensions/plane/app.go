@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "plane"
-const pageUI = "work"
+const pageUI = "plane"
 
 type app struct {
 	mu        sync.RWMutex

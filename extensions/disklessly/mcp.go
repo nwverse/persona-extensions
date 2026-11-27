@@ -19,8 +19,9 @@ import (
 const mcpProtocol = "2025-06-18"
 
 type mcpServer struct {
-	store  *store
-	runner Runner
+	store    *store
+	runner   Runner
+	streamer StreamRunner
 }
 
 type tool struct {
@@ -34,7 +35,7 @@ type tool struct {
 func str(desc string) map[string]any { return map[string]any{"type": "string", "description": desc} }
 
 var (
-	machineArg = str("目标机器 ID 或 SSH Host 别名（如 local、opc、gcp、mm-2）；不填默认 local（本机）")
+	machineArg = str("目标机器 ID 或 SSH Host 别名（如 local、build-box、nas-box）；不填默认 local（本机）")
 )
 
 var tools = []tool{
@@ -65,6 +66,67 @@ var tools = []tool{
 		description: "查看各机器历史清理记录台账（每次清理前后的 df 实测可用空间对比，如 5.4 GiB → 18.0 GiB (+12.6 GiB)）与累计释放空间。",
 	},
 	{
+		name:     "disklessly_sessions_search",
+		readOnly: true,
+		required: []string{"query"},
+		props: map[string]any{
+			"query":   str("搜索词（空格分隔，全部命中；不区分大小写，中文按子串匹配）：标题、首条消息、项目、工作目录、关键词、会话 ID、工具或机器名"),
+			"machine": str("只搜索这台机器（ID、SSH Host 别名，或结果里的 machine_name，例如「运行 Persona 的电脑」）；不填搜索全部机器"),
+			"limit":   map[string]any{"type": "integer", "minimum": 1, "maximum": 200, "description": "返回条数，默认 20"},
+			"deep":    map[string]any{"type": "boolean", "description": "若为 true，还在机器上运行 disklessly sessions search 全文搜索会话摘要（较慢），结果按 ID 合并"},
+		},
+		description: "在已上云的 Coding Agent 冷会话（Claude Code / Codex）里查找对话：按本地轻量索引搜索，返回机器（machine_id 与 machine_name；machine_name 可原样传回 machine，运行 Persona 的电脑也接受主机名）、工具、项目、日期、首条消息、位置（在网盘里 / 暂时不确定 / 网盘里找不到 / 还在电脑上）与恢复后的继续命令。位置「暂时不确定」只表示网盘连不上或最近 24 小时没检查，不代表丢失；「网盘里找不到」才是网盘里确实缺了。",
+	},
+	{
+		name:     "disklessly_sessions_status",
+		readOnly: true,
+		props: map[string]any{
+			"machine": str("只看这台机器；不填返回全部机器"),
+			"refresh": map[string]any{"type": "boolean", "description": "若为 true，先在机器上重新读取 disklessly 会话索引并检查备份后端与归档分段"},
+		},
+		description: "查看各机器冷会话云端备份状态：每台机器的状态 state（ready 正常、no_cli 还没装配套小工具、cli_too_old 配套小工具太旧、no_backend 还没设置网盘、backend_unreachable 网盘连不上、unreachable 连不上这台电脑、unreadable 配套小工具出错了、unchecked 还没检查）与原因、备份后端是否可达、最近检查时间、已索引会话数、按位置（在网盘里 / 暂时不确定 / 网盘里找不到 / 还在电脑上）统计、缺失或未确认的归档分段。",
+	},
+	{
+		name:     "disklessly_sessions_find",
+		readOnly: true,
+		props: map[string]any{
+			"keywords": map[string]any{"type": "array", "maxItems": 12, "items": map[string]any{"type": "string"},
+				"description": "从用户的描述里提取的关键词（几个都行，中英文都可以；同一个意思可以多给一个说法，比如「购物车」和「cart」）。在每个对话的标题、第一句话、关键词、项目和工作文件夹里找（不区分大小写），标题里有的分数最高"},
+			"match":    map[string]any{"type": "string", "enum": []string{"any", "all"}, "description": "any（默认）：有一个关键词对上就算，对上越多越靠前；all：关键词都要对上"},
+			"after":    str("只找这一天（含）以后的对话，格式 2026-11-02；按对话最后改动的时间算。用户说「上周」「十一月初」时换算成日期，宁可放宽几天"),
+			"before":   str("只找这一天（含）以前的对话，格式 2026-11-09"),
+			"tool":     str("用的 AI 助手，比如 Claude Code、Codex；不填不限"),
+			"project":  str("项目名或工作文件夹里的词（空格分隔，都要对上），比如 shop、checkout-service；不填不限"),
+			"machine":  str("只找这台电脑（机器 ID、SSH Host 别名，或 machine_name）；不填找所有电脑"),
+			"location": map[string]any{"type": "string", "enum": []string{"any", findOnComputer, findOnDrive}, "description": "on_computer：还在电脑上的；on_drive：已经搬到网盘的；any（默认）不限"},
+			"limit":    map[string]any{"type": "integer", "minimum": 1, "maximum": findMaxLimit, "description": "最多返回几个候选，默认 10"},
+		},
+		description: "只读：用户想找回以前的某段 AI 对话、只说得出大概内容和时间时（「帮我找回上次聊 X 的那段对话」「上周那个修 Y 的会话还在吗」），把描述拆成关键词、时间范围、AI 助手、项目、电脑和位置后调用它。只查本地记下的索引（标题、第一句话、关键词、项目、工作文件夹、日期、AI 助手），不读对话内容，也不拿回任何东西。" +
+			"返回 candidates（最像的在前：对上的关键词越多、在标题里越靠前，同分时越新越前）：title（和页面一样的标题，不是编号）、when（日期和时间）、tool、project / folder、machine_name、location（还在电脑上 / 在网盘里 / 暂时不确定 / 网盘里找不到）、size、why（为什么算对上）、id、can_restore、restore_call（拿回来的现有工具调用 disklessly_sessions_restore {machine, id}，是写入操作，要用户确认后才调用）和 resume_after_restore（拿回来后接着聊的命令）。" +
+			"一个都没找到时，too_narrow 说哪个条件太窄（去掉它能找到几个），suggest 说怎么放宽；不要自己猜。原来的 disklessly_sessions_search 照旧可用。",
+	},
+	{
+		name:     "disklessly_advise",
+		readOnly: true,
+		props: map[string]any{
+			"machine": str("只给这台电脑出主意（机器 ID、SSH Host 别名，或 machine_name）；不填就看所有电脑"),
+			"goal": map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"description":          "用户想要的结果；不填就列出所有能腾空间的步骤",
+				"properties": map[string]any{
+					"free_gib": map[string]any{"type": "number", "exclusiveMinimum": 0, "maximum": 100000, "description": "至少腾出这么多 GiB：步骤按顺序累计「现在就能做的」腾出量，够了就不再往下列"},
+					"fullest":  map[string]any{"type": "boolean", "description": "若为 true，只看硬盘最满的那一台电脑（填了 machine 时以 machine 为准）"},
+				},
+			},
+			"refresh": map[string]any{"type": "boolean", "description": "默认 false：用上次检查的结果（每台电脑的 checked 说明是多久以前检查的）。若为 true，先对这些电脑做一次和页面「检查」一样的只读检查（只读取大小，不删不搬），较慢"},
+		},
+		description: "只读：帮用户腾硬盘空间时先调用它。根据上次检查的结果、AI 对话的索引和每台电脑的状况，排出一份腾空间的步骤（现在就能做的在前，现在做不了的（possible 为 false，比如连不上那台电脑、还没装配套小工具）都排在后面；两部分里各自都是最满的电脑在前，同一台里先删能重新下载的缓存，再搬一周没动的 AI 对话，再删旧日志和临时文件；「建议先看」的单独放在 look_first 里，默认不删，也是能做的在前；有 goal 时够了就停；页面「帮我腾空间」的顺序和这里一样）。" +
+			"不删、不搬、不改任何东西，也不读对话内容。每一步 steps[i] 有：machine_id / machine_name（哪台电脑）、action（clean 删放心删的一类 / move_conversations 把一周没动的 AI 对话搬到网盘 / look_first 建议先看）、what（做什么）、frees（大约腾出多少）、risk（一句话的风险）、" +
+			"possible（现在能不能做；false 时 blocked 说为什么、unblock 说怎么才能做、unblock_call 是能帮上忙的工具调用、command 是要在那台电脑上运行的命令）、call（真正执行这一步的现有写入工具和参数，原样调用即可：disklessly_clean 或 disklessly_sessions_offload，执行前 Persona 会请用户确认）、preview_call（只看计划不执行的调用）、page / page_buttons（页面上做这一步的按钮）。" +
+			"另有 machines（每台电脑多满、还剩多少、多久前检查的、连不上的原因）、not_touched（哪些东西绝不碰）、summary 和 how_to_act。只执行用户选中的步骤。",
+	},
+	{
 		name:     "disklessly_clean",
 		readOnly: false,
 		props: map[string]any{
@@ -72,23 +134,28 @@ var tools = []tool{
 			"categories": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string", "enum": CategoryIDs},
-				"description": "要清理的分类列表（go-cache、node-python-cache、docker-unused、rust-xcode-build、tmp-logs、cold-agent-sessions）；不填默认清理全部 safe 等级项",
+				"description": "要清理的分类列表（go-cache、node-python-cache、docker-unused、rust-xcode-build、tmp-logs、cold-agent-sessions）；不填默认清理全部 safe 等级项（不含冷会话上云，冷会话需显式指定 cold-agent-sessions 或用 disklessly_sessions_offload）。注意：填了分类时，这几类里的 review 等级项（如 Playwright 浏览器缓存）也会一起清理，不看 include_review；只想清理 safe 项请用 items 点名",
 			},
 			"items": map[string]any{
 				"type":        "array",
 				"items":       map[string]any{"type": "string"},
-				"description": "指定要清理的单项 ID 列表（如 cache-gobuild、sessions-cold-claude）",
+				"description": "指定要清理的单项 ID 列表（如 cache-gobuild；sessions-cold-claude 等任一冷会话项会让 disklessly 一次处理所有 Agent 的冷会话）",
 			},
 			"include_review": map[string]any{
 				"type":        "boolean",
-				"description": "是否包含 review 等级项（如 Playwright 浏览器缓存），默认 false 只清理 safe 等级项",
+				"description": "不填 categories 和 items 时是否包含 review 等级项（如 Playwright 浏览器缓存），默认 false 只清理 safe 等级项；填了 categories 时那几类的 review 项总会清理，items 点名的项不论等级都会清理",
 			},
 			"dry_run": map[string]any{
 				"type":        "boolean",
 				"description": "若为 true 仅返回 Dry-Run 清理计划而不实际删除",
 			},
+			"exclude_sessions": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "归档冷会话时必须保留在本地、绝不上传或删除的会话（会话文件绝对路径，或会话 ID：Claude 文件名、Codex rollout 末尾 UUID），例如仍被引用的会话",
+			},
 		},
-		description: "对指定机器执行安全清理计划（支持指定分类、单项或全部 safe 项，以及归档 >7 天冷会话），返回清理前后 df 实测释放空间并写入清理历史台账。绝不触碰运行中容器、活跃 git 仓库、7 天内热会话或凭据密钥。",
+		description: "对指定机器执行安全清理计划（支持指定分类（含该类的 review 项）、单项或全部 safe 项；正在用的项和空项总是跳过；冷会话上云只在显式指定 cold-agent-sessions 时执行，会上传后删除本地副本），返回清理前后 df 实测释放空间并写入清理历史台账。绝不触碰运行中容器、活跃 git 仓库、7 天内热会话或凭据密钥。",
 	},
 	{
 		name:     "disklessly_machine_upsert",
@@ -96,8 +163,8 @@ var tools = []tool{
 		required: []string{"host"},
 		props: map[string]any{
 			"id":            str("机器节点 ID（可选，不填由 host 自动生成）"),
-			"host":          str("SSH Host 别名或主机地址（如 opc、gcp、mm-2、10.0.0.5）"),
-			"name":          str("显示名称（如 opc (Oracle Cloud ARM)）"),
+			"host":          str("SSH Host 别名或主机地址（如 build-box、nas-box、dev.example.com）"),
+			"name":          str("显示名称（如 build-box (ARM VM)）"),
 			"user":          str("SSH 登录用户名（可选，默认读 ~/.ssh/config）"),
 			"port":          map[string]any{"type": "integer", "minimum": 1, "maximum": 65535, "description": "SSH 端口，默认 22"},
 			"identity_file": str("SSH 私钥路径（可选，默认读 ~/.ssh/config）"),
@@ -113,6 +180,57 @@ var tools = []tool{
 			"machine": str("要移除的机器 ID 或 SSH Host 别名（本机 local 不可移除）"),
 		},
 		description: "移除一台纳管的远程机器节点。移除前请与用户确认。",
+	},
+	{
+		name:        "disklessly_sessions_offload",
+		readOnly:    false,
+		destructive: true,
+		required:    []string{"machine"},
+		props: map[string]any{
+			"machine": str("目标机器 ID 或 SSH Host 别名"),
+			"dry_run": map[string]any{"type": "boolean", "description": "若为 true 只返回将上云的冷会话计划与当前被引用（会保留）的会话，不上传也不删除"},
+			"exclude_sessions": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "额外必须保留在本地的会话（会话文件绝对路径或会话 ID）",
+			},
+		},
+		description: "把指定机器上 7 天外的 Coding Agent 冷会话由 disklessly 上传到备份后端，读回校验后才删除本地副本。运行中进程（--resume / codex resume）、打开中的会话文件、herdr / Persona 面板引用的会话自动保留；无法列出进程或后端不可达时中止，不删除任何会话。执行前请与用户确认。",
+	},
+	{
+		name:     "disklessly_sessions_restore",
+		readOnly: false,
+		required: []string{"machine", "id"},
+		props: map[string]any{
+			"machine": str("会话所在机器 ID 或 SSH Host 别名"),
+			"id":      str("会话条目 ID（disklessly_sessions_search 返回的 id）或会话 ID"),
+		},
+		description: "把一个已上云的冷会话从备份后端恢复到原路径，并返回继续对话的命令（claude --resume <id> 或 codex resume <id>）。",
+	},
+	{
+		name:     "disklessly_cli_install",
+		readOnly: false,
+		required: []string{"machine"},
+		props: map[string]any{
+			"machine": str("要安装或升级 disklessly CLI 的机器 ID 或 SSH Host 别名"),
+			"method":  map[string]any{"type": "string", "enum": []string{"brew", "copy"}, "description": "brew：在这台机器上运行 brew tap nwverse/tap && brew install（或 upgrade）nwverse/tap/disklessly-cli；copy：从同系统同架构、装有可用 CLI 的另一台机器复制。不填时有 Homebrew 用 brew，否则 copy"},
+		},
+		description: "给未安装或版本过旧的机器安装 / 升级 disklessly CLI（优先 Homebrew），装好后运行 disklessly version 确认，再重新读取这台机器的会话索引，返回新的状态。会在目标机器上安装软件，需要确认。",
+	},
+	{
+		name:        "disklessly_files_offload",
+		readOnly:    false,
+		destructive: true,
+		required:    []string{"machine", "paths"},
+		props: map[string]any{
+			"machine": str("目标机器 ID 或 SSH Host 别名"),
+			"paths": map[string]any{
+				"type": "array", "minItems": 1, "maxItems": offloadMaxRun, "items": map[string]any{"type": "string"},
+				"description": "要上云的文件、文件夹或 App（/Applications 或个人文件夹里的 .app）的绝对路径，最多 50 个",
+			},
+			"dry_run": map[string]any{"type": "boolean", "description": "若为 true 只检查每个路径能否上云（原因、类型），并说明 CLI 是否已安装，不移动任何东西"},
+		},
+		description: "把指定机器上的文件和文件夹（disklessly offload，原处留下 .disklessly 占位文件）或 App（disklessly pack，原处留下替身 App）上传到 disklessly 的存储，读回校验后才删除本地原件，返回每项结果和 df 实测释放空间。个人文件夹以外、标准文件夹、资源库、App 包内部、符号链接和密钥目录会被拒绝。CLI 缺失或过旧时报错并指向 disklessly_cli_install，不会自动安装。会删除本地原件，执行前请与用户确认，最好先 dry_run。",
 	},
 }
 
@@ -183,8 +301,10 @@ func (m *mcpServer) handle(ctx context.Context, method string, params json.RawMe
 			"protocolVersion": cmp.Or(p.ProtocolVersion, mcpProtocol),
 			"capabilities":    map[string]any{"tools": map[string]any{}},
 			"serverInfo":      map[string]any{"name": "disklessly", "version": about.Version},
-			"instructions": "Disklessly 机器磁盘与冷会话管理：先用 disklessly_machines_status 查看所有纳管机器的水位和可回收空间，" +
-				"再用 disklessly_scan 扫描目标机器查看 Dry-Run 清理计划与冷会话分布；需要执行清理或归档冷会话时调用 disklessly_clean。",
+			"instructions": "Disklessly 硬盘空间：用户说「帮我腾点空间」「哪台电脑快满了」「硬盘不够了」时，先调用只读的 disklessly_advise，把前几步（腾出多少、风险）讲给用户、问做哪一步，再按那一步的 call 调用现有写入工具（要用户确认）。" +
+				"也可以先用 disklessly_machines_status 查看所有纳管机器的水位和可回收空间，" +
+				"再用 disklessly_scan 扫描目标机器查看 Dry-Run 清理计划与冷会话分布；需要执行清理时调用 disklessly_clean；" +
+				"用户描述一段想找回的对话时用只读的 disklessly_sessions_find（关键词、时间、AI 助手、项目），按关键词找也可以用 disklessly_sessions_search（位置「暂时不确定」不代表丢失），恢复用 disklessly_sessions_restore，冷会话上云用 disklessly_sessions_offload。",
 		}, nil
 	case "ping":
 		return map[string]any{}, nil
@@ -207,7 +327,7 @@ func (m *mcpServer) handle(ctx context.Context, method string, params json.RawMe
 			return nil, &rpcError{-32602, err.Error()}
 		}
 		if err != nil {
-			return map[string]any{"content": []map[string]any{{"type": "text", "text": err.Error()}}, "isError": true}, nil
+			return map[string]any{"content": []map[string]any{{"type": "text", "text": toolErrorText(err)}}, "isError": true}, nil
 		}
 		text, _ := json.MarshalIndent(out, "", "  ")
 		return map[string]any{"content": []map[string]any{{"type": "text", "text": string(text)}}, "structuredContent": out}, nil
@@ -243,10 +363,12 @@ func (m *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return nil, err
 		}
 		if in.Refresh {
-			_ = m.store.update(func(st *State, now time.Time) error {
+			if err := m.store.update(func(st *State, now time.Time) error {
 				st.DiscoverMachines(m.store.homeDir, now)
 				return nil
-			})
+			}); err != nil {
+				return nil, err
+			}
 		}
 		err = m.store.read(func(st *State) {
 			statuses := st.statuses()
@@ -357,6 +479,9 @@ func (m *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			Items         []string `json:"items"`
 			IncludeReview bool     `json:"include_review"`
 			DryRun        bool     `json:"dry_run"`
+			// ExcludeSessions are transcripts (absolute paths or session ids) still referenced
+			// elsewhere; cold-session archiving skips them (disklessly --exclude-from).
+			ExcludeSessions []string `json:"exclude_sessions"`
 		}
 		if err := args(&in); err != nil {
 			return nil, err
@@ -367,7 +492,7 @@ func (m *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			if mach == nil {
 				return fmt.Errorf("找不到机器 %q", target)
 			}
-			plan, rec, cerr := ExecuteClean(ctx, m.run(), st, mach, in.Categories, in.Items, in.IncludeReview, in.DryRun, now)
+			plan, rec, cerr := ExecuteClean(ctx, m.run(), st, mach, in.Categories, in.Items, in.IncludeReview, in.DryRun, in.ExcludeSessions, now)
 			if cerr != nil {
 				return cerr
 			}
@@ -380,6 +505,284 @@ func (m *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 			return nil
 		})
 		return out, err
+
+	case "disklessly_sessions_search":
+		var in struct {
+			Query   string `json:"query"`
+			Machine string `json:"machine"`
+			Limit   int    `json:"limit"`
+			Deep    bool   `json:"deep"`
+		}
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(in.Query) == "" {
+			return nil, errors.New("query 不能为空")
+		}
+		limit := cmp.Or(in.Limit, 20)
+		if limit < 1 || limit > 200 {
+			limit = 20
+		}
+		var ferr error
+		err = m.store.read(func(st *State) {
+			if in.Machine != "" && st.machine(in.Machine) == nil {
+				ferr = fmt.Errorf("找不到机器 %q", in.Machine)
+				return
+			}
+			now := m.store.now().UTC()
+			var hits []ColdHit
+			var errs []string
+			if in.Deep {
+				hits, errs = DeepSearchCold(ctx, m.run(), st, in.Query, in.Machine, limit, now)
+			} else {
+				hits = SearchCold(st, in.Query, in.Machine, limit, now)
+			}
+			list := make([]map[string]any, 0, len(hits))
+			for _, h := range hits {
+				list = append(list, map[string]any{"session": h, "resume": resumeHint(h.ColdEntry)})
+			}
+			res := map[string]any{"query": in.Query, "count": len(list), "results": list}
+			if len(errs) > 0 {
+				res["deep_errors"] = errs
+			}
+			out = res
+		})
+		return out, cmp.Or(err, ferr)
+
+	case "disklessly_sessions_status":
+		var in struct {
+			Machine string `json:"machine"`
+			Refresh bool   `json:"refresh"`
+		}
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		summarize := func(st *State, now time.Time) error {
+			var list []map[string]any
+			for _, mach := range st.Machines {
+				if in.Machine != "" {
+					if mm := st.machine(in.Machine); mm == nil || mm.ID != mach.ID {
+						continue
+					}
+				} else if !mach.Enabled {
+					continue
+				}
+				if in.Refresh {
+					_, _ = RefreshColdIndex(ctx, m.run(), st, mach, now)
+				}
+				list = append(list, coldStatusOf(st, mach, now))
+			}
+			if in.Machine != "" && len(list) == 0 {
+				return fmt.Errorf("找不到机器 %q", in.Machine)
+			}
+			out = map[string]any{"machines": list}
+			return nil
+		}
+		if in.Refresh {
+			return out, m.store.update(summarize)
+		}
+		var serr error
+		err = m.store.read(func(st *State) { serr = summarize(st, m.store.now().UTC()) })
+		return out, cmp.Or(err, serr)
+
+	case "disklessly_advise":
+		var in struct {
+			Machine string      `json:"machine"`
+			Goal    *adviceGoal `json:"goal"`
+			Refresh bool        `json:"refresh"`
+		}
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		opt := adviceOptions{Machine: strings.TrimSpace(in.Machine)}
+		if in.Goal != nil {
+			if in.Goal.FreeGiB < 0 {
+				return nil, errors.New("goal.free_gib 要大于 0")
+			}
+			opt.Goal = *in.Goal
+		}
+		if !in.Refresh {
+			var aerr error
+			err = m.store.read(func(st *State) { out, aerr = buildAdvice(st, m.store.now().UTC(), opt) })
+			return out, cmp.Or(err, aerr)
+		}
+		// refresh: the same read-only check as the page's 检查 (ScanMachine), then the advice.
+		err = m.store.update(func(st *State, now time.Time) error {
+			var targets []*Machine
+			if opt.Machine != "" {
+				mach := st.machine(opt.Machine)
+				if mach == nil {
+					return fmt.Errorf("找不到电脑 %q（用 disklessly_machines_status 看有哪些）", opt.Machine)
+				}
+				targets = []*Machine{mach}
+			} else {
+				for _, mach := range st.Machines {
+					if mach.Enabled {
+						targets = append(targets, mach)
+					}
+				}
+			}
+			var notes []string
+			for _, mach := range targets {
+				if _, serr := ScanMachine(ctx, m.run(), st, mach, now); serr != nil {
+					msg, _ := humanizeErrFor(mach, serr)
+					notes = append(notes, "「"+machineLabel(mach)+"」没检查成功："+msg)
+				}
+			}
+			adv, aerr := buildAdvice(st, now, opt)
+			if aerr != nil {
+				return aerr
+			}
+			adv.Source = "刚刚重新检查的结果（只读取大小，没有删除或搬走任何东西）"
+			adv.RefreshNotes = notes
+			out = adv
+			return nil
+		})
+		return out, err
+
+	case "disklessly_sessions_find":
+		var in findInput
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		var ferr error
+		err = m.store.read(func(st *State) { out, ferr = findSessions(st, in, m.store.now(), time.Local) })
+		return out, cmp.Or(err, ferr)
+
+	case "disklessly_sessions_offload":
+		var in struct {
+			Machine         string   `json:"machine"`
+			DryRun          bool     `json:"dry_run"`
+			ExcludeSessions []string `json:"exclude_sessions"`
+		}
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		err = m.store.update(func(st *State, now time.Time) error {
+			mach := st.machine(in.Machine)
+			if mach == nil || strings.TrimSpace(in.Machine) == "" {
+				return fmt.Errorf("找不到机器 %q", in.Machine)
+			}
+			if in.DryRun {
+				refsOut, rerr := m.run()(ctx, mach, ReferencedSessionsScript, 60*time.Second)
+				if rerr != nil {
+					return rerr
+				}
+				refs, rerr := parseReferences(refsOut)
+				if rerr != nil {
+					return rerr
+				}
+				plan, _, perr := OffloadSessions(ctx, m.run(), st, mach, true, in.ExcludeSessions, now)
+				if perr != nil {
+					return perr
+				}
+				out = map[string]any{"dry_run": true, "plan": plan, "referenced": refs, "excluded": cleanSessionExcludes(in.ExcludeSessions)}
+				return nil
+			}
+			plan, rec, oerr := OffloadSessions(ctx, m.run(), st, mach, false, in.ExcludeSessions, now)
+			if oerr != nil {
+				return oerr
+			}
+			out = map[string]any{"dry_run": false, "plan": plan, "record": rec, "cloud": coldStatusOf(st, mach, now)}
+			return nil
+		})
+		return out, err
+
+	case "disklessly_sessions_restore":
+		var in struct {
+			Machine string `json:"machine"`
+			ID      string `json:"id"`
+		}
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		err = m.store.update(func(st *State, now time.Time) error {
+			mach := st.machine(in.Machine)
+			if mach == nil || strings.TrimSpace(in.Machine) == "" {
+				return fmt.Errorf("找不到机器 %q", in.Machine)
+			}
+			e, hint, rerr := RestoreCold(ctx, m.run(), st, mach, in.ID, now)
+			if rerr != nil {
+				return rerr
+			}
+			out = map[string]any{"restored": e, "path": e.Path, "resume": hint}
+			return nil
+		})
+		return out, err
+
+	case "disklessly_cli_install":
+		var in struct {
+			Machine string `json:"machine"`
+			Method  string `json:"method"`
+		}
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		var sc *scratch
+		var offer installOffer
+		var brew, name string
+		if err := m.store.read(func(st *State) {
+			mach := st.machine(in.Machine)
+			if mach == nil || strings.TrimSpace(in.Machine) == "" {
+				return
+			}
+			sc, name, offer = scratchOf(st, mach), machineLabel(mach), installSourceFor(st, mach)
+			if c := st.cold(mach.ID); c != nil {
+				brew = c.Brew
+			}
+		}); err != nil {
+			return nil, err
+		}
+		if sc == nil {
+			return nil, fmt.Errorf("找不到机器 %q", in.Machine)
+		}
+		method := in.Method
+		if method == "" {
+			method = "copy"
+			if brew != "" {
+				method = "brew"
+			}
+		}
+		now := m.store.now().UTC()
+		var note string
+		var werr error
+		switch method {
+		case "brew":
+			if brew == "" {
+				return nil, fmt.Errorf("「%s」上没有找到 Homebrew（先用 disklessly_sessions_status refresh=true 重新检查）；可以改用 method=copy，或在这台电脑上先安装 Homebrew", name)
+			}
+			note, werr = brewInstall(ctx, m.run(), sc, now)
+		case "copy":
+			if offer.src == nil {
+				return nil, fmt.Errorf("「%s」没法复制安装：%s", name, cmpOr(offer.reason, "没有可以复制的 disklessly CLI"))
+			}
+			streamer := m.streamer
+			if streamer == nil {
+				streamer = DefaultStreamRunner
+			}
+			note, werr = copyInstallWork(ctx, m.run(), streamer, offer.src, offer.cli, sc, now)
+		default:
+			return nil, fmt.Errorf("method 只能是 brew 或 copy，收到 %q", method)
+		}
+		err = m.store.update(func(st *State, now time.Time) error {
+			sc.apply(st)
+			if mach := st.machine(sc.orig.ID); mach != nil {
+				out = map[string]any{"machine": mach.ID, "method": method, "note": note, "status": coldStatusOf(st, mach, now)}
+			}
+			return nil
+		})
+		return out, cmp.Or(werr, err)
+
+	case "disklessly_files_offload":
+		var in struct {
+			Machine string   `json:"machine"`
+			Paths   []string `json:"paths"`
+			DryRun  bool     `json:"dry_run"`
+		}
+		if err := args(&in); err != nil {
+			return nil, err
+		}
+		return m.filesOffload(ctx, in.Machine, in.Paths, in.DryRun)
 
 	case "disklessly_machine_upsert":
 		var in struct {
@@ -428,4 +831,65 @@ func (m *mcpServer) call(ctx context.Context, name string, raw json.RawMessage) 
 		return out, err
 	}
 	return nil, fmt.Errorf("%w: %s", errNoTool, name)
+}
+
+// coldStatusOf summarizes machine mach's cold index for the assistant (without the entries).
+func coldStatusOf(st *State, mach *Machine, now time.Time) map[string]any {
+	cat := st.cold(mach.ID)
+	res := map[string]any{"machine_id": mach.ID, "machine_name": machineLabel(mach)}
+	state := cat.stateCode()
+	res["state"] = state
+	res["state_label"] = coldStateLabel(state)
+	if cat == nil {
+		res["checked"] = false
+		res["note"] = "尚未读取云端索引（disklessly_sessions_status refresh=true 或扫描机器）"
+		return res
+	}
+	counts := map[string]int{}
+	for _, e := range cat.Entries {
+		counts[cat.location(e, mach, now)]++
+	}
+	res["checked"] = !cat.RefreshedAt.IsZero()
+	res["backend"] = cat.Backend
+	res["refreshed_at"] = cat.RefreshedAt
+	res["indexed"] = len(cat.Entries)
+	res["total"] = cat.Total
+	res["capped"] = cat.Capped
+	res["locations"] = counts
+	res["missing_segments"] = cat.Missing
+	res["unchecked_segments"] = cat.Unchecked
+	res["timed_out"] = cat.TimedOut
+	res["archived_bytes"] = cat.ArchivedBytes
+	adv := coldProblem(st, mach, cat, state)
+	if state != ColdReady && adv.Reason != "" {
+		// The same words as the AI 对话 page: what is wrong, what to do, a command to copy;
+		// detail is the raw text (an SSH line, the CLI's answer) for 详情.
+		res["message"] = adv.Reason
+		res["next"] = adv.Next
+		if adv.Command != "" {
+			res["command"] = adv.Command
+		}
+		switch {
+		case adv.brew:
+			res["fix"] = "disklessly_cli_install method=brew"
+		case adv.copy.src != nil:
+			res["fix"] = "disklessly_cli_install method=copy（从 " + machineLabel(adv.copy.src) + " 复制）"
+		}
+	}
+	if c := cmp.Or(adv.Cause, cat.Cause); c != "" {
+		res["cause"] = c
+	}
+	if d := cmp.Or(adv.Raw, cat.Detail); d != "" {
+		res["detail"] = d
+	}
+	if cat.Brew != "" {
+		res["homebrew"] = cat.Brew
+	}
+	if cat.CLI.Version != "" {
+		res["cli_version"] = cat.CLI.Version
+	}
+	if cat.Platform != "" {
+		res["platform"] = cat.Platform
+	}
+	return res
 }

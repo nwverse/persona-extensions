@@ -2,7 +2,7 @@ import type { FetchAdapter } from "@persona/extension/ui";
 import { feeds, gone, isFeed, normalize, type Config, type Item, type Feed } from "./model.ts";
 import { fmt, textsFor } from "./i18n.ts";
 const api = "https://hacker-news.firebaseio.com/v0";
-export const limits = { response: 2 << 20, cache: 2000, parallel: 8, fresh: 300_000, refresh: 30_000, request: 15_000 } as const;
+export const limits = { response: 2 << 20, cache: 2000, parallel: 4, fresh: 300_000, refresh: 30_000, request: 15_000 } as const;
 type FailureCode = "slow" | "bad_answer" | "not_found" | "unreachable" | "http" | "all_missed";
 export class ReadError extends Error {
   constructor(readonly code: FailureCode, readonly status = 0) { super(fmt(textsFor("en")[code], status)); }
@@ -11,6 +11,8 @@ export function errorText(error: unknown, locale: string): string {
   return error instanceof ReadError ? fmt(textsFor(locale)[error.code], error.status) : textsFor(locale).unreachable;
 }
 interface Reading { value: unknown; at: number; stale?: ReadError }
+interface CachedReading extends Reading { revision: number }
+interface InFlight { revision: number; promise: Promise<CachedReading>; controller: AbortController; waiters: number }
 type ItemReading = Reading & { value: Item };
 export interface Listing { stories: Item[]; missed: number; at: number; stale?: ReadError }
 export interface Thread { story: Item; comments: Item[]; missed: number; at: number; stale?: ReadError }
@@ -37,7 +39,10 @@ function item(value: unknown, id: number): Item {
 /** Reads only the declared Firebase destination. The host must provide its sanctioned egress adapter. */
 export class HackerNews {
   readonly config: Required<Config>;
-  private cache = new Map<string, Reading>();
+  private cache = new Map<string, CachedReading>();
+  private inFlight = new Map<string, InFlight>();
+  private revision = 0;
+  private healthRevision = 0;
   private running = 0;
   private queue: (() => void)[] = [];
   private lastOK?: number;
@@ -67,10 +72,13 @@ export class HackerNews {
   }
   private release() { const next = this.queue.shift(); if (next) next(); else this.running--; }
   private async request(path: string, signal?: AbortSignal): Promise<unknown> {
-    const combined = signal ? AbortSignal.any([signal, AbortSignal.timeout(limits.request)]) : AbortSignal.timeout(limits.request);
+    const cancellation = signal ?? new AbortController().signal;
+    let combined: AbortSignal | undefined;
     let release: (() => void) | undefined;
     try {
-      release = await this.acquire(combined);
+      release = await this.acquire(cancellation);
+      // Queueing is not broker time: the request deadline starts only after admission.
+      combined = signal ? AbortSignal.any([signal, AbortSignal.timeout(limits.request)]) : AbortSignal.timeout(limits.request);
       const response = await this.fetch(api + path, { method: "GET", redirect: "error", signal: combined, headers: { Accept: "application/json" } });
       if (response.status !== 200) {
         // A tee-backed Response cancellation can wait for another reader. Never block the gate on it.
@@ -96,35 +104,74 @@ export class HackerNews {
       return result;
     } catch (error) {
       if (signal?.aborted) signal.throwIfAborted();
-      if (combined.aborted) throw new ReadError("slow");
+      if (combined?.aborted) throw new ReadError("slow");
       if (error instanceof ReadError) throw error;
       throw new ReadError("unreachable");
     } finally { release?.(); }
   }
-  private async read(path: string, refresh: boolean, validate: (value: unknown) => unknown, signal?: AbortSignal): Promise<Reading> {
-    aborted(signal);
-    const old = this.cache.get(path);
-    if (old && this.now() - old.at < (refresh ? limits.refresh : limits.fresh)) return old;
+  private async follow(path: string, flight: InFlight, signal?: AbortSignal): Promise<CachedReading> {
+    aborted(signal); flight.waiters++;
+    let abort: (() => void) | undefined;
+    const cancellation = signal ? new Promise<never>((_, reject) => {
+      abort = () => reject(signal.reason); signal.addEventListener("abort", abort, { once: true });
+    }) : undefined;
+    try {
+      const reading = await (cancellation ? Promise.race([flight.promise, cancellation]) : flight.promise);
+      aborted(signal); return reading;
+    } finally {
+      if (signal && abort) signal.removeEventListener("abort", abort);
+      if (--flight.waiters === 0) {
+        if (this.inFlight.get(path) === flight) this.inFlight.delete(path);
+        flight.controller.abort();
+      }
+    }
+  }
+  private async load(path: string, old: CachedReading | undefined, validate: (value: unknown) => unknown,
+    revision: number, controller: AbortController): Promise<CachedReading> {
+    const signal = controller.signal;
     try {
       const value = validate(await this.request(path, signal)); aborted(signal);
-      const reading = { value, at: this.now() };
+      const current = this.cache.get(path);
+      if (current && current.revision > revision) return current;
+      const reading = { value, at: this.now(), revision };
       this.cache.set(path, reading);
       while (this.cache.size > this.cacheLimit) {
         const first = [...this.cache].reduce((a, b) => a[1].at <= b[1].at ? a : b);
         this.cache.delete(first[0]);
       }
-      this.lastOK = reading.at;
-      this.lastError = undefined;
+      if (revision >= this.healthRevision) {
+        this.healthRevision = revision; this.lastOK = reading.at; this.lastError = undefined;
+      }
       return reading;
     } catch (error) {
       aborted(signal);
       if (cancelled(error)) throw error;
       const failure = error instanceof ReadError ? error : new ReadError("bad_answer");
+      const current = this.cache.get(path);
+      if (current && current.revision > revision) return current;
       if (failure.code === "not_found") this.cache.delete(path);
-      else this.lastError = failure;
-      if (old && failure.code !== "not_found") return { ...old, stale: failure };
+      if (revision >= this.healthRevision) {
+        this.healthRevision = revision;
+        if (failure.code !== "not_found") this.lastError = failure;
+      }
+      const fallback = current ?? old;
+      if (fallback && failure.code !== "not_found") return { ...fallback, stale: failure };
       throw failure;
+    } finally {
+      if (this.inFlight.get(path)?.revision === revision) this.inFlight.delete(path);
     }
+  }
+  private async read(path: string, refresh: boolean, validate: (value: unknown) => unknown, signal?: AbortSignal): Promise<Reading> {
+    aborted(signal);
+    const old = this.cache.get(path);
+    if (old && this.now() - old.at < (refresh ? limits.refresh : limits.fresh)) return old;
+    const existing = this.inFlight.get(path);
+    if (existing) return await this.follow(path, existing, signal);
+    const revision = ++this.revision, controller = new AbortController();
+    const promise = this.load(path, old, validate, revision, controller);
+    const flight = { revision, promise, controller, waiters: 0 };
+    this.inFlight.set(path, flight);
+    return await this.follow(path, flight, signal);
   }
   private async readItem(id: number, refresh: boolean, signal?: AbortSignal): Promise<ItemReading> {
     if (!Number.isSafeInteger(id) || id <= 0) throw new ReadError("not_found");

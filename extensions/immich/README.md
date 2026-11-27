@@ -15,7 +15,7 @@ Remote instances require HTTPS. URLs must not contain credentials. The key arriv
 
 - Filename and favorite searches use `POST /search/metadata` with current structured `filter.originalFileName` / `filter.isFavorite`, `size=40` and `nextCursor`. They do not use the deprecated top-level `query` or `page` fields.
 - Natural-language searches use `POST /search/smart` with `query`, `size=40` and EXIF enabled. They do not invent cursor behavior when the smart-search response has no continuation contract.
-- `GET /assets/{id}` reads filenames, capture dates, EXIF and people. `GET /albums` and `GET /albums/{id}` read album metadata and assets. Private filesystem paths and raw media are not returned to the agent.
+- `GET /assets/{id}` reads filenames, capture dates, EXIF and people. `GET /albums` and `GET /albums/{id}` read album metadata; an album's assets (the first 100, newest first) are found by `POST /search/metadata` with `filter.albumIds`, because Immich 3 does not send them with the album. Private filesystem paths and raw media are not returned to the agent.
 - Metadata, filenames and descriptions are untrusted content, not instructions to update or share media. The extension does not automatically download originals, thumbnails or videos.
 
 ## Confirmed favorites

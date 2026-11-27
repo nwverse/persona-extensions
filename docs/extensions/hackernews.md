@@ -6,7 +6,7 @@ Hacker News (`news.ycombinator.com`) is an English-language technology and start
 
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |
-| `ui` | `stories`, with the compatibility placement `plugin_page` | An extension page for the Top, New, Best, Ask HN and Show HN lists, filtered by interests. Open a story to read its text and top-level comments, or open the article or the Hacker News page. |
+| `ui` | `hackernews` (`stories` before 0.1.4), with the compatibility placement `plugin_page` | An extension page for the Top, New, Best, Ask HN and Show HN lists, filtered by interests. Open a story to read its text and top-level comments, or open the article or the Hacker News page. |
 | `connectors` | `hackernews`, capabilities `status` and `tools` | `hn_stories` and `hn_item`: the assistant can fetch a list, choose stories and read their discussion. |
 
 ## Fetching and network

@@ -16,8 +16,8 @@ import (
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
 
-	"github.com/nwverse/persona-extensions/extensions/spaces/internal/kernel"
 	"github.com/nwverse/persona-extensions/extensions/spaces/internal/templates"
+	"github.com/nwverse/persona-extensions/pluginkit/spaces/kernel"
 )
 
 // The contributions of the extension: the nav page and the overview card that opens it.
@@ -47,8 +47,8 @@ func New(st kernel.Storage) *App {
 func (a *App) SetHub(n Notifier) { a.hub = n }
 
 // state is the page's own state, sent back with every request. The fields name what is shown: the space, the type
-// tab, the view, the search text, the extra pages loaded, the entity page, the schema editor for a type and the one
-// open fold.
+// tab, the view, the search text, the extra pages loaded, the entity page, the schema editor for a type, the one
+// open fold and the new space being created.
 type state struct {
 	S string `json:"s,omitempty"` // space
 	T string `json:"t,omitempty"` // type; "" = the space overview
@@ -58,6 +58,7 @@ type state struct {
 	E string `json:"e,omitempty"` // entity page
 	D string `json:"d,omitempty"` // schema editor for this type ("+" = a new type)
 	F string `json:"f,omitempty"` // the one open fold
+	C string `json:"c,omitempty"` // a new space: its template's key ("?" = the template list)
 }
 
 // ctx is one request: its state, the time, the time zone and, once a base is read, the space and entity shown.
@@ -87,6 +88,8 @@ var actions = map[string]func(c *ctx, arg string) (*wire.ActionResult, error){
 	"more":   actMore,
 	"fold":   actFold,
 	"space":  actSpace,
+	"new":    actNew,
+	"cancel": actCancel,
 	"create": actCreate,
 	"add":    actAdd,
 	"save":   actSave,
@@ -178,7 +181,7 @@ func (a *App) Act(_ context.Context, r *ext.UIRequest) (*wire.ActionResult, erro
 	switch {
 	case refused != nil:
 		c.st = st0
-		res = &wire.ActionResult{Toast: refused.Error()}
+		res = &wire.ActionResult{Toast: toastOf(refused)}
 	case err != nil && !errors.Is(err, errKeep):
 		return nil, err
 	}
@@ -241,13 +244,16 @@ func location(name string) *time.Location {
 	return time.UTC
 }
 
-// route chooses the screen from the state and the data: no space is the welcome; an entity is its page; a schema
-// editor is shown for a type that exists or for a new one; else the space's overview or the type's tab. A stale id
-// falls through to the next screen.
+// route chooses the screen from the state and the data: an entity is its page; a new space is the template list or
+// its form; no space is the welcome; a schema editor is shown for a type that exists or for a new one; else the
+// space's overview or the type's tab. A stale id falls through to the next screen.
 func (c *ctx) route() (*wire.View, error) {
 	c.resolve()
 	if c.e != nil {
 		return c.entityPage()
+	}
+	if v := c.newSpacePage(); v != nil {
+		return v, nil
 	}
 	if c.sp == nil {
 		return c.welcome(), nil
@@ -344,7 +350,7 @@ func actTab(c *ctx, arg string) (*wire.ActionResult, error) {
 		key = ""
 	}
 	if key != "" && c.typeOf(key) == nil {
-		return nil, fmt.Errorf("没有类型「%s」", key)
+		return nil, fmt.Errorf("找不到分类「%s」，它可能刚被删掉了。请回到概览重新选", key)
 	}
 	c.st = state{S: c.st.S, T: key}
 	return nil, nil
@@ -354,7 +360,7 @@ func actView(c *ctx, arg string) (*wire.ActionResult, error) {
 	t := c.typeOf(c.st.T)
 	i, err := strconv.Atoi(c.pick(arg, "view"))
 	if t == nil || err != nil || i < 0 || i >= len(t.ViewsOrDefault()) {
-		return nil, errors.New("没有这个视图")
+		return nil, errors.New("找不到这个显示方式，它可能刚被删掉了。请重新选一个")
 	}
 	c.st.V, c.st.N, c.st.F = i, 0, ""
 	return nil, nil
@@ -391,9 +397,45 @@ func actSpace(c *ctx, arg string) (*wire.ActionResult, error) {
 	return nil, nil
 }
 
-// actCreate creates a space from a template, with its samples.
+// actNew opens the template list of a new space, or the form of the template the argument names. Like a change of
+// space it starts from the overview of the space shown: the type tab, the view, the search and the fold are dropped,
+// so that leaving the flow returns to the page that holds the button.
+func actNew(c *ctx, arg string) (*wire.ActionResult, error) {
+	if arg == "" {
+		arg = pickSlot
+	} else if _, ok := templates.Get(arg); !ok {
+		return nil, fmt.Errorf("找不到模板「%s」。请从模板列表里重新选一个", arg)
+	}
+	c.st = state{S: c.st.S, C: arg}
+	return nil, nil
+}
+
+// actCancel leaves the new space unmade and shows the overview of the space the flow started from, whatever else the
+// state it is sent with holds.
+func actCancel(c *ctx, _ string) (*wire.ActionResult, error) {
+	c.st = state{S: c.st.S}
+	return nil, nil
+}
+
+// actCreate creates a space from the template the argument names, with the name and the samples choice of its form.
+// An empty name is the default one. The examples come only when the template has some: by the form's switch when it
+// is sent ("true" or "false", anything else is refused), and by where the request comes from when it is not. From
+// the template's form, whose switch is drawn on, a missing value is that default, for a client that sends only the
+// fields that were edited; a create that does not come from the form creates none. The new space's overview is shown.
 func actCreate(c *ctx, arg string) (*wire.ActionResult, error) {
-	sp, err := templates.Apply(c.b, arg, "", true, c.now)
+	t, ok := templates.Get(arg)
+	if !ok {
+		return nil, fmt.Errorf("找不到模板「%s」。请从模板列表里重新选一个", arg)
+	}
+	name := strings.TrimSpace(c.r.Values["name"])
+	if name == "" {
+		name = c.defaultName(t)
+	}
+	samples, err := samplesChoice(&t, c.r.Values, c.st.C == t.Key)
+	if err != nil {
+		return nil, err
+	}
+	sp, err := templates.Apply(c.b, t.Key, name, samples, c.now)
 	if err != nil {
 		return nil, err
 	}
@@ -401,24 +443,47 @@ func actCreate(c *ctx, arg string) (*wire.ActionResult, error) {
 	return &wire.ActionResult{Toast: "已创建「" + sp.Name + "」"}, nil
 }
 
+// samplesChoice reads the samples switch of the create form. The form has the switch only for a template with
+// samples, so for any other template the answer is false whatever was sent. Without a value the answer is the form's
+// default (on) when the request comes from the template's form, and false otherwise.
+func samplesChoice(t *templates.Template, values map[string]string, fromForm bool) (bool, error) {
+	if len(t.Samples) == 0 {
+		return false, nil
+	}
+	v, ok := values["samples"]
+	if !ok {
+		return fromForm, nil
+	}
+	switch v {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	}
+	return false, fmt.Errorf("「先放几条示例」的开关没有读懂（收到「%s」）。请重新打开或关上这个开关，再点创建", v)
+}
+
 // actAdd creates an entity of the type tab's type with the title of the quick-add fold. It starts at the first stage.
 func actAdd(c *ctx, _ string) (*wire.ActionResult, error) {
 	t := c.typeOf(c.st.T)
 	if t == nil {
-		return nil, errors.New("先选择一个类型")
+		return nil, errors.New("还没选分类。请先点上面的一个分类，再添加条目")
 	}
 	title := strings.TrimSpace(c.r.Values["title"])
+	if title == "" {
+		return nil, errors.New("标题是空的。请先写下这一条叫什么（例如书名），再点添加")
+	}
 	if _, err := c.sp.PutEntity(c.b, kernel.EntityInput{Type: t.Key, Title: &title}, c.now); err != nil {
 		return nil, err
 	}
 	c.st.F = ""
-	return &wire.ActionResult{Toast: "已创建「" + title + "」"}, nil
+	return &wire.ActionResult{Toast: "已添加「" + title + "」"}, nil
 }
 
 // actSave changes the name and the about of the space shown, from its settings fold.
 func actSave(c *ctx, _ string) (*wire.ActionResult, error) {
 	if c.sp == nil {
-		return nil, errors.New("还没有空间")
+		return nil, errors.New("还没有空间。请先从模板新建一个空间")
 	}
 	name := strings.TrimSpace(c.r.Values["name"])
 	about := strings.TrimSpace(c.r.Values["about"])
@@ -432,7 +497,7 @@ func actSave(c *ctx, _ string) (*wire.ActionResult, error) {
 // actDrop deletes the space shown, with everything in it. The state then shows the first space left, or the welcome.
 func actDrop(c *ctx, _ string) (*wire.ActionResult, error) {
 	if c.sp == nil {
-		return nil, errors.New("还没有空间")
+		return nil, errors.New("还没有空间，没有可以删除的")
 	}
 	name := c.sp.Name
 	if err := c.b.DropSpace(c.sp.ID); err != nil {

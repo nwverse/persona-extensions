@@ -29,7 +29,7 @@ type pageState struct {
 
 func readState(r *ext.UIRequest) (pageState, error) {
 	var st pageState
-	if err := r.DecodeState(&st); err != nil || len(st.WorkspaceGID) > 40 || len(st.TaskGID) > 40 || len(st.WorkspaceName) > 1000 || len(st.DraftID) > 128 || len(st.Name) > 600 || len(st.Notes) > 11000 || len(st.ProjectGID) > 40 || len(st.Offset) > 2048 || len(st.History) > 10 {
+	if err := r.DecodeState(&st); err != nil || len(st.WorkspaceGID) > 40 || len(st.TaskGID) > 40 || len([]rune(st.WorkspaceName)) > maxWorkspaceNameChars || len(st.DraftID) > 128 || len([]rune(st.Name)) > maxNameChars || len(st.Notes) > 11000 || len(st.ProjectGID) > 40 || len(st.Offset) > 2048 || len(st.History) > 10 {
 		return pageState{}, errors.New("invalid page state")
 	}
 	return st, nil
@@ -53,7 +53,7 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		if err := validGID(r.Values["gid"]); err != nil {
 			return nil, err
 		}
-		if r.Values["name"] == "" || len(r.Values["name"]) > 500 {
+		if r.Values["name"] == "" || len([]rune(r.Values["name"])) > maxWorkspaceNameChars {
 			return nil, errors.New("invalid workspace name")
 		}
 		st = pageState{Mode: "tasks", WorkspaceGID: r.Values["gid"], WorkspaceName: r.Values["name"]}
@@ -228,7 +228,10 @@ func (a *app) createView(ctx context.Context, r *ext.UIRequest, st pageState) (*
 
 func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 	t := textsFor(r.Locale)
-	items := []wire.Component{{Type: wire.ComponentText, Text: clipText(taskSummary(item), 1800)}}
+	var items []wire.Component
+	if summary := taskSummary(item); summary != "" {
+		items = append(items, wire.Component{Type: wire.ComponentText, Text: clipText(summary, 1800)})
+	}
 	if link := safeTaskLink(item.PermalinkURL); link != "" {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
@@ -238,11 +241,24 @@ func detailView(r *ext.UIRequest, st pageState, item task) *wire.View {
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.back, Action: &wire.Action{ID: "back"}})
 	sections := []wire.Section{{Title: t.tasks, Items: items}}
 	if item.Notes != "" {
-		sections = append(sections, wire.Section{Title: t.description, Items: textComponents(clipText(item.Notes, 60000))})
+		sections = append(sections, wire.Section{Title: t.description, Items: capComponents(textComponents(clipText(item.Notes, 60000)), maxNotesItems)})
 	} else {
 		sections = append(sections, wire.Section{Title: t.description, Items: []wire.Component{{Type: wire.ComponentText, Text: t.noNotes, Style: wire.TextStyleSecondary}}})
 	}
 	return &wire.View{Title: clipText(item.Name, 1800), State: ext.EncodeState(st), Sections: sections}
+}
+
+// maxNotesItems keeps the task view within the hub's 300 component limit, whatever the notes hold.
+const maxNotesItems = 250
+
+// capComponents keeps the first n components and shows the cut on the last one.
+func capComponents(items []wire.Component, n int) []wire.Component {
+	if len(items) <= n {
+		return items
+	}
+	items = items[:n]
+	items[n-1].Text = clipText(items[n-1].Text, 1700) + " […]"
+	return items
 }
 
 func taskSummary(item task) string {

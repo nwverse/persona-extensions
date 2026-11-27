@@ -16,14 +16,19 @@ await writeFile(new URL("../build/hackernews.mjs", import.meta.url), bytes);
 await writeFile(new URL("../build/source.json", import.meta.url), JSON.stringify(source, null, 2) + "\n");
 // An explicit local profile only: never overwrite the released Go manifest or market.
 const manifest = JSON.parse(await readFile(new URL("../persona-extension.json", import.meta.url), "utf8"));
+const sourceIcon = manifest.icon;
+delete manifest.tags;
+delete manifest.replaces;
+delete manifest.icon;
 manifest.runtime = { mode: "deno", source };
 manifest.contributes.ui = [
-  { id: "stories", title: "Hacker News", placement: "nav_page", icon: "list" },
-  { id: "stories-snapshot", title: "Hacker News", placement: "widget", opens: "stories", families: ["small", "medium", "large", "accessory_rectangular", "accessory_circular", "accessory_inline"] },
+  { id: "hackernews", title: "Hacker News", placement: "nav_page", icon: "list" },
+  { id: "hackernews-snapshot", title: "Hacker News", placement: "widget", opens: "hackernews", families: ["small", "medium", "large", "accessory_rectangular", "accessory_circular", "accessory_inline"] },
 ];
 const pkg = new URL("../build/package/", import.meta.url);
 await rm(pkg, { recursive: true, force: true });
 await mkdir(new URL("build/", pkg), { recursive: true });
+if (sourceIcon) await cp(new URL("../assets/", import.meta.url), new URL("assets/", pkg), { recursive: true });
 await writeFile(new URL("persona-extension.json", pkg), JSON.stringify(manifest, null, 2) + "\n");
 await writeFile(new URL(source.bundle, pkg), bytes);
 for (const path of ["src", "package.json", "package-lock.json", "tsconfig.json", "scripts", "tests", "README.md"]) {

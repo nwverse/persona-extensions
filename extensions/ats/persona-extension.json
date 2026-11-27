@@ -1,13 +1,14 @@
 {
   "manifest_version": 1,
   "id": "ats",
-  "name": "ATS 任务调度",
-  "version": "0.3.0",
-  "description": "自包含 Go 原生 Agent 任务调度扩展：内置持久化任务队列（R2 Worker 租约与 fence 写保护、R6 确定性指数退避+jitter 重试、R8 排队准入上限保护），支持按标签区分优先级（priority=p0..p3）与难度（difficulty=easy|medium|hard|extreme 映射模型档位 fast|standard|strong）并结合机器槽位与通用 Quota Provider 额度水位进行离线计算队列式削峰填谷综合调度。单二进制同时提供扩展队列面板、基于 todos.write 的幂等 outcome decision 验收写回，以及 stdio MCP 服务（只读 list_tasks / get_task / get_evidence 默认放行；写工具 enqueue_task 强制绑定 persona_todo 标签、默认 readonly 权限且每次调用均需用户确认）。",
+  "name": "ATS 自动做待办",
+  "version": "0.7.6",
+  "icon": "assets/icon.png",
+  "description": "ATS 帮你把待办自动做掉：跟助手说「把这个待办交给 ATS 做」，助手每次都会先问你；你同意后，它在你选好的电脑上把事情做完，再把结果写回待办；交给它时说了怎么检查的，它做完还会自己检查一遍。默认只看不改，而且只会动你允许的文件夹里的项目。",
   "publisher": "nwverse",
   "homepage": "https://github.com/nwverse/persona-extensions/tree/main/extensions/ats",
-  "tags": ["agents", "assistant", "todos", "scheduler", "mcp"],
-  "engines": {"persona": ">=202611051918", "extension_protocol": 1},
+  "tags": ["agents", "assistant", "todos", "scheduler"],
+  "engines": {"persona": ">=202611092100", "extension_protocol": 1},
   "activation_events": ["on_startup"],
   "runtime": {
     "command": {
@@ -16,70 +17,148 @@
       "darwin-arm64": "bin/ats-darwin-arm64",
       "darwin-amd64": "bin/ats-darwin-amd64"
     },
-    "args": ["hub"]
+    "args": ["hub"],
+    "http": true
+  },
+  "node": {
+    "command": {
+      "linux-amd64": "bin/ats-linux-amd64",
+      "linux-arm64": "bin/ats-linux-arm64",
+      "darwin-arm64": "bin/ats-darwin-arm64",
+      "darwin-amd64": "bin/ats-darwin-amd64"
+    },
+    "args": ["node"],
+    "machines": "machines",
+    "permissions": {"files": true}
   },
   "contributes": {
-    "mcp_servers": [
-      {
-        "id": "ats",
-        "command": "ats",
-        "env": "PERSONA_ATS_BIN",
-        "args": ["mcp", "--enqueue"],
-        "requires": ["mcp"],
-        "allow": ["list_tasks", "get_task", "get_evidence"]
-      }
-    ],
-    "skills": [
-      {"id": "ats-todo", "dir": "skills/ats-todo"}
+    "assistant": [
+      {"id": "queue", "skills": ["skills/ats-todo"], "gate": "assistant/gate.json"}
     ],
     "ui": [
-      {"id": "queue", "title": "ATS 队列", "placement": "nav_page", "icon": "list"}
+      {"id": "queue", "title": "ATS 自动做待办", "placement": "nav_page", "icon": "list"},
+      {"id": "queue-card", "title": "ATS 自动做待办 · 概况", "placement": "overview_card", "opens": "queue"}
     ]
   },
   "permissions": {
     "usage_gateways": true,
-    "hub": ["todos.write", "machines.read"]
+    "hub": ["todos.write", "agents.read", "agents.control", "machines.read", "extensions.call:ats"]
   },
   "configuration": {
     "type": "object",
     "properties": {
+      "machines": {
+        "type": "array",
+        "title": "在哪台电脑上干活（必须选）",
+        "description": "事情会在选中的电脑上做，这台电脑要开着并登录 Persona。一台都不选，交给它的事只会排着，不会开始。列表里只会出现苹果电脑和 Linux 电脑。",
+        "items": {"type": "string", "format": "machine", "x-os": ["darwin", "linux"]},
+        "x-confirm": "选中后，ATS 会在这台电脑上自己动手做交给它的事，没人在旁边看着，还会运行检查用的命令。它只会动你允许的文件夹里的项目，只看不改的事不会改文件。确定要选这台电脑吗？"
+      },
+      "repos": {
+        "type": "array",
+        "title": "允许它动哪些文件夹（必须填）",
+        "description": "写项目所在的文件夹，比如 ~/code（~ 指那台电脑上你自己的文件夹）。只有这些文件夹里的项目能交给它；一个都不填，就没法交给它任何事。",
+        "items": {"type": "string", "minLength": 1, "maxLength": 512},
+        "maxItems": 32,
+        "default": []
+      },
+      "readonly_permission_mode": {
+        "type": "string",
+        "title": "只看不改的事，运行命令要不要问你",
+        "description": "默认用计划模式。有些本地网关会在运行命令时卡在等你同意。如果启用了「Bypass 自动允许」，并确认任务在独立的工作目录里做，可以选自动放行。它会跳过权限确认，ATS 仍会要求只看不改，并检查文件有没有改动。",
+        "oneOf": [
+          {"const": "plan", "title": "计划模式（默认）"},
+          {"const": "bypassPermissions", "title": "自动放行，跳过权限确认（有风险）"}
+        ],
+        "default": "plan"
+      },
+      "write_permission_mode": {
+        "type": "string",
+        "title": "要改文件的事，它能自己做主到什么程度",
+        "description": "只看不改的事永远不会改文件。要改文件的事没人在旁边看着，所以默认让它直接改文件；要运行别的命令时，它还是会停下来等你同意，首页会显示「等你处理」。",
+        "oneOf": [
+          {"const": "acceptEdits", "title": "可以直接改文件，别的要问我（推荐）"},
+          {"const": "default", "title": "每一步都先问我"},
+          {"const": "auto", "title": "让它自己判断要不要问我"},
+          {"const": "bypassPermissions", "title": "什么都不问，直接做（有风险）"}
+        ],
+        "default": "acceptEdits"
+      },
+      "parallel_per_machine": {
+        "type": "integer",
+        "title": "一台电脑同时做几件事",
+        "description": "同时做得多会快一些，但那台电脑会更忙。一般 1 件就够。",
+        "minimum": 1,
+        "maximum": 4,
+        "default": 1
+      },
+      "task_timeout_minutes": {
+        "type": "integer",
+        "title": "一件事最多做多久（分钟）",
+        "description": "超过这个时间还没做完就停下，算没做成。事情比较大的话可以调长。",
+        "minimum": 5,
+        "maximum": 1440,
+        "default": 120
+      },
+      "acceptance_timeout_minutes": {
+        "type": "integer",
+        "title": "检查最多等多久（分钟）",
+        "description": "做完以后会运行检查用的命令，超过这个时间还没跑完，就算检查没通过。",
+        "minimum": 1,
+        "maximum": 60,
+        "default": 10
+      },
       "max_queued": {
         "type": "integer",
-        "title": "最大排队任务数",
-        "description": "队列准入上限（R8）：排队任务达到该上限时拒绝新任务入队并返回 too_many_queued (429)。",
+        "title": "最多排多少件事",
+        "description": "排着的事到了这个数，新的事就交不进来了，要等前面的做完一些。一般不用改。",
         "minimum": 1,
         "maximum": 10000,
         "default": 100
       },
-      "lease_ttl_seconds": {
-        "type": "integer",
-        "title": "Worker 租约秒数",
-        "description": "单次执行尝试（attempt）的租约有效期（R2），超时未续期时自动回收重排。",
-        "minimum": 10,
-        "maximum": 3600,
-        "default": 75
-      },
       "max_retries": {
         "type": "integer",
-        "title": "默认最大重试次数",
-        "description": "任务普通失败后的自动重入队列次数上限（R6 确定性指数退避 + jitter）。",
+        "title": "没做成时自动再试几次",
+        "description": "电脑临时出问题、检查没通过这类情况会自动再试，每次隔得越来越久。像「选的模型用不了」这种再试也没用的情况，不会再试。",
         "minimum": 0,
         "maximum": 10,
         "default": 2
       },
-      "quota_url": {
-        "type": "string",
-        "title": "通用额度快照来源",
-        "description": "可选：通用 Quota Provider 快照接口地址或本地文件路径，留空时读取 Hub 的 usage.gateway_accounts 额度窗口。",
-        "default": ""
-      },
       "reserve_headroom_pct": {
         "type": "integer",
-        "title": "离线任务额度保留水位 (%)",
-        "description": "当剩余额度百分比低于该水位时进入「仅 P0-P1 保底」模式，暂停 P2/P3 与高消耗离线任务，优先保障 P0/P1。",
+        "title": "额度剩多少时只做急事（%）",
+        "description": "额度低于这条线时，只做紧急和重要的事，其余的等额度恢复再做。只有在 Persona 里接了额度账号才起作用；没接就不限额度。",
         "minimum": 5,
         "maximum": 90,
         "default": 30
+      },
+      "launcher": {
+        "type": "string",
+        "title": "Claude Code 用哪个启动器（可以不填）",
+        "description": "填启动器的名字。要给不同电脑选不同的启动器，可以写成 default-claude,workstation=local-claude。空着就用默认的启动器。",
+        "maxLength": 512,
+        "default": ""
+      },
+      "model_fast": {
+        "type": "string",
+        "title": "简单的事用哪个模型（可以不填）",
+        "description": "填模型的名字。空着就用默认的模型。简单的事用又快又便宜的模型就够了。没单独指定模型时，Claude 才会用这里的设置，Codex 和 AGY 会用各自的默认模型。",
+        "maxLength": 100,
+        "default": ""
+      },
+      "model_standard": {
+        "type": "string",
+        "title": "一般的事用哪个模型（可以不填）",
+        "description": "填模型的名字。空着就用默认的模型。没单独指定模型时，Claude 才会用这里的设置，Codex 和 AGY 会用各自的默认模型。",
+        "maxLength": 100,
+        "default": ""
+      },
+      "model_strong": {
+        "type": "string",
+        "title": "难的事用哪个模型（可以不填）",
+        "description": "填模型的名字。空着就用默认的模型。难的事可以填一个更强的模型。没单独指定模型时，Claude 才会用这里的设置，Codex 和 AGY 会用各自的默认模型。",
+        "maxLength": 100,
+        "default": ""
       }
     }
   }

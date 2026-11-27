@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -26,50 +28,69 @@ func DefaultRunner(ctx context.Context, m *Machine, script string, timeout time.
 	cctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	var cmd *exec.Cmd
-	if m == nil || m.IsLocal || isSelfHostAlias(m.Host) {
-		cmd = exec.CommandContext(cctx, "/bin/sh", "-s")
-	} else {
-		if !IsConcreteHost(m.Host) {
-			return "", fmt.Errorf("非法 SSH 主机名：%q", m.Host)
-		}
-		args := []string{
-			"-T",
-			"-o", "BatchMode=yes",
-			"-o", "ConnectTimeout=12",
-			"-o", "ServerAliveInterval=15",
-		}
-		if m.Port > 0 && m.Port != 22 {
-			args = append(args, "-p", strconv.Itoa(m.Port))
-		}
-		if m.IdentityFile != "" {
-			args = append(args, "-i", m.IdentityFile)
-		}
-		target := m.Host
-		if m.User != "" && !strings.Contains(target, "@") {
-			target = m.User + "@" + target
-		}
-		args = append(args, "--", target, "sh -s")
-		sshBin := resolveSSHBinary()
-		cmd = exec.CommandContext(cctx, sshBin, args...)
+	cmd, err := shellCommand(cctx, m, "sh -s", "-s")
+	if err != nil {
+		return "", err
 	}
-
 	cmd.Stdin = strings.NewReader(script)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
-	err := cmd.Run()
-	if err != nil {
-		reason := lastNonEmptyLine(stderr.String())
-		if reason == "" {
-			reason = err.Error()
-		}
-		if m != nil && !m.IsLocal {
-			return stdout.String(), fmt.Errorf("SSH 连接 %s 失败：%s", m.Host, reason)
-		}
-		return stdout.String(), fmt.Errorf("本地探测命令执行失败：%s", reason)
+	// When the time is up only the shell is killed: a du or find it started still holds stdout, and Run would wait
+	// for it to finish (minutes on a large cache). WaitDelay closes the pipes and returns what was read by then.
+	cmd.WaitDelay = runnerWaitDelay
+	if err := cmd.Run(); err != nil {
+		return stdout.String(), runError(m, err, stderr.String())
 	}
 	return stdout.String(), nil
+}
+
+// runnerWaitDelay is how long a run waits, after its time is up and the shell was killed, for the programs the shell
+// started to let go of its output; tests shorten it.
+var runnerWaitDelay = 5 * time.Second
+
+// probeTimeout bounds one scan's probe script; tests shorten it.
+var probeTimeout = 90 * time.Second
+
+// runError words a failed run like the scan does: an SSH failure names the host.
+func runError(m *Machine, err error, stderr string) error {
+	reason := lastNonEmptyLine(stderr)
+	if reason == "" {
+		reason = err.Error()
+	}
+	if m != nil && !m.IsLocal {
+		return fmt.Errorf("SSH 连接 %s 失败：%s", m.Host, reason)
+	}
+	return fmt.Errorf("本地探测命令执行失败：%s", reason)
+}
+
+// shellCommand runs /bin/sh with localArgs on this machine, or remote (the command line the
+// remote login shell runs) over OpenSSH with BatchMode=yes.
+func shellCommand(ctx context.Context, m *Machine, remote string, localArgs ...string) (*exec.Cmd, error) {
+	if m == nil || m.IsLocal || isLocalConnection(m.Host, m.Port) {
+		return exec.CommandContext(ctx, "/bin/sh", localArgs...), nil
+	}
+	if !IsConcreteHost(m.Host) {
+		return nil, fmt.Errorf("非法 SSH 主机名：%q", m.Host)
+	}
+	args := []string{
+		"-T",
+		"-o", "BatchMode=yes",
+		"-o", "ConnectTimeout=12",
+		"-o", "ServerAliveInterval=15",
+	}
+	if m.Port > 0 && m.Port != 22 {
+		args = append(args, "-p", strconv.Itoa(m.Port))
+	}
+	if m.IdentityFile != "" {
+		args = append(args, "-i", m.IdentityFile)
+	}
+	target := m.Host
+	if m.User != "" && !strings.Contains(target, "@") {
+		target = m.User + "@" + target
+	}
+	args = append(args, "--", target, remote)
+	return exec.CommandContext(ctx, resolveSSHBinary(), args...), nil
 }
 
 func resolveSSHBinary() string {
@@ -106,7 +127,7 @@ func lastNonEmptyLine(s string) string {
 //  2. node-python-cache (npm, pnpm, yarn, pip, uv)
 //  3. docker-unused (Docker buildx cache, dangling images; never running containers)
 //  4. rust-xcode-build (Cargo registry/git, Xcode DerivedData, SwiftPM, Clang, Gradle)
-//  5. tmp-logs (systemd journal, rotated /var/log, /tmp stale build/test artifacts >7d)
+//  5. tmp-logs (systemd journal, rotated /var/log, build/install leftovers in /tmp of any age and anything there older than 7d)
 //  6. cold-agent-sessions (Claude Code & Codex transcripts tiered into hot <=7d vs cold >7d)
 const ProbeScript = `export LC_ALL=C
 export LANG=C
@@ -117,12 +138,9 @@ hostname 2>/dev/null || uname -n 2>/dev/null || echo "machine"
 echo "@@SECTION:HOME"
 printf '%s\n' "$HOME"
 echo "@@SECTION:BIN_VERSION"
-if command -v disklessly >/dev/null 2>&1; then
-  disklessly version 2>/dev/null | head -n 1 || true
-elif [ -x "$HOME/.disklessly/bin/disklessly" ]; then
-  "$HOME/.disklessly/bin/disklessly" version 2>/dev/null | head -n 1 || true
-elif [ -x "/Applications/Disklessly.app/Contents/MacOS/disklessly" ]; then
-  "/Applications/Disklessly.app/Contents/MacOS/disklessly" version 2>/dev/null | head -n 1 || true
+` + resolveCLIScript + `
+if [ -n "$DKL" ]; then
+  "$DKL" version 2>/dev/null | head -n 1 || true
 fi
 echo "@@SECTION:DF"
 if [ -d "/System/Volumes/Data" ]; then
@@ -144,23 +162,23 @@ GOCACHE_DIR=$(go env GOCACHE 2>/dev/null || printf '%s' "$HOME/.cache/go-build")
 GOMOD_DIR=$(go env GOMODCACHE 2>/dev/null || printf '%s' "$HOME/go/pkg/mod")
 [ -z "$GOCACHE_DIR" ] && GOCACHE_DIR="$HOME/.cache/go-build"
 [ -z "$GOMOD_DIR" ] && GOMOD_DIR="$HOME/go/pkg/mod"
-probe_dir "cache-gobuild" "go-cache" "Go 编译构建缓存 (go-build)" "$GOCACHE_DIR" "safe" "可随时重建的 Go 编译器构建缓存"
-probe_dir "cache-gomod" "go-cache" "Go 模块下载缓存 (pkg/mod)" "$GOMOD_DIR" "safe" "可重新下载的 Go 依赖模块缓存"
+probe_dir "cache-gobuild" "go-cache" "Go 编译缓存" "$GOCACHE_DIR" "safe" "Go 编译时留下的缓存，删了下次编译会自动再生成"
+probe_dir "cache-gomod" "go-cache" "Go 下载的依赖包" "$GOMOD_DIR" "safe" "Go 项目下载过的依赖包，删了下次用到时会重新下载"
 
-probe_dir "cache-npm" "node-python-cache" "npm 包缓存 (~/.npm)" "$HOME/.npm" "safe" "可重新下载的 npm 缓存包"
-probe_dir "cache-pnpm" "node-python-cache" "pnpm 内容寻址缓存 (pnpm/store)" "$HOME/.local/share/pnpm/store" "safe" "可重新拉取的 pnpm 全局存储"
-probe_dir "cache-pnpm-cache" "node-python-cache" "pnpm 下载缓存 (~/.cache/pnpm)" "$HOME/.cache/pnpm" "safe" "可重新生成的 pnpm 元数据与 dlx 缓存"
-probe_dir "cache-yarn" "node-python-cache" "Yarn 包缓存 (~/.cache/yarn)" "$HOME/.cache/yarn" "safe" "可重新下载的 Yarn 缓存"
-probe_dir "cache-pip" "node-python-cache" "pip 轮子与 HTTP 缓存 (~/.cache/pip)" "$HOME/.cache/pip" "safe" "可重新下载的 Python pip 缓存"
-probe_dir "cache-uv" "node-python-cache" "uv Python 极速缓存 (~/.cache/uv)" "$HOME/.cache/uv" "safe" "可重新下载的 uv 包缓存"
+probe_dir "cache-npm" "node-python-cache" "npm 下载的包" "$HOME/.npm" "safe" "npm 下载过的包，删了下次安装时会重新下载"
+probe_dir "cache-pnpm" "node-python-cache" "pnpm 存的包" "$HOME/.local/share/pnpm/store" "safe" "pnpm 给所有项目共用的一份包，删了下次安装时会重新下载"
+probe_dir "cache-pnpm-cache" "node-python-cache" "pnpm 的下载缓存" "$HOME/.cache/pnpm" "safe" "pnpm 临时存的包信息和一次性运行的工具，删了会自动重新下载"
+probe_dir "cache-yarn" "node-python-cache" "Yarn 下载的包" "$HOME/.cache/yarn" "safe" "Yarn 下载过的包，删了下次安装时会重新下载"
+probe_dir "cache-pip" "node-python-cache" "pip 下载的 Python 包" "$HOME/.cache/pip" "safe" "pip 下载过的 Python 安装包，删了下次安装时会重新下载"
+probe_dir "cache-uv" "node-python-cache" "uv 下载的 Python 包" "$HOME/.cache/uv" "safe" "uv 下载过的 Python 包，删了下次用到时会重新下载"
 
-probe_dir "cache-cargo-registry" "rust-xcode-build" "Cargo 索引与源码包 (~/.cargo/registry)" "$HOME/.cargo/registry" "safe" "可重新同步的 Rust Crates 缓存"
-probe_dir "cache-cargo-git" "rust-xcode-build" "Cargo Git 检出缓存 (~/.cargo/git)" "$HOME/.cargo/git" "safe" "可重新拉取的 Cargo Git 依赖"
-probe_dir "cache-xcode-derived" "rust-xcode-build" "Xcode DerivedData 构建产物" "$HOME/Library/Developer/Xcode/DerivedData" "safe" "可重新编译的 Xcode DerivedData 缓存"
-probe_dir "cache-swiftpm" "rust-xcode-build" "SwiftPM 包缓存 (org.swift.swiftpm)" "$HOME/.cache/org.swift.swiftpm" "safe" "可重新拉取的 Swift Package Manager 缓存"
-probe_dir "cache-clang" "rust-xcode-build" "Clang 模块缓存 (~/.cache/clang)" "$HOME/.cache/clang" "safe" "可重新生成的 Clang 预编译模块缓存"
-probe_dir "cache-gradle" "rust-xcode-build" "Gradle 构建缓存 (~/.gradle/caches)" "$HOME/.gradle/caches" "safe" "可重新构建的 Gradle 缓存"
-probe_dir "cache-playwright" "rust-xcode-build" "Playwright 浏览器缓存 (ms-playwright)" "$HOME/.cache/ms-playwright" "review" "无头浏览器镜像，清理后首次运行需重新下载"
+probe_dir "cache-cargo-registry" "rust-xcode-build" "Rust 下载的依赖包（Cargo）" "$HOME/.cargo/registry" "safe" "Rust 项目下载过的依赖包，删了下次编译时会重新下载"
+probe_dir "cache-cargo-git" "rust-xcode-build" "Rust 从代码仓库拉的依赖（Cargo）" "$HOME/.cargo/git" "safe" "Rust 项目直接从代码仓库拉下来的依赖，删了下次编译时会重新拉"
+probe_dir "cache-xcode-derived" "rust-xcode-build" "Xcode 编译缓存" "$HOME/Library/Developer/Xcode/DerivedData" "safe" "Xcode 编译时留下的文件，删了下次编译会重新生成，第一次会慢一些"
+probe_dir "cache-swiftpm" "rust-xcode-build" "Swift 下载的依赖包" "$HOME/.cache/org.swift.swiftpm" "safe" "Swift 项目下载过的依赖包，删了下次编译时会重新下载"
+probe_dir "cache-clang" "rust-xcode-build" "Clang 编译缓存" "$HOME/.cache/clang" "safe" "C 和 C++ 编译时留下的缓存，删了下次编译会自动再生成"
+probe_dir "cache-gradle" "rust-xcode-build" "Gradle 编译和下载缓存" "$HOME/.gradle/caches" "safe" "安卓和 Java 项目编译时留下的缓存和下载的包，删了下次编译时会重新生成"
+probe_dir "cache-playwright" "rust-xcode-build" "Playwright 自动测试用的浏览器" "$HOME/.cache/ms-playwright" "review" "自动测试用的几个浏览器，删了下次跑测试前要重新下载，比较大、比较慢"
 
 echo "@@SECTION:TMP_LOGS"
 if command -v journalctl >/dev/null 2>&1; then
@@ -169,13 +187,13 @@ fi
 if [ -d /var/log ]; then
   rot_kb=$(find /var/log -maxdepth 2 -type f \( -name '*.gz' -o -name '*.1' -o -name '*.old' \) -exec du -k {} + 2>/dev/null | awk '{s+=$1} END {print s+0}')
   if [ -n "$rot_kb" ] && [ "$rot_kb" -gt 0 ] 2>/dev/null; then
-    printf 'logs-rotated\ttmp-logs\t系统轮转归档日志 (/var/log/*.gz)\t/var/log\t%s\tsafe\t已轮转压缩的历史系统日志，不影响当前服务写入\n' "$rot_kb"
+    printf 'logs-rotated\ttmp-logs\t系统换下来的旧日志\t/var/log\t%s\tsafe\t/var/log 里换下来的旧日志文件（.gz 压缩的和 .1、.old 结尾的），正在写的日志不碰\n' "$rot_kb"
   fi
 fi
 if [ -d /tmp ]; then
   tmp_kb=$(find /tmp -mindepth 1 -maxdepth 1 \( -name 'go-build*' -o -name 'playwright*' -o -name 'npm-*' -o -name 'pnpm-*' -o -name 'cargo-install*' -o -name 'disklessly-*' -o -mtime +7 \) -exec du -xsk {} + 2>/dev/null | awk '{s+=$1} END {print s+0}')
   if [ -n "$tmp_kb" ] && [ "$tmp_kb" -gt 0 ] 2>/dev/null; then
-    printf 'tmp-stale\ttmp-logs\t/tmp 陈旧构建与临时产物 (>7天)\t/tmp\t%s\tsafe\t超过 7 天或已退出的 go-build/playwright/npm 临时目录\n' "$tmp_kb"
+    printf 'tmp-stale\ttmp-logs\t临时文件夹里的旧文件和编译剩下的文件\t/tmp\t%s\tsafe\t临时文件夹 /tmp 里编译和安装剩下的文件（go-build、playwright、npm、pnpm、cargo-install 等开头的，最近的也删）和放了 7 天以上的文件\n' "$tmp_kb"
   fi
 fi
 
@@ -193,7 +211,7 @@ if command -v docker >/dev/null 2>&1; then
     END { print sum + 0 }
   ')
   if [ -n "$dangling_kb" ] && [ "$dangling_kb" -gt 0 ] 2>/dev/null; then
-    printf 'docker-dangling\tdocker-unused\tDocker 悬空镜像 (dangling images)\tdocker://dangling-images\t%s\tsafe\t未被任何运行或停止容器引用的悬空镜像层\n' "$dangling_kb"
+    printf 'docker-dangling\tdocker-unused\tDocker 没名字的旧镜像\tdocker://dangling-images\t%s\tsafe\t重新构建后被换下来、已经没有名字的旧镜像，没有任何容器（不管在不在运行）用到它们\n' "$dangling_kb"
   fi
   bcache_line=$(docker system df --format '{{.Type}}|{{.Reclaimable}}' 2>/dev/null | awk -F'|' '$1=="Build Cache"{print $2}' | head -n 1)
   if [ -n "$bcache_line" ]; then
@@ -209,7 +227,8 @@ probe_sessions() {
     hot_kb=$(find "$dir" -type f \( -name '*.jsonl' -o -name '*.json' \) -mtime -7 -exec du -k {} + 2>/dev/null | awk '{s+=$1} END {print s+0}')
     cold_c=$(find "$dir" -type f \( -name '*.jsonl' -o -name '*.json' \) -mtime +6 2>/dev/null | wc -l | tr -d ' ')
     cold_kb=$(find "$dir" -type f \( -name '*.jsonl' -o -name '*.json' \) -mtime +6 -exec du -k {} + 2>/dev/null | awk '{s+=$1} END {print s+0}')
-    printf 'tool\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$tool" "$label" "$dir" "${hot_c:-0}" "${hot_kb:-0}" "${cold_c:-0}" "${cold_kb:-0}"
+    real=$(cd "$dir" 2>/dev/null && pwd -P)
+    printf 'tool\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$tool" "$label" "$dir" "${hot_c:-0}" "${hot_kb:-0}" "${cold_c:-0}" "${cold_kb:-0}" "${real:-$dir}"
   fi
 }
 probe_sessions "claude" "Claude Code" "$HOME/.claude/projects"
@@ -219,6 +238,20 @@ if [ -d "$arch_dir" ]; then
   ac=$(find "$arch_dir" -type f -name '*.tar.gz' 2>/dev/null | wc -l | tr -d ' ')
   akb=$(du -xsk "$arch_dir" 2>/dev/null | awk '{print $1}' | head -n 1)
   printf 'archive\t%s\t%s\t%s\n' "$arch_dir" "${ac:-0}" "${akb:-0}"
+fi
+` + resolveCLIScript + `
+if [ -n "$DKL" ]; then
+  echo "@@SECTION:SESSIONS_CLI_PLAN"
+  "$DKL" --json sessions ` + cliDaysFlag + ` 2>/dev/null | tr '\n' ' '; echo
+  echo "@@SECTION:SESSIONS_CLI_STATUS"
+  "$DKL" --json sessions status 2>/dev/null | tr '\n' ' '; echo
+  echo "@@SECTION:SESSIONS_FILES"
+  for d in "$HOME/.claude/projects" "$HOME/.codex/sessions"; do
+    if [ -d "$d" ]; then
+      r=$(cd "$d" 2>/dev/null && pwd -P) || r="$d"
+      find "$r/" -type f \( -name '*.jsonl' -o -name '*.json' \) -mtime +5 -exec du -k {} + 2>/dev/null
+    fi
+  done
 fi
 echo "@@SECTION:END"
 `
@@ -295,12 +328,12 @@ func ParseProbeOutput(m *Machine, output string, now time.Time) *Scan {
 			items = append(items, ScanItem{
 				ID:       "journalctl-vacuum",
 				Category: CatTmpLogs,
-				Title:    "Systemd Journal 系统日志 (>7天)",
+				Title:    journalTitle,
 				Path:     "/var/log/journal",
 				Bytes:    b,
 				Safety:   SafetySafe,
 				Action:   "clean",
-				Reason:   "使用 journalctl --vacuum-time=7d 清理 7 天前的系统日志，保留近期日志",
+				Reason:   journalReason,
 			})
 		}
 	}
@@ -326,12 +359,12 @@ func ParseProbeOutput(m *Machine, output string, now time.Time) *Scan {
 				items = append(items, ScanItem{
 					ID:       "docker-buildx",
 					Category: CatDockerUnused,
-					Title:    "Docker Buildx 构建缓存 (unused)",
+					Title:    buildCacheTitle,
 					Path:     "docker://build-cache",
 					Bytes:    b,
 					Safety:   SafetySafe,
 					Action:   "clean",
-					Reason:   "未被运行中构建引用的 BuildKit 缓存层，绝不触碰运行中的服务容器",
+					Reason:   buildCacheReason,
 				})
 			}
 		}
@@ -356,24 +389,14 @@ func ParseProbeOutput(m *Machine, output string, now time.Time) *Scan {
 				ColdCount: coldC,
 				ColdBytes: coldKB * 1024,
 			}
+			if len(parts) >= 9 {
+				ts.RealDirectory = strings.TrimSpace(parts[8])
+			}
 			sess.HotCount += ts.HotCount
 			sess.HotBytes += ts.HotBytes
 			sess.ColdCount += ts.ColdCount
 			sess.ColdBytes += ts.ColdBytes
 			sess.Tools = append(sess.Tools, ts)
-			if ts.ColdBytes > 0 {
-				items = append(items, ScanItem{
-					ID:         "sessions-cold-" + ts.Tool,
-					Category:   CatColdAgentSession,
-					Title:      fmt.Sprintf("%s 冷会话日志 (%d 个 >7天会话)", ts.Label, ts.ColdCount),
-					Path:       ts.Directory,
-					Bytes:      ts.ColdBytes,
-					Safety:     SafetySafe,
-					Action:     "archive",
-					Reason:     "归档压缩超过 7 天的陈旧 Agent 会话到 ~/.disklessly/session-archives，7 天内活跃会话严格保留",
-					SessionCnt: ts.ColdCount,
-				})
-			}
 		} else if len(parts) >= 4 && parts[0] == "archive" {
 			sess.ArchiveDir = parts[1]
 			ac, _ := strconv.Atoi(parts[2])
@@ -382,6 +405,8 @@ func ParseProbeOutput(m *Machine, output string, now time.Time) *Scan {
 			sess.ArchivedBytes = akb * 1024
 		}
 	}
+
+	items = append(items, applySessionCLI(&sess, sections)...)
 
 	// Sort items by size descending, then path ascending.
 	slices.SortFunc(items, func(a, b ScanItem) int {
@@ -400,6 +425,10 @@ func ParseProbeOutput(m *Machine, output string, now time.Time) *Scan {
 			continue
 		}
 		reclaimable += it.Bytes
+		if it.Category == CatColdAgentSession {
+			// Uploaded off the machine, not a rebuildable cache: never part of the safe total.
+			continue
+		}
 		if it.Safety == SafetySafe {
 			safeBytes += it.Bytes
 		} else {
@@ -557,14 +586,21 @@ func ScanMachine(ctx context.Context, runner Runner, st *State, m *Machine, now 
 	if runner == nil {
 		runner = DefaultRunner
 	}
-	out, err := runner(ctx, m, ProbeScript, 90*time.Second)
-	if err != nil {
-		m.Reachable = false
-		m.LastError = err.Error()
-		m.UpdatedAt = now
-		return nil, err
-	}
+	out, err := runner(ctx, m, ProbeScript, probeTimeout)
 	scan := ParseProbeOutput(m, out, now)
+	if err != nil {
+		// The probe reads the root volume first and sizes caches after it. On a computer with large caches the sizing
+		// can outlast the probe's time: the watermark it already read is kept, and the caches are marked partial. A
+		// probe that stopped before its df line was whole has no watermark (a cut line parses to no volume) and fails.
+		if scan.Mount.TotalBytes == 0 {
+			m.Reachable = false
+			m.LastError = err.Error()
+			m.UpdatedAt = now
+			return nil, err
+		}
+		scan.Partial = true
+		scan.PartialReason = err.Error()
+	}
 	m.Reachable = true
 	m.LastError = ""
 	if scan.Platform != "" {
@@ -579,5 +615,154 @@ func ScanMachine(ctx context.Context, runner Runner, st *State, m *Machine, now 
 		st.Scans = map[string]*Scan{}
 	}
 	st.Scans[m.ID] = scan
+	if !scan.Partial && (scan.BinaryVersion != "" || scan.Sessions.CLIReady) {
+		// Keep the local cold index current without pulling the index on every scan; a failed
+		// refresh only marks the cloud state unknown.
+		refreshColdIfStale(ctx, runner, st, m, now, coldScanRefreshAge)
+	}
 	return scan, nil
+}
+
+// sizeKB looks up a transcript's size in the SESSIONS_FILES map, which lists files under the
+// resolved tool directory. p may be in either the configured (dir) or the resolved (real) form.
+func sizeKB(kb map[string]uint64, p, dir, real string) uint64 {
+	if v, ok := kb[p]; ok {
+		return v
+	}
+	for _, pair := range [][2]string{{dir, real}, {real, dir}} {
+		from, to := path.Clean(pair[0]), path.Clean(pair[1])
+		if pair[0] == "" || pair[1] == "" || from == to || !underDir(p, from) {
+			continue
+		}
+		if v, ok := kb[to+strings.TrimPrefix(path.Clean(p), from)]; ok {
+			return v
+		}
+	}
+	return 0
+}
+
+// applySessionCLI replaces the find-based cold session estimate with the disklessly CLI's own
+// cold plan (which skips hot, open and per-project longer-threshold sessions), attaches the
+// cloud backup state, and returns the archivable cold session items. Without a CLI that reports
+// both its plan and a reachable backend, no session item is offered: the extension never
+// archives or deletes transcripts itself.
+func applySessionCLI(sess *SessionSummary, sections map[string][]string) []ScanItem {
+	var plan sessionReport
+	planOK := parseCLIJSONLine(sections["SESSIONS_CLI_PLAN"], &plan)
+	var status CloudStatus
+	if parseCLIJSONLine(sections["SESSIONS_CLI_STATUS"], &status) {
+		sess.Cloud = &status
+	}
+	sess.CLIReady = planOK && sess.Cloud != nil
+	switch {
+	case !sess.CLIReady:
+		sess.Note = "这台电脑上没有能搬对话的配套小工具（disklessly），旧对话原样留着；到「AI 对话」页装好或升级它，再检查一次。"
+		return nil
+	case !sess.Cloud.Backend.Reachable:
+		sess.Note = "网盘连不上，旧对话先不搬；确认网盘在线后再检查一次。"
+	}
+
+	kb := map[string]uint64{}
+	for _, line := range sections["SESSIONS_FILES"] {
+		size, p, ok := strings.Cut(line, "\t")
+		if !ok {
+			continue
+		}
+		if v, err := strconv.ParseUint(strings.TrimSpace(size), 10, 64); err == nil {
+			kb[p] = v
+		}
+	}
+	sess.ColdCount, sess.ColdBytes = 0, 0
+	var items []ScanItem
+	for i := range sess.Tools {
+		ts := &sess.Tools[i]
+		ts.ColdCount, ts.ColdBytes = 0, 0
+		for _, p := range plan.Cold {
+			if underAny(p, ts.Directory, ts.RealDirectory) {
+				ts.ColdCount++
+				ts.ColdBytes += sizeKB(kb, p, ts.Directory, ts.RealDirectory) * 1024
+			}
+		}
+		sess.ColdCount += ts.ColdCount
+		sess.ColdBytes += ts.ColdBytes
+		if ts.ColdCount == 0 || !sess.Cloud.Backend.Reachable {
+			continue
+		}
+		items = append(items, ScanItem{
+			ID:         "sessions-cold-" + ts.Tool,
+			Category:   CatColdAgentSession,
+			Title:      coldItemTitle(ts.Label, ts.ColdCount),
+			Path:       ts.Directory,
+			Bytes:      ts.ColdBytes,
+			Safety:     SafetySafe,
+			Action:     "archive",
+			Reason:     coldItemReason,
+			SessionCnt: ts.ColdCount,
+			RealPath:   ts.RealDirectory,
+		})
+	}
+	return items
+}
+
+// The titles and reasons of the items the parser makes itself (the probe script prints the others).
+const (
+	journalTitle     = "系统日志（只删 7 天以前的）"
+	journalReason    = "这里显示的是全部系统日志的大小，只删其中 7 天以前的部分，最近 7 天的留着"
+	buildCacheTitle  = "Docker 构建缓存（没在用的）"
+	buildCacheReason = "正在进行的构建没用到的缓存，正在运行的服务和容器绝不碰"
+	coldItemReason   = "先放进网盘、读回核对无误才删电脑上的那份；最近 7 天用过、正打开着或还有程序在用的对话留着"
+)
+
+func coldItemTitle(label string, count int) string {
+	return fmt.Sprintf("%s 一周没动的对话（%d 个）", label, count)
+}
+
+// itemText is the current wording of one kind of scan item.
+type itemText struct{ title, reason string }
+
+// itemWords is the wording this version gives each scan item, by item id: the probe script's
+// probe_dir and printf lines, and the items the parser makes itself. A scan stored by an older
+// version keeps that version's words (such as 「Playwright 浏览器缓存 (ms-playwright)」); the
+// pages show these instead, so one kind of item has one name and one description everywhere.
+var itemWords = func() map[string]itemText {
+	out := map[string]itemText{
+		"journalctl-vacuum": {journalTitle, journalReason},
+		"docker-buildx":     {buildCacheTitle, buildCacheReason},
+	}
+	probe := regexp.MustCompile(`(?m)^probe_dir "([^"]+)" "[^"]+" "([^"]+)" "[^"]+" "[^"]+" "([^"]+)"$`)
+	for _, m := range probe.FindAllStringSubmatch(ProbeScript, -1) {
+		out[m[1]] = itemText{m[2], m[3]}
+	}
+	printed := regexp.MustCompile(`(?m)^\s*printf '([a-z-]+)\\t[a-z-]+\\t([^\\]+)\\t[^\\]+\\t%s\\t[a-z]+\\t([^\\]+)\\n'`)
+	for _, m := range printed.FindAllStringSubmatch(ProbeScript, -1) {
+		out[m[1]] = itemText{m[2], m[3]}
+	}
+	return out
+}()
+
+// coldToolLabels names the AI assistants of the probe script's session directories.
+var coldToolLabels = map[string]string{"claude": "Claude Code", "codex": "Codex"}
+
+// itemTitle is the name the pages give scan item it: this version's wording of its kind, else its own.
+func itemTitle(it ScanItem) string {
+	if w, ok := itemWords[it.ID]; ok {
+		return w.title
+	}
+	if tool, ok := strings.CutPrefix(it.ID, "sessions-cold-"); ok && it.Category == CatColdAgentSession && it.SessionCnt > 0 {
+		if label, ok := coldToolLabels[tool]; ok {
+			return coldItemTitle(label, it.SessionCnt)
+		}
+	}
+	return strings.TrimSpace(it.Title)
+}
+
+// itemReason is the description the pages give scan item it, as itemTitle does for its name.
+func itemReason(it ScanItem) string {
+	if w, ok := itemWords[it.ID]; ok {
+		return w.reason
+	}
+	if it.Category == CatColdAgentSession && strings.HasPrefix(it.ID, "sessions-cold-") {
+		return coldItemReason
+	}
+	return strings.TrimSpace(it.Reason)
 }

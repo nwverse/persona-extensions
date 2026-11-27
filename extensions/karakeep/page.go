@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -146,6 +147,12 @@ func (a *app) page(ctx context.Context, r *ext.UIRequest, st pageState) (*wire.V
 	return v, nil
 }
 
+// httpsLink reports whether a link component can carry raw: the view check refuses the whole view for any other.
+func httpsLink(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Hostname() != "" && u.User == nil
+}
+
 func detailView(r *ext.UIRequest, st pageState, item bookmark, highlights []highlight) *wire.View {
 	t := textsFor(r.Locale)
 	items := []wire.Component{}
@@ -153,7 +160,7 @@ func detailView(r *ext.UIRequest, st pageState, item bookmark, highlights []high
 	if kind := item.kind(); kind != "" {
 		items = append(items, wire.Component{Type: wire.ComponentText, Text: kind, Style: wire.TextStyleSecondary})
 	}
-	if link := item.link(); link != "" {
+	if link := item.link(); httpsLink(link) {
 		items = append(items, wire.Component{Type: wire.ComponentLink, Title: t.open, URL: link})
 	}
 	items = append(items, wire.Component{Type: wire.ComponentButton, Title: t.favourite, Action: &wire.Action{ID: "favourite", Confirm: t.favourite + "\n" + title}})
@@ -168,6 +175,9 @@ func detailView(r *ext.UIRequest, st pageState, item bookmark, highlights []high
 	}
 	section := wire.Section{Title: t.highlights}
 	for _, h := range highlights {
+		if h.BookmarkID != item.ID {
+			continue
+		}
 		section.Items = append(section.Items, textComponents(h.Text)...)
 		section.Items = append(section.Items, textComponents(h.Note)...)
 	}

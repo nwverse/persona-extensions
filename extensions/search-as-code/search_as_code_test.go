@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -26,6 +27,7 @@ func TestMain(m *testing.M) {
 	}
 	locatorFile = func() string { return filepath.Join(dir, "data-dir") }
 	defaultSessionDirs = func() []string { return nil }
+	defaultColdTextDirs = func() []string { return nil }
 	code := m.Run()
 	_ = os.RemoveAll(dir)
 	os.Exit(code)
@@ -49,14 +51,15 @@ func TestManifest(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil || len(m.Contributes.MCPServers) != 1 {
 		t.Fatalf("expected 1 mcp server: %v", err)
 	}
-	var readOnly []string
-	for _, tl := range tools {
-		if tl.readOnly {
-			readOnly = append(readOnly, tl.name)
-		}
+	// Searches read other projects' history: only listing recipes runs without asking (#519).
+	allow := m.Contributes.MCPServers[0].Allow
+	if !slices.Equal(allow, []string{"sac_recipes_list"}) {
+		t.Fatalf("allow %v, want only sac_recipes_list", allow)
 	}
-	if allow := m.Contributes.MCPServers[0].Allow; !slices.Equal(allow, readOnly) {
-		t.Fatalf("allow %v, want read-only tools %v", allow, readOnly)
+	for _, name := range []string{"sac_execute", "sac_session_search"} {
+		if slices.Contains(allow, name) || !hasTool(name) {
+			t.Fatalf("%s must exist and not be pre-allowed", name)
+		}
 	}
 	if !strings.Contains(usage, "mcp") {
 		t.Fatal("--help must mention mcp")
@@ -329,6 +332,67 @@ func TestUIViewsAndActionsPassCheckView(t *testing.T) {
 	}
 }
 
+// The Overview card reports the stored last run and never scans: the hub draws it on every visit to Overview.
+func TestCardNeverRunsAPipeline(t *testing.T) {
+	sessionDir, repoDir := seedFixtures(t)
+	a := newApp(t.TempDir())
+	a.now = func() time.Time { return t0 }
+	_ = a.db().update(func(st *State, _ time.Time) error {
+		st.SessionDirs = []string{sessionDir}
+		st.RepoDirs = []string{repoDir}
+		return nil
+	})
+	caption := func() string {
+		t.Helper()
+		v, err := a.card(context.Background(), &ext.UIRequest{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := wire.CheckView(v); err != nil {
+			t.Fatalf("card CheckView: %v", err)
+		}
+		for _, it := range v.Sections[0].Items {
+			if it.Key == "card-summary" {
+				return it.Text
+			}
+		}
+		return ""
+	}
+
+	// nothing was run yet: the sessions are there, but the card does not scan them to say how many
+	if got := caption(); got != "" {
+		t.Fatalf("card before any run: caption %q, want none", got)
+	}
+
+	// a run with a query is stored; the card reports it as it was
+	var stored *ExecutionResult
+	_ = a.db().update(func(st *State, now time.Time) error {
+		prog, err := CompileProgram(CompileInput{Query: "timeout", Scope: "conversation"})
+		if err != nil {
+			return err
+		}
+		stored = ExecuteProgram(st, prog, now)
+		st.recordRun(stored, now)
+		return nil
+	})
+	if stored == nil || stored.ScannedSessions == 0 {
+		t.Fatalf("fixture run scanned nothing: %+v", stored)
+	}
+	want := fmt.Sprintf("搜了本机 %d 段聊天", stored.ScannedSessions)
+	if got := caption(); !strings.Contains(got, want) || !strings.Contains(got, fmt.Sprintf("找到 %d 段", stored.TotalMatches)) {
+		t.Fatalf("card after a query run: caption %q, want the stored run's (%s…)", got, want)
+	}
+
+	// the sessions are gone since: a fresh scan would find none, the card still reports the stored run
+	_ = a.db().update(func(st *State, _ time.Time) error {
+		st.SessionDirs = []string{t.TempDir()}
+		return nil
+	})
+	if got := caption(); !strings.Contains(got, want) {
+		t.Fatalf("card after the sessions moved: caption %q, want the stored run's (%s…)", got, want)
+	}
+}
+
 func TestMCPServerOverStdio(t *testing.T) {
 	sessionDir, repoDir := seedFixtures(t)
 	s := newStore(t.TempDir())
@@ -392,8 +456,8 @@ func TestMCPServerOverStdio(t *testing.T) {
 	}
 	listRes := send(2, "tools/list", map[string]any{})
 	toolsArr := listRes["result"].(map[string]any)["tools"].([]any)
-	if len(toolsArr) != 5 {
-		t.Fatalf("expected 5 MCP tools, got %d", len(toolsArr))
+	if len(toolsArr) != 6 {
+		t.Fatalf("expected 6 MCP tools, got %d", len(toolsArr))
 	}
 
 	// 1. sac_recipes_list

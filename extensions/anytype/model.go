@@ -7,7 +7,7 @@ type space struct {
 
 type objectType struct {
 	ID      string `json:"id"`
-	TypeKey string `json:"type_key"`
+	TypeKey string `json:"key"`
 	Name    string `json:"name"`
 	Layout  string `json:"layout"`
 }
@@ -22,6 +22,11 @@ type knowledgeObject struct {
 	Layout   string     `json:"layout"`
 	Type     objectType `json:"type"`
 	Blocks   []block    `json:"blocks"`
+}
+
+// objectAnswer is what Anytype answers when one object is read or created (ObjectResponse).
+type objectAnswer struct {
+	Object knowledgeObject `json:"object"`
 }
 
 type block struct {

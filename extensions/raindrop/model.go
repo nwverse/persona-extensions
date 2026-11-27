@@ -9,19 +9,19 @@ import (
 // raindrop is the subset of the public API's bookmark used by Persona.
 // The ID stays an integer through the exact JSON decoder, not a float64.
 type raindrop struct {
-	ID         int64       `json:"_id"`
-	Title      string      `json:"title"`
-	Excerpt    string      `json:"excerpt"`
-	Note       string      `json:"note"`
-	Link       string      `json:"link"`
-	Domain     string      `json:"domain"`
-	Created    string      `json:"created"`
-	LastUpdate string      `json:"lastUpdate"`
-	Tags       []string    `json:"tags"`
-	Important  bool        `json:"important"`
-	Broken     bool        `json:"broken"`
-	Collection collection  `json:"collection"`
-	Highlights []highlight `json:"highlights"`
+	ID         int64              `json:"_id"`
+	Title      string             `json:"title"`
+	Excerpt    string             `json:"excerpt"`
+	Note       string             `json:"note"`
+	Link       string             `json:"link"`
+	Domain     string             `json:"domain"`
+	Created    string             `json:"created"`
+	LastUpdate string             `json:"lastUpdate"`
+	Tags       []string           `json:"tags"`
+	Important  bool               `json:"important"`
+	Broken     bool               `json:"broken"`
+	Collection bookmarkCollection `json:"collection"`
+	Highlights []highlight        `json:"highlights"`
 }
 
 type highlight struct {
@@ -30,6 +30,12 @@ type highlight struct {
 	Note    string `json:"note"`
 	Color   string `json:"color"`
 	Created string `json:"created"`
+}
+
+// bookmarkCollection is the collection a bookmark resides in. The reference documents only `collection.$id`; the title
+// comes from the collection list.
+type bookmarkCollection struct {
+	ID int64 `json:"$id"`
 }
 
 type collection struct {

@@ -14,7 +14,7 @@ import (
 )
 
 const connectorID = "gitlab"
-const pageUI = "reviews"
+const pageUI = "gitlab"
 
 type app struct {
 	mu       sync.RWMutex

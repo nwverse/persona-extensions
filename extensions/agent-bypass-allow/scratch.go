@@ -54,6 +54,10 @@ type roots struct {
 
 // scratchRoots reads the roots for a session in cwd ("" for none).
 func scratchRoots(cwd string) *roots {
+	return scratchRootsWithWorkspaces(cwd, nil)
+}
+
+func scratchRootsWithWorkspaces(cwd string, workspaces []string) *roots {
 	r := &roots{}
 	homeRaw, _ := os.UserHomeDir()
 	if filepath.IsAbs(homeRaw) {
@@ -69,9 +73,11 @@ func scratchRoots(cwd string) *roots {
 			cand = append(cand, filepath.Join(r.home, d))
 		}
 	}
-	if filepath.IsAbs(cwd) {
-		if c := resolve(filepath.Clean(cwd), true); r.workDir(c) {
-			cand = append(cand, c)
+	for _, w := range append([]string{cwd}, workspaces...) {
+		if filepath.IsAbs(w) {
+			if c := resolve(filepath.Clean(w), true); r.workDir(c) {
+				cand = append(cand, c)
+			}
 		}
 	}
 	for _, c := range cand {
@@ -196,12 +202,15 @@ func dangles(p string) bool {
 
 // shellVars is what one command string sets that the scratch check can read.
 type shellVars struct {
-	vars    map[string][]string // the values each readable variable can have
-	from    map[string]int      // the first segment that sets it
-	tainted map[string]bool     // names the command sets or touches some other way
-	off     bool                // no variable is read
-	links   bool                // the command makes links or mounts: what a path leads to may change before the deletion runs
-	cwds    []string            // directories relative targets are read against; none: relative targets are not read
+	vars        map[string][]string // the values each readable variable can have
+	from        map[string]int      // the first segment that sets it
+	tainted     map[string]bool     // names the command sets or touches some other way
+	off         bool                // no variable is read
+	indirectOff bool
+	links       bool     // the command makes links or mounts: what a path leads to may change before the deletion runs
+	cwds        []string // directories relative scratch targets are read against; none: relative targets are not scratch
+	protCwds    []string // candidate working directories for protected-target checks (retained across bare cd and local subshells)
+	protUnknown bool     // true if a cd moved to an unknown directory (cd -, popd, dynamic cd)
 }
 
 var identifier = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
@@ -214,9 +223,22 @@ func literal(v string) bool {
 // readVars reads cmd's segments (scanned from raw, its heredoc bodies taken out): the variables they set and the
 // directories they cd to. relative says whether the command runs in the session's working directory.
 func readVars(raw string, segs []segment, tail, cwd string, relative bool) *shellVars {
-	sv := &shellVars{vars: map[string][]string{}, from: map[string]int{}, tainted: map[string]bool{}}
+	return readVarsWithProtected(raw, segs, tail, cwd, relative, nil, false)
+}
+
+func readVarsWithProtected(raw string, segs []segment, tail, cwd string, relative bool, inheritedProt []string, inheritedUnknown bool) *shellVars {
+	sv := &shellVars{
+		vars:        map[string][]string{},
+		from:        map[string]int{},
+		tainted:     map[string]bool{},
+		protUnknown: inheritedUnknown,
+	}
 	if relative && cwd != "" {
-		sv.cwds = []string{filepath.Clean(cwd)}
+		clean := filepath.Clean(cwd)
+		sv.cwds = []string{clean}
+		sv.protCwds = []string{clean}
+	} else if len(inheritedProt) > 0 {
+		sv.protCwds = append([]string(nil), inheritedProt...)
 	}
 	if strings.Contains(raw, "$(") || strings.Contains(raw, "`") || strings.Contains(raw, "\\$") || quotedDollar(raw) {
 		sv.off = true
@@ -279,6 +301,19 @@ func readVars(raw string, segs []segment, tail, cwd string, relative bool) *shel
 		if shellish(words) {
 			sv.off = true
 		}
+		for _, w := range words {
+			switch progName(w) {
+			case "read", "export", "declare", "typeset", "readonly", "local", "unset", "getopts", "mapfile", "readarray", "vared", "let", "source", ".":
+				sv.indirectOff = true
+			case "printf":
+				if hasShort(words, 'v') {
+					sv.indirectOff = true
+				}
+			}
+		}
+		if strings.Contains(raw, "((") {
+			sv.indirectOff = true
+		}
 		for i, w := range words {
 			if i == firstProgram(words) || (i > 0 && wrappers[progName(words[i-1])]) {
 				switch progName(w) {
@@ -303,6 +338,7 @@ func readVars(raw string, segs []segment, tail, cwd string, relative bool) *shel
 				sv.cd(words[prog+1:], k)
 			case "eval":
 				sv.cwds = nil // its command string may cd anywhere
+				sv.protUnknown = true
 			}
 		}
 	}
@@ -442,35 +478,73 @@ func cdWord(words []string) int {
 	return i
 }
 
+func isCdFlags(a string) bool {
+	if len(a) < 2 || a[0] != '-' || a == "--" {
+		return false
+	}
+	for i := 1; i < len(a); i++ {
+		switch a[i] {
+		case 'P', 'L', 'e', '@':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // cd adds the directories a cd to args may go to; one it cannot read leaves relative targets unread.
 func (sv *shellVars) cd(args []string, k int) {
-	for len(args) > 0 && (args[0] == "-P" || args[0] == "-L" || args[0] == "-e" || args[0] == "-@") {
+	for len(args) > 0 && isCdFlags(args[0]) {
 		args = args[1:]
 	}
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) == 0 {
+		// Bare cd changes to $HOME: keep scratch failing closed, and record $HOME for protected-target checks.
+		sv.cwds = nil
+		if home, err := os.UserHomeDir(); err == nil && filepath.IsAbs(home) {
+			sv.protCwds = append(sv.protCwds, filepath.Clean(home))
+			if real, ok := physical(home); ok && real != filepath.Clean(home) {
+				sv.protCwds = append(sv.protCwds, real)
+			}
+		} else {
+			sv.protUnknown = true
+		}
+		if sv.tainted["HOME"] || sv.sets("HOME") {
+			sv.protUnknown = true
+		}
+		return
+	}
 	if len(args) != 1 || args[0] == "-" || strings.HasPrefix(args[0], "+") || strings.HasPrefix(args[0], "-") {
-		sv.cwds = nil // cd alone (home), cd -, popd, pushd +N: somewhere unknown
+		sv.cwds = nil // cd -, popd, pushd +N: somewhere unknown
+		sv.protUnknown = true
 		return
 	}
 	dirs, ok := sv.expand(args[0], k)
 	if !ok {
 		sv.cwds = nil
+		sv.protUnknown = true
 		return
 	}
-	var next []string
+	var next, protNext []string
 	// cd reads a .. logically, cd -P (or zsh's chase_links) physically: both count
-	add := func(d string) bool {
-		next = append(next, filepath.Clean(d))
+	addTo := func(dst *[]string, d string) bool {
+		*dst = append(*dst, filepath.Clean(d))
 		real, ok := physical(d)
 		if ok && real != filepath.Clean(d) {
-			next = append(next, real)
+			*dst = append(*dst, real)
 		}
 		return ok
 	}
+	scratchFailed := false
 	for _, d := range dirs {
 		if filepath.IsAbs(d) {
-			if !add(d) {
-				sv.cwds = nil
-				return
+			if !addTo(&protNext, d) {
+				sv.protUnknown = true
+			}
+			if !addTo(&next, d) {
+				scratchFailed = true
 			}
 			continue
 		}
@@ -479,22 +553,29 @@ func (sv *shellVars) cd(args []string, k int) {
 		// remain subject to confirmation.
 		first := strings.SplitN(d, string(filepath.Separator), 2)[0]
 		if first != "." && first != ".." && (os.Getenv("CDPATH") != "" || sv.sets("CDPATH") || sv.sets("cdpath")) {
-			sv.cwds = nil
-			return
+			scratchFailed = true
+			sv.protUnknown = true
+			continue
+		}
+		for _, c := range sv.protCwds {
+			if !addTo(&protNext, c+"/"+d) {
+				sv.protUnknown = true
+			}
 		}
 		if len(sv.cwds) == 0 {
-			sv.cwds = nil
-			return
+			scratchFailed = true
+			continue
 		}
 		for _, c := range sv.cwds {
-			if !add(c + "/" + d) {
-				sv.cwds = nil
-				return
+			if !addTo(&next, c+"/"+d) {
+				scratchFailed = true
 			}
 		}
 	}
-	if len(sv.cwds) == 0 {
-		return // relative targets stay unread
+	sv.protCwds = append(sv.protCwds, protNext...)
+	if scratchFailed || len(sv.cwds) == 0 {
+		sv.cwds = nil
+		return // relative targets stay unread for scratch
 	}
 	sv.cwds = append(sv.cwds, next...)
 }
@@ -503,7 +584,7 @@ func (sv *shellVars) cd(args []string, k int) {
 const expandMax = 64
 
 // dollar matches $NAME and ${NAME}.
-var dollar = regexp.MustCompile(`\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))`)
+var dollar = regexp.MustCompile(`\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*)|\{\(P\)([A-Za-z_][A-Za-z0-9_]*)\})`)
 
 // expand is the paths word w (in segment k) can be: ~ and the readable variables expanded. ok is false when w has an
 // expansion the check cannot read.
@@ -537,12 +618,34 @@ func (sv *shellVars) expand(w string, k int) (out []string, ok bool) {
 		name := ""
 		if loc[2] >= 0 {
 			name = rest[loc[2]:loc[3]]
-		} else {
+		} else if loc[4] >= 0 {
 			name = rest[loc[4]:loc[5]]
 		}
-		vals, known := sv.value(name, k)
-		if !known {
-			return nil, false
+		var vals []string
+		if loc[6] >= 0 {
+			selectors, known := sv.value(rest[loc[6]:loc[7]], k)
+			if !known || sv.off || sv.indirectOff {
+				return nil, false
+			}
+			for _, selector := range selectors {
+				if !identifier.MatchString(selector) {
+					return nil, false
+				}
+				values, known := sv.value(selector, k)
+				if !known {
+					return nil, false
+				}
+				vals = append(vals, values...)
+				if len(vals) > expandMax {
+					return nil, false
+				}
+			}
+		} else {
+			var known bool
+			vals, known = sv.value(name, k)
+			if !known {
+				return nil, false
+			}
 		}
 		var next []string
 		for _, o := range out {
@@ -587,7 +690,7 @@ func targetsOf(name string, args []string) []string {
 	case "truncate":
 		valueFlags = map[string]bool{"-s": true, "-r": true}
 	case "mv", "cp", "ln":
-		valueFlags = map[string]bool{"-t": true, "-S": true}
+		valueFlags = map[string]bool{"-t": true, "--target-directory": true, "-S": true, "--suffix": true}
 	case "rmdir":
 		if hasShort(args, 'p') || hasLongOpt(args, "--parents") {
 			return nil // it removes the parents too
@@ -617,29 +720,77 @@ func targetsOf(name string, args []string) []string {
 			operands = append(operands, a)
 		case a == "--":
 			dashdash = true
-		case valueFlags[a] && i+1 < len(args):
+		case valueFlags[a]:
+			if i+1 >= len(args) {
+				return nil
+			}
 			i++
 			values = append(values, a, args[i])
-		case strings.HasPrefix(a, "--target-directory="):
-			values = append(values, "-t", strings.TrimPrefix(a, "--target-directory="))
-		case strings.HasPrefix(a, "-t") && len(a) > 2 && (name == "mv" || name == "cp" || name == "ln"):
-			values = append(values, "-t", a[2:])
+		case (name == "mv" || name == "cp" || name == "ln") && longOpt(a, "--target-directory"):
+			if _, val, ok := strings.Cut(a, "="); ok {
+				values = append(values, "-t", val)
+			} else if i+1 < len(args) {
+				i++
+				values = append(values, "-t", args[i])
+			} else {
+				return nil
+			}
+		case (name == "mv" || name == "cp" || name == "ln") && longOpt(a, "--suffix"):
+			if !strings.Contains(a, "=") {
+				if i+1 >= len(args) {
+					return nil
+				}
+				i++
+			}
+		case !strings.HasPrefix(a, "--") && len(a) > 2 && (name == "mv" || name == "cp" || name == "ln"):
+			for j := 1; j < len(a); j++ {
+				switch a[j] {
+				case 't':
+					if j+1 < len(a) {
+						values = append(values, "-t", a[j+1:])
+					} else if i+1 < len(args) {
+						i++
+						values = append(values, "-t", args[i])
+					} else {
+						return nil
+					}
+					j = len(a)
+				case 'S':
+					if j+1 < len(a) {
+						j = len(a)
+					} else if i+1 < len(args) {
+						i++
+						j = len(a)
+					} else {
+						return nil
+					}
+				}
+			}
 		case strings.HasPrefix(a, "--") && strings.Contains(a, "=") && !strings.HasPrefix(a, "--suffix=") &&
 			!strings.HasPrefix(a, "--size=") && !strings.HasPrefix(a, "--reference=") && !strings.HasPrefix(a, "--iterations="):
 			return nil // an option whose value may be a path the check does not know
 		}
 	}
-	target := ""
+	var targetDirs []string
 	for k := 0; k+1 < len(values); k += 2 {
-		if values[k] == "-t" {
-			target = values[k+1]
+		if values[k] == "-t" || values[k] == "--target-directory" {
+			if values[k+1] == "" {
+				return nil
+			}
+			// -t/--target-directory always traverses DIR as a directory (never replaces a symlink itself);
+			// a trailing "/" makes scratchPath follow symlinks and check dangling links at DIR.
+			dir := values[k+1]
+			if !strings.HasSuffix(dir, "/") {
+				dir += "/"
+			}
+			targetDirs = append(targetDirs, dir)
 		}
 	}
 	switch name {
 	case "cp", "ln":
 		// only the destination changes
-		if target != "" {
-			return []string{target}
+		if len(targetDirs) > 0 {
+			return targetDirs
 		}
 		if len(operands) == 1 && name == "ln" {
 			return []string{path.Base(operands[0])}
@@ -649,8 +800,8 @@ func targetsOf(name string, args []string) []string {
 		}
 		return operands[len(operands)-1:]
 	case "mv":
-		if target != "" {
-			operands = append(operands, target)
+		if len(targetDirs) > 0 {
+			operands = append(operands, targetDirs...)
 		}
 		if len(operands) < 2 {
 			return nil
@@ -700,37 +851,11 @@ func findTargets(args []string) []string {
 	return out
 }
 
-// findStarts are find's starting points (find -L follows links out of them: not read).
+// findStarts are find's starting points (find -H/-L/-follow follows links out of them: not read).
 func findStarts(args []string) []string {
-	i := 0
-	for i < len(args) {
-		switch a := args[i]; {
-		case a == "-H" || a == "-P":
-			i++
-		case a == "-D" && i+1 < len(args):
-			i += 2
-		case strings.HasPrefix(a, "-O"):
-			i++
-		case a == "-L" || a == "-follow":
-			return nil
-		default:
-			goto starts
-		}
-	}
-starts:
-	var out []string
-	for ; i < len(args); i++ {
-		a := args[i]
-		if strings.HasPrefix(a, "-") || a == "(" || a == "!" || a == "," {
-			break
-		}
-		out = append(out, a)
-	}
-	if has(args, "-follow") || has(args, "-L") {
+	out, followLinks := parseFindStarts(args)
+	if followLinks {
 		return nil
-	}
-	if len(out) == 0 {
-		out = []string{"."}
 	}
 	for i, o := range out {
 		if o == "." || o == "./" {
