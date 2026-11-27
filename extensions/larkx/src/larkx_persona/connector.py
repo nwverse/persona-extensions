@@ -1097,7 +1097,8 @@ class Connector:
                 run.update(machine=machine, session=sid)
                 self.store.bind_agent_run(run, m["chat"], m.get("root") or m["id"])
             except Exception as exc:
-                if not session and isinstance(exc, TimeoutError):
+                # A gateway 502/504 means the hub's own call to the computer timed out: same unknown outcome.
+                if not session and (isinstance(exc, TimeoutError) or getattr(exc, "code", None) in (502, 504)):
                     # No binding returned: don't resend the POST or start an agent reply worker.
                     self._agent_event("timeout", run, "start; falling back to channel")
                     raise HubUnavailable from exc

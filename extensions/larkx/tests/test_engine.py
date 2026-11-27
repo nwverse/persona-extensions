@@ -447,6 +447,16 @@ class EngineTest(unittest.TestCase):
             self.c.channel_send({"ref": "one", "reply_to": "r1", "text": "final"})
         self.assertEqual(self.backend.sent, [("direct", "final\n\ntest suffix", None)])
 
+    def test_start_gateway_timeout_hands_request_to_channel_once(self):
+        error = HTTPError("https://example.com/hub", 502, "gateway", {}, None)
+        with mock.patch.object(self.api, "start", side_effect=error) as post:
+            self.live(1, "check")
+            self.assertTrue(self.hub.got.wait(2))
+            self.assertEqual(post.call_count, 1)
+        msg, = self.hub.received
+        self.assertEqual(msg["message"]["id"], "r1")
+        self.assertFalse(self.c.store.agent_runs(ME))
+
     def test_uncertain_submission_is_not_replayed_on_the_channel(self):
         self.live(1, "/agent first", sender=ME)
         self.until(lambda: self.count("replied") == 1)
