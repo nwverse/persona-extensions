@@ -33,6 +33,14 @@
       "license_file": "assets/LICENSE",
       "attribution": "LINUX DO. Official icon asset, with the upstream repository license notice preserved in each package. Trademark rights are separate from copyright licensing."
     },
+    "lucide": {
+      "repository": "https://github.com/lucide-icons/lucide",
+      "revision": "f620c85e3b8ecb7c9089de19df7e7b7ff3863efd",
+      "license": "ISC AND MIT",
+      "license_url": "https://raw.githubusercontent.com/lucide-icons/lucide/f620c85e3b8ecb7c9089de19df7e7b7ff3863efd/LICENSE",
+      "license_file": "assets/LICENSE",
+      "attribution": "Lucide Contributors and Cole Bemis. Gamepad 2 artwork from the Lucide icon set, with the upstream license notice."
+    },
     "magpie-usage": {
       "repository": "https://github.com/yetone/magpie",
       "revision": "053aa2d188bc66445cde45edfef9896ddbb0a58e",
@@ -965,6 +973,19 @@
       "height": 1024,
       "trademark_owner": "Persona / nwverse",
       "usage": "Official Persona app branding for this Persona-native tool or pack, not the logo of an external data provider."
+    },
+    "steam": {
+      "path": "assets/icon.png",
+      "source_id": "lucide",
+      "source_url": "https://raw.githubusercontent.com/lucide-icons/lucide/f620c85e3b8ecb7c9089de19df7e7b7ff3863efd/icons/gamepad-2.svg",
+      "sha256": "70e0a5543be088e0be0df78477e6af8de656d45111e14eb324ff26b5bf675833",
+      "format": "png",
+      "width": 256,
+      "height": 256,
+      "trademark_owner": "Valve Corporation (Steam)",
+      "usage": "Lucide gamepad pictogram identifying the Steam integration.",
+      "source_sha256": "b0671de7afbebdafc4d655d867d9851947170b906fb187e749410039df867509",
+      "transformation": "The source SVG is rasterized at 256 × 256 on a light blue background with its path geometry intact."
     },
     "sentry": {
       "path": "assets/icon.png",
