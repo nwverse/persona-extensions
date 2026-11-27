@@ -1929,7 +1929,7 @@ func recallNonStandingL1(st *store.State, ov *overview.State, f heFilter, day, s
 				continue
 			}
 			s := scoreText(head, e.Exception, memsrc.Subjects(st, e))
-			if s >= 3.0 {
+			if s >= 5.0 {
 				cands = append(cands, scoredRule{
 					id:    e.ID,
 					line:  "- " + heClip(uc.Text, 240),
@@ -1955,7 +1955,7 @@ func recallNonStandingL1(st *store.State, ov *overview.State, f heFilter, day, s
 				continue
 			}
 			s := scoreText(head, p.Exception, overview.EnrichSubjects(p))
-			if s >= 3.0 {
+			if s >= 5.0 {
 				cands = append(cands, scoredRule{
 					id:    p.ID,
 					line:  "- " + heClip(overview.Text(p), 240),
@@ -1982,7 +1982,7 @@ func recallNonStandingL1(st *store.State, ov *overview.State, f heFilter, day, s
 	var keptBodies []string
 	used := 0
 	for _, c := range cands {
-		if len(lines) >= 6 {
+		if len(lines) >= 4 {
 			break
 		}
 		if slices.ContainsFunc(keptBodies, func(b string) bool { return norm.Jaccard(b, c.body) >= 0.45 }) {
@@ -2059,54 +2059,186 @@ func collabContainsEntity(situation, name string) bool {
 	return len([]rune(n)) >= 2 && strings.Contains(situation, n)
 }
 
+// collabStripRecallPrefix removes bullet and semantic tier prefixes so cross-pass Jaccard deduplication catches
+// near-identical rules emitted by standing, UserOwned, L1, local recall, and 1-hop entity expansion.
+func collabStripRecallPrefix(ln string) string {
+	s := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(ln), "-"))
+	s = strings.TrimPrefix(s, "【原则】")
+	if strings.HasPrefix(s, "跨事模式（") {
+		if i := strings.Index(s, "）："); i >= 0 {
+			s = s[i+len("）："):]
+		}
+	}
+	return strings.TrimSpace(s)
+}
+
+// recallEntityFacts retrieves persistent high-IDF World/People facts directly naming entities in situation
+// (strictly World/People, whole-word ASCII matched, excluding ephemeral PR/ticket noise).
+func (idx collabNameIndex) recallEntityFacts(st *store.State, f heFilter, day, situation, standing string, budget int) []string {
+	if st == nil || budget <= 0 {
+		return nil
+	}
+	hits := map[string]float64{}
+	total := float64(max(1, len(st.Entries)))
+	idf := func(df int) float64 { return math.Log(total / float64(1+df)) }
+	var cands []*entry.Entry
+	seen := map[string]bool{}
+	add := func(e *entry.Entry, w float64) {
+		if e == nil || (e.Facet != entry.World && e.Facet != entry.People) {
+			return
+		}
+		if !seen[e.ID] {
+			seen[e.ID] = true
+			cands = append(cands, e)
+		}
+		hits[e.ID] += w
+	}
+	for n, es := range idx {
+		if !collabContainsEntity(situation, n) {
+			continue
+		}
+		w := idf(len(es))
+		for _, e := range es {
+			if (e.Facet != entry.World && e.Facet != entry.People) || f.entryOut(st, e, day) {
+				continue
+			}
+			add(e, w)
+		}
+	}
+	names := map[string]bool{}
+	for n := range idx {
+		if collabContainsEntity(situation, n) && len([]rune(n)) >= 4 {
+			names[n] = true
+		}
+	}
+	for _, n := range collabIdent.FindAllString(situation, -1) {
+		if collabContainsEntity(situation, n) {
+			names[n] = true
+		}
+	}
+	for n := range names {
+		var found []*entry.Entry
+		for _, e := range st.Entries {
+			if (e.Facet == entry.World || e.Facet == entry.People) && strings.Contains(e.Shown(), n) {
+				found = append(found, e)
+			}
+		}
+		w := idf(len(found))
+		for _, e := range found {
+			if !memsrc.Pageable(st, e) || len(e.Cats()) > 0 || e.OriginSpace != "" || e.Inferred || f.entryOut(st, e, day) {
+				continue
+			}
+			add(e, w)
+		}
+	}
+	sort.Slice(cands, func(i, j int) bool {
+		a, b := cands[i], cands[j]
+		if hits[a.ID] != hits[b.ID] {
+			return hits[a.ID] > hits[b.ID]
+		}
+		if ra, rb := memsrc.Rank(a), memsrc.Rank(b); ra != rb {
+			return ra > rb
+		}
+		if a.Last != b.Last {
+			return a.Last > b.Last
+		}
+		return a.ID < b.ID
+	})
+	var out []string
+	used := 0
+	for _, e := range cands {
+		if len(out) >= 16 {
+			break
+		}
+		t := heClip(e.Shown(), 200)
+		if t == "" || collabEphemeralFact.MatchString(t) || strings.Contains(standing, t) {
+			continue
+		}
+		ln := "- " + t
+		if used+len(ln)+1 > budget {
+			continue
+		}
+		out = append(out, ln)
+		used += len(ln) + 1
+	}
+	return out
+}
+
 // recallTwoLayer implements the unified design §2.2 two-layer contextual recall within budget bytes:
-//   - Main rule slot (~70%, <= 1400 B, symmetric across recall and recall-noent): non-standing L1 contracts/principles
-//     (<= 850 B) + high-IDF non-entity local rules, ensuring entity facts can never crowd out core rules;
-//   - Controlled entity supplement slot (remaining ~30%, <= 648 B when entities=true): high-purity word-boundary
-//     Block 2 1-hop entity skeleton expansion (pruned of hub fan-in and generic nouns) + persistent World/People
-//     facts (filtered of ephemeral PR/ticket noise). When entities=false, remaining room stays strictly non-entity.
+//   - Unified cross-pass semantic deduplication (norm.Jaccard >= 0.45) initialized from standing so no rule is
+//     repeated across standing, verbatim UserOwned/L1 recall, local rule recall, and 1-hop entity expansion;
+//   - Main rule slot (~70%, <= 1400 B for recall; 100% for recall-noent): high-precision non-standing UserOwned/L1
+//     rules (score >= 5.0, <= 650 B) + high-IDF non-entity local rules;
+//   - Controlled entity supplement slot (remaining ~30%, >= 648 B when entities=true): concise 1-hop [实体骨架]
+//     edges (<= 2/entity, <= 220 B) + persistent high-IDF World/People entity facts FIRST (never evicted by
+//     duplicate general rules) + deduplicated 1-hop neighbor rules in any remaining room;
+//   - Zero-waste backfill: when an incident has few/no entity facts, unused entity-slot bytes flow back to remaining
+//     non-entity local rules so non-entity scenes never lose budget relative to recall-noent.
 func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f heFilter, day, situation, standing string, budget int, entities bool) string {
 	if budget <= 0 {
 		return ""
 	}
 	var out []string
 	seen := map[string]bool{}
+	var keptBodies []string
+	for _, sl := range strings.Split(standing, "\n") {
+		if b := collabStripRecallPrefix(sl); b != "" {
+			keptBodies = append(keptBodies, b)
+		}
+	}
 	used := 0
-	addLine := func(ln string, capBytes int) bool {
+	addLine := func(ln string, capBytes int, dedupSemantic bool) bool {
+		ln = strings.TrimSpace(ln)
 		if ln == "" || seen[ln] {
 			return false
 		}
 		if used+len(ln)+1 > capBytes || used+len(ln)+1 > budget {
 			return false
 		}
+		body := collabStripRecallPrefix(ln)
+		if dedupSemantic && body != "" {
+			if slices.ContainsFunc(keptBodies, func(prev string) bool { return norm.Jaccard(prev, body) >= 0.45 }) {
+				return false
+			}
+		}
 		seen[ln] = true
+		if dedupSemantic && body != "" {
+			keptBodies = append(keptBodies, body)
+		}
 		out = append(out, ln)
 		used += len(ln) + 1
 		return true
 	}
 
-	// Main rule slot (identical priority in recall and recall-noent so entity facts never evict core rules).
+	// Pass 1: Main rule slot (identical priority in recall and recall-noent so entity facts never evict core rules).
 	mainCap := min(1400, budget*70/100)
 	if !entities {
 		mainCap = budget
 	}
-	l1Budget := min(850, mainCap*60/100)
+	l1Budget := min(650, mainCap*45/100)
 	for _, ln := range recallNonStandingL1(st, ov, f, day, situation, standing, l1Budget) {
-		addLine(ln, mainCap)
+		addLine(ln, mainCap, true)
 	}
-	if rem := mainCap - used; rem > 40 {
-		for _, ln := range strings.Split(idx.recall(st, f, day, situation, standing, rem, false), "\n") {
-			ln = strings.TrimSpace(ln)
-			if ln != "" {
-				addLine(ln, mainCap)
+	var nonEntLines []string
+	if budget-used > 40 {
+		for _, ln := range strings.Split(idx.recall(st, f, day, situation, standing, budget, false), "\n") {
+			if ln = strings.TrimSpace(ln); ln != "" {
+				nonEntLines = append(nonEntLines, ln)
 			}
+		}
+		for _, ln := range nonEntLines {
+			addLine(ln, mainCap, true)
 		}
 	}
 	if !entities {
 		return strings.Join(out, "\n")
 	}
 
-	// Controlled entity supplement slot (budget - used, ~648 B): high-purity 1-hop skeleton + persistent entity facts.
+	// Pass 2: Controlled entity supplement slot (remaining budget - used, >= ~648 B):
+	// 2a: Concise 1-hop [实体骨架] edges (<= 2 per top-2 entity, <= 220 B total);
+	// 2b: Persistent high-IDF World/People entity facts FIRST (never crowded out by ec.Rules);
+	// 2c: Deduplicated 1-hop neighbor rules (ec.Rules) in leftover room.
+	var hopRules []string
 	if st != nil && st.Graph != nil && budget-used > 40 {
 		cleanSt := &store.State{
 			Version:    st.Version,
@@ -2148,15 +2280,16 @@ func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f
 		if len(qs) > 2 {
 			qs = qs[:2]
 		}
+		skelCap := min(budget, used+220)
 		for _, q := range qs {
 			sr := recall.Search(cleanSt, recall.Query{Text: q.name, Limit: 4})
 			for _, ec := range sr.Entities {
 				skelAdded := 0
 				for _, edge := range ec.Skeleton {
-					if skelAdded >= 3 {
+					if skelAdded >= 2 {
 						break
 					}
-					if addLine(fmt.Sprintf("- [实体骨架] %s --%s--> %s", edge.From, edge.Predicate, edge.To), budget) {
+					if addLine(fmt.Sprintf("- [实体骨架] %s --%s--> %s", edge.From, edge.Predicate, edge.To), skelCap, false) {
 						skelAdded++
 					}
 				}
@@ -2165,23 +2298,33 @@ func (idx collabNameIndex) recallTwoLayer(st *store.State, ov *overview.State, f
 						break
 					}
 					t := heClip(rule.Text, 200)
-					if collabEphemeralFact.MatchString(t) || strings.Contains(standing, heClip(t, 24)) {
+					if t == "" || collabEphemeralFact.MatchString(t) {
 						continue
 					}
-					addLine("- "+t, budget)
+					hopRules = append(hopRules, "- "+t)
 				}
 			}
 		}
 	}
 
-	// Fill any remaining bytes in the entity supplement slot with persistent World/People facts (filtered of ephemeral tickets).
+	// 2b: Persistent high-IDF World/People entity facts before 1-hop rules so ownership/topology facts are never evicted.
 	if rem := budget - used; rem > 40 {
-		for _, ln := range strings.Split(idx.recall(st, f, day, situation, standing, rem*2, true), "\n") {
-			ln = strings.TrimSpace(ln)
-			if ln == "" || collabEphemeralFact.MatchString(ln) {
-				continue
-			}
-			addLine(ln, budget)
+		for _, ln := range idx.recallEntityFacts(st, f, day, situation, standing, rem*2) {
+			addLine(ln, budget, true)
+		}
+	}
+
+	// 2c: Deduplicated 1-hop neighbor rules in any remaining entity-slot room.
+	if budget-used > 40 {
+		for _, ln := range hopRules {
+			addLine(ln, budget, true)
+		}
+	}
+
+	// Pass 3: Zero-waste backfill — if few/no entity facts matched, return unused bytes to remaining non-entity rules.
+	if budget-used > 40 {
+		for _, ln := range nonEntLines {
+			addLine(ln, budget, true)
 		}
 	}
 	return strings.Join(out, "\n")
