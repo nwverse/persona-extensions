@@ -265,8 +265,12 @@ func (a *app) gameNewsPage(ctx context.Context, d *steamData, t *text, st pageSt
 	if news.Available && len(news.Updates) == 0 {
 		section.Items = append(section.Items, empty(t.noRecentNews))
 	}
+	seen := make(map[string]bool)
 	for _, warning := range news.Warnings {
-		section.Footer = joinText(section.Footer, warning.Message)
+		if !seen[warning.Message] {
+			section.Footer = joinText(section.Footer, warning.Message)
+			seen[warning.Message] = true
+		}
 	}
 	return &wire.View{Title: t.recentNews, State: ext.EncodeState(st), Sections: []wire.Section{section}}
 }

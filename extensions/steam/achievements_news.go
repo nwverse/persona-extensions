@@ -378,7 +378,7 @@ func (r achievementPersonalRead) states(schema *achievementSchema) map[string]ac
 	// Fill missing locked rows only when per-game totals confirm the roster
 	// and every unlocked achievement has been identified.
 	p := r.progress.Data
-	if len(states) == 0 || p == nil || p.Total != len(schema.definitions) || p.Unlocked != unlockedCount(states) {
+	if (len(states) == 0 && len(qr.Achievements) > 0) || p == nil || p.Total != len(schema.definitions) || p.Unlocked != unlockedCount(states) {
 		return nil
 	}
 	for id := range schema.definitions {
