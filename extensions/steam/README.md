@@ -13,18 +13,22 @@ To use the read-only Web API key fallback, select **Web API key** and enter a St
 
 ## Token settings
 
-These runtime gates and budgets govern update excerpts and the planned Inbox, memory and discovery features. Each disabled feature uses zero extra LLM tokens. Price and playtime observations use existing Steam reads. QR sessions keep their observations in memory until sign-out or restart. Web API key mode stores its observations in `steam-store-v1` under the extension data directory. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
+These runtime gates and budgets govern wishlist alerts, update excerpts and the planned memory and discovery features. Each disabled feature uses zero extra LLM tokens. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
 
 | Setting | Default | Token impact |
 | --- | --- | --- |
-| `inbox_events_enabled` | Off | Allows Steam Inbox events that can trigger AI triage. |
-| `inbox_max_events_per_day` | 5 (1–50) | Caps daily emissions that can trigger triage. |
+| `inbox_events_enabled` | Off | Starts wishlist scans for alerts about prices, releases, demos and limited-time giveaways. Turning it off stops scans, Inbox notifications and their token use. |
+| `inbox_max_events_per_day` | 5 (1–50) | Caps new alerts per Steam account and UTC day. |
 | `patch_notes_summary_enabled` | Off | Adds plain-text excerpts of up to 700 characters per post for assistant summaries. The default returns headline metadata only. |
-| `sale_roundup_enabled` | Off | Allows sale roundups that can trigger Inbox triage. Also requires Steam Inbox events. |
+| `sale_roundup_enabled` | Off | Replaces individual discount alerts with a top-five roundup when three or more wishlist games are on sale. Requires Inbox events. |
 | `memory_export_enabled` | Off | Allows the gaming profile to use assistant context via `memory_sources`. |
 | `memory_max_items` | 10 (1–30) | Caps profile items added to context. |
 | `discovery_tools_enabled` | On | Allows high-context game research tools and their skill. |
 | `discovery_max_results` | 15 (1–50) | Caps candidates returned per research request. |
+
+Choose the triggers in `wishlist_event_triggers`. The discount threshold defaults to 50%, and `wishlist_target_prices` accepts optional rules such as `123:USD:999`. A local-low alert needs an earlier price in the same currency. Steam checks at startup or QR sign-in and every six hours while alerts are enabled. Each price is announced once per sale window. Releases and demos use their own versions. QR sign-out clears the in-memory observations and Inbox queue. Web API key mode stores these snapshots atomically under `steam-store-v1`. [Wishlist alerts and deduplication](../../docs/extensions/steam.md#wishlist-inbox-alerts)
+
+Use `steam_wishlist_deals` for an on-demand list of deals, target prices met, local lows and giveaways, including when Inbox alerts are off.
 
 ## Development
 

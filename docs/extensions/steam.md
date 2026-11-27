@@ -31,6 +31,7 @@ In either mode, set **Store country or region** to a two-letter ISO 3166-1 alpha
 | `steam_wishlist` | Wishlist titles with current Store prices and discount percentages for the configured country. |
 | `steam_achievement_hunter` | Locked achievements sorted by global unlock rate and a timeline of dated personal unlocks for one numeric `appid`. |
 | `steam_game_news` | Latest game updates in descending date order for one optional numeric `appid` or a selection of the account's played games. |
+| `steam_wishlist_deals` | Current wishlist discounts, target prices met, locally observed lows and limited-time giveaways, with Steam Store links. |
 
 `steam_recent_games`, `steam_library` and `steam_wishlist` accept an `offset` and a `limit` from 1 through 50, with 20 items by default. Continue with `next_offset` using the same search and sort. Playtime is returned in minutes. An unavailable dataset reports a reason. A partial or cached result carries a warning when a request fails.
 
@@ -38,16 +39,34 @@ In either mode, set **Store country or region** to a two-letter ISO 3166-1 alpha
 
 `steam_game_news` accepts a `limit` from 1 through 20, with 10 updates by default. Omitting `appid` checks up to `games_limit` games (default 4, range 1–5) ranked by minutes played over the past two weeks. If the recent list is empty or unavailable, Steam ranks played library games by lifetime minutes. The default `official_only: true` uses Steam's official announcements feed and selects updates, patches and DLC using tags and headlines from up to 40 recent posts per game. This can miss posts without recognized tags or headlines. Set `official_only: false` to include other announcements and third-party media. Publication dates are Unix timestamps in seconds. [Steamworks news API](https://partner.steamgames.com/doc/webapi/ISteamNews)
 
-## Token settings
+`steam_wishlist_deals` accepts a `limit` from 1 through 50, with 20 by default. It checks the configured region on demand and sorts giveaways first, followed by local lows and larger discounts. A local-low flag means the current quote improved on an earlier local price or matches a low previously set that way. The tool works while Inbox alerts are off and publishes no events.
 
-Under **Settings › Extensions › Steam**, these settings define the defaults and limits for update excerpts and the planned Inbox, memory export and high-context discovery features. A disabled feature uses zero extra LLM tokens. Its gate applies before adding update excerpts, emitting events, exporting context or running discovery. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
+## Wishlist Inbox alerts
+
+Set **Steam Inbox events** in **Settings › Extensions › Steam** to opt in. Steam scans once at startup or QR sign-in and every six hours while signed in. It reads only the configured account's visible wishlist and regional Store data. The disabled setting runs zero background scans, produces zero events or Inbox notifications and uses zero extra LLM tokens. The page and assistant tools remain available for on-demand reads.
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `inbox_events_enabled` | Off | Allows Steam to send wishlist price drops, releases, sale roundups and major updates to the Inbox, where triage can use tokens. Turning this off stops all Steam Inbox emissions. |
-| `inbox_max_events_per_day` | 5 (1–50) | Caps daily Steam events so they can trigger triage only up to this count. |
+| `inbox_events_enabled` | Off | Turns on automatic wishlist alerts. The extension assigns the action tier, and Persona may apply its Inbox triage settings. |
+| `inbox_max_events_per_day` | 5 (1–50) | Hard cap on new events per Steam account and UTC day, shared across regions. |
+| `wishlist_event_triggers` | All five | Choose `discount`, `local_low`, `release`, `demo` and `giveaway`. Target price rules and roundups have their own settings. |
+| `wishlist_discount_threshold` | 50% (1–100) | Matches paid discounts at or above this percentage. The giveaway trigger handles 100%-off offers. |
+| `wishlist_target_prices` | Empty | Up to 20 comma-separated `AppID:CURRENCY:amount` rules. `123:USD:999` means $9.99 for AppID 123. Use the integer Steam price units reported by `steam_wishlist` and the matching currency. |
+| `sale_roundup_enabled` | Off | When at least three wishlist games have paid discounts, replaces their individual price alerts with one roundup. The top five rank new local lows first and larger discounts second. Giveaways, releases and demos have separate alerts. |
+
+One price alert may carry several reasons. A local low requires an earlier observation in the same region and currency, and qualifies only when the price falls below it. Release alerts require an observed transition from upcoming to released. Demo alerts use the demo AppID supplied by the Store. Giveaways require a free-to-keep offer or a 100% discount with a zero final price. Steam distinguishes these offers from permanent free-to-play games and free weekends. [Steamworks Free to Keep](https://partner.steamgames.com/doc/marketing/discounts/freetokeep) · [Steamworks Demos](https://partner.steamgames.com/doc/store/application/demos)
+
+In a sale window, each game and price is announced once. Steam's discount end date can distinguish successive windows. When Steam omits that date, a checked regular price ends the observed window. A roundup stays quiet during the same run of overlapping sales. Demo AppIDs and Steam release timestamps serve as version keys. The UTC daily cap gives giveaways and roundups priority. Qualifying offers can be picked up by a later scan when the cap resets, while one-time price or release transitions can be dropped when the cap is full.
+
+The extension hands recent results to Persona through the memory-only `connector.inbox.collect` call. It sends `connector.changed` with scope `inbox` after new events are recorded. Rows keep stable identifiers for up to 24 hours after detection or until a known offer deadline, whichever comes first. QR sign-out clears the extension's queue and cancels its scan. Web API key mode can recover recent rows and the daily cap from atomically persisted cursors after a restart. [Persona Connector Inbox protocol](https://github.com/nwverse/persona/blob/main/docs/protocol/connector-protocol.md)
+
+## Token settings
+
+These settings control update excerpts and the planned memory export and high-context discovery features. Each disabled feature uses zero extra LLM tokens. [Issue #1282](https://github.com/nwverse/persona-extensions/issues/1282)
+
+| Setting | Default | Effect |
+| --- | --- | --- |
 | `patch_notes_summary_enabled` | Off | Allows `steam_game_news` to share a plain-text excerpt of up to 700 characters per update for assistant summaries. When off, the tool reports `summary_enabled: false` and returns only the AppID, game name, announcement ID, title, date, source and link per update. |
-| `sale_roundup_enabled` | Off | Allows wishlist deal roundups during major sales. This also requires `inbox_events_enabled`. Turning either off skips roundup work and its Inbox delivery. |
 | `memory_export_enabled` | Off | Allows `memory_sources` to share a personal gaming profile. Turning this off keeps the profile out of assistant context. |
 | `memory_max_items` | 10 (1–30) | Caps the number of gaming preference items in the exported profile. |
 | `discovery_tools_enabled` | On | Allows high-context game research tools and their skill. Turning this off disables those features before they can add research context. |
@@ -65,14 +84,14 @@ The navigation and tools browse up to 20,000 library or recent entries and price
 
 ### Local snapshots
 
-QR mode keeps all four snapshot stores in memory for the signed-in session and clears them at sign-out. Web API key mode uses four versioned files under `steam-store-v1` inside the extension data directory. Each file has a 16 MiB limit and is replaced atomically. When the Hub supplies no data directory, Web API key mode also keeps the stores in memory. Price and playtime observations use existing reads without extra network or LLM requests. A failed local write leaves the Steam read result available.
+QR mode keeps all four snapshot stores in memory for the signed-in session and clears them at sign-out. Web API key mode uses four versioned files under `steam-store-v1` inside the extension data directory. Each file has a 16 MiB limit and is replaced atomically. When the Hub supplies no data directory, Web API key mode also keeps the stores in memory. Price and playtime snapshots reuse data already read from Steam. A failed local write leaves an on-demand result available and prevents an unrecorded Inbox event from being issued.
 
 | Store | Contents and limits |
 | --- | --- |
 | Price history | Fresh, checked wishlist prices are scoped to the Steam account, Store country and AppID. Up to 2,000 series retain 32 sampled UTC days each, the latest quote and the first observation of the local low with its discount. A change in Store currency starts a new series. |
 | Playtime | A complete library read records lifetime minutes, the two-week minutes supplied by the library, and counts of owned and unplayed games. The latest snapshot on each UTC day is kept for up to 400 days through the most recent observation, across up to 16 accounts. |
 | Backlog | Local per-account and per-game annotations support `unplayed`, `playing`, `queued`, `paused`, `completed` and `dropped`. The store holds up to 2,000 entries, with a 240-character note and up to eight tags of 32 characters each. Edits apply to the local annotation store only. |
-| Event cursors | Records of successful deliveries are scoped to the account, event kind, deduplication key and sale window or version. Up to 5,000 cursors expire after 90 days. |
+| Event cursors | The store records the account, region, kind, deduplication key and sale window or version, along with the last observed sale and release states. Up to 5,000 records are retained. Cursors expire after 90 days without a matching observation. |
 
 ## Network and credentials
 
@@ -92,7 +111,7 @@ The QR grant is a Steam mobile-client session with account privileges determined
 | Game news | Public `ISteamNews/GetNewsForApp` | Same public endpoint |
 | Wishlist | `IWishlistService/GetWishlist` | Public `IWishlistService/GetWishlist` |
 
-Wishlist names use `IStoreBrowseService/GetItems` in Simplified Chinese or English. Prices come from `store.steampowered.com/api/appdetails` for the selected country. [Player message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/service_player.proto) · [Steamworks IPlayerService](https://partner.steamgames.com/doc/webapi/IPlayerService)
+Wishlist names use `IStoreBrowseService/GetItems` in Simplified Chinese or English. The alert scan and the deals tool also request release, demo and purchase metadata in those batches. Prices come from `store.steampowered.com/api/appdetails` for the selected country. [Valve Store Browse message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/common.proto) · [Steamworks IPlayerService](https://partner.steamgames.com/doc/webapi/IPlayerService)
 
 The Hub encrypts the versioned QR sign-in record through `connector.secrets.*`. It holds the refresh token, SteamID, account name and timestamps. The access token stays in the extension process. The extension makes a rotated refresh token usable after the Hub has saved it.
 
