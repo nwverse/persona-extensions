@@ -103,8 +103,8 @@ func (s *cacheSlot[T]) read(ctx context.Context, scope string, ttl time.Duration
 		if hasData && s.now().Sub(s.record.At) <= maxStaleAge {
 			out = reading[T]{Data: s.record.Data, Issue: issue, Stale: true, At: s.record.At}
 		}
-	} else if s.record.Scope == scope {
-		// Once Steam reports that the data is hidden or invalid, an outage must never revive the old data.
+	} else if s.record.Scope == scope || issue == problemWishlist {
+		// Discard hidden or invalid data. Wishlist visibility applies across languages.
 		s.record = cacheRecord[T]{}
 		if s.path != "" {
 			_ = os.Remove(s.path)

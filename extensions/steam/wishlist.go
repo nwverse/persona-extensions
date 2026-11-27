@@ -16,7 +16,7 @@ const (
 	storeBatchSize   = 50
 )
 
-func (c steamClient) wishlist(ctx context.Context, id, country string) (*wishList, problem) {
+func (c steamClient) wishlist(ctx context.Context, id, country, language string) (*wishList, problem) {
 	var reply struct {
 		Response *struct {
 			Items []wishItem `json:"items"`
@@ -59,7 +59,7 @@ func (c steamClient) wishlist(ctx context.Context, id, country string) (*wishLis
 	var prices map[uint32]*storePrice
 	var priceProblem problem
 	var reads sync.WaitGroup
-	reads.Go(func() { names = c.storeNames(ctx, ids, country) })
+	reads.Go(func() { names = c.storeNames(ctx, ids, country, language) })
 	reads.Go(func() { prices, priceProblem = c.storePrices(ctx, ids, country) })
 	reads.Wait()
 
@@ -76,7 +76,7 @@ func (c steamClient) wishlist(ctx context.Context, id, country string) (*wishLis
 }
 
 // StoreBrowse provides display names in batches. App IDs still identify unlisted or unavailable games.
-func (c steamClient) storeNames(ctx context.Context, ids []uint32, country string) map[uint32]string {
+func (c steamClient) storeNames(ctx context.Context, ids []uint32, country, language string) map[uint32]string {
 	names := make(map[uint32]string, len(ids))
 	type storeID struct {
 		AppID uint32 `json:"appid"`
@@ -88,7 +88,7 @@ func (c steamClient) storeNames(ctx context.Context, ids []uint32, country strin
 		}
 		query, _ := json.Marshal(map[string]any{
 			"ids":     apps,
-			"context": map[string]string{"country_code": country, "language": "english"},
+			"context": map[string]string{"country_code": country, "language": language},
 		})
 		var reply struct {
 			Response struct {

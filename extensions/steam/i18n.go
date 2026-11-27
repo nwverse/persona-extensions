@@ -6,6 +6,7 @@ import (
 )
 
 type text struct {
+	storeLanguage                                                       string
 	invalidPage, invalidAction                                          string
 	overview, status, refresh, back, details, store                     string
 	recent, recentTime, totalTime, owned, library, wishlist, discounted string
@@ -19,7 +20,8 @@ type text struct {
 }
 
 var english = text{
-	invalidPage: "Invalid Steam page state.", invalidAction: "Invalid Steam page action.",
+	storeLanguage: "english",
+	invalidPage:   "Invalid Steam page state.", invalidAction: "Invalid Steam page action.",
 	overview: "Steam overview", status: "Player status", refresh: "Refresh", back: "Back",
 	details: "Game details", store: "Open in Steam Store",
 	recent: "Recently played", recentTime: "Last 2 weeks", totalTime: "Total playtime", owned: "Owned games",
@@ -54,7 +56,8 @@ var english = text{
 }
 
 var chinese = text{
-	invalidPage: "Steam 页面状态无效。", invalidAction: "Steam 页面操作无效。",
+	storeLanguage: "schinese",
+	invalidPage:   "Steam 页面状态无效。", invalidAction: "Steam 页面操作无效。",
 	overview: "Steam 概况", status: "玩家状态", refresh: "刷新", back: "返回",
 	details: "游戏详情", store: "打开 Steam 商店",
 	recent: "最近游玩", recentTime: "近两周", totalTime: "总游玩时长", owned: "拥有游戏",

@@ -37,14 +37,14 @@ type snapshot struct {
 	wishlist reading[wishList]
 }
 
-func (a *app) snapshot(ctx context.Context, refresh, includeLibrary bool) snapshot {
+func (a *app) snapshot(ctx context.Context, storeLanguage string, refresh, includeLibrary bool) snapshot {
 	s := snapshot{player: a.account(ctx, presenceTTL, refresh)}
 	if s.player.Data == nil || !s.player.Data.Public {
 		return s
 	}
 	var reads sync.WaitGroup
 	reads.Go(func() { s.recent = a.recentGames(ctx, s.player, refresh) })
-	reads.Go(func() { s.wishlist = a.wishlist(ctx, s.player, refresh) })
+	reads.Go(func() { s.wishlist = a.wishlist(ctx, s.player, storeLanguage, refresh) })
 	if includeLibrary {
 		reads.Go(func() { s.library = a.ownedGames(ctx, s.player, refresh) })
 	}
@@ -155,7 +155,7 @@ func (a *app) page(ctx context.Context, t *text, st pageState, refresh bool) *wi
 		return a.gameDetail(ctx, t, st)
 	}
 
-	s := a.snapshot(ctx, refresh, true)
+	s := a.snapshot(ctx, t.storeLanguage, refresh, true)
 	view := &wire.View{Title: "Steam"}
 	profile := wire.Section{Title: t.overview}
 	if s.player.Data == nil {
@@ -201,7 +201,7 @@ func (a *app) card(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 	ctx, cancel := context.WithTimeout(ctx, readBudget)
 	defer cancel()
 	t := a.viewText(r)
-	s := a.snapshot(ctx, false, false)
+	s := a.snapshot(ctx, t.storeLanguage, false, false)
 	issue := s.player.Issue
 	if issue == "" && s.player.Data != nil && !s.player.Data.Public {
 		issue = problemPrivate

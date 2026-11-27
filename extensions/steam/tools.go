@@ -225,7 +225,7 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 			return wire.ConnectorCallResult{}, invalid(badPaging)
 		}
 		p := a.toolAccount(ctx, out, t)
-		r := a.wishlist(ctx, p, false)
+		r := a.wishlist(ctx, p, t.storeLanguage, false)
 		describeReading(out, "wishlist", r, t)
 		out["country_code"] = a.config.CountryCode
 		if r.Data != nil {

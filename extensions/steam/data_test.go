@@ -176,7 +176,7 @@ func TestSteamReads(t *testing.T) {
 	if progress == nil || progress.Unlocked != 2 || progress.Total != 3 {
 		t.Fatalf("achievements %+v", progress)
 	}
-	w := d.wishlist(ctx, p, false)
+	w := d.wishlist(ctx, p, "english", false)
 	if w.Data == nil || w.Data.Discounted != 1 || w.Data.Checked != 3 || w.Data.Total != 3 {
 		t.Fatalf("wishlist %+v", w)
 	}
@@ -216,7 +216,7 @@ func TestSteamCacheLayersAndScope(t *testing.T) {
 		t.Helper()
 		p := d.account(t.Context(), presenceTTL, false)
 		if p.Data == nil || d.ownedGames(t.Context(), p, false).Data == nil ||
-			d.recentGames(t.Context(), p, false).Data == nil || d.wishlist(t.Context(), p, false).Data == nil {
+			d.recentGames(t.Context(), p, false).Data == nil || d.wishlist(t.Context(), p, "english", false).Data == nil {
 			t.Fatal("missing cached or upstream data")
 		}
 	}
@@ -332,7 +332,7 @@ func TestStorePriceBatchesAreBounded(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(result)
 	})
-	got, issue := (steamClient{http: f.http, key: f.key}).wishlist(t.Context(), fixtureID, defaultCountry)
+	got, issue := (steamClient{http: f.http, key: f.key}).wishlist(t.Context(), fixtureID, defaultCountry, "english")
 	if issue != "" || got.Total != len(items) || got.Checked != maxWishlistItems || len(got.Items) != maxWishlistItems {
 		t.Fatalf("bounded snapshot issue=%q, items=%d, checked=%d, total=%d", issue, len(got.Items), got.Checked, got.Total)
 	}

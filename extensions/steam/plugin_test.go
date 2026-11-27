@@ -247,6 +247,12 @@ func TestDeclarativeViews(t *testing.T) {
 	raw, _ = json.Marshal(viewAnswer(t, h, card))
 	contains(t, string(raw), "游戏中", "近两周", "2 小时 10 分钟", "愿望单打折", `"value":"1"`)
 
+	// Warm the page's locale before testing a failed refresh of that snapshot.
+	viewAnswer(t, h, nav)
+	beforeRefresh := map[string]int{}
+	for _, path := range []string{playerPath, ownedPath, recentPath, wishlistPath, storePricesPath} {
+		beforeRefresh[path] = f.hit(path)
+	}
 	f.reply(storePricesPath, 429, f.key)
 	v = act(t, h, nav, v, "refresh", nil)
 	raw, _ = json.Marshal(v)
@@ -254,8 +260,8 @@ func TestDeclarativeViews(t *testing.T) {
 	if strings.Contains(string(raw), f.key) {
 		t.Fatal("refresh reflected a secret from an upstream error")
 	}
-	for _, path := range []string{playerPath, ownedPath, recentPath, wishlistPath, storePricesPath} {
-		if f.hit(path) != 2 {
+	for path, before := range beforeRefresh {
+		if f.hit(path) != before+1 {
 			t.Errorf("%s was not explicitly refreshed", path)
 		}
 	}
@@ -284,6 +290,62 @@ func TestWishlistRowShowsOnlyPositiveDiscount(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWishlistNamesFollowLocaleAndCacheScope(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+		var query struct {
+			Context struct {
+				Language    string `json:"language"`
+				CountryCode string `json:"country_code"`
+			} `json:"context"`
+		}
+		if err := json.Unmarshal([]byte(r.URL.Query().Get("input_json")), &query); err != nil || query.Context.CountryCode != "GB" {
+			t.Error("expected a StoreBrowse request for GB")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		var name string
+		switch query.Context.Language {
+		case "english":
+			name = "Fixture Adventure"
+		case "schinese":
+			name = "示例冒险"
+		default:
+			t.Errorf("unexpected StoreBrowse language %q", query.Context.Language)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[{"appid":%d,"name":%q,"success":1}]}}`, firstApp, name)
+	})
+	dir := t.TempDir()
+	h := startTestHost(t, f, fixtureID, "GB", dir)
+	contains(t, toolAnswer(t, h, "steam_wishlist", `{"limit":1}`), "Fixture Adventure")
+	firstTitle := func(h *exttest.Host, locale string) string {
+		t.Helper()
+		v := viewAnswer(t, h, wire.UIParams{Contribution: extensionID, Size: wire.SizeFull, Placement: wire.PlacementNavPage, UIVersion: 12, Locale: locale})
+		return v.Sections[3].Items[0].Title
+	}
+	if title := firstTitle(h, "ja-JP"); title != "Fixture Adventure" || f.hit(storeNamesPath) != 1 {
+		t.Fatalf("non-Chinese locale should reuse the English snapshot, got %q after %d requests", title, f.hit(storeNamesPath))
+	}
+	if title := firstTitle(h, "zh-Hans"); title != "示例冒险" || f.hit(storeNamesPath) != 2 {
+		t.Fatalf("Chinese locale should fetch a localized snapshot, got %q after %d requests", title, f.hit(storeNamesPath))
+	}
+	h = startTestHost(t, f, fixtureID, "GB", dir)
+	if title := firstTitle(h, "zh_CN"); title != "示例冒险" || f.hit(storeNamesPath) != 2 {
+		t.Fatalf("Chinese locale variants should reuse the persisted snapshot, got %q after %d requests", title, f.hit(storeNamesPath))
+	}
+	contains(t, toolAnswer(t, h, "steam_wishlist", `{"limit":1}`), "Fixture Adventure")
+	if hits := f.hit(storeNamesPath); hits != 3 {
+		t.Fatalf("switching back to English should read the English name, got %d requests", hits)
+	}
+	f.reply(wishlistPath, http.StatusForbidden, "hidden")
+	if title := firstTitle(h, "zh-Hans"); title != chinese.message(problemWishlist, false) {
+		t.Fatalf("Chinese wishlist should report the privacy change, got %q", title)
+	}
+	contains(t, toolAnswer(t, h, "steam_wishlist", `{"limit":1}`), `"available":false`, `"wishlist_unavailable"`)
 }
 
 func TestHiddenAndPartialReads(t *testing.T) {

@@ -122,12 +122,13 @@ func (d *steamData) recentGames(ctx context.Context, p reading[player], refresh 
 	})
 }
 
-func (d *steamData) wishlist(ctx context.Context, p reading[player], refresh bool) reading[wishList] {
+func (d *steamData) wishlist(ctx context.Context, p reading[player], language string, refresh bool) reading[wishList] {
 	if issue := publicProfile(p); issue != "" {
 		return reading[wishList]{Issue: issue}
 	}
-	return d.wishes.read(ctx, p.Data.SteamID+"/"+d.config.CountryCode, wishlistTTL, refresh, func(ctx context.Context) (*wishList, problem) {
-		return d.client.wishlist(ctx, p.Data.SteamID, d.config.CountryCode)
+	id, country := p.Data.SteamID, d.config.CountryCode
+	return d.wishes.read(ctx, id+"/"+country+"/"+language, wishlistTTL, refresh, func(ctx context.Context) (*wishList, problem) {
+		return d.client.wishlist(ctx, id, country, language)
 	})
 }
 
