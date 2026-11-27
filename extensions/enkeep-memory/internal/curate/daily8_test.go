@@ -346,8 +346,8 @@ func TestCategoriesTagged(t *testing.T) {
 	c, _ := newCurator(t, nil, "shadow")
 	d8ingest(t, c, u, d, schema.DailyOutput{Observations: []schema.Observation{fam}}, nil)
 	e := entryWith(c, fam.Text)
-	if e == nil || !slices.Equal(e.Cats(), []string{entry.CatRelationships}) || e.Categories[0].By != entry.ByModel || e.Domain != entry.Life {
-		t.Fatalf("family kept and tagged: %+v %+v", e, c.St.S.Rejections)
+	if e == nil || !slices.Contains(e.Cats(), entry.CatRelationships) || !slices.Contains(e.Cats(), entry.CatHealth) || e.Categories[0].By != entry.ByModel || e.Domain != entry.Life {
+		t.Fatalf("family+health kept and tagged: %+v %+v", e, c.St.S.Rejections)
 	}
 	if e.Resident(c.St.S.Switches) {
 		t.Error("a category reached the resident exits with K22 off")
@@ -357,10 +357,14 @@ func TestCategoriesTagged(t *testing.T) {
 		t.Error("K13 or the K22 base opened the resident exits")
 	}
 	sw["K22.relationships"] = entry.SwitchSetting{Value: "on", By: "user"}
-	if !e.Resident(sw) {
-		t.Error("K22.relationships on: still out")
+	if e.Resident(sw) {
+		t.Error("K22.relationships alone should not open an entry also tagged health")
 	}
-	if !e.Named([]string{"relationships"}) || e.Named(nil) || e.Named([]string{"health"}) {
+	sw["K22.health"] = entry.SwitchSetting{Value: "on", By: "user"}
+	if !e.Resident(sw) {
+		t.Error("K22.relationships + K22.health on: still out")
+	}
+	if !e.Named([]string{"relationships", "health"}) || e.Named(nil) || e.Named([]string{"health"}) {
 		t.Error("named categories")
 	}
 	money := obs("persona", "用户这个月工资到账后要还信用卡", 6, "推进 project-x")
@@ -621,7 +625,7 @@ func TestReplayForced(t *testing.T) {
 	if err := c.digest(context.Background(), nil, b, u, d, "", owner, k, run); err != nil || run.Counts["digest_replayed"] != 1 {
 		t.Fatalf("forced: %v %v", err, run.Counts)
 	}
-	if e := entryWith(c, fam.Text); e == nil || !slices.Equal(e.Cats(), []string{entry.CatRelationships}) {
+	if e := entryWith(c, fam.Text); e == nil || !slices.Contains(e.Cats(), entry.CatRelationships) || !slices.Contains(e.Cats(), entry.CatHealth) {
 		t.Fatalf("the refused observation is not kept on replay: %+v", c.St.S.Rejections)
 	}
 	if slices.ContainsFunc(c.St.S.Rejections, func(r store.Rejection) bool { return r.Key == key && r.Code == "SENSITIVE_OFF" }) ||
