@@ -16,6 +16,9 @@ const (
 	problemNetwork      problem = "steam_unavailable"
 	problemResponse     problem = "unexpected_steam_response"
 	problemCanceled     problem = "canceled"
+	problemAuthPending  problem = "steam_sign_in_pending"
+	problemAuthRefused  problem = "steam_sign_in_refused"
+	problemAuthExpired  problem = "steam_session_expired"
 
 	// HTTP outcomes interpreted at the endpoint that knows what they mean.
 	problemDenied  problem = "access_denied"

@@ -59,7 +59,7 @@ func (s *cacheSlot[T]) read(ctx context.Context, scope string, ttl time.Duration
 	case s.gate <- struct{}{}:
 		defer func() { <-s.gate }()
 	case <-ctx.Done():
-		return reading[T]{Issue: requestProblem(ctx.Err())}
+		return reading[T]{Issue: sanitizeError(ctx.Err())}
 	}
 	if !s.loaded {
 		s.loaded = true
@@ -81,7 +81,7 @@ func (s *cacheSlot[T]) read(ctx context.Context, scope string, ttl time.Duration
 		}
 	}
 	if ctx.Err() != nil {
-		return reading[T]{Issue: requestProblem(ctx.Err())}
+		return reading[T]{Issue: sanitizeError(ctx.Err())}
 	}
 
 	data, issue := fetch(ctx)

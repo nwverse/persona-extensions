@@ -65,11 +65,26 @@ func (c steamClient) get(ctx context.Context, target string, params url.Values, 
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return requestProblem(err)
+		return sanitizeError(err)
 	}
 	defer resp.Body.Close()
-	switch resp.StatusCode {
+	if p := httpProblem(resp.StatusCode); p != "" {
+		return p
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIBytes+1))
+	if err != nil {
+		return sanitizeError(err)
+	}
+	if len(raw) > maxAPIBytes || json.Unmarshal(raw, out) != nil {
+		return problemResponse
+	}
+	return ""
+}
+
+func httpProblem(status int) problem {
+	switch status {
 	case http.StatusOK:
+		return ""
 	case http.StatusTooManyRequests:
 		return problemRateLimited
 	case http.StatusRequestTimeout, http.StatusGatewayTimeout:
@@ -81,23 +96,16 @@ func (c steamClient) get(ctx context.Context, target string, params url.Values, 
 	case http.StatusBadRequest:
 		return problemBadCall
 	default:
-		if resp.StatusCode >= 500 {
+		if status >= 500 {
 			return problemNetwork
 		}
 		return problemResponse
 	}
-
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxAPIBytes+1))
-	if err != nil {
-		return requestProblem(err)
-	}
-	if len(raw) > maxAPIBytes || json.Unmarshal(raw, out) != nil {
-		return problemResponse
-	}
-	return ""
 }
 
-func requestProblem(err error) problem {
+// Never format a transport error. In particular, *url.Error can contain the
+// entire credential-bearing URL, and its wrapped error may contain it again.
+func sanitizeError(err error) problem {
 	var network net.Error
 	switch {
 	case errors.Is(err, context.Canceled):
