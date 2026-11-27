@@ -694,4 +694,21 @@ func TestTwoLayerRecallAndHubPage1(t *testing.T) {
 	if strings.Contains(noEnt, "[实体骨架]") || strings.Contains(noEnt, "FutureOwner") {
 		t.Errorf("recall-noent must ablate entity skeleton: %q", noEnt)
 	}
+	// Whole-word ASCII guard prevents "Launch" from matching "launcher" and "ST" from matching "astergate",
+	// and ephemeral PR ticket lines are excluded from the entity supplement slot.
+	if collabContainsEntity("填全 launcher 参数", "Launch") {
+		t.Error("Launch must not substring-match launcher")
+	}
+	if collabContainsEntity("检查 astergate 配置", "ST") {
+		t.Error("short ASCII ST must not match astergate")
+	}
+	if collabContainsEntity("重写飞书文档", "文档") {
+		t.Error("generic common noun 文档 must not trigger entity expansion")
+	}
+	if !collabContainsEntity("检查 astergate 配置", "astergate") {
+		t.Error("exact whole-word entity astergate should match")
+	}
+	if !collabEphemeralFact.MatchString("Tivility负责PR #13346") {
+		t.Error("ephemeral PR ticket fact should be filtered")
+	}
 }

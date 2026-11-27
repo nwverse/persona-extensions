@@ -88,3 +88,41 @@ func TestSearchOneHopEntityExpansion(t *testing.T) {
 		t.Fatalf("SkeletonNeighbors = %v, want 2", nbs)
 	}
 }
+
+func TestEntityExpansionPurityAndHubFanIn(t *testing.T) {
+	st := &store.State{
+		Graph: &store.Graph{
+			Nodes: map[string]*store.Node{
+				"n-st":     {ID: "n-st", Type: "org", Name: "ST", Status: "active"},
+				"n-us":     {ID: "n-us", Type: "org", Name: "US", Status: "active"},
+				"n-launch": {ID: "n-launch", Type: "project", Name: "Launch", Status: "active"},
+				"n-doc":    {ID: "n-doc", Type: "topic", Name: "文档", Status: "active"},
+				"n-hub":    {ID: "n-hub", Type: "service", Name: "astergate", Status: "active"},
+				"n-owner":  {ID: "n-owner", Type: "person", Name: "网关负责人", Status: "active"},
+				"n-dep1":   {ID: "n-dep1", Type: "project", Name: "p1", Status: "active"},
+				"n-dep2":   {ID: "n-dep2", Type: "project", Name: "p2", Status: "active"},
+				"n-dep3":   {ID: "n-dep3", Type: "project", Name: "p3", Status: "active"},
+				"n-up":     {ID: "n-up", Type: "service", Name: "upstream-api", Status: "active"},
+			},
+			Assertions: map[string]*store.Assertion{
+				"a-st":   {ID: "a-st", S: "n-st", P: "member_of", O: "n-us", Status: "active"},
+				"a-own":  {ID: "a-own", S: "n-owner", P: "owns", O: "n-hub", Status: "active"},
+				"a-out":  {ID: "a-out", S: "n-hub", P: "depends_on", O: "n-up", Status: "active"},
+				"a-in1":  {ID: "a-in1", S: "n-dep1", P: "depends_on", O: "n-hub", Status: "active"},
+				"a-in2":  {ID: "a-in2", S: "n-dep2", P: "depends_on", O: "n-hub", Status: "active"},
+				"a-in3":  {ID: "a-in3", S: "n-dep3", P: "depends_on", O: "n-hub", Status: "active"},
+				"a-ldoc": {ID: "a-ldoc", S: "n-owner", P: "owns", O: "n-doc", Status: "active"},
+			},
+		},
+	}
+	// Short ASCII "ST" must never match "astergate", "Launch" must never match "launcher", and "文档" must not expand.
+	res := Search(st, Query{Text: "astergate launcher 文档配置"})
+	if len(res.Entities) != 1 || res.Entities[0].Name != "astergate" {
+		t.Fatalf("expected only astergate matched, got %+v", res.Entities)
+	}
+	// Hub fan-in (>2 incoming depends_on) must be pruned while keeping owns and outgoing depends_on.
+	skel := res.Entities[0].Skeleton
+	if len(skel) != 2 {
+		t.Fatalf("expected 2 pruned skeleton edges (owns + outgoing depends_on), got %+v", skel)
+	}
+}
