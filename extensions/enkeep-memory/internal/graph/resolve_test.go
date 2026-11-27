@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -314,5 +315,80 @@ func TestResolveAndMergeTier2HaikuAndUnmerge(t *testing.T) {
 	b := &Builder{G: st.Graph, Today: "2026-11-27"}
 	if err := b.Unmerge("n-sys-2"); err != nil || st.Graph.Resolve("n-sys-2") != "n-sys-2" {
 		t.Fatalf("Tier 2 Unmerge failed: err=%v resolved=%s", err, st.Graph.Resolve("n-sys-2"))
+	}
+}
+
+func TestTier2CandidatesRejectsSharedNeighborsOnlyAndAllowsAliasEvidence(t *testing.T) {
+	g := &store.Graph{
+		Nodes: map[string]*store.Node{
+			"p-en": {ID: "p-en", Type: "person", Name: "Alice Wang", Status: "active"},
+			"p-cn": {ID: "p-cn", Type: "person", Name: "李四", Status: "active"},
+			// Bilingual person with explicit alias evidence should still be admitted.
+			"p-bi-1": {ID: "p-bi-1", Type: "person", Name: "Bob Chen", Status: "active", Aliases: []store.Alias{{Name: "陈明远"}}},
+			"p-bi-2": {ID: "p-bi-2", Type: "person", Name: "陈明远", Status: "active"},
+		},
+		Assertions: map[string]*store.Assertion{},
+	}
+	// Wire 19 shared project neighbors between p-en and p-cn.
+	for i := 0; i < 19; i++ {
+		pid := fmt.Sprintf("proj-%02d", i)
+		g.Nodes[pid] = &store.Node{ID: pid, Type: "project", Name: fmt.Sprintf("alpha-svc-%02d", i), Status: "active"}
+		g.Assertions[fmt.Sprintf("a-en-%02d", i)] = &store.Assertion{ID: fmt.Sprintf("a-en-%02d", i), S: "p-en", P: "works_on", O: pid, Status: "active"}
+		g.Assertions[fmt.Sprintf("a-cn-%02d", i)] = &store.Assertion{ID: fmt.Sprintf("a-cn-%02d", i), S: "p-cn", P: "works_on", O: pid, Status: "active"}
+	}
+
+	pairs := tier2Candidates(g)
+	foundAlias := false
+	for _, p := range pairs {
+		if (p.A == "p-en" && p.B == "p-cn") || (p.A == "p-cn" && p.B == "p-en") {
+			t.Fatalf("unrelated people sharing 19 neighbors must NOT enter tier2Candidates: %+v", p)
+		}
+		if (p.A == "p-bi-1" && p.B == "p-bi-2") || (p.A == "p-bi-2" && p.B == "p-bi-1") {
+			foundAlias = true
+		}
+	}
+	if !foundAlias {
+		t.Fatalf("expected alias-backed bilingual pair (p-bi-1, p-bi-2) to be admitted into tier2Candidates")
+	}
+}
+
+func TestTier2CandidatesBoundedToMaxPairs(t *testing.T) {
+	g := &store.Graph{
+		Nodes:      map[string]*store.Node{},
+		Assertions: map[string]*store.Assertion{},
+	}
+	// Construct 270 distinct fuzzy-name candidate pairs (> 260) using unique 6-char prefixes.
+	for i := 0; i < 270; i++ {
+		base := fmt.Sprintf("svc%03d", i)
+		idA := fmt.Sprintf("n-%03d-a", i)
+		idB := fmt.Sprintf("n-%03d-b", i)
+		g.Nodes[idA] = &store.Node{ID: idA, Type: "system", Name: base + "-core", Status: "active"}
+		g.Nodes[idB] = &store.Node{ID: idB, Type: "system", Name: base + "-core-v2", Status: "active"}
+	}
+	// Give pair #0 a shared neighbor so its Score is strictly higher and must survive truncation.
+	g.Nodes["n-hub"] = &store.Node{ID: "n-hub", Type: "org", Name: "acme-org", Status: "active"}
+	g.Assertions["a-top-1"] = &store.Assertion{ID: "a-top-1", S: "n-000-a", P: "belongs_to", O: "n-hub", Status: "active"}
+	g.Assertions["a-top-2"] = &store.Assertion{ID: "a-top-2", S: "n-000-b", P: "belongs_to", O: "n-hub", Status: "active"}
+
+	pairs1 := tier2Candidates(g)
+	if len(pairs1) != tier2MaxPairs {
+		t.Fatalf("expected tier2Candidates capped at %d, got %d", tier2MaxPairs, len(pairs1))
+	}
+	batches := (len(pairs1) + tier2BatchSize - 1) / tier2BatchSize
+	if batches > 8 {
+		t.Fatalf("expected <= 8 batches, got %d", batches)
+	}
+	if pairs1[0].A != "n-000-a" || pairs1[0].B != "n-000-b" {
+		t.Fatalf("expected highest-scored pair first, got %+v", pairs1[0])
+	}
+	// Verify deterministic truncation on repeated calls.
+	pairs2 := tier2Candidates(g)
+	if len(pairs2) != len(pairs1) {
+		t.Fatalf("non-deterministic length: %d vs %d", len(pairs1), len(pairs2))
+	}
+	for i := range pairs1 {
+		if pairs1[i] != pairs2[i] {
+			t.Fatalf("non-deterministic pair at %d: %+v vs %+v", i, pairs1[i], pairs2[i])
+		}
 	}
 }

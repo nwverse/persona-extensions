@@ -24,6 +24,7 @@ const (
 	ProposalTier2Haiku   = "auto-haiku-v04"
 
 	tier2BatchSize = 30
+	tier2MaxPairs  = 240 // at most 8 batches of 30 pairs
 )
 
 // MergePair records one merge executed by ResolveAndMerge.
@@ -981,6 +982,7 @@ const tier2SystemPrompt = `You disambiguate candidate entity pairs in a personal
 For each pair (a, b), decide whether they refer to the exact same real-world entity ("same_entity"), different entities ("distinct"), or cannot be determined ("uncertain").
 Only mark verdict="same_entity" with confidence="high" when clearly aliases, abbreviations, bilingual equivalents, or repo/project variants of the same entity (e.g. "astergate" and "aster", "enkeep-memory" and "enkeep 记忆插件").
 Never merge distinct modules, distinct people with different full names, or a parent org with a child project.
+Never merge two people based solely on shared neighbors or shared team/project membership; specifically, never guess that an English name and a Chinese name (or any two people without direct name, pinyin, or alias correspondence) are the same person.
 Set "canonical" to "a" or "b" indicating the cleaner, more complete name. Return JSON matching the schema.`
 
 type tier2Response struct {
@@ -1113,11 +1115,16 @@ func runTier2Haiku(ctx context.Context, g *store.Graph, m model.Model, hadPrefix
 
 func tier2Candidates(g *store.Graph) []tier2Pair {
 	nb := nodeNeighbors(g)
-	type item struct {
-		id  string
-		typ string
+	type nameKey struct {
 		key string
-		tok string // leading ASCII token for bilingual matches like "enkeep" in "enkeep-memory" vs "enkeep 记忆插件"
+		tok string
+	}
+	type item struct {
+		id      string
+		typ     string
+		key     string
+		tok     string // leading ASCII token for bilingual matches like "enkeep" in "enkeep-memory" vs "enkeep 记忆插件"
+		aliases []nameKey
 	}
 	var items []item
 	for _, id := range sortedNodeIDs(g) {
@@ -1129,11 +1136,22 @@ func tier2Candidates(g *store.Graph) []tier2Pair {
 		if utf8.RuneCountInString(k) < 2 || isGeneric(n.Name) {
 			continue
 		}
+		var als []nameKey
+		seenAl := map[string]bool{k: true}
+		for _, a := range n.Aliases {
+			ak := NormKey(a.Name, n.Type)
+			if utf8.RuneCountInString(ak) < 2 || isGeneric(a.Name) || seenAl[ak] {
+				continue
+			}
+			seenAl[ak] = true
+			als = append(als, nameKey{key: ak, tok: leadingASCIIToken(a.Name)})
+		}
 		items = append(items, item{
-			id:  id,
-			typ: n.Type,
-			key: k,
-			tok: leadingASCIIToken(n.Name),
+			id:      id,
+			typ:     n.Type,
+			key:     k,
+			tok:     leadingASCIIToken(n.Name),
+			aliases: als,
 		})
 	}
 	compatible := func(t1, t2 string) bool {
@@ -1142,6 +1160,44 @@ func tier2Candidates(g *store.Graph) []tier2Pair {
 		}
 		isTech := func(t string) bool { return t == "project" || t == "system" || t == "repo" }
 		return isTech(t1) && isTech(t2)
+	}
+	aliasEvidenceMatch := func(a, b item) (matched bool, exact bool) {
+		check := func(x, y nameKey) bool {
+			if x.key == y.key {
+				exact = true
+				return true
+			}
+			return fuzzyNameMatch(x.key, y.key, x.tok, y.tok)
+		}
+		ak := nameKey{key: a.key, tok: a.tok}
+		bk := nameKey{key: b.key, tok: b.tok}
+		for _, aa := range a.aliases {
+			if check(aa, bk) {
+				matched = true
+				if exact {
+					return true, true
+				}
+			}
+		}
+		for _, ba := range b.aliases {
+			if check(ak, ba) {
+				matched = true
+				if exact {
+					return true, true
+				}
+			}
+		}
+		for _, aa := range a.aliases {
+			for _, ba := range b.aliases {
+				if check(aa, ba) {
+					matched = true
+					if exact {
+						return true, true
+					}
+				}
+			}
+		}
+		return matched, exact
 	}
 
 	var out []tier2Pair
@@ -1157,9 +1213,14 @@ func tier2Candidates(g *store.Graph) []tier2Pair {
 			if fuzzyNameMatch(a.key, b.key, a.tok, b.tok) {
 				reason = "prefix_or_containment"
 				score = 10 + shared
-			} else if a.typ == b.typ && shared >= 2 {
-				reason = fmt.Sprintf("shared_%d_neighbors", shared)
-				score = shared
+			} else if ok, exact := aliasEvidenceMatch(a, b); ok {
+				if exact {
+					reason = "alias_exact"
+					score = 12 + shared
+				} else {
+					reason = "alias_fuzzy"
+					score = 8 + shared
+				}
 			}
 			if reason != "" {
 				out = append(out, tier2Pair{A: a.id, B: b.id, Reason: reason, Score: score})
@@ -1175,6 +1236,9 @@ func tier2Candidates(g *store.Graph) []tier2Pair {
 		}
 		return out[i].B < out[j].B
 	})
+	if len(out) > tier2MaxPairs {
+		out = out[:tier2MaxPairs]
+	}
 	return out
 }
 

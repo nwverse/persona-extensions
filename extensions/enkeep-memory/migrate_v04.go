@@ -36,7 +36,10 @@ const (
 	migrateV04BatchSize        = 30
 
 	migrateV04DefaultHaikuModel  = "claude-haiku-4-5-20251001"
-	migrateV04DefaultSonnetModel = "claude-sonnet-4-5-20250929"
+	migrateV04DefaultSonnetModel = "claude-sonnet-5-5"
+
+	migrateV04DefaultMaxHaiku  = 32
+	migrateV04DefaultMaxSonnet = 15
 
 	migrateV04MaxConcHard = 4
 	migrateV04MaxRPMHard  = 20
@@ -210,8 +213,8 @@ func migrateV04Cmd(args []string) error {
 	skipLLM := fs.Bool("skip-llm", false, "skip model calls in Phase 2 and Phase 3 (deterministic only)")
 	maxConc := fs.Int("max-conc", 4, "max concurrent model calls (capped at 4)")
 	maxRPM := fs.Int("max-rpm", 15, "max model calls per minute (capped at 20)")
-	maxHaiku := fs.Int("max-haiku", 20, "hard cap on Haiku calls (0 = unlimited)")
-	maxSonnet := fs.Int("max-sonnet", 11, "hard cap on Sonnet calls (0 = unlimited)")
+	maxHaiku := fs.Int("max-haiku", migrateV04DefaultMaxHaiku, "hard cap on Haiku calls (0 = unlimited)")
+	maxSonnet := fs.Int("max-sonnet", migrateV04DefaultMaxSonnet, "hard cap on Sonnet calls (0 = unlimited)")
 	modelCmd := fs.String("model-cmd", "claude", "local CLI command for offline model calls")
 	haikuMdl := fs.String("haiku-model", migrateV04DefaultHaikuModel, "model name for Small/Haiku tier")
 	sonnetMdl := fs.String("sonnet-model", migrateV04DefaultSonnetModel, "model name for Medium/Sonnet tier")
@@ -392,12 +395,6 @@ func RunMigrateV04(ctx context.Context, opts MigrateV04Options) (*MigrateV04Repo
 		rep.Phase1.S3PersonaDemoted, rep.Phase1.CronWorkflowRetired, rep.Phase1.OpsRunbookTagged,
 		rep.Phase1.SensitiveWorkCleared)
 
-	if opts.Apply {
-		if err := stStore.Save(); err != nil {
-			return rep, fmt.Errorf("save after phase 1: %w", err)
-		}
-	}
-
 	// Prepare guarded rate-limited model for Phase 2 and Phase 3.
 	var guarded *migrateGuardedModel
 	if !opts.SkipLLM && opts.MaxPhase >= 2 {
@@ -421,6 +418,15 @@ func RunMigrateV04(ctx context.Context, opts MigrateV04Options) (*MigrateV04Repo
 		conc := clampInt(opts.MaxConc, 1, migrateV04MaxConcHard, 4)
 		rpm := clampInt(opts.MaxRPM, 1, migrateV04MaxRPMHard, 15)
 		guarded = newMigrateGuardedModel(base, &model.Limiter{Concurrent: conc, PerMinute: rpm}, opts.MaxHaiku, opts.MaxSonnet)
+	}
+
+	// Only flush state.json after Phase 1 when Phase 2 will not run (MaxPhase == 1 || SkipLLM).
+	// When Phase 2 runs, defer stStore.Save() until Phase 2 succeeds so a mid-Phase-2 failure
+	// never leaves a half-migrated state.json on disk.
+	if opts.Apply && (opts.MaxPhase == 1 || opts.SkipLLM || guarded == nil) {
+		if err := stStore.Save(); err != nil {
+			return rep, fmt.Errorf("save after phase 1: %w", err)
+		}
 	}
 
 	// Phase 2: lightweight Haiku disambiguation, sensitive audit, boundary rule split.

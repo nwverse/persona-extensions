@@ -526,3 +526,79 @@ func TestReviewBundleGeneratesAll6ArtifactsAndColdstart(t *testing.T) {
 		t.Fatalf("coldstart report missing S6 strip evidence:\n%s", coldRaw)
 	}
 }
+
+func TestMigrateV04DefaultsAndAtomicPhase2Save(t *testing.T) {
+	if migrateV04DefaultMaxHaiku != 32 {
+		t.Fatalf("migrateV04DefaultMaxHaiku = %d, want 32", migrateV04DefaultMaxHaiku)
+	}
+	if migrateV04DefaultMaxSonnet != 15 {
+		t.Fatalf("migrateV04DefaultMaxSonnet = %d, want 15", migrateV04DefaultMaxSonnet)
+	}
+	if migrateV04DefaultSonnetModel != "claude-sonnet-5-5" {
+		t.Fatalf("migrateV04DefaultSonnetModel = %q, want claude-sonnet-5-5", migrateV04DefaultSonnetModel)
+	}
+
+	dir := t.TempDir()
+	today := "2026-11-27"
+	st := &store.State{
+		Version:    store.Version,
+		ActiveDays: []string{today},
+		Entries: map[string]*entry.Entry{
+			"s6-1": {
+				ID: "s6-1", Facet: entry.Interaction, Grain: entry.Action,
+				Text: "长材料只给一句结论", Origin: entry.Handwritten, Status: entry.Stable, Last: today,
+			},
+			"p-sens": {
+				ID: "p-sens", Facet: entry.Persona, Grain: entry.Action,
+				Text: "工作上注重效率", Status: entry.Stable, Last: today, Count: 5,
+				Categories: []entry.Category{{Name: entry.CatEmotion, By: entry.ByModel}},
+			},
+		},
+	}
+	origBytes, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(statePath, origBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// When Apply=true and MaxPhase=2 with a failing Phase 2 model, state.json must remain untouched on disk.
+	failingModel := &stubRateModel{failWith: errors.New("HTTP 429 rate_limit_exceeded")}
+	_, err = RunMigrateV04(context.Background(), MigrateV04Options{
+		StateDir: dir,
+		Apply:    true,
+		MaxPhase: 2,
+		Today:    today,
+		Model:    failingModel,
+	})
+	if err == nil {
+		t.Fatal("expected Phase 2 error")
+	}
+	afterFail, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(afterFail) != string(origBytes) {
+		t.Fatalf("state.json was modified despite Phase 2 failure")
+	}
+
+	// When MaxPhase=1 (no Phase 2), Phase 1 must still save state.json to disk.
+	_, err = RunMigrateV04(context.Background(), MigrateV04Options{
+		StateDir: dir,
+		Apply:    true,
+		MaxPhase: 1,
+		Today:    today,
+	})
+	if err != nil {
+		t.Fatalf("MaxPhase=1 apply failed: %v", err)
+	}
+	reloaded, err := store.Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.S.Entries["s6-1"].Origin != entry.OriginAssistantNote {
+		t.Fatalf("expected Phase 1 save on MaxPhase=1, got origin=%s", reloaded.S.Entries["s6-1"].Origin)
+	}
+}
