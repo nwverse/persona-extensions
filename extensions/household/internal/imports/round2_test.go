@@ -22,7 +22,7 @@ func copyBase(b *kernel.Base) *kernel.Base {
 // N1: a record that merely has the id the import would have created is no proof it was written.
 func TestSettleDoesNotTakeAReusedIDAsWritten(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	apply(t, fx, imp, Input{Source: SrcReceipt, Lines: []Line{{Title: "番茄", Qty: f(2), Unit: "个"}}})
 	prev := lastApplied(t, imp)
 	d, _ := Preview(imp, fx.home(), Input{Source: SrcReceipt, Lines: []Line{{Title: "香蕉", Qty: f(1), Unit: "把"}}}, time.UTC, false)
@@ -76,7 +76,7 @@ func TestSettleDoesNotTakeAReusedIDAsWritten(t *testing.T) {
 // N2: a written import whose records were edited afterwards is not taken as never written.
 func TestSettleDoesNotForgetAWrittenImport(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	d, _ := Preview(imp, fx.home(), Input{Source: SrcReceipt, Lines: []Line{{Title: "鸡蛋", Qty: f(6), Unit: "个"}}}, time.UTC, false)
 	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, false, testNow, time.UTC); err != nil { // saved; finish lost
 		t.Fatal(err)
@@ -121,7 +121,7 @@ func TestLinesResolvedToOneItemAreMerged(t *testing.T) {
 		t.Fatalf("unconvertible %+v", s)
 	}
 	// Applying the merged count writes 8.
-	imp := Open("")
+	imp := openTestStore("")
 	a := apply(t, fx, imp, in, Edit{Line: 2, Match: tomato})
 	if it, _ := fx.home().Item(tomato); it.Qty != 8 || a.Totals.Counted != 1 {
 		t.Fatalf("tomato %v", it.Qty)
@@ -131,7 +131,7 @@ func TestLinesResolvedToOneItemAreMerged(t *testing.T) {
 // N4 (ii): the assistant does not apply or discard a draft the user pasted on the page.
 func TestTheAssistantDoesNotApplyOrDiscardThePagesDrafts(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	d, _ := Preview(imp, fx.home(), Input{Source: SrcPaste, Lines: []Line{{Title: "牛奶", Qty: f(1), Unit: "盒"}}}, time.UTC, true)
 	before := snapshot(t, fx.b)
 	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, false, testNow, time.UTC); err == nil || !strings.Contains(err.Error(), "页面") {
@@ -164,7 +164,7 @@ func TestTableNits(t *testing.T) {
 // A lost undo-finish, then an edit: settling at the start of the edit records the undo as done.
 func TestALostUndoFinishIsSettledBeforeTheNextWrite(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	apply(t, fx, imp, Input{Source: SrcReceipt, Lines: []Line{{Title: "番茄", Qty: f(2), Unit: "个"}}})
 	if _, _, err := UndoLast(fx.b, imp, "", testNow.Add(time.Minute)); err != nil { // saved; finish lost
 		t.Fatal(err)

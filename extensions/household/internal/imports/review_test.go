@@ -38,7 +38,7 @@ func draftOf(t *testing.T, imp *Store, id string) (Draft, bool) {
 // 1: a yes is for one revision of the plan.
 func TestApplyNeedsTheRevisionThatWasShown(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	d, err := Preview(imp, fx.home(), Input{Source: SrcReceipt, Lines: []Line{{Title: "牛奶", Qty: f(2), Unit: "盒"}}}, time.UTC, false)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestStaleWhenTheOldBatchExpiresOvernight(t *testing.T) {
 	if _, err := ops.Save(fx.b, kernel.EntityInput{ID: fx.eggs, Values: map[string]any{"expires": string(testToday)}}, testNow, time.UTC); err != nil {
 		t.Fatal(err)
 	}
-	imp := Open("")
+	imp := openTestStore("")
 	d, err := Preview(imp, fx.home(), Input{Source: SrcReceipt, Lines: []Line{{Title: "鸡蛋", Qty: f(6), Unit: "个"}}}, time.UTC, false)
 	if err != nil {
 		t.Fatal(err)
@@ -87,7 +87,8 @@ func TestStaleWhenTheOldBatchExpiresOvernight(t *testing.T) {
 	if s := step(t, d.Plan, 1); *s.After != 10 || s.OldGone {
 		t.Fatalf("preview %+v, want 4 → 10", s)
 	}
-	tomorrow := testNow.Add(24 * time.Hour)
+	// Advance across midnight into the next calendar day while staying within the 24-hour draft TTL.
+	tomorrow := testNow.Add(20 * time.Hour)
 	before := snapshot(t, fx.b)
 	_, _, err = Apply(fx.b, imp, d.ID, d.Rev, false, tomorrow, time.UTC)
 	if err == nil || !strings.Contains(err.Error(), "变了") {
@@ -118,7 +119,7 @@ func TestCountModeDuplicatesConvertOrAsk(t *testing.T) {
 	if s := step(t, p, 2); s.Action != ActAsk || s.Ask.Kind != AskDuplicate {
 		t.Fatalf("milk line 2 %+v", s)
 	}
-	imp := Open("")
+	imp := openTestStore("")
 	d, _ := Preview(imp, fx.home(), Input{Source: SrcFridge, Lines: []Line{{Title: "牛奶", Qty: f(2)}, {Title: "牛奶", Qty: f(3), Unit: "盒"}}}, time.UTC, false)
 	if _, _, err := Apply(fx.b, imp, d.ID, d.Rev, false, testNow, time.UTC); err == nil {
 		t.Fatal("two counts of one item written")
@@ -158,7 +159,7 @@ func TestCountBelowTheEstimateIsFlagged(t *testing.T) {
 // 6: a records save that fails or never happens leaves the draft, and the last real import's undo.
 func TestALostRecordsSaveLeavesTheDraft(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	apply(t, fx, imp, Input{Source: SrcReceipt, Lines: []Line{{Title: "酸奶", Qty: f(1), Unit: "杯"}}})
 	first := lastApplied(t, imp)
 	d, _ := Preview(imp, fx.home(), Input{Source: SrcReceipt, Lines: []Line{{Title: "牛奶", Qty: f(2), Unit: "盒"}}}, time.UTC, false)
@@ -220,7 +221,7 @@ func TestALostRecordsSaveLeavesTheDraft(t *testing.T) {
 // 6, for undo: an undo whose records were not saved is not recorded as done.
 func TestALostUndoSaveKeepsTheImport(t *testing.T) {
 	fx := newFixture(t)
-	imp := Open("")
+	imp := openTestStore("")
 	apply(t, fx, imp, Input{Source: SrcReceipt, Lines: []Line{{Title: "酸奶", Qty: f(1), Unit: "杯"}}})
 	work := *fx.b
 	work.Spaces = append([]*kernel.Space{}, fx.b.Spaces...)
@@ -273,7 +274,7 @@ func TestLimitsAreCheckedAtPreview(t *testing.T) {
 		"long place": {Source: SrcText, Lines: []Line{{Title: "牛奶", Place: long}}},
 		"long note":  {Source: SrcText, Note: strings.Repeat(long, 5), Lines: []Line{{Title: "牛奶"}}},
 	} {
-		if _, err := Preview(Open(""), &model.Home{}, in, time.UTC, false); err == nil {
+		if _, err := Preview(openTestStore(""), &model.Home{}, in, time.UTC, false); err == nil {
 			t.Errorf("%s: previewed", name)
 		}
 	}
@@ -281,7 +282,7 @@ func TestLimitsAreCheckedAtPreview(t *testing.T) {
 
 // 10: the assistant does not push out or re-plan a draft the user made on the page.
 func TestTheAssistantLeavesTheUsersDraftsAlone(t *testing.T) {
-	imp := Open("")
+	imp := openTestStore("")
 	h := &model.Home{}
 	in := Input{Source: SrcPaste, Lines: []Line{{Title: "牛奶", Qty: f(1)}}}
 	var mine []Draft
@@ -310,7 +311,7 @@ func TestTheAssistantLeavesTheUsersDraftsAlone(t *testing.T) {
 // 11: the file has a version; a newer one is refused, not overwritten.
 func TestStoreVersion(t *testing.T) {
 	dir := t.TempDir()
-	imp := Open(dir)
+	imp := openTestStore(dir)
 	if _, err := Preview(imp, &model.Home{}, Input{Source: SrcText, Lines: []Line{{Title: "牛奶"}}}, time.UTC, false); err != nil {
 		t.Fatal(err)
 	}
