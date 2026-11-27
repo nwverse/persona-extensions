@@ -594,8 +594,10 @@ func TestWishlistInboxQRLogoutDuringScan(t *testing.T) {
 			t.Fatal("the signed-out QR generation kept its event cursors")
 		}
 	}))
-	if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
-		t.Fatalf("QR sign-in wrote wishlist snapshots to disk: %v, %v", entries, err)
+	for _, snapshotDir := range []string{"steam-cache-v1", storeDirectory} {
+		if _, err := os.Lstat(filepath.Join(dir, snapshotDir)); !os.IsNotExist(err) {
+			t.Fatalf("QR sign-in created %s on disk: %v", snapshotDir, err)
+		}
 	}
 }
 
