@@ -22,30 +22,62 @@ func (a *app) do(ctx context.Context, requestID, name string, raw json.RawMessag
 	a.writeMu.Lock()
 	defer a.writeMu.Unlock()
 	env := a.env()
+	reqKey := argsKey(name, raw)
 	// Live actions always check idempotency against the live ledger a.ledger,
 	// never paper-ledger.json, regardless of the current PaperTrading mode.
 	if !isPaperAction(name) {
 		if r, ok := a.ledger.result(requestID); ok {
-			return answer(r), nil
+			var prevPtr *placedOrder
+			if prev, hasPrev := a.ledger.placedByRequest(requestID); hasPrev {
+				prevPtr = &prev
+			}
+			return replayResult(r, reqKey, requestID, prevPtr)
 		}
 		if prev, ok := a.ledger.placedByRequest(requestID); ok {
-			return a.recoverInFlightOrder(ctx, env, requestID, prev)
+			if err := checkRequestArgs(prev.ArgsKey, reqKey, requestID); err != nil {
+				return nil, err
+			}
+			return a.recoverInFlightOrder(ctx, env, requestID, reqKey, prev)
 		}
 	} else if a.paper != nil {
 		if r, ok := a.paper.result(requestID); ok {
-			return answer(r), nil
+			return replayResult(r, reqKey, requestID, nil)
 		}
 	}
 	if err := checkActionMode(env.cfg, name); err != nil {
 		return nil, err
 	}
 	if cancel {
-		return a.doCancel(ctx, requestID, mkt, raw)
+		return a.doCancel(ctx, requestID, reqKey, mkt, raw)
 	}
-	return a.doOrder(ctx, requestID, name, mkt, raw)
+	return a.doOrder(ctx, requestID, reqKey, name, mkt, raw)
 }
 
-func (a *app) recoverInFlightOrder(ctx context.Context, env *guardEnv, requestID string, prev placedOrder) (map[string]any, error) {
+func checkRequestArgs(savedKey, reqKey, requestID string) error {
+	if savedKey != "" && savedKey != reqKey {
+		return fmt.Errorf("request_id %s 已被不同的操作或参数使用，拒绝重放", requestID)
+	}
+	return nil
+}
+
+func replayResult(r writeResult, reqKey, requestID string, prev *placedOrder) (map[string]any, error) {
+	savedKey := r.ArgsKey
+	if savedKey == "" && prev != nil {
+		savedKey = prev.ArgsKey
+	}
+	if err := checkRequestArgs(savedKey, reqKey, requestID); err != nil {
+		return nil, err
+	}
+	if r.Error != "" {
+		return nil, errors.New(r.Error)
+	}
+	if prev != nil && prev.Status == "NOT_FOUND" {
+		return nil, errors.New(r.Text)
+	}
+	return answer(r), nil
+}
+
+func (a *app) recoverInFlightOrder(ctx context.Context, env *guardEnv, requestID, reqKey string, prev placedOrder) (map[string]any, error) {
 	if env.cfg.PaperTrading {
 		return nil, fmt.Errorf("该实盘请求已预留额度但尚未确认终态（client id %s），当前已切换到纸面模式，不会重发；请在币安核对订单状态", prev.ClientID)
 	}
@@ -55,21 +87,23 @@ func (a *app) recoverInFlightOrder(ctx context.Context, env *guardEnv, requestID
 	if a.client().signer == nil || env.locked != "" {
 		return nil, fmt.Errorf("该实盘请求已预留额度但尚未确认终态（client id %s），当前无法向币安核对，不会重发", prev.ClientID)
 	}
+	effectiveKey := firstOf(prev.ArgsKey, reqKey)
 	found, verdict := a.resolveUnknown(ctx, prev.Market, prev.Symbol, prev.ClientID)
 	switch verdict {
 	case verdictFound:
 		r := writeResult{Text: fmt.Sprintf("已下单 %s %s %s %s #%d，状态 %s（client id %s）", marketName(prev.Market), prev.Symbol,
 			sideName(prev.Side), prev.Type, found.OrderID, statusName(found.Status), prev.ClientID),
-			MessageRef: strconv.FormatInt(found.OrderID, 10), At: a.now()}
+			MessageRef: strconv.FormatInt(found.OrderID, 10), ArgsKey: effectiveKey, At: a.now()}
 		_ = a.ledger.update(func(s *ledgerState) error {
 			s.Results[requestID] = r
-			prev.OrderID, prev.Status, prev.Executed, prev.At = found.OrderID, found.Status, found.ExecutedQty, r.At
+			prev.OrderID, prev.Status, prev.Executed, prev.ArgsKey, prev.At = found.OrderID, found.Status, found.ExecutedQty, effectiveKey, r.At
 			savePlacedOrder(s, prev)
 			return nil
 		})
 		return answer(r), nil
 	case verdictAbsent:
 		msg := fmt.Sprintf("没下成：币安确认没有这笔单（client id %s）。额度已退回；扩展还会盯 10 分钟，万一出现会提醒你", prev.ClientID)
+		errMsg := fmt.Sprintf("没下成：币安确认没有这笔单（client id %s），额度已退回；不会自动重发", prev.ClientID)
 		now := a.now()
 		prevDay := prev.dayIn(a)
 		_ = a.ledger.update(func(s *ledgerState) error {
@@ -83,19 +117,19 @@ func (a *app) recoverInFlightOrder(ctx context.Context, env *guardEnv, requestID
 							s.Orders--
 						}
 					}
-					s.Placed[i].Status, s.Placed[i].Counts, s.Placed[i].At = "NOT_FOUND", false, now
+					s.Placed[i].Status, s.Placed[i].Counts, s.Placed[i].ArgsKey, s.Placed[i].At = "NOT_FOUND", false, effectiveKey, now
 				}
 			}
-			s.Results[requestID] = writeResult{Text: msg, At: now}
+			s.Results[requestID] = writeResult{Text: msg, ArgsKey: effectiveKey, Error: errMsg, At: now}
 			return nil
 		})
-		return nil, fmt.Errorf("没下成：币安确认没有这笔单（client id %s），额度已退回；不会自动重发", prev.ClientID)
+		return nil, errors.New(errMsg)
 	default:
 		msg := fmt.Sprintf("下单结果不明（上次提交未确认），扩展没有重发。请在币安里核对 client id %s；在核对清楚之前，额度按已下单占用", prev.ClientID)
 		now := a.now()
 		_ = a.ledger.update(func(s *ledgerState) error {
-			s.Results[requestID] = writeResult{Text: msg, At: now}
-			prev.Status, prev.Counts, prev.At = "UNKNOWN", !prev.Reducing, now
+			s.Results[requestID] = writeResult{Text: msg, ArgsKey: effectiveKey, At: now}
+			prev.Status, prev.Counts, prev.ArgsKey, prev.At = "UNKNOWN", !prev.Reducing, effectiveKey, now
 			savePlacedOrder(s, prev)
 			return nil
 		})
@@ -113,7 +147,7 @@ func answer(r writeResult) map[string]any {
 	return out
 }
 
-func (a *app) doCancel(ctx context.Context, requestID, mkt string, raw json.RawMessage) (map[string]any, error) {
+func (a *app) doCancel(ctx context.Context, requestID, reqKey, mkt string, raw json.RawMessage) (map[string]any, error) {
 	c, err := parseCancel(raw)
 	if err != nil {
 		return nil, err
@@ -132,7 +166,7 @@ func (a *app) doCancel(ctx context.Context, requestID, mkt string, raw json.RawM
 		return nil, fmt.Errorf("撤单失败：%v", err)
 	}
 	r := writeResult{Text: fmt.Sprintf("已撤销 %s %s 订单 #%d（状态 %s，已成交 %s）", marketName(mkt), c.Symbol, st.OrderID,
-		statusName(st.Status), st.ExecutedQty), MessageRef: strconv.FormatInt(st.OrderID, 10), At: a.now()}
+		statusName(st.Status), st.ExecutedQty), MessageRef: strconv.FormatInt(st.OrderID, 10), ArgsKey: reqKey, At: a.now()}
 	_ = a.ledger.update(func(s *ledgerState) error {
 		s.Results[requestID] = r
 		for i := range s.Placed {
@@ -145,7 +179,7 @@ func (a *app) doCancel(ctx context.Context, requestID, mkt string, raw json.RawM
 	return answer(r), nil
 }
 
-func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json.RawMessage) (map[string]any, error) {
+func (a *app) doOrder(ctx context.Context, requestID, reqKey, name, mkt string, raw json.RawMessage) (map[string]any, error) {
 	var peek orderArgs
 	if err := decodeStrict(raw, &peek); err != nil {
 		return nil, err
@@ -165,7 +199,7 @@ func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json
 	}
 	if p.Args.Type == "MARKET" {
 		a.mu.RLock()
-		card := a.quotes[argsKey(name, raw)]
+		card := a.quotes[reqKey]
 		a.mu.RUnlock()
 		if card.Price <= 0 || env.now.Sub(card.At) > 20*time.Minute {
 			return nil, errors.New("没有下单：找不到有效的确认卡片价格，请重新下单")
@@ -176,11 +210,11 @@ func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json
 		}
 	}
 	if isPaperAction(name) || env.cfg.PaperTrading {
-		return recordPaperOrder(env, requestID, p)
+		return recordPaperOrder(env, requestID, reqKey, p)
 	}
 	day := env.cfg.dayKey(env.now)
 	cid := clientOrderID(requestID)
-	order := plannedOrder(requestID, cid, p, env.now)
+	order := plannedOrder(requestID, reqKey, cid, p, env.now)
 	order.Status = "PENDING_SUBMIT"
 	if err := a.ledger.update(func(s *ledgerState) error {
 		a.ledger.roll(day)
@@ -227,11 +261,12 @@ func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json
 			st, err = found, nil
 		case verdictAbsent:
 			release()
-			a.rememberOrderOutcome(requestID, p, cid, "NOT_FOUND", fmt.Sprintf("没下成：币安确认没有这笔单（%v）。额度已退回；扩展还会盯 10 分钟，万一出现会提醒你", err))
-			return nil, fmt.Errorf("没下成：币安确认没有这笔单（%v），额度已退回；不会自动重发", err)
+			errMsg := fmt.Sprintf("没下成：币安确认没有这笔单（%v），额度已退回；不会自动重发", err)
+			a.rememberOrderOutcome(requestID, reqKey, p, cid, "NOT_FOUND", fmt.Sprintf("没下成：币安确认没有这笔单（%v）。额度已退回；扩展还会盯 10 分钟，万一出现会提醒你", err), errMsg)
+			return nil, errors.New(errMsg)
 		default:
 			msg := fmt.Sprintf("下单结果不明（%v），扩展没有重发。请在币安里核对 client id %s；在核对清楚之前，额度按已下单占用", err, cid)
-			a.rememberOrderOutcome(requestID, p, cid, "UNKNOWN", msg)
+			a.rememberOrderOutcome(requestID, reqKey, p, cid, "UNKNOWN", msg, "")
 			a.raise(event{Thread: "order:unknown:" + cid, Kind: "order_rejected", Tier: "action", Push: "time-sensitive", At: a.now(),
 				Title: fmt.Sprintf("币安 %s %s %s 下单结果不明", marketName(mkt), p.Args.Symbol, sideName(p.Args.Side)), Body: msg})
 			return answer(writeResult{Text: msg}), nil
@@ -242,7 +277,7 @@ func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json
 		return nil, fmt.Errorf("币安拒绝了这笔单：%v", err)
 	}
 	r := writeResult{Text: fmt.Sprintf("已下单 %s %s %s %s #%d，状态 %s（client id %s）", marketName(mkt), p.Args.Symbol,
-		sideName(p.Args.Side), p.Args.Type, st.OrderID, statusName(st.Status), cid), MessageRef: strconv.FormatInt(st.OrderID, 10), At: a.now()}
+		sideName(p.Args.Side), p.Args.Type, st.OrderID, statusName(st.Status), cid), MessageRef: strconv.FormatInt(st.OrderID, 10), ArgsKey: reqKey, At: a.now()}
 	_ = a.ledger.update(func(s *ledgerState) error {
 		s.Results[requestID] = r
 		order.OrderID, order.Status, order.Executed, order.At = st.OrderID, st.Status, st.ExecutedQty, r.At
@@ -252,10 +287,10 @@ func (a *app) doOrder(ctx context.Context, requestID, name, mkt string, raw json
 	return answer(r), nil
 }
 
-func plannedOrder(requestID, cid string, p *orderPlan, now time.Time) placedOrder {
+func plannedOrder(requestID, reqKey, cid string, p *orderPlan, now time.Time) placedOrder {
 	return placedOrder{Market: p.Market, Symbol: p.Args.Symbol, ClientID: cid, Side: p.Args.Side, Type: p.Args.Type,
 		Quantity: firstOf(p.Params.Get("quantity"), p.Params.Get("quoteOrderQty")), Price: p.Params.Get("price"),
-		Notional: p.Notional, Reducing: p.Reducing, Counts: p.Counts, At: now, RequestID: requestID}
+		Notional: p.Notional, Reducing: p.Reducing, Counts: p.Counts, At: now, RequestID: requestID, ArgsKey: reqKey}
 }
 
 func savePlacedOrder(s *ledgerState, order placedOrder) {
@@ -277,8 +312,8 @@ func removePlacedOrder(s *ledgerState, requestID string) {
 	}
 }
 
-func recordPaperOrder(env *guardEnv, requestID string, p *orderPlan) (map[string]any, error) {
-	o := plannedOrder(requestID, "paper-"+clientOrderID(requestID), p, env.now)
+func recordPaperOrder(env *guardEnv, requestID, reqKey string, p *orderPlan) (map[string]any, error) {
+	o := plannedOrder(requestID, reqKey, "paper-"+clientOrderID(requestID), p, env.now)
 	fillPrice := p.RefPrice
 	o.Status = "FILLED"
 	if o.Type == "LIMIT" {
@@ -298,7 +333,7 @@ func recordPaperOrder(env *guardEnv, requestID string, p *orderPlan) (map[string
 	} else {
 		text += " · 现价未达到限价，模拟未成交"
 	}
-	r := writeResult{Text: text, At: env.now}
+	r := writeResult{Text: text, ArgsKey: reqKey, At: env.now}
 	if err := env.ledger.update(func(s *ledgerState) error {
 		env.ledger.roll(env.cfg.dayKey(env.now))
 		env.usedUSDT, env.ordersDone = s.UsedUSDT, s.Orders
@@ -433,11 +468,11 @@ func (a *app) resolveUnknown(ctx context.Context, mkt, symbol, cid string) (orde
 }
 
 // rememberOrderOutcome saves the result for retries and keeps the client id for reconciliation.
-func (a *app) rememberOrderOutcome(requestID string, p *orderPlan, cid, status, text string) {
+func (a *app) rememberOrderOutcome(requestID, reqKey string, p *orderPlan, cid, status, text, errText string) {
 	now := a.now()
 	_ = a.ledger.update(func(s *ledgerState) error {
-		s.Results[requestID] = writeResult{Text: text, At: now}
-		order := plannedOrder(requestID, cid, p, now)
+		s.Results[requestID] = writeResult{Text: text, ArgsKey: reqKey, Error: errText, At: now}
+		order := plannedOrder(requestID, reqKey, cid, p, now)
 		order.Counts, order.Status = p.Counts && status == "UNKNOWN", status
 		savePlacedOrder(s, order)
 		return nil

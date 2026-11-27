@@ -31,6 +31,8 @@ type ledgerState struct {
 type writeResult struct {
 	Text       string    `json:"text"`
 	MessageRef string    `json:"message_ref,omitempty"`
+	ArgsKey    string    `json:"args_key,omitempty"`
+	Error      string    `json:"error,omitempty"` // non-empty: terminal failed outcome (e.g. NOT_FOUND); replay returns error
 	At         time.Time `json:"at"`
 }
 
@@ -52,6 +54,7 @@ type placedOrder struct {
 	FillPrice string    `json:"fill_price,omitempty"` // paper fills only
 	At        time.Time `json:"at"`
 	RequestID string    `json:"request_id"`
+	ArgsKey   string    `json:"args_key,omitempty"`
 }
 
 // dayIn is the guard day the order was placed on.

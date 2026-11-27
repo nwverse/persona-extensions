@@ -662,3 +662,233 @@ func TestCoinMReadOrderPriceUsesCoinMHost(t *testing.T) {
 		t.Fatalf("coinm live order did not hit dapi.binance.com cleanly: %v", f.requests)
 	}
 }
+
+func TestRequestIDArgsVerificationAndAbsentReplay(t *testing.T) {
+	oldGap := resolveGap
+	resolveGap = time.Millisecond
+	t.Cleanup(func() { resolveGap = oldGap })
+
+	argsA := json.RawMessage(`{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","quantity":"0.1","price":"96"}`)
+	argsAReordered := json.RawMessage(`{"price": "96", "quantity": "0.1", "type": "LIMIT", "side": "BUY", "symbol": "BTCUSDT"}`)
+	argsB := json.RawMessage(`{"symbol":"BTCUSDT","side":"BUY","type":"LIMIT","quantity":"0.2","price":"96"}`)
+	cancelArgs := json.RawMessage(`{"symbol":"BTCUSDT","order_id":4242}`)
+	ctx := context.Background()
+
+	t.Run("completed live order rejects mismatched args and action on same request_id", func(t *testing.T) {
+		f := newFakeBinance(t)
+		a := testApp(t, f, tradeCfg, t.TempDir())
+
+		r1, err := a.do(ctx, "req-idem-1", "binance_spot_order", argsA)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Identical args with different JSON key order replay cleanly.
+		r2, err := a.do(ctx, "req-idem-1", "binance_spot_order", argsAReordered)
+		if err != nil || r2["text"] != r1["text"] {
+			t.Fatalf("canonical retry failed: got (%v, %v), want %v", r2, err, r1)
+		}
+		// Different order quantity with same request_id must be rejected.
+		if _, err := a.do(ctx, "req-idem-1", "binance_spot_order", argsB); err == nil || !strings.Contains(err.Error(), "拒绝重放") {
+			t.Fatalf("mismatched order args: got %v, want replay conflict error", err)
+		}
+		// Different action name with same request_id must be rejected.
+		if _, err := a.do(ctx, "req-idem-1", "binance_spot_cancel", cancelArgs); err == nil || !strings.Contains(err.Error(), "拒绝重放") {
+			t.Fatalf("mismatched action name: got %v, want replay conflict error", err)
+		}
+		if f.seen("POST api.binance.com /api/v3/order") != 1 || f.seen("DELETE api.binance.com /api/v3/order") != 0 {
+			t.Fatalf("unexpected extra writes: %v", f.requests)
+		}
+	})
+
+	t.Run("in-flight PENDING_SUBMIT rejects mismatched args on same request_id", func(t *testing.T) {
+		f := newFakeBinance(t)
+		a := testApp(t, f, tradeCfg, t.TempDir())
+		if err := a.ledger.update(func(s *ledgerState) error {
+			savePlacedOrder(s, placedOrder{
+				Market: marketSpot, Symbol: "BTCUSDT", ClientID: clientOrderID("req-inflight-mismatch"),
+				Side: "BUY", Type: "LIMIT", Quantity: "0.1", Price: "96", Notional: 9.6, Counts: true,
+				Status: "PENDING_SUBMIT", At: time.Now(), RequestID: "req-inflight-mismatch",
+				ArgsKey: argsKey("binance_spot_order", argsA),
+			})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.do(ctx, "req-inflight-mismatch", "binance_spot_order", argsB); err == nil || !strings.Contains(err.Error(), "拒绝重放") {
+			t.Fatalf("in-flight mismatch: got %v, want replay conflict error", err)
+		}
+		if f.seen("GET api.binance.com /api/v3/order") != 0 || f.seen("POST api.binance.com /api/v3/order") != 0 {
+			t.Fatalf("mismatched in-flight retry should not call Binance: %v", f.requests)
+		}
+	})
+
+	t.Run("verdictAbsent retries keep returning error and reject mismatched args", func(t *testing.T) {
+		f := newFakeBinance(t)
+		a := testApp(t, f, tradeCfg, t.TempDir())
+		f.on("POST api.binance.com /api/v3/order", func(url.Values) (int, any) {
+			return 502, map[string]any{"msg": "Bad Gateway"}
+		})
+		f.on("GET api.binance.com /api/v3/order", func(url.Values) (int, any) {
+			return 400, map[string]any{"code": -2013, "msg": "Order does not exist."}
+		})
+		if _, err := a.do(ctx, "req-absent-1", "binance_spot_order", argsA); err == nil || !strings.Contains(err.Error(), "没下成") {
+			t.Fatalf("first call: got %v, want absent error", err)
+		}
+		// Retry with identical args must STILL return an error (never turn NOT_FOUND into nil/success) and not resend.
+		if res, err := a.do(ctx, "req-absent-1", "binance_spot_order", argsA); err == nil || res != nil || !strings.Contains(err.Error(), "没下成") {
+			t.Fatalf("retry of verdictAbsent: got (%v, %v), want (nil, absent error)", res, err)
+		}
+		// Retry with mismatched args must reject with conflict error.
+		if _, err := a.do(ctx, "req-absent-1", "binance_spot_order", argsB); err == nil || !strings.Contains(err.Error(), "拒绝重放") {
+			t.Fatalf("mismatched retry of verdictAbsent: got %v, want replay conflict error", err)
+		}
+		if f.seen("POST api.binance.com /api/v3/order") != 1 {
+			t.Fatalf("verdictAbsent retry resent POST: %d", f.seen("POST api.binance.com /api/v3/order"))
+		}
+	})
+
+	t.Run("recoverInFlightOrder verdictAbsent retries keep returning error", func(t *testing.T) {
+		f := newFakeBinance(t)
+		a := testApp(t, f, tradeCfg, t.TempDir())
+		f.on("GET api.binance.com /api/v3/order", func(url.Values) (int, any) {
+			return 400, map[string]any{"code": -2013, "msg": "Order does not exist."}
+		})
+		if err := a.ledger.update(func(s *ledgerState) error {
+			a.ledger.roll(a.cfg.dayKey(time.Now()))
+			s.UsedUSDT = 9.6
+			s.Orders = 1
+			savePlacedOrder(s, placedOrder{
+				Market: marketSpot, Symbol: "BTCUSDT", ClientID: clientOrderID("req-recover-absent"),
+				Side: "BUY", Type: "LIMIT", Quantity: "0.1", Price: "96", Notional: 9.6, Counts: true,
+				Status: "PENDING_SUBMIT", At: time.Now(), RequestID: "req-recover-absent",
+				ArgsKey: argsKey("binance_spot_order", argsA),
+			})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.do(ctx, "req-recover-absent", "binance_spot_order", argsA); err == nil || !strings.Contains(err.Error(), "没下成") {
+			t.Fatalf("first recover absent: got %v", err)
+		}
+		if res, err := a.do(ctx, "req-recover-absent", "binance_spot_order", argsA); err == nil || res != nil || !strings.Contains(err.Error(), "没下成") {
+			t.Fatalf("second recover absent: got (%v, %v), want (nil, absent error)", res, err)
+		}
+	})
+
+	t.Run("paper order rejects mismatched args on same request_id", func(t *testing.T) {
+		f := newFakeBinance(t)
+		a := testApp(t, f, string(mergeJSON(t, tradeCfg, `{"paper_trading":true}`)), t.TempDir())
+		if _, err := a.do(ctx, "req-paper-1", "binance_paper_spot_order", argsA); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := a.do(ctx, "req-paper-1", "binance_paper_spot_order", argsB); err == nil || !strings.Contains(err.Error(), "拒绝重放") {
+			t.Fatalf("paper mismatch: got %v, want replay conflict error", err)
+		}
+	})
+
+	t.Run("legacy ledger entries without args_key remain compatible and NOT_FOUND still errors", func(t *testing.T) {
+		f := newFakeBinance(t)
+		a := testApp(t, f, tradeCfg, t.TempDir())
+		if err := a.ledger.update(func(s *ledgerState) error {
+			s.Results["legacy-ok"] = writeResult{Text: "legacy ok", At: time.Now()}
+			s.Results["legacy-absent"] = writeResult{Text: "没下成：旧账本记录", At: time.Now()}
+			savePlacedOrder(s, placedOrder{
+				Market: marketSpot, Symbol: "BTCUSDT", ClientID: "cid-legacy", Status: "NOT_FOUND",
+				At: time.Now(), RequestID: "legacy-absent",
+			})
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if r, err := a.do(ctx, "legacy-ok", "binance_spot_order", argsA); err != nil || r["text"] != "legacy ok" {
+			t.Fatalf("legacy ok replay: got (%v, %v)", r, err)
+		}
+		if r, err := a.do(ctx, "legacy-absent", "binance_spot_order", argsA); err == nil || r != nil || !strings.Contains(err.Error(), "没下成") {
+			t.Fatalf("legacy absent replay: got (%v, %v), want error", r, err)
+		}
+	})
+}
+
+func TestSpotExchangeInfoIgnoresUSDMOnlyAndInvalidSymbols(t *testing.T) {
+	validSpot := map[string]map[string]any{
+		"BTCUSDT": spotSymbol("BTCUSDT", "BTC"),
+		"ETHUSDT": spotSymbol("ETHUSDT", "ETH"),
+	}
+	strictExchangeInfo := func(q url.Values) (int, any) {
+		var syms []string
+		if err := json.Unmarshal([]byte(q.Get("symbols")), &syms); err != nil {
+			return 400, map[string]any{"code": -1100, "msg": "bad symbols"}
+		}
+		var out []any
+		for _, s := range syms {
+			info, ok := validSpot[s]
+			if !ok {
+				return 400, map[string]any{"code": -1121, "msg": "Invalid symbol."}
+			}
+			out = append(out, info)
+		}
+		return 200, map[string]any{"symbols": out}
+	}
+
+	t.Run("loop intersects candidates with known spot tickers", func(t *testing.T) {
+		f := newFakeBinance(t)
+		f.on("GET data-api.binance.vision /api/v3/exchangeInfo", strictExchangeInfo)
+		cfg := `{"trading_enabled": true, "markets": ["spot","usdm"], "symbol_whitelist": ["BTCUSDT","1000PEPEUSDT","TYPOUSDT"], "watch_symbols": ["ETHUSDT","BADWATCH","BTCUSD_PERP"], "timezone": "UTC"}`
+		a := testApp(t, f, cfg, t.TempDir())
+		if a.market.rule(marketSpot, "BTCUSDT") == nil || a.market.rule(marketSpot, "ETHUSDT") == nil {
+			t.Fatalf("expected valid spot rules BTCUSDT & ETHUSDT despite USD-M-only and typo symbols")
+		}
+		if got := f.seen("GET data-api.binance.vision /api/v3/exchangeInfo"); got != 1 {
+			t.Fatalf("expected 1 clean batch exchangeInfo call after ticker intersection, got %d (%v)", got, f.requests)
+		}
+	})
+
+	t.Run("refreshRules falls back per symbol on -1121 when prices cache is empty", func(t *testing.T) {
+		f := newFakeBinance(t)
+		f.on("GET data-api.binance.vision /api/v3/exchangeInfo", strictExchangeInfo)
+		cl := newClient(f.srv.Client(), nil)
+		cl.hostURL = f.hostURL
+		m := newMarket()
+		now := time.Now()
+		if err := m.refreshRules(context.Background(), cl, marketSpot, []string{"1000PEPEUSDT", "BTCUSDT", "TYPOUSDT"}, now); err != nil {
+			t.Fatalf("refreshRules failed on mixed valid/invalid symbols: %v", err)
+		}
+		if m.rule(marketSpot, "BTCUSDT") == nil {
+			t.Fatalf("BTCUSDT spot rule missing after -1121 fallback")
+		}
+		if m.rule(marketSpot, "1000PEPEUSDT") != nil || m.rule(marketSpot, "TYPOUSDT") != nil {
+			t.Fatalf("invalid symbols unexpectedly stored in spot rules")
+		}
+	})
+}
+
+func TestToolOpenOrdersUnmarshalValidAndMalformed(t *testing.T) {
+	f := newFakeBinance(t)
+	a := testApp(t, f, tradeCfg, t.TempDir())
+	ctx := context.Background()
+
+	f.on("GET api.binance.com /api/v3/openOrders", fixed([]map[string]any{{
+		"symbol": "BTCUSDT", "orderId": 4242, "clientOrderId": "pa-test-1",
+		"side": "BUY", "type": "LIMIT", "price": "96.00", "origQty": "0.1",
+		"executedQty": "0", "status": "NEW", "time": 1735787045000, "timeInForce": "GTC",
+	}}))
+	out, err := a.callTool(ctx, "binance_open_orders", json.RawMessage(`{"market":"spot"}`))
+	if err != nil {
+		t.Fatalf("valid openOrders failed: %v", err)
+	}
+	for _, want := range []string{"BTCUSDT", "4242", "pa-test-1", "BUY", "LIMIT", "96.00", "2025-01-02T03:04:05Z"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("openOrders output missing %q:\n%s", want, out)
+		}
+	}
+
+	// Malformed time field previously caused extra unmarshal failure and out-of-range panic on extra[i].
+	f.on("GET api.binance.com /api/v3/openOrders", fixed([]map[string]any{{
+		"symbol": "BTCUSDT", "orderId": 4242, "clientOrderId": "pa-test-1",
+		"side": "BUY", "type": "LIMIT", "price": "96.00", "origQty": "0.1",
+		"executedQty": "0", "status": "NEW", "time": "not-a-number",
+	}}))
+	if _, err := a.callTool(ctx, "binance_open_orders", json.RawMessage(`{"market":"spot"}`)); err == nil || !strings.Contains(err.Error(), "cannot be read") {
+		t.Fatalf("malformed openOrders: got %v, want unmarshal error without panic", err)
+	}
+}

@@ -392,27 +392,24 @@ func (a *app) toolOpenOrders(ctx context.Context, raw json.RawMessage) (string, 
 		q.Set("symbol", s)
 	}
 	path := map[string]string{marketSpot: "/api/v3/openOrders", marketUSDM: "/fapi/v1/openOrders", marketCoinM: "/dapi/v1/openOrders"}[mkt]
-	var rows []orderStatus
-	var extra []struct {
+	var rows []struct {
+		orderStatus
 		Symbol string `json:"symbol"`
 		Time   int64  `json:"time"`
 		TIF    string `json:"timeInForce"`
 		PSide  string `json:"positionSide"`
 	}
-	var rawRows json.RawMessage
-	if err := a.client().signed(ctx, marketHost(mkt), "GET", path, q, &rawRows); err != nil {
+	if err := a.client().signed(ctx, marketHost(mkt), "GET", path, q, &rows); err != nil {
 		return "", err
 	}
-	_ = json.Unmarshal(rawRows, &rows)
-	_ = json.Unmarshal(rawRows, &extra)
 	if len(rows) == 0 {
 		return "(no open orders)", nil
 	}
 	var b strings.Builder
 	b.WriteString("symbol | order id | client id | side | type | price | qty | filled | status | placed\n")
-	for i, o := range rows {
-		fmt.Fprintf(&b, "%s | %d | %s | %s | %s | %s | %s | %s | %s | %s\n", extra[i].Symbol, o.OrderID, o.ClientOrderID, o.Side, o.Type,
-			o.Price, o.OrigQty, o.ExecutedQty, o.Status, time.UnixMilli(extra[i].Time).UTC().Format(time.RFC3339))
+	for _, o := range rows {
+		fmt.Fprintf(&b, "%s | %d | %s | %s | %s | %s | %s | %s | %s | %s\n", o.Symbol, o.OrderID, o.ClientOrderID, o.Side, o.Type,
+			o.Price, o.OrigQty, o.ExecutedQty, o.Status, time.UnixMilli(o.Time).UTC().Format(time.RFC3339))
 	}
 	return b.String(), nil
 }

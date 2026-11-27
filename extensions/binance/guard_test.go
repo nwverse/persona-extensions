@@ -185,3 +185,134 @@ func TestLockedKeyRefusesEveryWrite(t *testing.T) {
 		t.Fatal("futures write without the futures permission")
 	}
 }
+
+func TestNonUSDQuoteGuardrails(t *testing.T) {
+	makeEnv := func(t *testing.T, cfgJSON string) *guardEnv {
+		t.Helper()
+		env := testEnv(t, mergeJSONString(t, `{"symbol_whitelist":["ETHBTC","BTCJPY","BTCFOO","BTCUSD_PERP"],"max_order_usdt":200,"max_daily_usdt":1000}`, cfgJSON))
+		m := env.market
+		m.prices["BTCUSDT"] = 90000
+		m.prices["ETHBTC"] = 0.05
+		m.prices["USDTJPY"] = 150
+		m.prices["BTCJPY"] = 15000000
+		m.prices["BTCFOO"] = 10
+		m.pricesAt = t0
+		m.rules[marketSpot]["ETHBTC"] = &symbolRules{
+			Market: marketSpot, Symbol: "ETHBTC", Status: "TRADING", Base: "ETH", Quote: "BTC",
+			TickSize: ratOf("0.0001"), StepSize: ratOf("0.001"), MinQty: ratOf("0.001"), MaxQty: ratOf("9000"),
+			MinNotional: ratOf("0.0001"), OrderTypes: map[string]bool{"LIMIT": true, "MARKET": true},
+		}
+		m.rules[marketSpot]["BTCJPY"] = &symbolRules{
+			Market: marketSpot, Symbol: "BTCJPY", Status: "TRADING", Base: "BTC", Quote: "JPY",
+			TickSize: ratOf("1"), StepSize: ratOf("0.00001"), MinQty: ratOf("0.00001"), MaxQty: ratOf("100"),
+			MinNotional: ratOf("1000"), OrderTypes: map[string]bool{"LIMIT": true, "MARKET": true},
+		}
+		m.rules[marketSpot]["BTCFOO"] = &symbolRules{
+			Market: marketSpot, Symbol: "BTCFOO", Status: "TRADING", Base: "BTC", Quote: "FOO",
+			TickSize: ratOf("0.01"), StepSize: ratOf("0.01"), MinQty: ratOf("0.01"), MaxQty: ratOf("100"),
+			MinNotional: ratOf("1"), OrderTypes: map[string]bool{"LIMIT": true, "MARKET": true},
+		}
+		m.rules[marketCoinM]["BTCUSD_PERP"].Quote = "USD"
+		return env
+	}
+
+	t.Run("ETHBTC large order blocked by max_order_usdt", func(t *testing.T) {
+		env := makeEnv(t, "")
+		// 100 ETH * 0.05 BTC = 5 BTC = 450,000 USDT >> 200 USDT cap.
+		_, err := planOrder(env, marketSpot, json.RawMessage(`{"symbol":"ETHBTC","side":"BUY","type":"LIMIT","quantity":"100","price":"0.05"}`))
+		if err == nil || !strings.Contains(err.Error(), "单笔上限") || !strings.Contains(err.Error(), "450000") {
+			t.Fatalf("got %v, want per-order USDT cap error citing ~450000 USDT", err)
+		}
+	})
+
+	t.Run("ETHBTC quote_amount market order converted to USDT", func(t *testing.T) {
+		env := makeEnv(t, "")
+		// 0.01 BTC = 900 USDT > 200 USDT cap.
+		_, err := planOrder(env, marketSpot, json.RawMessage(`{"symbol":"ETHBTC","side":"BUY","type":"MARKET","quote_amount":"0.01"}`))
+		if err == nil || !strings.Contains(err.Error(), "单笔上限") || !strings.Contains(err.Error(), "900") {
+			t.Fatalf("got %v, want per-order USDT cap error citing 900 USDT", err)
+		}
+	})
+
+	t.Run("ETHBTC small order allowed with USDT notional and summary", func(t *testing.T) {
+		env := makeEnv(t, "")
+		// 0.04 ETH * 0.05 BTC = 0.002 BTC = 180 USDT <= 200 USDT cap.
+		p, err := planOrder(env, marketSpot, json.RawMessage(`{"symbol":"ETHBTC","side":"BUY","type":"LIMIT","quantity":"0.04","price":"0.05"}`))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if p.Notional < 179.99 || p.Notional > 180.01 {
+			t.Fatalf("notional = %v, want 180 USDT", p.Notional)
+		}
+		summary := orderSummary(env, p)
+		if !strings.Contains(summary, "≈ 180 USDT") {
+			t.Fatalf("summary did not display converted USDT notional:\n%s", summary)
+		}
+	})
+
+	t.Run("ETHBTC native min_notional enforced in BTC", func(t *testing.T) {
+		env := makeEnv(t, "")
+		// 0.001 ETH * 0.05 BTC = 0.00005 BTC < 0.0001 BTC min_notional.
+		_, err := planOrder(env, marketSpot, json.RawMessage(`{"symbol":"ETHBTC","side":"BUY","type":"LIMIT","quantity":"0.001","price":"0.05"}`))
+		if err == nil || !strings.Contains(err.Error(), "最小下单金额") {
+			t.Fatalf("got %v, want native BTC min_notional rejection", err)
+		}
+	})
+
+	t.Run("BTCJPY low-unit quote converts via USDTJPY", func(t *testing.T) {
+		env := makeEnv(t, "")
+		// 0.001 BTC * 15,000,000 JPY = 15,000 JPY; 15,000 / 150 = 100 USDT <= 200 USDT.
+		p, err := planOrder(env, marketSpot, json.RawMessage(`{"symbol":"BTCJPY","side":"BUY","type":"LIMIT","quantity":"0.001","price":"15000000"}`))
+		if err != nil {
+			t.Fatalf("BTCJPY order falsely rejected: %v", err)
+		}
+		if p.Notional < 99.99 || p.Notional > 100.01 {
+			t.Fatalf("notional = %v, want 100 USDT", p.Notional)
+		}
+		if summary := orderSummary(env, p); !strings.Contains(summary, "≈ 100 USDT") {
+			t.Fatalf("summary did not display 100 USDT:\n%s", summary)
+		}
+		// Below native 1000 JPY min_notional: 0.00005 * 15,000,000 = 750 JPY.
+		_, err = planOrder(env, marketSpot, json.RawMessage(`{"symbol":"BTCJPY","side":"BUY","type":"LIMIT","quantity":"0.00005","price":"15000000"}`))
+		if err == nil || !strings.Contains(err.Error(), "最小下单金额") {
+			t.Fatalf("got %v, want native JPY min_notional rejection", err)
+		}
+	})
+
+	t.Run("unpriceable quote asset fails closed", func(t *testing.T) {
+		env := makeEnv(t, "")
+		_, err := planOrder(env, marketSpot, json.RawMessage(`{"symbol":"BTCFOO","side":"BUY","type":"LIMIT","quantity":"1","price":"10"}`))
+		if err == nil || !strings.Contains(err.Error(), "折算为 USDT") {
+			t.Fatalf("got %v, want fail-closed conversion error", err)
+		}
+	})
+
+	t.Run("stale spot prices fail closed for non-USD quote", func(t *testing.T) {
+		env := makeEnv(t, "")
+		env.priceNow = 0.05
+		env.now = t0.Add(3 * time.Minute)
+		_, err := planOrder(env, marketSpot, json.RawMessage(`{"symbol":"ETHBTC","side":"BUY","type":"LIMIT","quantity":"0.04","price":"0.05"}`))
+		if err == nil || !strings.Contains(err.Error(), "过期") {
+			t.Fatalf("got %v, want stale quote-rate error", err)
+		}
+	})
+
+	t.Run("coinm contract notional remains USD face value", func(t *testing.T) {
+		env := makeEnv(t, "")
+		p, err := planOrder(env, marketCoinM, json.RawMessage(`{"symbol":"BTCUSD_PERP","side":"BUY","type":"LIMIT","quantity":"2","price":"100","position_side":"LONG"}`))
+		if err != nil {
+			t.Fatalf("coinm 2 contracts failed: %v", err)
+		}
+		if p.Notional != 200 {
+			t.Fatalf("coinm notional = %v, want 200 USD", p.Notional)
+		}
+		if summary := orderSummary(env, p); !strings.Contains(summary, "≈ 200 USD") {
+			t.Fatalf("coinm summary missing USD notional:\n%s", summary)
+		}
+	})
+}
+
+func mergeJSONString(t *testing.T, a, b string) string {
+	t.Helper()
+	return string(mergeJSON(t, a, b))
+}

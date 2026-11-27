@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math/big"
 	"net/url"
 	"sort"
@@ -71,6 +72,29 @@ func (m *market) spotPrice(symbol string) float64 {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.prices[symbol]
+}
+
+func (m *market) spotPricesFresh(now time.Time) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return !m.pricesAt.IsZero() && now.Sub(m.pricesAt) < staleAfter
+}
+
+// filterKnownSpotSymbols intersects candidates with the cached Spot ticker symbols when prices have loaded,
+// so USDⓈ-M-only symbols (e.g. 1000PEPEUSDT) or typos do not poison the batch Spot exchangeInfo call.
+func (m *market) filterKnownSpotSymbols(symbols []string) []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if len(m.prices) == 0 {
+		return symbols
+	}
+	var out []string
+	for _, s := range symbols {
+		if _, ok := m.prices[s]; ok {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 func (m *market) rule(mkt, symbol string) *symbolRules {
@@ -188,8 +212,7 @@ func (m *market) refreshRules(ctx context.Context, c *client, mkt string, symbol
 		if len(symbols) == 0 {
 			return nil
 		}
-		b, _ := json.Marshal(symbols)
-		err = c.public(ctx, hostPublic, "/api/v3/exchangeInfo", url.Values{"symbols": {string(b)}}, &info)
+		info, err = fetchSpotExchangeInfo(ctx, c, symbols)
 	case marketUSDM:
 		err = c.public(ctx, hostUSDM, "/fapi/v1/exchangeInfo", nil, &info)
 	case marketCoinM:
@@ -234,6 +257,37 @@ func (m *market) refreshRules(ctx context.Context, c *client, mkt string, symbol
 	m.rules[mkt], m.rulesAt[mkt] = out, now
 	m.mu.Unlock()
 	return nil
+}
+
+func fetchSpotExchangeInfo(ctx context.Context, c *client, symbols []string) (exchangeInfo, error) {
+	var info exchangeInfo
+	b, _ := json.Marshal(symbols)
+	err := c.public(ctx, hostPublic, "/api/v3/exchangeInfo", url.Values{"symbols": {string(b)}}, &info)
+	if err == nil || !isInvalidSymbolErr(err) {
+		return info, err
+	}
+	if len(symbols) == 1 {
+		return exchangeInfo{}, nil
+	}
+	var combined exchangeInfo
+	for _, s := range symbols {
+		var one exchangeInfo
+		sb, _ := json.Marshal([]string{s})
+		serr := c.public(ctx, hostPublic, "/api/v3/exchangeInfo", url.Values{"symbols": {string(sb)}}, &one)
+		if serr != nil {
+			if isInvalidSymbolErr(serr) {
+				continue
+			}
+			return exchangeInfo{}, serr
+		}
+		combined.Symbols = append(combined.Symbols, one.Symbols...)
+	}
+	return combined, nil
+}
+
+func isInvalidSymbolErr(err error) bool {
+	var ae *apiError
+	return errors.As(err, &ae) && ae.Code == -1121
 }
 
 func (m *market) rulesAge(mkt string, now time.Time) time.Duration {

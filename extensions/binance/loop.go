@@ -53,7 +53,7 @@ func (a *app) round(ctx context.Context, now time.Time, due func(string, time.Du
 		a.logPublicOnce()
 	}
 	if due("rules", time.Hour, now) || a.market.rulesAge(marketSpot, now) > 2*time.Hour {
-		a.record(a.market.refreshRules(rctx, c, marketSpot, spotSymbols(cfg), now))
+		a.record(a.market.refreshRules(rctx, c, marketSpot, a.market.filterKnownSpotSymbols(spotSymbols(cfg)), now))
 	}
 	for _, m := range []string{marketUSDM, marketCoinM} {
 		if (cfg.marketOK[m] || perms.Futures) && (due("rules-"+m, time.Hour, now) || a.market.rulesAge(m, now) > 2*time.Hour) {
@@ -149,7 +149,7 @@ func spotSymbols(cfg config) []string {
 		}
 	}
 	for _, s := range cfg.WatchSymbols {
-		if !seen[s] {
+		if !seen[s] && !isFuturesSymbol(s) {
 			seen[s] = true
 			out = append(out, s)
 		}

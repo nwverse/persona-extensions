@@ -172,7 +172,7 @@ func planOrder(env *guardEnv, mkt string, raw json.RawMessage) (*orderPlan, erro
 	if err := checkPrice(p, cfg, a, price, ref); err != nil {
 		return nil, err
 	}
-	if err := checkQuantity(p, a, qty, quote); err != nil {
+	if err := checkQuantity(env, p, a, qty, quote); err != nil {
 		return nil, err
 	}
 	if err := checkPosition(env, p, qty); err != nil {
@@ -227,8 +227,9 @@ func checkPrice(p *orderPlan, cfg *config, a orderArgs, price dec, ref float64) 
 	return nil
 }
 
-// checkQuantity: the size on the step and in range; the estimated notional over the minimum.
-func checkQuantity(p *orderPlan, a orderArgs, qty, quote dec) error {
+// checkQuantity: the size on the step and in range; the estimated notional over the minimum (in native quote units)
+// and converted to USDT (coinm: contract USD face value) for risk guardrails.
+func checkQuantity(env *guardEnv, p *orderPlan, a orderArgs, qty, quote dec) error {
 	r := p.Rules
 	price := ratOf(p.Params.Get("price"))
 	priceF := p.RefPrice
@@ -242,9 +243,17 @@ func checkQuantity(p *orderPlan, a orderArgs, qty, quote dec) error {
 		if qty.ok() {
 			return errors.New("quantity 和 quote_amount 只能给一个")
 		}
+		quoteNotional := quote.Float()
+		if err := checkMinNotional(r, quoteNotional); err != nil {
+			return err
+		}
+		usdt, err := quoteToUSDT(env, r.Quote, quoteNotional)
+		if err != nil {
+			return err
+		}
 		p.Params.Set("quoteOrderQty", quote.String())
-		p.Notional = quote.Float()
-		return checkMinNotional(p)
+		p.Notional = usdt
+		return nil
 	}
 	if !qty.ok() {
 		return errors.New("需要 quantity（现货市价单也可以用 quote_amount）")
@@ -273,15 +282,48 @@ func checkQuantity(p *orderPlan, a orderArgs, qty, quote dec) error {
 		p.Notional = qty.Float() * r.ContractSize
 		return nil
 	}
-	p.Notional = qty.Float() * priceF
-	return checkMinNotional(p)
+	quoteNotional := qty.Float() * priceF
+	if err := checkMinNotional(r, quoteNotional); err != nil {
+		return err
+	}
+	usdt, err := quoteToUSDT(env, r.Quote, quoteNotional)
+	if err != nil {
+		return err
+	}
+	p.Notional = usdt
+	return nil
 }
 
-func checkMinNotional(p *orderPlan) error {
-	if m := p.Rules.MinNotional; m != nil && p.Notional < ratFloat(m) {
-		return fmt.Errorf("金额约 %s，低于这个币对的最小下单金额 %s", fmtNum(p.Notional), ratText(m))
+func checkMinNotional(r *symbolRules, quoteNotional float64) error {
+	if m := r.MinNotional; m != nil && quoteNotional < ratFloat(m) {
+		if r.Quote != "" {
+			return fmt.Errorf("金额约 %s %s，低于这个币对的最小下单金额 %s %s", fmtNum(quoteNotional), r.Quote, ratText(m), r.Quote)
+		}
+		return fmt.Errorf("金额约 %s，低于这个币对的最小下单金额 %s", fmtNum(quoteNotional), ratText(m))
 	}
 	return nil
+}
+
+// quoteToUSDT converts a native quote-currency notional into USDT for per-order and daily caps (fail closed).
+func quoteToUSDT(env *guardEnv, quoteAsset string, quoteNotional float64) (float64, error) {
+	if quoteNotional <= 0 || math.IsNaN(quoteNotional) || math.IsInf(quoteNotional, 0) {
+		return 0, errors.New("无法计算下单金额，稍后再试")
+	}
+	q := strings.ToUpper(strings.TrimSpace(quoteAsset))
+	if q == "" {
+		return 0, errors.New("缺少计价币种，无法折算 USDT 风控额度")
+	}
+	if q == "USDT" {
+		return quoteNotional, nil
+	}
+	if !stableUSD[q] && !env.market.spotPricesFresh(env.now) {
+		return 0, fmt.Errorf("计价币种 %s 的 USDT 价格数据过期，无法核验风控额度，稍后再试", q)
+	}
+	usdt := valueUSDT(env.market, q, quoteNotional)
+	if usdt <= 0 || math.IsNaN(usdt) || math.IsInf(usdt, 0) {
+		return 0, fmt.Errorf("无法将计价币种 %s 折算为 USDT，无法核验风控额度", q)
+	}
+	return usdt, nil
 }
 
 // checkPosition: futures position side, reduce-only and leverage.
