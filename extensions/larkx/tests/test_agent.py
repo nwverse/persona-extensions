@@ -12,12 +12,15 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from test_connector import ME, Backend, Hub, message  # noqa: E402
+from test_connector import ME, Backend, Hub, NormalizeTest, message  # noqa: E402
 
 from larkx_persona import main  # noqa: E402
-from larkx_persona.connector import AGENT_SUFFIX, AGENT_SUFFIX_LEAST, AGENT_SUFFIX_MOST, Connector, agent_request  # noqa: E402
+from larkx_persona.connector import (  # noqa: E402
+    AGENT_PREFIX, AGENT_PREFIX_LEAST, AGENT_PREFIX_MOST, AGENT_SUFFIX, AGENT_SUFFIX_LEAST, AGENT_SUFFIX_MOST,
+    Connector, agent_request, normalize_agent_prefix,
+)
 from larkx_persona.main import Plugin  # noqa: E402
-from larkx_persona.real import own_chat_ok  # noqa: E402
+from larkx_persona.real import normalize, own_chat_ok  # noqa: E402
 from larkx_persona.store import Store  # noqa: E402
 from larkx_persona.wire import RpcError  # noqa: E402
 
@@ -370,8 +373,8 @@ class AgentSuffixTest(unittest.TestCase):
         got = {}
 
         class Recorder:
-            def __init__(self, backend, store, hub, rules="", suffix=""):
-                got.update(rules=rules, suffix=suffix)
+            def __init__(self, backend, store, hub, rules="", suffix="", prefix=""):
+                got.update(rules=rules, suffix=suffix, prefix=prefix)
 
             def start(self):
                 pass
@@ -381,10 +384,165 @@ class AgentSuffixTest(unittest.TestCase):
         self.addCleanup(setattr, main, "Connector", real)
         plugin = Plugin({"id": "larkx", "version": "0", "contributes": {}}, lambda *_: None)
         plugin.initialize({"protocol": main.PROTOCOL, "extension": {"data_dir": self.dir.name},
-                           "config": {"triage_rules": "规则", "agent_reply_suffix": "— AI 代答",
+                           "config": {"triage_rules": "规则", "agent_reply_suffix": "— AI 代答", "agent_prefix": "/ai",
                                       "inbox_triage_chats": ["g1", "g2"]}})
-        self.assertEqual(got, {"rules": "规则", "suffix": "— AI 代答"})
+        self.assertEqual(got, {"rules": "规则", "suffix": "— AI 代答", "prefix": "/ai"})
         self.assertEqual(plugin.connector.inbox_triage_chats, {"g1", "g2"})
+
+
+class AgentPrefixTest(unittest.TestCase):
+    """The setting agent_prefix: which trigger prefix hands a message to the hub and allows channel.send."""
+    setUp, handed, nothing_handed = AgentTest.setUp, AgentTest.handed, AgentTest.nothing_handed
+
+    def use(self, prefix):
+        self.c = Connector(self.backend, self.c.store, self.hub, prefix=prefix)
+        self.c._ready.set()
+        self.assertTrue(self.c.login_step({"step": "scan"})["done"])
+        self.addCleanup(self.c.close)
+
+    def test_custom_prefix_triggers_and_answers(self):
+        self.use("  /ai  ")
+        self.assertEqual(self.c.prefix, "/ai")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/AI：帮我看下"))
+        got = self.handed()
+        self.assertEqual(got["message"]["text"], "帮我看下")
+        self.assertIn("/ai", got["message"]["forward"])
+        out = self.c.channel_send({"ref": "r1", "text": "好的", "kind": "answer", "reply_to": "m1"})
+        self.assertEqual(out, {"message_id": "m_new"})
+        self.assertEqual(self.backend.sent, [("c1", "好的\n\n" + AGENT_SUFFIX, "m1")])
+
+    def test_custom_prefix_in_group_carries_topic_thread(self):
+        self.use("/ai")
+        self.c._on_live(message("m1", "g1", 1, kind="group", sender=ME, text="/ai 新问题"))
+        got = self.handed()["message"]
+        self.assertEqual((got["text"], got["thread"]), ("新问题", "g1:m1"))
+
+    def test_custom_prefix_triggers_in_muted_group_while_non_mention_stays_out_of_inbox(self):
+        self.use("/ai")
+        self.backend.chats["g1"] = {"name": "安静群", "last_position": 0, "mute": "muted"}
+        self.c._on_live(message("m1", "g1", 1, kind="group", text="群里的日常消息"))
+        self.assertEqual(self.c.inbox_collect({})["things"], [])
+        self.assertEqual(self.c.store.chat("g1")["mute"], "muted")
+        self.nothing_handed()
+        self.c._on_live(message("m2", "g1", 2, kind="group", sender=ME, text="/ai 总结一下"))
+        got = self.handed()["message"]
+        self.assertEqual((got["text"], got["thread"]), ("总结一下", "g1:m2"))
+        out = self.c.channel_send({"ref": "r_muted_ai", "text": "好的", "kind": "answer", "reply_to": "m2"})
+        self.assertEqual(out, {"message_id": "m_new"})
+        self.assertEqual(self.backend.sent, [("g1", "好的\n\n" + AGENT_SUFFIX, "m2")])
+        self.hub.received.clear()
+        self.hub.got.clear()
+        self.c._on_live(message("m3", "g1", 3, kind="group", sender=ME, text="/agent 不触发"))
+        self.nothing_handed()
+
+    def test_custom_prefix_in_post_rich_text_ignores_title(self):
+        self.use("/ai")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, msg_type="POST", text="[富文本] 示例标题\n/ai 检查"))
+        self.assertEqual(self.handed()["message"]["text"], "检查")
+        out = self.c.channel_send({"ref": "r1", "text": "好的", "kind": "answer", "reply_to": "m1"})
+        self.assertEqual(out, {"message_id": "m_new"})
+        self.hub.received.clear()
+        self.hub.got.clear()
+        self.c._on_live(message("m2", "c1", 2, sender=ME, msg_type="POST", text="[富文本] 示例标题\n/agent 不触发"))
+        self.nothing_handed()
+
+    def test_custom_prefix_coexists_with_rich_text_markdown(self):
+        self.use("/ai")
+        rich = NormalizeTest()
+        data = rich.tree(("paragraph",), {
+            "paragraph": rich.node(3, children=("cmd", "bold", "space", "link")),
+            "cmd": rich.node(1, "/ai 检查 "),
+            "bold": rich.node(7, "重点"),
+            "space": rich.node(1, " "),
+            "link": rich.node(6, fields=((1, "https://example.com/docs"), (2, "文档"))),
+        })
+        data["title"] = "周报"
+        m = normalize({
+            "msg_id": "m_rich_ai", "chat_id": "c1", "chat_type": 1, "position": 1, "from_id": ME,
+            "msg_type": 2, "msg_type_name": "POST", "content": "[富文本] 周报\n/ai 检查 重点",
+            "content_data": data,
+        }, rich.key)
+        self.c._on_live(m)
+        self.assertEqual(self.handed()["message"]["text"], "检查 重点 文档 https://example.com/docs")
+        out = self.c.channel_send({"ref": "r_rich_ai", "text": "收到", "kind": "answer", "reply_to": "m_rich_ai"})
+        self.assertEqual(out, {"message_id": "m_new"})
+        page_msg = self.c.thread_page({"thread": "c1", "limit": 5})["messages"][0]
+        self.assertEqual(page_msg["format"], "markdown")
+        self.assertEqual(page_msg["text"], "\\[富文本\\] 周报\n\\/ai 检查 **重点** [文档](https://example.com/docs)")
+        # Default /agent in a rich-text Markdown POST does not trigger when a custom prefix is set.
+        self.hub.received.clear()
+        self.hub.got.clear()
+        other = rich.tree(("paragraph",), {
+            "paragraph": rich.node(3, children=("cmd", "bold")),
+            "cmd": rich.node(1, "/agent "),
+            "bold": rich.node(7, "不触发"),
+        })
+        other["title"] = "周报"
+        m2 = normalize({
+            "msg_id": "m_rich_default", "chat_id": "c1", "chat_type": 1, "position": 2, "from_id": ME,
+            "msg_type": 2, "msg_type_name": "POST", "content": "[富文本] 周报\n/agent 不触发",
+            "content_data": other,
+        }, rich.key)
+        self.c._on_live(m2)
+        self.nothing_handed()
+        page_msg2 = self.c.thread_page({"thread": "c1", "limit": 5})["messages"][-1]
+        self.assertEqual((page_msg2["format"], page_msg2["text"]), ("markdown", "\\[富文本\\] 周报\n\\/agent **不触发**"))
+
+    def test_chinese_prefix_and_empty_request(self):
+        self.use("/助手")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/助手"))
+        got = self.handed()
+        self.assertIn("只发了 /助手", got["message"]["text"])
+
+    def test_custom_prefix_does_not_match_default_or_longer_word(self):
+        self.use("/ai")
+        self.c._on_live(message("m1", "c1", 1, sender=ME, text="/agent 总结"))
+        self.c._on_live(message("m2", "c1", 2, sender=ME, text="/aibot 总结"))
+        self.nothing_handed()
+        for mid in ("m1", "m2"):
+            with self.assertRaises(RpcError) as e:
+                self.c.channel_send({"ref": "r_" + mid, "text": "x", "kind": "answer", "reply_to": mid})
+            self.assertEqual(e.exception.code, "cannot_send")
+
+    def test_blank_or_invalid_prefix_keeps_default(self):
+        invalid = [
+            "", "   \n ", None,
+            "/", "//", "//note",
+            "agent", "ai", "助手",
+            "/a b", "/a\tb", "/a\nb",
+            "/a:b", "/a：b",
+            "/a\x00b", "/a\x7fb", "/a\x80b", "/a\x9fb",
+            "/" + "a" * AGENT_PREFIX_MOST,
+        ]
+        for bad in invalid:
+            self.assertEqual(normalize_agent_prefix(bad), AGENT_PREFIX, repr(bad))
+            self.assertEqual(Connector(self.backend, self.c.store, self.hub, prefix=bad).prefix, AGENT_PREFIX)
+        # Every Unicode Cc control character (C0, DEL, and C1 U+0080..U+009F) is rejected.
+        for cp in list(range(0x00, 0x20)) + list(range(0x7F, 0xA0)):
+            self.assertEqual(normalize_agent_prefix("/a" + chr(cp) + "b"), AGENT_PREFIX, hex(cp))
+        # Valid edge lengths: AGENT_PREFIX_LEAST and AGENT_PREFIX_MOST.
+        shortest = "/" + "p" * (AGENT_PREFIX_LEAST - 1)
+        longest = "/" + "a" * (AGENT_PREFIX_MOST - 1)
+        self.assertEqual(normalize_agent_prefix(shortest), shortest)
+        self.assertEqual(normalize_agent_prefix(longest), longest)
+
+    def test_the_manifest_setting_matches_the_code(self):
+        with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
+            manifest = json.load(f)
+        props = manifest["configuration"]["properties"]
+        setting = props["agent_prefix"]
+        self.assertEqual(setting["default"], AGENT_PREFIX)
+        self.assertEqual(setting["maxLength"], AGENT_PREFIX_MOST)
+        for label, text in (
+            ("extension description", manifest["description"]),
+            ("channel description", manifest["contributes"]["channel"][0]["description"]),
+            ("agent_reply_suffix", props["agent_reply_suffix"]["description"]),
+            ("agent_mention", props["agent_mention"]["description"]),
+            ("agent_group_topics", props["agent_group_topics"]["description"]),
+        ):
+            self.assertIn("触发前缀", text, label)
+            self.assertIn("默认 /agent", text, label)
+        self.assertNotIn("关闭后只认 /agent", props["agent_mention"]["description"])
 
 
 class PluginRoutingTest(unittest.TestCase):

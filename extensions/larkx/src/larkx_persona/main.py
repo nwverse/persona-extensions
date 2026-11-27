@@ -77,7 +77,8 @@ class Plugin:
             backend = self.make_backend(data_dir, config.get("region") or "feishu", store)
             hub = Hub(self.peer)
             self.connector = Connector(backend, store, hub,
-                                       config.get("triage_rules") or "", config.get("agent_reply_suffix") or "")
+                                       config.get("triage_rules") or "", config.get("agent_reply_suffix") or "",
+                                       config.get("agent_prefix") or "")
             hub_info = params.get("hub") or {}
             self.connector.hub_api = HubAPI(hub_info.get("url") or os.environ.get("PERSONA_HUB_URL", ""),
                                             hub_info.get("token") or os.environ.get("PERSONA_HUB_TOKEN", ""))
