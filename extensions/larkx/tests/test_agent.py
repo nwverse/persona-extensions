@@ -344,6 +344,7 @@ class AgentTopicTest(unittest.TestCase):
             {
                 "region",
                 "triage_rules",
+                "agent_prefix",
                 "inbox_triage_chats",
                 "agent_reply_suffix",
                 "agent_mention",
@@ -359,6 +360,7 @@ class AgentTopicTest(unittest.TestCase):
             self.assertNotIn("section", spec, name)
         self.assertEqual(props["region"]["default"], "feishu")
         self.assertEqual(props["triage_rules"]["default"], "")
+        self.assertEqual(props["agent_prefix"]["default"], AGENT_PREFIX)
         self.assertEqual(props["inbox_triage_chats"]["default"], [])
         self.assertEqual(props["agent_reply_suffix"]["default"], AGENT_SUFFIX)
         self.assertIs(props["agent_mention"]["default"], True)

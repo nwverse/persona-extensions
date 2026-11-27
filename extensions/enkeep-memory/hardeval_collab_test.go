@@ -712,3 +712,171 @@ func TestTwoLayerRecallAndHubPage1(t *testing.T) {
 		t.Error("ephemeral PR ticket fact should be filtered")
 	}
 }
+
+// sliceStateBefore must downgrade Stable->Candidate only when post-cutoff evidence was actually stripped,
+// never falsely downgrading pre-cutoff single-evidence Stable entries (which would evict entity-anchored rules
+// from collabHubPage1).
+func TestSliceStateBeforeStatusDowngradePrecision(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"pre-stable": {
+			ID: "pre-stable", Facet: entry.Tools, Origin: entry.Behavior, Status: entry.Stable,
+			Text: "task_plan 必须带 role 字段", Count: 1, First: "2026-11-10", Last: "2026-11-10",
+			Tagged: true, Object: "task_plan",
+			Evidence: []entry.Evidence{{Day: "2026-11-10", Source: "S3", Quote: "role required"}},
+		},
+		"post-promoted": {
+			ID: "post-promoted", Facet: entry.Tools, Origin: entry.Behavior, Status: entry.Stable,
+			Text: "事后新证据才升格的条目", Count: 2, First: "2026-11-10", Last: "2026-11-25",
+			Tagged: true, Object: "task_plan",
+			Evidence: []entry.Evidence{
+				{Day: "2026-11-10", Source: "S3", Quote: "first"},
+				{Day: "2026-11-25", Source: "S3", Quote: "second"},
+			},
+		},
+		"hw-post-ev": {
+			ID: "hw-post-ev", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
+			Text: "手写规矩不被降级", Count: 2, First: "2026-11-10", Last: "2026-11-25",
+			Tagged: true,
+			Evidence: []entry.Evidence{
+				{Day: "2026-11-10", Source: "S6", Quote: "first"},
+				{Day: "2026-11-25", Source: "S6", Quote: "second"},
+			},
+		},
+	}}
+	sliced := sliceStateBefore(st, "2026-11-20")
+	if got := sliced.Entries["pre-stable"].Status; got != entry.Stable {
+		t.Errorf("pre-cutoff Stable entry with no stripped evidence falsely downgraded to %q", got)
+	}
+	if got := sliced.Entries["post-promoted"].Status; got != entry.Candidate {
+		t.Errorf("post-cutoff promoted non-owned entry should downgrade to Candidate, got %q", got)
+	}
+	if got := sliced.Entries["hw-post-ev"].Status; got != entry.Stable {
+		t.Errorf("handwritten entry must stay Stable, got %q", got)
+	}
+	// Verify pre-stable keeps its active rank >= 750 in collabHubPage1.
+	page := collabHubPage1(sliced, nil, heFilter{leak: map[string]bool{}, units: map[string]bool{}}, "2026-11-20", 4096)
+	dq := hubDecisionsQuery(page, []string{"task_plan"}, decisionsQueryMaxBytes)
+	if !strings.Contains(dq, "pre-stable") {
+		t.Errorf("pre-stable entity-anchored rule missing from collabHubPage1 decisions_query: %q", dq)
+	}
+}
+
+// Verify heMemories and recallNonStandingL1 enforce verbatim UserOwned pass-through alongside pure-behavior L1.
+func TestHeMemoriesAndRecallUserOwnedVerbatim(t *testing.T) {
+	st := &store.State{Entries: map[string]*entry.Entry{
+		"hw-stand": {
+			ID: "hw-stand", Facet: entry.Interaction, Origin: entry.Handwritten, Status: entry.Stable,
+			Text: "已放行运维活直接自主执行，严禁弹确认卡。", Count: 20, Kinds: []string{"S1", "S6"},
+			First: "2026-10-01", Last: "2026-11-15", Tagged: true,
+		},
+		"hw-recall": {
+			ID: "hw-recall", Facet: entry.Tools, Origin: entry.Handwritten, Status: entry.Stable,
+			Text: "用 task_plan 派活时按要求填全 cwd 与 model 字段。", Count: 1, Kinds: []string{"S6"},
+			First: "2026-10-05", Last: "2026-10-05", Tagged: true,
+		},
+	}}
+	ov := &overview.State{Patterns: map[string]*overview.Pattern{
+		"ov:wrap": {
+			ID: "ov:wrap", Facet: string(entry.Interaction), Kind: overview.KindContract, Lifecycle: overview.Core,
+			Text: "抽象改写版自主执行口号", CoveredIDs: []string{"hw-stand"}, EvidenceIDs: []string{"hw-stand"},
+			Hard: true, Polarity: overview.PolarityAct, ScenesCount: 3, SourcesCount: 5, LastEvidence: "2026-11-15",
+		},
+		"ov:pure": {
+			ID: "ov:pure", Facet: string(entry.Tools), Kind: overview.KindContract, Lifecycle: overview.Core,
+			Text:        "发消息给用户必须调用 send_message 工具。",
+			ScenesCount: 3, SourcesCount: 10, LastEvidence: "2026-11-15",
+		},
+	}}
+	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}}
+	mems := heMemories(st, ov, nil, f, "2026-11-20", 4096)
+	res := mems["resident"]
+	if !strings.Contains(res, "已放行运维活直接自主执行，严禁弹确认卡") {
+		t.Errorf("resident missing verbatim handwritten rule: %s", res)
+	}
+	if strings.Contains(res, "抽象改写版自主执行口号") {
+		t.Errorf("resident should suppress L1 paraphrase covering live handwritten rule: %s", res)
+	}
+	if !strings.Contains(res, "send_message") {
+		t.Errorf("resident missing pure behavior-synthesized L1 contract: %s", res)
+	}
+	// Non-standing handwritten rule is retrieved verbatim by recallNonStandingL1.
+	lines := recallNonStandingL1(st, ov, f, "2026-11-20", "准备用 task_plan 派一个开发任务", "- 已放行运维活直接自主执行", 850)
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "填全 cwd 与 model 字段") {
+		t.Errorf("recallNonStandingL1 missing verbatim non-standing handwritten rule: %q", joined)
+	}
+}
+
+// Verify recallTwoLayer eliminates cross-pass near-duplicates, places persistent World/People entity facts ahead of
+// 1-hop ec.Rules (preventing secondary-entity rules from evicting core ownership facts), backfills unused entity-slot
+// room on non-entity scenes, and rejects loose single-occasion-tag spam.
+func TestRecallTwoLayerDedupAndEntityFactPriority(t *testing.T) {
+	st := &store.State{
+		Graph: &store.Graph{
+			Nodes: map[string]*store.Node{
+				"n-ag":  {ID: "n-ag", Type: "project", Name: "astergate", Status: "active", Created: "2026-10-01"},
+				"n-pg":  {ID: "n-pg", Type: "system", Name: "PG", Status: "active", Created: "2026-10-01"},
+				"n-red": {ID: "n-red", Type: "system", Name: "Redis", Status: "active", Created: "2026-10-01"},
+				"n-cpa": {ID: "n-cpa", Type: "system", Name: "cpa", Status: "active", Created: "2026-10-01"},
+			},
+			Assertions: map[string]*store.Assertion{
+				"a1": {ID: "a1", S: "n-ag", P: "depends_on", O: "n-pg", Status: "active", ValidFrom: "2026-10-01"},
+				"a2": {ID: "a2", S: "n-ag", P: "depends_on", O: "n-red", Status: "active", ValidFrom: "2026-10-01"},
+				"a3": {ID: "a3", S: "n-ag", P: "depends_on", O: "n-cpa", Status: "active", ValidFrom: "2026-10-01"},
+			},
+		},
+		Entries: map[string]*entry.Entry{
+			"hw-dup1": {
+				ID: "hw-dup1", Facet: entry.Workflow, Origin: entry.Handwritten, Status: entry.Stable,
+				Text: "派发 Agent 任务时一律配置 bypassPermissions，不向用户提示权限申请。", Count: 4, Kinds: []string{"S6"},
+				First: "2026-10-10", Last: "2026-11-10", Tagged: true,
+			},
+			"i-dup2": {
+				ID: "i-dup2", Facet: entry.Interaction, Origin: entry.Behavior, Status: entry.Stable,
+				Text: "派发 Agent 任务时一律配置 bypassPermissions，不向用户提示权限确认。", Count: 3, Kinds: []string{"S3"},
+				First: "2026-10-12", Last: "2026-11-12", Tagged: true, Object: "astergate",
+			},
+			"i-ag-rule1": {
+				ID: "i-ag-rule1", Facet: entry.Tools, Origin: entry.Behavior, Status: entry.Stable,
+				Text: "在门控脚本中判断 astergate 会话状态时仅使用本机文件时间戳，禁止调用 ops/sess.py 或读取 hub.json 接口，避免触发敏感凭据拦截。", Count: 3,
+				First: "2026-10-10", Last: "2026-11-10", Tagged: true, Object: "astergate",
+			},
+			"i-ag-rule2": {
+				ID: "i-ag-rule2", Facet: entry.Tools, Origin: entry.Behavior, Status: entry.Stable,
+				Text: "排查 astergate 网关限流报错时优先检查上游配额与路由健康状态，不要盲目重启容器或反复重试，并把排查日志整理到报告目录。", Count: 3,
+				First: "2026-10-10", Last: "2026-11-10", Tagged: true, Object: "astergate",
+			},
+			"w-repo": {
+				ID: "w-repo", Facet: entry.World, Origin: entry.Behavior, Status: entry.Stable,
+				Text: "repo-internal-shared 是团队共用私有仓库，个人扩展组件不应混入其中，需在个人名下建专属私有仓库。", Count: 3,
+				First: "2026-10-10", Last: "2026-11-10", Tagged: true, Object: "repo-internal-shared",
+			},
+			"hw-unrelated": {
+				ID: "hw-unrelated", Facet: entry.Tools, Origin: entry.Handwritten, Status: entry.Stable,
+				Text: "运行升级任务时使用标准启动器，不要切换实验分支。", Count: 2, Kinds: []string{"S6"},
+				First: "2026-10-10", Last: "2026-11-10", Tagged: true,
+			},
+		},
+	}
+	f := heFilter{leak: map[string]bool{}, units: map[string]bool{}}
+	idx := collabNames(st)
+	sit := "用户问要不要把个人组件放进 repo-internal-shared（里面已有 astergate 扩展），需要派发 Agent 调研。"
+	// Tight budget (760 B) where ec.Rules would previously evict w-repo.
+	got := idx.recallTwoLayer(st, nil, f, "2026-11-20", sit, "", 760, true)
+	if strings.Count(got, "bypassPermissions") > 1 {
+		t.Errorf("expected cross-pass semantic dedup to keep at most 1 bypassPermissions line, got:\n%s", got)
+	}
+	if !strings.Contains(got, "团队共用私有仓库") {
+		t.Errorf("persistent World ownership fact w-repo was evicted by ec.Rules:\n%s", got)
+	}
+	if strings.Contains(got, "不要切换实验分支") {
+		t.Errorf("unrelated single-occasion rule should be filtered by >=5.0 score gate:\n%s", got)
+	}
+	// Non-entity scene: unused entity slot flows back to non-entity rules so recall matches recall-noent.
+	nonEntSit := "需要派发一个普通任务并配置权限。"
+	rEnt := idx.recallTwoLayer(st, nil, f, "2026-11-20", nonEntSit, "", 1024, true)
+	rNoEnt := idx.recallTwoLayer(st, nil, f, "2026-11-20", nonEntSit, "", 1024, false)
+	if rEnt != rNoEnt {
+		t.Errorf("on pure non-entity scene, recall should match recall-noent:\nent=%q\nnoent=%q", rEnt, rNoEnt)
+	}
+}

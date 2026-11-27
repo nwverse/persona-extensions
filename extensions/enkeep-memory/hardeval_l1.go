@@ -61,12 +61,13 @@ func sliceStateBefore(st *store.State, cutoff string) *store.State {
 				cp.Last = cp.First
 			}
 			if len(evs) > 0 {
+				stripped := len(evs) < len(e.Evidence)
 				cp.Count = min(e.Count, len(evs))
 				if cp.Count <= 0 {
 					cp.Count = len(evs)
 				}
 				isOwned := cp.Origin == entry.Handwritten || cp.Origin == entry.SelfReport || cp.Pinned || cp.User != nil
-				if cp.Count <= 1 && cp.Status == entry.Stable && !isOwned {
+				if stripped && cp.Count <= 1 && cp.Status == entry.Stable && !isOwned {
 					cp.Status = entry.Candidate
 				}
 				if len(kinds) > 0 {

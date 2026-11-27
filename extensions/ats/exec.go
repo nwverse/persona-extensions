@@ -1,6 +1,7 @@
 package main
 
 import (
+	"slices"
 	"sort"
 	"time"
 )
@@ -82,14 +83,15 @@ func (q *Queue) ActiveTasks() []*Task {
 	return out
 }
 
-// Prune drops finished tasks older than maxAge, and the oldest finished ones beyond keep. A finished task whose
-// outcome still waits to be written to its to-do stays.
+// Prune drops finished tasks older than maxAge, and the oldest finished ones beyond keep. A finished task stays
+// while it has an outcome to write or a session to detach from its to-do.
 func (q *Queue) Prune(now time.Time, maxAge time.Duration, keep int) (int, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	var done []*Task
 	for _, t := range q.tasks {
-		if t.IsTerminal() && t.FinishedAt != nil && (t.TodoID() == "" || t.DecisionWrittenRef != "" || t.DecisionSkipReason != "") {
+		if t.IsTerminal() && t.FinishedAt != nil && (t.TodoID() == "" || t.DecisionWrittenRef != "" || t.DecisionSkipReason != "") &&
+			!slices.ContainsFunc(t.Attempts, func(att Attempt) bool { return att.TodoDetachPending }) {
 			done = append(done, t)
 		}
 	}

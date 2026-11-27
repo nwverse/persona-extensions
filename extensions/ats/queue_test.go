@@ -304,6 +304,105 @@ func TestQueueLoadsLegacyDirtyEvidence(t *testing.T) {
 	}
 }
 
+func TestGetTaskClonesContinuationTime(t *testing.T) {
+	q := newTestQueue(t, DefaultQueueConfig())
+	task := mustEnqueue(t, q, EnqueueInput{})
+	_, att, err := q.LeaseTask(task.ID, "worker-1", testMachine, testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	continuedAt := testStart
+	updated, err := q.UpdateExec(task.ID, att.FenceToken, testStart, func(e *Execution) {
+		e.Phase = PhaseWorking
+		e.ContinueCount, e.ContinuedAt, e.ContinuedErrorAt = 1, &continuedAt, "error-1"
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	*updated.Exec.ContinuedAt = testStart.Add(time.Minute)
+	got, err := q.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if e := got.Exec; e.ContinuedAt == nil || !e.ContinuedAt.Equal(testStart) || e.ContinueCount != 1 || e.ContinuedErrorAt != "error-1" {
+		t.Fatalf("continuation state aliased a caller snapshot: %+v", e)
+	}
+}
+
+func TestGatewayUnreachableRetryUsesAlternateCapacity(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		alt      MachineSlot
+		machine  string
+		fill     bool
+		wantFast bool
+	}{
+		{name: "free alternate", alt: MachineSlot{Name: "machine-2", Online: true, MaxSlots: 1}, wantFast: true},
+		{name: "busy alternate", alt: MachineSlot{Name: "machine-2", Online: true, MaxSlots: 1}, fill: true, wantFast: true},
+		{name: "offline alternate", alt: MachineSlot{Name: "machine-2", MaxSlots: 1}},
+		{name: "degraded alternate", alt: MachineSlot{Name: "machine-2", Online: true, Degraded: true, MaxSlots: 1}},
+		{name: "pinned to failing machine", alt: MachineSlot{Name: "machine-2", Online: true, MaxSlots: 1}, machine: "Primary"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			q := newTestQueue(t, DefaultQueueConfig())
+			if err := q.SetMachines([]MachineSlot{{Name: testMachine, Title: "Primary", Online: true, MaxSlots: 1}, tc.alt}); err != nil {
+				t.Fatal(err)
+			}
+			if tc.fill {
+				busy := mustEnqueue(t, q, EnqueueInput{Title: "occupy alternate"})
+				if _, _, err := q.LeaseTask(busy.ID, "worker-2", tc.alt.Name, testStart); err != nil {
+					t.Fatal(err)
+				}
+			}
+			task := mustEnqueue(t, q, EnqueueInput{Machine: tc.machine})
+			_, att, err := q.LeaseTask(task.ID, "worker-1", testMachine, testStart)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := q.CompleteAttempt(CompleteAttemptInput{
+				TaskID: task.ID, FenceToken: att.FenceToken, WorkerID: att.WorkerID,
+				Outcome: StateFailed, ErrorClass: "gateway_unreachable", Now: testStart,
+			})
+			if err != nil || got.State != StateQueued || got.FailureReason != "gateway_unreachable" {
+				t.Fatalf("expected queued gateway retry: %+v, %v", got, err)
+			}
+			if tc.wantFast {
+				if got.NotBefore != nil || got.RetriesLeft != task.RetriesLeft {
+					t.Fatalf("expected immediate retry with no charge: %+v", got)
+				}
+			} else if got.NotBefore == nil || !got.NotBefore.After(testStart) || got.RetriesLeft != task.RetriesLeft-1 {
+				t.Fatalf("expected a charged retry with backoff: %+v", got)
+			}
+		})
+	}
+}
+
+func TestGatewayUnreachableRetriesAreBounded(t *testing.T) {
+	q := newTestQueue(t, DefaultQueueConfig())
+	if err := q.SetMachines([]MachineSlot{{Name: testMachine, Online: true, MaxSlots: 1}, {Name: "machine-2", Online: true, MaxSlots: 1}}); err != nil {
+		t.Fatal(err)
+	}
+	zero := 0
+	task := mustEnqueue(t, q, EnqueueInput{MaxRetries: &zero})
+	for i := 1; i <= 4; i++ {
+		_, att, err := q.LeaseTask(task.ID, "worker-1", testMachine, testStart)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := q.CompleteAttempt(CompleteAttemptInput{
+			TaskID: task.ID, FenceToken: att.FenceToken, WorkerID: att.WorkerID,
+			Outcome: StateFailed, ErrorClass: "gateway_unreachable", Now: testStart,
+		})
+		want := StateQueued
+		if i == 4 {
+			want = StateFailed
+		}
+		if err != nil || got.State != want || got.NotBefore != nil || got.RetriesLeft != 0 {
+			t.Fatalf("attempt %d: want %s with no delay or charge, got %+v, %v", i, want, got, err)
+		}
+	}
+}
+
 func TestRetryDelayIsDeterministicAndGrows(t *testing.T) {
 	base, most := 5*time.Second, 10*time.Minute
 	d1 := ComputeRetryDelay("task_42", 1, base, most)
@@ -523,6 +622,38 @@ func TestPruneDropsOldFinishedTasksOnly(t *testing.T) {
 		if _, err := q.GetTask(id); err != nil {
 			t.Fatalf("a task that must stay is gone: %v", err)
 		}
+	}
+}
+
+func TestPendingTodoDetachSkipsActiveAttemptAndRollsBackOnSaveError(t *testing.T) {
+	q := newTestQueue(t, DefaultQueueConfig())
+	task := mustEnqueue(t, q, EnqueueInput{Labels: map[string]string{PersonaTodoLabel: "todo_1"}})
+	_, att, err := q.LeaseTask(task.ID, "worker", testMachine, testStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := q.UpdateExec(task.ID, att.FenceToken, testStart, func(e *Execution) {
+		e.SessionID = "session-1"
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := q.SetAttemptTodoDetachPending(task.ID, att.AttemptNo, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := q.PendingTodoDetaches(); len(got) != 0 {
+		t.Fatalf("active attempt eligible for detach: %+v", got)
+	}
+	if _, err := q.CancelTask(task.ID, testStart); err != nil {
+		t.Fatal(err)
+	}
+
+	q.dataFile = filepath.Join(t.TempDir(), "missing", "queue.json")
+	if err := q.SetAttemptTodoDetachPending(task.ID, att.AttemptNo, false); err == nil {
+		t.Fatal("expected queue save to fail")
+	}
+	want := pendingTodoDetach{TaskID: task.ID, AttemptNo: att.AttemptNo, TodoID: "todo_1", MachineID: testMachine, SessionID: "session-1"}
+	if got := q.PendingTodoDetaches(); len(got) != 1 || got[0] != want {
+		t.Fatalf("pending detaches after save failure: %+v, want %+v", got, want)
 	}
 }
 

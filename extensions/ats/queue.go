@@ -167,7 +167,8 @@ type Attempt struct {
 	Verdict        string     `json:"verdict,omitempty"`
 	Summary        string     `json:"summary,omitempty"`
 
-	TodoAttachError string `json:"todo_attach_error,omitempty"`
+	TodoAttachError   string `json:"todo_attach_error,omitempty"`
+	TodoDetachPending bool   `json:"todo_detach_pending,omitempty"`
 }
 
 // EvidenceReport stores a verification report from an attempt.
@@ -273,6 +274,10 @@ type Execution struct {
 	JudgedUpdate string `json:"judged_update,omitempty"`
 	LastReply    string `json:"last_reply,omitempty"`
 	Waiting      string `json:"waiting,omitempty"` // why the task needs the user, when it does
+
+	ContinueCount    int        `json:"continue_count,omitempty"`
+	ContinuedAt      *time.Time `json:"continued_at,omitempty"`
+	ContinuedErrorAt string     `json:"continued_error_at,omitempty"`
 
 	TodoAttachError string `json:"todo_attach_error,omitempty"`
 }
@@ -613,7 +618,7 @@ type CompleteAttemptInput struct {
 	ReportID   string
 	Outcome    string // succeeded | failed | canceled | rate_limited
 	Verdict    string // pass | fail | unverified
-	ErrorClass string // infra_error | timeout | task_failed | rate_limited | lost | auth_expired | config_error | rejected
+	ErrorClass string // See isRetryableErrorClass for errors eligible for retry.
 	ExitCode   *int
 	Message    string
 	Summary    string // the end of the agent's last reply
@@ -628,6 +633,16 @@ type CompleteAttemptInput struct {
 	Artifacts  []Artifact
 	Retryable  *bool
 	Now        time.Time
+
+	TodoDetachPending bool
+}
+
+type pendingTodoDetach struct {
+	TaskID    string
+	AttemptNo int
+	TodoID    string
+	MachineID string
+	SessionID string
 }
 
 // TaskFilter specifies filtering criteria for ListTasks.
@@ -871,6 +886,10 @@ func cloneTask(t *Task) *Task {
 	if t.Exec != nil {
 		e := *t.Exec
 		e.Dirty = cloneBoolPtr(e.Dirty)
+		if e.ContinuedAt != nil {
+			ca := *e.ContinuedAt
+			e.ContinuedAt = &ca
+		}
 		out.Exec = &e
 	}
 	if t.Attempts != nil {
@@ -1246,6 +1265,7 @@ func (q *Queue) CompleteAttempt(in CompleteAttemptInput) (*Task, error) {
 	att.Launcher, att.Model, att.SessionID, att.Worktree = in.Launcher, in.Model, in.SessionID, in.Worktree
 	att.BaseSHA, att.HeadSHA, att.FullReply = in.BaseSHA, in.HeadSHA, in.FullReply
 	att.Dirty = cloneBoolPtr(in.Dirty)
+	att.TodoDetachPending = in.TodoDetachPending
 	att.Summary = firstLinePreview(in.Message, 200)
 	t.Summary = att.Summary
 
@@ -1271,23 +1291,23 @@ func (q *Queue) CompleteAttempt(in CompleteAttemptInput) (*Task, error) {
 		if errClass == "" {
 			errClass = "task_failed"
 		}
-		shouldRetry := t.RetriesLeft > 0 && isRetryableErrorClass(errClass)
-		if errClass == "rate_limited" && t.AttemptNo <= t.MaxRetries+3 {
-			shouldRetry = true
-		}
+		reroute := errClass == "gateway_unreachable" && t.AttemptNo <= t.MaxRetries+3 && q.hasHealthyAlternateLocked(t.Machine, att.Machine)
+		extraRetry := reroute || (errClass == "rate_limited" && t.AttemptNo <= t.MaxRetries+3)
+		shouldRetry := extraRetry || (t.RetriesLeft > 0 && isRetryableErrorClass(errClass))
 		if in.Retryable != nil {
-			shouldRetry = *in.Retryable && (t.RetriesLeft > 0 || (errClass == "rate_limited" && t.AttemptNo <= t.MaxRetries+3))
+			shouldRetry = *in.Retryable && (t.RetriesLeft > 0 || extraRetry)
 		}
 		if shouldRetry {
-			if errClass != "rate_limited" || t.AttemptNo > t.MaxRetries {
-				if t.RetriesLeft > 0 {
+			t.NotBefore = nil
+			if !reroute {
+				if t.RetriesLeft > 0 && (errClass != "rate_limited" || t.AttemptNo > t.MaxRetries) {
 					t.RetriesLeft--
 				}
+				delay := ComputeRetryDelay(t.ID, t.AttemptNo, q.cfg.RetryBaseDelay, q.cfg.RetryMaxDelay)
+				readyAt := now.Add(delay)
+				t.NotBefore = &readyAt
 			}
-			delay := ComputeRetryDelay(t.ID, t.AttemptNo, q.cfg.RetryBaseDelay, q.cfg.RetryMaxDelay)
-			readyAt := now.Add(delay)
 			t.State = StateQueued
-			t.NotBefore = &readyAt
 			t.FailureReason = errClass
 		} else {
 			t.State = StateFailed
@@ -1304,12 +1324,73 @@ func (q *Queue) CompleteAttempt(in CompleteAttemptInput) (*Task, error) {
 	return cloneTask(t), nil
 }
 
+// PendingTodoDetaches returns unfinished unlink requests for attempts that no longer hold the lease.
+func (q *Queue) PendingTodoDetaches() []pendingTodoDetach {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+
+	var pending []pendingTodoDetach
+	for _, t := range q.tasks {
+		todoID := t.TodoID()
+		if todoID == "" {
+			continue
+		}
+		active := isActiveState(t.State)
+		for i, att := range t.Attempts {
+			if !att.TodoDetachPending || (active && i == len(t.Attempts)-1) || att.Machine == "" || att.SessionID == "" {
+				continue
+			}
+			pending = append(pending, pendingTodoDetach{
+				TaskID: t.ID, AttemptNo: att.AttemptNo, TodoID: todoID, MachineID: att.Machine, SessionID: att.SessionID,
+			})
+		}
+	}
+	return pending
+}
+
+// SetAttemptTodoDetachPending saves whether the attempt's to-do link still needs to be removed.
+func (q *Queue) SetAttemptTodoDetachPending(taskID string, attemptNo int, pending bool) error {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+
+	t, ok := q.tasks[taskID]
+	if !ok {
+		return ErrTaskNotFound
+	}
+	for i := range t.Attempts {
+		att := &t.Attempts[i]
+		if att.AttemptNo != attemptNo {
+			continue
+		}
+		prev := att.TodoDetachPending
+		if prev == pending {
+			return nil
+		}
+		att.TodoDetachPending = pending
+		if err := q.saveLocked(); err != nil {
+			att.TodoDetachPending = prev
+			return err
+		}
+		return nil
+	}
+	return ErrStaleAttempt
+}
+
+func (q *Queue) hasHealthyAlternateLocked(requiredMachine, failedMachine string) bool {
+	for _, m := range q.machines {
+		if m.Name != failedMachine && m.Online && !m.Degraded && m.MaxSlots > 0 && m.matches(requiredMachine) {
+			return true
+		}
+	}
+	return false
+}
+
 // isRetryableErrorClass: the classes another attempt can get past. Not among them: rejected (the task asks for
 // something that is not there), config_error (the configured model is unavailable) and auth_expired (the agent
 // is signed out): they fail the same way until the user changes something.
 func isRetryableErrorClass(errClass string) bool {
 	switch errClass {
-	case "infra_error", "timeout", "task_failed", "rate_limited", "lost":
+	case "infra_error", "timeout", "task_failed", "rate_limited", "lost", "gateway_unreachable", "gateway_error", "stream_interrupted":
 		return true
 	default:
 		return false

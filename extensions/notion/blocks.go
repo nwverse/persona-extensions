@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 )
 
@@ -19,12 +20,19 @@ func pageTitle(page notionPage) string {
 			}
 		}
 	}
-	for _, raw := range page.Properties {
+	keys := make([]string, 0, len(page.Properties))
+	for k := range page.Properties {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
 		var prop struct {
 			Title []richText `json:"title"`
 		}
-		if json.Unmarshal(raw, &prop) == nil && len(prop.Title) > 0 {
-			return plain(prop.Title)
+		if json.Unmarshal(page.Properties[k], &prop) == nil {
+			if title := plain(prop.Title); title != "" {
+				return title
+			}
 		}
 	}
 	return "Untitled"

@@ -102,31 +102,44 @@ func (c ExtConfig) launcherFor(machineID string) string {
 	return launcherForSpec(c.Launcher, machineID)
 }
 
-// launcherForSpec 优先取匹配机器的启动器，首个未指定机器的名称用作默认值。
+func (c ExtConfig) launchersFor(machineID string) []string {
+	return launchersForSpec(c.Launcher, machineID)
+}
+
 func launcherForSpec(spec, machineID string) string {
+	if candidates := launchersForSpec(spec, machineID); len(candidates) > 0 {
+		return candidates[0]
+	}
+	return ""
+}
+
+func launchersForSpec(spec, machineID string) []string {
 	target := strings.TrimSpace(machineID)
 	parts := strings.FieldsFunc(spec, func(r rune) bool {
 		return r == ',' || r == ';' || r == '\n'
 	})
-	fallback := ""
-	for _, raw := range parts {
-		entry := strings.TrimSpace(raw)
-		if entry == "" {
-			continue
-		}
+	var machine, defaults []string
+	for _, entry := range parts {
 		if k, v, ok := strings.Cut(entry, "="); ok {
-			k = strings.TrimSpace(k)
-			v = strings.TrimSpace(v)
-			if k != "" && strings.EqualFold(k, target) {
-				return v
+			if target != "" && strings.EqualFold(strings.TrimSpace(k), target) {
+				machine = append(machine, v)
 			}
-			continue
-		}
-		if fallback == "" {
-			fallback = entry
+		} else {
+			defaults = append(defaults, entry)
 		}
 	}
-	return fallback
+	var candidates []string
+	seen := map[string]bool{}
+	for _, entry := range append(machine, defaults...) {
+		for _, name := range strings.Split(entry, "|") {
+			name = strings.TrimSpace(name)
+			if name != "" && !seen[name] {
+				seen[name] = true
+				candidates = append(candidates, name)
+			}
+		}
+	}
+	return candidates
 }
 
 func (c ExtConfig) queueConfig() QueueConfig {
