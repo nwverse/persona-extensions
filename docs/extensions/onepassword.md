@@ -4,7 +4,7 @@
 
 This extension (id `onepassword`) connects Persona to your 1Password vaults, either those you grant to a 1Password [service account](https://developer.1password.com/docs/service-accounts/) or those of the account the [1Password CLI](https://developer.1password.com/docs/cli/) (`op`) is signed in to on one of your computers. The assistant gets three read-only tools: the vaults it can read, item search by title, tag or website, and one item's fields with each field's `op://` [secret reference](https://developer.1password.com/docs/cli/secret-reference-syntax/). No tool returns a secret value, and the query tools never change your vaults. Phone-approved storage is a separate manager-owned flow, described below. It is also Persona's secret provider for `op://` references: when one of Persona's settings holds a reference, or you approve handing one to an Agent run, Persona's manager asks this extension for the value.
 
-This page describes version 0.4.1. When the manifest shown in the install preview disagrees with this page, the manifest wins.
+This page describes version 0.4.4. When the manifest shown in the install preview disagrees with this page, the manifest wins.
 
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |
@@ -160,7 +160,8 @@ metadata and local field-file paths:
 For an update use `operation: "edit"`, stable vault/item IDs and fields, omitting category/title. Create categories:
 `LOGIN`, `PASSWORD`, `SECURE_NOTE`, `API_CREDENTIAL`, `SERVER`, `DATABASE`. Types: `STRING`, `CONCEALED` (default),
 `OTP` (one-time password: accepts a raw base32 secret, wrapped into `otpauth://totp/...`, or an `otpauth://` URI, and
-writes a native 1Password OTP field). On `LOGIN` items, `username` and `password` write to 1Password's built-in
+writes a native 1Password OTP field with a `TOTP_` field ID; converting a field to `OTP` gives it a new ID, so use
+the returned reference, and the write fails unless the saved field reads back as `OTP` with a live code). On `LOGIN` items, `username` and `password` write to 1Password's built-in
 `USERNAME`/`PASSWORD` fields instead of creating duplicate custom fields. On `edit`, a field may set `"delete": true`
 (without `type` or `file`) to remove an existing field, or omit `file` with an explicit `type` (such as `"OTP"`) to
 convert an existing field's type in place inside the resident node.

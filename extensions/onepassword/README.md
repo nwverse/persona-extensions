@@ -14,6 +14,11 @@ References need a Persona hub with secret providers ([nwverse/persona#3962](http
 - [Manifest](persona-extension.json)
 
 
+Version 0.4.4 writes `OTP` fields with 1Password's native `TOTP_` field identity, both when creating a field and
+when converting an existing one (the converted field gets a new ID; use the returned `op://` reference). A write
+reports success only when the saved field reads back as type `OTP` with a live one-time code; a CLI downgrade to
+`CONCEALED` now fails instead of passing silently.
+
 Version 0.4.3 never prompts on everyday asks when `op` runs on a computer: an ask with an earlier answer (a value
 Persona keeps, metadata kept here, a description) checks `op whoami` first and answers from what it had while the
 1Password app's authorization has lapsed, so only something new needs the user to authorize `op` once. See
