@@ -15,19 +15,34 @@ type storeDataRequest struct {
 	BestPurchase bool `json:"include_best_purchase_option"`
 	Release      bool `json:"include_release,omitempty"`
 	Assets       bool `json:"include_assets,omitempty"`
+	BasicInfo    bool `json:"include_basic_info,omitempty"`
+	Platforms    bool `json:"include_platforms,omitempty"`
+	TagCount     int  `json:"include_tag_count,omitempty"`
 }
 
 type storeBrowseItem struct {
-	ID         uint32        `json:"id"`
-	AppID      uint32        `json:"appid"`
-	Success    int           `json:"success"`
-	Restricted bool          `json:"unvailable_for_country_restriction"`
-	Name       string        `json:"name"`
-	IsFree     bool          `json:"is_free"`
-	ComingSoon *bool         `json:"is_coming_soon"`
-	Release    *storeRelease `json:"release"`
-	Assets     *storeAssets  `json:"assets"`
-	Related    struct {
+	ID         uint32           `json:"id"`
+	AppID      uint32           `json:"appid"`
+	Success    int              `json:"success"`
+	Restricted bool             `json:"unvailable_for_country_restriction"`
+	Name       string           `json:"name"`
+	IsFree     bool             `json:"is_free"`
+	ComingSoon *bool            `json:"is_coming_soon"`
+	Release    *storeRelease    `json:"release"`
+	Assets     *storeAssets     `json:"assets"`
+	Type       int              `json:"type"`
+	TagIDs     []uint32         `json:"tagids"`
+	Categories *storeCategories `json:"categories"`
+	BasicInfo  struct {
+		Description string `json:"short_description"`
+	} `json:"basic_info"`
+	Platforms struct {
+		Windows bool `json:"windows"`
+		Mac     bool `json:"mac"`
+		Linux   bool `json:"steamos_linux"`
+		Deck    int  `json:"steam_deck_compat_category"`
+	} `json:"platforms"`
+	Related struct {
 		Demos         []storeDemo `json:"demos"`
 		Standalone    []storeDemo `json:"standalone_demos"`
 		DemoIDs       []uint32    `json:"demo_appid"`
@@ -43,10 +58,18 @@ type storeBrowseItem struct {
 }
 
 type storeRelease struct {
-	ComingSoon *bool  `json:"is_coming_soon"`
-	SteamDate  uint32 `json:"steam_release_date"`
-	IsPreload  bool   `json:"is_preload"`
-	Limited    bool   `json:"limited_launch_active"`
+	ComingSoon        *bool  `json:"is_coming_soon"`
+	SteamDate         uint32 `json:"steam_release_date"`
+	IsPreload         bool   `json:"is_preload"`
+	Limited           bool   `json:"limited_launch_active"`
+	CustomDate        string `json:"custom_release_date_message"`
+	ComingSoonDisplay string `json:"coming_soon_display"`
+}
+
+type storeCategories struct {
+	Players     []uint32 `json:"supported_player_categoryids"`
+	Features    []uint32 `json:"feature_categoryids"`
+	Controllers []uint32 `json:"controller_categoryids"`
 }
 
 type storeAssets struct {
@@ -180,8 +203,8 @@ func storeCurrency(country string) string {
 		return currency
 	}
 	switch country {
-	case "AD", "AL", "AT", "AX", "BA", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FO", "FR", "GR", "HR", "HU", "IE",
-		"IT", "LT", "LU", "LV", "MC", "ME", "MK", "MT", "NL", "PT", "RO", "RS", "SE", "SI", "SK", "SM", "VA":
+	case "AD", "AL", "AT", "AX", "BA", "BE", "BG", "CY", "CZ", "DE", "DK", "EE", "ES", "FI", "FO", "FR", "GI", "GR", "HR", "HU", "IE",
+		"IT", "LT", "LU", "LV", "MC", "ME", "MK", "MT", "NL", "PT", "RO", "RS", "SE", "SI", "SJ", "SK", "SM", "VA":
 		return "EUR"
 	default:
 		return "USD"
@@ -190,7 +213,7 @@ func storeCurrency(country string) string {
 
 var localStoreCurrency = map[string]string{
 	"AE": "AED", "AU": "AUD", "BR": "BRL", "CA": "CAD", "CH": "CHF", "CL": "CLP", "CN": "CNY", "CO": "COP",
-	"CR": "CRC", "GB": "GBP", "HK": "HKD", "ID": "IDR", "IL": "ILS", "IN": "INR", "JP": "JPY", "KR": "KRW",
+	"CR": "CRC", "GB": "GBP", "GG": "GBP", "HK": "HKD", "ID": "IDR", "IL": "ILS", "IM": "GBP", "IN": "INR", "JE": "GBP", "JP": "JPY", "KR": "KRW",
 	"KW": "KWD", "KZ": "KZT", "LI": "CHF", "MX": "MXN", "MY": "MYR", "NO": "NOK", "NZ": "NZD", "PE": "PEN",
 	"PH": "PHP", "PL": "PLN", "QA": "QAR", "RU": "RUB", "SA": "SAR", "SG": "SGD", "TH": "THB", "TW": "TWD",
 	"UA": "UAH", "UY": "UYU", "VN": "VND", "ZA": "ZAR",

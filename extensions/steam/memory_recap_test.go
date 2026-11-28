@@ -336,8 +336,7 @@ func TestMemoryEntriesCachedProfileAndPagination(t *testing.T) {
 	f.reply(recentPath, 200, fmt.Sprintf(`{"response":{"games":[{"appid":%d,"name":"Fixture Rally","playtime_2weeks":60}]}}`, secondApp))
 	f.reply(achievementsPath, 200, `{"playerstats":{"success":true,"gameName":"Fixture Quest","achievements":[`+strings.Repeat(`{"achieved":1},`, 9)+`{"achieved":0}]}}`)
 	f.reply(storePricesPath, 200, fmt.Sprintf(`{"%d":{"success":true,"data":{"steam_appid":%d,"name":"Fixture Quest","genres":[{"description":"Adventure"}]}}}`, firstApp, firstApp))
-	f.reply(appReviewsPath+appIDText(firstApp), 200, `{"success":1,"query_summary":{"total_positive":2,"total_negative":0,"total_reviews":2}}`)
-	f.reply(reviewsAPIPath, 200, `{"response":{"total_positive":2,"total_negative":0,"total_reviews":2}}`)
+	f.reply(reviewsAPIPath, 200, `{"response":{"total_matching":2,"query_summary":{"total_positive":2,"total_negative":0,"total_reviews":2}}}`)
 	a := &app{}
 	h := startInboxTestHost(t, f, a, time.Now, dir, "en", `"memory_export_enabled":true`)
 	requireStoreOK(t, a.backlog.Set(fixtureID, firstApp, BacklogEntry{Status: BacklogPlaying, Note: note, Tags: []string{email}}))

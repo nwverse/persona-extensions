@@ -95,7 +95,7 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 		case globalAchievementsPath, gameAchievementsPath, newsForAppPath:
 		case authBasePath + beginQRPath + "/v1/", authBasePath + pollQRPath + "/v1/":
 			method = http.MethodPost
-		case storeNamesPath, reviewsAPIPath:
+		case storeNamesPath, reviewsAPIPath, storeCategoriesPath:
 		case storePricesPath, storeSearchPath:
 			wantHost = storeHost
 		default:

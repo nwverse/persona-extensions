@@ -450,7 +450,9 @@ func (d *steamData) rememberGenres(games []discoveryGame) {
 		_ = d.memory.genres.update(func(entries map[string]observedGenres) (bool, error) {
 			now := d.library.now()
 			for _, game := range games {
-				if game.Details == nil {
+				if game.Details == nil || len(game.Details.Genres) == 0 || slices.ContainsFunc(game.Warnings, func(w toolWarning) bool {
+					return w.Stale && (w.Dataset == "genres" || w.Dataset == "details")
+				}) {
 					continue
 				}
 				var names []string
