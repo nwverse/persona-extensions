@@ -2,7 +2,7 @@
   "manifest_version": 1,
   "id": "steam",
   "name": "Steam",
-  "version": "0.3.3",
+  "version": "0.3.6",
   "icon": "assets/icon.png",
   "description": "在 Persona 中调研 Steam 商店游戏，查看游戏库、成就、更新、愿望单价格和游玩复盘，在本机标注游戏进度。可选用好友开黑雷达、愿望单提醒和个人游玩画像。支持 Steam 手机 App 扫码和只读 Web API 密钥。",
   "publisher": "nwverse",
@@ -118,13 +118,6 @@
         "default": 50,
         "minimum": 1,
         "maximum": 100
-      },
-      "wishlist_target_prices": {
-        "type": "string",
-        "title": "愿望单目标价",
-        "description": "可选。使用 AppID:货币:Steam 价格单位，以逗号分隔，最多 20 条。例如 123:USD:999 表示 9.99 美元。",
-        "maxLength": 640,
-        "pattern": "^[ \\t]*([0-9]{1,10}:[A-Z]{3}:[0-9]{1,10}([ \\t]*,[ \\t]*[0-9]{1,10}:[A-Z]{3}:[0-9]{1,10}){0,19})?[ \\t]*$"
       },
       "patch_notes_summary_enabled": {
         "type": "boolean",

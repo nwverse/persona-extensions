@@ -199,9 +199,9 @@ func TestWishlistSentinelAndDealsPreferLocalTargetsWithLegacyFallback(t *testing
 	// Local WishlistTargetStore overrides firstApp to <= 200 USD (not met at 400)
 	// and adds thirdApp <= 750 USD (met at 700).
 	legacyCfg := config{
-		TokenConfig:          TokenConfig{InboxEventsEnabled: true},
+		TokenConfig:           TokenConfig{InboxEventsEnabled: true},
 		WishlistEventTriggers: []string{},
-		WishlistTargetPrices: appIDText(firstApp) + ":USD:500," + appIDText(secondApp) + ":USD:600",
+		WishlistTargetPrices:  appIDText(firstApp) + ":USD:500," + appIDText(secondApp) + ":USD:600",
 	}
 	a := newInboxTestApp(f, dir, func() time.Time { return now }, legacyCfg)
 	requireStoreOK(t, a.stores.targets.Set(fixtureID, WishlistTarget{

@@ -39,10 +39,6 @@
       "title": "Wishlist discount threshold (%)",
       "description": "Alert when the discount reaches this percentage. Range 1–100, default 50."
     },
-    "wishlist_target_prices": {
-      "title": "Wishlist target prices",
-      "description": "Optional. Separate up to 20 rules with commas in AppID:CURRENCY:Steam price units format. For example, 123:USD:999 means $9.99."
-    },
     "patch_notes_summary_enabled": {
       "title": "AI summaries of major updates",
       "description": "Share short announcement excerpts with the assistant for summaries. Off by default, with headlines, dates, sources and links available."

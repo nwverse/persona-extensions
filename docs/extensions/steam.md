@@ -2,7 +2,7 @@
 
 [Documentation](../README.md) · [Source](../../extensions/steam/README.md)
 
-Steam 0.3.3 researches games in the Store and reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search and sort the library, review the backlog, or open **Playtime recap**. Game details show achievement progress, local annotations and a link to the Steam Store. **Recent official updates** loads up to five dated Steam announcements when you open it. The Overview card opens the main Steam page. Friends Radar, wishlist alerts and gaming profile memory are optional.
+Steam 0.3.6 researches games in the Store and reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search and sort the library, manage per-game wishlist target price alerts, review the backlog, or open **Playtime recap**. Game details show achievement progress, in-page local status/note/tag editing and links to the Steam Store and Community Hub. **Recent official updates** loads up to five dated Steam announcements when you open it. The Overview card opens the main Steam page. The extension package uses the official Steam mark, while sidebar navigation uses `play` from Persona's fixed icon set until the host supports custom brand icons in sidebar navigation. Friends Radar, wishlist alerts and gaming profile memory are optional.
 
 ## Sign in with Steam Mobile QR
 
@@ -54,7 +54,7 @@ The recent games, library, wishlist and backlog list results accept an `offset` 
 
 ## Backlog and tonight's picks
 
-**Backlog & local progress** shows the counts for the visible library. Annotated games have status badges. Open a game, choose a status and select **Save status locally**. Existing notes and tags stay with the annotation. In game details, **Clear local annotation** asks you to confirm removal of the status, note and tags.
+**Backlog & local progress** shows the counts for the visible library. Annotated games have status badges. Open a game from **Recently played** or **Game library** to choose a status, edit your personal note (up to 240 characters) and enter custom tags (separated by commas or spaces, auto-trimmed and deduplicated, up to eight tags of 32 characters each), then select **Save annotation**. In game details, **Clear annotation** asks you to confirm removal of the status, note and tags.
 
 `steam_backlog_summary` returns counts by default. Pass a `bucket`, `status`, `limit` or `offset` to get a page of titles sorted by name. The `status` filter matches your exact local annotation, including `unplayed`. If you supply both filters, they apply together. Counts cover the analyzed games in the visible library and can overlap.
 
@@ -143,8 +143,9 @@ Set **Steam Inbox events** in **Settings › Extensions › Steam** to opt in. S
 | `inbox_max_events_per_day` | 5 (1–50) | Hard cap on new events per Steam account and UTC day, shared across regions. |
 | `wishlist_event_triggers` | All five | Choose `discount`, `local_low`, `release`, `demo` and `giveaway`. Target price rules and roundups have their own settings. |
 | `wishlist_discount_threshold` | 50% (1–100) | Matches paid discounts at or above this percentage. The giveaway trigger handles 100%-off offers. |
-| `wishlist_target_prices` | Empty | Up to 20 comma-separated `AppID:CURRENCY:amount` rules. `123:USD:999` means $9.99 for AppID 123. Use the integer Steam price units reported by `steam_wishlist` and the matching currency. |
 | `sale_roundup_enabled` | Off | When at least three wishlist games have paid discounts, replaces their individual price alerts with one roundup. The top five rank new local lows first and larger discounts second. Giveaways, releases and demos have separate alerts. |
+
+Per-game target prices are managed directly inside **Personal › Steam**: select any wishlist game to view its current Store price, locally observed low, active Store currency and Steam Store / Community links, then enter a human-readable amount (such as `99` or `19.99`) and save. Target prices are stored locally per SteamID64 in `steam-store-v1/wishlist-targets.json` (up to 200 targets per account), take precedence over any legacy `wishlist_target_prices` rules in existing configuration files, and highlight immediately on the wishlist row and detail page when met. Unreleased or unpriced games can still preset a target price using the active Store country's currency.
 
 One price alert may carry several reasons. A local low requires an earlier observation in the same region and currency, and qualifies only when the price falls below it. Release alerts require an observed transition from upcoming to released. Demo alerts use the demo AppID supplied by the Store. Giveaways require a free-to-keep offer or a 100% discount with a zero final price. Steam distinguishes these offers from permanent free-to-play games and free weekends. [Steamworks Free to Keep](https://partner.steamgames.com/doc/marketing/discounts/freetokeep) · [Steamworks Demos](https://partner.steamgames.com/doc/store/application/demos)
 
@@ -188,11 +189,12 @@ The navigation and tools browse up to 20,000 library or recent entries and price
 
 QR mode keeps Steam observations and Inbox state in memory for the signed-in session and clears them at sign-out. Web API key mode can persist observations and event cursors in separate files under `steam-store-v1`. Price and playtime snapshots reuse data already read from Steam. The extension records new Inbox events before publishing them, and on-demand reads remain available if a snapshot write fails.
 
-Both modes use `PERSONA_EXTENSION_DATA_DIR/steam-store-v1/backlog.json` for explicit personal annotations. The file stores each status, note and set of tags under its SteamID64 and AppID. Signing out preserves the annotations, and they are available again when you use the same Steam account in either mode. A local edit for a vanity name first resolves its current SteamID64. The stores use the Hub's data directory when the environment variable is absent, and fall back to in-memory storage when no directory is available. Versioned files have a 16 MiB limit and are replaced atomically.
+Both modes use `PERSONA_EXTENSION_DATA_DIR/steam-store-v1/backlog.json` for explicit personal annotations and `PERSONA_EXTENSION_DATA_DIR/steam-store-v1/wishlist-targets.json` for explicit per-game wishlist target prices. Signing out preserves both files, and they are available again when you use the same Steam account in either mode. A local edit for a vanity name first resolves its current SteamID64. The stores use the Hub's data directory when the environment variable is absent, and fall back to in-memory storage when no directory is available. Versioned files have a 16 MiB limit and are replaced atomically.
 
 | Store | Contents and limits |
 | --- | --- |
 | Price history | Fresh, checked wishlist prices are scoped to the Steam account, Store country and AppID. Up to 2,000 series retain 32 sampled UTC days each, the latest quote and the first observation of the local low with its discount. A change in Store currency starts a new series. |
+| Wishlist targets | Up to 200 per-game target prices per SteamID64 (2,000 total), storing the currency, threshold in Steam minor units and update timestamp. Target edits apply to local storage only and override any legacy `wishlist_target_prices` config rules. |
 | Playtime | A complete library read records lifetime minutes, the two-week minutes supplied by the library, and counts of owned and unplayed games. The aggregate store keeps the latest snapshot on each UTC day for up to 400 days through the most recent observation, across up to 16 accounts. |
 | Playtime recap | On-demand observations use per-AppID minutes and status for visible library games. The store keeps the first observation of each month and the latest observation overall. Retention is up to 400 days and up to 16 accounts, within the snapshot file budget. |
 | Backlog | Up to 2,000 local annotations, each with a status, a note of up to 240 characters and up to eight tags of 32 characters each. Annotation edits apply to local storage only. |
