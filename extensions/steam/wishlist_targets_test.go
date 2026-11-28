@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -8,6 +10,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/nwverse/persona/sdk/go/ext"
+	"github.com/nwverse/persona/sdk/go/wire"
 )
 
 func TestWishlistTargetStoreCRUDIsolationPersistenceAndLimits(t *testing.T) {
@@ -232,5 +237,115 @@ func TestWishlistSentinelAndDealsPreferLocalTargetsWithLegacyFallback(t *testing
 	contains(t, raw, storeLink(secondApp), storeLink(thirdApp), `"target_price_met":true`)
 	if strings.Contains(raw, storeLink(firstApp)) {
 		t.Fatalf("local override did not supersede legacy config in steam_wishlist_deals: %s", raw)
+	}
+}
+
+func TestWishlistDetailViewAndTargetPriceActions(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	dir := t.TempDir()
+	now := fixtureObservationAt
+
+	// Seed an observed local low for firstApp in CNY and an upcoming unpriced game (thirdApp).
+	requireStoreOK(t, NewPriceHistoryStore(dir).Observe(fixtureID, "CN", now.Add(-48*time.Hour), map[uint32]PriceQuote{
+		firstApp: {Currency: "CNY", Final: 7900, DiscountPercent: 50},
+	}))
+	seedInboxWishlist(t, f,
+		inboxFixtureGame{firstApp, 9900, 40, `{"name":"Wishlist Alpha","best_purchase_option":{"original_price_in_cents":"16500","formatted_final_price":"¥ 99.00"}}`},
+		inboxFixtureGame{secondApp, 6800, 0, `{"name":"Wishlist Beta","best_purchase_option":{"formatted_final_price":"¥ 68.00"}}`},
+		inboxFixtureGame{thirdApp, -1, 0, `{"name":"Wishlist Upcoming","release":{"is_coming_soon":true}}`},
+	)
+
+	h := startTestHost(t, f, fixtureID, "CN", dir)
+	nav := wire.UIParams{Contribution: extensionID, Size: wire.SizeFull, Placement: wire.PlacementNavPage, UIVersion: 12, Locale: "zh-Hans"}
+
+	overview := viewAnswer(t, h, nav)
+	wishRows := overview.Sections[3].Items
+	if len(wishRows) != 3 || wishRows[0].Action == nil || wishRows[0].Action.ID != "wish-game-"+appIDText(firstApp) {
+		t.Fatalf("wishlist rows should be clickable with wish-game-<appid>, got %+v", wishRows)
+	}
+
+	// Open wishlist game detail page for firstApp.
+	detail := act(t, h, nav, overview, wishRows[0].Action.ID, nil)
+	raw, err := json.Marshal(detail)
+	requireStoreOK(t, err)
+	contains(t, string(raw),
+		"Wishlist Alpha", "¥ 99.00", "原价 ¥165.00 · 优惠 40%",
+		"¥79.00", "CN · CNY", storeLink(firstApp), communityLink(firstApp),
+		"目标提醒价格（CNY）", `"kind":"number"`, `"name":"target_price"`,
+		`"id":"wishlist-target-save","submit":true`,
+	)
+	assertHidden(t, string(raw), wishlistTargetClearAction)
+
+	// Invalid price inputs are rejected with a friendly error.
+	for _, bad := range []string{"", "0", "-5", "19.999", "abc", "99999999999"} {
+		badReq := nav
+		badReq.Action, badReq.State, badReq.Values = wishlistTargetSaveAction, detail.State, map[string]string{wishlistTargetPriceField: bad}
+		var e *ext.Error
+		if err := h.Call("ui.action", badReq, nil); !errors.As(err, &e) || e.Code != "invalid" {
+			t.Errorf("invalid target_price %q was accepted: %v", bad, err)
+		}
+	}
+
+	// Save a target price that is NOT yet met (¥80.00 < ¥99.00).
+	saveReq := nav
+	saveReq.Action, saveReq.State, saveReq.Values = wishlistTargetSaveAction, detail.State, map[string]string{wishlistTargetPriceField: "80"}
+	var saveRes wire.ActionResult
+	requireStoreOK(t, h.Call("ui.action", saveReq, &saveRes))
+	requireStoreOK(t, wire.CheckView(saveRes.View))
+	contains(t, saveRes.Toast, "¥80.00")
+	detail = *saveRes.View
+	raw, _ = json.Marshal(detail)
+	contains(t, string(raw), `"value":"80.00"`, `"id":"wishlist-target-clear"`)
+
+	// Verify back to overview shows target hint without losing discount badge.
+	overview = act(t, h, nav, detail, "back", nil)
+	row0 := overview.Sections[3].Items[0]
+	if row0.Badge == nil || row0.Badge.Text != "优惠 40%" || !strings.Contains(row0.Subtitle, "目标价 ≤ ¥80.00") {
+		t.Fatalf("unmet target row should keep discount badge and show target subtitle: %+v", row0)
+	}
+
+	// Save a target price that IS met (¥100.50 >= ¥99.00).
+	detail = act(t, h, nav, overview, row0.Action.ID, nil)
+	detail = act(t, h, nav, detail, wishlistTargetSaveAction, map[string]string{wishlistTargetPriceField: "100.5"})
+	raw, _ = json.Marshal(detail)
+	contains(t, string(raw), "已达到目标价", "已达目标价", `"value":"100.50"`)
+
+	overview = act(t, h, nav, detail, "back", nil)
+	row0 = overview.Sections[3].Items[0]
+	if row0.Badge == nil || row0.Badge.Text != "已达目标价" || row0.Badge.Tone != wire.TonePositive ||
+		!strings.Contains(row0.Subtitle, "优惠 40%") || !strings.Contains(row0.Subtitle, "目标价 ≤ ¥100.50") {
+		t.Fatalf("met target row should highlight positive badge and retain discount + target info: %+v", row0)
+	}
+
+	// Account-change protection rejects stale state from another SteamID.
+	other := startTestHost(t, f, fixtureID2, "CN", dir)
+	staleReq := nav
+	staleReq.Action, staleReq.State = wishlistTargetClearAction, detail.State
+	var e *ext.Error
+	if err := other.Call("ui.action", staleReq, nil); !errors.As(err, &e) || e.Code != "invalid" {
+		t.Fatalf("target clear from another SteamID was accepted: %v", err)
+	}
+
+	// Clear target price on firstApp.
+	clearReq := nav
+	clearReq.Action, clearReq.State = wishlistTargetClearAction, detail.State
+	var clearRes wire.ActionResult
+	requireStoreOK(t, h.Call("ui.action", clearReq, &clearRes))
+	requireStoreOK(t, wire.CheckView(clearRes.View))
+	contains(t, clearRes.Toast, "已清除")
+	raw, _ = json.Marshal(clearRes.View)
+	assertHidden(t, string(raw), wishlistTargetClearAction, "已达到目标价")
+	if _, ok, err := NewWishlistTargetStore(dir).Get(fixtureID, firstApp); err != nil || ok {
+		t.Fatalf("target still persisted after clear: ok=%t err=%v", ok, err)
+	}
+
+	// Upcoming unpriced game allows presetting a target price using the region's currency (CN -> CNY).
+	upcomingDetail := act(t, h, nav, overview, "wish-game-"+appIDText(thirdApp), nil)
+	raw, _ = json.Marshal(upcomingDetail)
+	contains(t, string(raw), "Wishlist Upcoming", "即将推出", "暂无历史记录", "CN · CNY", "目标提醒价格（CNY）")
+	upcomingDetail = act(t, h, nav, upcomingDetail, wishlistTargetSaveAction, map[string]string{wishlistTargetPriceField: "128.00"})
+	got, ok, err := NewWishlistTargetStore(dir).Get(fixtureID, thirdApp)
+	if err != nil || !ok || got.Currency != "CNY" || got.MaxUnits != 12800 {
+		t.Fatalf("upcoming target was not saved with regional currency: %+v, ok=%t, err=%v", got, ok, err)
 	}
 }

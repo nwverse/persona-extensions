@@ -21,10 +21,11 @@ type text struct {
 	states                                                              map[string]string
 	problems                                                            map[problem]string
 
-	recentNews, noRecentNews string
-	backlog                  backlogText
-	recap                    recapText
-	memory                   memoryText
+	recentNews, noRecentNews, communityHub string
+	backlog                                backlogText
+	wishTarget                             wishlistTargetText
+	recap                                  recapText
+	memory                                 memoryText
 
 	inboxPrice, inboxGiveaway, inboxRelease, inboxDemo, inboxRoundup string
 	inboxGiveawayHint, inboxReleaseHint, inboxDemoHint               string
@@ -52,6 +53,15 @@ type backlogText struct {
 	pickPaused, pickUnplayed, pickTried, pickLongTerm, pickCompleted string
 }
 
+type wishlistTargetText struct {
+	detailTitle, marketOverview, currentPrice, observedLow, noHistory  string
+	regionCurrency, viewInStore, comingSoon, unreleasedHint, unpriced  string
+	wasPriceDiscount, sectionTitle, description, legacyHint            string
+	priceLabel, placeholder, inputDetail, save, clear, confirmClear    string
+	savedToast, cleared, invalidPrice, accountChanged                  string
+	rowHint, metBadge, metBannerTitle, metBannerDetail                 string
+}
+
 func (t *backlogText) bucketTitle(bucket string) string {
 	if title := t.activity[bucket]; title != "" {
 		return title
@@ -74,6 +84,37 @@ var english = text{
 	achievements: "Achievements", noAchievements: "Steam lists no achievements for this game.", unlocked: "%d of %d unlocked",
 	game: "App %d", playing: "Playing %s", unknown: "Status unavailable",
 	recentNews: "Recent official updates", noRecentNews: "No recent official game updates were found.",
+	communityHub: "Steam Community Hub",
+	wishTarget: wishlistTargetText{
+		detailTitle:      "Wishlist game",
+		marketOverview:   "Price & store info",
+		currentPrice:     "Current price",
+		observedLow:      "Observed local low",
+		noHistory:        "No local history",
+		regionCurrency:   "Store region / currency",
+		viewInStore:      "View in Steam Store",
+		comingSoon:       "Coming soon",
+		unreleasedHint:   "Not yet released; you can preset a target price",
+		unpriced:         "No price listed",
+		wasPriceDiscount: "Was %s · %d%% off",
+		sectionTitle:     "Target price alert",
+		description:      "When the Steam Store price drops to or below this amount, you will receive a notification if Steam Inbox wishlist alerts are enabled. If the current price already meets your target, it is highlighted immediately here.",
+		legacyHint:       "Currently loaded from legacy settings; saving stores it locally for this account.",
+		priceLabel:       "Target alert price (%s)",
+		placeholder:      "e.g. 99 or 19.99",
+		inputDetail:      "Enter a positive amount in %s (up to two decimal places).",
+		save:             "Save target price",
+		clear:            "Clear target price",
+		confirmClear:     "Remove the target price alert for this wishlist game?",
+		savedToast:       "Target price saved (≤ %s).",
+		cleared:          "Target price cleared.",
+		invalidPrice:     "Enter a positive target price with at most two decimal places (for example, 99 or 19.99).",
+		accountChanged:   "Your Steam account changed. Reopen this game to update its target price.",
+		rowHint:          "Target ≤ %s",
+		metBadge:         "Target met",
+		metBannerTitle:   "Target price reached",
+		metBannerDetail:  "Current Steam Store price is at or below your target (%s).",
+	},
 	recap: recapText{
 		title: "Playtime recap", period: "Period", invalidArgs: "Use month, quarter, year or all, with top_n from 1 to 20.",
 		noBaseline: "This period needs a start snapshot. Open the recap on another day to track playtime changes automatically.",
@@ -200,6 +241,37 @@ var chinese = text{
 	achievements: "成就", noAchievements: "Steam 没有列出这款游戏的成就。", unlocked: "已解锁 %d / %d",
 	game: "应用 %d", playing: "游戏中 · %s", unknown: "状态不可用",
 	recentNews: "近期官方更新", noRecentNews: "暂未找到近期官方游戏更新。",
+	communityHub: "Steam 社区中心",
+	wishTarget: wishlistTargetText{
+		detailTitle:      "愿望单游戏详情",
+		marketOverview:   "价格与商店行情",
+		currentPrice:     "当前售价",
+		observedLow:      "本机观测最低价",
+		noHistory:        "暂无历史记录",
+		regionCurrency:   "商店区域 / 币种",
+		viewInStore:      "在 Steam 商店查看",
+		comingSoon:       "即将推出",
+		unreleasedHint:   "待发售，可提前预设目标价",
+		unpriced:         "暂无报价",
+		wasPriceDiscount: "原价 %s · 优惠 %d%%",
+		sectionTitle:     "目标价提醒",
+		description:      "当 Steam 商店售价降到该金额或以下时，若已开启收件箱愿望单提醒将收到通知；若当前售价已达标，也会在本页立即提示。",
+		legacyHint:       "当前沿用旧配置中的目标价，保存后将转为本机账号独立管理。",
+		priceLabel:       "目标提醒价格（%s）",
+		placeholder:      "例如 99 或 19.99",
+		inputDetail:      "直接输入 %s 正常金额（正数，最多两位小数）。",
+		save:             "保存目标价",
+		clear:            "清除目标价",
+		confirmClear:     "确认清除这款愿望单游戏的目标价提醒？",
+		savedToast:       "已保存目标价（≤ %s）。",
+		cleared:          "已清除目标价提醒。",
+		invalidPrice:     "请输入有效的正数金额（最多两位小数，例如 99 或 19.99）。",
+		accountChanged:   "Steam 账号已切换，请重新打开愿望单详情再修改目标价。",
+		rowHint:          "目标价 ≤ %s",
+		metBadge:         "已达目标价",
+		metBannerTitle:   "已达到目标价",
+		metBannerDetail:  "当前 Steam 商店售价已低于或等于你设定的目标价（%s）。",
+	},
 	recap: recapText{
 		title: "游玩复盘", period: "周期", invalidArgs: "请选择 month、quarter、year 或 all，top_n 可设为 1–20。",
 		noBaseline: "尚缺可对比的周期起点快照。改天再打开复盘，即可自动累计游玩增量。",
