@@ -2,14 +2,17 @@
 Run them: python3 -m unittest discover -s tests, in extensions/larkx."""
 import hashlib
 import hmac
+import http.client
 import http.server
 import json
 import os
+import socket
 import sys
 import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -202,14 +205,32 @@ class HttpTest(unittest.TestCase):
 
     def setUp(self):
         Receiver.got, Receiver.status = [], 200
+        # A proxy in the developer's environment would turn the loopback address into the sandbox's name.
+        saved = {k: os.environ.pop(k) for k in list(os.environ) if k.lower() in ("http_proxy", "https_proxy", "all_proxy")}
+        self.addCleanup(os.environ.update, saved)
+        try:
+            self.start_server()
+        except PermissionError:
+            # Sandboxes may disallow listeners. Still transmit and parse real HTTP in both directions.
+            def connect(connection):
+                connection.sock, server = socket.socketpair()
+                def receive():
+                    with server:
+                        Receiver(server, ("example.com", 0), None)
+                worker = threading.Thread(target=receive, daemon=True)
+                worker.start()
+                self.addCleanup(worker.join, 5)
+            patch = mock.patch.object(http.client.HTTPConnection, "connect", connect)
+            patch.start()
+            self.addCleanup(patch.stop)
+            self.url = "http://localhost/hook"
+
+    def start_server(self):
         self.server = http.server.HTTPServer(("127.0.0.1", 0), Receiver)
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
         self.url = "http://127.0.0.1:%d/hook" % self.server.server_address[1]
-        # A proxy in the developer's environment would turn the loopback address into the sandbox's name.
-        saved = {k: os.environ.pop(k) for k in list(os.environ) if k.lower() in ("http_proxy", "https_proxy", "all_proxy")}
-        self.addCleanup(os.environ.update, saved)
 
     def test_a_post_and_its_status(self):
         self.assertEqual(post_json(self.url, b'{"a":1}', {"Content-Type": "application/json", "X-Larkx-Delivery": "d"}, 5), 200)

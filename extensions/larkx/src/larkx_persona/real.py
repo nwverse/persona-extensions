@@ -3,6 +3,7 @@ downloaded from GitHub at the commit in upstream.json and checked file by file, 
 the hash-locked requirements.txt. Nothing here imports it at the top: the handshake must not wait for either."""
 import asyncio
 import hashlib
+import html
 import io
 import json
 import os
@@ -15,6 +16,7 @@ import tarfile
 import time
 import urllib.parse
 import urllib.request
+import uuid
 import zlib
 from pathlib import Path
 
@@ -355,6 +357,17 @@ def _clean_id(value):
     return "" if s == "0" else s
 
 
+def _mentions_all(rich):
+    """An AT for everyone can have a label but no userId, so it need not appear among the personal mention spans."""
+    try:
+        elements = rich["elements"]["dictionary"]
+    except (TypeError, KeyError, IndexError):
+        return False
+    return isinstance(elements, dict) and any(
+        isinstance(e, dict) and e.get("tag") == _AT and _string(e.get("property"), 2).casefold() in ("@所有人", "@all", "@everyone")
+        for e in elements.values())
+
+
 def normalize(msg, extract_key):
     """A message of LarkAgentX's, live or from history, as the connector keeps it. Pure, for the tests."""
     msg_type = msg.get("msg_type") or 0
@@ -398,7 +411,7 @@ def normalize(msg, extract_key):
     anchor = _clean_id(msg.get("anchor"))
     # Pinned LarkAgentX (97ad48e) folds threadId into anchor and does not emit thread_id; keep thread_id as a
     # defensive fallback in case a future upstream pin or caller supplies it directly.
-    thread_id = _clean_id(msg.get("thread_id"))
+    thread_id = _clean_id(msg.get("thread_id") or msg.get("threadId"))
     topic_id = ""
     if chat_type != 1:
         if scope == "topic":
@@ -416,7 +429,10 @@ def normalize(msg, extract_key):
         "position": int(msg.get("position") or 0), "sender": str(msg.get("from_id") or ""), "type": name,
         "text": text, "at": at or time.time(), "root": root,
         "parent": parent, "topic_id": topic_id, "at_me": bool(msg.get("at_me")), "media": media,
-        "mentions": mentions, "markdown": markdown or "",
+        "thread_id": thread_id or (anchor if scope == "topic" else ""),
+        **({"card_json": data.get("jsonCard"), "card_title": (data.get("cardHeader") or {}).get("title")
+             or (data.get("cardHeader") or {}).get("mainTitle")} if name == "CARD" and isinstance(data, dict) else {}),
+        "mentions": mentions, "markdown": markdown or "", "at_all": bool(msg.get("at_me")) and _mentions_all(rich),
     }
 
 
@@ -591,10 +607,12 @@ def drop_others(data_dir, prefix, keep):
 class RealBackend:
     Expired = Expired
 
-    def __init__(self, root, data_dir, region):
+    def __init__(self, root, data_dir, region, store=None):
         self._root = root
         self._data_dir = data_dir
         self._region = region
+        self._store = store
+        self._chatter_types = {}
         self._client = None
         self._auth = None
         self._qr = None
@@ -809,8 +827,11 @@ class RealBackend:
             req.content.richText.elementIds.append(element_id)
         req.content.richText.innerText = text
         content = self._client._gateway_post(builders.wrap_packet(5, req, generate_long_request_id()))
-        return builders.decode_put_message_response(content)
-
+        packet = P.Packet.FromString(content)
+        sent = P.PutMessageResponse.FromString(packet.payload).message
+        if self._store and sent.threadId and (root or sent.id):
+            self._store.remember_thread(str(chat), str(root or sent.id), sent.threadId)
+        return sent.id
 
     def create_chat(self, user):
         chat = self._client.create_chat(user)
@@ -828,13 +849,178 @@ class RealBackend:
     def search(self, query):
         return self._client.search(query)
 
+    def search_chats(self, query):
+        # The upstream convenience decoder drops bot results and DM chat IDs.
+        header = {"query": query, "searchSession": uuid.uuid4().hex, "sessionSeqId": 1,
+                  "locale": self._auth.region.locale, "searchContext": {"tagName": "SMART_SEARCH",
+                  "sourceKey": "messenger", "entityItems": [{"type": 1}, {"type": 2, "filter": {}},
+                  {"type": 3, "filter": {"groupChatFilter": {}}}]}}
+        rows, tokens = [], set()
+        while True:
+            page = self._client.api("usearch.UniversalSearchRequest", {"header": dict(header)})
+            entries = _response_map(page, "results")
+            info = page.get("header") or {}
+            if info.get("errorCode"):
+                raise ValueError("chat search failed")
+            missing = {}
+            for item in entries:
+                name = html.unescape(re.sub(r"</?(?:em|b|h|highlight)>", "", item.get("titleHighlighted") or "", flags=re.I))
+                meta = item.get("resultMeta") or {}
+                group = meta.get("groupChatMeta")
+                if group is not None:
+                    if group.get("isMember") is False:
+                        continue
+                    chat, kind, active = group.get("id") or item.get("id"), "group", group.get("lastMessageTime", 0)
+                else:
+                    peer = meta.get("botMeta") or meta.get("userMeta") or {}
+                    chat, kind, active = peer.get("chatId"), "dm", 0
+                    peer_id = peer.get("id") or item.get("id")
+                    if (not chat or chat == "0") and peer_id and name == query and item.get("type") in (1, 2, "BOT", "USER"):
+                        missing[str(peer_id)] = name
+                if chat and str(chat) != "0":
+                    rows.append({"id": str(chat), "name": name, "kind": kind, "active": int(active or 0)})
+            if missing:
+                result = self._client.api("chats.CheckP2PChatsExistByUserRequest", {"chatterIds": list(missing)})
+                for peer, chat in _response_map(result, "chatterChatMap").items():
+                    if str(peer) in missing and chat and str(chat) != "0":
+                        rows.append({"id": str(chat), "name": missing[str(peer)], "kind": "dm", "active": 0})
+            if not info.get("hasMore"):
+                return rows
+            token = info.get("paginationToken")
+            if not token or token in tokens:
+                raise ValueError("incomplete chat search")
+            tokens.add(token)
+            header.update(paginationToken=token, sessionSeqId=header["sessionSeqId"] + 1)
+
+    def ensure_bot_member(self, chat, bot):
+        # PullChatChattersByIDs answers a chatter's profile whether or not it is in the chat, so it cannot tell
+        # membership. Adding is idempotent: add first, and only when that fails fall back to the profile lookup.
+        try:
+            result = self._client.api("chats.PutChatChatterRequest", {"chatId": chat, "chatterIds": [bot]})
+            if str(_response_map(result, "chat").get("id") or "") == chat:
+                return
+        except Exception:
+            pass
+        query = self._client.api("chats.PullChatChattersByIDsRequest", {
+            "chatId": chat, "chatterIds": [bot], "needChatters": True, "notSubscribeChatters": True})
+        members = _response_map(query, "chatters")
+        if not isinstance(members, dict) or not any(str(key) == bot for key in members):
+            raise ValueError("group membership not confirmed")
+
     def history(self, chat, positions):
         return [normalize(m, self._extract_key) for m in self._client.pull_history(chat, positions)]
 
-    def chat_info(self, chat):
+    def _decode_context_message(self, chat, m, root, thread):
+        from larkx.proto import decoders
+        kind = decoders.enum_to_int(m.get("type", 0))
+        text, data = decoders.decode_message_content(kind, m.get("content", b""))
+        return normalize({"msg_id": m["id"], "chat_id": chat, "root_id": root, "thread_id": thread,
+                          "parent_id": m.get("parentId"), "msg_type": kind,
+                          "msg_type_name": decoders.MSG_TYPE_NAMES.get(kind, str(kind)), "from_id": m.get("fromId"),
+                          "chat_type": decoders.enum_to_int(m.get("chatType", 0)), "position": m.get("position"),
+                          "create_time": m.get("createTime"), "content": text, "content_data": data}, self._extract_key)
+
+    def messages_by_id(self, chat, ids):
+        # Unlike the position decoder, this response retains reply counts, including for unseen topics.
+        chat, ids = str(chat), [str(mid) for mid in ids]
+        response = self._client.api("messages.PullMessagesByIdsRequest", {"messageIds": ids})
+        rows = []
+        for mid, m in _response_map(response, "messages").items():
+            if mid not in ids or str(m.get("id")) != mid or str(m.get("chatId") or m.get("channelId")) != chat:
+                continue
+            row = self._decode_context_message(chat, m, m.get("rootId"), m.get("threadId"))
+            if "replyCount" in m:
+                row["reply_count"] = int(m["replyCount"] or 0)
+            rows.append(row)
+        return rows
+
+    def topic_roots(self, chat, roots):
+        """Check roots with no reply-count field together, without one network probe per group post."""
+        chat = str(chat)
+        threads = {str(root): str((self._store.thread_id(chat, root) if self._store else None) or tid or root)
+                   for root, tid in roots.items()}
+        response = self._client.api("thread.PullThreadsByIDsRequest", {"threadIds": list(threads.values())})
+        infos = _response_map(response, "threads")
+        found = set()
+        for root, tid in threads.items():
+            info = infos.get(tid) or {}
+            if (str(info.get("channelId", chat)) == chat and str(info.get("rootMessageId", root)) == root
+                    and int(info.get("lastVisibleMessagePosition", info.get("lastMessagePosition", -1)))
+                    >= max(0, int(info.get("messageStartPosition", 0)))):
+                found.add(root)
+        return found
+
+    def thread_replies(self, chat, root_id, limit=50):
+        # Why the last read returned what it did, for the connector's log (diagnostics only).
+        chat, root_id = str(chat), str(root_id)
+        self.last_thread_trace = "start"
+        if limit <= 0:
+            return []
+        client = self._client
+        thread = self._store.thread_id(chat, root_id) if self._store else None
+        if not thread:
+            roots = client.api("messages.PullMessagesByIdsRequest", {"messageIds": [root_id]})
+            root = _response_map(roots, "messages").get(root_id, {})
+            if str(root.get("chatId") or root.get("channelId") or chat) != chat:
+                self.last_thread_trace = "root in another chat: %r" % sorted(root)[:12]
+                return []
+            thread = _clean_id(root.get("threadId")) or root_id
+        result = client.api("thread.PullThreadsByIDsRequest", {"threadIds": [thread]})
+        info = _response_map(result, "threads").get(thread)
+        if (not info or str(info.get("channelId", chat)) != chat or str(info.get("rootMessageId", root_id)) != root_id):
+            self.last_thread_trace = "thread %s info mismatch: found=%s keys=%r" % (thread, bool(info), sorted(info or {})[:14])
+            return []
+        last = int(info.get("lastVisibleMessagePosition", info.get("lastMessagePosition", -1)))
+        first = max(0, int(info.get("messageStartPosition", 0)), last - limit + 1)
+        if last < first:
+            self.last_thread_trace = "thread %s empty range first=%d last=%d" % (thread, first, last)
+            return []
+        # Only the topic and its positions: with the channel fields or onlyVisibleMessages set the server answered an
+        # empty page for a topic whose replies the web client shows.
+        page = client.api("thread.PullThreadMessagesByPositionsRequest", {
+            "threadId": thread, "positions": list(range(first, last + 1))})
+        messages = _response_map(page, "messages")
+        if str(page.get("threadId", thread)) != thread or str(page.get("channelId", chat)) not in (chat, "", "0"):
+            self.last_thread_trace = "thread %s page mismatch" % thread
+            return []
+        replies = []
+        for pos, m in sorted(messages.items(), key=lambda kv: int(kv[0])):
+            if (not first <= int(pos) <= last or not m.get("id") or str(m["id"]) == root_id
+                    or str(m.get("chatId") or m.get("channelId") or chat) != chat
+                    or _clean_id(m.get("threadId")) not in ("", thread)
+                    or _clean_id(m.get("rootId")) not in ("", root_id)):
+                continue
+            replies.append(self._decode_context_message(chat, m, root_id, thread))
+        self.last_thread_trace = "thread %s positions %d..%d got %d kept %d" % (thread, first, last, len(messages), len(replies))
+        return replies
+
+    def is_bot(self, sender_id):
+        now = time.time()
+        sender_id = str(sender_id)
+        cached = self._chatter_types.get(sender_id)
+        if cached and cached[1] > now:
+            return cached[0]
+        row = self._store.chatter_type(sender_id, now) if self._store else None
+        if row:
+            bot, expires = bool(row["bot"]), row["expires"]
+        else:
+            result = self._client.api("chatters.PullChattersByIdsRequest", {
+                "chatterIds": [sender_id], "notSubscribeChatters": True})
+            kind = _response_map(result, "chatters").get(sender_id, {}).get("type")
+            if kind not in (1, "USER", 2, "BOT", 3, "AI"):
+                raise ValueError("unknown chatter type")
+            bot, expires = kind not in (1, "USER"), now + 86400
+            if self._store:
+                self._store.set_chatter_type(sender_id, bot, expires)
+        self._chatter_types[sender_id] = (bot, expires)
+        return bot
+
+    def chat_info(self, chat, require_position=False):
         info = self._client.get_chat_info(chat)
         if not isinstance(info, dict):
             info = {}
+        if require_position and ("lastMessagePosition" not in info or str(info.get("id", chat)) != chat):
+            raise ValueError("missing chat position")
         return {"name": info.get("name") or "", "last_position": int(info.get("lastMessagePosition") or 0),
                 "mute": mute_state(info)}
 
@@ -896,6 +1082,14 @@ class RealBackend:
         url = media.message_resource_url(msg_id, key, chat, host=self._auth.region.file_host)
         data, mime = media.download(self._auth, url, max_bytes=most)
         return mime or "application/octet-stream", data
+
+
+def _response_map(response, key):
+    # With no decoded payload client.api can return the outer Packet instead.
+    if not isinstance(response, dict) or "cmd" in response or response.get("status"):
+        raise ValueError("unexpected gateway response")
+    value = response.get(key, {})
+    return {str(k): v for k, v in value.items()} if isinstance(value, dict) else value
 
 
 def _remind_state(value):

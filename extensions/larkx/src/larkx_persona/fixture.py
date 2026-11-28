@@ -77,6 +77,12 @@ class FixtureBackend:
     def search(self, query):
         return [{"type": "user", "id": "u_a", "title": "示例联系人"}]
 
+    def thread_replies(self, chat, root_id, limit=50):
+        return []
+
+    def is_bot(self, sender_id):
+        return False
+
     def history(self, chat, positions):
         return []
 
