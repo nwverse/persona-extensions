@@ -90,6 +90,7 @@ class Plugin:
             self.connector.auto_handle = config.get("auto_handle") is True
             self.connector.auto_route_hint = (config.get("auto_route_hint") or "").strip()[:2000].rstrip()
             self.connector.auto_bot_name = (config.get("auto_bot_name") or "").strip()
+            self.connector.auto_bot_join_command = (config.get("auto_bot_join_command") or "").strip()
             self.connector.auto_bot_id = (config.get("auto_bot_id") or "").strip()
             self.connector.auto_bot_timeout_seconds = max(30, min(1800, config.get("auto_bot_timeout_seconds", 180)))
             self.connector.auto_playbook_dir = (config.get("auto_playbook_dir") or "").strip()

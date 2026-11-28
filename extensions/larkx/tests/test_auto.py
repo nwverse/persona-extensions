@@ -325,6 +325,21 @@ class AutoTest(unittest.TestCase):
         with self.assertRaises(RpcError):
             self.answer("m2")
 
+    def test_bot_join_command_goes_once_per_chat_before_the_handoff(self):
+        self.c.auto_bot_name = "小明"
+        self.c.auto_bot_join_command = "/allow"
+        self.c.on_message(message("old", "g", 1, sender="7001", kind="group"))
+        self.c.store.set_name("7100", "同事")
+        self.live(2, MR, "g", kind="group", at_me=True, sender="7100")
+        self.done("bot")
+        self.assertEqual(self.backend.sent[0], ("g", "@小明 /allow", None, [{"id": "7001", "name": "小明"}]))
+        self.assertTrue(self.backend.sent[1][1].startswith("@小明 请 review"))
+        self.assertTrue(self.c._ensure_bot_member("g", "7001"))
+        self.assertEqual(len(self.backend.sent), 2)
+        self.c.auto_bot_join_command = ""
+        self.assertTrue(self.c._ensure_bot_member("g2", "7001"))
+        self.assertEqual(len(self.backend.sent), 2)
+
     def test_auto_handoff_uses_current_group_roster_and_topic_routing(self):
         name = self.c.auto_bot_name = "Example Bot"
         self.c.store.add_message(message("old", "another", 1, sender="8000"), name, False)
@@ -835,7 +850,7 @@ class AutoTest(unittest.TestCase):
     def test_manifest_and_initialize_enable_the_settings(self):
         with open(os.path.join(main.ROOT, "persona-extension.json"), encoding="utf-8") as f:
             manifest = json.load(f)
-        self.assertEqual(manifest["version"], "0.5.4")
+        self.assertEqual(manifest["version"], "0.5.5")
         self.assertIn("models", manifest["permissions"]["hub"])
         settings = manifest["configuration"]["properties"]
         self.assertEqual(settings["auto_active_minutes"]["default"], 10)

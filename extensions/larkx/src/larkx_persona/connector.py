@@ -241,6 +241,7 @@ class Connector:
         self.auto_route_hint = ""
         self.auto_bot_name = self.auto_bot_id = self.auto_playbook_dir = ""
         self.auto_bot_timeout_seconds = 180
+        self.auto_bot_join_command = ""
         self._bot_session = None
         # Patterns (user configuration, setting auto_review_patterns) that mark a message as a code review request
         # without asking the model, such as the merge request links of the user's own code host.
@@ -719,10 +720,18 @@ class Connector:
     def _ensure_bot_member(self, chat, bot):
         try:
             self.backend.ensure_bot_member(chat, bot)
-            return True
         except Exception:
             self._log("auto bot not in chat: add failed")
             return False
+        command = self.auto_bot_join_command
+        if command:
+            # Once per chat and bot (the send ledger): e.g. letting the chat's members talk to the bot too.
+            try:
+                self._channel_out("botjoin:%s:%s" % (chat, bot), chat, "@%s %s" % (self.auto_bot_name, command), None,
+                                  lambda: [{"id": bot, "name": self.auto_bot_name}])
+            except RpcError:
+                self._log("auto bot join command failed")
+        return True
 
     def _alarm_worker(self, me, stop):
         sources = {}
@@ -1164,6 +1173,8 @@ class Connector:
                     run["cursor"] = cursor
                 if answer is None:
                     continue
+                if answer and run["auto"]:
+                    answer = self._in_chinese(answer)  # Before the session lock: a rewrite may take a model call.
                 with self._session_lock:
                     if stop.is_set() or not self._signed_in or self._account_id != run["account"]:
                         return
