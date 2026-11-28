@@ -38,7 +38,7 @@
         "id": "steam",
         "title": "Steam",
         "placement": "nav_page",
-        "icon": "chart",
+        "icon": "play",
         "group": {"id": "personal", "title": "个人"}
       },
       {

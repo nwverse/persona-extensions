@@ -55,7 +55,7 @@ func TestManifestAndTranslations(t *testing.T) {
 		t.Fatalf("connector %+v", c)
 	}
 	page, card := m.Contributes.UI[0], m.Contributes.UI[1]
-	if page.ID != extensionID || page.Placement != wire.PlacementNavPage || page.Icon != "chart" ||
+	if page.ID != extensionID || page.Placement != wire.PlacementNavPage || page.Icon != "play" ||
 		page.Group == nil || page.Group.ID != "personal" || page.Group.Title != "个人" ||
 		card.ID != summaryID || card.Placement != wire.PlacementOverviewCard || card.Opens != page.ID {
 		t.Fatal("navigation and card declarations do not match")
