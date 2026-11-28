@@ -471,6 +471,10 @@ func TestProfileIsolatesOthersAndMisreads(t *testing.T) {
 	}
 	add(&entry.Entry{ID: "p-b-0", Facet: entry.People, Person: "person:b", Part: entry.PartFact, Count: 4, Text: "负责评测数据维护"})
 	add(&entry.Entry{ID: "p-c-0", Facet: entry.People, Person: "person:c", Part: entry.PartFact, Count: 4, Text: "负责值班告警"})
+	for i, pair := range [][2]string{{"person:a", "person:b"}, {"person:b", "person:a"}, {"person:a", "person:c"}, {"person:c", "person:a"}} {
+		add(&entry.Entry{ID: "w-rel-" + string(rune('0'+i)), Facet: entry.World, Grain: entry.Class, Type: "collaborates_with",
+			Subject: pair[0], Predicate: "collaborates_with", Target: pair[1], Count: 15, Text: pair[0] + " 和 " + pair[1] + " 合作"})
+	}
 	add(&entry.Entry{ID: "w-own-1", Facet: entry.World, Grain: entry.Class, Text: "用户拆解方案时把每个环节点名到负责人"})
 	add(&entry.Entry{ID: "w-own-2", Facet: entry.World, Grain: entry.Class, Text: "用户把协作与依赖关系明确记录下来"})
 	add(&entry.Entry{ID: "u-low", Facet: entry.Persona, Grain: entry.Action, Text: "用户拒了个面试被告状，回顾读博的时间",
@@ -506,11 +510,23 @@ func TestProfileIsolatesOthersAndMisreads(t *testing.T) {
 	perPerson := map[string]int{}
 	people := 0
 	for _, pt := range world.Points {
-		if e := st.Entries[pt.ID]; e != nil && e.Facet == entry.People {
-			people++
-			perPerson[e.Person]++
-			if perPerson[e.Person] > 1 {
-				t.Errorf("person %s holds %d world lines", e.Person, perPerson[e.Person])
+		e := st.Entries[pt.ID]
+		if e == nil {
+			continue
+		}
+		var names []string
+		switch {
+		case e.Facet == entry.People:
+			names = []string{e.Person}
+		case strings.HasPrefix(e.Subject, "person:"):
+			names = []string{e.Subject, e.Target}
+		default:
+			continue
+		}
+		people++
+		for _, n := range names {
+			if perPerson[n]++; perPerson[n] > 1 {
+				t.Errorf("person %s holds %d world lines: %+v", n, perPerson[n], world.Points)
 			}
 		}
 	}

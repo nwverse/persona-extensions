@@ -661,10 +661,24 @@ func renderProfileV04(st *store.State, ov *overview.State, prof *profile.Summary
 			if entry.IsUnreliableOneOff(e) {
 				sum.ProfileLowConfidenceHits++
 			}
-			if sec.Facet == entry.World && e.Facet == entry.People {
+			if sec.Facet != entry.World {
+				continue
+			}
+			var names []string
+			if e.Facet == entry.People {
+				names = []string{e.Person}
+			} else if strings.HasPrefix(e.Subject, "person:") {
+				names = []string{e.Subject}
+				if strings.HasPrefix(e.Target, "person:") {
+					names = append(names, e.Target)
+				}
+			}
+			if len(names) > 0 {
 				sum.ProfileWorldPeopleLines++
-				perPerson[e.Person]++
-				sum.ProfileWorldMaxPerPerson = max(sum.ProfileWorldMaxPerPerson, perPerson[e.Person])
+			}
+			for _, n := range names {
+				perPerson[n]++
+				sum.ProfileWorldMaxPerPerson = max(sum.ProfileWorldMaxPerPerson, perPerson[n])
 			}
 		}
 	}
@@ -681,7 +695,7 @@ func renderProfileV04(st *store.State, ov *overview.State, prof *profile.Summary
 	fmt.Fprintf(&b, "- 红线审计：AI主管幻觉=%d | 敏感区混入工作规矩/手册=%d（emotion=%d, health=%d）| 敏感区混入他人记录=%d | 低置信/孤立误抽=%d\n",
 		sum.ProfileSupervisorHits, sum.ProfileSensitiveWorkHits, sum.ProfileEmoWorkHits, sum.ProfileHealthWorkHits,
 		sum.ProfileSensitivePeopleHits, sum.ProfileLowConfidenceHits)
-	fmt.Fprintf(&b, "- 人和事分区：人物卡片 %d 条（单人最多 %d 条）\n\n", sum.ProfileWorldPeopleLines, sum.ProfileWorldMaxPerPerson)
+	fmt.Fprintf(&b, "- 人和事分区：他人人物卡片与他人关系 %d 条（单人最多 %d 条）\n\n", sum.ProfileWorldPeopleLines, sum.ProfileWorldMaxPerPerson)
 
 	if prof.Overview != "" {
 		b.WriteString("## 总览\n\n")

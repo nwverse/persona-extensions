@@ -87,6 +87,9 @@ type CandidateItem struct {
 	// never enter the sensitive sections (someone else's health or money is not the user's profile) and fill the world
 	// section only after the user's own lines, one per person, at most MaxWorldPeople.
 	Person string
+	// Others are the other people a world relation line names (its target, when a person): they count towards the
+	// one-line-per-person cap like Person.
+	Others []string
 }
 
 // InputProvider supplies normalized candidate items for building a profile Summary.
@@ -131,12 +134,19 @@ func (EntriesProvider) Items(st *store.State) []CandidateItem {
 			continue
 		}
 		weight := e.Count * max(1, len(e.Kinds))
-		person := ""
+		person, others := "", []string(nil)
 		if e.Facet == entry.People {
 			// The contact's score orders people lines among themselves; they come after the user's own world lines.
 			weight += contactScore[e.Person] / 10
 			if person = strings.TrimSpace(e.Person); person == "" {
 				person = e.ID
+			}
+		} else if e.Facet == entry.World && isPersonRef(e.Subject) {
+			// A relation between other people ("A 和 B 合作", "A 负责 X") is about them, not the user's own world:
+			// it is capped like a people card, counting both ends.
+			person = strings.TrimSpace(e.Subject)
+			if isPersonRef(e.Target) {
+				others = []string{strings.TrimSpace(e.Target)}
 			}
 		}
 		originSpace := e.OriginSpace
@@ -157,6 +167,7 @@ func (EntriesProvider) Items(st *store.State) []CandidateItem {
 			IsFocus:     e.Type == "current_focus",
 			Own:         own(e),
 			Person:      person,
+			Others:      others,
 		})
 	}
 	return out
@@ -296,6 +307,12 @@ func isS3S4Only(e *entry.Entry) bool {
 		}
 	}
 	return true
+}
+
+// isPersonRef says whether a relation end is someone else's contact ("person:<id>"), not the user.
+func isPersonRef(s string) bool {
+	s = strings.TrimSpace(s)
+	return strings.HasPrefix(s, "person:") && s != "person:me"
 }
 
 // ownTypes are the ⑥ types that say what the user is doing or keeping an eye on now (the prompt's keys and the
@@ -607,10 +624,13 @@ func BuildWith(st *store.State, src InputProvider, now time.Time, lang string) *
 				continue
 			}
 			if it.Person != "" {
-				if seenPerson[it.Person] || people >= MaxWorldPeople {
+				names := append([]string{it.Person}, it.Others...)
+				if people >= MaxWorldPeople || slices.ContainsFunc(names, func(n string) bool { return seenPerson[n] }) {
 					continue
 				}
-				seenPerson[it.Person] = true
+				for _, n := range names {
+					seenPerson[n] = true
+				}
 				people++
 			}
 			seen[key] = true
