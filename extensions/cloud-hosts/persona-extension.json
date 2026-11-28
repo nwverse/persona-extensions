@@ -1,0 +1,248 @@
+{
+  "manifest_version": 1,
+  "id": "cloud-hosts",
+  "name": "Cloud Hosts",
+  "version": "0.1.0",
+  "icon": "assets/icon.png",
+  "description": "Puts your rented servers on the computers' page: lists the instances of your AWS (EC2 and Lightsail), Google Cloud and Oracle Cloud accounts and of common VPS panels (Pterodactyl / Pelican, SolusVM, Virtualizor, Proxmox VE, Hetzner Cloud, DigitalOcean, Vultr) and of servers without an API, shows whether each is running, starts, shuts down and restarts them, reads their addresses back, takes snapshots and opens their console. Bring a spot instance the vendor took back up again with one press. Credentials are kept in the hub's sealed secrets and never leave this extension.",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/docs/extensions/cloud-hosts.md",
+  "tags": ["cloud", "servers", "VPS", "AWS", "GCP", "OCI"],
+  "engines": {"persona": ">=202611270000", "extension_protocol": 1},
+  "activation_events": ["on_startup"],
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/cloud-hosts-linux-amd64",
+      "linux-arm64": "bin/cloud-hosts-linux-arm64",
+      "darwin-arm64": "bin/cloud-hosts-darwin-arm64",
+      "darwin-amd64": "bin/cloud-hosts-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "cloud_hosts": [
+      {"id": "aws-ec2", "name": "Amazon EC2", "vendor": "aws"},
+      {"id": "aws-lightsail", "name": "Amazon Lightsail", "vendor": "aws"},
+      {"id": "gcp", "name": "Google Compute Engine", "vendor": "gcp"},
+      {
+        "id": "oci",
+        "name": "Oracle Cloud Infrastructure",
+        "vendor": "oci",
+        "custom_actions": [
+          {"id": "keepalive", "title": "Keep-alive check", "safety": "read"}
+        ]
+      },
+      {"id": "pterodactyl", "name": "Pterodactyl / Pelican Panel", "vendor": "pterodactyl"},
+      {"id": "solusvm", "name": "SolusVM", "vendor": "solusvm"},
+      {"id": "solusvm2", "name": "SolusVM 2", "vendor": "solusvm"},
+      {"id": "virtualizor", "name": "Virtualizor", "vendor": "virtualizor"},
+      {"id": "proxmox", "name": "Proxmox VE", "vendor": "proxmox"},
+      {"id": "hetzner", "name": "Hetzner Cloud", "vendor": "hetzner"},
+      {"id": "digitalocean", "name": "DigitalOcean", "vendor": "digitalocean"},
+      {"id": "vultr", "name": "Vultr", "vendor": "vultr"},
+      {
+        "id": "custom",
+        "name": "Custom hosts",
+        "vendor": "custom",
+        "custom_actions": [
+          {
+            "id": "renew",
+            "title": "Renew",
+            "safety": "confirm",
+            "confirm": "Mark this server as renewed for another term? If you set a renewal webhook for it, that webhook is called."
+          },
+          {"id": "probe", "title": "Check reachability", "safety": "read"}
+        ]
+      }
+    ]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "aws_regions": {
+        "type": "array",
+        "title": "AWS regions (EC2)",
+        "description": "The regions to look for EC2 instances in, such as us-east-1. Every profile of the AWS credentials secret is read in each of them.",
+        "items": {"type": "string", "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]+$", "maxLength": 32},
+        "default": ["us-east-1"],
+        "maxItems": 16,
+        "uniqueItems": true
+      },
+      "aws_lightsail_regions": {
+        "type": "array",
+        "title": "AWS regions (Lightsail)",
+        "description": "The regions to look for Lightsail instances in. Leave empty when you do not use Lightsail.",
+        "items": {"type": "string", "pattern": "^[a-z]{2}(-[a-z]+)+-[0-9]+$", "maxLength": 32},
+        "maxItems": 16,
+        "uniqueItems": true
+      },
+      "gcp_projects": {
+        "type": "array",
+        "title": "Google Cloud projects",
+        "description": "More project ids to read with the first service account key of the secret. Leave empty to read only each key's own project.",
+        "items": {"type": "string", "pattern": "^([a-z0-9][a-z0-9.-]{0,62}:)?[a-z][a-z0-9-]{4,28}[a-z0-9]$"},
+        "maxItems": 16,
+        "uniqueItems": true
+      },
+      "oci_compartments": {
+        "type": "array",
+        "title": "Oracle Cloud compartments",
+        "description": "The OCIDs of the compartments to list instances in. Leave empty to list the tenancy's root compartment.",
+        "items": {"type": "string", "pattern": "^ocid1\\.(compartment|tenancy)\\.", "maxLength": 255},
+        "maxItems": 16,
+        "uniqueItems": true
+      },
+      "pterodactyl_url": {
+        "type": "string",
+        "format": "uri",
+        "title": "Pterodactyl / Pelican panel address",
+        "description": "The address of the panel, such as https://panel.example.com."
+      },
+      "solusvm_url": {
+        "type": "string",
+        "format": "uri",
+        "title": "SolusVM panel address",
+        "description": "The address of a SolusVM 1 panel (its client API), such as https://vps.example.com:5656."
+      },
+      "solusvm_tls_fingerprint": {
+        "type": "string",
+        "title": "SolusVM certificate fingerprint",
+        "description": "Only for a panel with a self-signed certificate: the SHA-256 fingerprint of that certificate. The connection is then accepted for this certificate only.",
+        "maxLength": 128
+      },
+      "solusvm2_url": {
+        "type": "string",
+        "format": "uri",
+        "title": "SolusVM 2 panel address",
+        "description": "The address of a SolusVM 2 panel, such as https://vps.example.com."
+      },
+      "virtualizor_url": {
+        "type": "string",
+        "format": "uri",
+        "title": "Virtualizor panel address",
+        "description": "The address of the Virtualizor end-user panel, with its port, such as https://vps.example.com:4083."
+      },
+      "virtualizor_tls_fingerprint": {
+        "type": "string",
+        "title": "Virtualizor certificate fingerprint",
+        "description": "Only for a panel with a self-signed certificate: the SHA-256 fingerprint of that certificate.",
+        "maxLength": 128
+      },
+      "proxmox_url": {
+        "type": "string",
+        "format": "uri",
+        "title": "Proxmox VE address",
+        "description": "The address of a Proxmox VE node or cluster, with its port, such as https://pve.example.com:8006."
+      },
+      "proxmox_tls_fingerprint": {
+        "type": "string",
+        "title": "Proxmox VE certificate fingerprint",
+        "description": "Only for a node with a self-signed certificate: the SHA-256 fingerprint of that certificate (pvenode cert info shows it).",
+        "maxLength": 128
+      },
+      "custom_webhook_url": {
+        "type": "string",
+        "format": "uri",
+        "title": "Custom hosts: webhook address",
+        "description": "The address your own webhooks live at, such as https://hooks.example.com. A custom host's start, stop and renew paths are added to it."
+      },
+      "custom_hosts": {
+        "type": "array",
+        "title": "Custom hosts",
+        "description": "One server without an API per line, as key=value pairs separated by semicolons: name=free-vps; address=203.0.113.10; probe=tcp:22; start=/free-vps/start; stop=/free-vps/stop; console=https://panel.example.com/vps/1; expires=2027-01-31; term_days=30. See the extension's guide for every key.",
+        "items": {"type": "string", "maxLength": 2000},
+        "maxItems": 64,
+        "uniqueItems": true
+      }
+    }
+  },
+  "secrets": [
+    {
+      "name": "aws_credentials",
+      "title": "AWS credentials",
+      "description": "The text of an AWS credentials file: a [default] profile (and more, each its own account) with aws_access_key_id and aws_secret_access_key. Use an IAM user limited to the EC2 and Lightsail actions this extension needs."
+    },
+    {
+      "name": "gcp_service_account",
+      "title": "Google Cloud service account key",
+      "description": "The JSON key file of a service account with the Compute Instance Admin role. Paste several keys one after another for several projects."
+    },
+    {
+      "name": "oci_config",
+      "title": "Oracle Cloud API configuration",
+      "description": "The text of an OCI configuration file: a [DEFAULT] profile with user, fingerprint, tenancy and region."
+    },
+    {
+      "name": "oci_private_key",
+      "title": "Oracle Cloud API private key",
+      "description": "The PEM private key of the API signing key named by the fingerprint above (unencrypted)."
+    },
+    {
+      "name": "pterodactyl_api_key",
+      "title": "Pterodactyl / Pelican API key",
+      "description": "A client API key from the panel's Account > API Credentials. For several logins, one name=key per line.",
+      "hint": "last4"
+    },
+    {
+      "name": "solusvm_credentials",
+      "title": "SolusVM API key and hash",
+      "description": "From the panel's API page, as key:hash. SolusVM 1 has one pair per server: for several servers, one label=key:hash per line."
+    },
+    {
+      "name": "solusvm2_api_token",
+      "title": "SolusVM 2 API token",
+      "description": "An API token from the SolusVM 2 user area. For several accounts, one name=token per line.",
+      "hint": "last4"
+    },
+    {
+      "name": "virtualizor_credentials",
+      "title": "Virtualizor API key and password",
+      "description": "From the end-user panel's API Credentials, as key:password. For several accounts, one name=key:password per line."
+    },
+    {
+      "name": "proxmox_api_token",
+      "title": "Proxmox VE API token",
+      "description": "An API token as Proxmox shows it once: user@realm!tokenid=secret. Give it only the VM.Audit, VM.PowerMgmt and VM.Snapshot privileges, and VM.GuestAgent.Audit (VM.Monitor before Proxmox VE 9) so the addresses of virtual machines can be read. For several tokens, one name=user@realm!tokenid=secret per line."
+    },
+    {
+      "name": "hetzner_api_token",
+      "title": "Hetzner Cloud API token",
+      "description": "A read and write API token of a Hetzner Cloud project. For several projects, one name=token per line.",
+      "hint": "last4"
+    },
+    {
+      "name": "digitalocean_api_token",
+      "title": "DigitalOcean API token",
+      "description": "A personal access token with the droplet and snapshot scopes. For several accounts, one name=token per line.",
+      "hint": "last4"
+    },
+    {
+      "name": "vultr_api_key",
+      "title": "Vultr API key",
+      "description": "The API key from the Vultr account settings. For several accounts, one name=key per line.",
+      "hint": "last4"
+    },
+    {
+      "name": "custom_webhook_token",
+      "title": "Custom hosts: webhook token",
+      "description": "Optional. At least 8 characters, sent as a Bearer token with every webhook call of the custom hosts.",
+      "hint": "last4"
+    }
+  ],
+  "permissions": {
+    "network": [
+      "*.amazonaws.com",
+      "compute.googleapis.com",
+      "oauth2.googleapis.com",
+      "*.oraclecloud.com",
+      "api.hetzner.cloud",
+      "api.digitalocean.com",
+      "api.vultr.com",
+      "config:pterodactyl_url",
+      "config:solusvm_url",
+      "config:solusvm2_url",
+      "config:virtualizor_url",
+      "config:proxmox_url",
+      "config:custom_webhook_url"
+    ]
+  }
+}

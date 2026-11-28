@@ -5,6 +5,7 @@ package wire
 
 import (
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -256,6 +257,9 @@ type Permissions struct {
 	// Its program is an agent runtime that connects to this machine's node; in a sandbox it gets a socket in its run
 	// directory (PERSONA_RUNTIME_SOCKET) that leads to the node's runtime.sock only. Needs runtime.
 	AgentRuntimes bool `json:"agent_runtimes,omitempty"`
+	// The routine sends its local date and language to this extension and may include its facts and report sections in
+	// the briefing.
+	RoutineFacts bool `json:"routine_facts,omitempty"`
 	// It receives the error and crash reports of the hub and the user's devices, scrubbed (no message text, tokens, user
 	// names, machine names or IP addresses). Needed by contributes.error_reports.
 	ErrorReports bool               `json:"error_reports,omitempty"`
@@ -305,12 +309,15 @@ type Contributes struct {
 	TriageTemplates     []TriageTemplateItem     `json:"triage_templates,omitempty"`
 	AgentFilters        []AgentFilterItem        `json:"agent_filters,omitempty"`
 	Tunnels             []TunnelItem             `json:"tunnels,omitempty"`
+	RoutineFacts        []RoutineFactsItem       `json:"routine_facts,omitempty"`
 	ErrorReports        []ErrorReportsItem       `json:"error_reports,omitempty"`
 	AuthRelay           []AuthRelayItem          `json:"auth_relay,omitempty"`
 	SecretProviders     []SecretProviderItem     `json:"secret_providers,omitempty"`
 	RepositoryProviders []RepositoryProviderItem `json:"repository_providers,omitempty"`
+	TextLookup          []TextLookupItem         `json:"text_lookup,omitempty"`
 	MemorySources       []MemorySourceItem       `json:"memory_sources,omitempty"`
 	DiskOffload         []DiskOffloadItem        `json:"disk_offload,omitempty"`
+	CloudHosts          []CloudHostItem          `json:"cloud_hosts,omitempty"`
 	Messaging           []MessagingItem          `json:"messaging,omitempty"`
 	// Extra keys stay at this object's level on the wire; they cannot replace declared fields.
 	AdditionalProperties map[string]json.RawMessage `json:"-"`
@@ -322,7 +329,7 @@ func (v *Contributes) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	declared := map[string]json.RawMessage{}
-	for _, key := range []string{"connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "track_kinds", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "repository_providers", "memory_sources", "disk_offload", "messaging"} {
+	for _, key := range []string{"connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "track_kinds", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "routine_facts", "error_reports", "auth_relay", "secret_providers", "repository_providers", "text_lookup", "memory_sources", "disk_offload", "cloud_hosts", "messaging"} {
 		if value, ok := extra[key]; ok {
 			declared[key] = value
 			delete(extra, key)
@@ -354,7 +361,7 @@ func (v Contributes) MarshalJSON() ([]byte, error) {
 	}
 	for key, value := range v.AdditionalProperties {
 		switch key {
-		case "connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "track_kinds", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "error_reports", "auth_relay", "secret_providers", "repository_providers", "memory_sources", "disk_offload", "messaging":
+		case "connectors", "voice", "transcription", "speech", "computer", "browser", "iphone", "quota", "usage", "providers", "api", "assistant", "mcp_servers", "ui", "track_kinds", "agent_sources", "channel", "events", "shortcuts", "skills", "prompts", "themes", "looks", "triage_templates", "agent_filters", "tunnels", "routine_facts", "error_reports", "auth_relay", "secret_providers", "repository_providers", "text_lookup", "memory_sources", "disk_offload", "cloud_hosts", "messaging":
 			continue
 		}
 		fields[key] = value
@@ -368,6 +375,8 @@ func (v Contributes) MarshalJSON() ([]byte, error) {
 // 256 KB and 32 skills per extension).
 type SkillItem struct {
 	ID string `json:"id"`
+	// What the extension's contributions list calls it; the id when absent.
+	Title string `json:"title,omitempty"`
 	// The directory, relative to the package (or to the data directory with source data).
 	Dir    string `json:"dir"`
 	Source string `json:"source,omitempty"`
@@ -612,6 +621,23 @@ type RepositoryProviderItem struct {
 	Capabilities []string `json:"capabilities,omitempty"`
 }
 
+// TextLookupContributionID: identifies one text_lookup dictionary within its extension.
+type TextLookupContributionID string
+
+// String returns the ID as it is on the wire.
+func (v TextLookupContributionID) String() string { return string(v) }
+
+// TextLookupItem: A dictionary the apps ask for the meaning of a word the user taps (text_lookup.state,
+// text_lookup.lookup, text_lookup.save, text_lookup.remove). Needs the program to speak the protocol. Only English
+// (languages ["en"]) for now.
+type TextLookupItem struct {
+	ID TextLookupContributionID `json:"id"`
+	// What the dictionary is called, in a few words.
+	Name string `json:"name,omitempty"`
+	// The languages it looks up. Only "en" is accepted for now; omitted means ["en"].
+	Languages []string `json:"languages,omitempty"`
+}
+
 // DiskOffloadItem: A provider that moves items from a computer to storage elsewhere, lists what it already holds and
 // brings items back (docs/server/machine-usage-map.md "Extension point disk_offload"): the disk usage map draws its
 // inventory beside the computer's disk and offers Offload; the manager asks the program (offload.inventory,
@@ -625,6 +651,59 @@ type DiskOffloadItem struct {
 	Kinds []string `json:"kinds,omitempty"`
 	// Items it holds can be brought back (Restore on the map's cloud side).
 	Restore bool `json:"restore,omitempty"`
+}
+
+// CloudHostItem: A provider of cloud instances and hosted servers (docs/design/machine-cloud-ops.md): it lists the
+// instances of the accounts the user set it up with, says how each is, and starts, stops and restarts them, reads
+// their addresses back, snapshots them and opens their console, for the computers' page and the assistant. The
+// manager asks the program (cloud.instances, cloud.instance, cloud.action, cloud.snapshots; cloud.schema.json), a
+// write only after its safety gate passed. The vendor's credentials are the extension's own secrets. Needs the
+// program to speak the protocol.
+type CloudHostItem struct {
+	ID CloudProviderID `json:"id"`
+	// What the computers' page calls the provider (Example Cloud). Not only spaces, no control characters.
+	Name string `json:"name"`
+	// A short lowercase id of whose machines these are (aws, gcp, oci, a panel's own name): the badge beside a bound
+	// computer. Several contributions may share one.
+	Vendor string `json:"vendor"`
+	// Actions of its own beside the standard ones (renew, a keep-alive probe), each id once. An instance offers one by
+	// naming its id in custom_actions.
+	CustomActions []CloudCustomAction `json:"custom_actions,omitempty"`
+}
+
+// CloudCustomAction: A provider's own action on an instance. safety is the gate the hub holds it to; confirm is what
+// the confirmation asks, in a sentence (needed unless safety is read).
+type CloudCustomAction struct {
+	ID CloudCustomActionID `json:"id"`
+	// The button's words (Renew). Not only spaces, no control characters.
+	Title  string      `json:"title"`
+	Safety CloudSafety `json:"safety"`
+	// The confirmation's sentence. Not only spaces, no control characters.
+	Confirm string `json:"confirm,omitempty"`
+}
+
+// CloudSafety: the gate an action on a cloud instance passes before a program hears of it: read (none: it changes
+// nothing), confirm (a person agreed to exactly this action), destructive (a person agreed and acknowledged the
+// instance by its id: it may lose what is unsaved).
+// A value this side does not know keeps its raw string and is not Valid.
+type CloudSafety string
+
+const (
+	CloudSafetyRead        CloudSafety = "read"
+	CloudSafetyConfirm     CloudSafety = "confirm"
+	CloudSafetyDestructive CloudSafety = "destructive"
+)
+
+// CloudSafeties are the values of CloudSafety, in order.
+var CloudSafeties = []CloudSafety{CloudSafetyRead, CloudSafetyConfirm, CloudSafetyDestructive}
+
+// Valid reports whether v is one of CloudSafeties.
+func (v CloudSafety) Valid() bool {
+	switch v {
+	case CloudSafetyRead, CloudSafetyConfirm, CloudSafetyDestructive:
+		return true
+	}
+	return false
 }
 
 // DiskOffloadKind: what a disk_offload provider takes: file, dir (a folder) or app (a macOS app bundle).
@@ -671,6 +750,19 @@ const (
 
 // RepositoryLinkKinds are the values of RepositoryLinkKind, in order.
 var RepositoryLinkKinds = []string{"issue", "pull_request"}
+
+// RoutineContributionID: identifies one routine facts source within its extension.
+type RoutineContributionID string
+
+// String returns the ID as it is on the wire.
+func (v RoutineContributionID) String() string { return string(v) }
+
+// RoutineFactsItem: A source of facts and report sections for a scheduled briefing. Requires an RPC runtime and
+// permissions.routine_facts.
+type RoutineFactsItem struct {
+	ID    RoutineContributionID `json:"id"`
+	Title string                `json:"title"`
+}
 
 // ErrorReportsItem: it is given the error and crash reports of the hub and the user's devices
 // (error_reports.deliver): needs the program to speak the protocol, on_startup and permissions.error_reports.
@@ -778,12 +870,9 @@ type QuotaItem struct {
 }
 
 type UsageItem struct {
-	ID            string   `json:"id"`
-	Name          string   `json:"name"`
-	Hosts         []string `json:"hosts,omitempty"`
-	Direct        bool     `json:"direct,omitempty"`
-	RemoteAddress string   `json:"remote_address,omitempty"`
-	RemoteKey     string   `json:"remote_key,omitempty"`
+	ID    string   `json:"id"`
+	Name  string   `json:"name"`
+	Hosts []string `json:"hosts,omitempty"`
 }
 
 type ProviderItem struct {
@@ -820,7 +909,9 @@ type APIReceipt struct {
 }
 
 type AssistantItem struct {
-	ID           string   `json:"id"`
+	ID string `json:"id"`
+	// What the extension's contributions list calls it; the id when absent.
+	Title        string   `json:"title,omitempty"`
 	Skills       []string `json:"skills,omitempty"`
 	Instructions string   `json:"instructions,omitempty"`
 	Gate         string   `json:"gate,omitempty"`
@@ -832,6 +923,8 @@ type AssistantItem struct {
 type MCPServerItem struct {
 	// The server's name for the assistant; not persona or persona.
 	ID string `json:"id"`
+	// What the extension's contributions list calls it; the id when absent.
+	Title string `json:"title,omitempty"`
 	// Looked up on PATH, then in ~/bin.
 	Command string `json:"command"`
 	// A PERSONA_ variable (PERSONA_ read too) that, when set, replaces the lookup: a path, or "" / 0 / off / false to
@@ -1523,6 +1616,64 @@ type AuthRelayResult struct {
 	Reason string `json:"reason,omitempty"`
 }
 
+// TextLookupStateParams: text_lookup.state's parameters: which contribution to ask for the words the user saved and
+// whether saved words are underlined.
+type TextLookupStateParams struct {
+	Contribution string `json:"contribution"`
+}
+
+// TextLookupStateResult: what text_lookup.state answers. words is capped by the manager at 5000.
+type TextLookupStateResult struct {
+	UnderlineSaved bool     `json:"underline_saved"`
+	Words          []string `json:"words,omitempty"`
+}
+
+// TextLookupLookupParams: text_lookup.lookup's parameters: the word the user tapped, an optional sentence around it,
+// the word's language and the language of the app.
+type TextLookupLookupParams struct {
+	Contribution string `json:"contribution"`
+	Word         string `json:"word"`
+	Context      string `json:"context,omitempty"`
+	Lang         string `json:"lang"`
+	UILang       string `json:"ui_lang"`
+}
+
+// TextLookupSense: one meaning of a looked-up word.
+type TextLookupSense struct {
+	Pos  string `json:"pos,omitempty"`
+	Text string `json:"text"`
+}
+
+// TextLookupLookupResult: what text_lookup.lookup answers: found is false when the dictionary has no entry.
+type TextLookupLookupResult struct {
+	Found    bool              `json:"found"`
+	Word     string            `json:"word"`
+	Lemma    string            `json:"lemma,omitempty"`
+	Phonetic string            `json:"phonetic,omitempty"`
+	Senses   []TextLookupSense `json:"senses,omitempty"`
+	Saved    bool              `json:"saved"`
+}
+
+// TextLookupSaveParams: text_lookup.save's parameters: the word to remember, an optional sentence around it and where
+// the user saved it from.
+type TextLookupSaveParams struct {
+	Contribution string `json:"contribution"`
+	Word         string `json:"word"`
+	Context      string `json:"context,omitempty"`
+	Source       string `json:"source,omitempty"`
+}
+
+// TextLookupRemoveParams: text_lookup.remove's parameters: the saved word to forget.
+type TextLookupRemoveParams struct {
+	Contribution string `json:"contribution"`
+	Word         string `json:"word"`
+}
+
+// TextLookupSavedResult: what text_lookup.save and text_lookup.remove answer: whether the word is saved afterwards.
+type TextLookupSavedResult struct {
+	Saved bool `json:"saved"`
+}
+
 // SecretPurpose: what a secret value is resolved for: kind extension (an extension's secret, id its id), launcher (a
 // launcher's or model provider's key, id its name, machine the computer it goes to) or agent_run (handed to one Agent
 // run after the user approved it on the phone, id the variable's name, machine and session the Agent's).
@@ -1967,7 +2118,12 @@ type Component struct {
 	Load      *Action       `json:"load,omitempty"`
 	// An https link to lines of this file on its site, {start} and {end} standing for the lines
 	// (…/blob/<sha>/a.go#L{start}-L{end}).
-	LineURL   string   `json:"line_url,omitempty"`
+	LineURL string `json:"line_url,omitempty"`
+	// Go to definition (UI version 13): a name in the code chosen to follow it (⌘/Ctrl-click or ⌘/Ctrl+B on it; Alt+F7
+	// for its usages) calls ui.action with action and values {path, line, column (1-based, in characters), word, intent:
+	// definition or references}; ⌘[ (Ctrl+Alt+← elsewhere) calls it with {path, intent: back}. An older app leaves it
+	// out.
+	Navigate  *Action  `json:"navigate,omitempty"`
 	OldPath   string   `json:"old_path,omitempty"`
 	Status    string   `json:"status,omitempty"`
 	Additions int      `json:"additions,omitempty"`
@@ -2713,8 +2869,8 @@ type Action struct {
 	// Assistant only: send this text back to the same conversation. The hub reads it from the saved view, not from the
 	// client.
 	Reply string `json:"reply,omitempty"`
-	// Assistant only: an https URL or a validated persona/persona session, task, kb or file target, opened inside the
-	// app.
+	// Assistant only, except that a full extension page may open persona://session/<machine>/<session> or
+	// persona://task/<id>: an https URL or a validated persona session, task, kb or file target, opened inside the app.
 	Open string `json:"open,omitempty"`
 	// Assistant only: return one page within the card.
 	Pop bool `json:"pop,omitempty"`
@@ -3833,6 +3989,26 @@ const (
 // ConnectorGroupTools are the values of ConnectorGroupTool, in order.
 var ConnectorGroupTools = []string{"messages_before", "messages_around", "search"}
 
+// ConnectorApprovalMode: how the hub's write gate authorized actions.do besides an ordinary phone card or
+// connector_gate allow rule: auto_confirm means the hub accepted the short-lived credential actions.describe returned
+// under an explicit hub-side guarded auto-confirm policy.
+const (
+	ConnectorApprovalModeAutoConfirm = "auto_confirm"
+)
+
+// ConnectorApprovalModes are the values of ConnectorApprovalMode, in order.
+var ConnectorApprovalModes = []string{"auto_confirm"}
+
+// ConnectorAutoConfirm: short-lived, single-use credential returned from actions.describe when the hub negotiated
+// approval_protocol and the extension's own guard checks passed. Bound by the extension to the exact action and raw
+// args JSON; ignored unless the hub also authorizes guarded auto-confirm for the call.
+type ConnectorAutoConfirm struct {
+	// Opaque single-use approval token generated by the extension; never logged or persisted by the hub.
+	Token string `json:"token"`
+	// RFC 3339 timestamp after which the token is no longer valid.
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 // Empty: an answer with nothing in it: {}.
 type Empty struct {
 }
@@ -3917,6 +4093,10 @@ type ConnectorCallParams struct {
 	Contribution string          `json:"contribution"`
 	Name         string          `json:"name"`
 	Args         json.RawMessage `json:"args,omitempty"`
+	// actions.describe only (tools.call never sets and ignores it): the guarded auto-confirm protocol the hub is willing
+	// to accept for this call when a hub-side policy matches (for example guarded-auto-confirm-v1). Absent when no
+	// policy applies or on older hubs.
+	ApprovalProtocol string `json:"approval_protocol,omitempty"`
 	// The calling conversation's track (#13246): its slug, main for the main track; absent when the hub cannot tell.
 	Track string `json:"track,omitempty"`
 	// The track's kind; absent when not known (the main track).
@@ -3968,6 +4148,9 @@ type ConnectorAction struct {
 type ConnectorDescribeResult struct {
 	Action  ConnectorAction `json:"action"`
 	Summary string          `json:"summary"`
+	// Optional short-lived single-use credential returned only when approval_protocol was negotiated and the extension's
+	// own guard checks passed. Ignored unless the hub also authorizes guarded auto-confirm for this call.
+	AutoConfirm *ConnectorAutoConfirm `json:"auto_confirm,omitempty"`
 }
 
 // ConnectorDoParams: actions.do, only once the hub's gate let the write through: the very args of the card, and the
@@ -3977,6 +4160,12 @@ type ConnectorDoParams struct {
 	Name         string          `json:"name"`
 	Args         json.RawMessage `json:"args,omitempty"`
 	RequestID    string          `json:"request_id"`
+	// Present together with approval_token only when the hub gate let the write through via guarded auto-confirm; absent
+	// for phone-card approvals, connector_gate allow rules and user-initiated writes.
+	ApprovalMode string `json:"approval_mode,omitempty"`
+	// The exact opaque token returned by actions.describe in auto_confirm.token, sent together with approval_mode only
+	// when the hub gate approved guarded auto-confirm.
+	ApprovalToken string `json:"approval_token,omitempty"`
 	// The calling conversation's track (#13246): its slug, main for the main track; absent when the hub cannot tell.
 	Track string `json:"track,omitempty"`
 	// The track's kind; absent when not known (the main track).
@@ -4279,8 +4468,8 @@ type ConnectorThingGroup struct {
 	New   []string `json:"new"`
 }
 
-// ConnectorThingParent: what the thing grew out of: kind inbox (an item's id), todo (a todo's id) or session
-// (<machine>/<session>).
+// ConnectorThingParent: what the thing grew out of: kind inbox (an item's id), todo (a todo's id), session (a coding
+// Agent's <machine>/<session>) or agent (a personal Agent's <source>:<sessionKey>).
 type ConnectorThingParent struct {
 	Kind string `json:"kind"`
 	ID   string `json:"id"`
@@ -5034,6 +5223,59 @@ type ChannelEditParams struct {
 	Text         string `json:"text"`
 }
 
+// KBImportCheckpointParams: the host selects the provider, source, account and chat for this import.
+type KBImportCheckpointParams struct {
+}
+
+// KBImportState: the host importer’s committed state for the selected chat.
+// A value this side does not know keeps its raw string and is not Valid.
+type KBImportState string
+
+const (
+	KBImportStatePending    KBImportState = "pending"
+	KBImportStateRunning    KBImportState = "running"
+	KBImportStateDone       KBImportState = "done"
+	KBImportStatePaused     KBImportState = "paused"
+	KBImportStateError      KBImportState = "error"
+	KBImportStateUnreadable KBImportState = "unreadable"
+)
+
+// KBImportStates are the values of KBImportState, in order.
+var KBImportStates = []KBImportState{KBImportStatePending, KBImportStateRunning, KBImportStateDone, KBImportStatePaused, KBImportStateError, KBImportStateUnreadable}
+
+// Valid reports whether v is one of KBImportStates.
+func (v KBImportState) Valid() bool {
+	switch v {
+	case KBImportStatePending, KBImportStateRunning, KBImportStateDone, KBImportStatePaused, KBImportStateError, KBImportStateUnreadable:
+		return true
+	}
+	return false
+}
+
+type KBImportCheckpointResult struct {
+	State    KBImportState `json:"state"`
+	Approval string        `json:"approval"`
+	Read     int           `json:"read"`
+	Written  int           `json:"written"`
+}
+
+type KBSentMarkersParams struct {
+	Day      string `json:"day"`
+	Approval string `json:"approval"`
+	After    int    `json:"after,omitempty"`
+}
+
+type KBSentMarker struct {
+	N          int       `json:"n"`
+	SentBy     string    `json:"sent_by"`
+	RecalledAt time.Time `json:"recalled_at,omitzero"`
+}
+
+type KBSentMarkersResult struct {
+	Markers   []KBSentMarker `json:"markers"`
+	NextAfter int            `json:"next_after,omitempty"`
+}
+
 // Values of KBKind.
 const (
 	KBKindProjects   = "projects"
@@ -5052,17 +5294,19 @@ var KBKinds = []string{"projects", "chats", "people", "docs", "meetings", "event
 // KBErrorCode: error.code of a knowledge-base call besides permission_denied (data {scope}, the one missing):
 // invalid_params, not_found, assistant_offline (the manager is away), kb_unavailable (not open yet), conflict
 // (kb.update touches fields the user or another extension holds; data KBConflict, nothing was written).
-// assistant_offline and kb_unavailable are worth trying again; conflict is for the user to decide.
+// assistant_offline and kb_unavailable are worth trying again; conflict is for the user to decide. deleted:
+// kb.put_recording of a recording the user deleted, which is not made again.
 const (
 	KBErrorCodeInvalidParams    = "invalid_params"
 	KBErrorCodeNotFound         = "not_found"
 	KBErrorCodeAssistantOffline = "assistant_offline"
 	KBErrorCodeKbUnavailable    = "kb_unavailable"
 	KBErrorCodeConflict         = "conflict"
+	KBErrorCodeDeleted          = "deleted"
 )
 
 // KBErrorCodes are the values of KBErrorCode, in order.
-var KBErrorCodes = []string{"invalid_params", "not_found", "assistant_offline", "kb_unavailable", "conflict"}
+var KBErrorCodes = []string{"invalid_params", "not_found", "assistant_offline", "kb_unavailable", "conflict", "deleted"}
 
 // KBConflict: the data of a conflict error: field → who holds it (user, or ext:<extension id>); a linked entity's
 // field is <kind>/<id>.<field>.
@@ -5462,6 +5706,142 @@ type KBUpdateResult struct {
 	Ignored []KBIgnoredField `json:"ignored,omitempty"`
 }
 
+// KBRecordingID: A recording's UUID, picked by the extension so a retry lands on the same recording.
+type KBRecordingID string
+
+// String returns the ID as it is on the wire.
+func (v KBRecordingID) String() string { return string(v) }
+
+// KBMinutesActionID: an action item's id, picked by the extension and stable across writes.
+type KBMinutesActionID string
+
+// String returns the ID as it is on the wire.
+func (v KBMinutesActionID) String() string { return string(v) }
+
+// KBTodoID: A to-do's id, set by the hub when the user makes a to-do of an action item.
+type KBTodoID string
+
+// String returns the ID as it is on the wire.
+func (v KBTodoID) String() string { return string(v) }
+
+// KBRecordingMeetingKind: whether a recording's meeting is a calendar item (events) or an imported meeting
+// (meetings).
+// A value this side does not know keeps its raw string and is not Valid.
+type KBRecordingMeetingKind string
+
+const (
+	KBRecordingMeetingKindEvents   KBRecordingMeetingKind = "events"
+	KBRecordingMeetingKindMeetings KBRecordingMeetingKind = "meetings"
+)
+
+// KBRecordingMeetingKinds are the values of KBRecordingMeetingKind, in order.
+var KBRecordingMeetingKinds = []KBRecordingMeetingKind{KBRecordingMeetingKindEvents, KBRecordingMeetingKindMeetings}
+
+// Valid reports whether v is one of KBRecordingMeetingKinds.
+func (v KBRecordingMeetingKind) Valid() bool {
+	switch v {
+	case KBRecordingMeetingKindEvents, KBRecordingMeetingKindMeetings:
+		return true
+	}
+	return false
+}
+
+// KBRecordingMeetingID: A calendar item's or imported meeting's id in the knowledge base.
+type KBRecordingMeetingID string
+
+// String returns the ID as it is on the wire.
+func (v KBRecordingMeetingID) String() string { return string(v) }
+
+// KBPutRecordingParams: kb.put_recording (kb.write): create or update the extension's own recording with its minutes
+// and, optionally, its transcript (docs/extensions/extensions.md "Writing recordings and minutes"). It is the
+// extension's: no other extension may write it, and no extension a recording the phone uploaded (permission_denied).
+// The same params again change nothing; a recording the user deleted is not made again (deleted). A recording with
+// minutes is kept past recording_days, its minutes until minutes_days.
+type KBPutRecordingParams struct {
+	// A UUID the extension picks; one derived from its own source id makes a retry land on the same recording.
+	ID    KBRecordingID `json:"id"`
+	Title string        `json:"title,omitempty"`
+	// An RFC 3339 time.
+	StartedAt time.Time `json:"started_at"`
+	// An RFC 3339 time, not before started_at.
+	EndedAt time.Time `json:"ended_at,omitzero"`
+	// An i18n code (zh-Hans, en, ja).
+	Language string              `json:"language,omitempty"`
+	Minutes  *KBRecordingMinutes `json:"minutes,omitempty"`
+	// Optional; n, source and echo are the hub's and are dropped. Without minutes, the hub makes minutes of it when the
+	// recording module is on.
+	Transcript []KBRecordingSegment `json:"transcript,omitempty"`
+	// Slugs of existing projects to link it to; a later write never removes a link.
+	Projects []string            `json:"projects,omitempty"`
+	Meeting  *KBRecordingMeeting `json:"meeting,omitempty"`
+}
+
+// KBRecordingMinutes: the minutes the extension wrote, stored as minutes.json and minutes.md. The hub sets version,
+// revision, generated_at, when, start and end. Minutes or a transcript is required.
+type KBRecordingMinutes struct {
+	Title     string            `json:"title,omitempty"`
+	Where     string            `json:"where,omitempty"`
+	Attendees []string          `json:"attendees,omitempty"`
+	Points    []KBMinutesPoint  `json:"points,omitempty"`
+	Decisions []KBMinutesItem   `json:"decisions,omitempty"`
+	Actions   []KBMinutesAction `json:"actions,omitempty"`
+	Open      []KBMinutesItem   `json:"open,omitempty"`
+	// An i18n code: what the minutes are written in.
+	Language string `json:"language,omitempty"`
+	// The minutes as Markdown: minutes.md, what searches and kb.get read. Required, not blank.
+	Markdown string `json:"markdown"`
+}
+
+// KBMinutesItem: A decision or an open question of the minutes.
+type KBMinutesItem struct {
+	Text string `json:"text"`
+	// Seconds from the recording's start.
+	At    float64 `json:"at"`
+	Photo int     `json:"photo,omitempty"`
+}
+
+// KBMinutesPoint: A point discussed; who only when the source names the person.
+type KBMinutesPoint struct {
+	Text string `json:"text"`
+	// Seconds from the recording's start.
+	At    float64 `json:"at"`
+	Photo int     `json:"photo,omitempty"`
+	Who   string  `json:"who,omitempty"`
+}
+
+// KBMinutesAction: an action item. id is the extension's, stable across writes (at most 64 characters): a to-do the
+// user made of it stays on it.
+type KBMinutesAction struct {
+	ID   KBMinutesActionID `json:"id"`
+	Who  string            `json:"who,omitempty"`
+	What string            `json:"what"`
+	// The deadline as said.
+	By string `json:"by,omitempty"`
+	// YYYY-MM-DD, when by is one date.
+	DueDate string `json:"due_date,omitempty"`
+	// Seconds from the recording's start.
+	At    float64 `json:"at"`
+	Photo int     `json:"photo,omitempty"`
+	// The hub's: the to-do made of it.
+	TodoID KBTodoID `json:"todo_id,omitempty"`
+}
+
+// KBRecordingMeeting: the calendar item (events) or imported meeting (meetings) the recording was; it must exist.
+type KBRecordingMeeting struct {
+	Kind KBRecordingMeetingKind `json:"kind"`
+	ID   KBRecordingMeetingID   `json:"id"`
+}
+
+type KBPutRecordingResult struct {
+	ID KBRecordingID `json:"id"`
+	// The hub's revision of the recording: 1 when created, one more for each write that changed it.
+	Revision int  `json:"revision"`
+	Created  bool `json:"created,omitempty"`
+	// The write was the same as the last one; nothing was written.
+	Unchanged      bool `json:"unchanged,omitempty"`
+	MinutesVersion int  `json:"minutes_version,omitempty"`
+}
+
 // KBOwnerParams: kb.owner takes nothing.
 type KBOwnerParams struct {
 }
@@ -5737,19 +6117,25 @@ type ModelRefusal struct {
 }
 
 // AssistantErrorCode: error.code of the assistant calls besides permission_denied (data {scope: "assistant.read"}, or
-// "assistant.memory.read" for assistant.memory, or "assistant.entries.read" for assistant.entries.list):
-// invalid_params; not_found (assistant.messages: no such conversation in the assistant's own space);
-// assistant_offline (the manager is away: try again); machine_offline (the assistant's computer is not connected or
-// not set up: try again).
+// "assistant.memory.read" for assistant.memory, or "assistant.entries.read" for assistant.entries.list, or
+// "assistant.events" for assistant.event): invalid_params; not_found (assistant.messages: no such conversation in the
+// assistant's own space); assistant_offline (the manager is away: try again); machine_offline (the assistant's
+// computer is not connected or not set up: try again); assistant.event only: no_main_conversation (the user has no
+// main conversation: nothing was started or changed, do not retry until they have one); rate_limited (data
+// {retry_after} in seconds: too many events from this extension); queue_full (this extension already has the most
+// events waiting behind a running turn: try again later).
 const (
-	AssistantErrorCodeInvalidParams    = "invalid_params"
-	AssistantErrorCodeNotFound         = "not_found"
-	AssistantErrorCodeAssistantOffline = "assistant_offline"
-	AssistantErrorCodeMachineOffline   = "machine_offline"
+	AssistantErrorCodeInvalidParams      = "invalid_params"
+	AssistantErrorCodeNotFound           = "not_found"
+	AssistantErrorCodeAssistantOffline   = "assistant_offline"
+	AssistantErrorCodeMachineOffline     = "machine_offline"
+	AssistantErrorCodeNoMainConversation = "no_main_conversation"
+	AssistantErrorCodeRateLimited        = "rate_limited"
+	AssistantErrorCodeQueueFull          = "queue_full"
 )
 
 // AssistantErrorCodes are the values of AssistantErrorCode, in order.
-var AssistantErrorCodes = []string{"invalid_params", "not_found", "assistant_offline", "machine_offline"}
+var AssistantErrorCodes = []string{"invalid_params", "not_found", "assistant_offline", "machine_offline", "no_main_conversation", "rate_limited", "queue_full"}
 
 // AssistantConversationsParams: assistant.conversations (assistant.read): the conversations last active at or after
 // since, newest first.
@@ -5937,6 +6323,118 @@ type AssistantEntriesChangedEvent struct {
 	ID       string `json:"id"`
 	RecordID string `json:"record_id"`
 	Status   string `json:"status"`
+}
+
+// AssistantEventSeverity: how much the user should care. info: tell them only if it matters to what they are doing;
+// warning: they should hear about it; critical: they need to know now.
+const (
+	AssistantEventSeverityInfo     = "info"
+	AssistantEventSeverityWarning  = "warning"
+	AssistantEventSeverityCritical = "critical"
+)
+
+// AssistantEventSeverities are the values of AssistantEventSeverity, in order.
+var AssistantEventSeverities = []string{"info", "warning", "critical"}
+
+// AssistantEventState: where the thing an event's key names is now, in the extension's own words (firing, resolved,
+// ...): a label each extension chooses.
+// It is free text, not a closed set of values.
+type AssistantEventState string
+
+// AssistantEventReplace: whether an event takes the place of one of the extension's with the same key still waiting
+// behind a running turn: absent and true replace, false keeps the earlier one as its own message.
+// It has three values: AssistantEventReplaceDefault (absent from the JSON), AssistantEventReplaceTrue and
+// AssistantEventReplaceFalse.
+type AssistantEventReplace uint8
+
+const (
+	// AssistantEventReplaceDefault: absent.
+	AssistantEventReplaceDefault AssistantEventReplace = iota
+	// AssistantEventReplaceTrue: true.
+	AssistantEventReplaceTrue
+	// AssistantEventReplaceFalse: false.
+	AssistantEventReplaceFalse
+)
+
+// IsZero reports AssistantEventReplaceDefault, which omitzero leaves out of the JSON.
+func (v AssistantEventReplace) IsZero() bool { return v == AssistantEventReplaceDefault }
+
+// Or is the boolean v says, or absent when v is the default.
+func (v AssistantEventReplace) Or(absent bool) bool {
+	switch v {
+	case AssistantEventReplaceTrue:
+		return true
+	case AssistantEventReplaceFalse:
+		return false
+	}
+	return absent
+}
+
+// MarshalJSON writes true or false; AssistantEventReplaceDefault is null (a field tagged omitzero leaves it out
+// instead).
+func (v AssistantEventReplace) MarshalJSON() ([]byte, error) {
+	switch v {
+	case AssistantEventReplaceDefault:
+		return []byte("null"), nil
+	case AssistantEventReplaceTrue:
+		return []byte("true"), nil
+	case AssistantEventReplaceFalse:
+		return []byte("false"), nil
+	}
+	return nil, errors.New("AssistantEventReplace: not one of its three values")
+}
+
+// UnmarshalJSON reads true or false, and null as absent; anything else fails.
+func (v *AssistantEventReplace) UnmarshalJSON(data []byte) error {
+	if string(data) == "null" {
+		*v = AssistantEventReplaceDefault
+		return nil
+	}
+	var b bool
+	if err := json.Unmarshal(data, &b); err != nil {
+		return err
+	}
+	*v = AssistantEventReplaceFalse
+	if b {
+		*v = AssistantEventReplaceTrue
+	}
+	return nil
+}
+
+// AssistantEventParams: assistant.event (assistant.events): one event for the assistant's main conversation. The
+// assistant gets it as something an extension observed, never as the user's words, and decides what to tell the user.
+// An event with the same key as one of this extension's still waiting behind a running turn replaces it, unless
+// replace is false. Lengths are in characters.
+type AssistantEventParams struct {
+	// What the event is about (one monitored thing). The same extension and key replace an event not yet delivered.
+	Key      string `json:"key"`
+	Severity string `json:"severity,omitempty"`
+	// One line saying what happened.
+	Title string `json:"title"`
+	// The details.
+	Body string `json:"body,omitempty"`
+	// What the extension suggests be done about it: a suggestion for the assistant to weigh, not an order.
+	ActionHint string `json:"action_hint,omitempty"`
+	// Where the thing the key names is now, in the extension's words (firing, resolved, ...).
+	State AssistantEventState `json:"state,omitempty"`
+	// false keeps an earlier event with the same key as its own message instead of replacing it. Absent is true.
+	Replace AssistantEventReplace `json:"replace,omitzero"`
+}
+
+// AssistantEventDelivery: what happened to the event. delivered: sent into the idle main conversation now. queued:
+// the conversation is running (or not reachable just now), so it goes in when its turn ends. replaced: it took the
+// place of an earlier event with the same key that was still queued.
+const (
+	AssistantEventDeliveryDelivered = "delivered"
+	AssistantEventDeliveryQueued    = "queued"
+	AssistantEventDeliveryReplaced  = "replaced"
+)
+
+// AssistantEventDeliveries are the values of AssistantEventDelivery, in order.
+var AssistantEventDeliveries = []string{"delivered", "queued", "replaced"}
+
+type AssistantEventResult struct {
+	Delivery string `json:"delivery"`
 }
 
 // AssistantDataStatusParams: assistant.data_status takes no parameters.
@@ -7223,6 +7721,544 @@ type OffloadError struct {
 	Items  []OffloadRunItem `json:"items,omitempty"`
 }
 
+// CloudAccountID: A provider's own name for a set of credentials, a project or a panel login: opaque to the hub,
+// never a secret.
+type CloudAccountID string
+
+// String returns the ID as it is on the wire.
+func (v CloudAccountID) String() string { return string(v) }
+
+// CloudInstanceID: an instance's id at its vendor: opaque to the hub, kept as given.
+type CloudInstanceID string
+
+// String returns the ID as it is on the wire.
+func (v CloudInstanceID) String() string { return string(v) }
+
+// CloudSnapshotID: A snapshot's id at its vendor.
+type CloudSnapshotID string
+
+// String returns the ID as it is on the wire.
+func (v CloudSnapshotID) String() string { return string(v) }
+
+// CloudRequestID: one request to act, the same for its retries.
+type CloudRequestID string
+
+// String returns the ID as it is on the wire.
+func (v CloudRequestID) String() string { return string(v) }
+
+// CloudMachineID: A computer's id at the hub.
+type CloudMachineID string
+
+// String returns the ID as it is on the wire.
+func (v CloudMachineID) String() string { return string(v) }
+
+// CloudProviderID: A cloud_hosts contribution's id (manifest.schema.json ID).
+type CloudProviderID string
+
+// String returns the ID as it is on the wire.
+func (v CloudProviderID) String() string { return string(v) }
+
+// CloudCustomActionID: A custom action's id, as the manifest declares it (manifest.schema.json ID).
+type CloudCustomActionID string
+
+// String returns the ID as it is on the wire.
+func (v CloudCustomActionID) String() string { return string(v) }
+
+// CloudMessage: one line for people, in the reader's language: why something failed or was refused.
+// It is free text, not a closed set of values.
+type CloudMessage string
+
+// CloudErrorCode: error.code a provider answers besides the base ErrorCode: not_found (no such instance or account,
+// or the credentials cannot see it), not_signed_in (credentials are missing, expired or refused: the user sets them
+// in the extension's settings), unsupported (this instance has no such action), invalid_state (the action does not
+// apply to the state the instance is in, such as start on a running one), rate_limited (the vendor's API asks to slow
+// down), capacity (the vendor has no capacity or quota for it now, such as a spot instance that cannot be placed),
+// refused (the vendor said no: say why in message), failed (anything else, say why in message). The manager shows the
+// message on one line, clipped.
+// A value this side does not know keeps its raw string and is not Valid.
+type CloudErrorCode string
+
+const (
+	CloudErrorCodeNotFound     CloudErrorCode = "not_found"
+	CloudErrorCodeNotSignedIn  CloudErrorCode = "not_signed_in"
+	CloudErrorCodeUnsupported  CloudErrorCode = "unsupported"
+	CloudErrorCodeInvalidState CloudErrorCode = "invalid_state"
+	CloudErrorCodeRateLimited  CloudErrorCode = "rate_limited"
+	CloudErrorCodeCapacity     CloudErrorCode = "capacity"
+	CloudErrorCodeRefused      CloudErrorCode = "refused"
+	CloudErrorCodeFailed       CloudErrorCode = "failed"
+)
+
+// CloudErrorCodes are the values of CloudErrorCode, in order.
+var CloudErrorCodes = []CloudErrorCode{CloudErrorCodeNotFound, CloudErrorCodeNotSignedIn, CloudErrorCodeUnsupported, CloudErrorCodeInvalidState, CloudErrorCodeRateLimited, CloudErrorCodeCapacity, CloudErrorCodeRefused, CloudErrorCodeFailed}
+
+// Valid reports whether v is one of CloudErrorCodes.
+func (v CloudErrorCode) Valid() bool {
+	switch v {
+	case CloudErrorCodeNotFound, CloudErrorCodeNotSignedIn, CloudErrorCodeUnsupported, CloudErrorCodeInvalidState, CloudErrorCodeRateLimited, CloudErrorCodeCapacity, CloudErrorCodeRefused, CloudErrorCodeFailed:
+		return true
+	}
+	return false
+}
+
+// CloudInstanceState: an instance's state in the words every vendor's are mapped to: running; stopped (off, and can
+// be started); starting; stopping; rebooting; preempted (a spot instance the vendor took back: off, and start may
+// bring it back); terminated (gone or being deleted: nothing acts on it); unknown (the provider cannot say).
+// A value this side does not know keeps its raw string and is not Valid.
+type CloudInstanceState string
+
+const (
+	CloudInstanceStateRunning    CloudInstanceState = "running"
+	CloudInstanceStateStopped    CloudInstanceState = "stopped"
+	CloudInstanceStateStarting   CloudInstanceState = "starting"
+	CloudInstanceStateStopping   CloudInstanceState = "stopping"
+	CloudInstanceStateRebooting  CloudInstanceState = "rebooting"
+	CloudInstanceStatePreempted  CloudInstanceState = "preempted"
+	CloudInstanceStateTerminated CloudInstanceState = "terminated"
+	CloudInstanceStateUnknown    CloudInstanceState = "unknown"
+)
+
+// CloudInstanceStates are the values of CloudInstanceState, in order.
+var CloudInstanceStates = []CloudInstanceState{CloudInstanceStateRunning, CloudInstanceStateStopped, CloudInstanceStateStarting, CloudInstanceStateStopping, CloudInstanceStateRebooting, CloudInstanceStatePreempted, CloudInstanceStateTerminated, CloudInstanceStateUnknown}
+
+// Valid reports whether v is one of CloudInstanceStates.
+func (v CloudInstanceState) Valid() bool {
+	switch v {
+	case CloudInstanceStateRunning, CloudInstanceStateStopped, CloudInstanceStateStarting, CloudInstanceStateStopping, CloudInstanceStateRebooting, CloudInstanceStatePreempted, CloudInstanceStateTerminated, CloudInstanceStateUnknown:
+		return true
+	}
+	return false
+}
+
+// CloudActionKind: what can be asked of an instance. Power: start, stop (a graceful shutdown), reboot (a graceful
+// restart), hard_reset (reset without shutting the system down), force_stop (power off without shutting it down).
+// Operations: sync_ip (read its addresses back from the vendor now), snapshot_list (its snapshots, asked with
+// cloud.snapshots, never cloud.action), snapshot_create, console (a link to its page or console at the vendor),
+// custom (one of the manifest's custom_actions, named by its id). The safety level of each is the hub's
+// (manifest.schema.json CloudSafety): sync_ip, snapshot_list and console read; start, stop, reboot and
+// snapshot_create confirm; hard_reset and force_stop destructive; a custom action's is the manifest's.
+// A value this side does not know keeps its raw string and is not Valid.
+type CloudActionKind string
+
+const (
+	CloudActionKindStart          CloudActionKind = "start"
+	CloudActionKindStop           CloudActionKind = "stop"
+	CloudActionKindReboot         CloudActionKind = "reboot"
+	CloudActionKindHardReset      CloudActionKind = "hard_reset"
+	CloudActionKindForceStop      CloudActionKind = "force_stop"
+	CloudActionKindSyncIp         CloudActionKind = "sync_ip"
+	CloudActionKindSnapshotList   CloudActionKind = "snapshot_list"
+	CloudActionKindSnapshotCreate CloudActionKind = "snapshot_create"
+	CloudActionKindConsole        CloudActionKind = "console"
+	CloudActionKindCustom         CloudActionKind = "custom"
+)
+
+// CloudActionKinds are the values of CloudActionKind, in order.
+var CloudActionKinds = []CloudActionKind{CloudActionKindStart, CloudActionKindStop, CloudActionKindReboot, CloudActionKindHardReset, CloudActionKindForceStop, CloudActionKindSyncIp, CloudActionKindSnapshotList, CloudActionKindSnapshotCreate, CloudActionKindConsole, CloudActionKindCustom}
+
+// Valid reports whether v is one of CloudActionKinds.
+func (v CloudActionKind) Valid() bool {
+	switch v {
+	case CloudActionKindStart, CloudActionKindStop, CloudActionKindReboot, CloudActionKindHardReset, CloudActionKindForceStop, CloudActionKindSyncIp, CloudActionKindSnapshotList, CloudActionKindSnapshotCreate, CloudActionKindConsole, CloudActionKindCustom:
+		return true
+	}
+	return false
+}
+
+// CloudActionStatus: cloud.action's answer: done (it has taken effect: instance, snapshot or url say what is there
+// now), accepted (the vendor took the request and the instance is on its way: read its state to follow), refused
+// (nothing happened; message says why).
+// A value this side does not know keeps its raw string and is not Valid.
+type CloudActionStatus string
+
+const (
+	CloudActionStatusDone     CloudActionStatus = "done"
+	CloudActionStatusAccepted CloudActionStatus = "accepted"
+	CloudActionStatusRefused  CloudActionStatus = "refused"
+)
+
+// CloudActionStatuses are the values of CloudActionStatus, in order.
+var CloudActionStatuses = []CloudActionStatus{CloudActionStatusDone, CloudActionStatusAccepted, CloudActionStatusRefused}
+
+// Valid reports whether v is one of CloudActionStatuses.
+func (v CloudActionStatus) Valid() bool {
+	switch v {
+	case CloudActionStatusDone, CloudActionStatusAccepted, CloudActionStatusRefused:
+		return true
+	}
+	return false
+}
+
+// CloudSnapshotState: A snapshot: creating, ready, failed or deleting.
+// A value this side does not know keeps its raw string and is not Valid.
+type CloudSnapshotState string
+
+const (
+	CloudSnapshotStateCreating CloudSnapshotState = "creating"
+	CloudSnapshotStateReady    CloudSnapshotState = "ready"
+	CloudSnapshotStateFailed   CloudSnapshotState = "failed"
+	CloudSnapshotStateDeleting CloudSnapshotState = "deleting"
+)
+
+// CloudSnapshotStates are the values of CloudSnapshotState, in order.
+var CloudSnapshotStates = []CloudSnapshotState{CloudSnapshotStateCreating, CloudSnapshotStateReady, CloudSnapshotStateFailed, CloudSnapshotStateDeleting}
+
+// Valid reports whether v is one of CloudSnapshotStates.
+func (v CloudSnapshotState) Valid() bool {
+	switch v {
+	case CloudSnapshotStateCreating, CloudSnapshotStateReady, CloudSnapshotStateFailed, CloudSnapshotStateDeleting:
+		return true
+	}
+	return false
+}
+
+// CloudInstanceRef: one instance of a provider: the account that holds it (the provider's own name for a set of
+// credentials, a project or a panel login, never a secret) and its id at the vendor. Both are opaque to the hub and
+// kept as given.
+type CloudInstanceRef struct {
+	Account CloudAccountID  `json:"account"`
+	ID      CloudInstanceID `json:"id"`
+}
+
+// CloudSpec: an instance's size. size is the vendor's name for it (its instance type, machine type or shape); cpu its
+// virtual CPUs (a burstable share may be a fraction); memory_mb and disk_gb what it has.
+type CloudSpec struct {
+	Size     string  `json:"size,omitempty"`
+	Cpu      float64 `json:"cpu,omitempty"`
+	MemoryMb int64   `json:"memory_mb,omitempty"`
+	DiskGb   int64   `json:"disk_gb,omitempty"`
+	Arch     string  `json:"arch,omitempty"`
+	OS       string  `json:"os,omitempty"`
+}
+
+// CloudLifecycle: what ends or interrupts an instance. spot: the vendor may take it back at any time (spot,
+// preemptible). expires_at: when what was paid for ends. renews_at: when it is charged or renewed next. keepalive_at:
+// by when the account has to show activity to keep it (a free tier's idle rule). auto_renew: it renews by itself.
+type CloudLifecycle struct {
+	Spot        bool      `json:"spot,omitempty"`
+	ExpiresAt   time.Time `json:"expires_at,omitzero"`
+	RenewsAt    time.Time `json:"renews_at,omitzero"`
+	KeepaliveAt time.Time `json:"keepalive_at,omitzero"`
+	AutoRenew   bool      `json:"auto_renew,omitempty"`
+}
+
+// CloudInstance: one instance as its provider reads it. account and id name it (CloudInstanceRef); display_name is
+// what people call it. public_ips and private_ips are plain IPv4 or IPv6 addresses, the one to reach it by first.
+// console_url is an https address of its page at the vendor, without credentials. actions are what can be asked of
+// this instance now (never custom; snapshot_list means cloud.snapshots answers), custom_actions the manifest's custom
+// actions that apply to it. observed_at is when the provider read it from the vendor. state_detail says more about
+// the state in the caller's language, one line.
+type CloudInstance struct {
+	Account       CloudAccountID        `json:"account"`
+	ID            CloudInstanceID       `json:"id"`
+	DisplayName   string                `json:"display_name,omitempty"`
+	State         CloudInstanceState    `json:"state"`
+	StateDetail   string                `json:"state_detail,omitempty"`
+	Region        string                `json:"region,omitempty"`
+	Zone          string                `json:"zone,omitempty"`
+	PublicIps     []string              `json:"public_ips,omitempty"`
+	PrivateIps    []string              `json:"private_ips,omitempty"`
+	Spec          *CloudSpec            `json:"spec,omitempty"`
+	Lifecycle     *CloudLifecycle       `json:"lifecycle,omitempty"`
+	ConsoleURL    string                `json:"console_url,omitempty"`
+	Actions       []CloudActionKind     `json:"actions,omitempty"`
+	CustomActions []CloudCustomActionID `json:"custom_actions,omitempty"`
+	ObservedAt    time.Time             `json:"observed_at,omitzero"`
+}
+
+// CloudInstancesParams: cloud.instances: every instance of every account the provider is set up with. refresh asks it
+// not to answer from its own cache.
+type CloudInstancesParams struct {
+	Contribution string `json:"contribution"`
+	Locale       string `json:"locale"`
+	Refresh      bool   `json:"refresh,omitempty"`
+}
+
+// CloudInstanceList: the provider's instances, at most 500. partial when the list may be incomplete (an account could
+// not be read: detail says which, in the caller's language). instances may be left out when there are none.
+type CloudInstanceList struct {
+	Instances []CloudInstance `json:"instances,omitempty"`
+	Partial   bool            `json:"partial,omitempty"`
+	Detail    string          `json:"detail,omitempty"`
+}
+
+// CloudInstanceParams: cloud.instance: how one instance is now. refresh asks the vendor rather than the provider's
+// cache. Answered with the CloudInstance of that account and id, or not_found.
+type CloudInstanceParams struct {
+	Contribution string           `json:"contribution"`
+	Locale       string           `json:"locale"`
+	Instance     CloudInstanceRef `json:"instance"`
+	Refresh      bool             `json:"refresh,omitempty"`
+}
+
+// CloudActionParams: cloud.action: act on one instance. action is never snapshot_list; custom carries the manifest's
+// custom action id in custom. name is a new snapshot's name (snapshot_create). The gate of the action's safety level
+// has passed before the program hears of it. request_id is the same for a retry of the same request: a program that
+// already did it answers what it answered.
+type CloudActionParams struct {
+	Contribution string              `json:"contribution"`
+	Locale       string              `json:"locale"`
+	Instance     CloudInstanceRef    `json:"instance"`
+	Action       CloudActionKind     `json:"action"`
+	Custom       CloudCustomActionID `json:"custom,omitempty"`
+	Name         string              `json:"name,omitempty"`
+	RequestID    CloudRequestID      `json:"request_id"`
+}
+
+// CloudSnapshot: one snapshot of an instance.
+type CloudSnapshot struct {
+	ID        CloudSnapshotID    `json:"id"`
+	Name      string             `json:"name,omitempty"`
+	State     CloudSnapshotState `json:"state"`
+	CreatedAt time.Time          `json:"created_at,omitzero"`
+	SizeGb    float64            `json:"size_gb,omitempty"`
+}
+
+// CloudActionResult: cloud.action's answer (CloudActionStatus). instance is the instance after the request when the
+// program knows it (sync_ip always answers it); snapshot the one snapshot_create made; url what console opens: an
+// https address, which may be signed and short-lived (expires_at). message is one line for people in the caller's
+// language: why it was refused, or what a custom action found.
+type CloudActionResult struct {
+	Status    CloudActionStatus `json:"status"`
+	Instance  *CloudInstance    `json:"instance,omitempty"`
+	Snapshot  *CloudSnapshot    `json:"snapshot,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	ExpiresAt time.Time         `json:"expires_at,omitzero"`
+	Message   string            `json:"message,omitempty"`
+}
+
+// CloudSnapshotsParams: cloud.snapshots: one instance's snapshots, newest first. Asked only of an instance whose
+// actions name snapshot_list.
+type CloudSnapshotsParams struct {
+	Contribution string           `json:"contribution"`
+	Locale       string           `json:"locale"`
+	Instance     CloudInstanceRef `json:"instance"`
+}
+
+// CloudSnapshotList: an instance's snapshots, at most 200. snapshots may be left out when there are none; the
+// manager's answer to the apps always has it.
+type CloudSnapshotList struct {
+	Snapshots []CloudSnapshot `json:"snapshots,omitempty"`
+}
+
+// CloudProvider: one enabled cloud_hosts contribution, as the manager lists it for the apps.
+type CloudProvider struct {
+	Extension string          `json:"extension"`
+	ID        CloudProviderID `json:"id"`
+	Name      string          `json:"name"`
+	Vendor    string          `json:"vendor"`
+}
+
+// CloudProviders: GET /api/v1/extensions/-/cloud: the enabled providers. No program is asked.
+type CloudProviders struct {
+	Providers []CloudProvider `json:"providers"`
+}
+
+// CloudHostAction: one thing the apps can ask of a host, with the gate the hub holds it to (safety). id, title and
+// confirm_text are a custom action's, from the manifest.
+type CloudHostAction struct {
+	Action      CloudActionKind     `json:"action"`
+	ID          CloudCustomActionID `json:"id,omitempty"`
+	Title       string              `json:"title,omitempty"`
+	Safety      CloudSafety         `json:"safety"`
+	ConfirmText string              `json:"confirm_text,omitempty"`
+}
+
+// CloudHost: one instance as the manager gives it to the apps: its provider (extension, provider, provider_name,
+// vendor), the instance as the program answered it and the hub re-checked it, the actions it takes with their safety
+// levels, and machine_id when a computer is bound to it.
+type CloudHost struct {
+	Extension    string            `json:"extension"`
+	Provider     CloudProviderID   `json:"provider"`
+	ProviderName string            `json:"provider_name"`
+	Vendor       string            `json:"vendor"`
+	Instance     CloudInstance     `json:"instance"`
+	Actions      []CloudHostAction `json:"actions"`
+	MachineID    CloudMachineID    `json:"machine_id,omitempty"`
+}
+
+// CloudProviderProblem: A provider whose instances could not be listed: code is a CloudError code, error says why in
+// the reader's language.
+type CloudProviderProblem struct {
+	Extension    string          `json:"extension"`
+	Provider     CloudProviderID `json:"provider"`
+	ProviderName string          `json:"provider_name"`
+	Code         string          `json:"code"`
+	Error        CloudMessage    `json:"error"`
+}
+
+// CloudHosts: GET /api/v1/extensions/-/cloud/instances: every enabled provider's instances together, the bound ones
+// naming their computer. A provider that failed is in problems and the others' instances are still listed; partial
+// when a provider said its own list may be incomplete.
+type CloudHosts struct {
+	Hosts    []CloudHost            `json:"hosts"`
+	Problems []CloudProviderProblem `json:"problems"`
+	Partial  bool                   `json:"partial,omitempty"`
+}
+
+// CloudBinding: A computer bound to an instance: machine_id ↔ (extension, provider, account, instance). The rest is
+// what the hub last read of it, kept so the computers' list draws a badge without asking a program: provider_name,
+// vendor, display_name, state and public_ip as of seen_at.
+type CloudBinding struct {
+	MachineID    CloudMachineID     `json:"machine_id"`
+	Extension    string             `json:"extension"`
+	Provider     CloudProviderID    `json:"provider"`
+	Account      CloudAccountID     `json:"account"`
+	Instance     CloudInstanceID    `json:"instance"`
+	BoundAt      time.Time          `json:"bound_at"`
+	ProviderName string             `json:"provider_name,omitempty"`
+	Vendor       string             `json:"vendor,omitempty"`
+	DisplayName  string             `json:"display_name,omitempty"`
+	State        CloudInstanceState `json:"state,omitempty"`
+	PublicIp     string             `json:"public_ip,omitempty"`
+	SeenAt       time.Time          `json:"seen_at,omitzero"`
+}
+
+// CloudBindings: GET /api/v1/extensions/-/cloud/bindings: every binding, by machine id. No program is asked.
+type CloudBindings struct {
+	Bindings []CloudBinding `json:"bindings"`
+}
+
+// CloudBindRequest: PUT /api/v1/machines/{mid}/cloud: bind the computer to this instance (replacing its binding). The
+// instance must be one the provider answers now, and bound to no other computer.
+type CloudBindRequest struct {
+	Extension string          `json:"extension"`
+	Provider  CloudProviderID `json:"provider"`
+	Account   CloudAccountID  `json:"account"`
+	Instance  CloudInstanceID `json:"instance"`
+}
+
+// CloudRecoveryPhase: where a start-and-reconnect is: starting (waiting for the instance to run), reconnecting (it
+// runs: the computer's node is being connected again), done (the computer is connected), failed (error says why; the
+// instance may still be running).
+// A value this side does not know keeps its raw string and is not Valid.
+type CloudRecoveryPhase string
+
+const (
+	CloudRecoveryPhaseStarting     CloudRecoveryPhase = "starting"
+	CloudRecoveryPhaseReconnecting CloudRecoveryPhase = "reconnecting"
+	CloudRecoveryPhaseDone         CloudRecoveryPhase = "done"
+	CloudRecoveryPhaseFailed       CloudRecoveryPhase = "failed"
+)
+
+// CloudRecoveryPhases are the values of CloudRecoveryPhase, in order.
+var CloudRecoveryPhases = []CloudRecoveryPhase{CloudRecoveryPhaseStarting, CloudRecoveryPhaseReconnecting, CloudRecoveryPhaseDone, CloudRecoveryPhaseFailed}
+
+// Valid reports whether v is one of CloudRecoveryPhases.
+func (v CloudRecoveryPhase) Valid() bool {
+	switch v {
+	case CloudRecoveryPhaseStarting, CloudRecoveryPhaseReconnecting, CloudRecoveryPhaseDone, CloudRecoveryPhaseFailed:
+		return true
+	}
+	return false
+}
+
+// CloudRecovery: A start-and-reconnect the manager is running or last ran for a computer. It lives in the manager's
+// memory: after its restart there is none, and the instance's state and the computer's own Reconnect say the rest.
+// ip_changed: the instance came back with another public address than the binding last had.
+type CloudRecovery struct {
+	Phase     CloudRecoveryPhase `json:"phase"`
+	StartedAt time.Time          `json:"started_at"`
+	Error     CloudMessage       `json:"error,omitempty"`
+	IpChanged bool               `json:"ip_changed,omitempty"`
+}
+
+// CloudMachine: GET /api/v1/machines/{mid}/cloud: the computer's binding and, when the provider answered, its host
+// now. bound false: no binding, nothing else. problem: the provider could not be asked or failed (the binding still
+// stands), with a CloudError code. recovery: a start-and-reconnect in progress or just ended.
+type CloudMachine struct {
+	Bound    bool                  `json:"bound"`
+	Binding  *CloudBinding         `json:"binding,omitempty"`
+	Host     *CloudHost            `json:"host,omitempty"`
+	Problem  *CloudProviderProblem `json:"problem,omitempty"`
+	Recovery *CloudRecovery        `json:"recovery,omitempty"`
+}
+
+// CloudActionRequest: POST /api/v1/machines/{mid}/cloud/actions, an app's request on the instance the computer is
+// bound to. id names a custom action. confirm: a person agreed to exactly this action (needed for safety confirm and
+// destructive, else confirmation_required). acknowledge: the instance's id typed or shown back (needed for
+// destructive, else acknowledgement_required). name: a new snapshot's name. reconnect (start only): once the instance
+// runs, connect the computer's node again (CloudRecovery).
+type CloudActionRequest struct {
+	Action      CloudActionKind     `json:"action"`
+	ID          CloudCustomActionID `json:"id,omitempty"`
+	Confirm     bool                `json:"confirm,omitempty"`
+	Acknowledge string              `json:"acknowledge,omitempty"`
+	Name        string              `json:"name,omitempty"`
+	Reconnect   bool                `json:"reconnect,omitempty"`
+}
+
+// CloudActionOutcome: the actions route's answer: status done or accepted (a refusal is a CloudError), the host after
+// it when the program said, the snapshot it made, the url to open (console), the provider's one line (message) and
+// the start-and-reconnect it began (recovery).
+type CloudActionOutcome struct {
+	Status    CloudActionStatus `json:"status"`
+	Host      *CloudHost        `json:"host,omitempty"`
+	Snapshot  *CloudSnapshot    `json:"snapshot,omitempty"`
+	URL       string            `json:"url,omitempty"`
+	ExpiresAt time.Time         `json:"expires_at,omitzero"`
+	Message   string            `json:"message,omitempty"`
+	Recovery  *CloudRecovery    `json:"recovery,omitempty"`
+}
+
+// CloudSnapshots: GET /api/v1/machines/{mid}/cloud/snapshots: the bound instance's snapshots, newest first.
+type CloudSnapshots struct {
+	Snapshots []CloudSnapshot `json:"snapshots"`
+}
+
+// CloudAuditEntry: one audited change: a bind, an unbind or an action asked of an instance, with who asked (actor: a
+// device, or the assistant for a tool call a person approved) and how it ended (outcome: done, accepted, refused,
+// failed). Never a credential, an address or a provider's words.
+type CloudAuditEntry struct {
+	At        time.Time       `json:"at"`
+	Extension string          `json:"extension"`
+	Event     string          `json:"event"`
+	Actor     string          `json:"actor"`
+	MachineID CloudMachineID  `json:"machine_id,omitempty"`
+	Provider  CloudProviderID `json:"provider,omitempty"`
+	Instance  CloudInstanceID `json:"instance,omitempty"`
+	Action    string          `json:"action,omitempty"`
+	Safety    string          `json:"safety,omitempty"`
+	Outcome   string          `json:"outcome,omitempty"`
+}
+
+// CloudAudit: GET /api/v1/machines/{mid}/cloud/audit: what was asked of the computer's instances, newest first.
+type CloudAudit struct {
+	Audit []CloudAuditEntry `json:"audit"`
+}
+
+// CloudError: A cloud route's error: error in the reader's language and a code: bad_request, read_only, not_found (no
+// such computer, provider or instance), not_bound, already_bound (machine_id: the computer that holds the instance),
+// confirmation_required and acknowledgement_required (safety says which gate), unsupported, invalid_state,
+// not_signed_in, rate_limited, capacity, refused, plugin_failed (detail: the provider's own words, one line),
+// provider_off, deadline, no_database.
+type CloudError struct {
+	Error     CloudMessage   `json:"error"`
+	Code      string         `json:"code"`
+	Safety    CloudSafety    `json:"safety,omitempty"`
+	Detail    string         `json:"detail,omitempty"`
+	MachineID CloudMachineID `json:"machine_id,omitempty"`
+}
+
+type RoutineFactsParams struct {
+	Contribution RoutineContributionID `json:"contribution"`
+	// Calendar date in the routine's time zone.
+	Date     string `json:"date"`
+	Language string `json:"language"`
+}
+
+type RoutineReportSection struct {
+	Title string `json:"title"`
+	// Plain text. The host owns report layout.
+	Body string `json:"body"`
+}
+
+// RoutineFactsResult: A read-only snapshot. Return an empty object when the contribution has nothing for this date.
+type RoutineFactsResult struct {
+	Facts    []string               `json:"facts,omitempty"`
+	Sections []RoutineReportSection `json:"sections,omitempty"`
+}
+
 // requiredJSONComponent preserves required fields only inside stream payloads.
 type requiredJSONComponent Component
 
@@ -7844,9 +8880,13 @@ var newDef = map[string]func() any{
 	"AuthRelayItem":                 func() any { return new(AuthRelayItem) },
 	"SecretProviderItem":            func() any { return new(SecretProviderItem) },
 	"RepositoryProviderItem":        func() any { return new(RepositoryProviderItem) },
+	"TextLookupItem":                func() any { return new(TextLookupItem) },
 	"DiskOffloadItem":               func() any { return new(DiskOffloadItem) },
+	"CloudHostItem":                 func() any { return new(CloudHostItem) },
+	"CloudCustomAction":             func() any { return new(CloudCustomAction) },
 	"MemorySourceItem":              func() any { return new(MemorySourceItem) },
 	"RepositoryLinkLabel":           func() any { return new(RepositoryLinkLabel) },
+	"RoutineFactsItem":              func() any { return new(RoutineFactsItem) },
 	"ErrorReportsItem":              func() any { return new(ErrorReportsItem) },
 	"TunnelItem":                    func() any { return new(TunnelItem) },
 	"AgentFilterItem":               func() any { return new(AgentFilterItem) },
@@ -7918,6 +8958,14 @@ var newDef = map[string]func() any{
 	"ErrorReportsDeliver":           func() any { return new(ErrorReportsDeliver) },
 	"AuthRelayCompleteParams":       func() any { return new(AuthRelayCompleteParams) },
 	"AuthRelayResult":               func() any { return new(AuthRelayResult) },
+	"TextLookupStateParams":         func() any { return new(TextLookupStateParams) },
+	"TextLookupStateResult":         func() any { return new(TextLookupStateResult) },
+	"TextLookupLookupParams":        func() any { return new(TextLookupLookupParams) },
+	"TextLookupSense":               func() any { return new(TextLookupSense) },
+	"TextLookupLookupResult":        func() any { return new(TextLookupLookupResult) },
+	"TextLookupSaveParams":          func() any { return new(TextLookupSaveParams) },
+	"TextLookupRemoveParams":        func() any { return new(TextLookupRemoveParams) },
+	"TextLookupSavedResult":         func() any { return new(TextLookupSavedResult) },
 	"SecretPurpose":                 func() any { return new(SecretPurpose) },
 	"SecretsDescribeParams":         func() any { return new(SecretsDescribeParams) },
 	"SecretsDescribeResult":         func() any { return new(SecretsDescribeResult) },
@@ -8058,6 +9106,7 @@ var newDef = map[string]func() any{
 	"ConnectorCatalogCallParams":    func() any { return new(ConnectorCatalogCallParams) },
 	"ConnectorSubscriptionFields":   func() any { return new(ConnectorSubscriptionFields) },
 	"ConnectorSubscriptionRecipe":   func() any { return new(ConnectorSubscriptionRecipe) },
+	"ConnectorAutoConfirm":          func() any { return new(ConnectorAutoConfirm) },
 	"Empty":                         func() any { return new(Empty) },
 	"ConnectorInitParams":           func() any { return new(ConnectorInitParams) },
 	"ConnectorManifest":             func() any { return new(ConnectorManifest) },
@@ -8168,6 +9217,11 @@ var newDef = map[string]func() any{
 	"ChannelSendResult":             func() any { return new(ChannelSendResult) },
 	"ChannelTypingParams":           func() any { return new(ChannelTypingParams) },
 	"ChannelEditParams":             func() any { return new(ChannelEditParams) },
+	"KBImportCheckpointParams":      func() any { return new(KBImportCheckpointParams) },
+	"KBImportCheckpointResult":      func() any { return new(KBImportCheckpointResult) },
+	"KBSentMarkersParams":           func() any { return new(KBSentMarkersParams) },
+	"KBSentMarker":                  func() any { return new(KBSentMarker) },
+	"KBSentMarkersResult":           func() any { return new(KBSentMarkersResult) },
 	"KBConflict":                    func() any { return new(KBConflict) },
 	"KBEvidence":                    func() any { return new(KBEvidence) },
 	"KBProvenance":                  func() any { return new(KBProvenance) },
@@ -8202,6 +9256,13 @@ var newDef = map[string]func() any{
 	"KBHit":                         func() any { return new(KBHit) },
 	"KBUpdateParams":                func() any { return new(KBUpdateParams) },
 	"KBUpdateResult":                func() any { return new(KBUpdateResult) },
+	"KBPutRecordingParams":          func() any { return new(KBPutRecordingParams) },
+	"KBRecordingMinutes":            func() any { return new(KBRecordingMinutes) },
+	"KBMinutesItem":                 func() any { return new(KBMinutesItem) },
+	"KBMinutesPoint":                func() any { return new(KBMinutesPoint) },
+	"KBMinutesAction":               func() any { return new(KBMinutesAction) },
+	"KBRecordingMeeting":            func() any { return new(KBRecordingMeeting) },
+	"KBPutRecordingResult":          func() any { return new(KBPutRecordingResult) },
 	"KBOwnerParams":                 func() any { return new(KBOwnerParams) },
 	"KBOwner":                       func() any { return new(KBOwner) },
 	"KBChangedEvent":                func() any { return new(KBChangedEvent) },
@@ -8240,6 +9301,8 @@ var newDef = map[string]func() any{
 	"AssistantEntriesParams":        func() any { return new(AssistantEntriesParams) },
 	"AssistantEntriesResult":        func() any { return new(AssistantEntriesResult) },
 	"AssistantEntriesChangedEvent":  func() any { return new(AssistantEntriesChangedEvent) },
+	"AssistantEventParams":          func() any { return new(AssistantEventParams) },
+	"AssistantEventResult":          func() any { return new(AssistantEventResult) },
 	"AssistantDataStatusParams":     func() any { return new(AssistantDataStatusParams) },
 	"AssistantDataItem":             func() any { return new(AssistantDataItem) },
 	"AssistantDataStatusResult":     func() any { return new(AssistantDataStatusResult) },
@@ -8331,6 +9394,38 @@ var newDef = map[string]func() any{
 	"OffloadRunRequest":             func() any { return new(OffloadRunRequest) },
 	"OffloadStarted":                func() any { return new(OffloadStarted) },
 	"OffloadError":                  func() any { return new(OffloadError) },
+	"CloudInstanceRef":              func() any { return new(CloudInstanceRef) },
+	"CloudSpec":                     func() any { return new(CloudSpec) },
+	"CloudLifecycle":                func() any { return new(CloudLifecycle) },
+	"CloudInstance":                 func() any { return new(CloudInstance) },
+	"CloudInstancesParams":          func() any { return new(CloudInstancesParams) },
+	"CloudInstanceList":             func() any { return new(CloudInstanceList) },
+	"CloudInstanceParams":           func() any { return new(CloudInstanceParams) },
+	"CloudActionParams":             func() any { return new(CloudActionParams) },
+	"CloudSnapshot":                 func() any { return new(CloudSnapshot) },
+	"CloudActionResult":             func() any { return new(CloudActionResult) },
+	"CloudSnapshotsParams":          func() any { return new(CloudSnapshotsParams) },
+	"CloudSnapshotList":             func() any { return new(CloudSnapshotList) },
+	"CloudProvider":                 func() any { return new(CloudProvider) },
+	"CloudProviders":                func() any { return new(CloudProviders) },
+	"CloudHostAction":               func() any { return new(CloudHostAction) },
+	"CloudHost":                     func() any { return new(CloudHost) },
+	"CloudProviderProblem":          func() any { return new(CloudProviderProblem) },
+	"CloudHosts":                    func() any { return new(CloudHosts) },
+	"CloudBinding":                  func() any { return new(CloudBinding) },
+	"CloudBindings":                 func() any { return new(CloudBindings) },
+	"CloudBindRequest":              func() any { return new(CloudBindRequest) },
+	"CloudRecovery":                 func() any { return new(CloudRecovery) },
+	"CloudMachine":                  func() any { return new(CloudMachine) },
+	"CloudActionRequest":            func() any { return new(CloudActionRequest) },
+	"CloudActionOutcome":            func() any { return new(CloudActionOutcome) },
+	"CloudSnapshots":                func() any { return new(CloudSnapshots) },
+	"CloudAuditEntry":               func() any { return new(CloudAuditEntry) },
+	"CloudAudit":                    func() any { return new(CloudAudit) },
+	"CloudError":                    func() any { return new(CloudError) },
+	"RoutineFactsParams":            func() any { return new(RoutineFactsParams) },
+	"RoutineReportSection":          func() any { return new(RoutineReportSection) },
+	"RoutineFactsResult":            func() any { return new(RoutineFactsResult) },
 }
 
 // Call is one call or event of an extension point's protocol (the schemas' x-methods and x-events): who
@@ -8400,6 +9495,9 @@ var Calls = map[string]Call{
 	"kb.update":                       {Name: "kb.update", From: "program", Params: "KBUpdateParams", Result: "KBUpdateResult"},
 	"kb.owner":                        {Name: "kb.owner", From: "program", Params: "KBOwnerParams", Result: "KBOwner"},
 	"kb.recent":                       {Name: "kb.recent", From: "program", Params: "KBRecentParams", Result: "KBRecentResult"},
+	"kb.import_checkpoint":            {Name: "kb.import_checkpoint", From: "program", Params: "KBImportCheckpointParams", Result: "KBImportCheckpointResult"},
+	"kb.sent_markers":                 {Name: "kb.sent_markers", From: "program", Params: "KBSentMarkersParams", Result: "KBSentMarkersResult"},
+	"kb.put_recording":                {Name: "kb.put_recording", From: "program", Params: "KBPutRecordingParams", Result: "KBPutRecordingResult"},
 	"event.kb.changed":                {Name: "event.kb.changed", From: "hub", Params: "KBChangedEvent", Result: "", Event: true},
 	"event.kb.forgotten":              {Name: "event.kb.forgotten", From: "hub", Params: "KBForgottenEvent", Result: "", Event: true},
 	"event.todo.changed":              {Name: "event.todo.changed", From: "hub", Params: "TodoChangedEvent", Result: "", Event: true},
@@ -8411,6 +9509,7 @@ var Calls = map[string]Call{
 	"assistant.messages":              {Name: "assistant.messages", From: "program", Params: "AssistantMessagesParams", Result: "AssistantMessagesResult"},
 	"assistant.memory":                {Name: "assistant.memory", From: "program", Params: "AssistantMemoryParams", Result: "AssistantMemoryResult"},
 	"assistant.entries.list":          {Name: "assistant.entries.list", From: "program", Params: "AssistantEntriesParams", Result: "AssistantEntriesResult"},
+	"assistant.event":                 {Name: "assistant.event", From: "program", Params: "AssistantEventParams", Result: "AssistantEventResult"},
 	"event.assistant.entries.changed": {Name: "event.assistant.entries.changed", From: "hub", Params: "AssistantEntriesChangedEvent", Result: "", Event: true},
 	"assistant.data_status":           {Name: "assistant.data_status", From: "program", Params: "AssistantDataStatusParams", Result: "AssistantDataStatusResult"},
 	"machines.pair_link":              {Name: "machines.pair_link", From: "program", Params: "MachinesPairLinkParams", Result: "MachinesPairLinkResult"},
@@ -8447,4 +9546,9 @@ var Calls = map[string]Call{
 	"offload.run":                     {Name: "offload.run", From: "hub", Params: "OffloadRunParams", Result: "OffloadRunResult"},
 	"offload.job":                     {Name: "offload.job", From: "hub", Params: "OffloadJobParams", Result: "OffloadJob"},
 	"offload.cancel":                  {Name: "offload.cancel", From: "hub", Params: "OffloadJobParams", Result: "Empty"},
+	"cloud.instances":                 {Name: "cloud.instances", From: "hub", Params: "CloudInstancesParams", Result: "CloudInstanceList"},
+	"cloud.instance":                  {Name: "cloud.instance", From: "hub", Params: "CloudInstanceParams", Result: "CloudInstance"},
+	"cloud.action":                    {Name: "cloud.action", From: "hub", Params: "CloudActionParams", Result: "CloudActionResult"},
+	"cloud.snapshots":                 {Name: "cloud.snapshots", From: "hub", Params: "CloudSnapshotsParams", Result: "CloudSnapshotList"},
+	"routine_facts.collect":           {Name: "routine_facts.collect", From: "hub", Params: "RoutineFactsParams", Result: "RoutineFactsResult"},
 }
