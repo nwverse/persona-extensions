@@ -4,8 +4,10 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -183,6 +185,60 @@ func (args backlogMarkArgs) validate() error {
 		return invalid(err.Error())
 	}
 	return nil
+}
+
+func cleanBacklogNoteInput(raw string) (string, error) {
+	if !utf8.ValidString(raw) {
+		return "", errors.New("invalid UTF-8 in backlog note")
+	}
+	normalized := strings.ReplaceAll(raw, "\r\n", "\n")
+	normalized = strings.ReplaceAll(normalized, "\r", "\n")
+	cleaned := strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return ' '
+		}
+		return r
+	}, normalized)
+	cleaned = strings.TrimSpace(cleaned)
+	if utf8.RuneCountInString(cleaned) > maxBacklogNoteRunes {
+		return "", errors.New("backlog note exceeds length limit")
+	}
+	return cleaned, nil
+}
+
+func parseBacklogTagsInput(raw string) ([]string, error) {
+	if !utf8.ValidString(raw) {
+		return nil, errors.New("invalid UTF-8 in backlog tags")
+	}
+	parts := strings.FieldsFunc(raw, func(r rune) bool {
+		return unicode.IsSpace(r) || r == ',' || r == '，' || r == '、' || r == ';' || r == '；'
+	})
+	tags := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		tag := strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return -1
+			}
+			return r
+		}, strings.TrimSpace(part))
+		if tag == "" {
+			continue
+		}
+		if utf8.RuneCountInString(tag) > maxBacklogTagRunes {
+			return nil, errors.New("backlog tag exceeds length limit")
+		}
+		key := strings.ToLower(tag)
+		if _, dup := seen[key]; dup {
+			continue
+		}
+		seen[key] = struct{}{}
+		tags = append(tags, tag)
+		if len(tags) > maxBacklogTags {
+			return nil, errors.New("backlog tag count exceeds limit")
+		}
+	}
+	return tags, nil
 }
 
 func (d *steamData) backlogMarkID(ctx context.Context) (string, problem) {

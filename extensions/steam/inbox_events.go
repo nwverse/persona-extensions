@@ -269,9 +269,11 @@ func (t *text) wishlistRoundup(country string, started time.Time, deals []wishli
 	}}
 }
 
-func (state *wishlistWatchState) candidates(cfg config, t *text, at, previous time.Time, list *wishList, complete bool, history map[uint32]PriceHistory) []wishlistCandidate {
+func (state *wishlistWatchState) candidates(cfg config, t *text, at, previous time.Time, list *wishList, complete bool, history map[uint32]PriceHistory, targets map[wishlistTargetKey]uint32) []wishlistCandidate {
 	threshold := enabledLimit(true, cfg.WishlistDiscountThreshold, defaultDiscount, 100)
-	targets := cfg.wishlistTargets()
+	if targets == nil {
+		targets = cfg.wishlistTargets()
+	}
 	var giveaways, releasesAndDemos, priceAlerts, saleAlerts []wishlistCandidate
 	var sales []wishlistDeal
 	var uncertainSales int
@@ -359,7 +361,7 @@ func (state *wishlistWatchState) candidates(cfg config, t *text, at, previous ti
 	return slices.Concat(giveaways, releasesAndDemos, saleAlerts, priceAlerts)
 }
 
-func (s *EventCursorStore) observeWishlist(id string, cfg config, t *text, at time.Time, list *wishList, complete bool, histories map[uint32]PriceHistory) (out []wishlistDelivery, created int, err error) {
+func (s *EventCursorStore) observeWishlist(id string, cfg config, t *text, at time.Time, list *wishList, complete bool, histories map[uint32]PriceHistory, targets map[wishlistTargetKey]uint32) (out []wishlistDelivery, created int, err error) {
 	limit := cfg.InboxEventLimit()
 	if limit == 0 {
 		return nil, 0, nil
@@ -386,7 +388,7 @@ func (s *EventCursorStore) observeWishlist(id string, cfg config, t *text, at ti
 		} else {
 			state = wishlistWatchState{Namespace: rand.Text(), Items: make(map[uint32]wishlistItemState)}
 		}
-		candidates := state.candidates(cfg, t, at, saved.SeenAt, list, complete, histories)
+		candidates := state.candidates(cfg, t, at, saved.SeenAt, list, complete, histories, targets)
 		keys := make([]string, len(candidates))
 		for i, event := range candidates {
 			key, err := eventCursorKey(id, event.kind, cfg.CountryCode+"/"+event.key, event.version)
@@ -542,7 +544,8 @@ func (d *steamData) scanWishlistInbox(ctx context.Context, t *text, notify func(
 		at := d.wishes.now().UTC()
 		quotes := wishlistQuotes(list)
 		history, _ := d.stores.prices.Histories(id, d.config.CountryCode, slices.Collect(maps.Keys(quotes))...)
-		deliveries, created, err := d.stores.cursors.observeWishlist(id, d.config, t, at, list, issue == "" && list.Total == len(list.Items), history)
+		targets := d.resolvedWishlistTargets(id)
+		deliveries, created, err := d.stores.cursors.observeWishlist(id, d.config, t, at, list, issue == "" && list.Total == len(list.Items), history, targets)
 		if err != nil {
 			d.inbox.Store(nil)
 			return
@@ -605,7 +608,7 @@ func (a *app) wishlistDeals(ctx context.Context, raw json.RawMessage) (map[strin
 	at := d.wishes.now().UTC()
 	quotes := wishlistQuotes(list)
 	histories, _ := d.stores.prices.Histories(id, d.config.CountryCode, slices.Collect(maps.Keys(quotes))...)
-	targets := d.config.wishlistTargets()
+	targets := d.resolvedWishlistTargets(id)
 	deals := make([]wishlistDeal, 0)
 	for _, item := range list.Items {
 		giveaway, _ := list.store[item.AppID].promotion(item.Price, at)

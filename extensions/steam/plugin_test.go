@@ -32,7 +32,7 @@ func TestManifestAndTranslations(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatal(err)
 	}
-	const release = "0.3.3"
+	const release = "0.3.6"
 	if m.Version != release || version != release {
 		t.Fatalf("manifest version = %q, runtime version = %q, want %q", m.Version, version, release)
 	}
@@ -55,7 +55,7 @@ func TestManifestAndTranslations(t *testing.T) {
 		t.Fatalf("connector %+v", c)
 	}
 	page, card := m.Contributes.UI[0], m.Contributes.UI[1]
-	if page.ID != extensionID || page.Placement != wire.PlacementNavPage || page.Icon != "chart" ||
+	if page.ID != extensionID || page.Placement != wire.PlacementNavPage || page.Icon != "play" ||
 		page.Group == nil || page.Group.ID != "personal" || page.Group.Title != "个人" ||
 		card.ID != summaryID || card.Placement != wire.PlacementOverviewCard || card.Opens != page.ID {
 		t.Fatal("navigation and card declarations do not match")
@@ -75,6 +75,9 @@ func TestManifestAndTranslations(t *testing.T) {
 	if json.Unmarshal(m.Configuration, &cfg) != nil || json.Unmarshal(cfg.Properties["auth_mode"], &mode) != nil ||
 		len(cfg.Required) != 0 || mode.Type != "string" || !slices.Equal(mode.Enum, []string{modeQR, modeWebAPIKey}) || mode.Default != nil {
 		t.Fatal("mode selection must preserve the runtime default and let both modes start")
+	}
+	if _, legacyPresent := cfg.Properties["wishlist_target_prices"]; legacyPresent {
+		t.Fatal("wishlist_target_prices should be removed from global extension configuration")
 	}
 
 	for _, lang := range []string{"en", "zh-Hans"} {
@@ -98,10 +101,13 @@ func TestManifestAndTranslations(t *testing.T) {
 			t.Errorf("incomplete %s manifest translations", lang)
 		}
 		for _, key := range []string{"auth_mode", "steam_id", "country_code", "friends_radar_enabled", "discovery_tools_enabled", "discovery_max_results", pluginkit.TriageRulesSetting,
-			"inbox_events_enabled", "inbox_max_events_per_day", "sale_roundup_enabled", "wishlist_event_triggers", "wishlist_discount_threshold", "wishlist_target_prices"} {
+			"inbox_events_enabled", "inbox_max_events_per_day", "sale_roundup_enabled", "wishlist_event_triggers", "wishlist_discount_threshold"} {
 			if f := translation.Configuration[key]; f.Title == "" || f.Description == "" {
 				t.Errorf("missing %s translation for %s", lang, key)
 			}
+		}
+		if _, legacyPresent := translation.Configuration["wishlist_target_prices"]; legacyPresent {
+			t.Errorf("%s translations still include removed wishlist_target_prices setting", lang)
 		}
 		if f := translation.Secrets[keyName]; f.Title == "" || f.Description == "" {
 			t.Errorf("missing %s secret translation", lang)

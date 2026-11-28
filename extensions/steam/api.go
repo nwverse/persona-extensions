@@ -509,3 +509,5 @@ func (c steamClient) achievementTotals(ctx context.Context, id string, appID uin
 func appIDText(id uint32) string { return strconv.FormatUint(uint64(id), 10) }
 
 func storeLink(id uint32) string { return storeBase + "/app/" + appIDText(id) + "/" }
+
+func communityLink(id uint32) string { return "https://steamcommunity.com/app/" + appIDText(id) + "/" }

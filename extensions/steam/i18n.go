@@ -21,10 +21,11 @@ type text struct {
 	states                                                              map[string]string
 	problems                                                            map[problem]string
 
-	recentNews, noRecentNews string
-	backlog                  backlogText
-	recap                    recapText
-	memory                   memoryText
+	recentNews, noRecentNews, communityHub string
+	backlog                                backlogText
+	wishTarget                             wishlistTargetText
+	recap                                  recapText
+	memory                                 memoryText
 
 	inboxPrice, inboxGiveaway, inboxRelease, inboxDemo, inboxRoundup string
 	inboxGiveawayHint, inboxReleaseHint, inboxDemoHint               string
@@ -45,11 +46,22 @@ type memoryText struct {
 
 type backlogText struct {
 	title, annotation, status, note, tags, unmarked, overlap         string
+	notePlaceholder, noteDetail, tagsPlaceholder, tagsDetail         string
+	invalidNote, invalidTags                                         string
 	save, clear, confirmClear, saved, cleared, accountChanged        string
 	activity                                                         map[string]string
 	statuses                                                         map[BacklogStatus]string
 	pickFamiliar, pickRecent, pickTime, pickPlaying, pickQueued      string
 	pickPaused, pickUnplayed, pickTried, pickLongTerm, pickCompleted string
+}
+
+type wishlistTargetText struct {
+	detailTitle, marketOverview, currentPrice, observedLow, noHistory string
+	regionCurrency, viewInStore, comingSoon, unreleasedHint, unpriced string
+	wasPriceDiscount, sectionTitle, description, legacyHint           string
+	priceLabel, placeholder, inputDetail, save, clear, confirmClear   string
+	savedToast, cleared, invalidPrice, accountChanged                 string
+	rowHint, metBadge, metBannerTitle, metBannerDetail                string
 }
 
 func (t *backlogText) bucketTitle(bucket string) string {
@@ -74,6 +86,37 @@ var english = text{
 	achievements: "Achievements", noAchievements: "Steam lists no achievements for this game.", unlocked: "%d of %d unlocked",
 	game: "App %d", playing: "Playing %s", unknown: "Status unavailable",
 	recentNews: "Recent official updates", noRecentNews: "No recent official game updates were found.",
+	communityHub: "Steam Community Hub",
+	wishTarget: wishlistTargetText{
+		detailTitle:      "Wishlist game",
+		marketOverview:   "Price & store info",
+		currentPrice:     "Current price",
+		observedLow:      "Observed local low",
+		noHistory:        "No local history",
+		regionCurrency:   "Store region / currency",
+		viewInStore:      "View in Steam Store",
+		comingSoon:       "Coming soon",
+		unreleasedHint:   "Not yet released; you can preset a target price",
+		unpriced:         "No price listed",
+		wasPriceDiscount: "Was %s · %d%% off",
+		sectionTitle:     "Target price alert",
+		description:      "When the Steam Store price drops to or below this amount, you will receive a notification if Steam Inbox wishlist alerts are enabled. If the current price already meets your target, it is highlighted immediately here.",
+		legacyHint:       "Currently loaded from legacy settings; saving stores it locally for this account.",
+		priceLabel:       "Target alert price (%s)",
+		placeholder:      "e.g. 99 or 19.99",
+		inputDetail:      "Enter a positive amount in %s (up to two decimal places).",
+		save:             "Save target price",
+		clear:            "Clear target price",
+		confirmClear:     "Remove the target price alert for this wishlist game?",
+		savedToast:       "Target price saved (≤ %s).",
+		cleared:          "Target price cleared.",
+		invalidPrice:     "Enter a positive target price with at most two decimal places (for example, 99 or 19.99).",
+		accountChanged:   "Your Steam account changed. Reopen this game to update its target price.",
+		rowHint:          "Target ≤ %s",
+		metBadge:         "Target met",
+		metBannerTitle:   "Target price reached",
+		metBannerDetail:  "Current Steam Store price is at or below your target (%s).",
+	},
 	recap: recapText{
 		title: "Playtime recap", period: "Period", invalidArgs: "Use month, quarter, year or all, with top_n from 1 to 20.",
 		noBaseline: "This period needs a start snapshot. Open the recap on another day to track playtime changes automatically.",
@@ -105,33 +148,34 @@ var english = text{
 		"snooze": "Snoozing", "looking_to_trade": "Looking to trade", "looking_to_play": "Looking to play", "invisible": "Invisible",
 	},
 	problems: map[problem]string{
-		problemSetup:              "Enter your Steam player ID and Web API key in Settings › Extensions › Steam.",
-		problemInvalidID:          "Steam could not find this player. Check the SteamID64 or profile vanity name.",
-		problemCountry:            "Enter an assigned two-letter ISO 3166-1 country code for the Steam Store.",
-		problemMode:               "Choose Steam Mobile QR or Web API key in Steam's extension settings.",
-		problemKey:                "Steam rejected the Web API key. Check the saved secret in Settings › Extensions › Steam.",
-		problemPrivate:            "This Steam profile is private. Make the profile public to see its activity.",
-		problemProfileUnavailable: "Steam did not share this player's profile.",
-		problemGameDetails:        "Steam did not share these games. Availability depends on the sign-in method and Steam privacy settings.",
-		problemAchievements:       "Steam did not share achievement progress. Availability depends on Steam privacy settings and whether the game supports achievements.",
-		problemWishlist:           "Steam did not share a wishlist. It may be private, empty or unavailable.",
-		problemMissing:            "Steam did not return this item for the selected Store country.",
-		problemRateLimited:        "Steam is rate limiting requests. Try again in a moment.",
-		problemTimeout:            "Steam took too long to respond. Try again in a moment.",
-		problemNetwork:            "Steam is temporarily unavailable. Try again in a moment.",
-		problemResponse:           "Steam returned an unexpected response. Try again in a moment.",
-		problemCanceled:           "The Steam request was canceled.",
-		problemAuthRequired:       "Sign in with the Steam Mobile App in Settings › Extensions › Steam.",
-		problemAuthPending:        "Scan the QR code and approve the sign-in on your phone.",
-		problemAuthRefused:        "Steam ended the sign-in request. Start a new QR sign-in.",
-		problemAuthTimeout:        "The Steam QR sign-in expired. Start a new QR sign-in.",
-		problemAuthExpired:        "Your Steam sign-in expired. Scan a new QR code to sign in again.",
-		problemAuthLoad:           "Persona could not restore the saved Steam sign-in. Sign in with a new QR code.",
-		problemAuthSave:           "Persona could not save the Steam sign-in. Try again when the Hub's secret store is available.",
-		problemAuthDelete:         "Persona could not delete the saved Steam sign-in. Try signing out again.",
-		problemAuthClearing:       "Persona is clearing the saved Steam sign-in. Try again in a moment.",
-		problemBacklogStore:       "Persona could not access your local Steam backlog.",
-		problemRecapStore:         "Persona could not access your local playtime history.",
+		problemSetup:               "Enter your Steam player ID and Web API key in Settings › Extensions › Steam.",
+		problemInvalidID:           "Steam could not find this player. Check the SteamID64 or profile vanity name.",
+		problemCountry:             "Enter an assigned two-letter ISO 3166-1 country code for the Steam Store.",
+		problemMode:                "Choose Steam Mobile QR or Web API key in Steam's extension settings.",
+		problemKey:                 "Steam rejected the Web API key. Check the saved secret in Settings › Extensions › Steam.",
+		problemPrivate:             "This Steam profile is private. Make the profile public to see its activity.",
+		problemProfileUnavailable:  "Steam did not share this player's profile.",
+		problemGameDetails:         "Steam did not share these games. Availability depends on the sign-in method and Steam privacy settings.",
+		problemAchievements:        "Steam did not share achievement progress. Availability depends on Steam privacy settings and whether the game supports achievements.",
+		problemWishlist:            "Steam did not share a wishlist. It may be private, empty or unavailable.",
+		problemMissing:             "Steam did not return this item for the selected Store country.",
+		problemRateLimited:         "Steam is rate limiting requests. Try again in a moment.",
+		problemTimeout:             "Steam took too long to respond. Try again in a moment.",
+		problemNetwork:             "Steam is temporarily unavailable. Try again in a moment.",
+		problemResponse:            "Steam returned an unexpected response. Try again in a moment.",
+		problemCanceled:            "The Steam request was canceled.",
+		problemAuthRequired:        "Sign in with the Steam Mobile App in Settings › Extensions › Steam.",
+		problemAuthPending:         "Scan the QR code and approve the sign-in on your phone.",
+		problemAuthRefused:         "Steam ended the sign-in request. Start a new QR sign-in.",
+		problemAuthTimeout:         "The Steam QR sign-in expired. Start a new QR sign-in.",
+		problemAuthExpired:         "Your Steam sign-in expired. Scan a new QR code to sign in again.",
+		problemAuthLoad:            "Persona could not restore the saved Steam sign-in. Sign in with a new QR code.",
+		problemAuthSave:            "Persona could not save the Steam sign-in. Try again when the Hub's secret store is available.",
+		problemAuthDelete:          "Persona could not delete the saved Steam sign-in. Try signing out again.",
+		problemAuthClearing:        "Persona is clearing the saved Steam sign-in. Try again in a moment.",
+		problemBacklogStore:        "Persona could not access your local Steam backlog.",
+		problemWishlistTargetStore: "Persona could not access your local Steam wishlist target prices.",
+		problemRecapStore:          "Persona could not access your local playtime history.",
 
 		problemGlobalAchievements:     "Steam did not share global unlock rates for this game.",
 		problemAchievementSchema:      "Steam did not share this game's achievement names and hidden status.",
@@ -165,8 +209,14 @@ var english = text{
 	backlog: backlogText{
 		title: "Backlog & local progress", annotation: "Local backlog annotation", status: "Status",
 		note: "Note", tags: "Tags", unmarked: "No local annotation", overlap: "A game can count in more than one category.",
-		save: "Save status locally", clear: "Clear local annotation", confirmClear: "Clear this game's local status, note and tags?",
-		saved: "Local Steam status saved.", cleared: "Local Steam annotation cleared.",
+		notePlaceholder: "Write your progress notes or thoughts (up to 240 characters)",
+		noteDetail:      "Saved locally on this device (up to 240 characters).",
+		tagsPlaceholder: "e.g. solo, co-op, weekend",
+		tagsDetail:      "Separate multiple tags with commas or spaces (up to 8 tags, 32 characters each).",
+		invalidNote:     "Notes must be valid text of at most 240 characters.",
+		invalidTags:     "Use at most 8 tags, each up to 32 characters, separated by commas or spaces.",
+		save:            "Save annotation", clear: "Clear annotation", confirmClear: "Clear this game's local status, note and tags?",
+		saved: "Local Steam annotation saved.", cleared: "Local Steam annotation cleared.",
 		accountChanged: "Your Steam account changed. Reopen this game to edit its annotation.",
 		activity: map[string]string{
 			neverPlayed: "Never played", triedUnder2h: "Tried under 2 hours",
@@ -199,6 +249,37 @@ var chinese = text{
 	achievements: "成就", noAchievements: "Steam 没有列出这款游戏的成就。", unlocked: "已解锁 %d / %d",
 	game: "应用 %d", playing: "游戏中 · %s", unknown: "状态不可用",
 	recentNews: "近期官方更新", noRecentNews: "暂未找到近期官方游戏更新。",
+	communityHub: "Steam 社区中心",
+	wishTarget: wishlistTargetText{
+		detailTitle:      "愿望单游戏详情",
+		marketOverview:   "价格与商店行情",
+		currentPrice:     "当前售价",
+		observedLow:      "本机观测最低价",
+		noHistory:        "暂无历史记录",
+		regionCurrency:   "商店区域 / 币种",
+		viewInStore:      "在 Steam 商店查看",
+		comingSoon:       "即将推出",
+		unreleasedHint:   "待发售，可提前预设目标价",
+		unpriced:         "暂无报价",
+		wasPriceDiscount: "原价 %s · 优惠 %d%%",
+		sectionTitle:     "目标价提醒",
+		description:      "当 Steam 商店售价降到该金额或以下时，若已开启收件箱愿望单提醒将收到通知；若当前售价已达标，也会在本页立即提示。",
+		legacyHint:       "当前沿用旧配置中的目标价，保存后将转为本机账号独立管理。",
+		priceLabel:       "目标提醒价格（%s）",
+		placeholder:      "例如 99 或 19.99",
+		inputDetail:      "直接输入 %s 正常金额（正数，最多两位小数）。",
+		save:             "保存目标价",
+		clear:            "清除目标价",
+		confirmClear:     "确认清除这款愿望单游戏的目标价提醒？",
+		savedToast:       "已保存目标价（≤ %s）。",
+		cleared:          "已清除目标价提醒。",
+		invalidPrice:     "请输入有效的正数金额（最多两位小数，例如 99 或 19.99）。",
+		accountChanged:   "Steam 账号已切换，请重新打开愿望单详情再修改目标价。",
+		rowHint:          "目标价 ≤ %s",
+		metBadge:         "已达目标价",
+		metBannerTitle:   "已达到目标价",
+		metBannerDetail:  "当前 Steam 商店售价已低于或等于你设定的目标价（%s）。",
+	},
 	recap: recapText{
 		title: "游玩复盘", period: "周期", invalidArgs: "请选择 month、quarter、year 或 all，top_n 可设为 1–20。",
 		noBaseline: "尚缺可对比的周期起点快照。改天再打开复盘，即可自动累计游玩增量。",
@@ -230,33 +311,34 @@ var chinese = text{
 		"snooze": "暂离", "looking_to_trade": "想交易", "looking_to_play": "想玩游戏", "invisible": "隐身",
 	},
 	problems: map[problem]string{
-		problemSetup:              "请在「设置 › 扩展 › Steam」填写玩家标识和 Web API 密钥。",
-		problemInvalidID:          "Steam 未找到该玩家，请检查 SteamID64 或个人资料自定义名称。",
-		problemCountry:            "请填写有效的两位 ISO 3166-1 商店国家或地区代码。",
-		problemMode:               "请在 Steam 扩展设置中选择手机 App 扫码或 Web API 密钥。",
-		problemKey:                "Steam 拒绝了 Web API 密钥，请在「设置 › 扩展 › Steam」检查已保存的密钥。",
-		problemPrivate:            "此 Steam 个人资料为私密状态。公开资料后可查看游戏活动。",
-		problemProfileUnavailable: "Steam 未共享该玩家的个人资料。",
-		problemGameDetails:        "Steam 未共享这些游戏。可见范围取决于登录方式和 Steam 隐私设置。",
-		problemAchievements:       "Steam 未共享成就进度。可见范围取决于 Steam 隐私设置及游戏是否支持成就。",
-		problemWishlist:           "Steam 未共享愿望单。愿望单可能为私密、为空或暂不可访问。",
-		problemMissing:            "Steam 未返回所选商店地区的此项目。",
-		problemRateLimited:        "Steam 正在限制请求频率，请稍后重试。",
-		problemTimeout:            "Steam 响应超时，请稍后重试。",
-		problemNetwork:            "Steam 暂时不可用，请稍后重试。",
-		problemResponse:           "Steam 返回了无法识别的数据，请稍后重试。",
-		problemCanceled:           "Steam 请求已取消。",
-		problemAuthRequired:       "请在「设置 › 扩展 › Steam」使用 Steam 手机 App 扫码登录。",
-		problemAuthPending:        "请扫描二维码，并在手机上批准登录。",
-		problemAuthRefused:        "Steam 已结束此次登录请求，请重新发起扫码登录。",
-		problemAuthTimeout:        "Steam 扫码登录已超时，请重新发起扫码登录。",
-		problemAuthExpired:        "Steam 登录已失效，请重新扫码登录。",
-		problemAuthLoad:           "Persona 无法恢复已保存的 Steam 登录，请重新扫码登录。",
-		problemAuthSave:           "Persona 无法保存 Steam 登录，请在 Hub 密钥存储可用后重试。",
-		problemAuthDelete:         "Persona 无法删除已保存的 Steam 登录，请重试登出。",
-		problemAuthClearing:       "Persona 正在清除已保存的 Steam 登录，请稍后重试。",
-		problemBacklogStore:       "Persona 无法访问本机 Steam 游戏标注。",
-		problemRecapStore:         "Persona 无法访问本机 Steam 游玩历史。",
+		problemSetup:               "请在「设置 › 扩展 › Steam」填写玩家标识和 Web API 密钥。",
+		problemInvalidID:           "Steam 未找到该玩家，请检查 SteamID64 或个人资料自定义名称。",
+		problemCountry:             "请填写有效的两位 ISO 3166-1 商店国家或地区代码。",
+		problemMode:                "请在 Steam 扩展设置中选择手机 App 扫码或 Web API 密钥。",
+		problemKey:                 "Steam 拒绝了 Web API 密钥，请在「设置 › 扩展 › Steam」检查已保存的密钥。",
+		problemPrivate:             "此 Steam 个人资料为私密状态。公开资料后可查看游戏活动。",
+		problemProfileUnavailable:  "Steam 未共享该玩家的个人资料。",
+		problemGameDetails:         "Steam 未共享这些游戏。可见范围取决于登录方式和 Steam 隐私设置。",
+		problemAchievements:        "Steam 未共享成就进度。可见范围取决于 Steam 隐私设置及游戏是否支持成就。",
+		problemWishlist:            "Steam 未共享愿望单。愿望单可能为私密、为空或暂不可访问。",
+		problemMissing:             "Steam 未返回所选商店地区的此项目。",
+		problemRateLimited:         "Steam 正在限制请求频率，请稍后重试。",
+		problemTimeout:             "Steam 响应超时，请稍后重试。",
+		problemNetwork:             "Steam 暂时不可用，请稍后重试。",
+		problemResponse:            "Steam 返回了无法识别的数据，请稍后重试。",
+		problemCanceled:            "Steam 请求已取消。",
+		problemAuthRequired:        "请在「设置 › 扩展 › Steam」使用 Steam 手机 App 扫码登录。",
+		problemAuthPending:         "请扫描二维码，并在手机上批准登录。",
+		problemAuthRefused:         "Steam 已结束此次登录请求，请重新发起扫码登录。",
+		problemAuthTimeout:         "Steam 扫码登录已超时，请重新发起扫码登录。",
+		problemAuthExpired:         "Steam 登录已失效，请重新扫码登录。",
+		problemAuthLoad:            "Persona 无法恢复已保存的 Steam 登录，请重新扫码登录。",
+		problemAuthSave:            "Persona 无法保存 Steam 登录，请在 Hub 密钥存储可用后重试。",
+		problemAuthDelete:          "Persona 无法删除已保存的 Steam 登录，请重试登出。",
+		problemAuthClearing:        "Persona 正在清除已保存的 Steam 登录，请稍后重试。",
+		problemBacklogStore:        "Persona 无法访问本机 Steam 游戏标注。",
+		problemWishlistTargetStore: "Persona 无法访问本机 Steam 愿望单目标价。",
+		problemRecapStore:          "Persona 无法访问本机 Steam 游玩历史。",
 
 		problemGlobalAchievements:     "Steam 未共享这款游戏的全球成就达成率。",
 		problemAchievementSchema:      "Steam 未共享这款游戏的成就名称和隐藏状态。",
@@ -289,9 +371,15 @@ var chinese = text{
 	},
 	backlog: backlogText{
 		title: "吃灰盘点与标注", annotation: "本机游戏标注", status: "游玩状态",
-		note: "备注", tags: "标签", unmarked: "暂无本机标注", overlap: "同一款游戏可能计入多个分类。",
-		save: "保存到本机", clear: "清除本机标注", confirmClear: "清除这款游戏的本机状态、备注和标签？",
-		saved: "已保存本机 Steam 游戏状态。", cleared: "已清除本机 Steam 游戏标注。",
+		note: "个人备注", tags: "自定义标签", unmarked: "暂无本机标注", overlap: "同一款游戏可能计入多个分类。",
+		notePlaceholder: "记录游玩进度、攻略心得或下次打开提醒（最多 240 字）",
+		noteDetail:      "仅保存在本机，最多 240 字。",
+		tagsPlaceholder: "例如：RPG, 联机, 周末短局",
+		tagsDetail:      "支持中英文逗号或空格分隔多个标签，最多 8 个、每个最多 32 字，保存时自动去重。",
+		invalidNote:     "个人备注需为有效文本且不超过 240 字。",
+		invalidTags:     "最多填写 8 个标签，每个不超过 32 字（用逗号或空格分隔）。",
+		save:            "保存标注", clear: "清除标注", confirmClear: "清除这款游戏的本机状态、备注和标签？",
+		saved: "已保存本机 Steam 游戏标注。", cleared: "已清除本机 Steam 游戏标注。",
 		accountChanged: "Steam 账号已切换，请重新打开游戏详情再编辑标注。",
 		activity: map[string]string{
 			neverPlayed: "从未打开", triedUnder2h: "试水不足 2 小时",

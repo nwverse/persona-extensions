@@ -22,6 +22,8 @@ const (
 	gameNewsAction     = "game-news"
 	newsPageLimit      = 5
 	backlogStatusField = "backlog_status"
+	backlogNoteField   = "backlog_note"
+	backlogTagsField   = "backlog_tags"
 	recapAction        = "playtime-recap"
 	recapPeriodAction  = "recap-period"
 )
@@ -36,6 +38,7 @@ type pageState struct {
 	From           string      `json:"from,omitempty"`
 	News           bool        `json:"news,omitempty"`
 	BacklogAccount string      `json:"backlog_account,omitempty"`
+	TargetAccount  string      `json:"target_account,omitempty"`
 	Recap          recapPeriod `json:"recap,omitempty"`
 }
 
@@ -93,7 +96,7 @@ func (a *app) readState(r *ext.UIRequest, t *text) (pageState, error) {
 		st.LibraryPage < 0 || st.LibraryPage > maxGames/pageSize ||
 		st.WishPage < 0 || st.WishPage > maxWishlistItems/pageSize ||
 		(st.Recap != "" && (!slices.Contains(recapPeriods[:], st.Recap) || st.News || st.AppID != 0)) ||
-		(st.AppID != 0 && (st.News || (st.From != recentSection && st.From != librarySection))) {
+		(st.AppID != 0 && (st.News || (st.From != recentSection && st.From != librarySection && st.From != wishSection))) {
 		return pageState{}, invalid(t.invalidPage)
 	}
 	if st.Sort == "" {
@@ -103,7 +106,7 @@ func (a *app) readState(r *ext.UIRequest, t *text) (pageState, error) {
 		return pageState{}, invalid(t.invalidPage)
 	}
 	if st.AppID == 0 {
-		st.From, st.BacklogAccount = "", ""
+		st.From, st.BacklogAccount, st.TargetAccount = "", "", ""
 	}
 	st.Query = a.viewQuery(st.Query)
 	return st, nil
@@ -166,10 +169,15 @@ func (a *app) action(ctx context.Context, r *ext.UIRequest) (*wire.ActionResult,
 		st.WishPage--
 	case "backlog-save", "backlog-clear":
 		return a.backlogAction(ctx, r, t, st)
+	case wishlistTargetSaveAction, wishlistTargetClearAction:
+		return a.wishlistTargetAction(ctx, r, t, st)
 	default:
 		from, rawID, ok := strings.Cut(r.Action, "-game-")
+		if from == "wish" {
+			from = wishSection
+		}
 		id, parseErr := strconv.ParseUint(rawID, 10, 32)
-		if !ok || parseErr != nil || id == 0 || (from != recentSection && from != librarySection) {
+		if !ok || parseErr != nil || id == 0 || (from != recentSection && from != librarySection && from != wishSection) {
 			return nil, invalid(t.invalidAction)
 		}
 		st.AppID, st.From, st.News, st.Recap = uint32(id), from, false, ""
@@ -192,12 +200,14 @@ func (a *app) accountPage(ctx context.Context, d *steamData, t *text, st pageSta
 		return unavailablePage(t, d.setup)
 	}
 	var view *wire.View
-	st.BacklogAccount = ""
+	st.BacklogAccount, st.TargetAccount = "", ""
 	switch {
 	case st.Recap != "":
 		view = a.recapPage(ctx, d, t, st, refresh)
 	case st.News:
 		view = a.gameNewsPage(ctx, d, t, st)
+	case st.AppID != 0 && st.From == wishSection:
+		view = a.wishlistDetail(ctx, d, t, st)
 	case st.AppID != 0:
 		view = a.gameDetail(ctx, d, t, st)
 	case d.config.FriendsRadarEnabled && d.setup == "":
@@ -217,25 +227,32 @@ func (a *app) accountPage(ctx context.Context, d *steamData, t *text, st pageSta
 }
 
 func unavailablePage(t *text, issue problem) *wire.View {
-	return &wire.View{Title: "Steam", Sections: []wire.Section{{Title: t.overview,
-		Items: []wire.Component{empty(t.message(issue, false)), button(t.refresh, "refresh")}}}}
+	return &wire.View{Title: "Steam", Sections: []wire.Section{{Title: t.overview, Icon: wire.NavIconPlay,
+		Items: []wire.Component{emptyWithIcon(t.message(issue, false), wire.NavIconInfo), button(t.refresh, "refresh")}}}}
 }
 
 func (a *app) overview(ctx context.Context, d *steamData, t *text, st pageState, refresh bool) *wire.View {
 	s := d.snapshot(ctx, t.storeLanguage, refresh, true)
 	view := &wire.View{Title: "Steam"}
-	profile := wire.Section{Title: t.overview}
+	profile := wire.Section{Title: t.overview, Icon: wire.NavIconPlay}
 	if p := s.player.Data; p == nil {
 		if d.session == nil {
 			return unavailablePage(t, s.player.Issue)
 		}
-		profile.Items = []wire.Component{empty(t.message(s.player.Issue, false))}
+		profile.Items = []wire.Component{emptyWithIcon(t.message(s.player.Issue, false), wire.NavIconInfo)}
 	} else {
 		name := p.Name
 		if name == "" {
 			name = t.status
 		}
-		profile.Items = []wire.Component{{Type: wire.ComponentRow, Title: name, Subtitle: t.presence(p)}}
+		profileRow := wire.Component{Type: wire.ComponentRow, Title: name, Subtitle: t.presence(p), Icon: wire.NavIconPerson}
+		switch {
+		case p.Playing != "" || p.PlayApp != 0:
+			profileRow.Icon, profileRow.IconColor = wire.NavIconPlay, "green"
+		case p.State == "online" || p.State == "looking_to_play" || p.State == "looking_to_trade":
+			profileRow.IconColor = "blue"
+		}
+		profile.Items = []wire.Component{profileRow}
 		profile.Footer = t.message(s.player.Issue, s.player.Stale)
 		if d.session == nil && !p.Public {
 			profile.Footer = joinText(profile.Footer, t.message(problemPrivate, false))
@@ -259,11 +276,17 @@ func (a *app) overview(ctx context.Context, d *steamData, t *text, st pageState,
 	if s.library.Data != nil {
 		entries, backlogIssue = a.backlogEntries(d, s.player)
 	}
+	var wishTargets map[uint32]WishlistTarget
+	if s.wishlist.Data != nil {
+		if steamID, issue := d.readID(s.player); issue == "" {
+			wishTargets, _ = d.effectiveWishlistTargetsForView(steamID, s.wishlist.Data.Items)
+		}
+	}
 	view.Sections = []wire.Section{
 		profile,
 		gamesSection(t, recentSection, s.recent, &st, entries),
 		gamesSection(t, librarySection, s.library, &st, entries),
-		wishlistSection(t, s.wishlist, &st),
+		wishlistSection(t, s.wishlist, &st, wishTargets),
 	}
 	if s.library.Data != nil {
 		view.Sections = append(view.Sections, backlogSection(t, s.library.Data, s.recent, entries, backlogIssue))
@@ -429,17 +452,17 @@ func discountValue(t *text, r reading[wishList]) string {
 }
 
 func gamesSection(t *text, kind string, r reading[gameList], st *pageState, entries map[uint32]BacklogEntry) wire.Section {
-	title, emptyMessage := t.recent, t.noRecent
+	title, emptyMessage, sectionIcon := t.recent, t.noRecent, wire.NavIconClock
 	index := &st.RecentPage
 	if kind == librarySection {
-		title, emptyMessage, index = t.library, t.noGames, &st.LibraryPage
+		title, emptyMessage, sectionIcon, index = t.library, t.noGames, wire.NavIconList, &st.LibraryPage
 		if st.Query != "" {
 			emptyMessage = t.noMatches
 		}
 	}
-	section := wire.Section{Title: title, Footer: t.message(r.Issue, r.Stale)}
+	section := wire.Section{Title: title, Icon: sectionIcon, Footer: t.message(r.Issue, r.Stale)}
 	if r.Data == nil {
-		section.Items, section.Footer = []wire.Component{empty(section.Footer)}, ""
+		section.Items, section.Footer = []wire.Component{emptyWithIcon(section.Footer, wire.NavIconInfo)}, ""
 		return section
 	}
 	games := r.Data.Games
@@ -447,7 +470,7 @@ func gamesSection(t *text, kind string, r reading[gameList], st *pageState, entr
 		games = libraryGames(games, st.Query, st.Sort)
 	}
 	if len(games) == 0 {
-		section.Items = []wire.Component{empty(emptyMessage)}
+		section.Items = []wire.Component{emptyWithIcon(emptyMessage, sectionIcon)}
 	}
 	start, end := window(len(games), index)
 	for _, game := range games[start:end] {
@@ -458,7 +481,7 @@ func gamesSection(t *text, kind string, r reading[gameList], st *pageState, entr
 		id := appIDText(game.AppID)
 		row := wire.Component{
 			Type: wire.ComponentRow, Key: kind + "-" + id, Title: t.gameName(game.AppID, game.Name), Subtitle: subtitle,
-			Action: &wire.Action{ID: kind + "-game-" + id},
+			Icon: wire.NavIconPlay, Action: &wire.Action{ID: kind + "-game-" + id},
 		}
 		if label := t.backlog.statuses[entries[game.AppID].Status]; label != "" {
 			row.Badge = &wire.Badge{Text: label}
@@ -472,36 +495,20 @@ func gamesSection(t *text, kind string, r reading[gameList], st *pageState, entr
 	return section
 }
 
-func wishlistSection(t *text, r reading[wishList], st *pageState) wire.Section {
-	section := wire.Section{Title: t.wishlist, Footer: t.message(r.Issue, r.Stale)}
+func wishlistSection(t *text, r reading[wishList], st *pageState, targets map[uint32]WishlistTarget) wire.Section {
+	section := wire.Section{Title: t.wishlist, Icon: wire.NavIconStar, Footer: t.message(r.Issue, r.Stale)}
 	if r.Data == nil {
-		section.Items, section.Footer = []wire.Component{empty(section.Footer)}, ""
+		section.Items, section.Footer = []wire.Component{emptyWithIcon(section.Footer, wire.NavIconInfo)}, ""
 		return section
 	}
 	items := r.Data.Items
 	if len(items) == 0 {
-		section.Items = []wire.Component{empty(t.noWishes)}
+		section.Items = []wire.Component{emptyWithIcon(t.noWishes, wire.NavIconStar)}
 	}
 	start, end := window(len(items), &st.WishPage)
 	for _, item := range items[start:end] {
-		row := wire.Component{Type: wire.ComponentRow, Key: "wish-" + appIDText(item.AppID), Title: t.gameName(item.AppID, item.Name)}
-		switch {
-		case item.Price != nil:
-			row.Value = item.Price.FinalFormatted
-			if row.Value == "" {
-				row.Value = fmt.Sprintf("%s %d.%02d", item.Price.Currency, item.Price.Final/100, item.Price.Final%100)
-			}
-			if discount := item.Price.DiscountPercent; discount > 0 {
-				row.Badge = &wire.Badge{Text: fmt.Sprintf(t.discount, discount), Tone: wire.TonePositive}
-			}
-		case item.IsFree:
-			row.Value = t.freeToPlay
-		case item.PriceChecked:
-			row.Subtitle = t.noPrice
-		default:
-			row.Subtitle = t.priceUnchecked
-		}
-		section.Items = append(section.Items, row)
+		target, hasTarget := targets[item.AppID]
+		section.Items = append(section.Items, wishlistRow(t, item, target, hasTarget))
 	}
 	addPager(t, &section, wishSection, start, end, len(items))
 	if r.Data.Total > len(items) {
@@ -544,9 +551,10 @@ func (a *app) gameDetail(ctx context.Context, d *steamData, t *text, st pageStat
 	section.Items = append(section.Items,
 		wire.Component{Type: wire.ComponentStatGrid, Stats: stats},
 		wire.Component{Type: wire.ComponentLink, Title: t.store, URL: storeLink(game.AppID)},
+		wire.Component{Type: wire.ComponentLink, Title: t.communityHub, URL: communityLink(game.AppID)},
 	)
 	progress := d.achievements(ctx, p, game.AppID, t.storeLanguage)
-	achievement := wire.Section{Title: t.achievements}
+	achievement := wire.Section{Title: t.achievements, Icon: wire.NavIconStar}
 	if progress.Data != nil {
 		achievement.Footer = t.message(progress.Issue, progress.Stale)
 	}
@@ -570,7 +578,7 @@ func (a *app) gameDetail(ctx context.Context, d *steamData, t *text, st pageStat
 }
 
 func backlogSection(t *text, owned *gameList, recent reading[gameList], entries map[uint32]BacklogEntry, issue problem) wire.Section {
-	section := wire.Section{Title: t.backlog.title}
+	section := wire.Section{Title: t.backlog.title, Icon: wire.NavIconTag}
 	if issue != "" {
 		section.Items = []wire.Component{empty(t.message(issue, false))}
 		return section
@@ -591,38 +599,43 @@ func backlogSection(t *text, owned *gameList, recent reading[gameList], entries 
 }
 
 func (a *app) backlogDetail(t *text, steamID string, appID uint32) wire.Section {
-	section := wire.Section{Title: t.backlog.annotation}
+	section := wire.Section{Title: t.backlog.annotation, Icon: wire.NavIconTag}
 	entry, marked, err := a.backlog.Get(steamID, appID)
 	if err != nil {
-		section.Items = []wire.Component{empty(t.message(problemBacklogStore, false))}
+		section.Items = []wire.Component{emptyWithIcon(t.message(problemBacklogStore, false), wire.NavIconWarning)}
 		return section
 	}
 	status := entry.Status
 	if !marked {
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.backlog.unmarked})
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.backlog.unmarked, Style: "secondary"})
 	}
 	if t.backlog.statuses[status] == "" {
 		status = BacklogUnplayed
-	}
-	if note := cleanText(entry.Note, maxBacklogNoteRunes); note != "" {
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Title: t.backlog.note, Subtitle: note})
-	}
-	if tags := cleanText(strings.Join(entry.Tags, " · "), maxBacklogTags*(maxBacklogTagRunes+3)); tags != "" {
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Title: t.backlog.tags, Subtitle: tags})
 	}
 	choices := make([]wire.Choice, 0, len(backlogStatuses))
 	for _, value := range backlogStatuses {
 		choices = append(choices, wire.Choice{Value: string(value), Title: t.backlog.statuses[value]})
 	}
-	section.Items = append(section.Items, wire.Component{
-		Type: wire.ComponentField, Kind: "choice", Label: t.backlog.status, Name: backlogStatusField,
-		Value: string(status), Choices: choices,
-	}, wire.Component{
-		Type: wire.ComponentButton, Title: t.backlog.save, Action: &wire.Action{ID: "backlog-save", Submit: true},
-	})
+	section.Items = append(section.Items,
+		wire.Component{
+			Type: wire.ComponentField, Kind: wire.FieldKindChoice, Label: t.backlog.status, Name: backlogStatusField,
+			Value: string(status), Choices: choices,
+		},
+		wire.Component{
+			Type: wire.ComponentField, Kind: wire.FieldKindMultiline, Label: t.backlog.note, Name: backlogNoteField,
+			Value: entry.Note, Placeholder: t.backlog.notePlaceholder, Detail: t.backlog.noteDetail,
+		},
+		wire.Component{
+			Type: wire.ComponentField, Kind: wire.FieldKindText, Label: t.backlog.tags, Name: backlogTagsField,
+			Value: strings.Join(entry.Tags, ", "), Placeholder: t.backlog.tagsPlaceholder, Detail: t.backlog.tagsDetail,
+		},
+		wire.Component{
+			Type: wire.ComponentButton, Title: t.backlog.save, Action: &wire.Action{ID: "backlog-save", Submit: true},
+		},
+	)
 	if marked {
 		section.Items = append(section.Items, wire.Component{
-			Type: wire.ComponentButton, Title: t.backlog.clear,
+			Type: wire.ComponentButton, Title: t.backlog.clear, Role: "destructive",
 			Action: &wire.Action{ID: "backlog-clear", Confirm: t.backlog.confirmClear},
 		})
 	}
@@ -637,6 +650,20 @@ func (a *app) backlogAction(ctx context.Context, r *ext.UIRequest, t *text, st p
 	if !args.Clear {
 		status := BacklogStatus(r.Values[backlogStatusField])
 		args.Status = &status
+		if rawNote, ok := r.Values[backlogNoteField]; ok {
+			note, err := cleanBacklogNoteInput(rawNote)
+			if err != nil {
+				return nil, invalid(t.backlog.invalidNote)
+			}
+			args.Note = &note
+		}
+		if rawTags, ok := r.Values[backlogTagsField]; ok {
+			tags, err := parseBacklogTagsInput(rawTags)
+			if err != nil {
+				return nil, invalid(t.backlog.invalidTags)
+			}
+			args.Tags = &tags
+		}
 	}
 	if args.validate() != nil {
 		return nil, invalid(t.invalidAction)
@@ -684,6 +711,10 @@ func button(title, action string) wire.Component {
 
 func empty(message string) wire.Component {
 	return wire.Component{Type: wire.ComponentEmpty, Title: message}
+}
+
+func emptyWithIcon(message, icon string) wire.Component {
+	return wire.Component{Type: wire.ComponentEmpty, Title: message, Icon: icon}
 }
 
 func joinText(a, b string) string {

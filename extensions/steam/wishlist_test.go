@@ -87,7 +87,7 @@ func TestWishlistPricesUseOnlyStoreBrowse(t *testing.T) {
 		t.Fatalf("the Inbox lost the promotion or its expiry: %t, %d", giveaway, end)
 	}
 	for _, locale := range []*text{&english, &chinese} {
-		section := wishlistSection(locale, reading[wishList]{Data: list}, &pageState{})
+		section := wishlistSection(locale, reading[wishList]{Data: list}, &pageState{}, nil)
 		if section.Items[1].Value != locale.freeToPlay || section.Items[2].Subtitle != locale.noPrice {
 			t.Fatalf("wishlist UI lost the free and unpriced states: %+v", section.Items)
 		}
@@ -114,7 +114,7 @@ func TestWishlistExpiredSnapshotAfterSteamTimeout(t *testing.T) {
 	if got.Data.Items[0].Price == nil || got.Data.Items[0].Price.Final != 399 || got.Data.Items[1].AppID != newApp || got.Data.Items[1].PriceChecked {
 		t.Fatalf("stale quotes must only fill matching current wishlist entries: %+v", got.Data.Items)
 	}
-	section := wishlistSection(&chinese, got, &pageState{})
+	section := wishlistSection(&chinese, got, &pageState{}, nil)
 	if section.Items[0].Value != "$3.99" || section.Footer != chinese.message(problemTimeout, true) {
 		t.Fatalf("the page did not display the stale price and warning: %+v", section)
 	}

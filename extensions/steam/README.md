@@ -1,6 +1,6 @@
 # Steam
 
-Steam 0.3.3 researches Store games and reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to review your backlog, annotate games locally and open a playtime recap. The Overview card opens the same page. Friends Radar, wishlist alerts and gaming profile memory are optional.
+Steam 0.3.6 researches Store games and reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to set per-game wishlist target price alerts, review your backlog, edit local game progress, notes and tags, and open a playtime recap. The Overview card opens the same page. Friends Radar, wishlist alerts and gaming profile memory are optional.
 
 The wishlist loads regional prices, titles and release information together through Steam StoreBrowse. A slow batch leaves the other results visible. When Steam temporarily fails, the page labels any usable cached snapshot. [Network and cache behavior](../../docs/extensions/steam.md#refresh-and-storage)
 
@@ -15,7 +15,7 @@ To use the read-only Web API key fallback, select **Web API key** and enter a St
 
 ## Backlog and tonight's picks
 
-Open a game from the library to select and save a local status. The **Backlog & local progress** section shows library counts, and annotated games display their status on their rows. Use **Clear local annotation** in game details to remove the status, note and tags.
+Open a game from the library or recently played list to edit and save its local status, personal note (up to 240 characters) and custom tags (comma- or space-separated, up to eight tags). The **Backlog & local progress** section shows library counts, and annotated games display their status on their rows. Use **Clear annotation** in game details to remove the status, note and tags.
 
 - `steam_backlog_summary` counts games by lifetime minutes, recent activity and local status. Pass `bucket` or `status` to list matching games in pages of up to 50. Counts can overlap.
 - `steam_backlog_mark` sets `status` for one `appid`, with an optional `note` and `tags`. Omitted fields retain their values. Use `clear: true` with the AppID to clear the annotation.
@@ -86,7 +86,7 @@ The table shows which features can add assistant context or trigger Inbox triage
 | `discovery_max_results` | 15 (1–50) | Caps tags and search candidates per call. Details batches also have a ceiling of 10 games. |
 | Steam game discovery contribution | Off | The optional skill has its own Contributions switch and follows the research gate and Hub delivery rules. |
 
-Choose the triggers in `wishlist_event_triggers`. The discount threshold defaults to 50%, and `wishlist_target_prices` accepts optional rules such as `123:USD:999`. A local-low alert needs an earlier price in the same currency. Steam checks at startup or QR sign-in and every six hours while alerts are enabled. Each price is announced once per sale window. Releases and demos use their own versions. QR sign-out clears the in-memory observations and Inbox queue. Web API key mode stores these snapshots atomically under `steam-store-v1`. [Wishlist alerts and deduplication](../../docs/extensions/steam.md#wishlist-inbox-alerts)
+Choose the triggers in `wishlist_event_triggers`. The discount threshold defaults to 50%. Open any wishlist game under **Personal › Steam** to view its current Store price, locally observed low and Store/Community links, and set or clear a human-readable target price (for example, `99` or `19.99`). Target prices are saved per SteamID64 in `steam-store-v1/wishlist-targets.json` and take precedence over any legacy `wishlist_target_prices` rules in existing config files. A local-low alert needs an earlier price in the same currency. Steam checks at startup or QR sign-in and every six hours while alerts are enabled. Each price is announced once per sale window. Releases and demos use their own versions. QR sign-out clears the in-memory observations and Inbox queue while preserving explicit local backlog annotations and wishlist target prices. Web API key mode stores these snapshots atomically under `steam-store-v1`. [Wishlist alerts and deduplication](../../docs/extensions/steam.md#wishlist-inbox-alerts)
 
 Use `steam_wishlist_deals` for an on-demand list of deals, target prices met, local lows and giveaways, including when Inbox alerts are off.
 

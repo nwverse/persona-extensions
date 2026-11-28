@@ -39,10 +39,6 @@
       "title": "愿望单折扣门槛（%）",
       "description": "折扣达到或超过该百分比时提醒。范围 1–100，默认 50。"
     },
-    "wishlist_target_prices": {
-      "title": "愿望单目标价",
-      "description": "可选。使用 AppID:货币:Steam 价格单位，以逗号分隔，最多 20 条。例如 123:USD:999 表示 9.99 美元。"
-    },
     "patch_notes_summary_enabled": {
       "title": "重大更新 AI 摘要",
       "description": "向助手提供简短的更新公告正文片段以生成摘要。默认关闭，此时可查看标题、日期、来源和链接。"
