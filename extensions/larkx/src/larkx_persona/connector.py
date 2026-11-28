@@ -9,7 +9,7 @@ import time
 from datetime import datetime, timezone
 
 from .hooks import delivery_id
-from .real import mention_parts
+from .real import parse_markdown_rich_text
 from .wire import RpcError
 
 ID = "larkx"
@@ -119,7 +119,7 @@ def _mentions(args, text):
     if not args.get("mentions"):
         return []
     try:
-        mention_parts(text, args.get("mentions") or [])
+        parse_markdown_rich_text(text, args.get("mentions") or [])
     except ValueError as e:
         raise RpcError(str(e), "invalid_params") from e
     return args.get("mentions") or []
@@ -577,7 +577,8 @@ class Connector:
             raise RpcError(_UNKNOWN_SEND)
         try:
             msg_id = self.backend.send(chat, text, root, mentions=mentions() if mentions else [])
-        except Exception:
+        except Exception as e:
+            self._log("channel send failed: %s" % type(e).__name__)
             msg_id = None
         if not msg_id:
             raise RpcError(_UNKNOWN_SEND)
@@ -679,7 +680,7 @@ class Connector:
         if not targets:
             return []
         try:
-            mention_parts(text, targets)
+            parse_markdown_rich_text(text, targets)
         except ValueError:
             return []
         return targets
@@ -873,7 +874,8 @@ class Connector:
             root = quoted.get("root") or reply_to
         try:
             msg_id = self.backend.send(chat, text, root, mentions=mentions)
-        except Exception:
+        except Exception as e:
+            self._log("send failed: %s" % type(e).__name__)
             msg_id = None
         if not msg_id:
             # Left without a result on purpose: this key is never tried again.
@@ -966,9 +968,16 @@ class Connector:
 
     def inbox_reply(self, p):
         thread, text = _required(p, "thread"), _required(p, "text")
-        key = p.get("client_id") or hashlib.sha256(("%s|%s|%s" % (thread, p.get("last"), text)).encode()).hexdigest()
+        mentions = _mentions(p, text)
+        if p.get("client_id"):
+            key = p["client_id"]
+        elif mentions:
+            encoded = json.dumps(mentions, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+            key = hashlib.sha256(("%s|%s|%s|%s" % (thread, p.get("last"), text, encoded)).encode()).hexdigest()
+        else:
+            key = hashlib.sha256(("%s|%s|%s" % (thread, p.get("last"), text)).encode()).hexdigest()
         chat, _, root = thread.partition(":")
-        self._send_once("reply:" + key, chat, text, root or None)
+        self._send_once("reply:" + key, chat, text, root or None, mentions)
         return {}
 
     # threads

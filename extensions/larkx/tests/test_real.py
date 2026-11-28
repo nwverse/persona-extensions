@@ -14,7 +14,80 @@ sys.path.insert(0, os.path.join(ROOT, "src"))
 UPSTREAM = os.environ.get("LARKX_UPSTREAM", "")
 DEPS = os.environ.get("LARKX_DEPS", "")
 
-from larkx_persona.real import RealBackend, mute_state
+from larkx_persona.real import RealBackend, mute_state, parse_markdown_rich_text
+
+
+class OutboundMarkdownTest(unittest.TestCase):
+    def test_plain_text_without_mentions_stays_non_rich(self):
+        blocks, inner, has_rich, has_md = parse_markdown_rich_text("@Example hi\n普通换行 2 * 3 * 4")
+        self.assertFalse(has_rich)
+        self.assertFalse(has_md)
+        self.assertEqual(inner, "@Example hi\n普通换行 2 * 3 * 4")
+        self.assertEqual([b[0] for b in blocks], ["line", "line"])
+
+    def test_inline_markdown_and_mentions_parse_together(self):
+        text = "@Alice **Root cause**: call `fetch_report` and check [docs](https://example.com/doc) *italic* `not @Alice`"
+        blocks, inner, has_rich, has_md = parse_markdown_rich_text(text, mentions=[{"id": "7001", "name": "Alice"}])
+        self.assertTrue(has_rich)
+        self.assertTrue(has_md)
+        self.assertEqual(blocks[0][0], "line")
+        nodes = blocks[0][1]
+        self.assertEqual(nodes[0], ("at", {"id": "7001", "name": "Alice"}))
+        self.assertIn(("bold", "Root cause"), nodes)
+        self.assertIn(("code", "fetch_report"), nodes)
+        self.assertIn(("link", "docs", "https://example.com/doc"), nodes)
+        self.assertIn(("italic", "italic"), nodes)
+        # @Alice inside inline code stays literal code, not an AT element
+        self.assertIn(("code", "not @Alice"), nodes)
+        self.assertEqual(inner, "@Alice Root cause: call fetch_report and check docs italic not @Alice")
+
+    def test_blocks_code_quote_lists_and_headings_parse(self):
+        text = "\n".join([
+            "## Summary",
+            "1. Step one **check**",
+            "2. Step two @Alice",
+            "- Item A",
+            "- Item B",
+            "> Quoted line",
+            "```python",
+            "print(1)",
+            "```",
+        ])
+        blocks, inner, has_rich, has_md = parse_markdown_rich_text(text, mentions=[{"id": "7001", "name": "Alice"}])
+        self.assertTrue(has_rich)
+        self.assertTrue(has_md)
+        self.assertEqual([b[0] for b in blocks], ["line", "ol", "ul", "quote", "code_block"])
+        self.assertEqual(blocks[0][1], [("bold", "Summary")])
+        self.assertEqual(blocks[1][1], 1)
+        self.assertEqual(blocks[1][2][1], [("text", "Step two "), ("at", {"id": "7001", "name": "Alice"})])
+        self.assertEqual(blocks[4], ("code_block", "python", "print(1)"))
+        self.assertIn("1. Step one check", inner)
+
+    def test_unsafe_link_scheme_degrades_to_plain_text(self):
+        blocks, inner, has_rich, has_md = parse_markdown_rich_text("Click [bad](javascript:alert(1))")
+        self.assertFalse(has_rich)
+        self.assertFalse(has_md)
+        self.assertEqual(inner, "Click [bad](javascript:alert(1))")
+        self.assertEqual(blocks, [("line", [("text", "Click [bad](javascript:alert(1))")])])
+
+    def test_unwritten_mention_raises(self):
+        with self.assertRaises(ValueError):
+            parse_markdown_rich_text("**bold** without mention", mentions=[{"id": "7001", "name": "Alice"}])
+
+    def test_overlong_ordered_list_marker_and_nested_fence_info_string(self):
+        # CommonMark limits ordered-list markers to 1-9 digits so protobuf int32 start never overflows.
+        blocks, inner, has_rich, has_md = parse_markdown_rich_text("202611270001. note")
+        self.assertFalse(has_rich)
+        self.assertFalse(has_md)
+        self.assertEqual(blocks, [("line", [("text", "202611270001. note")])])
+        self.assertEqual(inner, "202611270001. note")
+
+        # A line like ```python inside a fenced code block is content, not a closing fence.
+        nested = "```markdown\nExample:\n```python\nprint(1)\n```"
+        blocks, _, has_rich, has_md = parse_markdown_rich_text(nested)
+        self.assertTrue(has_rich)
+        self.assertTrue(has_md)
+        self.assertEqual(blocks, [("code_block", "markdown", "Example:\n```python\nprint(1)")])
 
 
 class MuteStateTest(unittest.TestCase):
@@ -291,6 +364,93 @@ class RealTest(unittest.TestCase):
             backend.send("6001", "@Example hi", None, mentions=[{"id": "ou_not_numeric", "name": "Example"}])
         mock_client.send_msg.assert_not_called()
         mock_client._gateway_post.assert_not_called()
+
+    def test_markdown_and_mentions_build_post_rich_text_and_fallback_on_reject(self):
+        from larkx_persona.real import RealBackend
+        backend = RealBackend(ROOT, self.home.name, "feishu")
+        backend._client = self.larkx.LarkClient.__new__(self.larkx.LarkClient)
+        backend._client.is_thread_chat = lambda chat: False
+        sent = []
+        ok_resp = self.P.PutMessageResponse()
+        ok_resp.message.id = "m_rich"
+        ok_pkt = self.P.Packet(status=0, payload=ok_resp.SerializeToString())
+        backend._client._gateway_post = lambda packet: sent.append(packet) or ok_pkt.SerializeToString()
+        text = "@Example **重要** `cmd` [文档](https://example.com/a)\n\n> 引用\n- 无序\n1. 第一项\n2. 第二项\n```python\nprint(1)\n```"
+        self.assertEqual(backend.send("6001", text, None, mentions=[{"id": "7001", "name": "Example"}]), "m_rich")
+        full = self.full_lark.messages.PutMessageRequest()
+        full.ParseFromString(sent[0].payload)
+        self.assertEqual(full.type, 2)
+        self.assertEqual(list(full.atUserIdList), [7001])
+        rich = full.content.richText
+        # Every element, including empty-property containers (P, LI, QUOTE, CODE) and blank-line TEXT,
+        # must carry the property field on the wire for Feishu's proto2 server unmarshaler.
+        for eid, el in rich.elements.dictionary.items():
+            self.assertTrue(el.HasField("property"), f"element {eid} (tag={el.tag}) missing property field")
+        top_tags = [rich.elements.dictionary[eid].tag for eid in rich.elementIds]
+        self.assertEqual(top_tags, [3, 3, 29, 26, 27, 37])
+        p_el = rich.elements.dictionary[rich.elementIds[0]]
+        child_tags = [rich.elements.dictionary[cid].tag for cid in p_el.childIds]
+        self.assertEqual(child_tags, [5, 1, 1, 1, 30, 1, 6])
+        self.assertEqual(dict(rich.elements.dictionary[p_el.childIds[2]].style), {"fontWeight": "bold"})
+        self.assertEqual(len(rich.atIds), 1)
+        self.assertEqual(len(rich.anchorIds), 1)
+        code_el = rich.elements.dictionary[p_el.childIds[4]]
+        self.assertEqual(len(code_el.childIds), 1)
+        code_child = self.P.TextProperty()
+        code_child.ParseFromString(rich.elements.dictionary[code_el.childIds[0]].property)
+        self.assertEqual(code_child.content, "cmd")
+        cb = self.full_lark.entities.RichTextElement.CodeBlockV2Property()
+        cb.ParseFromString(rich.elements.dictionary[rich.elementIds[-1]].property)
+        self.assertEqual(cb.language, 50)
+        self.assertTrue(cb.wordWrap)
+        self.assertEqual(cb.version, 1)
+        self.assertEqual([[c.content for c in line.contents] for line in cb.contents], [["print(1)"]])
+
+        # Explicit gateway rejection (non-zero Packet.status or HTTPError) falls back to TEXT blocks, then inline TEXT,
+        # and if still rejected, to plain TEXT preserving @mentions.
+        sent.clear()
+        err_pkt = self.P.Packet(status=500)
+        responses = iter([err_pkt.SerializeToString(), err_pkt.SerializeToString(), err_pkt.SerializeToString(), ok_pkt.SerializeToString()])
+        backend._client._gateway_post = lambda packet: sent.append(packet) or next(responses)
+        self.assertEqual(backend.send("6001", "@Example **重要**", None, mentions=[{"id": "7001", "name": "Example"}]), "m_rich")
+        self.assertEqual(len(sent), 4)
+        inline_fb = self.full_lark.messages.PutMessageRequest()
+        inline_fb.ParseFromString(sent[2].payload)
+        self.assertEqual(inline_fb.type, 4)
+        self.assertEqual([inline_fb.content.richText.elements.dictionary[e].tag for e in inline_fb.content.richText.elementIds], [5, 1, 1])
+        self.assertEqual(dict(inline_fb.content.richText.elements.dictionary[inline_fb.content.richText.elementIds[2]].style), {"fontWeight": "bold"})
+        plain_fb = self.full_lark.messages.PutMessageRequest()
+        plain_fb.ParseFromString(sent[3].payload)
+        self.assertEqual(plain_fb.type, 4)
+        self.assertEqual([plain_fb.content.richText.elements.dictionary[e].tag for e in plain_fb.content.richText.elementIds], [5, 1])
+        self.assertEqual(list(plain_fb.atUserIdList), [7001])
+
+        # HTTP 5xx responses may already have delivered the message: never retry with new cids.
+        class HttpErr(Exception):
+            def __init__(self, code):
+                self.response = mock.Mock(status_code=code, content=b"")
+
+        for code in (500, 502, 503, 504):
+            sent.clear()
+            def fail_5xx(packet, status=code):
+                sent.append(packet)
+                raise HttpErr(status)
+            backend._client._gateway_post = fail_5xx
+            self.assertIsNone(backend.send("6001", "**uncertain**", None))
+            self.assertEqual(len(sent), 1)
+
+        # HTTP 400 is an explicit rejection before delivery and does fall back.
+        sent.clear()
+        calls = iter([HttpErr(400), ok_pkt.SerializeToString()])
+        def fail_400_then_ok(packet):
+            sent.append(packet)
+            nxt = next(calls)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+        backend._client._gateway_post = fail_400_then_ok
+        self.assertEqual(backend.send("6001", "**bold**", None), "m_rich")
+        self.assertEqual(len(sent), 2)
 
     def test_no_mentions_keeps_the_original_send_path(self):
         from larkx_persona.real import RealBackend
