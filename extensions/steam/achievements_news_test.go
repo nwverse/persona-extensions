@@ -343,7 +343,7 @@ func TestGameNewsRecentGamesAndLibraryFallback(t *testing.T) {
 }
 
 func TestGameNewsSlowAppKeepsSiblingUpdates(t *testing.T) {
-	f := newFakeSteam(t, 7*time.Second)
+	f := newFakeSteam(t, time.Second)
 	f.handle(newsForAppPath, func(w http.ResponseWriter, r *http.Request) {
 		id := r.URL.Query().Get("appid")
 		if id == appIDText(firstApp) {
@@ -358,7 +358,7 @@ func TestGameNewsSlowAppKeepsSiblingUpdates(t *testing.T) {
 	h := startTestHost(t, f, fixtureID, "GB", "")
 	start := time.Now()
 	got := toolAnswer(t, h, gameNewsName, `{"games_limit":2}`)
-	if elapsed := time.Since(start); elapsed > batchTimeout+time.Second {
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("one news request consumed the page budget: %s", elapsed)
 	}
 	contains(t, got, `"available":true`, "Fast Patch Notes", "Zeta Rally", `"dataset":"game_news/`+appIDText(firstApp)+`"`, `"code":"timeout"`)

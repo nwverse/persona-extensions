@@ -121,7 +121,7 @@ func TestWishlistExpiredSnapshotAfterSteamTimeout(t *testing.T) {
 }
 
 func TestWishlistSlowBatchKeepsOtherPriorityBatches(t *testing.T) {
-	f := newFakeSteam(t, 8*time.Second)
+	f := newFakeSteam(t, time.Second)
 	items := make([]wishItem, (steamConcurrency+1)*storeBatchSize)
 	for i := range items {
 		// Return the wishlist in reverse order to verify the output uses priority.
@@ -155,7 +155,7 @@ func TestWishlistSlowBatchKeepsOtherPriorityBatches(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"response": map[string]any{"store_items": rows}})
 	})
-	ctx, cancel := context.WithTimeout(t.Context(), 7*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	result := make(chan reading[wishList], 1)
 	start := time.Now()
@@ -172,7 +172,7 @@ func TestWishlistSlowBatchKeepsOtherPriorityBatches(t *testing.T) {
 	}
 	close(release)
 	got := <-result
-	if time.Since(start) > batchTimeout+1500*time.Millisecond || got.Issue != problemTimeout || got.Data == nil || got.Data.Checked != len(items)-storeBatchSize {
+	if time.Since(start) > 3*time.Second || got.Issue != problemTimeout || got.Data == nil || got.Data.Checked != len(items)-storeBatchSize {
 		t.Fatalf("a single hung batch lost completed results or consumed the outer budget: elapsed=%s, issue=%s, data=%v", time.Since(start), got.Issue, got.Data != nil)
 	}
 	if f.hit(storeBrowsePath) != steamConcurrency+1 || f.hit(appDetailsPath) != 0 {

@@ -41,6 +41,35 @@ func TestSteamHTTPDefaultTransport(t *testing.T) {
 	}
 }
 
+func TestSteamRequestDeadlinesAllowProxyLatency(t *testing.T) {
+	f := newFakeSteam(t, httpTimeout)
+	f.reply(reviewsAPIPath, http.StatusOK, `{}`)
+	f.reply(storeSearchPath, http.StatusOK, `{}`)
+	budgets := map[string]time.Duration{
+		reviewsAPIPath:  8 * time.Second,
+		storeSearchPath: 5 * time.Second,
+		storeBrowsePath: 6 * time.Second,
+	}
+	transport := f.http.Transport
+	f.http.Transport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		deadline, ok := r.Context().Deadline()
+		want := budgets[r.URL.Path]
+		if left := time.Until(deadline); !ok || left < want-time.Second || left > want {
+			t.Errorf("%s has %s remaining, want a deadline near %s", r.URL.Path, left, want)
+		}
+		return transport.RoundTrip(r)
+	})
+	c := steamClient{http: f.http}
+	for _, target := range []string{apiBase + reviewsAPIPath, storeBase + storeSearchPath} {
+		if issue := c.get(t.Context(), target, nil, false, &struct{}{}); issue != "" {
+			t.Fatalf("%s: %s", target, issue)
+		}
+	}
+	if items, issue := c.browseStore(t.Context(), []uint32{firstApp}, "US", "english", storeDataRequest{}); issue != "" || len(items) != 1 {
+		t.Fatalf("StoreBrowse returned %d items, issue %s", len(items), issue)
+	}
+}
+
 func TestSteamTransportLimitsActiveBodiesPerOrigin(t *testing.T) {
 	f := newFakeSteam(t, 3*time.Second)
 	streaming := make(chan struct{}, steamConcurrency+1)

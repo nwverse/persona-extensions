@@ -688,8 +688,7 @@ func TestFriendsPresenceSlowBatchRetainsOtherSummaries(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"response": map[string]any{"players": players}})
 	})
-	client.Timeout = 7 * time.Second
-	ctx, cancel := context.WithTimeout(t.Context(), 6*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	result := make(chan reading[[]player], 1)
 	start := time.Now()
@@ -706,7 +705,7 @@ func TestFriendsPresenceSlowBatchRetainsOtherSummaries(t *testing.T) {
 	}
 	close(release)
 	got := <-result
-	if elapsed := time.Since(start); elapsed > batchTimeout+1500*time.Millisecond || got.Issue != problemTimeout || got.Data == nil || len(*got.Data) != len(ids)-friendBatchSize {
+	if elapsed := time.Since(start); elapsed > 3*time.Second || got.Issue != problemTimeout || got.Data == nil || len(*got.Data) != len(ids)-friendBatchSize {
 		t.Fatalf("a hung summary batch lost other results or used the request budget: elapsed=%s issue=%s", elapsed, got.Issue)
 	}
 }
@@ -740,12 +739,11 @@ func TestCoopOverlapSlowLibraryKeepsOtherFriendsAndStoreNames(t *testing.T) {
 			t.Error("unexpected overlap endpoint")
 		}
 	})
-	client.Timeout = 7 * time.Second
 	h := startFriendsHost(t, client, key, "en", fmt.Sprintf(`{"steam_id":%q,"friends_radar_enabled":true}`, fixtureID), t.TempDir(), time.Now)
 	args, _ := json.Marshal(map[string]any{"friend_steam_ids": friends})
 	start := time.Now()
 	got := toolAnswer(t, h, coopOverlapTool, string(args))
-	if elapsed := time.Since(start); elapsed > batchTimeout+time.Second {
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
 		t.Fatalf("a hung peer library took %s", elapsed)
 	}
 	contains(t, got, `"partial":true`, `"included_friend_count":4`, `"code":"timeout"`, `"total_playtime":25`, `"coop_support":"supported"`, "Shared Store name")

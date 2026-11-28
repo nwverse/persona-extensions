@@ -37,8 +37,9 @@ const (
 	maxGames    = 20_000
 	nameRunes   = 120
 
-	apiReadTimeout   = 4 * time.Second
-	storeReadTimeout = 3 * time.Second
+	// Allow cold connections through slow proxies before falling back to cached data.
+	apiReadTimeout   = 8 * time.Second
+	storeReadTimeout = 5 * time.Second
 )
 
 type steamClient struct {

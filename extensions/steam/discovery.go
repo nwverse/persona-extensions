@@ -225,7 +225,12 @@ func discoveryLanguage(input, fallback string) (string, bool) {
 }
 
 func (a *app) callDiscoveryTool(ctx context.Context, name string, raw json.RawMessage) (wire.ConnectorCallResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, discoveryBudget)
+	budget := discoveryBudget
+	if name == gameDetailsTool {
+		// StoreBrowse runs before review jobs, so give both stages room for a batch.
+		budget = min(readBudget, 2*batchTimeout)
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	t := textFor(a.locale)
 	fallbackLanguage, ok := discoveryLanguage(a.locale, t.storeLanguage)

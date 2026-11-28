@@ -11,7 +11,7 @@ import (
 const (
 	steamConcurrency = 4
 	storeBatchSize   = 50
-	batchTimeout     = 2500 * time.Millisecond
+	batchTimeout     = 6 * time.Second
 )
 
 type batchResult[T any] struct {
