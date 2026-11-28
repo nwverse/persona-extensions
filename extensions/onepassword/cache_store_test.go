@@ -91,6 +91,9 @@ func TestMetadataSurvivesHubRecreationAfterAuthorizationExpires(t *testing.T) {
 		return cli.run(ctx, args...)
 	}
 	a, _ := onComputerRun(t, run)
+	// This fixture exercises cache/auth RPCs. The SDK parser's cold WASM startup is tested separately and must not
+	// consume secretTimeout before the fake node sees a describe request.
+	a.validate = func(context.Context, string) error { return nil }
 	at := time.Date(2026, 11, 28, 0, 0, 0, 0, time.UTC)
 	a.now = func() time.Time { return at }
 	slot := &memoryMetadata{}
@@ -114,6 +117,7 @@ func TestMetadataSurvivesHubRecreationAfterAuthorizationExpires(t *testing.T) {
 	at = at.Add(16 * time.Minute)
 	// New Hub-side app and new resident node app. Only the Hub's sealed slot is shared.
 	b, _ := onComputerRun(t, run)
+	b.validate = a.validate
 	b.now = a.now
 	restoreMetadata(t, b, slot, source)
 	for range 3 {
@@ -136,6 +140,7 @@ func TestMetadataSurvivesHubRecreationAfterAuthorizationExpires(t *testing.T) {
 // the sealed record can find the earlier keyed name without persisting any readable form of its secret value.
 func TestRestoredMetadataKeepsItsPrivateNameIndex(t *testing.T) {
 	a, f, _ := clocked(t)
+	a.validate = func(context.Context, string) error { return nil }
 	slot := &memoryMetadata{}
 	source := metadataSource("", testToken)
 	restoreMetadata(t, a, slot, source)
@@ -144,6 +149,7 @@ func TestRestoredMetadataKeepsItsPrivateNameIndex(t *testing.T) {
 	before := slot.bytes()
 	assertNoSecrets(t, "stored metadata", string(before))
 	b := newApp(fakeConnect(f))
+	b.validate = a.validate
 	b.token = testToken
 	b.now = a.now
 	initial := b.metaSeed
