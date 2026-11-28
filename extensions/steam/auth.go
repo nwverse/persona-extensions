@@ -61,12 +61,13 @@ type authResultWait struct {
 }
 
 type qrAuth struct {
-	ctx    context.Context
-	hub    *ext.Hub
-	client steamClient
-	now    func() time.Time
-	config config
-	locale string
+	ctx     context.Context
+	hub     *ext.Hub
+	client  steamClient
+	now     func() time.Time
+	config  config
+	locale  string
+	targets *WishlistTargetStore
 
 	loaded     chan struct{}
 	cancelLoad context.CancelFunc
@@ -82,9 +83,9 @@ type qrAuth struct {
 	storeMu sync.Mutex
 }
 
-func newQRAuth(ctx context.Context, hub *ext.Hub, client *http.Client, now func() time.Time, cfg config, locale string) *qrAuth {
+func newQRAuth(ctx context.Context, hub *ext.Hub, client *http.Client, now func() time.Time, cfg config, locale string, targets *WishlistTargetStore) *qrAuth {
 	loadCtx, cancel := context.WithTimeout(ctx, httpTimeout)
-	a := &qrAuth{ctx: ctx, hub: hub, client: steamClient{http: client}, now: now, config: cfg, locale: locale,
+	a := &qrAuth{ctx: ctx, hub: hub, client: steamClient{http: client}, now: now, config: cfg, locale: locale, targets: targets,
 		loaded: make(chan struct{}), cancelLoad: cancel, issue: problemAuthRequired}
 	go a.restore(loadCtx)
 	return a
@@ -407,6 +408,9 @@ func (a *qrAuth) installLocked(t steamTokens) {
 	cfg := a.config
 	cfg.SteamID = t.secret.SteamID
 	s.reads = newAccountData(cfg, a.client, "", a.now, s)
+	if a.targets != nil {
+		s.reads.stores.targets = a.targets
+	}
 	a.session = s
 	a.issue = ""
 	s.reads.startWishlistInbox(s.ctx, a.hub, textFor(a.locale))

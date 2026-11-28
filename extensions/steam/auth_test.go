@@ -335,7 +335,7 @@ func answerSaved(t *testing.T, h *exttest.Host, saved steamSecret) {
 func restoredSession(t *testing.T, h *exttest.Host, ctx context.Context, hub *ext.Hub, c *http.Client, now func() time.Time, saved steamSecret) (*qrAuth, *qrSession) {
 	t.Helper()
 	answerSaved(t, h, saved)
-	q := newQRAuth(ctx, hub, c, now, config{AuthMode: modeQR, CountryCode: "GB"}, "en")
+	q := newQRAuth(ctx, hub, c, now, config{AuthMode: modeQR, CountryCode: "GB"}, "en", nil)
 	if !q.waitLoaded(t.Context()) {
 		t.Fatal("stored QR session did not load")
 	}
@@ -355,7 +355,7 @@ func TestQRLoginLocalDeadline(t *testing.T) {
 		}
 		authFixture(w, "1", beginFixture())
 	})
-	q := newQRAuth(root, hub, f, time.Now, config{AuthMode: modeQR, CountryCode: "US"}, "en")
+	q := newQRAuth(root, hub, f, time.Now, config{AuthMode: modeQR, CountryCode: "US"}, "en", nil)
 	q.waitLoaded(t.Context())
 	ctx, cancel := context.WithTimeout(root, time.Second)
 	defer cancel()

@@ -317,7 +317,7 @@ func newFriendsQRApp(t *testing.T, client *http.Client, key, access string, save
 	h, root, hub := testSecretHub(t)
 	answerSaved(t, h, saved)
 	cfg := config{AuthMode: modeQR, CountryCode: "US", FriendsRadarEnabled: true}
-	q := newQRAuth(root, hub, client, func() time.Time { return now }, cfg, locale)
+	q := newQRAuth(root, hub, client, func() time.Time { return now }, cfg, locale, nil)
 	if !q.waitLoaded(t.Context()) {
 		t.Fatal("could not initialize the synthetic QR session")
 	}

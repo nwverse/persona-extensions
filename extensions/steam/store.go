@@ -38,6 +38,7 @@ type steamStores struct {
 	prices   *PriceHistoryStore
 	playtime *PlaytimeSnapshotStore
 	cursors  *EventCursorStore
+	targets  *WishlistTargetStore
 }
 
 func newSteamStores(dataDir string) steamStores {
@@ -45,6 +46,7 @@ func newSteamStores(dataDir string) steamStores {
 		prices:   NewPriceHistoryStore(dataDir),
 		playtime: NewPlaytimeSnapshotStore(dataDir),
 		cursors:  NewEventCursorStore(dataDir),
+		targets:  NewWishlistTargetStore(dataDir),
 	}
 }
 

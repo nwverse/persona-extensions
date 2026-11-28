@@ -130,8 +130,9 @@ var english = text{
 		problemAuthSave:           "Persona could not save the Steam sign-in. Try again when the Hub's secret store is available.",
 		problemAuthDelete:         "Persona could not delete the saved Steam sign-in. Try signing out again.",
 		problemAuthClearing:       "Persona is clearing the saved Steam sign-in. Try again in a moment.",
-		problemBacklogStore:       "Persona could not access your local Steam backlog.",
-		problemRecapStore:         "Persona could not access your local playtime history.",
+		problemBacklogStore:        "Persona could not access your local Steam backlog.",
+		problemWishlistTargetStore: "Persona could not access your local Steam wishlist target prices.",
+		problemRecapStore:          "Persona could not access your local playtime history.",
 
 		problemGlobalAchievements:     "Steam did not share global unlock rates for this game.",
 		problemAchievementSchema:      "Steam did not share this game's achievement names and hidden status.",
@@ -255,8 +256,9 @@ var chinese = text{
 		problemAuthSave:           "Persona 无法保存 Steam 登录，请在 Hub 密钥存储可用后重试。",
 		problemAuthDelete:         "Persona 无法删除已保存的 Steam 登录，请重试登出。",
 		problemAuthClearing:       "Persona 正在清除已保存的 Steam 登录，请稍后重试。",
-		problemBacklogStore:       "Persona 无法访问本机 Steam 游戏标注。",
-		problemRecapStore:         "Persona 无法访问本机 Steam 游玩历史。",
+		problemBacklogStore:        "Persona 无法访问本机 Steam 游戏标注。",
+		problemWishlistTargetStore: "Persona 无法访问本机 Steam 愿望单目标价。",
+		problemRecapStore:          "Persona 无法访问本机 Steam 游玩历史。",
 
 		problemGlobalAchievements:     "Steam 未共享这款游戏的全球成就达成率。",
 		problemAchievementSchema:      "Steam 未共享这款游戏的成就名称和隐藏状态。",

@@ -30,6 +30,7 @@ type app struct {
 	publicData  *steamPublicData
 	qr          *qrAuth
 	backlog     *BacklogStore
+	targets     *WishlistTargetStore
 	discovery   *steamDiscovery
 	locale      string
 	triageRules string
@@ -69,6 +70,8 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 			a.steamData = newSteamData(cfg, in.Secrets[keyName], dir, client, now)
 			a.publicData = &steamPublicData{client: steamClient{http: client, key: a.client.key}, now: now}
 			a.backlog = NewBacklogStore(dir)
+			a.targets = NewWishlistTargetStore(dir)
+			a.steamData.stores.targets = a.targets
 			a.locale = in.Hub.Locale
 			a.triageRules = pluginkit.TriageRules(in.InitializeParams.Config)
 			a.discovery = nil
@@ -79,7 +82,7 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 				log.Print("steam: could not update the game discovery skill")
 			}
 			if a.config.AuthMode == modeQR {
-				a.qr = newQRAuth(ctx, hub, client, now, a.config, a.locale)
+				a.qr = newQRAuth(ctx, hub, client, now, a.config, a.locale, a.targets)
 			} else {
 				a.steamData.startWishlistInbox(ctx, hub, textFor(a.locale))
 			}
