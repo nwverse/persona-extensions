@@ -1,0 +1,263 @@
+{
+  "manifest_version": 1,
+  "id": "binance",
+  "name": "币安",
+  "version": "0.1.0",
+  "icon": "assets/icon.png",
+  "description": "查询币安现货、资金、理财、U 本位和币本位合约的余额、持仓、挂单和成交；在你手机确认后，对白名单里的币对下限价或市价单、撤单（现货、U 本位、币本位），也支持可选的纸面模拟盘（独立纸面台账、不向交易所发单）。每笔写操作都要手机确认，并受单笔上限、每日上限、白名单、最大杠杆、限价偏离和市价滑点护栏限制，这些都能在设置里改。不做提现、划转、借贷、改杠杆或保证金模式、条件单和批量单。API Key 必须有读取和交易权限、绑定 IP 白名单，且不能有提现或划转权限，否则拒绝保存。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/binance/README.md",
+  "tags": [
+    "Binance",
+    "币安",
+    "加密货币",
+    "交易"
+  ],
+  "engines": {
+    "persona": ">=202611061502",
+    "plugin_protocol": 1
+  },
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/binance-linux-amd64",
+      "linux-arm64": "bin/binance-linux-arm64",
+      "darwin-arm64": "bin/binance-darwin-arm64",
+      "darwin-amd64": "bin/binance-darwin-amd64"
+    }
+  },
+  "activation_events": [
+    "on_startup"
+  ],
+  "contributes": {
+    "connectors": [
+      {
+        "id": "binance",
+        "name": "币安",
+        "capabilities": [
+          "status",
+          "tools",
+          "actions",
+          "inbox",
+          "fallback"
+        ],
+        "hosts": [
+          "www.binance.com"
+        ],
+        "agent_tools": [
+          "binance_overview",
+          "binance_balances",
+          "binance_positions",
+          "binance_open_orders",
+          "binance_order",
+          "binance_price",
+          "binance_trades",
+          "binance_income",
+          "binance_transfers",
+          "binance_limits",
+          "binance_status"
+        ],
+        "confirm_always": [
+          "binance_*"
+        ],
+        "poll_seconds": 120,
+        "kinds": [
+          "liq_risk",
+          "position_change",
+          "order_filled",
+          "order_rejected",
+          "price_move",
+          "deposit",
+          "withdrawal",
+          "key_problem"
+        ]
+      }
+    ],
+    "assistant": [
+      {
+        "id": "binance",
+        "skills": [
+          "assistant/skills/binance"
+        ]
+      }
+    ]
+  },
+  "settings_check": true,
+  "secrets": [
+    {
+      "name": "api_key",
+      "title": "API Key",
+      "description": "币安 API 管理里创建的 Key。必须开启读取和交易（现货或合约），绑定 IP 白名单；开了提现、内部划转、万向划转、杠杆借贷、期权或统一账户权限的 Key 会被拒绝保存。",
+      "hint": "last4"
+    },
+    {
+      "name": "ed25519_private_key",
+      "title": "Ed25519 私钥（PEM）",
+      "description": "创建「自生成」Ed25519 Key 时用的私钥，完整的 -----BEGIN PRIVATE KEY----- 文本。只在这里填写，加密保存在 hub。"
+    }
+  ],
+  "permissions": {
+    "network": [
+      "api.binance.com",
+      "fapi.binance.com",
+      "dapi.binance.com",
+      "data-api.binance.vision",
+      "host.persona.internal"
+    ],
+    "hub": [
+      "notify"
+    ]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "proxy_url": {
+        "type": "string",
+        "title": "币安流量走的 HTTP 代理",
+        "description": "可选。hub 所在电脑上一个支持 CONNECT 的 HTTP 代理，写成 http://host.persona.internal:<端口>（扩展在沙箱里时用这个名字访问 hub 电脑本机）。留空则直接经 hub 的出口访问币安。",
+        "pattern": "^$|^http://host\\.persona\\.internal:[0-9]{1,5}/?$",
+        "maxLength": 64
+      },
+      "trading_enabled": {
+        "type": "boolean",
+        "title": "允许下单和撤单",
+        "description": "实盘和纸面盘共用的总开关。关闭时所有下单和撤单都拒绝，查询照常。",
+        "default": false
+      },
+      "paper_trading": {
+        "type": "boolean",
+        "title": "纸面模拟交易",
+        "description": "开启后仅提供模拟下单动作，使用实时行情和相同风控，结果记入独立纸面台账，不向交易所发单。现货模拟可不填 API Key，仍需打开下单总开关。",
+        "default": false
+      },
+      "markets": {
+        "type": "array",
+        "title": "允许下单的市场",
+        "items": {
+          "type": "string",
+          "enum": [
+            "spot",
+            "usdm",
+            "coinm"
+          ]
+        },
+        "uniqueItems": true,
+        "default": [
+          "spot"
+        ],
+        "description": "spot 现货、usdm U 本位合约、coinm 币本位合约；查询不受限制。"
+      },
+      "symbol_whitelist": {
+        "type": "array",
+        "title": "允许下单的币对",
+        "items": {
+          "type": "string",
+          "pattern": "^[A-Z0-9_]{4,24}$"
+        },
+        "uniqueItems": true,
+        "maxItems": 50,
+        "default": [],
+        "description": "例如 BTCUSDT、ETHUSDT、BTCUSD_PERP。留空表示一个都不允许。撤单不受白名单限制。"
+      },
+      "max_order_usdt": {
+        "type": "number",
+        "title": "单笔上限（USDT）",
+        "minimum": 0,
+        "maximum": 1000000,
+        "default": 200,
+        "description": "单笔估算名义金额上限；合约按名义金额（数量 × 价格），不是保证金。"
+      },
+      "max_daily_usdt": {
+        "type": "number",
+        "title": "每日累计上限（USDT）",
+        "minimum": 0,
+        "maximum": 10000000,
+        "default": 1000,
+        "description": "按下面的时区 00:00 清零；撤单和只减仓不计入。"
+      },
+      "max_orders_per_day": {
+        "type": "integer",
+        "title": "每日下单笔数上限",
+        "minimum": 0,
+        "maximum": 1000,
+        "default": 20
+      },
+      "max_leverage": {
+        "type": "integer",
+        "title": "合约最大杠杆",
+        "minimum": 1,
+        "maximum": 125,
+        "default": 5,
+        "description": "合约当前杠杆高于这个值时拒绝开仓（扩展不改杠杆，请在币安里自己调）。"
+      },
+      "limit_deviation_pct": {
+        "type": "number",
+        "title": "限价偏离上限（%）",
+        "minimum": 0.1,
+        "maximum": 50,
+        "default": 5,
+        "description": "限价和现价相差超过这个比例就拒绝，防止手误。"
+      },
+      "market_orders": {
+        "type": "boolean",
+        "title": "允许市价单",
+        "default": true
+      },
+      "market_slippage_pct": {
+        "type": "number",
+        "title": "市价单滑点保护（%）",
+        "minimum": 0.1,
+        "maximum": 10,
+        "default": 1,
+        "description": "执行时的价格和确认卡片上的价格相差超过这个比例就拒绝。"
+      },
+      "timezone": {
+        "type": "string",
+        "title": "每日额度的时区",
+        "default": "Asia/Shanghai",
+        "maxLength": 64,
+        "description": "IANA 时区名，例如 Asia/Shanghai、UTC。"
+      },
+      "price_move_pct": {
+        "type": "number",
+        "title": "价格异动提醒阈值（%）",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 5,
+        "description": "持仓或关注的币 60 分钟内涨跌超过这个比例时进收件箱；超过两倍时推送。"
+      },
+      "alert_min_usdt": {
+        "type": "number",
+        "title": "价格异动只看持仓超过（USDT）",
+        "minimum": 0,
+        "maximum": 10000000,
+        "default": 100
+      },
+      "liq_warn_pct": {
+        "type": "number",
+        "title": "强平预警距离（%）",
+        "minimum": 1,
+        "maximum": 50,
+        "default": 15,
+        "description": "合约标记价离强平价不到这个比例时提醒，再到 2/3、1/3 时各提醒一次。"
+      },
+      "watch_symbols": {
+        "type": "array",
+        "title": "额外关注的币对",
+        "items": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{4,20}$"
+        },
+        "uniqueItems": true,
+        "maxItems": 30,
+        "default": [],
+        "description": "不持有也要看价格异动的现货币对，例如 BTCUSDT。"
+      },
+      "triage_rules": {
+        "type": "string",
+        "title": "分拣规则",
+        "maxLength": 4000,
+        "description": "币安的条目按什么分「需要你 / 知悉即可 / 噪音」，用你自己的话写；填了就只用它、不用收件箱的全局规则（只管币安）。一般不在这里改：和助手说（比如「价格异动都算知悉即可」），它来改。写 \\n 换行；空着用全局规则"
+      }
+    }
+  }
+}
