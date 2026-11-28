@@ -254,8 +254,9 @@ func probe(ctx context.Context, client *http.Client, cred credentials, f Form, t
 // startupTest tests the settings of this run once when status.json has no outcome for them (their fingerprint):
 // the hub does not check the first key it is given (an extension that needs setup is not running to be asked), so a
 // wrong one shows here. It runs at most once per fingerprint, since its outcome is kept for it, and not within
-// testInterval of another test of this run. A refused key then makes both points' info say setup "key_rejected" and
-// the page say why; the program keeps running, so the next save goes through settings.check.
+// testInterval of another test of this run. A service that refuses the key makes its own point's info say setup
+// "key_rejected" (recognition: transcription, synthesis: speech) and the page say why; the program keeps running, so
+// the next save goes through settings.check.
 func (pl *Plugin) startupTest(ctx context.Context) {
 	if !pl.cred.set() {
 		return
@@ -286,16 +287,22 @@ func (pl *Plugin) startupTest(ctx context.Context) {
 	}
 	pl.logf("startup test %d: recognition %s, synthesis %s", n, outcomeOf(res.asrErr, res.asrLat),
 		map[bool]string{true: outcomeOf(res.ttsErr, res.ttsLat), false: "not tried"}[res.tts])
-	if pl.keyRejected() {
-		pl.logf("Volcengine refused the saved key: transcription and reading aloud say setup %q until another key is saved", setupKeyRejected)
+	if pl.keyRejected(serviceASR) || pl.keyRejected(serviceTTS) {
+		pl.logf("Volcengine refused the saved key (recognition %v, synthesis %v): each refusing point says setup %q until another key is saved",
+			pl.keyRejected(serviceASR), pl.keyRejected(serviceTTS), setupKeyRejected)
 	}
 }
 
-// keyRejected: the last outcome of either service for these settings is the key refused (by a test or real use).
-func (pl *Plugin) keyRejected() bool {
+// keyRejected: the last outcome of service (serviceASR or serviceTTS) for these settings is the key refused (by a
+// test or real use). Each point answers for its own service only: a synthesis refusal does not hold back
+// transcription, nor the other way round.
+func (pl *Plugin) keyRejected(service string) bool {
 	asr, tts := pl.board.get()
-	refused := func(st *serviceState) bool { return st != nil && !st.OK && st.Kind == failForbidden }
-	return refused(asr) || refused(tts)
+	st := asr
+	if service == serviceTTS {
+		st = tts
+	}
+	return st != nil && !st.OK && st.Kind == failForbidden
 }
 
 // checkSettings is settings.check: the settings about to be saved, tried. No key yet: nothing to try. Recognition

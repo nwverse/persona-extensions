@@ -46,7 +46,7 @@ func (pl *Plugin) speechCaller(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // serveSpeechInfo is GET /speech/{cid}/info: {protocol, rate, setup?}: setup "key" before a key is saved,
-// "key_rejected" while the service refuses it, "off" while reading answers is turned off.
+// "key_rejected" while synthesis refuses it, "off" while reading answers is turned off.
 func (pl *Plugin) serveSpeechInfo(w http.ResponseWriter, r *http.Request) {
 	if !pl.speechCaller(w, r) {
 		return
@@ -55,7 +55,7 @@ func (pl *Plugin) serveSpeechInfo(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case !pl.cred.set():
 		info.Setup = setupKey
-	case pl.keyRejected():
+	case pl.keyRejected(serviceTTS):
 		info.Setup = setupKeyRejected
 	case !pl.form.readAnswers():
 		info.Setup = setupOff

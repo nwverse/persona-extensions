@@ -52,12 +52,13 @@ const (
 	replayPause  = 0.5 // seconds of quiet a window ends at
 	livePause    = 0.3 // seconds of quiet a session rolls over at
 	setupKey     = "key"
-	// setupKeyRejected: Volcengine refused the saved key (startupTest, a test or real use); another key must be saved.
+	// setupKeyRejected: the point's own service refused the saved key (startupTest, a test or real use); another key
+	// must be saved.
 	setupKeyRejected = "key_rejected"
 )
 
 // serveTranscriptionInfo is GET /transcription/{cid}/info: {protocol, features, setup?}; setup "key" until a key is
-// saved, "key_rejected" while the service refuses it.
+// saved, "key_rejected" while recognition refuses it.
 func (pl *Plugin) serveTranscriptionInfo(w http.ResponseWriter, r *http.Request) {
 	if !pl.transcriptionCaller(w, r) {
 		return
@@ -67,7 +68,7 @@ func (pl *Plugin) serveTranscriptionInfo(w http.ResponseWriter, r *http.Request)
 	switch {
 	case !pl.cred.set():
 		info.Setup = setupKey
-	case pl.keyRejected():
+	case pl.keyRejected(serviceASR):
 		info.Setup = setupKeyRejected
 	}
 	writeJSON(w, http.StatusOK, info)

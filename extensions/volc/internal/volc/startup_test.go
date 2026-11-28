@@ -215,3 +215,79 @@ func TestStartupTestStoppedKeepsNothing(t *testing.T) {
 		t.Errorf("a stopped test kept %+v %+v", asr, tts)
 	}
 }
+
+// checkAndSave is settings.check of the running pl on form and key (the save the hub makes after it), which must pass.
+func checkAndSave(t *testing.T, pl *Plugin, form Form, key string) {
+	t.Helper()
+	params, _ := json.Marshal(wire.SettingsCheckParams{Config: mustJSON(form), Secrets: map[string]string{SecretKey: key}})
+	out, err := pl.settings(context.Background(), "check", params)
+	if err != nil || !out.(wire.SettingsCheckResult).Ok {
+		t.Fatalf("settings.check %+v: %+v %v", form, out, err)
+	}
+}
+
+// Each point answers for its own service: a key only synthesis refuses leaves transcription ready, also once reading
+// answers is turned off, after Test Connection and with another voice; a key only recognition refuses leaves
+// speech ready.
+func TestKeyRejectedIsPerService(t *testing.T) {
+	fast(t)
+	fv := fake(t)
+	old := testInterval
+	testInterval = 0 // Test Connection right after a start is not held back by the interval here
+	t.Cleanup(func() { testInterval = old })
+	dir := t.TempDir()
+
+	// Only synthesis refuses the key.
+	fv.Set(func(s *volctest.Script) {
+		s.TTSStatus, s.TTSBody = 401, `{"code":45000010,"message":"invalid api key"}`
+	})
+	pl := run(t, dir, Form{}, "k")
+	if pl.tests.Load() != 1 {
+		t.Fatalf("startup tests %d", pl.tests.Load())
+	}
+	if got := setupOf(t, pl, "transcription"); got != "" {
+		t.Errorf("synthesis refused: transcription setup %q, want none", got)
+	}
+	if got := setupOf(t, pl, "speech"); got != "key_rejected" {
+		t.Errorf("synthesis refused: speech setup %q", got)
+	}
+
+	// Reading answers turned off: the check passes (nothing to try), and the run with it is not tested again.
+	off := false
+	checkAndSave(t, pl, Form{ReadAnswers: &off}, "k")
+	before := calls(fv)
+	quiet := run(t, dir, Form{ReadAnswers: &off}, "k")
+	if calls(fv) != before || quiet.tests.Load() != 0 {
+		t.Errorf("reading off: tested again (%d calls)", calls(fv)-before)
+	}
+	if got := setupOf(t, quiet, "transcription"); got != "" {
+		t.Errorf("reading off: transcription setup %q", got)
+	}
+	// Test Connection tries recognition only, which works.
+	res, err := quiet.statusAction(context.Background(), &ext.UIRequest{UIParams: wire.UIParams{Contribution: StatusPage, Action: "test"}})
+	if err != nil || res.View == nil || quiet.tests.Load() != 1 || fv.Count() == 0 {
+		t.Fatalf("Test Connection: %v, %d tests", err, quiet.tests.Load())
+	}
+	if got := setupOf(t, quiet, "transcription"); got != "" {
+		t.Errorf("after Test Connection: transcription setup %q", got)
+	}
+	// Another voice with reading off: a new fingerprint, still not held back.
+	checkAndSave(t, quiet, Form{ReadAnswers: &off, Voice: Voices[2]}, "k")
+	voiced := run(t, dir, Form{ReadAnswers: &off, Voice: Voices[2]}, "k")
+	if got := setupOf(t, voiced, "transcription"); got != "" {
+		t.Errorf("reading off, another voice: transcription setup %q", got)
+	}
+
+	// Only recognition refuses the key; synthesis works.
+	fv.Set(func(s *volctest.Script) {
+		s.TTSStatus, s.TTSBody = 0, ""
+		s.RefuseASR, s.RefuseBody = 401, `{"code":45000010,"message":"invalid api key"}`
+	})
+	asrOnly := run(t, t.TempDir(), Form{}, "k")
+	if got := setupOf(t, asrOnly, "transcription"); got != "key_rejected" {
+		t.Errorf("recognition refused: transcription setup %q", got)
+	}
+	if got := setupOf(t, asrOnly, "speech"); got != "" {
+		t.Errorf("recognition refused: speech setup %q, want none", got)
+	}
+}

@@ -38,7 +38,7 @@ The connection test recognizes 0.6 seconds of silence and, while answers are rea
 - from Test Connection on the status page, at most once every 10 seconds;
 - **once at start** when no outcome is kept for the current settings. The hub does not check the first key it is given, because an extension that still needs setup is not running. Outcomes are kept per settings fingerprint (a hash, never the key) in the extension's data directory as `status.json`, so the same settings are not tested again on the next start.
 
-When Volcengine refuses the key (at start, in a test or in real use), both `GET /transcription/volc/info` and `GET /speech/volc/info` answer `setup: "key_rejected"`: meetings do not pick it as ready and the phone uses its own voice. The status page says why. The program keeps running, so saving another key goes through `settings.check` and takes effect at once. A model that is not turned on, a used-up quota or a network failure is shown on the page but is not `key_rejected`.
+When Volcengine refuses the key (at start, in a test or in real use), each point reflects only its own service's refusal with `setup: "key_rejected"`: `GET /transcription/volc/info` when recognition refuses it (meetings then do not pick it as ready), `GET /speech/volc/info` when synthesis refuses it (the phone then uses its own voice). A refusal by one service does not hold back the other point. The status page says why. The program keeps running, so saving another key goes through `settings.check` and takes effect at once. A model that is not turned on, a used-up quota or a network failure is shown on the page but is not `key_rejected`.
 
 ## Differences from the built-in
 
