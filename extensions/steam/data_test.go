@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -179,19 +178,28 @@ func (f *fakeSteam) seed() {
 	f.reply(recentPath, 200, fmt.Sprintf(`{"response":{"total_count":2,"games":[{"appid":%d,"name":"Zeta Rally","playtime_2weeks":40,"playtime_forever":600},{"appid":%d,"name":"Synthetic Adventure","playtime_2weeks":90,"playtime_forever":200}]}}`, secondApp, firstApp))
 	f.reply(achievementsPath, 200, `{"playerstats":{"success":true,"gameName":"Synthetic Adventure","achievements":[{"achieved":1},{"achieved":0},{"achieved":1}]}}`)
 	f.reply(wishlistPath, 200, fmt.Sprintf(`{"response":{"items":[{"appid":%d,"priority":2},{"appid":%d,"priority":1},{"appid":%d,"priority":3}]}}`, secondApp, firstApp, thirdApp))
-	f.reply(storeNamesPath, 200, fmt.Sprintf(`{"response":{"store_items":[{"appid":%d,"name":"Synthetic Adventure","success":1},{"appid":%d,"name":"Zeta Rally","success":1},{"appid":%d,"name":"Alpha Café","success":1}]}}`, firstApp, secondApp, thirdApp))
-	f.handle(storePricesPath, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		if q.Get("filters") != "price_overview" || q.Get("appids") != fmt.Sprintf("%d,%d,%d", firstApp, secondApp, thirdApp) {
-			f.t.Error("Store did not receive one batched price lookup")
+	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+		input := fixtureBrowseInput(f.t, r)
+		salePrice, fullPrice := "$3.99", "$6.99"
+		if input.Context["country_code"] == "GB" {
+			salePrice, fullPrice = "£3.99", "£6.99"
 		}
-		currency, salePrice, fullPrice := "USD", "$3.99", "$6.99"
-		if cc := q.Get("cc"); cc == "GB" {
-			currency, salePrice, fullPrice = "GBP", "£3.99", "£6.99"
-		} else if cc != "US" {
-			f.t.Error("Store did not receive a normalized country code")
+		rows := make([]map[string]any, 0, len(input.IDs))
+		for _, app := range input.IDs {
+			row := map[string]any{"appid": app.AppID, "success": 1}
+			switch app.AppID {
+			case firstApp:
+				row["name"] = "Synthetic Adventure"
+				row["best_purchase_option"] = map[string]any{"final_price_in_cents": "399", "formatted_final_price": salePrice, "discount_pct": 40}
+			case secondApp:
+				row["name"] = "Zeta Rally"
+				row["best_purchase_option"] = map[string]any{"final_price_in_cents": "699", "formatted_final_price": fullPrice}
+			case thirdApp:
+				row["name"] = "Alpha Café"
+			}
+			rows = append(rows, row)
 		}
-		_, _ = fmt.Fprintf(w, `{"%d":{"success":true,"data":{"price_overview":{"currency":%q,"final":399,"final_formatted":%q,"discount_percent":40}}},"%d":{"success":true,"data":{"price_overview":{"currency":%q,"final":699,"final_formatted":%q,"discount_percent":0}}},"%d":{"success":true,"data":[]}}`, firstApp, currency, salePrice, secondApp, currency, fullPrice, thirdApp)
+		_ = json.NewEncoder(w).Encode(map[string]any{"response": map[string]any{"store_items": rows}})
 	})
 }
 
@@ -244,7 +252,7 @@ func TestQRReadRoutes(t *testing.T) {
 		default:
 			t.Error("StoreBrowse did not receive a supported locale")
 		}
-		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[{"appid":%d,"name":%q,"success":1}]}}`, firstApp, name)
+		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[{"appid":%d,"name":%q,"success":1,"best_purchase_option":{"final_price_in_cents":"399","discount_pct":40}},{"appid":%d,"name":"Zeta Rally","success":1},{"appid":%d,"name":"Alpha Café","success":1}]}}`, firstApp, name, secondApp, thirdApp)
 	})
 
 	dir := t.TempDir()
@@ -273,7 +281,7 @@ func TestQRReadRoutes(t *testing.T) {
 	authStep(t, h, "")
 	await(t, 5*time.Second, func() bool { return authStep(t, h, qrStep).Done })
 	await(t, time.Second, func() bool {
-		return f.hit(wishlistPath) == 1 && f.hit(storeNamesPath) == 1 && f.hit(storePricesPath) == 1
+		return f.hit(wishlistPath) == 1 && f.hit(storeNamesPath) == 1 && f.hit(storePricesPath) == 0
 	})
 	profile := toolAnswer(t, h, "steam_profile", "{}")
 	contains(t, profile, "Private QR Pilot", `"public":false`, `"state":"online"`, "Synthetic Adventure", `"owned_game_count":3`)
@@ -282,7 +290,7 @@ func TestQRReadRoutes(t *testing.T) {
 	contains(t, toolAnswer(t, h, "steam_library", `{"query":"zeta"}`), "Zeta Rally", `"playtime_forever":600`)
 	contains(t, toolAnswer(t, h, "steam_achievements", fmt.Sprintf(`{"appid":%d}`, firstApp)), `"total":3`, `"unlocked":2`)
 	contains(t, toolAnswer(t, h, "steam_wishlist", `{"limit":1}`), "示例冒险", `"country_code":"GB"`, `"currency":"GBP"`, `"discounted_count":1`)
-	for path, want := range map[string]int{playerLinkPath: 1, ownedPath: 1, recentPath: 1, progressPath: 1, wishlistPath: 2, storeNamesPath: 2, storePricesPath: 2} {
+	for path, want := range map[string]int{playerLinkPath: 1, ownedPath: 1, recentPath: 1, progressPath: 1, wishlistPath: 2, storeNamesPath: 2, storePricesPath: 0} {
 		if n := f.hit(path); n != want {
 			t.Errorf("expected %d %s reads, got %d", want, path, n)
 		}
@@ -334,9 +342,9 @@ func TestQRReadRoutes(t *testing.T) {
 	contains(t, toolAnswer(t, h, "steam_achievements", fmt.Sprintf(`{"appid":%d}`, firstApp)), `"available":false`, string(problemAchievements))
 	f.reply(playerLinkPath, 200, `{"response":{"accounts":[]}}`)
 	f.reply(wishlistPath, http.StatusForbidden, "hidden")
-	prices := f.hit(storePricesPath)
+	quotes := f.hit(storeNamesPath)
 	if got := act(t, h, nav, view, "refresh", nil); len(got.Sections) != 5 || got.Sections[2].Items[0].Title != "Alpha Café" ||
-		got.Sections[3].Items[0].Title != english.message(problemWishlist, false) || f.hit(storePricesPath) != prices {
+		got.Sections[3].Items[0].Title != english.message(problemWishlist, false) || f.hit(storeNamesPath) != quotes {
 		t.Fatal("library reads should use the signed-in SteamID even if the profile is unavailable")
 	}
 	var status wire.AuthStatus
@@ -614,7 +622,7 @@ func TestSteamCacheLayersAndScope(t *testing.T) {
 	load()
 	d = f.data(dir, fixtureVanity, "US", clock)
 	load()
-	for _, path := range []string{vanityPath, playerPath, ownedPath, recentPath, wishlistPath, storePricesPath} {
+	for _, path := range []string{vanityPath, playerPath, ownedPath, recentPath, wishlistPath, storeNamesPath} {
 		count(path, 1)
 	}
 	now = now.Add(11 * time.Minute)
@@ -623,14 +631,14 @@ func TestSteamCacheLayersAndScope(t *testing.T) {
 	count(playerPath, 2)
 	count(ownedPath, 1)
 	count(recentPath, 2)
-	count(storePricesPath, 2)
+	count(storeNamesPath, 2)
 
 	d = f.data(dir, fixtureVanity, "GB", clock)
 	load()
 	count(vanityPath, 1)
 	count(playerPath, 2)
 	count(ownedPath, 1)
-	count(storePricesPath, 3)
+	count(storeNamesPath, 3)
 
 	now = now.Add(8 * time.Hour)
 	load()
@@ -640,7 +648,7 @@ func TestSteamCacheLayersAndScope(t *testing.T) {
 	d = f.data(dir, fixtureID2, "GB", clock)
 	load()
 	count(ownedPath, 3)
-	count(storePricesPath, 5)
+	count(storeNamesPath, 5)
 	files, err := os.ReadDir(filepath.Join(dir, "steam-cache-v1"))
 	if err != nil || len(files) != 5 {
 		t.Fatalf("expected five fixed cache slots, got %d: %v", len(files), err)
@@ -702,26 +710,25 @@ func TestStorePriceBatchesAreBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.reply(wishlistPath, 200, string(payload))
-	f.handle(storePricesPath, func(w http.ResponseWriter, r *http.Request) {
-		apps := strings.Split(r.URL.Query().Get("appids"), ",")
-		if len(apps) != storeBatchSize {
-			t.Errorf("batch size %d", len(apps))
+	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+		input := fixtureBrowseInput(t, r)
+		if len(input.IDs) != storeBatchSize {
+			t.Errorf("batch size %d", len(input.IDs))
 		}
-		result := map[string]any{}
-		for _, app := range apps {
-			id, _ := strconv.ParseUint(app, 10, 32)
-			if id >= uint64(firstApp)+maxWishlistItems {
+		rows := make([]map[string]any, 0, len(input.IDs))
+		for _, app := range input.IDs {
+			if app.AppID >= firstApp+maxWishlistItems {
 				t.Error("looked up prices beyond the snapshot limit")
 			}
-			result[app] = map[string]any{"success": false}
+			rows = append(rows, map[string]any{"id": app.AppID, "success": 15})
 		}
-		_ = json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(map[string]any{"response": map[string]any{"store_items": rows}})
 	})
 	got, issue := (steamClient{http: f.http, key: f.key}).wishlist(t.Context(), fixtureID, defaultCountry, "english")
 	if issue != "" || got.Total != len(items) || got.Checked != maxWishlistItems || len(got.Items) != maxWishlistItems {
 		t.Fatalf("bounded snapshot issue=%q, items=%d, checked=%d, total=%d", issue, len(got.Items), got.Checked, got.Total)
 	}
-	if requests := f.hit(storePricesPath); requests != maxWishlistItems/storeBatchSize {
+	if requests := f.hit(storeNamesPath); requests != maxWishlistItems/storeBatchSize {
 		t.Fatalf("%d Store price requests", requests)
 	}
 }

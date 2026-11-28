@@ -70,6 +70,7 @@ func newAccountData(cfg config, client steamClient, dataDir string, now func() t
 		wishIDs: newSlot[map[uint32]struct{}]("", "", now, session),
 		stores:  newSteamStores(dataDir),
 	}
+	d.wishes.mergeStale = mergeStaleWishlist
 	if cfg.FriendsRadarEnabled {
 		d.friendList = newSlot[friendRoster]("", "", now, session)
 		d.friendState = newSlot[[]player]("", "", now, session)

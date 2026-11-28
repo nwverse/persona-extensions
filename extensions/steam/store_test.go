@@ -420,7 +420,7 @@ func TestSteamReadsRecordFreshSnapshots(t *testing.T) {
 	now = now.Add(time.Minute)
 	d.ownedGames(t.Context(), p, false)
 	d.wishlist(t.Context(), p, "english", false)
-	for _, path := range []string{ownedPath, wishlistPath, storePricesPath, storeNamesPath} {
+	for _, path := range []string{ownedPath, wishlistPath, storeNamesPath} {
 		if hits := f.hit(path); hits != 1 {
 			t.Fatalf("%s received %d requests for one fresh read and one cache hit", path, hits)
 		}
@@ -432,7 +432,7 @@ func TestSteamReadsRecordFreshSnapshots(t *testing.T) {
 	checkPrice(firstApp, 399, fixtureObservationAt)
 
 	f.reply(ownedPath, http.StatusTooManyRequests, "fixture rate limit")
-	f.reply(storePricesPath, http.StatusServiceUnavailable, "fixture Store outage")
+	f.reply(storeNamesPath, http.StatusServiceUnavailable, "fixture Store outage")
 	if got := d.ownedGames(t.Context(), p, true); !got.Stale || got.Issue != problemRateLimited {
 		t.Fatalf("expected library fallback: %+v", got)
 	}
@@ -444,12 +444,13 @@ func TestSteamReadsRecordFreshSnapshots(t *testing.T) {
 
 	now = now.Add(time.Minute)
 	f.reply(ownedPath, http.StatusOK, fmt.Sprintf(`{"response":{"game_count":3,"games":[{"appid":%d,"playtime_forever":250}]}}`, firstApp))
-	f.reply(storePricesPath, http.StatusOK, fmt.Sprintf(`{"%d":{"success":true,"data":{"price_overview":{"currency":"USD","final":199,"discount_percent":80}}},"%d":{"success":true,"data":{"price_overview":{"currency":"USD","final":1,"discount_percent":101}}},"%d":{"success":false}}`, firstApp, secondApp, thirdApp))
+	f.reply(storeNamesPath, http.StatusOK, fmt.Sprintf(`{"response":{"store_items":[{"appid":%d,"success":1,"best_purchase_option":{"final_price_in_cents":"199","discount_pct":80}},{"appid":%d,"success":1,"best_purchase_option":{"final_price_in_cents":"1","discount_pct":101}},{"id":%d,"success":15}]}}`, firstApp, secondApp, thirdApp))
 	if got := d.ownedGames(t.Context(), p, true); got.Issue != "" || got.Data == nil || !got.Data.Truncated {
 		t.Fatalf("expected a readable but incomplete library: %+v", got)
 	}
-	if got := d.wishlist(t.Context(), p, "english", true); !got.Stale || got.Issue != problemResponse {
-		t.Fatalf("expected a fallback after the partial Store response: %+v", got)
+	if got := d.wishlist(t.Context(), p, "english", true); !got.Stale || got.Issue != problemResponse || got.Data == nil ||
+		got.Data.Items[0].Price == nil || got.Data.Items[0].Price.Final != 199 || got.Data.Items[1].Price == nil || got.Data.Items[1].Price.Final != 699 {
+		t.Fatalf("expected both fresh and cached prices after the partial Store response: %+v", got)
 	}
 	checkPlaytime()
 	checkPrice(firstApp, 199, now)

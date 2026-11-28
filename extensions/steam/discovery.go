@@ -993,6 +993,33 @@ func (d *steamDiscovery) gameMetadata(ctx context.Context, id uint32, country, l
 	return game, ""
 }
 
+func (c steamClient) parsePrice(data json.RawMessage) (*storePrice, bool) {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("[]")) {
+		return nil, true
+	}
+	var reply *struct {
+		Price *struct {
+			Currency  string  `json:"currency"`
+			Final     *uint32 `json:"final"`
+			Formatted string  `json:"final_formatted"`
+			Discount  int     `json:"discount_percent"`
+		} `json:"price_overview"`
+	}
+	if json.Unmarshal(data, &reply) != nil || reply == nil {
+		return nil, false
+	}
+	if reply.Price == nil {
+		return nil, true
+	}
+	p := reply.Price
+	if p.Final == nil || len(p.Currency) != 3 || strings.IndexFunc(p.Currency, func(r rune) bool {
+		return r < 'A' || r > 'Z'
+	}) >= 0 || p.Discount < 0 || p.Discount > 100 {
+		return nil, false
+	}
+	return &storePrice{Currency: p.Currency, Final: *p.Final, FinalFormatted: c.text(p.Formatted), DiscountPercent: p.Discount}, true
+}
+
 func shortStoreDescription(raw string) string {
 	tokens := html.NewTokenizer(strings.NewReader(raw))
 	var text strings.Builder

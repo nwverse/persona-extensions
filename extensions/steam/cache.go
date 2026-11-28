@@ -38,13 +38,14 @@ type cacheRecord[T any] struct {
 // The gate coalesces fetches. A separate lock protects the snapshot so a waiter
 // can reuse it when its own deadline expires during another caller's fetch.
 type cacheSlot[T any] struct {
-	gate      chan struct{}
-	mu        sync.Mutex
-	path      string
-	now       func() time.Time
-	loaded    bool
-	record    cacheRecord[T]
-	freshOnly bool
+	gate       chan struct{}
+	mu         sync.Mutex
+	path       string
+	now        func() time.Time
+	loaded     bool
+	record     cacheRecord[T]
+	freshOnly  bool
+	mergeStale func(current, previous *T) *T
 	// QR slots belong to exactly one account and generation. The session lock
 	// guards their records against logout while the gate serializes fetches.
 	session *qrSession
@@ -109,8 +110,8 @@ func (s *cacheSlot[T]) cached(scope string, ttl time.Duration, refresh bool) (re
 	if !refresh {
 		if s.retryScope == scope && !s.retryAt.IsZero() {
 			if now.Before(s.retryAt) {
-				if s.failedRead.Stale && (age < 0 || age > maxStaleAge) {
-					return reading[T]{Issue: s.failedRead.Issue}, true
+				if s.failedRead.Issue.temporary() {
+					return s.withStaleLocked(scope, s.failedRead), true
 				}
 				return s.failedRead, true
 			}
@@ -136,10 +137,20 @@ func (s *cacheSlot[T]) interruptedRead(scope string, issue problem) reading[T] {
 
 func (s *cacheSlot[T]) withStaleLocked(scope string, out reading[T]) reading[T] {
 	age := s.now().Sub(s.record.At)
-	if !s.freshOnly && s.record.Scope == scope && s.record.Data != nil && age >= 0 && age <= maxStaleAge {
-		return reading[T]{Data: s.record.Data, Issue: out.Issue, Stale: true, At: s.record.At}
+	if s.freshOnly || s.record.Scope != scope || s.record.Data == nil || age < 0 || age > maxStaleAge {
+		return out
 	}
-	return out
+	snapshot := s.record.Data
+	if out.Data != nil {
+		if s.mergeStale == nil {
+			return out
+		}
+		snapshot = s.mergeStale(out.Data, snapshot)
+		if snapshot == nil {
+			return out
+		}
+	}
+	return reading[T]{Data: snapshot, Issue: out.Issue, Stale: true, At: s.record.At}
 }
 
 func (s *cacheSlot[T]) update(scope string, data *T, issue problem) reading[T] {
@@ -162,16 +173,17 @@ func (s *cacheSlot[T]) update(scope string, data *T, issue problem) reading[T] {
 	}
 
 	out := reading[T]{Data: data, Issue: issue}
+	s.retryScope, s.retryAt, s.failedRead = scope, s.now().Add(retryDelay), out
 	if issue.temporary() {
-		out = s.withStaleLocked(scope, out)
-	} else if s.record.Scope == scope || issue == problemWishlist {
+		return s.withStaleLocked(scope, out)
+	}
+	if s.record.Scope == scope || issue == problemWishlist {
 		// Discard hidden or invalid data. Wishlist visibility applies across languages.
 		s.record = cacheRecord[T]{}
 		if s.path != "" {
 			_ = os.Remove(s.path)
 		}
 	}
-	s.retryScope, s.retryAt, s.failedRead = scope, s.now().Add(retryDelay), out
 	return out
 }
 

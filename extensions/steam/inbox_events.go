@@ -40,43 +40,7 @@ var wishlistDealsTool = wire.ConnectorTool{
 	InputSchema: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":50,"default":20}}}`),
 }
 
-type wishlistStoreItem struct {
-	AppID      uint32 `json:"appid"`
-	Name       string `json:"-"`
-	IsFree     bool   `json:"is_free"`
-	ComingSoon *bool  `json:"is_coming_soon"`
-	Release    *struct {
-		ComingSoon *bool  `json:"is_coming_soon"`
-		SteamDate  uint32 `json:"steam_release_date"`
-		IsPreload  bool   `json:"is_preload"`
-		Limited    bool   `json:"limited_launch_active"`
-	} `json:"release"`
-	Related struct {
-		Demos         []wishlistDemo `json:"demos"`
-		Standalone    []wishlistDemo `json:"standalone_demos"`
-		DemoIDs       []uint32       `json:"demo_appid"`
-		StandaloneIDs []uint32       `json:"standalone_demo_appid"`
-	} `json:"related_items"`
-	FreeWeekend *struct {
-		Start uint32 `json:"start_time"`
-		End   uint32 `json:"end_time"`
-	} `json:"free_weekend"`
-	BestPurchase struct {
-		IsFreeToKeep  bool        `json:"is_free_to_keep"`
-		FreeToKeepEnd uint32      `json:"free_to_keep_ends"`
-		Final         json.Number `json:"final_price_in_cents"`
-		Discount      int         `json:"discount_pct"`
-		Discounts     []struct {
-			End uint32 `json:"discount_end_date"`
-		} `json:"active_discounts"`
-	} `json:"best_purchase_option"`
-}
-
-type wishlistDemo struct {
-	AppID uint32 `json:"appid"`
-}
-
-func (s wishlistStoreItem) releaseState(at time.Time) (state string, date uint32) {
+func (s storeBrowseItem) releaseState(at time.Time) (state string, date uint32) {
 	comingSoon := s.ComingSoon
 	if r := s.Release; r != nil {
 		if r.IsPreload || r.Limited || r.ComingSoon != nil && *r.ComingSoon {
@@ -96,9 +60,9 @@ func (s wishlistStoreItem) releaseState(at time.Time) (state string, date uint32
 	return "", 0
 }
 
-func (s wishlistStoreItem) demoIDs() []uint32 {
+func (s storeBrowseItem) demoIDs() []uint32 {
 	ids := slices.Concat(s.Related.DemoIDs, s.Related.StandaloneIDs)
-	for _, demos := range [][]wishlistDemo{s.Related.Demos, s.Related.Standalone} {
+	for _, demos := range [][]storeDemo{s.Related.Demos, s.Related.Standalone} {
 		for _, demo := range demos {
 			ids = append(ids, demo.AppID)
 		}
@@ -108,22 +72,22 @@ func (s wishlistStoreItem) demoIDs() []uint32 {
 	return slices.Compact(ids)
 }
 
-func (s wishlistStoreItem) promotion(p *storePrice, at time.Time) (giveaway bool, end uint32) {
+func (s storeBrowseItem) promotion(p *storePrice, at time.Time) (giveaway bool, end uint32) {
 	option := s.BestPurchase
 	now := at.Unix()
-	if option.IsFreeToKeep && (option.FreeToKeepEnd == 0 || int64(option.FreeToKeepEnd) > now) {
+	freeToKeep := option != nil && option.IsFreeToKeep
+	if freeToKeep && (option.FreeToKeepEnd == 0 || int64(option.FreeToKeepEnd) > now) {
 		return true, option.FreeToKeepEnd
 	}
 	if p == nil || p.DiscountPercent == 0 {
 		return false, 0
 	}
 	weekend := s.FreeWeekend
-	if p.DiscountPercent == 100 && p.Final == 0 && !s.IsFree && !option.IsFreeToKeep &&
+	if p.DiscountPercent == 100 && p.Final == 0 && !s.IsFree && !freeToKeep &&
 		(weekend == nil || int64(weekend.Start) > now || weekend.End != 0 && int64(weekend.End) <= now) {
 		giveaway = true
 	}
-	final, err := strconv.ParseUint(string(option.Final), 10, 32)
-	if err == nil && uint32(final) == p.Final && option.Discount == p.DiscountPercent {
+	if option != nil {
 		for _, discount := range option.Discounts {
 			if int64(discount.End) > now && (end == 0 || discount.End < end) {
 				end = discount.End
@@ -326,10 +290,6 @@ func (state *wishlistWatchState) candidates(cfg config, t *text, at, previous ti
 		}
 		sale := deal.paidDiscount()
 		checked := item.Price != nil && item.Price.DiscountPercent == 0
-		if old.Giveaway && meta.AppID == 0 && (old.SaleEnd == 0 || int64(old.SaleEnd) > at.Unix()) {
-			// AppDetails can still list the full price during a free-to-keep promotion.
-			checked = false
-		}
 		old.observeSale(at, sale || giveaway, checked, ends)
 		if giveaway || sale || checked {
 			old.Giveaway = giveaway
@@ -549,7 +509,7 @@ func (d *steamData) readWishlistSignals(ctx context.Context, t *text) (string, *
 	if issue != "" {
 		return "", nil, issue
 	}
-	list, issue := c.loadWishlist(ctx, id, d.config.CountryCode, t.storeLanguage, true)
+	list, issue := c.wishlist(ctx, id, d.config.CountryCode, t.storeLanguage)
 	if list != nil {
 		for i := range list.Items {
 			item := &list.Items[i]
@@ -574,7 +534,9 @@ func (d *steamData) scanWishlistInbox(ctx context.Context, t *text, notify func(
 			return
 		}
 		if list == nil {
-			d.inbox.Store(nil)
+			if !issue.temporary() {
+				d.inbox.Store(nil)
+			}
 			return
 		}
 		at := d.wishes.now().UTC()

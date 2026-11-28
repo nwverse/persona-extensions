@@ -361,10 +361,10 @@ func TestDeclarativeViews(t *testing.T) {
 	// Warm the page's locale before testing a failed refresh of that snapshot.
 	viewAnswer(t, h, nav)
 	beforeRefresh := map[string]int{}
-	for _, path := range []string{playerPath, ownedPath, recentPath, wishlistPath, storePricesPath} {
+	for _, path := range []string{playerPath, ownedPath, recentPath, wishlistPath, storeNamesPath} {
 		beforeRefresh[path] = f.hit(path)
 	}
-	f.reply(storePricesPath, 429, f.key)
+	f.reply(storeNamesPath, 429, f.key)
 	v = act(t, h, nav, v, "refresh", nil)
 	raw, _ = json.Marshal(v)
 	contains(t, string(raw), "Showing cached data.", "rate limiting")
@@ -405,6 +405,7 @@ func TestWishlistRowShowsOnlyPositiveDiscount(t *testing.T) {
 
 func TestWishlistNamesFollowLocaleAndCacheScope(t *testing.T) {
 	f := newFakeSteam(t, time.Second)
+	seedWishlistIDs(t, f, []wishItem{{AppID: firstApp}})
 	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
 		var query struct {
 			Context struct {
@@ -485,14 +486,14 @@ func TestHiddenAndPartialReads(t *testing.T) {
 		contains(t, toolAnswer(t, h, "steam_wishlist", "{}"), `"available":false`, `"wishlist_unavailable"`)
 		contains(t, toolAnswer(t, h, "steam_recent_games", "{}"), `"available":true`, `"playtime_2weeks":130`)
 		contains(t, toolAnswer(t, h, "steam_achievements", fmt.Sprintf(`{"appid":%d}`, firstApp)), `"achievements_unavailable"`)
-		if f.hit(storePricesPath) != 0 {
+		if f.hit(storeNamesPath) != 0 {
 			t.Fatal("private wishlist initiated a Store lookup")
 		}
 	})
 
 	t.Run("cold Store failure", func(t *testing.T) {
 		f := newFakeSteam(t, time.Second)
-		f.reply(storePricesPath, 429, "rate limit")
+		f.reply(storeNamesPath, 429, "rate limit")
 		h := startTestHost(t, f, fixtureID, "", "")
 		contains(t, toolAnswer(t, h, "steam_wishlist", "{}"), `"available":true`, `"prices_checked":0`, `"rate_limited"`)
 		card := viewAnswer(t, h, wire.UIParams{Contribution: summaryID, Size: wire.SizeCompact, Placement: wire.PlacementOverviewCard, UIVersion: 12})
@@ -557,7 +558,7 @@ func TestNavigationPagerAndEmptySnapshots(t *testing.T) {
 		t.Fatal("expected only the remaining games on the last page")
 	}
 	v = act(t, h, p, v, "library-previous", nil)
-	if v.Sections[2].Items[0].Title != "Fixture 13" || f.hit(ownedPath) != 1 || f.hit(storePricesPath) != 0 {
+	if v.Sections[2].Items[0].Title != "Fixture 13" || f.hit(ownedPath) != 1 || f.hit(storeNamesPath) != 0 {
 		t.Fatal("paging should reuse the local library, with no Store reads for an empty wishlist")
 	}
 	contains(t, toolAnswer(t, h, "steam_wishlist", "{}"), `"wishlist_count":0`, `"items":[]`, `"discounted_count":0`)
