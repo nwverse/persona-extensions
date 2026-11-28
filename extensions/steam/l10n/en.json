@@ -23,6 +23,10 @@
       "title": "Steam Inbox events",
       "description": "Check the wishlist automatically and alert you to deals, releases and demos. Turning this off stops background checks and uses zero extra AI tokens."
     },
+    "triage_rules": {
+      "title": "Triage rules",
+      "description": "Write your own rules for sorting Steam wishlist alerts into Needs You, FYI, or Noise. For example, “Wishlist price drops are FYI.” Leave blank to use the global Inbox rules. Enter \\n for a line break."
+    },
     "inbox_max_events_per_day": {
       "title": "Daily Steam Inbox event limit",
       "description": "Maximum number of new Steam Inbox events per UTC day. Range 1–50, default 5."

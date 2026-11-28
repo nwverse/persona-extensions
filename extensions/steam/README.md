@@ -1,6 +1,6 @@
 # Steam
 
-Steam 0.3.0 researches Store games and reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to review your backlog, annotate games locally and open a playtime recap. The Overview card opens the same page. Friends Radar, wishlist alerts and gaming profile memory are optional.
+Steam 0.3.1 researches Store games and reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to review your backlog, annotate games locally and open a playtime recap. The Overview card opens the same page. Friends Radar, wishlist alerts and gaming profile memory are optional.
 
 New installations use Steam Mobile QR by default. In **Settings › Extensions › Steam**, select **Sign In**, scan with Steam Guard in the Steam Mobile App, and approve the login on the phone. The Hub encrypts the refresh token in its connector secret store. The extension keeps the access token, Steam account data and recap history in memory for the current session. Signing out clears them and preserves your explicit local annotations.
 
@@ -73,6 +73,7 @@ The table shows which features can add assistant context or trigger Inbox triage
 | --- | --- | --- |
 | `friends_radar_enabled` | Off | Off keeps friend data and both friend tool definitions out of context and skips all friend requests. |
 | `inbox_events_enabled` | Off | Starts wishlist scans for alerts about prices, releases, demos and limited-time giveaways. Turning it off stops scans, Inbox notifications and their token use. |
+| `triage_rules` | Empty | Supplies custom triage rules for Steam wishlist alerts, up to 4,000 characters. Leave blank to use the global Inbox rules. |
 | `inbox_max_events_per_day` | 5 (1–50) | Caps new alerts per Steam account and UTC day. |
 | `patch_notes_summary_enabled` | Off | Adds plain-text excerpts of up to 700 characters per post for summaries. Off returns headline metadata and uses zero excerpt tokens. |
 | `sale_roundup_enabled` | Off | Requires Inbox events. Off uses zero roundup tokens. Individual alerts follow the Inbox settings. |

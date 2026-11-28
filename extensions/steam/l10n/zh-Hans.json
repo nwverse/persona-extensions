@@ -23,6 +23,10 @@
       "title": "Steam 收件箱事件",
       "description": "自动检查愿望单并提醒优惠、发售和试玩。关闭时无需后台检查或额外 AI Token。"
     },
+    "triage_rules": {
+      "title": "分拣规则",
+      "description": "用你自己的话设置 Steam 愿望单提醒在收件箱中的分拣方式（需要你、知悉即可或噪音）。例如「愿望单降价提醒归为知悉即可」。留空时使用收件箱的全局分拣规则。输入 \\n 可以换行。"
+    },
     "inbox_max_events_per_day": {
       "title": "Steam 收件箱每日事件上限",
       "description": "每个 UTC 自然日最多生成的 Steam 收件箱事件数。范围 1–50，默认 5。"

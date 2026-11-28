@@ -2,7 +2,7 @@
 
 [Documentation](../README.md) · [Source](../../extensions/steam/README.md)
 
-Steam 0.3.0 researches games in the Store and reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search and sort the library, review the backlog, or open **Playtime recap**. Game details show achievement progress, local annotations and a link to the Steam Store. **Recent official updates** loads up to five dated Steam announcements when you open it. The Overview card opens the main Steam page. Friends Radar, wishlist alerts and gaming profile memory are optional.
+Steam 0.3.1 researches games in the Store and reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search and sort the library, review the backlog, or open **Playtime recap**. Game details show achievement progress, local annotations and a link to the Steam Store. **Recent official updates** loads up to five dated Steam announcements when you open it. The Overview card opens the main Steam page. Friends Radar, wishlist alerts and gaming profile memory are optional.
 
 ## Sign in with Steam Mobile QR
 
@@ -139,6 +139,7 @@ Set **Steam Inbox events** in **Settings › Extensions › Steam** to opt in. S
 | Setting | Default | Effect |
 | --- | --- | --- |
 | `inbox_events_enabled` | Off | Turns on automatic wishlist alerts. The extension assigns the action tier, and Persona may apply its Inbox triage settings. |
+| `triage_rules` | Empty | Write your own rules for sorting Steam wishlist alerts into Needs You, FYI, or Noise. Up to 4,000 characters. Leave blank to use the global Inbox rules. |
 | `inbox_max_events_per_day` | 5 (1–50) | Hard cap on new events per Steam account and UTC day, shared across regions. |
 | `wishlist_event_triggers` | All five | Choose `discount`, `local_low`, `release`, `demo` and `giveaway`. Target price rules and roundups have their own settings. |
 | `wishlist_discount_threshold` | 50% (1–100) | Matches paid discounts at or above this percentage. The giveaway trigger handles 100%-off offers. |
