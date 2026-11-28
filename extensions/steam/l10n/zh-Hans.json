@@ -12,8 +12,8 @@
       "description": "仅用于 Web API 密钥模式。填写 17 位 SteamID64，或 Steam 个人资料自定义链接中的名称。"
     },
     "country_code": {
-      "title": "商店国家或地区",
-      "description": "用于愿望单价格和游戏调研预算的两位 ISO 3166-1 商店国家或地区代码，默认为 US。"
+      "title": "商店国家或地区（可选）",
+      "description": "留空自动跟随当前登录账号的商店区域，无法识别时使用 US。填写两位 ISO 3166-1 国家代码（如 JP、US 或 CN）可手动覆盖，用于跨区查价和调研。"
     },
     "friends_radar_enabled": {
       "title": "好友开黑雷达",

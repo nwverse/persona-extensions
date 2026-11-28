@@ -12,8 +12,8 @@
       "description": "For Web API key mode. Enter your 17-digit SteamID64 or the vanity name from your Steam profile URL."
     },
     "country_code": {
-      "title": "Store country or region",
-      "description": "Two-letter ISO 3166-1 Store country or region code for wishlist prices and research budgets. Defaults to US."
+      "title": "Store country or region override",
+      "description": "Leave blank to follow your signed-in account, with US as a fallback. Enter a two-letter ISO 3166-1 country code such as JP, US or CN to compare prices or research games in another region."
     },
     "friends_radar_enabled": {
       "title": "Friends Radar",

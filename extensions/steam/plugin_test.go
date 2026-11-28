@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -32,7 +33,7 @@ func TestManifestAndTranslations(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatal(err)
 	}
-	const release = "0.3.3"
+	const release = "0.3.4"
 	if m.Version != release || version != release {
 		t.Fatalf("manifest version = %q, runtime version = %q, want %q", m.Version, version, release)
 	}
@@ -75,6 +76,18 @@ func TestManifestAndTranslations(t *testing.T) {
 	if json.Unmarshal(m.Configuration, &cfg) != nil || json.Unmarshal(cfg.Properties["auth_mode"], &mode) != nil ||
 		len(cfg.Required) != 0 || mode.Type != "string" || !slices.Equal(mode.Enum, []string{modeQR, modeWebAPIKey}) || mode.Default != nil {
 		t.Fatal("mode selection must preserve the runtime default and let both modes start")
+	}
+	var country struct {
+		Type    string          `json:"type"`
+		Pattern string          `json:"pattern"`
+		Default json.RawMessage `json:"default"`
+	}
+	if json.Unmarshal(cfg.Properties["country_code"], &country) != nil || country.Type != "string" || country.Default != nil {
+		t.Fatal("Store country must be an optional string without a default")
+	}
+	pattern, err := regexp.Compile(country.Pattern)
+	if err != nil || !pattern.MatchString("") || !pattern.MatchString("jp") || pattern.MatchString("USA") {
+		t.Fatal("Store country must accept a blank value or a two-letter override")
 	}
 
 	for _, lang := range []string{"en", "zh-Hans"} {
@@ -506,19 +519,24 @@ func TestHiddenAndPartialReads(t *testing.T) {
 
 func TestInvalidSteamConfiguration(t *testing.T) {
 	for _, test := range []struct {
-		id      string
-		country string
-		issue   problem
+		id, country, want string
+		issue             problem
 	}{
-		{"", "", problemSetup},
-		{"00000000000000000", "", problemInvalidID},
-		{"https://example.com/id/unsafe", "", problemInvalidID},
-		{fixtureID, "ZZ", problemCountry},
-		{fixtureID, "gb", ""},
+		{"", "", "", problemSetup},
+		{"00000000000000000", "", "", problemInvalidID},
+		{"https://example.com/id/unsafe", "", "", problemInvalidID},
+		{fixtureID, "ZZ", "", problemCountry},
+		{fixtureID, "USA", "", problemCountry},
+		{fixtureID, "", "", ""},
+		{fixtureID, " \t", "", ""},
+		{fixtureID, " jp ", "JP", ""},
+		{fixtureID, "gb", "GB", ""},
+		{fixtureID, "US", "US", ""},
+		{fixtureID, "CN", "CN", ""},
 	} {
 		c, issue := (config{AuthMode: modeWebAPIKey, SteamID: test.id, CountryCode: test.country}).normalized("synthetic-key")
-		if issue != test.issue || (issue == "" && c.CountryCode != "GB") {
-			t.Errorf("configuration issue=%q country=%q, expected issue %q", issue, c.CountryCode, test.issue)
+		if issue != test.issue || (issue == "" && c.CountryCode != test.want) {
+			t.Errorf("country %q: got %q, %q; want %q, %q", test.country, c.CountryCode, issue, test.want, test.issue)
 		}
 	}
 	f := newFakeSteam(t, time.Second)
