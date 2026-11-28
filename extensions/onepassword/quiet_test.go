@@ -57,7 +57,6 @@ func (l *lapsingCLI) asked() []string {
 // at once (no prompt, no wait), describe never prompts, and a resolve Persona marks quiet (it keeps the value) answers
 // not_signed_in at once. Only an ask with nothing to fall back on (a first resolve) may prompt.
 func TestAuthorizedOnceNeverPromptsAgain(t *testing.T) {
-	ctx := context.Background()
 	cli := &lapsingCLI{fakeCLI: newFakeCLI(), authorized: true}
 	a, _ := onComputerRun(t, cli.run)
 	clock := time.Date(2026, 11, 27, 18, 0, 0, 0, time.UTC)
