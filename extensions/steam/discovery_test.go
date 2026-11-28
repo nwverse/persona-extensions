@@ -158,7 +158,7 @@ func TestDiscoverySearchFiltersAndAccount(t *testing.T) {
 			t.Errorf("%s missed its cache", path)
 		}
 	}
-	if f.hit(storePricesPath) != 0 || f.hit(storeNamesPath) != 0 {
+	if f.hit(appDetailsPath) != 0 || f.hit(storeBrowsePath) != 0 {
 		t.Fatal("membership lookup performed unnecessary wishlist enrichment")
 	}
 }
@@ -252,7 +252,7 @@ func TestDiscoveryGameDetailsBatchAndReviewWindows(t *testing.T) {
 	now, _ := syntheticClock()
 	h := startDiscoveryHost(t, f, `{"country_code":"GB","discovery_max_results":2}`, "zh-Hans", now)
 	f.reply(tagCatalogPath+"schinese", http.StatusOK, `[{"tagid":1664,"name":"解谜"}]`)
-	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, r *http.Request) {
 		input := fixtureBrowseInput(t, r)
 		if len(input.IDs) == 0 || len(input.IDs) > 2 || input.IDs[0].AppID != firstApp ||
 			input.Context["country_code"] != "GB" || input.Context["language"] != "schinese" ||
@@ -270,7 +270,7 @@ func TestDiscoveryGameDetailsBatchAndReviewWindows(t *testing.T) {
 			{"id":%d,"success":15}
 		]}}`, firstApp, description, secondApp)
 	})
-	f.handle(storePricesPath, func(w http.ResponseWriter, r *http.Request) {
+	f.handle(appDetailsPath, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("cc") != "GB" || q.Get("l") != "schinese" || q.Get("filters") != "genres" || q.Get("appids") != appIDText(firstApp) {
 			t.Errorf("legacy lookup should only request genres for the StoreBrowse item: %v", q)
@@ -324,7 +324,7 @@ func TestDiscoveryGameDetailsBatchAndReviewWindows(t *testing.T) {
 	if json.Unmarshal([]byte(raw), &out) != nil || len(out.Games) != 2 || out.Games[0].AppID != firstApp || out.Games[1].AppID != secondApp {
 		t.Fatalf("batch did not preserve the app order: %s", raw)
 	}
-	if f.hit(storeNamesPath) != 1 || f.hit(storePricesPath) != 1 || f.hit(reviewsAPIPath) != 4 ||
+	if f.hit(storeBrowsePath) != 1 || f.hit(appDetailsPath) != 1 || f.hit(reviewsAPIPath) != 4 ||
 		f.hit(appReviewsPath+appIDText(firstApp)) != 0 || f.hit(appReviewsPath+appIDText(secondApp)) != 0 {
 		t.Fatal("unexpected number of Store or review requests")
 	}
@@ -335,7 +335,7 @@ func TestDiscoveryGameDetailsBatchAndReviewWindows(t *testing.T) {
 			t.Errorf("invalid details request accepted: %s: %v", invalidArgs, err)
 		}
 	}
-	if f.hit(storePricesPath) != 1 || f.hit(ownedPath) != 0 || f.hit(wishlistPath) != 0 {
+	if f.hit(appDetailsPath) != 1 || f.hit(ownedPath) != 0 || f.hit(wishlistPath) != 0 {
 		t.Fatal("invalid inputs or public details touched unnecessary endpoints")
 	}
 	contains(t, toolAnswer(t, h, gameDetailsTool, fmt.Sprintf(`{"appid":%d}`, firstApp)), `"name":"合成冒险"`)
@@ -345,11 +345,11 @@ func TestDiscoveryLegacyDetailDeadlineKeepsWebAPIResults(t *testing.T) {
 	f := newFakeSteam(t, 7*time.Second)
 	h := startDiscoveryHost(t, f, `{}`, "en", time.Now)
 	var browsed atomic.Bool
-	f.handle(storeNamesPath, func(w http.ResponseWriter, _ *http.Request) {
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, _ *http.Request) {
 		browsed.Store(true)
 		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[{"appid":%d,"success":1,"name":"Fast API title","best_purchase_option":{"final_price_in_cents":"100"}}]}}`, firstApp)
 	})
-	f.handle(storePricesPath, func(w http.ResponseWriter, r *http.Request) {
+	f.handle(appDetailsPath, func(w http.ResponseWriter, r *http.Request) {
 		if !browsed.Load() {
 			t.Error("appdetails ran before StoreBrowse")
 		}

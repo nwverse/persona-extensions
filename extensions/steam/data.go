@@ -32,6 +32,7 @@ type steamData struct {
 	wishIDs     *cacheSlot[map[uint32]struct{}]
 	friendList  *cacheSlot[friendRoster]
 	friendState *cacheSlot[[]player]
+	progress    gameReadCache[achievementProgressKey, achievementProgress]
 	stores      steamStores
 	memory      memoryObservations
 	lastAccount atomic.Pointer[reading[player]]
@@ -59,16 +60,17 @@ func newAccountData(cfg config, client steamClient, dataDir string, now func() t
 		cacheDir = filepath.Join(dataDir, "steam-cache-v1")
 	}
 	d := &steamData{
-		client:  client,
-		config:  cfg,
-		session: session,
-		vanity:  newSlot[string](cacheDir, "vanity", now, session),
-		profile: newSlot[player](cacheDir, "profile", now, session),
-		library: newSlot[gameList](cacheDir, "library", now, session),
-		recent:  newSlot[gameList](cacheDir, "recent", now, session),
-		wishes:  newSlot[wishList](cacheDir, "wishlist", now, session),
-		wishIDs: newSlot[map[uint32]struct{}]("", "", now, session),
-		stores:  newSteamStores(dataDir),
+		client:   client,
+		config:   cfg,
+		session:  session,
+		vanity:   newSlot[string](cacheDir, "vanity", now, session),
+		profile:  newSlot[player](cacheDir, "profile", now, session),
+		library:  newSlot[gameList](cacheDir, "library", now, session),
+		recent:   newSlot[gameList](cacheDir, "recent", now, session),
+		wishes:   newSlot[wishList](cacheDir, "wishlist", now, session),
+		wishIDs:  newSlot[map[uint32]struct{}]("", "", now, session),
+		progress: gameReadCache[achievementProgressKey, achievementProgress]{session: session},
+		stores:   newSteamStores(dataDir),
 	}
 	d.wishes.mergeStale = mergeStaleWishlist
 	if cfg.FriendsRadarEnabled {
@@ -131,6 +133,8 @@ func (d *steamData) sessionIssue() problem {
 func (d *steamData) readClient(ctx context.Context) (steamClient, problem) {
 	c := d.client
 	if d.session != nil {
+		ctx, cancel := context.WithTimeout(ctx, apiReadTimeout)
+		defer cancel()
 		t, issue := d.session.access(ctx)
 		if issue != "" {
 			return steamClient{}, issue
@@ -147,6 +151,7 @@ func (d *steamData) clearLocked() {
 	d.recent.clear()
 	d.wishes.clear()
 	d.wishIDs.clear()
+	d.progress.clear()
 	if d.friendList != nil {
 		d.friendList.clear()
 		d.friendState.clear()
@@ -293,13 +298,9 @@ func (d *steamData) achievements(ctx context.Context, p reading[player], appID u
 	if issue != "" {
 		return reading[achievementProgress]{Issue: issue}
 	}
-	c, issue := d.readClient(ctx)
-	if issue != "" {
-		return reading[achievementProgress]{Issue: issue}
-	}
-	progress, issue := c.achievements(ctx, id, appID, language)
-	d.rememberAchievement(id, progress)
-	return reading[achievementProgress]{Data: progress, Issue: issue}
+	return d.readAchievementProgress(ctx, id, appID, language, func(ctx context.Context, c steamClient) (*achievementProgress, problem) {
+		return c.achievements(ctx, id, appID, language)
+	})
 }
 
 func compareName(a, b game) int {

@@ -128,7 +128,7 @@ func (c steamClient) browseStoreBatch(ctx context.Context, ids []uint32, country
 		} `json:"response"`
 	}
 	query := url.Values{"input_json": {string(input)}}
-	if issue := c.readBoundedJSON(ctx, apiBase+storeNamesPath, query, nil, false, storeBrowseBytes, &reply); issue != "" {
+	if issue := c.readBoundedJSON(ctx, apiBase+storeBrowsePath, query, nil, false, storeBrowseBytes, &reply); issue != "" {
 		return nil, issue
 	}
 	items := make(map[uint32]storeBrowseItem, len(ids))

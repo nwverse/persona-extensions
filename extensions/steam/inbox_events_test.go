@@ -45,7 +45,7 @@ func TestWishlistInboxDisabled(t *testing.T) {
 	if got := collectWishlistInbox(t, h); len(got) != 0 {
 		t.Fatalf("default-off inbox returned %d things", len(got))
 	}
-	for _, path := range []string{playerPath, wishlistPath, storeNamesPath, storePricesPath} {
+	for _, path := range []string{playerPath, wishlistPath, storeBrowsePath, appDetailsPath} {
 		if f.hit(path) != 0 {
 			t.Fatalf("default-off Inbox requested %s", path)
 		}
@@ -93,7 +93,7 @@ func seedInboxWishlist(t *testing.T, f *fakeSteam, games ...inboxFixtureGame) {
 		return string(raw)
 	}
 	f.reply(wishlistPath, http.StatusOK, reply("items", wishes))
-	f.reply(storeNamesPath, http.StatusOK, reply("store_items", items))
+	f.reply(storeBrowsePath, http.StatusOK, reply("store_items", items))
 }
 
 func newInboxTestApp(f *fakeSteam, dir string, now func() time.Time, cfg config) *app {
@@ -111,7 +111,7 @@ func TestWishlistInboxWireCollect(t *testing.T) {
 	f := newFakeSteam(t, time.Second)
 	seedInboxWishlist(t, f, inboxFixtureGame{firstApp, 500, 50, fmt.Sprintf(`{"name":%q}`, "Fixture "+fixtureID+" "+f.key)})
 	var metadataRequested atomic.Bool
-	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			DataRequest map[string]bool `json:"data_request"`
 		}
@@ -147,7 +147,7 @@ func TestWishlistInboxWireCollect(t *testing.T) {
 	if again := collectWishlistInbox(t, h); !reflect.DeepEqual(got, again) {
 		t.Fatalf("collection changed stable values %+v", again)
 	}
-	if !metadataRequested.Load() || f.hit(playerPath) != 1 || f.hit(wishlistPath) != 1 || f.hit(storeNamesPath) != 1 || f.hit(storePricesPath) != 0 {
+	if !metadataRequested.Load() || f.hit(playerPath) != 1 || f.hit(wishlistPath) != 1 || f.hit(storeBrowsePath) != 1 || f.hit(appDetailsPath) != 0 {
 		t.Fatal("collection should use a single pre-scanned snapshot")
 	}
 }
@@ -552,7 +552,7 @@ func TestWishlistInboxQRLogoutDuringScan(t *testing.T) {
 	session := a.qr.session
 	a.qr.mu.Unlock()
 	blocked := make(chan struct{})
-	f.handle(storeNamesPath, func(_ http.ResponseWriter, r *http.Request) {
+	f.handle(storeBrowsePath, func(_ http.ResponseWriter, r *http.Request) {
 		close(blocked)
 		<-r.Context().Done()
 	})

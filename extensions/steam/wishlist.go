@@ -81,15 +81,6 @@ func (c steamClient) wishlist(ctx context.Context, id, country, language string)
 	return list, issue
 }
 
-func (c steamClient) storeNames(ctx context.Context, ids []uint32, country, language string) map[uint32]string {
-	items, _ := c.browseStore(ctx, ids, country, language, storeDataRequest{})
-	names := make(map[uint32]string, len(items))
-	for id, item := range items {
-		names[id] = item.Name
-	}
-	return names
-}
-
 // Reuse prior names and quotes only for missing fields in the current wishlist.
 // Price history and alerts only see the fresh upstream results.
 func mergeStaleWishlist(current, previous *wishList) *wishList {

@@ -293,7 +293,7 @@ func TestGameNewsSummaryCleansAndBoundsExcerpts(t *testing.T) {
 			assertHidden(t, item.Excerpt, "scriptNoise", "commentNoise", "imageNoise", "tooLong", "example.com", "[", "<")
 		}
 	}
-	if f.hit("/ISteamNews/GetNewsForApp/v2/") != 1 || f.hit(storeNamesPath) != 1 {
+	if f.hit("/ISteamNews/GetNewsForApp/v2/") != 1 || f.hit(storeBrowsePath) != 1 {
 		t.Fatal("repeated reads should reuse cached articles and the Store name")
 	}
 }
@@ -340,6 +340,41 @@ func TestGameNewsRecentGamesAndLibraryFallback(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGameNewsSlowAppKeepsSiblingUpdates(t *testing.T) {
+	f := newFakeSteam(t, 7*time.Second)
+	f.handle(newsForAppPath, func(w http.ResponseWriter, r *http.Request) {
+		id := r.URL.Query().Get("appid")
+		if id == appIDText(firstApp) {
+			<-r.Context().Done()
+			return
+		}
+		if id != appIDText(secondApp) {
+			t.Errorf("unexpected news AppID: %s", id)
+		}
+		_, _ = fmt.Fprintf(w, `{"appnews":{"appid":%s,"newsitems":[{"gid":"401","date":200,"title":"Fast Patch Notes","feedname":"steam_community_announcements"}]}}`, id)
+	})
+	h := startTestHost(t, f, fixtureID, "GB", "")
+	start := time.Now()
+	got := toolAnswer(t, h, gameNewsName, `{"games_limit":2}`)
+	if elapsed := time.Since(start); elapsed > batchTimeout+time.Second {
+		t.Fatalf("one news request consumed the page budget: %s", elapsed)
+	}
+	contains(t, got, `"available":true`, "Fast Patch Notes", "Zeta Rally", `"dataset":"game_news/`+appIDText(firstApp)+`"`, `"code":"timeout"`)
+}
+
+func TestAchievementProgressUsesStaleDataOnTimeout(t *testing.T) {
+	f := newFakeSteam(t, 250*time.Millisecond)
+	h := startTestHost(t, f, fixtureID, "GB", "")
+	args := fmt.Sprintf(`{"appid":%d}`, firstApp)
+	contains(t, toolAnswer(t, h, "steam_achievements", args), `"available":true`, `"unlocked":2`)
+	f.handle(achievementsPath, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	contains(t, toolAnswer(t, h, "steam_achievements", args), `"available":true`, `"unlocked":2`, `"stale":true`, `"code":"timeout"`)
+	f.reply(achievementsPath, http.StatusForbidden, "fixture private achievements")
+	got := toolAnswer(t, h, "steam_achievements", args)
+	contains(t, got, `"available":false`, `"code":"achievements_unavailable"`)
+	assertHidden(t, got, `"stale":true`, `"unlocked":2`)
 }
 
 func TestRecentOfficialUpdatesPageLoadsOnDemandAndReusesNews(t *testing.T) {

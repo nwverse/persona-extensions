@@ -95,8 +95,8 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 		case globalAchievementsPath, gameAchievementsPath, newsForAppPath:
 		case authBasePath + beginQRPath + "/v1/", authBasePath + pollQRPath + "/v1/":
 			method = http.MethodPost
-		case storeNamesPath, reviewsAPIPath, storeCategoriesPath:
-		case storePricesPath, storeSearchPath:
+		case storeBrowsePath, reviewsAPIPath, storeCategoriesPath:
+		case appDetailsPath, storeSearchPath:
 			wantHost = storeHost
 		default:
 			if !strings.HasPrefix(req.URL.Path, tagCatalogPath) && !strings.HasPrefix(req.URL.Path, appReviewsPath) {
@@ -178,7 +178,7 @@ func (f *fakeSteam) seed() {
 	f.reply(recentPath, 200, fmt.Sprintf(`{"response":{"total_count":2,"games":[{"appid":%d,"name":"Zeta Rally","playtime_2weeks":40,"playtime_forever":600},{"appid":%d,"name":"Synthetic Adventure","playtime_2weeks":90,"playtime_forever":200}]}}`, secondApp, firstApp))
 	f.reply(achievementsPath, 200, `{"playerstats":{"success":true,"gameName":"Synthetic Adventure","achievements":[{"achieved":1},{"achieved":0},{"achieved":1}]}}`)
 	f.reply(wishlistPath, 200, fmt.Sprintf(`{"response":{"items":[{"appid":%d,"priority":2},{"appid":%d,"priority":1},{"appid":%d,"priority":3}]}}`, secondApp, firstApp, thirdApp))
-	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, r *http.Request) {
 		input := fixtureBrowseInput(f.t, r)
 		salePrice, fullPrice := "$3.99", "$6.99"
 		if input.Context["country_code"] == "GB" {
@@ -234,7 +234,7 @@ func TestQRReadRoutes(t *testing.T) {
 		}
 		_, _ = fmt.Fprintf(w, `{"response":{"achievement_progress":[{"appid":%d,"unlocked":1,"total":1},{"appid":%d,"unlocked":2,"total":3}]}}`, secondApp, firstApp)
 	})
-	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Context struct {
 				Country  string `json:"country_code"`
@@ -281,7 +281,7 @@ func TestQRReadRoutes(t *testing.T) {
 	authStep(t, h, "")
 	await(t, 5*time.Second, func() bool { return authStep(t, h, qrStep).Done })
 	await(t, time.Second, func() bool {
-		return f.hit(wishlistPath) == 1 && f.hit(storeNamesPath) == 1 && f.hit(storePricesPath) == 0
+		return f.hit(wishlistPath) == 1 && f.hit(storeBrowsePath) == 1 && f.hit(appDetailsPath) == 0
 	})
 	profile := toolAnswer(t, h, "steam_profile", "{}")
 	contains(t, profile, "Private QR Pilot", `"public":false`, `"state":"online"`, "Synthetic Adventure", `"owned_game_count":3`)
@@ -290,7 +290,7 @@ func TestQRReadRoutes(t *testing.T) {
 	contains(t, toolAnswer(t, h, "steam_library", `{"query":"zeta"}`), "Zeta Rally", `"playtime_forever":600`)
 	contains(t, toolAnswer(t, h, "steam_achievements", fmt.Sprintf(`{"appid":%d}`, firstApp)), `"total":3`, `"unlocked":2`)
 	contains(t, toolAnswer(t, h, "steam_wishlist", `{"limit":1}`), "示例冒险", `"country_code":"GB"`, `"currency":"GBP"`, `"discounted_count":1`)
-	for path, want := range map[string]int{playerLinkPath: 1, ownedPath: 1, recentPath: 1, progressPath: 1, wishlistPath: 2, storeNamesPath: 2, storePricesPath: 0} {
+	for path, want := range map[string]int{playerLinkPath: 1, ownedPath: 1, recentPath: 1, progressPath: 1, wishlistPath: 2, storeBrowsePath: 2, appDetailsPath: 0} {
 		if n := f.hit(path); n != want {
 			t.Errorf("expected %d %s reads, got %d", want, path, n)
 		}
@@ -342,9 +342,9 @@ func TestQRReadRoutes(t *testing.T) {
 	contains(t, toolAnswer(t, h, "steam_achievements", fmt.Sprintf(`{"appid":%d}`, firstApp)), `"available":false`, string(problemAchievements))
 	f.reply(playerLinkPath, 200, `{"response":{"accounts":[]}}`)
 	f.reply(wishlistPath, http.StatusForbidden, "hidden")
-	quotes := f.hit(storeNamesPath)
+	quotes := f.hit(storeBrowsePath)
 	if got := act(t, h, nav, view, "refresh", nil); len(got.Sections) != 5 || got.Sections[2].Items[0].Title != "Alpha Café" ||
-		got.Sections[3].Items[0].Title != english.message(problemWishlist, false) || f.hit(storeNamesPath) != quotes {
+		got.Sections[3].Items[0].Title != english.message(problemWishlist, false) || f.hit(storeBrowsePath) != quotes {
 		t.Fatal("library reads should use the signed-in SteamID even if the profile is unavailable")
 	}
 	var status wire.AuthStatus
@@ -450,7 +450,7 @@ func TestSteamAccessTokenCannotFollowRedirect(t *testing.T) {
 	if _, issue := c.profile(t.Context(), fixtureID); issue != problemResponse || count != 1 {
 		t.Fatal("credential-bearing request should stop at a redirect")
 	}
-	if issue := c.get(t.Context(), storeBase+storePricesPath, nil, true, &struct{}{}); issue != problemResponse || count != 1 {
+	if issue := c.get(t.Context(), storeBase+appDetailsPath, nil, true, &struct{}{}); issue != problemResponse || count != 1 {
 		t.Fatal("credential-bearing request should not be sent to the Store")
 	}
 }
@@ -622,7 +622,7 @@ func TestSteamCacheLayersAndScope(t *testing.T) {
 	load()
 	d = f.data(dir, fixtureVanity, "US", clock)
 	load()
-	for _, path := range []string{vanityPath, playerPath, ownedPath, recentPath, wishlistPath, storeNamesPath} {
+	for _, path := range []string{vanityPath, playerPath, ownedPath, recentPath, wishlistPath, storeBrowsePath} {
 		count(path, 1)
 	}
 	now = now.Add(11 * time.Minute)
@@ -631,14 +631,14 @@ func TestSteamCacheLayersAndScope(t *testing.T) {
 	count(playerPath, 2)
 	count(ownedPath, 1)
 	count(recentPath, 2)
-	count(storeNamesPath, 2)
+	count(storeBrowsePath, 2)
 
 	d = f.data(dir, fixtureVanity, "GB", clock)
 	load()
 	count(vanityPath, 1)
 	count(playerPath, 2)
 	count(ownedPath, 1)
-	count(storeNamesPath, 3)
+	count(storeBrowsePath, 3)
 
 	now = now.Add(8 * time.Hour)
 	load()
@@ -648,7 +648,7 @@ func TestSteamCacheLayersAndScope(t *testing.T) {
 	d = f.data(dir, fixtureID2, "GB", clock)
 	load()
 	count(ownedPath, 3)
-	count(storeNamesPath, 5)
+	count(storeBrowsePath, 5)
 	files, err := os.ReadDir(filepath.Join(dir, "steam-cache-v1"))
 	if err != nil || len(files) != 5 {
 		t.Fatalf("expected five fixed cache slots, got %d: %v", len(files), err)
@@ -710,7 +710,7 @@ func TestStorePriceBatchesAreBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.reply(wishlistPath, 200, string(payload))
-	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, r *http.Request) {
 		input := fixtureBrowseInput(t, r)
 		if len(input.IDs) != storeBatchSize {
 			t.Errorf("batch size %d", len(input.IDs))
@@ -728,7 +728,7 @@ func TestStorePriceBatchesAreBounded(t *testing.T) {
 	if issue != "" || got.Total != len(items) || got.Checked != maxWishlistItems || len(got.Items) != maxWishlistItems {
 		t.Fatalf("bounded snapshot issue=%q, items=%d, checked=%d, total=%d", issue, len(got.Items), got.Checked, got.Total)
 	}
-	if requests := f.hit(storeNamesPath); requests != maxWishlistItems/storeBatchSize {
+	if requests := f.hit(storeBrowsePath); requests != maxWishlistItems/storeBatchSize {
 		t.Fatalf("%d Store price requests", requests)
 	}
 }
@@ -738,9 +738,9 @@ func TestSteamRedirectAndEchoCannotExposeKey(t *testing.T) {
 	d := f.data(t.TempDir(), fixtureID, "", time.Now)
 	ctx := t.Context()
 	f.handle(playerPath, func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, storeBase+storePricesPath, http.StatusFound)
+		http.Redirect(w, r, storeBase+appDetailsPath, http.StatusFound)
 	})
-	if p := d.account(ctx, profileTTL, true); p.Data != nil || p.Issue != problemResponse || f.hit(storePricesPath) != 0 {
+	if p := d.account(ctx, profileTTL, true); p.Data != nil || p.Issue != problemResponse || f.hit(appDetailsPath) != 0 {
 		t.Fatal("unexpected success or redirect from the key-bearing endpoint")
 	}
 	f.reply(playerPath, 200, fmt.Sprintf(`{"response":{"players":[{"steamid":%q,"personaname":%q,"communityvisibilitystate":3,"gameextrainfo":%q}]}}`, fixtureID, f.key, f.key))

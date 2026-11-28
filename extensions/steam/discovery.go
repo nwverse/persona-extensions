@@ -1040,7 +1040,7 @@ func (d *steamDiscovery) legacyGameMetadata(ctx context.Context, id uint32, coun
 		Success *bool           `json:"success"`
 		Data    json.RawMessage `json:"data"`
 	}
-	if p := d.get(ctx, legacyDetailTimeout, gameResponseBytes, storeBase+storePricesPath, query, &reply); p != "" {
+	if p := d.get(ctx, legacyDetailTimeout, gameResponseBytes, storeBase+appDetailsPath, query, &reply); p != "" {
 		return nil, p
 	}
 	item := reply[appID]

@@ -30,8 +30,8 @@ const (
 	achievementsPath = "/ISteamUserStats/GetPlayerAchievements/v1/"
 	progressPath     = "/IPlayerService/GetAchievementsProgress/v1/"
 	wishlistPath     = "/IWishlistService/GetWishlist/v1/"
-	storeNamesPath   = "/IStoreBrowseService/GetItems/v1/"
-	storePricesPath  = "/api/appdetails"
+	storeBrowsePath  = "/IStoreBrowseService/GetItems/v1/"
+	appDetailsPath   = "/api/appdetails"
 
 	maxAPIBytes = 16 << 20
 	maxGames    = 20_000
@@ -88,6 +88,9 @@ func (t *steamTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	select {
 	case slots <- struct{}{}:
 	case <-req.Context().Done():
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
 		return nil, req.Context().Err()
 	}
 	resp, err := t.base.RoundTrip(req)

@@ -420,7 +420,7 @@ func TestSteamReadsRecordFreshSnapshots(t *testing.T) {
 	now = now.Add(time.Minute)
 	d.ownedGames(t.Context(), p, false)
 	d.wishlist(t.Context(), p, "english", false)
-	for _, path := range []string{ownedPath, wishlistPath, storeNamesPath} {
+	for _, path := range []string{ownedPath, wishlistPath, storeBrowsePath} {
 		if hits := f.hit(path); hits != 1 {
 			t.Fatalf("%s received %d requests for one fresh read and one cache hit", path, hits)
 		}
@@ -432,7 +432,7 @@ func TestSteamReadsRecordFreshSnapshots(t *testing.T) {
 	checkPrice(firstApp, 399, fixtureObservationAt)
 
 	f.reply(ownedPath, http.StatusTooManyRequests, "fixture rate limit")
-	f.reply(storeNamesPath, http.StatusServiceUnavailable, "fixture Store outage")
+	f.reply(storeBrowsePath, http.StatusServiceUnavailable, "fixture Store outage")
 	if got := d.ownedGames(t.Context(), p, true); !got.Stale || got.Issue != problemRateLimited {
 		t.Fatalf("expected library fallback: %+v", got)
 	}
@@ -444,7 +444,7 @@ func TestSteamReadsRecordFreshSnapshots(t *testing.T) {
 
 	now = now.Add(time.Minute)
 	f.reply(ownedPath, http.StatusOK, fmt.Sprintf(`{"response":{"game_count":3,"games":[{"appid":%d,"playtime_forever":250}]}}`, firstApp))
-	f.reply(storeNamesPath, http.StatusOK, fmt.Sprintf(`{"response":{"store_items":[{"appid":%d,"success":1,"best_purchase_option":{"final_price_in_cents":"199","discount_pct":80}},{"appid":%d,"success":1,"best_purchase_option":{"final_price_in_cents":"1","discount_pct":101}},{"id":%d,"success":15}]}}`, firstApp, secondApp, thirdApp))
+	f.reply(storeBrowsePath, http.StatusOK, fmt.Sprintf(`{"response":{"store_items":[{"appid":%d,"success":1,"best_purchase_option":{"final_price_in_cents":"199","discount_pct":80}},{"appid":%d,"success":1,"best_purchase_option":{"final_price_in_cents":"1","discount_pct":101}},{"id":%d,"success":15}]}}`, firstApp, secondApp, thirdApp))
 	if got := d.ownedGames(t.Context(), p, true); got.Issue != "" || got.Data == nil || !got.Data.Truncated {
 		t.Fatalf("expected a readable but incomplete library: %+v", got)
 	}

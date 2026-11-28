@@ -119,7 +119,7 @@ func newFriendsClient(t *testing.T, key, access string, handler http.HandlerFunc
 			return nil, fmt.Errorf("unexpected Steam route")
 		}
 		wantKey, wantAccess := key, access
-		if req.URL.Path == storeNamesPath || (req.URL.Path == wishlistPath && access == "") {
+		if req.URL.Path == storeBrowsePath || (req.URL.Path == wishlistPath && access == "") {
 			wantKey, wantAccess = "", ""
 		} else if access != "" {
 			wantKey = ""
@@ -484,7 +484,7 @@ func TestCoopOverlapMultiFriend(t *testing.T) {
 				t.Error("shared library read used an unverified SteamID")
 				http.NotFound(w, r)
 			}
-		case storeNamesPath:
+		case storeBrowsePath:
 			storeHits.Add(1)
 			ids := readCategoryBatch(t, r, "english")
 			if slices.Contains(ids, ownOnly) || slices.Contains(ids, subsetOnly) {
@@ -588,7 +588,7 @@ func TestCoopOverlapQRPartial(t *testing.T) {
 				t.Error("QR overlap requested an unexpected SteamID")
 				http.NotFound(w, r)
 			}
-		case storeNamesPath:
+		case storeBrowsePath:
 			if ids := readCategoryBatch(t, r, "schinese"); !slices.Equal(ids, []uint32{firstApp}) {
 				t.Error("unexpected QR Store category request")
 			}
@@ -628,7 +628,7 @@ func TestCoopOverlapStoreScanLimit(t *testing.T) {
 			sendFriendList(t, w, r, []string{friend})
 		case ownedPath:
 			sendFriendGames(w, games)
-		case storeNamesPath:
+		case storeBrowsePath:
 			storeHits.Add(1)
 			ids := readCategoryBatch(t, r, "english")
 			categories := make(map[uint32][]int, len(ids))
@@ -731,7 +731,7 @@ func TestCoopOverlapSlowLibraryKeepsOtherFriendsAndStoreNames(t *testing.T) {
 				t.Error("looked up an unverified library")
 			}
 			sendFriendGames(w, []game{{AppID: firstApp, PlaytimeForever: 5}})
-		case storeNamesPath:
+		case storeBrowsePath:
 			if !slices.Equal(readCategoryBatch(t, r, "english"), []uint32{firstApp}) {
 				t.Error("StoreBrowse received other games than the surviving intersection")
 			}

@@ -41,7 +41,7 @@ func TestWishlistPricesUseOnlyStoreBrowse(t *testing.T) {
 		{AppID: firstApp + 3, Priority: 3}, {AppID: firstApp, Priority: 1}, {AppID: secondApp, Priority: 2}, {AppID: thirdApp, Priority: 4},
 		{AppID: firstApp + 4, Priority: 5},
 	})
-	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, r *http.Request) {
 		input := fixtureBrowseInput(t, r)
 		if len(input.IDs) != 5 || input.IDs[0].AppID != firstApp || input.Context["country_code"] != "JP" || input.Context["language"] != "schinese" {
 			t.Errorf("incorrect regional wishlist batch: %+v", input)
@@ -63,7 +63,7 @@ func TestWishlistPricesUseOnlyStoreBrowse(t *testing.T) {
 	})
 	c := steamClient{http: f.http, key: f.key}
 	list, issue := c.wishlist(t.Context(), fixtureID, "JP", "schinese")
-	if f.hit(storeNamesPath) != 1 || f.hit(storePricesPath) != 0 || issue != "" || list == nil || list.Checked != 5 || list.Discounted != 2 {
+	if f.hit(storeBrowsePath) != 1 || f.hit(appDetailsPath) != 0 || issue != "" || list == nil || list.Checked != 5 || list.Discounted != 2 {
 		t.Fatalf("expected five checked prices in one StoreBrowse call, got %+v, %s", list, issue)
 	}
 	price := list.Items[0].Price
@@ -106,7 +106,7 @@ func TestWishlistExpiredSnapshotAfterSteamTimeout(t *testing.T) {
 	now = now.Add(wishlistTTL + time.Minute)
 	newApp := firstApp + 10
 	seedWishlistIDs(t, f, []wishItem{{AppID: firstApp, Priority: 1}, {AppID: newApp, Priority: 2}})
-	f.handle(storeNamesPath, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+	f.handle(storeBrowsePath, func(_ http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 	got := d.wishlist(t.Context(), p, "english", true)
 	if got.Data == nil || !got.Stale || got.Issue != problemTimeout || got.At != first.At || got.Data.Checked != 1 || got.Data.Total != 2 {
 		t.Fatalf("the wishlist did not return its expired quotes with a stale warning: %+v", got)
@@ -131,7 +131,7 @@ func TestWishlistSlowBatchKeepsOtherPriorityBatches(t *testing.T) {
 	seedWishlistIDs(t, f, items)
 	started := make(chan uint32, steamConcurrency+1)
 	release := make(chan struct{})
-	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, r *http.Request) {
 		input := fixtureBrowseInput(t, r)
 		if len(input.IDs) != storeBatchSize {
 			t.Errorf("wishlist sent a batch of %d", len(input.IDs))
@@ -175,7 +175,7 @@ func TestWishlistSlowBatchKeepsOtherPriorityBatches(t *testing.T) {
 	if time.Since(start) > batchTimeout+1500*time.Millisecond || got.Issue != problemTimeout || got.Data == nil || got.Data.Checked != len(items)-storeBatchSize {
 		t.Fatalf("a single hung batch lost completed results or consumed the outer budget: elapsed=%s, issue=%s, data=%v", time.Since(start), got.Issue, got.Data != nil)
 	}
-	if f.hit(storeNamesPath) != steamConcurrency+1 || f.hit(storePricesPath) != 0 {
+	if f.hit(storeBrowsePath) != steamConcurrency+1 || f.hit(appDetailsPath) != 0 {
 		t.Fatal("wishlist did not finish the remaining StoreBrowse batches")
 	}
 	for i, item := range got.Data.Items {
