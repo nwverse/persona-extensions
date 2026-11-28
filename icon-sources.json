@@ -113,6 +113,14 @@
       "license_file": "assets/LICENSE",
       "attribution": "RSSHub project. Official icon asset, with the upstream repository license notice preserved in each package. Trademark rights are separate from copyright licensing."
     },
+    "simple-icons": {
+      "repository": "https://github.com/simple-icons/simple-icons",
+      "revision": "801eaab5b70f4933137069397ebbd2ce5f9ad56e",
+      "license": "CC0-1.0",
+      "license_url": "https://raw.githubusercontent.com/simple-icons/simple-icons/801eaab5b70f4933137069397ebbd2ce5f9ad56e/LICENSE.md",
+      "license_file": "assets/LICENSE",
+      "attribution": "Simple Icons contributors. Official Steam vector mark under CC0-1.0, with the upstream license notice preserved in each package. Trademark rights are separate from copyright licensing."
+    },
     "stackexchange": {
       "repository": "https://github.com/StackExchange/StackExchange.DataExplorer",
       "revision": "72748408781c83da507bd41ef5db254c4c637349",
@@ -968,14 +976,17 @@
     },
     "steam": {
       "path": "assets/icon.png",
-      "source_id": "raycast",
-      "source_url": "https://raw.githubusercontent.com/raycast/extensions/dfa15bf5d53b5c97722f9d4df1b1e0af939a81ab/extensions/steam/assets/command-icon.png",
-      "sha256": "919745007d0c9403b8014a944d44c89661a9a89646e46e584ef6947f77362041",
+      "source_id": "simple-icons",
+      "source_url": "https://raw.githubusercontent.com/simple-icons/simple-icons/801eaab5b70f4933137069397ebbd2ce5f9ad56e/icons/steam.svg",
+      "sha256": "2a07ece4f6f99178058bfe35f3215c67360404b7aa4897df219502c4c49d1fb8",
       "format": "png",
       "width": 512,
       "height": 512,
       "trademark_owner": "Valve Corporation (Steam)",
-      "usage": "Exact Raycast extension icon used to identify the corresponding public service."
+      "usage": "Official Steam piston/crank vector mark from Simple Icons (CC0-1.0), used solely to identify the Steam integration. Rasterized with Google Chrome for Testing 149.0.7827.55 as a 512x512 full-bleed square app icon with the white mark over the official vertical Steam blue gradient (#1586B9 to #123C6D to #0A152C) and its left crank arm extended seamlessly to the left edge; trademark rights remain with Valve Corporation.",
+      "source_path": "assets/icon-source.svg",
+      "source_sha256": "5eef8f31106b81956ed908490bcf8c73abe476aa58bb9041acdf70b0d42ebcae",
+      "transformation": "Inverted the official Simple Icons Steam negative-space path to white, extended the lower-left crank arm seamlessly along its exact edges to the left canvas edge, and rasterized with Google Chrome for Testing 149.0.7827.55 onto a 512x512 full-bleed vertical Steam blue gradient (#1586B9 -> #123C6D -> #0A152C)."
     },
     "sentry": {
       "path": "assets/icon.png",
