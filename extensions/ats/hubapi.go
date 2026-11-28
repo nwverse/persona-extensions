@@ -80,7 +80,7 @@ type hubAPI interface {
 	CreateSession(ctx context.Context, req sessionRequest) (string, error)
 	// Session returns nil when the hub no longer lists the session.
 	Session(ctx context.Context, machineID, sessionID string) (*hubSession, error)
-	LastReply(ctx context.Context, machineID, sessionID string) (string, error)
+	LastReply(ctx context.Context, machineID, sessionID string) (text, trailingCloseout string, err error)
 	SendMessage(ctx context.Context, machineID, sessionID, text string) error
 	Interrupt(ctx context.Context, machineID, sessionID string) error
 	AttachTodo(ctx context.Context, todoID, machineID, sessionID string) error
@@ -232,9 +232,8 @@ func sessionPath(machineID, sessionID string) string {
 	return "/api/v1/sessions/" + url.PathEscape(machineID) + "/" + url.PathEscape(sessionID)
 }
 
-// LastReply is the text the agent ended its latest turn with. When the hub's light item list clipped a long
-// message (full_size > 0), it fetches the complete unclipped item from /items/{iid}/full.
-func (c *hubClient) LastReply(ctx context.Context, machineID, sessionID string) (string, error) {
+// LastReply 返回本轮展示用的回复和单独发送的 closeout 尾部。列表截断的消息会读取完整条目。
+func (c *hubClient) LastReply(ctx context.Context, machineID, sessionID string) (text, trailingCloseout string, err error) {
 	var out struct {
 		Items []struct {
 			ID       string `json:"id"`
@@ -245,7 +244,7 @@ func (c *hubClient) LastReply(ctx context.Context, machineID, sessionID string) 
 		} `json:"items"`
 	}
 	if err := c.do(ctx, http.MethodGet, sessionPath(machineID, sessionID)+"/items?turns=1", nil, &out); err != nil {
-		return "", err
+		return "", "", err
 	}
 	resolveText := func(id, text string, fullSize int) string {
 		if fullSize > 0 && id != "" {
@@ -280,9 +279,9 @@ func (c *hubClient) LastReply(ctx context.Context, machineID, sessionID string) 
 			}
 			continue
 		}
-		return txt, nil
+		return txt, fallback, nil
 	}
-	return fallback, nil
+	return fallback, "", nil
 }
 
 func (c *hubClient) SendMessage(ctx context.Context, machineID, sessionID, text string) error {

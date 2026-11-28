@@ -456,6 +456,8 @@ func errorClassInWords(class string) string {
 	switch class {
 	case "task_failed":
 		return "the work did not pass (the acceptance command failed, or the agent's turn ended in an error)"
+	case "incomplete":
+		return "the agent reported the work is not done"
 	case "timeout":
 		return "it ran out of time"
 	case "infra_error":
@@ -663,13 +665,31 @@ func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt) bool {
 			return false
 		}
 		rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-		reply, err := d.api.LastReply(rctx, e.MachineID, e.SessionID)
+		reply, trailingCloseout, err := d.api.LastReply(rctx, e.MachineID, e.SessionID)
 		cancel()
 		if err != nil {
 			return false
 		}
 		if need, blocked := blockedReason(reply); blocked {
 			return d.setWaiting(t, "Agent 说它卡住了："+need, s.UpdatedAt)
+		}
+		status, waiting, missing, ok := parseCloseoutStatus(trailingCloseout)
+		if !ok {
+			status, waiting, missing, ok = parseCloseoutStatus(reply)
+		}
+		if ok && (status == "blocked" || status == "not_done") {
+			if status == "blocked" || waiting != "" {
+				reason := cmpOr(waiting, cmpOr(missing, "Agent 报告任务被阻塞或等待外部输入"))
+				return d.setWaiting(t, "Agent 未完成（等待中）："+firstLinePreview(reason, 200), s.UpdatedAt)
+			}
+			sum := agentSummary(reply)
+			t.Exec.LastReply, t.Exec.FullReply = sum, reply
+			d.finish(ctx, t, att, outcome{
+				state: StateFailed, verdict: VerdictFail, errClass: "incomplete",
+				message: "Agent 报告任务尚未完成：" + firstLinePreview(cmpOr(missing, "closeout status=not_done"), 200),
+				summary: sum, fullReply: reply,
+			})
+			return true
 		}
 		return d.startAcceptance(ctx, t, att, reply)
 	}

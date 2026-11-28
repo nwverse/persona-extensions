@@ -634,6 +634,117 @@ func TestSessionWaitingForTheUserIsNeedsInput(t *testing.T) {
 	}
 }
 
+func TestDispatcherGuardsAcceptanceForCloseout(t *testing.T) {
+	const done = `<closeout status="done">Finished the inspection.</closeout>`
+	for _, tc := range []struct {
+		name, reply, state, verdict string
+		waiting, decision           string
+	}{
+		{
+			name: "not done waiting", reply: "<closeout status=\"not_done\">\nwaiting: Need the staging URL\nmissing: Staging check\n</closeout>",
+			state: StateNeedsInput, verdict: VerdictUnverified, waiting: "Agent 未完成（等待中）：Need the staging URL",
+		},
+		{
+			name: "blocked", reply: "<closeout status=\"blocked\">\nmissing: Repository access\n</closeout>",
+			state: StateNeedsInput, verdict: VerdictUnverified, waiting: "Agent 未完成（等待中）：Repository access",
+		},
+		{
+			name: "not done without waiting", reply: "<closeout status=\"not_done\">\nmissing: Check the rollback path\n</closeout>\n\nSummary: Only deployment was checked.",
+			state: StateFailed, verdict: VerdictFail, decision: "失败：Agent 未做完（试了 1 次）",
+		},
+		{
+			name: "done", reply: done,
+			state: StateSucceeded, verdict: VerdictPass, decision: "通过验收",
+		},
+		{
+			name: "fenced example followed by done", reply: "```xml\n<closeout status=\"not_done\">\nwaiting: Example only\n</closeout>\n```\n\n" + done,
+			state: StateSucceeded, verdict: VerdictPass, decision: "通过验收",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			task := r.enqueue(EnqueueInput{PermissionProfile: PermissionReadonly, AcceptanceCommand: "true"})
+			r.tick()
+			r.hub.turnEnds("session-1", "u1", tc.reply)
+			r.tick()
+			r.tick()
+			ranAcceptance := slices.Contains(r.nodes.calls, "ats.accept")
+			if ranAcceptance {
+				r.waitAccepted(task.ID, 1)
+			}
+			r.tick()
+
+			got := r.task(task.ID)
+			if got.State != tc.state || got.Verdict != tc.verdict || ranAcceptance != (tc.state == StateSucceeded) {
+				t.Fatalf("state %s, verdict %s, acceptance called %t, want state %s, verdict %s", got.State, got.Verdict, ranAcceptance, tc.state, tc.verdict)
+			}
+			switch tc.state {
+			case StateNeedsInput:
+				if got.Exec == nil || got.Exec.Waiting != tc.waiting || got.Exec.JudgedUpdate != "u1" {
+					t.Fatalf("waiting: %+v, want %q at u1", got.Exec, tc.waiting)
+				}
+			case StateFailed:
+				rep := lastReport(got)
+				if rep == nil || rep.ErrorClass != "incomplete" || rep.ExitCode != nil || rep.Message != "Agent 报告任务尚未完成：Check the rollback path" {
+					t.Fatalf("incomplete attempt report: %+v", rep)
+				}
+				if rep.Summary != "Only deployment was checked." || rep.FullReply != tc.reply {
+					t.Fatalf("incomplete attempt lost the reply: %+v", rep)
+				}
+			}
+			decisions := r.todos.written()
+			if tc.decision == "" && len(decisions) != 0 || tc.decision != "" && (len(decisions) != 1 || decisions[0].Choice != tc.decision) {
+				t.Fatalf("Todo decisions: %+v, want %q", decisions, tc.decision)
+			}
+		})
+	}
+}
+
+type lastReplyTestHub struct {
+	*fakeHub
+	client *hubClient
+}
+
+func (h lastReplyTestHub) LastReply(ctx context.Context, machine, session string) (string, string, error) {
+	return h.client.LastReply(ctx, machine, session)
+}
+
+func TestDispatcherGuardsAcceptanceForSeparateCloseoutItem(t *testing.T) {
+	r := newRig(t)
+	const reply = "Summary: Only deployment was checked."
+	const closeout = "<closeout status=\"not_done\">\nmissing: Check the rollback path\n</closeout>"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodGet || req.URL.Path != "/api/v1/sessions/"+testMachine+"/session-1/items" || req.URL.Query().Get("turns") != "1" {
+			t.Errorf("last reply request: %s %s", req.Method, req.URL)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string][]map[string]string{"items": {
+			{"role": "assistant", "kind": "text", "text": reply},
+			{"role": "assistant", "kind": "text", "text": closeout},
+		}})
+	}))
+	t.Cleanup(srv.Close)
+	r.d.api = lastReplyTestHub{fakeHub: r.hub, client: newHubClient(srv.URL, "test-token")}
+	task := r.enqueue(EnqueueInput{PermissionProfile: PermissionReadonly, AcceptanceCommand: "true"})
+	r.tick()
+	r.hub.turnEnds("session-1", "u1", "")
+	r.tick()
+	r.tick()
+	if slices.Contains(r.nodes.calls, "ats.accept") {
+		r.waitAccepted(task.ID, 1)
+		t.Fatal("acceptance ran after a separate not_done closeout")
+	}
+	got := r.task(task.ID)
+	rep := lastReport(got)
+	if got.State != StateFailed || got.Verdict != VerdictFail || rep == nil || rep.ErrorClass != "incomplete" {
+		t.Fatalf("state %s, verdict %s, report %+v", got.State, got.Verdict, rep)
+	}
+	if rep.FullReply != reply || rep.Summary != "Only deployment was checked." {
+		t.Fatalf("reported reply: %+v", rep)
+	}
+}
+
 func TestFailedAcceptanceIsRetriedAsANewAttemptThenFails(t *testing.T) {
 	r := newRig(t)
 	one := 1
@@ -1437,6 +1548,52 @@ func TestBlockedReason(t *testing.T) {
 		if got != want || blocked != (want != "") {
 			t.Errorf("%q: %q %v", reply, got, blocked)
 		}
+	}
+}
+
+func TestParseCloseoutStatus(t *testing.T) {
+	const blocked = `<closeout status="blocked">missing: Access</closeout>`
+	const done = `<closeout status="done">Complete.</closeout>`
+	for _, tc := range []struct {
+		name, reply              string
+		status, waiting, missing string
+		ok                       bool
+	}{
+		{
+			name:   "attributes and fields",
+			reply:  "<CLOSEOUT detail=\"x > y\" STATUS = ' Not-Done '>\r\n WAITING:  Confirm A & B  \r\nMissing: review: staging\r\n</CLOSEOUT>",
+			status: "not_done", waiting: "Confirm A & B", missing: "review: staging", ok: true,
+		},
+		{
+			name:   "placeholder fields",
+			reply:  "<closeout status=\"not_done\">\nwaiting: \nwaiting: NONE\nwaiting: 无\nmissing: N/A\n</closeout>",
+			status: "not_done", ok: true,
+		},
+		{
+			name: "last complete block", reply: blocked + "\n" + done + "\n<closeout status=\"blocked\">",
+			status: "done", ok: true,
+		},
+		{
+			name: "valid block after an unclosed opening", reply: "<closeout status=\"done\">\n" + blocked,
+			status: "blocked", missing: "Access", ok: true,
+		},
+		{
+			name: "fenced blocks around a real closeout", reply: "```xml\n" + done + "\n```\n" + blocked + "\n~~~xml\n" + done + "\n~~~",
+			status: "blocked", missing: "Access", ok: true,
+		},
+		{name: "longer fence", reply: "````md\n```xml\n~~~\n" + blocked + "\n```\n````"},
+		{name: "unclosed fence", reply: "~~~xml\n" + blocked},
+		{name: "blockquote", reply: "> " + blocked},
+		{name: "unclosed closeout", reply: `<closeout status="blocked">missing: Access`},
+		{name: "self-closing closeout", reply: `<closeout status="blocked" />`},
+		{name: "malformed attributes", reply: `<closeout status=blocked>missing: Access</closeout>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			status, waiting, missing, ok := parseCloseoutStatus(tc.reply)
+			if status != tc.status || waiting != tc.waiting || missing != tc.missing || ok != tc.ok {
+				t.Fatalf("status=%q waiting=%q missing=%q ok=%t, want %q %q %q %t", status, waiting, missing, ok, tc.status, tc.waiting, tc.missing, tc.ok)
+			}
+		})
 	}
 }
 

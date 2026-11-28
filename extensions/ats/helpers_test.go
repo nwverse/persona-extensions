@@ -140,10 +140,10 @@ func (f *fakeHub) Session(_ context.Context, _ string, sessionID string) (*hubSe
 	return &c, nil
 }
 
-func (f *fakeHub) LastReply(_ context.Context, _ string, sessionID string) (string, error) {
+func (f *fakeHub) LastReply(_ context.Context, _ string, sessionID string) (string, string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.replies[sessionID], nil
+	return f.replies[sessionID], "", nil
 }
 
 func (f *fakeHub) Interrupt(_ context.Context, _ string, sessionID string) error {

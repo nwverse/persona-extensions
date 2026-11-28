@@ -30,6 +30,8 @@ func failureWords(class, verdict string) string {
 		return "会话丢失"
 	case "rejected":
 		return "任务本身有问题（仓库或 ref 不对）"
+	case "incomplete":
+		return "Agent 未做完"
 	case "", "task_failed":
 		if verdict == VerdictFail {
 			return "没通过验收"
