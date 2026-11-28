@@ -897,6 +897,121 @@ class RealBackend:
         data, mime = media.download(self._auth, url, max_bytes=most)
         return mime or "application/octet-stream", data
 
+    # Pictures and files. The pinned LarkAgentX only downloads; its later releases upload the way the web client does,
+    # and so does this, with the pinned generated classes: on the region's file host, with the session's cookies, in
+    # lark.pan's protobuf. An upload is seen by nobody until a message carries its key, and the connector uploads only
+    # from actions.do, after the phone confirmation.
+
+    def upload(self, item):
+        """Uploads one checked local file (outbound.load): {"kind", "key"} for a picture, plus name, size and mime
+        for a file. Raises UploadError, whose message has neither the file's content nor an address."""
+        if item["kind"] == "image":
+            return {"kind": "image", "key": self._upload_image(item)}
+        return dict(self._upload_file(item), kind="file")
+
+    def send_media(self, chat, uploaded, root):
+        """Sends one uploaded picture (IMAGE) or file (FILE) as its own message: its id, or None when Feishu's answer
+        does not prove it went out. root answers in that topic, as send does."""
+        from larkx.proto import builders, ids
+        from larkx.proto import lark_all_pb2 as L
+        req = L.messages.PutMessageRequest()
+        req.chatId = str(chat)
+        req.cid = ids.generate_request_cid()
+        req.isNotified = True
+        req.version = 1
+        if root:
+            req.rootId = req.parentId = str(root)
+            if not self._client.is_thread_chat(chat):
+                req.isReplyInThread = True
+        if uploaded["kind"] == "image":
+            req.type = MESSAGE_IMAGE
+            # The web client sends the uploaded key as cryptoToken too; an image message without it is refused.
+            req.content.imageKey = req.content.cryptoToken = str(uploaded["key"])
+        else:
+            req.type = MESSAGE_FILE
+            req.content.fileKey = str(uploaded["key"])
+            req.content.fileName = str(uploaded["name"])
+            req.content.fileSize = int(uploaded["size"])
+            if uploaded.get("mime"):
+                req.content.fileMime = str(uploaded["mime"])
+        content = self._client._gateway_post(builders.wrap_packet(5, req, ids.generate_long_request_id()))
+        msg_id = builders.decode_put_message_response(content)
+        # A refused message comes back with a negative id such as -1, and is not in the chat.
+        return msg_id if msg_id and not str(msg_id).startswith("-") else None
+
+    def _upload_image(self, item):
+        from larkx.proto import lark_all_pb2 as L
+        content = self._upload_post("/api/image", "上传图片", files={"image": (item["name"], item["data"], item["mime"])})
+        key = _parsed(L.pan.PutFileResponse, content, "上传图片").key
+        if not _UPLOAD_KEY.fullmatch(key or ""):
+            raise UploadError("上传图片失败：飞书没有返回图片 key")
+        return key
+
+    def _upload_file(self, item):
+        """/upload/create gives the upload id, which is the file's key; then every part, each checked by its CRC-32,
+        and /upload/complete."""
+        from larkx.proto import lark_all_pb2 as L
+        pan, data, name, mime = L.pan, item["data"], item["name"], item.get("mime") or ""
+        created = _parsed(pan.CreateFileUploadResponse, self._upload_post(
+            "/upload/create", "创建上传", "application/x-protobuf",
+            data=pan.CreateFileUploadRequest(fileType=UPLOAD_FILE_TYPE, fileName=name, fileSize=len(data)).SerializeToString()),
+            "创建上传")
+        upload_id = created.uploadId
+        if not _UPLOAD_KEY.fullmatch(upload_id or ""):
+            raise UploadError("创建上传失败：飞书没有返回 uploadId")
+        complete = pan.CompleteFileUploadRequest(uploadId=upload_id, fileType=UPLOAD_FILE_TYPE, fileName=name, mime=mime)
+        for part_id, start in enumerate(range(0, len(data), UPLOAD_PART), 1):
+            chunk = data[start:start + UPLOAD_PART]
+            what = "上传第 %d 块" % part_id
+            part = _parsed(pan.UploadFilePartResponse, self._upload_post(
+                "/upload/part", what, "application/octet-stream", params={"upload_id": upload_id, "part_id": part_id}, data=chunk), what)
+            crc = zlib.crc32(chunk)
+            if part.partId != part_id or part.crc32 != crc:
+                raise UploadError("%s失败：校验和不一致" % what)
+            complete.partToCrc32[part_id] = crc
+        done = _parsed(pan.CompleteFileUploadResponse, self._upload_post(
+            "/upload/complete", "完成上传", "application/x-protobuf", data=complete.SerializeToString()), "完成上传")
+        if done.code != 0:
+            raise UploadError("完成上传失败：code=%d" % done.code)
+        return {"key": upload_id, "name": name, "size": len(data), "mime": mime}
+
+    def _upload_post(self, path, what, content_type="", **kwargs):
+        import requests
+        region = self._auth.region
+        headers = {"origin": region.web_origin, "referer": region.web_origin + "/", "user-agent": BROWSER}
+        if content_type:
+            headers["content-type"] = content_type
+        try:
+            r = requests.post(region.file_host + path, cookies=self._auth.cookies, headers=headers, timeout=UPLOAD_SECONDS,
+                              allow_redirects=False, **kwargs)
+        except requests.RequestException as e:
+            raise UploadError("%s失败：%s" % (what, type(e).__name__)) from e
+        if r.status_code != 200:
+            raise UploadError("%s失败：HTTP %d" % (what, r.status_code))
+        return r.content
+
+
+class UploadError(RuntimeError):
+    """A picture or file did not upload: nothing carrying it was sent."""
+
+
+# PutMessageRequest.type for a picture and a file; CreateFileUploadRequest.fileType for a message attachment.
+MESSAGE_FILE, MESSAGE_IMAGE = 3, 5
+UPLOAD_FILE_TYPE = 1
+UPLOAD_PART = 4 << 20
+UPLOAD_SECONDS = 60
+_UPLOAD_KEY = re.compile(r"[\w\-.]{1,200}")
+# The browser LarkAgentX's own gateway requests name.
+BROWSER = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36"
+
+
+def _parsed(cls, content, what):
+    from google.protobuf.message import DecodeError
+    try:
+        return cls.FromString(content)
+    except DecodeError as e:
+        raise UploadError("%s失败：飞书的回应看不懂" % what) from e
+
 
 def _remind_state(value):
     if type(value) is not bool:

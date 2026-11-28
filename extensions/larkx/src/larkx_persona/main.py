@@ -78,6 +78,7 @@ class Plugin:
             self.connector.mention = config.get("agent_mention", True) is not False
             self.connector.topics = config.get("agent_group_topics", True) is not False
             self.connector.hooks = Hooks.from_config(config, params.get("secrets"), hub.log)
+            self.connector.private_dirs = (data_dir,)
             self.connector.start()
         return {"protocol": PROTOCOL, "id": self.manifest["id"], "version": self.manifest["version"], "contributes": self.manifest["contributes"]}
 

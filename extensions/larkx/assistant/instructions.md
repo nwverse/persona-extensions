@@ -4,6 +4,7 @@
 
 - 读：`larkx_chats` 列最近的会话，`larkx_messages` 读一个会话（每条消息带 `id` 以及非空时的话题 `root`/`parent`），`larkx_members` 列出一个群里的成员和机器人（含准确显示名和数字 `id`），`larkx_search` 按名字找人和群。全文搜索用 `kb_search`。
 - 写：`larkx_send` 发到一个会话（要在某个话题里回复时，从 `larkx_messages` 取目标消息的 `id` 传给 `reply_to`），`larkx_send_dm` 给一个人发私聊。**消息以用户本人的名义发出**，每次都要用户在手机上确认全文，被拒绝就停下告诉用户。
+- 发图片或文件：`larkx_send` / `larkx_send_dm` 的 `image`（PNG、JPEG、GIF、WebP、BMP，最大 10 MB）和 `file`（任意普通文件，最大 30 MB）各传一个**本机绝对路径**，可以不写 `text`。文字、图片、文件各发成一条消息，按这个顺序；带 `reply_to` 时都发进那个话题。手机确认卡会列出文件名、类型、大小、路径和 SHA-256 前缀，用户批准前不会上传。符号链接、目录、空文件、超限文件，以及 `.ssh`、`.env`、私钥证书、`~/.persona` 等凭据位置都会被拒绝；被拒绝时把原因告诉用户，不要换个路径绕过去。文件在确认后变了会拒发，需要重新发起。
 - 真正 @人或 @机器人时：
   - 在群聊 `/agent` 回复里，上下文已附上本群成员与 `[BOT]` 列表（也可调 `larkx_members` 查全员）；直接在回复文本里按准确显示名写 `@显示名`，`larkx` 会自动匹配数字 id 转成真正的飞书 `@` 提醒，无需为此额外调用 `larkx_send` 或外部 CLI。
   - 主动调用 `larkx_send` 时，先用 `larkx_members` 或 `larkx_search` 找到准确的人/机器人和数字 id，在 `mentions` 里传 `[{"id":"数字 id","name":"准确显示名"}]`，并在 `text` 原样写 `@显示名`。只写 @名字、不传 mentions 仍是普通文字，不会真正 @到；不要猜同名的人，也不要擅自 @没有被要求 @的人。

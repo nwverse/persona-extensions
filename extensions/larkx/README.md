@@ -17,6 +17,10 @@ Read this before installing:
 
 `larkx_send` accepts `mentions: [{id, name}]` using the exact person or bot and numeric id returned by `larkx_members` or `larkx_search`; write `@name` literally in `text` for each target. It builds a rich-text AT element and the notification user-id list, so the target gets a real mention rather than plain text. Without `mentions`, an @name stays ordinary text and the original send path is unchanged. Assistant replies resolve exact names from the chat's member/bot roster (via `PullChatChattersRequest`) as well as recent senders and historical mentions; unknown or ambiguous names are never guessed.
 
+## Send pictures and files
+
+`larkx_send` and `larkx_send_dm` also take `image` and `file`: the absolute path of a local picture (PNG, JPEG, GIF, WebP or BMP, up to 10 MB) or file (up to 30 MB) on the hub's machine. `text` is then optional; the text, the picture and the file each go as a message of their own, in that order, and `reply_to` puts all of them in the topic. The phone confirmation lists each file's name, type, size, path and SHA-256 prefix before the text. Nothing is uploaded until the user approves, and a file that changed after the card is not sent. Symbolic links, directories, devices, empty or oversized files, credential locations (`.ssh`, `.env`, private keys, the hub's `.persona` directory, this extension's data and the like) are refused. Details are in the [extension guide](../../docs/extensions/larkx.md#pictures-and-files).
+
 ## Invoke the assistant by mentioning yourself
 
 Write your configured trigger prefix (default `/agent`, set via `agent_prefix`), such as `/agent <what to do>`, or mention your own signed-in Feishu account with a real rich-text @ tag in your own message. The @ tag is removed from the request. A mention without any other text uses the same context-based request as an empty trigger-prefix message.

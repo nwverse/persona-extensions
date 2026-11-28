@@ -68,6 +68,15 @@ class FixtureBackend:
         self.sent.append((chat, text, root))
         return "m_sent_%d" % len(self.sent)
 
+    def upload(self, item):
+        if item["kind"] == "image":
+            return {"kind": "image", "key": "img_up_%d" % len(self.sent)}
+        return {"kind": "file", "key": "file_up_%d" % len(self.sent), "name": item["name"], "size": item["size"], "mime": item["mime"]}
+
+    def send_media(self, chat, uploaded, root):
+        self.sent.append((chat, uploaded, root))
+        return "m_sent_%d" % len(self.sent)
+
     def create_chat(self, user):
         return "c_" + user
 
