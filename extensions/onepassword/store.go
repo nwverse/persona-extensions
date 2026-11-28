@@ -184,7 +184,9 @@ func (a *app) store(ctx context.Context, raw json.RawMessage) (any, error) {
 		return nil, storeFailure()
 	}
 	if in.Phase == "commit" {
-		a.forgetMeta()
+		if err := a.forgetMeta(); err != nil {
+			return nil, err
+		}
 	}
 	return out, nil
 }

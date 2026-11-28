@@ -192,7 +192,7 @@ func (a *app) lookup(ctx context.Context, r reference) (vault, item, section, fi
 		return "", "", "", "", false, nil
 	}
 	// Names compare by their keys (nameKey): the kept names may be scrubbed of a value the reference spells out.
-	sectionKey, fieldKey := nameKey(r.section), nameKey(r.field)
+	sectionKey, fieldKey := a.metaNameKey(r.section), a.metaNameKey(r.field)
 	inSection := func(f fieldInfo) bool {
 		return r.section == "" || f.SectionID != "" && (f.SectionID == r.section || f.SectionKey == sectionKey)
 	}
