@@ -22,6 +22,8 @@ const (
 	gameNewsAction     = "game-news"
 	newsPageLimit      = 5
 	backlogStatusField = "backlog_status"
+	backlogNoteField   = "backlog_note"
+	backlogTagsField   = "backlog_tags"
 	recapAction        = "playtime-recap"
 	recapPeriodAction  = "recap-period"
 )
@@ -597,38 +599,43 @@ func backlogSection(t *text, owned *gameList, recent reading[gameList], entries 
 }
 
 func (a *app) backlogDetail(t *text, steamID string, appID uint32) wire.Section {
-	section := wire.Section{Title: t.backlog.annotation}
+	section := wire.Section{Title: t.backlog.annotation, Icon: wire.NavIconTag}
 	entry, marked, err := a.backlog.Get(steamID, appID)
 	if err != nil {
-		section.Items = []wire.Component{empty(t.message(problemBacklogStore, false))}
+		section.Items = []wire.Component{emptyWithIcon(t.message(problemBacklogStore, false), wire.NavIconWarning)}
 		return section
 	}
 	status := entry.Status
 	if !marked {
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.backlog.unmarked})
+		section.Items = append(section.Items, wire.Component{Type: wire.ComponentText, Text: t.backlog.unmarked, Style: "secondary"})
 	}
 	if t.backlog.statuses[status] == "" {
 		status = BacklogUnplayed
-	}
-	if note := cleanText(entry.Note, maxBacklogNoteRunes); note != "" {
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Title: t.backlog.note, Subtitle: note})
-	}
-	if tags := cleanText(strings.Join(entry.Tags, " · "), maxBacklogTags*(maxBacklogTagRunes+3)); tags != "" {
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Title: t.backlog.tags, Subtitle: tags})
 	}
 	choices := make([]wire.Choice, 0, len(backlogStatuses))
 	for _, value := range backlogStatuses {
 		choices = append(choices, wire.Choice{Value: string(value), Title: t.backlog.statuses[value]})
 	}
-	section.Items = append(section.Items, wire.Component{
-		Type: wire.ComponentField, Kind: "choice", Label: t.backlog.status, Name: backlogStatusField,
-		Value: string(status), Choices: choices,
-	}, wire.Component{
-		Type: wire.ComponentButton, Title: t.backlog.save, Action: &wire.Action{ID: "backlog-save", Submit: true},
-	})
+	section.Items = append(section.Items,
+		wire.Component{
+			Type: wire.ComponentField, Kind: wire.FieldKindChoice, Label: t.backlog.status, Name: backlogStatusField,
+			Value: string(status), Choices: choices,
+		},
+		wire.Component{
+			Type: wire.ComponentField, Kind: wire.FieldKindMultiline, Label: t.backlog.note, Name: backlogNoteField,
+			Value: entry.Note, Placeholder: t.backlog.notePlaceholder, Detail: t.backlog.noteDetail,
+		},
+		wire.Component{
+			Type: wire.ComponentField, Kind: wire.FieldKindText, Label: t.backlog.tags, Name: backlogTagsField,
+			Value: strings.Join(entry.Tags, ", "), Placeholder: t.backlog.tagsPlaceholder, Detail: t.backlog.tagsDetail,
+		},
+		wire.Component{
+			Type: wire.ComponentButton, Title: t.backlog.save, Action: &wire.Action{ID: "backlog-save", Submit: true},
+		},
+	)
 	if marked {
 		section.Items = append(section.Items, wire.Component{
-			Type: wire.ComponentButton, Title: t.backlog.clear,
+			Type: wire.ComponentButton, Title: t.backlog.clear, Role: "destructive",
 			Action: &wire.Action{ID: "backlog-clear", Confirm: t.backlog.confirmClear},
 		})
 	}
@@ -643,6 +650,20 @@ func (a *app) backlogAction(ctx context.Context, r *ext.UIRequest, t *text, st p
 	if !args.Clear {
 		status := BacklogStatus(r.Values[backlogStatusField])
 		args.Status = &status
+		if rawNote, ok := r.Values[backlogNoteField]; ok {
+			note, err := cleanBacklogNoteInput(rawNote)
+			if err != nil {
+				return nil, invalid(t.backlog.invalidNote)
+			}
+			args.Note = &note
+		}
+		if rawTags, ok := r.Values[backlogTagsField]; ok {
+			tags, err := parseBacklogTagsInput(rawTags)
+			if err != nil {
+				return nil, invalid(t.backlog.invalidTags)
+			}
+			args.Tags = &tags
+		}
 	}
 	if args.validate() != nil {
 		return nil, invalid(t.invalidAction)

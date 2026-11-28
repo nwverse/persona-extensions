@@ -379,3 +379,73 @@ func TestBacklogViewStatusActions(t *testing.T) {
 	assertHidden(t, string(raw), "合成备注", "单人", "backlog-clear")
 	contains(t, toolAnswer(t, h, "steam_backlog_summary", `{"status":"completed"}`), `"games":[]`)
 }
+
+func TestBacklogViewInPageNoteAndTagsEditing(t *testing.T) {
+	f := newFakeSteam(t, time.Second)
+	dir := t.TempDir()
+	h := startTestHost(t, f, fixtureID, "", dir)
+	nav := wire.UIParams{Contribution: extensionID, Size: wire.SizeFull, Placement: wire.PlacementNavPage, UIVersion: 12, Locale: "zh-Hans"}
+
+	overview := viewAnswer(t, h, nav)
+	detail := act(t, h, nav, overview, "library-game-"+appIDText(firstApp), nil)
+	raw, err := json.Marshal(detail)
+	requireStoreOK(t, err)
+	contains(t, string(raw),
+		`"name":"backlog_status"`, `"kind":"choice"`,
+		`"name":"backlog_note"`, `"kind":"multiline"`,
+		`"name":"backlog_tags"`, `"kind":"text"`,
+		`"id":"backlog-save","submit":true`,
+	)
+
+	// Save status + multiline note + mixed separator tags with duplicates.
+	saveReq := nav
+	saveReq.Action, saveReq.State = "backlog-save", detail.State
+	saveReq.Values = map[string]string{
+		backlogStatusField: string(BacklogPlaying),
+		backlogNoteField:   "  第一行进度\r\n第二行攻略  ",
+		backlogTagsField:   "RPG， 联机, rpg  短局、单人 ",
+	}
+	var saveRes wire.ActionResult
+	requireStoreOK(t, h.Call("ui.action", saveReq, &saveRes))
+	requireStoreOK(t, wire.CheckView(saveRes.View))
+	contains(t, saveRes.Toast, "已保存")
+
+	got, ok, err := NewBacklogStore(dir).Get(fixtureID, firstApp)
+	wantTags := []string{"RPG", "联机", "短局", "单人"}
+	if err != nil || !ok || got.Status != BacklogPlaying || got.Note != "第一行进度\n第二行攻略" || !reflect.DeepEqual(got.Tags, wantTags) {
+		t.Fatalf("saved backlog entry mismatch: %+v, ok=%t, err=%v", got, ok, err)
+	}
+	detail = *saveRes.View
+	raw, _ = json.Marshal(detail)
+	contains(t, string(raw), `"value":"RPG, 联机, 短局, 单人"`, "第一行进度\\n第二行攻略", `"id":"backlog-clear"`)
+
+	// Reject note > 240 chars, > 8 tags, and tag > 32 chars.
+	for _, values := range []map[string]string{
+		{backlogStatusField: "playing", backlogNoteField: strings.Repeat("字", 241), backlogTagsField: ""},
+		{backlogStatusField: "playing", backlogNoteField: "", backlogTagsField: "a,b,c,d,e,f,g,h,i"},
+		{backlogStatusField: "playing", backlogNoteField: "", backlogTagsField: strings.Repeat("标", 33)},
+	} {
+		badReq := nav
+		badReq.Action, badReq.State, badReq.Values = "backlog-save", detail.State, values
+		var e *ext.Error
+		if err := h.Call("ui.action", badReq, nil); !errors.As(err, &e) || e.Code != "invalid" {
+			t.Errorf("backlog-save accepted invalid fields %+v: %v", values, err)
+		}
+	}
+
+	// Clearing note and tags via empty form inputs retains status and clears note/tags.
+	detail = act(t, h, nav, detail, "backlog-save", map[string]string{
+		backlogStatusField: string(BacklogPaused),
+		backlogNoteField:   "   ",
+		backlogTagsField:   " , ， ",
+	})
+	got, ok, err = NewBacklogStore(dir).Get(fixtureID, firstApp)
+	if err != nil || !ok || got.Status != BacklogPaused || got.Note != "" || len(got.Tags) != 0 {
+		t.Fatalf("clearing note/tags via UI form failed: %+v, ok=%t, err=%v", got, ok, err)
+	}
+
+	// Verify overview library row badge updated to 暂停.
+	overview = act(t, h, nav, detail, "back", nil)
+	raw, _ = json.Marshal(overview)
+	contains(t, string(raw), `"badge":{"text":"暂停"}`)
+}

@@ -46,6 +46,8 @@ type memoryText struct {
 
 type backlogText struct {
 	title, annotation, status, note, tags, unmarked, overlap         string
+	notePlaceholder, noteDetail, tagsPlaceholder, tagsDetail         string
+	invalidNote, invalidTags                                         string
 	save, clear, confirmClear, saved, cleared, accountChanged        string
 	activity                                                         map[string]string
 	statuses                                                         map[BacklogStatus]string
@@ -207,8 +209,14 @@ var english = text{
 	backlog: backlogText{
 		title: "Backlog & local progress", annotation: "Local backlog annotation", status: "Status",
 		note: "Note", tags: "Tags", unmarked: "No local annotation", overlap: "A game can count in more than one category.",
-		save: "Save status locally", clear: "Clear local annotation", confirmClear: "Clear this game's local status, note and tags?",
-		saved: "Local Steam status saved.", cleared: "Local Steam annotation cleared.",
+		notePlaceholder: "Write your progress notes or thoughts (up to 240 characters)",
+		noteDetail:      "Saved locally on this device (up to 240 characters).",
+		tagsPlaceholder: "e.g. solo, co-op, weekend",
+		tagsDetail:      "Separate multiple tags with commas or spaces (up to 8 tags, 32 characters each).",
+		invalidNote:     "Notes must be valid text of at most 240 characters.",
+		invalidTags:     "Use at most 8 tags, each up to 32 characters, separated by commas or spaces.",
+		save: "Save annotation", clear: "Clear annotation", confirmClear: "Clear this game's local status, note and tags?",
+		saved: "Local Steam annotation saved.", cleared: "Local Steam annotation cleared.",
 		accountChanged: "Your Steam account changed. Reopen this game to edit its annotation.",
 		activity: map[string]string{
 			neverPlayed: "Never played", triedUnder2h: "Tried under 2 hours",
@@ -363,9 +371,15 @@ var chinese = text{
 	},
 	backlog: backlogText{
 		title: "吃灰盘点与标注", annotation: "本机游戏标注", status: "游玩状态",
-		note: "备注", tags: "标签", unmarked: "暂无本机标注", overlap: "同一款游戏可能计入多个分类。",
-		save: "保存到本机", clear: "清除本机标注", confirmClear: "清除这款游戏的本机状态、备注和标签？",
-		saved: "已保存本机 Steam 游戏状态。", cleared: "已清除本机 Steam 游戏标注。",
+		note: "个人备注", tags: "自定义标签", unmarked: "暂无本机标注", overlap: "同一款游戏可能计入多个分类。",
+		notePlaceholder: "记录游玩进度、攻略心得或下次打开提醒（最多 240 字）",
+		noteDetail:      "仅保存在本机，最多 240 字。",
+		tagsPlaceholder: "例如：RPG, 联机, 周末短局",
+		tagsDetail:      "支持中英文逗号或空格分隔多个标签，最多 8 个、每个最多 32 字，保存时自动去重。",
+		invalidNote:     "个人备注需为有效文本且不超过 240 字。",
+		invalidTags:     "最多填写 8 个标签，每个不超过 32 字（用逗号或空格分隔）。",
+		save: "保存标注", clear: "清除标注", confirmClear: "清除这款游戏的本机状态、备注和标签？",
+		saved: "已保存本机 Steam 游戏标注。", cleared: "已清除本机 Steam 游戏标注。",
 		accountChanged: "Steam 账号已切换，请重新打开游戏详情再编辑标注。",
 		activity: map[string]string{
 			neverPlayed: "从未打开", triedUnder2h: "试水不足 2 小时",
