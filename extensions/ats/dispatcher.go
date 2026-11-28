@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,7 @@ const (
 	pruneMaxAge             = 30 * 24 * time.Hour
 	pruneKeep               = 500
 	lostSessionAfter        = 2 * time.Minute
+	offlineFailoverGrace    = 3 * time.Minute
 	blockedMarker           = "ATS_BLOCKED:"
 	waitingInSession        = "Agent 在会话里等你回答或批准"
 	nodeCallTimeout         = 25 * time.Second
@@ -59,6 +61,8 @@ type dispatcher struct {
 	// changed tells the apps the queue page's data changed.
 	changed func()
 
+	offlineFailoverAfter time.Duration
+
 	mu           sync.Mutex
 	accepted     map[string]acceptResult // acceptance results the node program reported, by attempt key
 	planDeclines map[string]int          // count of ExitPlanMode auto-declines per attempt key
@@ -72,7 +76,7 @@ type dispatcher struct {
 func newDispatcher(q *Queue, api hubAPI, nodes nodeCaller, writer *DecisionWriter, cfg func() ExtConfig, now func() time.Time) *dispatcher {
 	return &dispatcher{q: q, api: api, nodes: nodes, writer: writer, cfg: cfg, now: now,
 		accepted: map[string]acceptResult{}, planDeclines: map[string]int{}, wake: make(chan struct{}, 1),
-		probeCache: map[string]launcherProbeState{}}
+		probeCache: map[string]launcherProbeState{}, offlineFailoverAfter: offlineFailoverGrace}
 }
 
 // run is the background loop; it ends with ctx.
@@ -106,6 +110,11 @@ func (d *dispatcher) onAccepted(res acceptResult) {
 	}
 	res.Done = true
 	d.mu.Lock()
+	t, err := d.q.GetTask(res.TaskID)
+	if err != nil || !isActiveState(t.State) || t.AttemptNo != res.Attempt {
+		d.mu.Unlock()
+		return
+	}
 	d.accepted[key] = res
 	d.mu.Unlock()
 	d.poke()
@@ -114,6 +123,7 @@ func (d *dispatcher) onAccepted(res acceptResult) {
 func (d *dispatcher) tick(ctx context.Context) {
 	now := d.now()
 	_ = d.q.RenewLeases(now)
+	refreshSlots := sync.OnceValue(func() bool { return d.refreshMachines(ctx) })
 
 	d.mu.Lock()
 	slow := now.Sub(d.lastRefresh) >= refreshInterval
@@ -122,7 +132,7 @@ func (d *dispatcher) tick(ctx context.Context) {
 	}
 	d.mu.Unlock()
 	if slow {
-		d.refreshMachines(ctx)
+		refreshSlots()
 		if d.refresh != nil {
 			d.refresh(ctx)
 		}
@@ -132,14 +142,17 @@ func (d *dispatcher) tick(ctx context.Context) {
 	d.retryPendingTodoDetaches(ctx)
 	moved := false
 	for _, t := range d.q.ActiveTasks() {
-		if d.advance(ctx, t) {
+		if d.advance(ctx, t, refreshSlots) {
 			moved = true
 		}
 	}
-	leased, _, _, err := d.q.DispatchNext(8, d.now())
+	cfg := d.cfg()
+	leased, _, _, err := d.q.dispatchNext(8, d.now(), func(t *Task, slot MachineSlot) bool {
+		return d.offlineRetryLauncherReady(ctx, cfg, t, slot.Name, false)
+	})
 	if err == nil {
 		for _, t := range leased {
-			d.advance(ctx, t)
+			d.advance(ctx, t, refreshSlots)
 			moved = true
 		}
 	}
@@ -155,7 +168,7 @@ func (d *dispatcher) tick(ctx context.Context) {
 
 // refreshMachines sets the scheduler's slots from the hub's list of computers: the ones the extension's program
 // is switched on for, each with the configured number of tasks at a time.
-func (d *dispatcher) refreshMachines(ctx context.Context) {
+func (d *dispatcher) refreshMachines(ctx context.Context) bool {
 	now := d.now()
 	d.probeMu.Lock()
 	for key, st := range d.probeCache {
@@ -170,7 +183,7 @@ func (d *dispatcher) refreshMachines(ctx context.Context) {
 	machines, err := d.api.Machines(cctx)
 	cancelList()
 	if err != nil {
-		return // keep the last known slots: a hub that is briefly unreachable must not look like no computers
+		return false // keep the last known slots: a hub that is briefly unreachable must not look like no computers
 	}
 	on := map[string]bool{}
 	for _, id := range cfg.Machines {
@@ -199,11 +212,11 @@ func (d *dispatcher) refreshMachines(ctx context.Context) {
 		})
 	}
 	probes.Wait()
-	_ = d.q.SetMachines(slots)
+	return d.q.SetMachines(slots) == nil
 }
 
 // advance moves one running attempt a step along; it reports whether the task changed.
-func (d *dispatcher) advance(ctx context.Context, t *Task) bool {
+func (d *dispatcher) advance(ctx context.Context, t *Task, refreshSlots func() bool) bool {
 	if len(t.Attempts) == 0 {
 		return false
 	}
@@ -221,13 +234,73 @@ func (d *dispatcher) advance(ctx context.Context, t *Task) bool {
 	}
 	switch e.Phase {
 	case PhasePreparing:
+		if waiting, changed := d.waitIfOffline(ctx, t, att, false, d.cfg().taskTimeout(), refreshSlots); waiting {
+			return changed
+		}
 		return d.prepare(ctx, t, att)
 	case PhaseWorking:
-		return d.watch(ctx, t, att)
+		return d.watch(ctx, t, att, refreshSlots)
 	case PhaseAccepting:
-		return d.collect(ctx, t, att)
+		return d.collect(ctx, t, att, refreshSlots)
 	}
 	return false
+}
+
+func (d *dispatcher) waitIfOffline(ctx context.Context, t *Task, att Attempt, sessionOffline bool, timeout time.Duration, refreshSlots func() bool) (waiting, changed bool) {
+	e := t.Exec
+	if !sessionOffline && !d.q.machineOffline(e.MachineID) {
+		return false, false
+	}
+	now := d.now()
+	if now.Sub(e.PhaseSince) >= timeout {
+		if e.Phase == PhaseWorking {
+			d.timeoutAttempt(ctx, t, att, timeout)
+		} else {
+			d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "timeout", message: "等待离线电脑恢复超时"})
+		}
+		return true, true
+	}
+	if e.OfflineSince == nil {
+		_, err := d.q.UpdateExec(t.ID, t.FenceToken, now, func(e *Execution) {
+			e.OfflineSince = &now
+			e.SeenUpdate, e.Stable = "", 0
+		})
+		return true, err == nil
+	}
+	if now.Sub(*e.OfflineSince) < d.offlineFailoverAfter || !refreshSlots() {
+		return true, false
+	}
+	if !sessionOffline && !d.q.machineOffline(e.MachineID) {
+		return false, false
+	}
+	if !d.hasAlternateOnlineMachine(ctx, t, e.MachineID) {
+		return true, false
+	}
+	if e.Phase == PhaseWorking && e.SessionID != "" {
+		d.interruptSession(ctx, e)
+	}
+	d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "machine_offline", message: "电脑或 Agent 会话持续离线，转到其他可用电脑重试"})
+	return true, true
+}
+
+func (d *dispatcher) hasAlternateOnlineMachine(ctx context.Context, t *Task, current string) bool {
+	cfg := d.cfg()
+	ready := false
+	// 调度可能选中任一空闲候选，先把这些启动器的探测结果写入缓存。
+	for _, slot := range d.q.Machines() {
+		if slot.isHealthyAlternate(t.Machine, current) && slot.FreeSlots() > 0 && d.offlineRetryLauncherReady(ctx, cfg, t, slot.Name, true) {
+			ready = true
+		}
+	}
+	return ready && ctx.Err() == nil
+}
+
+func (d *dispatcher) offlineRetryLauncherReady(ctx context.Context, cfg ExtConfig, t *Task, machineID string, probe bool) bool {
+	if !slices.Contains(cfg.Machines, machineID) {
+		return false
+	}
+	_, unreachable, _ := d.resolveTaskLauncher(ctx, cfg, t, machineID, effectiveAgentType(t.AgentType), probe)
+	return !unreachable
 }
 
 func (d *dispatcher) nodeCall(ctx context.Context, machine, method string, params, out any) error {
@@ -297,27 +370,28 @@ func (d *dispatcher) invalidateProbe(machineID, launcher, detail string) {
 	d.probeMu.Unlock()
 }
 
-// prepare checks the worktree out and starts the agent session in it.
-func (d *dispatcher) prepare(ctx context.Context, t *Task, att Attempt) bool {
-	e := t.Exec
-	cfg := d.cfg()
-	agentType := effectiveAgentType(att.Harness, t.AgentType)
-	candidates := launchersForSpec(t.Launcher, e.MachineID)
+func (d *dispatcher) resolveTaskLauncher(ctx context.Context, cfg ExtConfig, t *Task, machineID, agentType string, probe bool) (string, bool, string) {
+	candidates := launchersForSpec(t.Launcher, machineID)
 	if len(candidates) == 0 {
 		if agentType == AgentClaude {
-			candidates = cfg.launchersFor(e.MachineID)
+			candidates = cfg.launchersFor(machineID)
 		} else {
 			// 只指定引擎时，Hub 仍可能选用默认的 Claude 启动器。
 			candidates = []string{agentType}
 		}
 	}
-	launcher, allUnreachable, detail := d.resolveHealthyLauncher(ctx, e.MachineID, candidates, len(candidates) > 0 && (agentType == AgentClaude || strings.TrimSpace(t.Launcher) != ""))
+	return d.resolveHealthyLauncher(ctx, machineID, candidates, probe && (agentType == AgentClaude || strings.TrimSpace(t.Launcher) != ""))
+}
+
+// prepare checks the worktree out and starts the agent session in it.
+func (d *dispatcher) prepare(ctx context.Context, t *Task, att Attempt) bool {
+	e := t.Exec
+	cfg := d.cfg()
+	agentType := effectiveAgentType(att.Harness, t.AgentType)
+	launcher, allUnreachable, detail := d.resolveTaskLauncher(ctx, cfg, t, e.MachineID, agentType, true)
 	if allUnreachable {
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "gateway_unreachable", message: "所有候选启动器网关不可达：" + detail})
 		return true
-	}
-	if launcher == "" {
-		launcher = launcherForSpec(t.Launcher, e.MachineID)
 	}
 	readonly := t.PermissionProfile != PermissionDefault
 	prev := lastFailedReport(t)
@@ -352,6 +426,7 @@ func (d *dispatcher) prepare(ctx context.Context, t *Task, att Attempt) bool {
 	}
 	updated, err := d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(e *Execution) {
 		e.Worktree, e.Branch, e.BaseSHA = ws.Path, ws.Branch, ws.BaseSHA
+		e.OfflineSince = nil
 	})
 	if err != nil {
 		// The attempt is no longer active (for example canceled during ats.prepare): release the worktree
@@ -460,6 +535,8 @@ func errorClassInWords(class string) string {
 		return "it ran out of time"
 	case "infra_error":
 		return "the computer or the agent session failed, not necessarily the work"
+	case "machine_offline":
+		return "the computer or the agent session went offline"
 	case "rate_limited":
 		return "the model service's rate or usage limit was reached"
 	case "gateway_unreachable", "gateway_error":
@@ -576,33 +653,54 @@ func indentBlock(s string) string {
 }
 
 // watch reads the session's state: waiting for the user, still working, or done with its turn.
-func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt) bool {
+func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt, refreshSlots func() bool) bool {
 	e := t.Exec
-	now := d.now()
 	cctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	s, err := d.api.Session(cctx, e.MachineID, e.SessionID)
 	cancel()
+	now := d.now()
+	elapsed := now.Sub(e.PhaseSince)
+	timeout := d.cfg().taskTimeout()
+	state := ""
+	var sessionOffline, sessionActive bool
+	if s != nil {
+		state = cmpOr(s.State, s.Status)
+		sessionOffline = s.State == "offline" || s.Status == "offline"
+		sessionActive = state == "working" || state == "unread" || state == "idle" || state == "needs_you" || s.BackgroundWorking
+	}
+	if waiting, changed := d.waitIfOffline(ctx, t, att, sessionOffline, timeout, refreshSlots); waiting {
+		return changed
+	}
+	if e.OfflineSince != nil && !sessionActive && elapsed >= timeout {
+		d.timeoutAttempt(ctx, t, att, timeout)
+		return true
+	}
 	if err != nil {
 		return false // the hub is briefly unreachable: look again next round
 	}
 	if s == nil {
-		if now.Sub(e.PhaseSince) > lostSessionAfter {
+		if e.OfflineSince == nil && elapsed > lostSessionAfter {
 			d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "lost", message: "Agent 会话不见了（被关闭或电脑重装）"})
 			return true
 		}
 		return false
 	}
-	if model := strings.TrimSpace(s.Model); model != "" && model != e.Model {
-		updated, err := d.q.UpdateExec(t.ID, t.FenceToken, now, func(e *Execution) { e.Model = model })
+	clearedOffline := e.OfflineSince != nil && sessionActive
+	model := strings.TrimSpace(s.Model)
+	if clearedOffline || (model != "" && model != e.Model) {
+		updated, err := d.q.UpdateExec(t.ID, t.FenceToken, now, func(e *Execution) {
+			e.Model = cmpOr(model, e.Model)
+			if clearedOffline {
+				e.OfflineSince = nil
+			}
+		})
 		if err != nil {
 			return false
 		}
 		t = updated
 		e = t.Exec
 	}
-	elapsed := now.Sub(e.PhaseSince)
-	timeout := d.cfg().taskTimeout()
-	working := s.State == "working" || s.BackgroundWorking
+	working := state == "working" || s.BackgroundWorking
 	resumed := working && e.ContinuedAt != nil && s.UpdatedAt != e.ContinuedErrorAt
 	// Hub 可能先报会话恢复，再清除上轮的错误文本。
 	continuationWorking := resumed || (working && e.ContinueCount > 0 && e.ContinuedAt == nil)
@@ -611,28 +709,28 @@ func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt) bool {
 		d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "infra_error", message: "Agent 会话没有启动：" + s.StartError})
 		return true
 	case s.Starting:
-		return false
+		return clearedOffline
 	case s.TurnError != "" && !continuationWorking:
 		if e.ContinuedAt != nil && now.Sub(*e.ContinuedAt) < autoContinueGrace && s.UpdatedAt == e.ContinuedErrorAt {
 			if elapsed >= timeout {
 				d.timeoutAttempt(ctx, t, att, timeout)
 				return true
 			}
-			return false
+			return clearedOffline
 		}
 		d.handleTurnError(ctx, t, att, s, now, timeout-elapsed)
 		return true
-	case s.State == "needs_you" || s.PendingInteractions > 0:
+	case state == "needs_you" || s.PendingInteractions > 0:
 		if t.PermissionProfile != PermissionDefault {
 			if declined, changed := d.tryDeclineReadonlyPlan(ctx, t, att, e); declined {
-				return changed
+				return changed || clearedOffline
 			}
 		}
 		why, known := d.waitingFor(ctx, e)
 		if !known && e.Waiting != "" && e.JudgedUpdate == "" {
-			return false // the hub did not say what the session asks: keep what was known
+			return clearedOffline // the hub did not say what the session asks: keep what was known
 		}
-		return d.setWaiting(t, why, "")
+		return d.setWaiting(t, why, "") || clearedOffline
 	case working:
 		if elapsed >= timeout {
 			d.timeoutAttempt(ctx, t, att, timeout)
@@ -645,12 +743,12 @@ func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt) bool {
 					e.ContinuedAt, e.ContinuedErrorAt = nil, ""
 				}
 			})
-			return err == nil
+			return err == nil || clearedOffline
 		}
-		return false
-	case s.State == "unread" || s.State == "idle":
+		return clearedOffline
+	case state == "unread" || state == "idle":
 		if s.UpdatedAt == e.JudgedUpdate && e.JudgedUpdate != "" {
-			return false // the turn that said it is blocked: nothing new since
+			return clearedOffline // the turn that said it is blocked: nothing new since
 		}
 		// The hub shows a finished turn for a moment between an agent's steps: take it only when two rounds
 		// in a row see the same one.
@@ -660,20 +758,20 @@ func (d *dispatcher) watch(ctx context.Context, t *Task, att Attempt) bool {
 		}
 		if stable < stablePolls {
 			_, _ = d.q.UpdateExec(t.ID, t.FenceToken, now, func(e *Execution) { e.SeenUpdate, e.Stable = s.UpdatedAt, stable })
-			return false
+			return clearedOffline
 		}
 		rctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		reply, err := d.api.LastReply(rctx, e.MachineID, e.SessionID)
 		cancel()
 		if err != nil {
-			return false
+			return clearedOffline
 		}
 		if need, blocked := blockedReason(reply); blocked {
-			return d.setWaiting(t, "Agent 说它卡住了："+need, s.UpdatedAt)
+			return d.setWaiting(t, "Agent 说它卡住了："+need, s.UpdatedAt) || clearedOffline
 		}
-		return d.startAcceptance(ctx, t, att, reply)
+		return d.startAcceptance(ctx, t, att, reply) || clearedOffline
 	}
-	return false // offline, unknown: the computer is away; the session is still there when it is back
+	return false
 }
 
 func (d *dispatcher) handleTurnError(ctx context.Context, t *Task, att Attempt, s *hubSession, now time.Time, remaining time.Duration) {
@@ -765,7 +863,8 @@ func turnErrorClass(kind, text string) string {
 	case has("mid-response", "connection lost", "unexpected eof", "stream closed", "stream ended", "response.failed", "before its last event"):
 		return "stream_interrupted"
 	case has("502", "503", "504", "bad gateway", "gateway timeout", "service unavailable", "inference gateway",
-		"connection refused", "connection reset", "no route to host", "dial tcp", "i/o timeout"):
+		"connection refused", "connection reset", "no route to host", "dial tcp", "i/o timeout",
+		"no internet route", "ehostunreach", "enetunreach", "econnrefused", "etimedout"):
 		return "gateway_error"
 	case has("overloaded"):
 		return "rate_limited"
@@ -917,7 +1016,7 @@ func (d *dispatcher) startAcceptance(ctx context.Context, t *Task, att Attempt, 
 }
 
 // collect takes the acceptance command's result: the event the node program sent, or its answer when asked.
-func (d *dispatcher) collect(ctx context.Context, t *Task, att Attempt) bool {
+func (d *dispatcher) collect(ctx context.Context, t *Task, att Attempt, refreshSlots func() bool) bool {
 	e := t.Exec
 	key, _ := attemptKey(t.ID, att.AttemptNo)
 	d.mu.Lock()
@@ -925,10 +1024,19 @@ func (d *dispatcher) collect(ctx context.Context, t *Task, att Attempt) bool {
 	delete(d.accepted, key)
 	d.mu.Unlock()
 	if !ok {
-		if err := d.nodeCall(ctx, e.MachineID, "ats.accept_status", acceptParams{TaskID: t.ID, Attempt: att.AttemptNo}, &res); err != nil || !res.Done {
-			if d.now().Sub(e.PhaseSince) > d.cfg().acceptTimeout()+5*time.Minute {
+		timeout := d.cfg().acceptTimeout() + 5*time.Minute
+		if waiting, changed := d.waitIfOffline(ctx, t, att, false, timeout, refreshSlots); waiting {
+			return changed
+		}
+		err := d.nodeCall(ctx, e.MachineID, "ats.accept_status", acceptParams{TaskID: t.ID, Attempt: att.AttemptNo}, &res)
+		if err != nil || !res.Done {
+			if d.now().Sub(e.PhaseSince) >= timeout {
 				d.finish(ctx, t, att, outcome{state: StateFailed, errClass: "timeout", message: "等不到验收命令的结果（电脑离线或程序重启）"})
 				return true
+			}
+			if err == nil && e.OfflineSince != nil {
+				_, err := d.q.UpdateExec(t.ID, t.FenceToken, d.now(), func(e *Execution) { e.OfflineSince = nil })
+				return err == nil
 			}
 			return false
 		}
@@ -994,6 +1102,11 @@ func (d *dispatcher) finish(ctx context.Context, t *Task, att Attempt, out outco
 		d.mu.Lock()
 		delete(d.planDeclines, key)
 		d.mu.Unlock()
+		defer func() {
+			d.mu.Lock()
+			delete(d.accepted, key)
+			d.mu.Unlock()
+		}()
 	}
 	arts, releasedHeadSHA, relDirty := d.cleanup(ctx, t, att.AttemptNo, false)
 	todoDetachPending := false

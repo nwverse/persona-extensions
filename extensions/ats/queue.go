@@ -279,7 +279,8 @@ type Execution struct {
 	ContinuedAt      *time.Time `json:"continued_at,omitempty"`
 	ContinuedErrorAt string     `json:"continued_error_at,omitempty"`
 
-	TodoAttachError string `json:"todo_attach_error,omitempty"`
+	OfflineSince    *time.Time `json:"offline_since,omitempty"`
+	TodoAttachError string     `json:"todo_attach_error,omitempty"`
 }
 
 // isActiveState reports whether a task in this state holds a lease.
@@ -886,6 +887,10 @@ func cloneTask(t *Task) *Task {
 	if t.Exec != nil {
 		e := *t.Exec
 		e.Dirty = cloneBoolPtr(e.Dirty)
+		if e.OfflineSince != nil {
+			since := *e.OfflineSince
+			e.OfflineSince = &since
+		}
 		if e.ContinuedAt != nil {
 			ca := *e.ContinuedAt
 			e.ContinuedAt = &ca
@@ -1291,7 +1296,8 @@ func (q *Queue) CompleteAttempt(in CompleteAttemptInput) (*Task, error) {
 		if errClass == "" {
 			errClass = "task_failed"
 		}
-		reroute := errClass == "gateway_unreachable" && t.AttemptNo <= t.MaxRetries+3 && q.hasHealthyAlternateLocked(t.Machine, att.Machine)
+		reroute := (errClass == "gateway_unreachable" || errClass == "machine_offline") &&
+			t.AttemptNo <= t.MaxRetries+3 && q.hasHealthyAlternateLocked(t.Machine, att.Machine)
 		extraRetry := reroute || (errClass == "rate_limited" && t.AttemptNo <= t.MaxRetries+3)
 		shouldRetry := extraRetry || (t.RetriesLeft > 0 && isRetryableErrorClass(errClass))
 		if in.Retryable != nil {
@@ -1303,9 +1309,11 @@ func (q *Queue) CompleteAttempt(in CompleteAttemptInput) (*Task, error) {
 				if t.RetriesLeft > 0 && (errClass != "rate_limited" || t.AttemptNo > t.MaxRetries) {
 					t.RetriesLeft--
 				}
-				delay := ComputeRetryDelay(t.ID, t.AttemptNo, q.cfg.RetryBaseDelay, q.cfg.RetryMaxDelay)
-				readyAt := now.Add(delay)
-				t.NotBefore = &readyAt
+				if errClass != "machine_offline" {
+					delay := ComputeRetryDelay(t.ID, t.AttemptNo, q.cfg.RetryBaseDelay, q.cfg.RetryMaxDelay)
+					readyAt := now.Add(delay)
+					t.NotBefore = &readyAt
+				}
 			}
 			t.State = StateQueued
 			t.FailureReason = errClass
@@ -1378,7 +1386,7 @@ func (q *Queue) SetAttemptTodoDetachPending(taskID string, attemptNo int, pendin
 
 func (q *Queue) hasHealthyAlternateLocked(requiredMachine, failedMachine string) bool {
 	for _, m := range q.machines {
-		if m.Name != failedMachine && m.Online && !m.Degraded && m.MaxSlots > 0 && m.matches(requiredMachine) {
+		if m.isHealthyAlternate(requiredMachine, failedMachine) {
 			return true
 		}
 	}
@@ -1390,7 +1398,7 @@ func (q *Queue) hasHealthyAlternateLocked(requiredMachine, failedMachine string)
 // is signed out): they fail the same way until the user changes something.
 func isRetryableErrorClass(errClass string) bool {
 	switch errClass {
-	case "infra_error", "timeout", "task_failed", "rate_limited", "lost", "gateway_unreachable", "gateway_error", "stream_interrupted":
+	case "infra_error", "timeout", "task_failed", "rate_limited", "lost", "machine_offline", "gateway_unreachable", "gateway_error", "stream_interrupted":
 		return true
 	default:
 		return false

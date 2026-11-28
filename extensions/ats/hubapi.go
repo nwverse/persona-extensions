@@ -36,6 +36,7 @@ type hubSession struct {
 	Launcher            string `json:"launcher,omitempty"`
 	Cwd                 string `json:"cwd,omitempty"`
 	State               string `json:"state"` // needs_you | working | unread | idle | offline | unknown
+	Status              string `json:"status,omitempty"`
 	Starting            bool   `json:"starting"`
 	StartError          string `json:"start_error"`
 	TurnError           string `json:"turn_error"`

@@ -31,6 +31,10 @@ func (m MachineSlot) matches(name string) bool {
 	return name == "" || strings.EqualFold(m.Name, name) || strings.EqualFold(m.Title, name)
 }
 
+func (m MachineSlot) isHealthyAlternate(requiredMachine, failedMachine string) bool {
+	return m.Name != failedMachine && m.matches(requiredMachine) && m.Online && !m.Degraded && m.MaxSlots > 0
+}
+
 // FreeSlots returns the number of unoccupied slots on an online machine.
 func (m MachineSlot) FreeSlots() int {
 	if !m.Online || m.MaxSlots <= m.RunningSlots {
@@ -113,6 +117,13 @@ func (q *Queue) Machines() []MachineSlot {
 	return q.machinesLocked()
 }
 
+func (q *Queue) machineOffline(name string) bool {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
+	machine, ok := q.machines[name]
+	return ok && !machine.Online
+}
+
 func (q *Queue) machinesLocked() []MachineSlot {
 	running := map[string]int{}
 	for _, t := range q.tasks {
@@ -162,12 +173,12 @@ func priorityBaseScore(priority string) float64 {
 
 // PlanSchedule computes the offline-compute-style multi-factor schedule plan without mutating task state.
 func (q *Queue) PlanSchedule(now time.Time) SchedulePlan {
-	q.mu.RLock()
-	defer q.mu.RUnlock()
-	return q.planScheduleLocked(now)
+	return q.planSchedule(now, nil)
 }
 
-func (q *Queue) planScheduleLocked(now time.Time) SchedulePlan {
+func (q *Queue) planSchedule(now time.Time, allowOfflineRetry func(*Task, MachineSlot) bool) SchedulePlan {
+	q.mu.RLock()
+	defer q.mu.RUnlock()
 	if now.IsZero() {
 		now = time.Now().UTC()
 	} else {
@@ -310,7 +321,7 @@ func (q *Queue) planScheduleLocked(now time.Time) SchedulePlan {
 		}
 		c.EffectiveTier = effTier
 
-		mIdx, mWhy := pickMachineSlot(simMachines, t.Machine, t.LastFailedWorker, t.Attempts)
+		mIdx, mWhy := pickTaskMachineSlot(simMachines, t, allowOfflineRetry)
 		if mIdx < 0 {
 			c.Admitted = false
 			c.HoldReason = mWhy
@@ -411,7 +422,28 @@ func evaluateTierAdmission(t *Task, waitMinutes float64, mode string, quota Quot
 	return reqTier, true, ""
 }
 
+func pickTaskMachineSlot(machines []MachineSlot, t *Task, allowOfflineRetry func(*Task, MachineSlot) bool) (int, string) {
+	if t.FailureReason != "machine_offline" || len(t.Attempts) == 0 {
+		return pickMachineSlot(machines, t.Machine, t.LastFailedWorker, t.Attempts)
+	}
+	failedMachine := t.Attempts[len(t.Attempts)-1].Machine
+	healthy := func(m MachineSlot) bool {
+		return !m.Degraded && (allowOfflineRetry == nil || allowOfflineRetry(t, m))
+	}
+	alternate := func(m MachineSlot) bool {
+		return m.isHealthyAlternate(t.Machine, failedMachine) && healthy(m)
+	}
+	if slices.ContainsFunc(machines, alternate) {
+		return pickMachineSlotWhere(machines, t.Machine, t.LastFailedWorker, t.Attempts, alternate)
+	}
+	return pickMachineSlotWhere(machines, t.Machine, t.LastFailedWorker, t.Attempts, healthy)
+}
+
 func pickMachineSlot(machines []MachineSlot, requiredMachine, lastFailedWorker string, attempts []Attempt) (int, string) {
+	return pickMachineSlotWhere(machines, requiredMachine, lastFailedWorker, attempts, nil)
+}
+
+func pickMachineSlotWhere(machines []MachineSlot, requiredMachine, lastFailedWorker string, attempts []Attempt, allowed func(MachineSlot) bool) (int, string) {
 	reqName := strings.TrimSpace(requiredMachine)
 	bestIdx := -1
 	bestPenalty := math.MaxFloat64
@@ -429,6 +461,9 @@ func pickMachineSlot(machines []MachineSlot, requiredMachine, lastFailedWorker s
 			continue
 		}
 		foundOnline = true
+		if allowed != nil && !allowed(m) {
+			continue
+		}
 		if !m.Degraded && m.MaxSlots > 0 {
 			foundHealthy = true
 		}
@@ -476,10 +511,14 @@ func pickMachineSlot(machines []MachineSlot, requiredMachine, lastFailedWorker s
 
 // DispatchNext plans and leases up to maxCount ready tasks according to the multi-factor schedule plan.
 func (q *Queue) DispatchNext(maxCount int, now time.Time) ([]*Task, []*Attempt, SchedulePlan, error) {
+	return q.dispatchNext(maxCount, now, nil)
+}
+
+func (q *Queue) dispatchNext(maxCount int, now time.Time, allowOfflineRetry func(*Task, MachineSlot) bool) ([]*Task, []*Attempt, SchedulePlan, error) {
 	if maxCount <= 0 {
 		maxCount = 1
 	}
-	plan := q.PlanSchedule(now)
+	plan := q.planSchedule(now, allowOfflineRetry)
 	if plan.AdmissionMode == AdmissionPausedQuota || len(plan.AdmittedCandidates) == 0 {
 		return nil, nil, plan, nil
 	}
@@ -498,6 +537,6 @@ func (q *Queue) DispatchNext(maxCount int, now time.Time) ([]*Task, []*Attempt, 
 		leasedTasks = append(leasedTasks, t)
 		leasedAttempts = append(leasedAttempts, att)
 	}
-	updatedPlan := q.PlanSchedule(now)
+	updatedPlan := q.planSchedule(now, allowOfflineRetry)
 	return leasedTasks, leasedAttempts, updatedPlan, nil
 }

@@ -890,6 +890,323 @@ func TestAgentRunningTooLongIsInterruptedAndTimesOut(t *testing.T) {
 	}
 }
 
+func TestDispatcherFailsOverOfflineAttempt(t *testing.T) {
+	for _, sessionOnly := range []bool{false, true} {
+		name := "machine offline"
+		if sessionOnly {
+			name = "session offline on an online machine"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			const alternate = "machine-2"
+			r.cfg.Machines = append(r.cfg.Machines, alternate)
+			r.hub.machines = append(r.hub.machines, hubMachine{ID: alternate, Online: true})
+			zero := 0
+			task := r.enqueue(EnqueueInput{AgentType: AgentCodex, MaxRetries: &zero})
+			r.tick()
+			first := r.task(task.ID).Exec
+			if sessionOnly {
+				r.hub.set(first.SessionID, func(s *hubSession) { s.State = "offline" })
+			} else {
+				r.hub.machines[0].Online = false
+				r.now = r.now.Add(refreshInterval)
+			}
+			r.tick()
+			if !sessionOnly {
+				offline := r.task(task.ID).Exec.OfflineSince
+				if offline == nil || !offline.Equal(r.now) {
+					t.Fatalf("offline timestamp = %v, want %v", offline, r.now)
+				}
+				*offline = offline.Add(time.Hour)
+				if stored := r.task(task.ID).Exec.OfflineSince; stored == nil || !stored.Equal(r.now) {
+					t.Fatalf("offline timestamp aliases a caller snapshot: %v", stored)
+				}
+				var err error
+				r.q, err = NewQueue(filepath.Dir(r.q.dataFile), r.cfg.queueConfig())
+				if err != nil {
+					t.Fatal(err)
+				}
+				r.start(r.worker.data)
+			}
+			r.now = r.now.Add(3*time.Minute - dispatchInterval)
+			r.tick()
+
+			got := r.task(task.ID)
+			if got.State != StateRunning || got.AttemptNo != 2 || got.Exec == nil || got.Exec.MachineID != alternate {
+				t.Fatalf("task did not move to the alternate: %+v", got)
+			}
+			if got.Attempts[0].State != StateFailed || got.Attempts[0].ErrorClass != "machine_offline" || len(got.Reports) != 1 || got.Reports[0].ErrorClass != "machine_offline" || got.NotBefore != nil || got.Exec.OfflineSince != nil {
+				t.Fatalf("unexpected failed attempt: %+v", got)
+			}
+			if !slices.Equal(r.hub.detached, []string{"todo_1/" + first.SessionID}) || !slices.Equal(r.hub.attached, []string{"todo_1/" + first.SessionID, "todo_1/" + got.Exec.SessionID}) {
+				t.Fatalf("todo links: attached %v, detached %v", r.hub.attached, r.hub.detached)
+			}
+			if r.hub.created[1].AgentType != AgentCodex || r.hub.created[1].Launcher != AgentCodex {
+				t.Fatalf("failover changed the selected engine or launcher: %+v", r.hub.created[1])
+			}
+		})
+	}
+}
+
+func TestDispatcherRecoversBriefOfflineAttempt(t *testing.T) {
+	for _, state := range []string{"working", "idle", "unread", "needs_you"} {
+		t.Run(state, func(t *testing.T) {
+			r := newRig(t)
+			r.d.offlineFailoverAfter = time.Minute
+			const alternate = "machine-2"
+			r.cfg.Machines = append(r.cfg.Machines, alternate)
+			r.hub.machines = append(r.hub.machines, hubMachine{ID: alternate, Online: true})
+			task := r.enqueue(EnqueueInput{})
+			r.tick()
+			first := r.task(task.ID).Exec
+			r.hub.set(first.SessionID, func(s *hubSession) { s.Status = "offline" })
+			r.tick()
+			if since := r.task(task.ID).Exec.OfflineSince; since == nil || !since.Equal(r.now) {
+				t.Fatalf("offline timestamp = %v, want %v", since, r.now)
+			}
+			r.hub.set(first.SessionID, func(s *hubSession) { s.State, s.Status = "", state })
+			r.tick()
+			got := r.task(task.ID)
+			if got.Exec == nil || got.Exec.OfflineSince != nil || got.Exec.SessionID != first.SessionID ||
+				got.AttemptNo != 1 || got.RetriesLeft != task.RetriesLeft || len(r.hub.detached) != 0 || len(r.hub.interrupts) != 0 {
+				t.Fatalf("brief disconnect did not recover in the original attempt: %+v", got)
+			}
+		})
+	}
+}
+
+func TestDispatcherOfflineRefreshesStaleSlots(t *testing.T) {
+	for _, originalRecovers := range []bool{false, true} {
+		name := "alternate came online"
+		if originalRecovers {
+			name = "original came online"
+		}
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			r.d.offlineFailoverAfter = dispatchInterval
+			const alternate = "machine-2"
+			r.cfg.Machines = append(r.cfg.Machines, alternate)
+			r.hub.machines = append(r.hub.machines, hubMachine{ID: alternate, Online: originalRecovers})
+			task := r.enqueue(EnqueueInput{})
+			r.tick()
+			if originalRecovers {
+				r.hub.machines[0].Online = false
+				r.now = r.now.Add(refreshInterval)
+			} else {
+				r.hub.set("session-1", func(s *hubSession) { s.State = "offline" })
+			}
+			r.tick()
+			r.hub.machines[0].Online, r.hub.machines[1].Online = originalRecovers, true
+			r.tick()
+			got := r.task(task.ID)
+			wantMachine, wantAttempt := alternate, 2
+			if originalRecovers {
+				wantMachine, wantAttempt = testMachine, 1
+			}
+			if got.Exec == nil || got.Exec.OfflineSince != nil || got.Exec.MachineID != wantMachine || got.AttemptNo != wantAttempt {
+				t.Fatalf("after the machine list changed: %+v", got)
+			}
+		})
+	}
+}
+
+func TestDispatcherOfflineWaitsForEligibleAlternate(t *testing.T) {
+	for _, name := range []string{"pinned", "offline", "disabled", "busy", "degraded", "unreachable task launcher"} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			const alternate = "machine-2"
+			r.hub.machines = append(r.hub.machines, hubMachine{ID: alternate, Online: name != "offline"})
+			if name != "disabled" {
+				r.cfg.Machines = append(r.cfg.Machines, alternate)
+			}
+			in := EnqueueInput{}
+			switch name {
+			case "pinned":
+				in.Machine = "sTuDiO"
+			case "degraded":
+				r.cfg.Launcher = alternate + "=selected"
+			case "unreachable task launcher":
+				in.AgentType, in.Launcher = AgentCodex, "selected"
+			}
+			r.d.nodes = nodeCallFunc(func(ctx context.Context, machine, method string, params, out any) error {
+				if method == "ats.probe_launcher" {
+					*out.(*probeLauncherResult) = probeLauncherResult{Reachable: machine != alternate}
+					return nil
+				}
+				return r.nodes.Call(ctx, machine, method, params, out)
+			})
+			task := r.enqueue(in)
+			r.tick()
+			if name == "busy" {
+				busy := r.enqueue(EnqueueInput{Machine: alternate})
+				r.tick()
+				if got := r.task(busy.ID); got.State != StateRunning {
+					t.Fatalf("alternate was not occupied: %+v", got)
+				}
+			}
+			first := r.task(task.ID).Exec
+			r.hub.machines[0].Online = false
+			r.now = r.now.Add(refreshInterval)
+			r.tick()
+			offlineAt := r.now
+			r.now = r.now.Add(4 * time.Minute)
+			r.tick()
+			r.tick()
+			got := r.task(task.ID)
+			if got.State != StateRunning || got.Exec == nil || got.Exec.SessionID != first.SessionID || got.AttemptNo != 1 ||
+				got.RetriesLeft != task.RetriesLeft || len(got.Reports) != 0 || len(r.hub.detached) != 0 {
+				t.Fatalf("without an eligible alternate the original attempt must keep waiting: %+v", got)
+			}
+			if since := got.Exec.OfflineSince; since == nil || !since.Equal(offlineAt) {
+				t.Fatalf("offline timestamp = %v, want %v", since, offlineAt)
+			}
+		})
+	}
+}
+
+func TestDispatcherOfflineChoosesReachableTaskLauncher(t *testing.T) {
+	r := newRig(t)
+	const unreachable, reachable = "machine-2", "machine-3"
+	r.cfg.Machines = append(r.cfg.Machines, unreachable, reachable)
+	r.hub.machines = append(r.hub.machines, hubMachine{ID: unreachable, Online: true}, hubMachine{ID: reachable, Online: true})
+	r.d.nodes = nodeCallFunc(func(ctx context.Context, machine, method string, params, out any) error {
+		if method == "ats.probe_launcher" {
+			*out.(*probeLauncherResult) = probeLauncherResult{Reachable: machine != unreachable}
+			return nil
+		}
+		return r.nodes.Call(ctx, machine, method, params, out)
+	})
+	task := r.enqueue(EnqueueInput{AgentType: AgentCodex, Launcher: reachable + "=backup,primary"})
+	r.tick()
+	r.hub.set("session-1", func(s *hubSession) { s.State = "offline" })
+	r.tick()
+	r.now = r.now.Add(offlineFailoverGrace - dispatchInterval)
+	r.tick()
+	got := r.task(task.ID)
+	if got.Exec == nil || got.Exec.MachineID != reachable || got.Exec.Launcher != "backup" || got.AttemptNo != 2 {
+		t.Fatalf("did not retry on the machine with a reachable launcher: %+v", got)
+	}
+}
+
+func TestDispatcherOfflineTimesOutAtDeadline(t *testing.T) {
+	r := newRig(t)
+	zero := 0
+	r.cfg.TaskTimeoutMinutes = 4
+	const alternate = "machine-2"
+	r.cfg.Machines = append(r.cfg.Machines, alternate)
+	r.hub.machines = append(r.hub.machines, hubMachine{ID: alternate, Online: true})
+	task := r.enqueue(EnqueueInput{MaxRetries: &zero})
+	r.tick()
+	e := r.task(task.ID).Exec
+	r.hub.set(e.SessionID, func(s *hubSession) { s.State = "offline" })
+	r.tick()
+	r.now = e.PhaseSince.Add(r.cfg.taskTimeout() - dispatchInterval)
+	r.tick()
+	got := r.task(task.ID)
+	if got.State != StateFailed || got.FailureReason != "timeout" || got.AttemptNo != 1 || got.Exec != nil {
+		t.Fatalf("offline attempt did not time out: %+v", got)
+	}
+	if !slices.Equal(r.hub.interrupts, []string{e.SessionID}) || !slices.Equal(r.hub.detached, []string{"todo_1/" + e.SessionID}) {
+		t.Fatalf("timed-out session: interrupted %v, detached %v", r.hub.interrupts, r.hub.detached)
+	}
+}
+
+func TestDispatcherOfflineDuringAcceptance(t *testing.T) {
+	for _, name := range []string{"failover", "machine recovers", "result arrives", "deadline"} {
+		t.Run(name, func(t *testing.T) {
+			r := newRig(t)
+			zero := 0
+			r.cfg.AcceptTimeoutMinutes = 1
+			const alternate = "machine-2"
+			r.cfg.Machines = append(r.cfg.Machines, alternate)
+			r.hub.machines = append(r.hub.machines, hubMachine{ID: alternate, Online: true})
+			r.d.nodes = nodeCallFunc(func(ctx context.Context, machine, method string, params, out any) error {
+				switch method {
+				case "ats.accept", "ats.accept_status":
+					return nil
+				case "ats.release":
+					if machine == testMachine && !r.hub.machines[0].Online {
+						return errors.New("node unavailable")
+					}
+				}
+				return r.nodes.Call(ctx, machine, method, params, out)
+			})
+			task := r.enqueue(EnqueueInput{AcceptanceCommand: "true", MaxRetries: &zero})
+			r.tick()
+			r.hub.turnEnds("session-1", "complete", "Done.")
+			r.tick()
+			r.tick()
+			first := r.task(task.ID).Exec
+			if first == nil || first.Phase != PhaseAccepting {
+				t.Fatalf("acceptance did not start: %+v", first)
+			}
+			r.hub.machines[0].Online = false
+			r.now = r.now.Add(refreshInterval)
+			r.tick()
+			if since := r.task(task.ID).Exec.OfflineSince; since == nil || !since.Equal(r.now) {
+				t.Fatalf("offline timestamp = %v, want %v", since, r.now)
+			}
+			result := acceptResult{TaskID: task.ID, Attempt: 1, ExitCode: 0}
+			switch name {
+			case "failover":
+				r.now = r.now.Add(offlineFailoverGrace - dispatchInterval)
+				r.tick()
+				got := r.task(task.ID)
+				if got.Exec == nil || got.Exec.MachineID != alternate || got.AttemptNo != 2 || got.Attempts[0].ErrorClass != "machine_offline" ||
+					!slices.Equal(r.hub.detached, []string{"todo_1/" + first.SessionID}) || !slices.Contains(artifactKinds(got), "worktree") {
+					t.Fatalf("offline acceptance was not replaced cleanly: %+v", got)
+				}
+				r.d.onAccepted(result)
+				if len(r.d.accepted) != 0 {
+					t.Fatalf("the old acceptance result was kept: %v", r.d.accepted)
+				}
+			case "machine recovers":
+				r.hub.machines[0].Online = true
+				r.now = r.now.Add(refreshInterval)
+				r.tick()
+				if got := r.task(task.ID); got.Exec == nil || got.Exec.Phase != PhaseAccepting || got.Exec.OfflineSince != nil || got.AttemptNo != 1 {
+					t.Fatalf("acceptance did not resume in the original attempt: %+v", got)
+				}
+			case "result arrives":
+				r.d.onAccepted(result)
+				r.now = r.now.Add(offlineFailoverGrace - dispatchInterval)
+				r.tick()
+				if got := r.task(task.ID); got.State != StateSucceeded || got.Verdict != VerdictPass || got.AttemptNo != 1 || len(r.hub.detached) != 0 {
+					t.Fatalf("already-reported acceptance result was discarded: %+v", got)
+				}
+			case "deadline":
+				r.now = first.PhaseSince.Add(r.cfg.acceptTimeout() + 5*time.Minute - dispatchInterval)
+				r.tick()
+				if got := r.task(task.ID); got.State != StateFailed || got.FailureReason != "timeout" || got.AttemptNo != 1 {
+					t.Fatalf("offline acceptance did not time out: %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestDispatcherOfflineBeforePreparing(t *testing.T) {
+	r := newRig(t)
+	const alternate = "machine-2"
+	r.cfg.Machines = append(r.cfg.Machines, alternate)
+	r.hub.machines = []hubMachine{{ID: testMachine}, {ID: alternate, Online: true}}
+	task := r.enqueue(EnqueueInput{})
+	if _, _, err := r.q.LeaseTask(task.ID, "test-worker", testMachine, r.now); err != nil {
+		t.Fatal(err)
+	}
+	r.tick()
+	if got := r.task(task.ID); got.Exec == nil || got.Exec.Phase != PhasePreparing || got.Exec.OfflineSince == nil || len(r.nodes.calls) != 0 {
+		t.Fatalf("offline attempt started preparing: %+v calls=%v", got, r.nodes.calls)
+	}
+	r.now = r.now.Add(offlineFailoverGrace - dispatchInterval)
+	r.tick()
+	got := r.task(task.ID)
+	if got.Exec == nil || got.Exec.MachineID != alternate || got.Exec.Phase != PhaseWorking || got.AttemptNo != 2 ||
+		got.Attempts[0].ErrorClass != "machine_offline" || !slices.Equal(r.nodes.calls, []string{"ats.prepare"}) || len(r.hub.detached) != 0 {
+		t.Fatalf("offline preparation did not move to the alternate: %+v calls=%v", got, r.nodes.calls)
+	}
+}
+
 func TestWatchContinuesInterruptedTurnInSameSession(t *testing.T) {
 	r := newRig(t)
 	task := r.enqueue(EnqueueInput{})
@@ -966,6 +1283,34 @@ func TestWatchTripsBreakerOnStartupGatewayError(t *testing.T) {
 	r.tick()
 	if got := r.task(task.ID); got.Exec == nil || got.Exec.Launcher != "backup" || got.AttemptNo != 2 {
 		t.Fatalf("expected the retry to use the backup launcher, got %+v", got)
+	}
+}
+
+func TestWatchTripsBreakerOnNoInternetRoute(t *testing.T) {
+	r := newRig(t)
+	r.cfg.Launcher = "primary"
+	task := r.enqueue(EnqueueInput{})
+	r.tick()
+	const message = "API Error: No internet route — check your connection or VPN (EHOSTUNREACH)"
+	r.hub.turnFails("session-1", "error-1", message)
+	r.tick()
+	got := r.task(task.ID)
+	if got.FailureReason != "gateway_error" || got.State != StateQueued {
+		t.Fatalf("startup network failure: state %s, reason %s", got.State, got.FailureReason)
+	}
+	probe := r.d.launcherProbe(t.Context(), testMachine, "primary", false)
+	if probe.reachable || !probe.until.Equal(r.now.Add(breakerCooldown)) || probe.err != message {
+		t.Fatalf("the launcher was not invalidated: %+v", probe)
+	}
+}
+
+func TestTurnErrorClassRecognizesNetworkErrors(t *testing.T) {
+	for _, message := range []string{"No internet route", "EHOSTUNREACH", "eNetUnreach", "ECONNREFUSED", "ETIMEDOUT"} {
+		t.Run(message, func(t *testing.T) {
+			if class := turnErrorClass("", message); class != "gateway_error" {
+				t.Fatalf("classified %q as %q", message, class)
+			}
+		})
 	}
 }
 
@@ -1105,7 +1450,7 @@ func TestWatchDoesNotResendWhenContinuationStateCannotBeSaved(t *testing.T) {
 	savedFile := r.q.dataFile
 	r.q.dataFile = filepath.Join(t.TempDir(), "missing", "queue.json")
 	current := r.task(task.ID)
-	r.d.watch(t.Context(), current, current.Attempts[0])
+	r.d.watch(t.Context(), current, current.Attempts[0], func() bool { return r.d.refreshMachines(t.Context()) })
 	r.q.dataFile = savedFile
 	r.tick()
 	if got := r.task(task.ID); got.State != StateFailed || got.FailureReason != "infra_error" ||
