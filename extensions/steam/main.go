@@ -16,7 +16,7 @@ import (
 
 const (
 	extensionID = "steam"
-	version     = "0.3.0"
+	version     = "0.3.2"
 	summaryID   = "steam-summary"
 )
 
@@ -27,11 +27,12 @@ var manifest = pluginkit.PackagedManifest(authorManifest)
 
 type app struct {
 	*steamData
-	publicData *steamPublicData
-	qr         *qrAuth
-	backlog    *BacklogStore
-	discovery  *steamDiscovery
-	locale     string
+	publicData  *steamPublicData
+	qr          *qrAuth
+	backlog     *BacklogStore
+	discovery   *steamDiscovery
+	locale      string
+	triageRules string
 }
 
 func main() {
@@ -69,6 +70,7 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 			a.publicData = &steamPublicData{client: steamClient{http: client, key: a.client.key}, now: now}
 			a.backlog = NewBacklogStore(dir)
 			a.locale = in.Hub.Locale
+			a.triageRules = pluginkit.TriageRules(in.InitializeParams.Config)
 			a.discovery = nil
 			if cfg.AllowsDiscoveryTools() {
 				a.discovery = newSteamDiscovery(client, now)

@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nwverse/persona-extensions/pluginkit"
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/exttest"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -21,11 +22,20 @@ func TestManifestAndTranslations(t *testing.T) {
 	if err := wire.ValidateJSON("Manifest", manifest); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := pluginkit.CheckManifest(manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := pluginkit.CheckStandardSettings(manifest); err != nil {
+		t.Fatal(err)
+	}
 	var m wire.Manifest
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.ID != extensionID || m.Version != version || m.Engines == nil || m.Engines.PluginProtocol != 1 ||
+	if m.Version != version {
+		t.Fatalf("manifest version = %q, want runtime version %q", m.Version, version)
+	}
+	if m.ID != extensionID || m.Engines == nil || m.Engines.PluginProtocol != 1 ||
 		m.Icon != "" || len(m.Tags) != 0 || m.Permissions == nil ||
 		!slices.Equal(m.Permissions.Network, []string{apiHost, storeHost}) {
 		t.Fatal("runtime manifest differs from the extension contract")
@@ -86,7 +96,7 @@ func TestManifestAndTranslations(t *testing.T) {
 			translation.UI[card.ID] == "" || translation.Groups[page.Group.ID] == "" {
 			t.Errorf("incomplete %s manifest translations", lang)
 		}
-		for _, key := range []string{"auth_mode", "steam_id", "country_code", "friends_radar_enabled", "discovery_tools_enabled", "discovery_max_results",
+		for _, key := range []string{"auth_mode", "steam_id", "country_code", "friends_radar_enabled", "discovery_tools_enabled", "discovery_max_results", pluginkit.TriageRulesSetting,
 			"inbox_events_enabled", "inbox_max_events_per_day", "sale_roundup_enabled", "wishlist_event_triggers", "wishlist_discount_threshold", "wishlist_target_prices"} {
 			if f := translation.Configuration[key]; f.Title == "" || f.Description == "" {
 				t.Errorf("missing %s translation for %s", lang, key)

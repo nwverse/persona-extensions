@@ -119,7 +119,8 @@ func TestWishlistInboxWireCollect(t *testing.T) {
 		metadataRequested.Store(json.Unmarshal([]byte(r.URL.Query().Get("input_json")), &in) == nil && in.DataRequest["include_release"] && in.DataRequest["include_best_purchase_option"])
 		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[{"appid":%d,"success":1,"name":%q}]}}`, firstApp, "Fixture "+fixtureID+" "+f.key)
 	})
-	h := startInboxTestHost(t, f, &app{}, time.Now, t.TempDir(), "zh-Hans", `"inbox_events_enabled":true`)
+	h := startInboxTestHost(t, f, &app{}, time.Now, t.TempDir(), "zh-Hans",
+		`"inbox_events_enabled":true,"triage_rules":"  Price drops are FYI.\\nGiveaways need me.  "`)
 	await(t, 3*time.Second, func() bool { return hasEvent(h, "connector.changed") })
 	var event wire.ConnectorChangedEvent
 	for _, received := range h.Events() {
@@ -135,6 +136,9 @@ func TestWishlistInboxWireCollect(t *testing.T) {
 		got[0].Thread == "" || got[0].Last == "" || got[0].At.IsZero() || got[0].CanReply ||
 		got[0].Tier != wire.ConnectorTierAction || got[0].Extra == nil || got[0].Extra.RuleTier != wire.ConnectorTierAction {
 		t.Fatalf("unexpected Inbox things %+v", got)
+	}
+	if got[0].Rules != "Price drops are FYI.\nGiveaways need me." {
+		t.Fatalf("Inbox triage rules = %q", got[0].Rules)
 	}
 	contains(t, got[0].Title, "愿望单价格提醒")
 	contains(t, got[0].Preview, "折扣达到 50%")

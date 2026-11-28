@@ -612,7 +612,9 @@ func (a *app) collectWishlistInbox() wire.ConnectorCollectResult {
 		at := d.wishes.now()
 		for _, event := range *deliveries {
 			if at.Before(event.Until) && (d.config.AllowsSaleRoundup() || event.Thing.Kind != wishlistRoundupKind) {
-				out.Things = append(out.Things, event.Thing)
+				thing := event.Thing
+				thing.Rules = a.triageRules
+				out.Things = append(out.Things, thing)
 			}
 		}
 	}

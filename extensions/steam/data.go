@@ -15,8 +15,8 @@ const (
 	sortPlaytime  = "playtime"
 	sortName      = "name"
 	maxQueryRunes = 100
-	readBudget    = 12 * time.Second
-	httpTimeout   = 4 * time.Second
+	readBudget    = 18 * time.Second
+	httpTimeout   = 12 * time.Second
 )
 
 type steamData struct {
