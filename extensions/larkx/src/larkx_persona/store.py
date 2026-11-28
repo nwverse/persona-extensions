@@ -182,6 +182,11 @@ class Store:
     def finish_send(self, key, result):
         self._do("UPDATE sends SET result = ? WHERE key = ?", result, key)
 
+    def release_send(self, key):
+        """Gives key back when its send certainly did not happen (a file did not upload, nothing was sent), so the
+        same request may run again. A send with a result keeps it."""
+        self._do("DELETE FROM sends WHERE key = ? AND result IS NULL", key)
+
 
 def _message(row):
     if row is None:

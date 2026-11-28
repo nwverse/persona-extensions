@@ -342,6 +342,132 @@ class RealTest(unittest.TestCase):
         self.assertEqual(mock_client.api.call_args_list[0].args[0], "chats.PullChatChattersRequest")
         self.assertEqual(mock_client.api.call_args_list[1].args[1]["cursor"], 100)
 
+    def media_backend(self):
+        from larkx.region import get_region
+        from larkx_persona.real import RealBackend
+        backend = RealBackend(ROOT, self.home.name, "feishu")
+        backend._auth = mock.Mock(region=get_region("feishu"), cookies={"session": "example"})
+        return backend
+
+    @staticmethod
+    def answer(body, status=200):
+        return mock.Mock(status_code=status, content=body)
+
+    def test_a_picture_uploads_to_the_regions_file_host_as_the_web_client_does(self):
+        from larkx.proto import lark_all_pb2 as L
+        backend = self.media_backend()
+        item = {"kind": "image", "name": "shot.png", "data": b"\x89PNG example", "mime": "image/png"}
+        with mock.patch("requests.post", return_value=self.answer(L.pan.PutFileResponse(key="img_v3_example").SerializeToString())) as post:
+            self.assertEqual(backend.upload(item), {"kind": "image", "key": "img_v3_example"})
+        url = post.call_args.args[0]
+        self.assertEqual(url, backend._auth.region.file_host + "/api/image")
+        self.assertTrue(url.startswith("https://") and url.split("/")[2].endswith(".feishu.cn"))
+        kwargs = post.call_args.kwargs
+        self.assertEqual(kwargs["files"], {"image": ("shot.png", b"\x89PNG example", "image/png")})
+        self.assertEqual(kwargs["cookies"], {"session": "example"})
+        self.assertFalse(kwargs["allow_redirects"])
+        self.assertEqual(kwargs["headers"]["origin"], backend._auth.region.web_origin)
+
+    def test_a_file_uploads_in_parts_checked_by_crc32(self):
+        import zlib
+        from larkx.proto import lark_all_pb2 as L
+        from larkx_persona import real
+        pan = L.pan
+        backend = self.media_backend()
+        data = b"0123456789"
+        item = {"kind": "file", "name": "report.pdf", "data": data, "mime": "application/pdf"}
+        parts = [data[0:4], data[4:8], data[8:10]]
+        answers = [self.answer(pan.CreateFileUploadResponse(uploadId="file_v3_example").SerializeToString())]
+        answers += [self.answer(pan.UploadFilePartResponse(partId=i, crc32=zlib.crc32(p)).SerializeToString()) for i, p in enumerate(parts, 1)]
+        answers.append(self.answer(pan.CompleteFileUploadResponse(code=0).SerializeToString()))
+        with mock.patch.object(real, "UPLOAD_PART", 4), mock.patch("requests.post", side_effect=answers) as post:
+            self.assertEqual(backend.upload(item), {"kind": "file", "key": "file_v3_example", "name": "report.pdf",
+                                                    "size": 10, "mime": "application/pdf"})
+        calls = post.call_args_list
+        host = backend._auth.region.file_host
+        self.assertEqual([c.args[0] for c in calls], [host + "/upload/create"] + [host + "/upload/part"] * 3 + [host + "/upload/complete"])
+        created = pan.CreateFileUploadRequest.FromString(calls[0].kwargs["data"])
+        self.assertEqual((created.fileType, created.fileName, created.fileSize), (1, "report.pdf", 10))
+        for i, (c, p) in enumerate(zip(calls[1:4], parts), 1):
+            self.assertEqual(c.kwargs["params"], {"upload_id": "file_v3_example", "part_id": i})
+            self.assertEqual(c.kwargs["data"], p)
+            self.assertEqual(c.kwargs["headers"]["content-type"], "application/octet-stream")
+        complete = pan.CompleteFileUploadRequest.FromString(calls[4].kwargs["data"])
+        self.assertEqual((complete.uploadId, complete.fileName, complete.mime), ("file_v3_example", "report.pdf", "application/pdf"))
+        self.assertEqual(dict(complete.partToCrc32), {i: zlib.crc32(p) for i, p in enumerate(parts, 1)})
+
+    def test_an_upload_that_fails_says_where_without_content_or_address(self):
+        import requests
+        from larkx.proto import lark_all_pb2 as L
+        from larkx_persona.real import UploadError
+        pan = L.pan
+        backend = self.media_backend()
+        image = {"kind": "image", "name": "a.png", "data": b"png", "mime": "image/png"}
+        file = {"kind": "file", "name": "a.txt", "data": b"abc", "mime": "text/plain"}
+        created = self.answer(pan.CreateFileUploadResponse(uploadId="file_v3_example").SerializeToString())
+        cases = [
+            (image, [self.answer(b"", 500)], "上传图片失败：HTTP 500"),
+            (image, [requests.ConnectionError("https://secret.example/")], "上传图片失败：ConnectionError"),
+            (image, [self.answer(pan.PutFileResponse().SerializeToString())], "没有返回图片 key"),
+            (image, [self.answer(b"\xff\xff\xff")], "看不懂"),
+            (file, [self.answer(pan.CreateFileUploadResponse(uploadId="../x").SerializeToString())], "没有返回 uploadId"),
+            (file, [created, self.answer(pan.UploadFilePartResponse(partId=1, crc32=1).SerializeToString())], "校验和不一致"),
+            (file, [created, self.answer(b"", 302)], "上传第 1 块失败：HTTP 302"),
+        ]
+        for item, answers, words in cases:
+            with self.subTest(words=words), mock.patch("requests.post", side_effect=answers):
+                with self.assertRaises(UploadError) as e:
+                    backend.upload(item)
+                self.assertIn(words, str(e.exception))
+                self.assertNotIn("secret.example", str(e.exception))
+        import zlib
+        bad_finish = [created, self.answer(pan.UploadFilePartResponse(partId=1, crc32=zlib.crc32(b"abc")).SerializeToString()),
+                      self.answer(pan.CompleteFileUploadResponse(code=1).SerializeToString())]
+        with mock.patch("requests.post", side_effect=bad_finish), self.assertRaises(UploadError) as e:
+            backend.upload(file)
+        self.assertIn("完成上传失败：code=1", str(e.exception))
+
+    def sent_media(self, uploaded, root=None, thread_chat=False, message_id="m_media"):
+        from larkx.proto import lark_all_pb2 as L
+        backend = self.media_backend()
+        backend._client = self.larkx.LarkClient.__new__(self.larkx.LarkClient)
+        backend._client.is_thread_chat = lambda chat: thread_chat
+        sent = []
+        response = self.P.Packet()
+        reply = self.P.PutMessageResponse()
+        reply.message.id = message_id
+        response.payload = reply.SerializeToString()
+        backend._client._gateway_post = lambda packet: sent.append(packet) or response.SerializeToString()
+        result = backend.send_media("6001", uploaded, root)
+        self.assertEqual(sent[0].cmd, 5)
+        return result, L.messages.PutMessageRequest.FromString(sent[0].payload)
+
+    def test_a_picture_message_carries_its_key_as_image_key_and_crypto_token(self):
+        result, req = self.sent_media({"kind": "image", "key": "img_v3_example"})
+        self.assertEqual(result, "m_media")
+        self.assertEqual((req.type, req.chatId, req.content.imageKey, req.content.cryptoToken), (5, "6001", "img_v3_example", "img_v3_example"))
+        self.assertTrue(req.isNotified)
+        self.assertFalse(req.rootId or req.isReplyInThread)
+
+    def test_a_file_message_carries_its_key_name_size_and_type(self):
+        result, req = self.sent_media({"kind": "file", "key": "file_v3_example", "name": "report.pdf", "size": 10, "mime": "application/pdf"})
+        self.assertEqual(result, "m_media")
+        content = req.content
+        self.assertEqual((req.type, content.fileKey, content.fileName, content.fileSize, content.fileMime),
+                         (3, "file_v3_example", "report.pdf", 10, "application/pdf"))
+        _, req = self.sent_media({"kind": "file", "key": "file_v3_example", "name": "blob", "size": 1, "mime": ""})
+        self.assertFalse(req.content.HasField("fileMime"))
+
+    def test_media_goes_into_a_topic_and_a_refused_one_is_not_sent(self):
+        _, req = self.sent_media({"kind": "image", "key": "img_v3_example"}, root="m_root")
+        self.assertEqual((req.rootId, req.parentId, req.isReplyInThread), ("m_root", "m_root", True))
+        _, req = self.sent_media({"kind": "image", "key": "img_v3_example"}, root="m_root", thread_chat=True)
+        self.assertEqual((req.rootId, req.isReplyInThread), ("m_root", False))
+        for refused in ("-1", ""):
+            with self.subTest(refused=refused):
+                result, _ = self.sent_media({"kind": "image", "key": "img_v3_example"}, message_id=refused)
+                self.assertIsNone(result)
+
     def test_credentials_go_through_the_hub_and_never_a_file(self):
         from larkx_persona.real import RealBackend
         saved = []

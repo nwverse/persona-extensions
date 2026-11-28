@@ -8,8 +8,9 @@ import threading
 import time
 from datetime import datetime, timezone
 
+from . import outbound
 from .hooks import delivery_id
-from .real import mention_parts
+from .real import UploadError, mention_parts
 from .wire import RpcError
 
 ID = "larkx"
@@ -66,34 +67,41 @@ MEMBERS_CACHE_SECONDS = 300
 AGENT_RETRY_SECONDS = [2, 5, 15]
 # The send key a hook delivery claims, once per message id: a message with one is a hook command, not an /agent.
 HOOK_KEY = "hook:"
+# A card's files, by its action and args, from actions.describe to actions.do: what the user confirmed is what is sent.
+CARD_SECONDS = 86400
+CARD_MOST = 64
 SIGNED_OUT_ERROR = "还没登录飞书"
 SIGN_IN_GUIDE = ["在连接器设置里打开「飞书（LarkAgentX）」，用飞书 App 扫码登录。"]
 SEND_SCHEMA = {
     "type": "object",
     "properties": {
         "chat": {"type": "string", "description": "The chat's id, from larkx_chats or an inbox item."},
-        "text": {"type": "string", "description": "The message, plain text. Write @name exactly as in mentions."},
+        "text": {"type": "string", "description": "The message, plain text. Write @name exactly as in mentions. May be left out when image or file is given."},
         "mentions": {"type": "array", "maxItems": 100, "description": "People or bots to really @; a plain @name without an entry here is ordinary text.",
                      "items": {"type": "object", "additionalProperties": False, "required": ["id", "name"],
                                "properties": {"id": {"type": "string", "description": "The person or bot numeric id from larkx_members or larkx_search."},
                                               "name": {"type": "string", "description": "The exact display name from larkx_members or larkx_search."}}}},
-        "reply_to": {"type": "string", "description": "A message's id (from larkx_messages), to answer in its topic."},
+        "reply_to": {"type": "string", "description": "A message's id (from larkx_messages), to answer in its topic; the picture and file go into the topic too."},
+        "image": {"type": "string", "description": "Absolute path of a local picture on the hub's machine (PNG, JPEG, GIF, WebP or BMP, at most 10 MB), sent as its own Feishu image message after the text."},
+        "file": {"type": "string", "description": "Absolute path of a local file on the hub's machine (at most 30 MB), sent as its own Feishu file message after the text and the picture."},
     },
-    "required": ["chat", "text"],
+    "required": ["chat"],
 }
 SEND_DM_SCHEMA = {
     "type": "object",
     "properties": {
         "user": {"type": "string", "description": "The person's id, from larkx_search."},
-        "text": {"type": "string", "description": "The message, plain text."},
+        "text": {"type": "string", "description": "The message, plain text. May be left out when image or file is given."},
+        "image": {"type": "string", "description": "Absolute path of a local picture on the hub's machine (PNG, JPEG, GIF, WebP or BMP, at most 10 MB), sent as its own Feishu image message after the text."},
+        "file": {"type": "string", "description": "Absolute path of a local file on the hub's machine (at most 30 MB), sent as its own Feishu file message after the text and the picture."},
     },
-    "required": ["user", "text"],
+    "required": ["user"],
 }
 ACTIONS = [
     {"name": "larkx_send", "input_schema": SEND_SCHEMA,
-     "description": "Send a Feishu message to a chat as the user themself, not a bot. To really @ a person or bot, pass their id and exact name from larkx_members or larkx_search in mentions and write @name in text; @name alone is ordinary text. The user confirms the full text on the phone first."},
+     "description": "Send a Feishu message to a chat as the user themself, not a bot. To really @ a person or bot, pass their id and exact name from larkx_members or larkx_search in mentions and write @name in text; @name alone is ordinary text. image and file send a local picture or file (absolute path) as messages of their own after the text. The user confirms the full text and each file's name, type and size on the phone first; nothing is uploaded before that."},
     {"name": "larkx_send_dm", "input_schema": SEND_DM_SCHEMA,
-     "description": "Send a Feishu direct message to a person as the user themself, not a bot. The user confirms the full text on the phone first."},
+     "description": "Send a Feishu direct message to a person as the user themself, not a bot. image and file send a local picture or file (absolute path) as messages of their own after the text. The user confirms the full text and each file's name, type and size on the phone first; nothing is uploaded before that."},
 ]
 TOOLS = [
     {"name": "larkx_status", "description": "Say whether the user's Feishu account is signed in and its messages are being received.",
@@ -159,6 +167,11 @@ class Connector:
         self.topics = True
         # The user's own /commands that go to their own address instead of the assistant (hooks.Hooks), or None.
         self.hooks = None
+        # Directories no picture or file may be sent from: the program's data directory (main.py sets it).
+        self.private_dirs = ()
+        # The files each confirmation card showed (CARD_SECONDS, CARD_MOST): {card key: (shown at, [fingerprint])}.
+        self._cards = {}
+        self._cards_lock = threading.Lock()
         self.store = store
         self.hub = hub
         self._ready = threading.Event()
@@ -802,7 +815,7 @@ class Connector:
 
     def actions_describe(self, p):
         name, args = p.get("name"), p.get("args") or {}
-        text = _required(args, "text")
+        text, specs = _content(args)
         quoted = ""
         if name == "larkx_send":
             chat = _required(args, "chat")
@@ -823,8 +836,53 @@ class Connector:
             target = "%s〔私聊〕" % title
         else:
             raise RpcError("没有这个操作：%s" % name)
-        summary = "以你本人的身份发飞书消息\n发给：%s\n%s内容（全文）：\n%s" % (target, quoted, text)
+        if not specs:
+            summary = "以你本人的身份发飞书消息\n发给：%s\n%s内容（全文）：\n%s" % (target, quoted, text)
+            return {"action": {"name": name, "visible": where}, "summary": summary}
+        # Read here, never uploaded here: the card shows what will be sent, and actions.do sends only that.
+        media = _loaded(specs, self.private_dirs)
+        self._remember_card(name, args, media)
+        lines = [line for item in media for line in outbound.card_lines(item)]
+        order = (["文字"] if text else []) + ["图片" if item["kind"] == "image" else "文件" for item in media]
+        lines.append("按%s的顺序发，每样各是一条消息" % "、".join(order) if len(order) > 1 else "只发这一条消息")
+        # The text comes last, as without media: nothing it says can pass for a line above it.
+        body = "内容（全文）：\n%s" % text if text else "内容：没有文字"
+        summary = "以你本人的身份发飞书消息\n发给：%s\n%s%s\n%s" % (target, quoted, "\n".join(lines), body)
         return {"action": {"name": name, "visible": where}, "summary": summary}
+
+    def _remember_card(self, name, args, media):
+        now = time.time()
+        with self._cards_lock:
+            for key in [k for k, (at, _) in self._cards.items() if now - at > CARD_SECONDS]:
+                del self._cards[key]
+            while len(self._cards) >= CARD_MOST:
+                del self._cards[min(self._cards, key=lambda k: self._cards[k][0])]
+            self._cards[_card_key(name, args)] = (now, [outbound.fingerprint(item) for item in media])
+
+    def _confirmed(self, name, args, specs, key):
+        """The files of a confirmed card, read again: (media, the card taken). Refused, before anything is claimed or
+        uploaded, when no card showed them or a file is not what the card showed. A card is taken once, under the
+        lock, so two sends at the same time cannot both use one confirmation."""
+        if self.store.claimed(key):
+            return [], None  # a repeated request: _claim answers with what the first one ended with
+        media = _loaded(specs, self.private_dirs)
+        card = _card_key(name, args)
+        with self._cards_lock:
+            shown = self._cards.get(card)
+            if shown is None or time.time() - shown[0] > CARD_SECONDS:
+                raise RpcError("没有找到这次发送的确认卡（可能已过期或插件重启过），什么都没有发出；请重新发起，让用户在手机上再确认一次。",
+                               "invalid_params")
+            if [outbound.fingerprint(item) for item in media] != shown[1]:
+                raise RpcError("文件在确认之后变了（大小或内容和确认卡上的不一样），什么都没有发出；请重新发起，让用户再确认一次。",
+                               "invalid_params")
+            del self._cards[card]
+        return media, (card, shown)
+
+    def _give_back_card(self, taken):
+        """A send that certainly did not happen (an upload failed) keeps its card, for the same request to run again."""
+        if taken:
+            with self._cards_lock:
+                self._cards.setdefault(taken[0], taken[1])
 
     def _quoted(self, reply_to):
         """The confirmation's line for reply_to: the reply goes into that message's topic, so it says which one."""
@@ -840,17 +898,25 @@ class Connector:
         name, args = p.get("name"), p.get("args") or {}
         # Each request's send runs at most once, keyed on its id: without one, every later send would read as that one.
         request_id = _required(p, "request_id")
+        key = "action:" + request_id
         if name == "larkx_send":
-            chat, text = _required(args, "chat"), _required(args, "text")
+            chat = _required(args, "chat")
+            text, specs = _content(args)
             mentions = _mentions(args, text)
-            return {"text": self._send_once("action:" + request_id, chat, text, args.get("reply_to"), mentions)}
+            if not specs:
+                return {"text": self._send_once(key, chat, text, args.get("reply_to"), mentions)}
+            self._need_signed_in()
+            media, card = self._confirmed(name, args, specs, key)
+            return {"text": self._claim(key) or self._send(key, chat, text, args.get("reply_to"), mentions, media, card)}
         if name == "larkx_send_dm":
             self._need_signed_in()
-            user, text = _required(args, "user"), _required(args, "text")
-            done = self._claim("action:" + request_id)
+            user = _required(args, "user")
+            text, specs = _content(args)
+            media, card = self._confirmed(name, args, specs, key) if specs else ([], None)
+            done = self._claim(key)
             if done:
                 return {"text": done}
-            return {"text": self._send("action:" + request_id, self.backend.create_chat(user), text, None)}
+            return {"text": self._send(key, self.backend.create_chat(user), text, None, (), media, card)}
         raise RpcError("没有这个操作：%s" % name)
 
     def _send_once(self, key, chat, text, reply_to, mentions=()):
@@ -866,19 +932,48 @@ class Connector:
             return result
         raise RpcError(_UNKNOWN_SEND)
 
-    def _send(self, key, chat, text, reply_to, mentions=()):
+    def _send(self, key, chat, text, reply_to, mentions=(), media=(), card=None):
         root = None
         if reply_to:
             quoted = self.store.message(reply_to) or {}
             root = quoted.get("root") or reply_to
-        try:
-            msg_id = self.backend.send(chat, text, root, mentions=mentions)
-        except Exception:
-            msg_id = None
-        if not msg_id:
-            # Left without a result on purpose: this key is never tried again.
-            raise RpcError(_UNKNOWN_SEND)
-        result = "已发出（%s）。" % msg_id
+        # Every file is uploaded before anything is sent: an upload that fails leaves the chat as it was, and the key
+        # is given back so the same request may run again. An upload alone is seen by nobody.
+        uploaded = []
+        for item in media:
+            try:
+                uploaded.append(self.backend.upload(item))
+            except Exception as e:
+                self.store.release_send(key)
+                self._give_back_card(card)
+                reason = str(e) if isinstance(e, UploadError) else type(e).__name__
+                raise RpcError("%s「%s」没有上传成功（%s），什么都没有发出，可以重试。" % (_media_label(item), item["name"], reason)) from e
+        sent = []
+        if text:
+            try:
+                msg_id = self.backend.send(chat, text, root, mentions=mentions)
+            except Exception:
+                msg_id = None
+            if not msg_id:
+                # Left without a result on purpose: this key is never tried again.
+                waiting = "和".join(dict.fromkeys(_media_label(m) for m in media))
+                raise RpcError(_UNKNOWN_SEND + ("%s还没有发。" % waiting if media else ""))
+            sent.append(msg_id)
+        for i, (item, done) in enumerate(zip(media, uploaded)):
+            try:
+                msg_id = self.backend.send_media(chat, done, root)
+            except Exception:
+                msg_id = None
+            if not msg_id:
+                rest = "".join("%s「%s」没有发；" % (_media_label(m), m["name"]) for m in media[i + 1:])
+                unsure = "%s「%s」可能已经发出，没法确认，不要重发，先去飞书里看一下。" % (_media_label(item), item["name"])
+                if not sent:
+                    raise RpcError(rest + unsure)
+                result = "已发出（%s），但%s%s" % ("，".join(sent), rest, unsure)
+                self.store.finish_send(key, result)
+                raise RpcError(result)
+            sent.append(msg_id)
+        result = "已发出（%s）。" % "，".join(sent)
         self.store.finish_send(key, result)
         return result
 
@@ -1183,6 +1278,36 @@ def _title(chat):
     if chat.get("name"):
         return chat["name"]
     return DM_UNKNOWN if chat.get("kind") == "dm" else "飞书会话"
+
+
+def _content(args):
+    """An action's text and its media [(kind, path)]: the text may be left out only when a picture or file is sent."""
+    try:
+        specs = outbound.media_args(args)
+    except outbound.MediaError as e:
+        raise RpcError(str(e), "invalid_params") from e
+    if not specs:
+        return _required(args, "text"), []
+    text = args.get("text")
+    if text is not None and not isinstance(text, str):
+        raise RpcError("text 要是文字", "invalid_params")
+    return (text if text and text.strip() else ""), specs
+
+
+def _loaded(specs, private):
+    try:
+        return [outbound.load(kind, path, private) for kind, path in specs]
+    except outbound.MediaError as e:
+        raise RpcError(str(e), "invalid_params") from e
+
+
+def _card_key(name, args):
+    raw = json.dumps({"name": name, "args": args}, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _media_label(item):
+    return "图片" if item["kind"] == "image" else "文件"
 
 
 def _required(args, name):

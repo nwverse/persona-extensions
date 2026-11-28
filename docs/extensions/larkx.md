@@ -4,7 +4,7 @@
 
 This extension (id `larkx`) reaches Feishu as the user, next to the hub's own `lark-cli` integration (nwverse/persona#1487). It runs [LarkAgentX](https://github.com/cv-cat/LarkAgentX), a Python library for the Feishu web client, as a connector program: the user signs in with a QR code, every message arrives over the web client's long connection, the assistant can send as the user after a confirmation on the phone, and a trigger prefix (`/agent` by default, configurable via `agent_prefix`) or a self-mention in any chat hands a request to the assistant. It is an ordinary connector and channel program (Persona's `docs/connector-protocol.md` and `docs/extensions/channels.md`), so the hub needs no change.
 
-This page describes version 0.4.1. When the manifest shown in the install preview disagrees with this page, the manifest wins.
+This page describes version 0.4.2. When the manifest shown in the install preview disagrees with this page, the manifest wins.
 
 | Extension point | Contribution | Behavior |
 | --- | --- | --- |
@@ -58,7 +58,7 @@ The machine the hub runs on needs Python 3.9 or newer with pip. Install the exte
 | Thread page | `thread.page` serves what the program has kept and reads older messages from the server by position. Topic pages show locally retained messages from that topic. Pictures come through `thread.media`; files show their names only. |
 | Knowledge base | `archive.changes`; the cursor is a local row number, so nothing is delivered twice. The identity hint is `lark`. |
 | Assistant tools | `larkx_status`, `larkx_chats`, `larkx_messages`, `larkx_members`, `larkx_search`. |
-| Sending | `larkx_send` (to a chat; `reply_to` answers in a message's topic) and `larkx_send_dm` (a direct message to a person). |
+| Sending | `larkx_send` (to a chat; `reply_to` answers in a message's topic) and `larkx_send_dm` (a direct message to a person). Both take an optional local `image` and `file`; see [Pictures and files](#pictures-and-files). |
 | `/agent` and self-mention | The user's own live message that starts with `/agent` (or the trigger prefix set in `agent_prefix`: must start with `/`, not `//`, be 2–32 characters with no whitespace, control characters or colons; blank or invalid values keep `/agent`), or contains a rich-text @ tag for that same signed-in account, goes to the hub with `channel.receive`, with the chat it was written in and the messages just before it. The self-mention is removed from the request; with no other text, the existing empty-request context behavior applies. Only a real @ tag counts, not an `@name` typed as plain text. The setting `agent_mention` is enabled by default; turning it off leaves the trigger prefix available. In a group, the request carries its topic as `thread` (see below; controlled by `agent_group_topics`, enabled by default). The answer comes back through `channel.send` and is posted as the user under the request, ending with an AI-answer mark. Only a reply to one of the user's own requests, or a push (below), is sent (anything else is `cannot_send`), each once. Fetched history, old messages, other people's messages and the answers themselves never trigger it. For POST rich text, the title line does not block the trigger prefix, child elements keep their order, and up to four inline images (3 MB each) are forwarded as channel images. |
 
 **Inbox group triage.** Add the group IDs returned by `larkx_chats` to `inbox_triage_chats` to see ordinary messages from those groups sorted by your Inbox rules, including in muted groups. Leave `triage_rules` blank to inherit the global rules. Ordinary group messages fall back to Noise when the triage model is unavailable. For a topic item, Inbox replies go to the topic root. Existing chat-level items still reply to the chat.
@@ -69,11 +69,34 @@ The machine the hub runs on needs Python 3.9 or newer with pip. Install the exte
 
 **Command hooks.** Optional, and off until both **/命令 Hook** (`command_hooks`) and **Hook 地址** (`command_hook_url`) are set. See [Command hooks](#command-hooks): the user's own live message that starts with one of the listed commands goes, as a signed JSON POST, to the user's own address instead of the assistant.
 
-**Writes.** `confirm_always: ["larkx_*"]`: even an `allow` in `connector_gate` is held for the phone confirmation, so the assistant cannot send as the user without them. The confirmation names the recipient, quotes the message a reply answers, and shows the full text. A direct chat seen only through the user's own messages says it does not know the other person yet. A reply the user sends from the app goes through `inbox.reply`, where pressing send is the confirmation.
+**Writes.** `confirm_always: ["larkx_*"]`: even an `allow` in `connector_gate` is held for the phone confirmation, so the assistant cannot send as the user without them. The confirmation names the recipient, quotes the message a reply answers, lists every picture and file to be sent, and shows the full text. A direct chat seen only through the user's own messages says it does not know the other person yet. A reply the user sends from the app goes through `inbox.reply`, where pressing send is the confirmation.
 
 Each send runs at most once per `request_id` (actions) or `client_id` (replies); an action without a `request_id` is refused. When the result is unknown (the request failed, or the answer has no message id), the program returns an error and never retries, because the message may have gone out.
 
 **Nothing is marked read.** LarkAgentX's own `lark listen` marks handled messages read; this extension does not, so unread counts in Feishu stay as they are.
+
+## Pictures and files
+
+`larkx_send` and `larkx_send_dm` take two optional arguments, `image` and `file`, each the absolute path of one local file on the hub's machine (`~/` is expanded). With either, `text` may be left out. Each goes as a message of its own, in this order: the text, the picture (an `IMAGE` message), the file (a `FILE` message). `reply_to` and `mentions` work as before: the text carries the mentions, and with `reply_to` every message goes into that topic.
+
+| | `image` | `file` |
+| --- | --- | --- |
+| Accepted | PNG, JPEG, GIF, WebP, BMP, recognized by their first bytes (a picture in another format goes as `file`) | any ordinary file |
+| Size | 1 byte to 10 MB | 1 byte to 30 MB |
+| Shown on the card | name, format, pixel size, size, path, the first 12 hex digits of its SHA-256 | name, MIME type from the name, size, path, SHA-256 prefix |
+
+**Confirmed first, uploaded after.** `actions.describe` reads the file, checks it and builds the card; it neither uploads nor sends. The card lists each file before the text, so nothing in the text can pass for a file line, and says that each item is a message of its own. The hub's card has no thumbnail field, so the picture's pixel size and digest stand in for a preview. Only `actions.do`, which the hub calls after the user approves, uploads, and it first reads every file again and refuses (sending nothing) when the file is no longer the one the card showed, or when it has no card for these exact arguments (the program restarted, or the card is older than a day). A card is good for one send. A refused or expired confirmation never reaches `actions.do`, so nothing is uploaded.
+
+**Uploading.** The pinned LarkAgentX can download message resources but not upload them; the program uploads the way the web client does (as LarkAgentX's later releases do), with the generated classes of the pinned commit and the session's cookies, on the region's file host (inside `*.feishu.cn` or `*.larksuite.com`, already in the manifest's network list): a picture is one `POST /api/image`; a file is `/upload/create`, then 4 MB parts to `/upload/part`, each checked against its CRC-32, then `/upload/complete`. Redirects are not followed. An upload alone is seen by nobody.
+
+**Order and failures.** Every file is uploaded before any message is sent. An upload that fails sends nothing, says which file and why (an HTTP status or an error type, never an address or the content), and leaves the request free to run again. After that, the usual rule holds: once a message may have gone out, the request is never run again. When the text's result is unknown, no picture or file follows. When a picture or file message's result is unknown, the error says what was sent, which item is uncertain and which were not sent, and the same request answers with that from then on. Feishu's answer with a negative message id is a refusal.
+
+**Which files.** These checks catch a wrong path, not a determined program: the program runs as the hub's user, and the phone confirmation stays the real gate.
+
+- An absolute path, one line: control characters (line breaks, tabs, direction overrides) are refused, as they could forge a line of the card.
+- An ordinary file, opened without following a symbolic link (`O_NOFOLLOW`) and checked on that descriptor, which is also what is read: a symbolic link, a directory, a device, a pipe, an empty file or one over the limit is refused. A symbolic link in a parent directory is followed, and the resolved path is checked again.
+- Never from credential or state locations, by path component in any case: `.ssh`, `.gnupg`, `.aws`, `.azure`, `.kube`, `.docker`, `.password-store`, `.persona` (the hub's whole directory, so save a file elsewhere first), `.larkx`, `.lark-cli`, `.claude`, `.codex`, `.config/gcloud`, `.config/gh`, `.config/op`, `.config/shared-agent-config`, `.local/share/keyrings`, `Library/Keychains` and `Library/Cookies`; never from `/proc`, `/sys`, `/dev`, `/run`, `/etc` or `/var/run`; never this program's data directory (`larkx.db`, the LarkAgentX copy).
+- Never a file named like a credential: `.env`, `.env.*`, `*.env`, `.netrc`, `.git-credentials`, `.npmrc`, `.pypirc`, `.pgpass`, `credentials`, `credentials.json`, `hub.json`, `authorized_keys`, `known_hosts`, `id_rsa`/`id_ed25519`/`id_ecdsa`/`id_dsa` and their variants, and the suffixes `.pem`, `.key`, `.p12`, `.pfx`, `.jks`, `.keystore`, `.kdbx`, `.keychain`, `.keychain-db`, `.gpg`, `.asc`, `.ppk`, `.ovpn`.
 
 ## Command hooks
 
@@ -128,7 +151,7 @@ LarkAgentX's `client.api()` reaches over 2,200 gateway commands, so most of this
 - Listing every chat: the program knows the chats it has seen a message in since sign-in. Older ones appear with their next message, or through `larkx_search`.
 - The other person of a direct chat seen only through the user's own messages (the chat with oneself among them): it is named once they write.
 - The app's Feishu chat page (`/api/v1/lark/…`): it would have to take over the `lark` connector's `api`.
-- Docs, Moments, pins, reactions, Feishu's own encryption, read state, sending pictures and files.
+- Docs, Moments, pins, reactions, Feishu's own encryption, read state, rich-text posts with inline pictures, videos, and several pictures or files in one call.
 
 ## Structure
 
@@ -138,9 +161,10 @@ LarkAgentX's `client.api()` reaches over 2,200 gateway commands, so most of this
 | `src/larkx_persona/wire.py` | One JSON message a line; each request runs on its own thread, so a handler can call back into the hub. |
 | `src/larkx_persona/main.py` | Handshake and namespaces. stdout is the protocol only; a library's `print` goes to the log. |
 | `src/larkx_persona/connector.py` | Every connector method; knows nothing of LarkAgentX. |
+| `src/larkx_persona/outbound.py` | Pictures and files to send: the path, type and size checks, the card's lines, the digest the send is checked against. No network. |
 | `src/larkx_persona/hooks.py` | Command hooks: the settings, matching a command, the address, signing, and the POST with its retries. |
 | `src/larkx_persona/store.py` | SQLite: `status` and `inbox.collect` answer without the network; send deduplication. |
-| `src/larkx_persona/real.py` | LarkAgentX: download and check it, install the dependencies, keep the sign-in in the hub, hold the long connection. Its log carries message bodies, so only where an error happened is kept. |
+| `src/larkx_persona/real.py` | LarkAgentX: download and check it, install the dependencies, keep the sign-in in the hub, hold the long connection, upload pictures and files and send them. Its log carries message bodies, so only where an error happened is kept. |
 | `src/larkx_persona/upstream.json` | LarkAgentX's repository, pinned commit, archive URL and each file's SHA-256. |
 | `src/larkx_persona/fixture.py` | A fake backend with synthetic data, used only when a test sets `LARKX_PERSONA_BACKEND=fixture` (an installed extension never gets that variable). |
 
@@ -150,7 +174,7 @@ LarkAgentX's `client.api()` reaches over 2,200 gateway commands, so most of this
 (cd extensions/larkx && python3 -I -B -m unittest discover -s tests)
 ```
 
-`scripts/ci.sh` runs these (step `python`). `tests/test_connector.py` covers what the conformance test does not call: `actions.do`, `inbox.reply`, failed and uncertain sends, sign-in and expiry, pruning. `tests/test_agent.py` covers `/agent`: what is handed over, what is not, the topic a group request carries, and `channel.send` once per ref. `tests/test_hooks.py` covers command hooks: which messages fire one and which never do, once per message, the payload, the signature, retries and refusals, the address rules and the sandbox name, against a recorder and a local HTTP server. `tests/test_upstream.py` checks the download and its file-by-file check against a synthetic archive, and that `upstream.json` and `requirements.txt` pin everything. `tests/test_real.py` decodes a synthetic push with the real LarkAgentX and checks the sign-in never reaches a file; it needs the directories the program downloads on first start (see the top of the file) and skips without them.
+`scripts/ci.sh` runs these (step `python`). `tests/test_connector.py` covers what the conformance test does not call: `actions.do`, `inbox.reply`, failed and uncertain sends, sign-in and expiry, pruning. `tests/test_agent.py` covers `/agent`: what is handed over, what is not, the topic a group request carries, and `channel.send` once per ref. `tests/test_hooks.py` covers command hooks: which messages fire one and which never do, once per message, the payload, the signature, retries and refusals, the address rules and the sandbox name, against a recorder and a local HTTP server. `tests/test_media.py` covers pictures and files: the path, type, size and credential checks on synthetic files, the card, that nothing is uploaded before `actions.do`, that a changed file or a missing card sends nothing, the sending order, topics, direct messages and every failure. `tests/test_upstream.py` checks the download and its file-by-file check against a synthetic archive, and that `upstream.json` and `requirements.txt` pin everything. `tests/test_real.py` decodes a synthetic push with the real LarkAgentX, checks the uploads' requests and the picture and file messages against its generated classes, and checks the sign-in never reaches a file; it needs the directories the program downloads on first start (see the top of the file) and skips without them.
 
 The conformance tests live in Persona, whose `internal/` packages only it can import: the real Python program on the fake backend passes `plugin/conformance.Check` and `CheckProgram`, and the channel passes `channel/conformance.Check`.
 
