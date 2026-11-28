@@ -197,12 +197,14 @@ func (c steamClient) friendSummaries(ctx context.Context, ids []string) ([]playe
 	var reply struct {
 		Response *struct {
 			Players []struct {
-				SteamID    string `json:"steamid"`
-				Name       string `json:"personaname"`
-				Visibility int    `json:"communityvisibilitystate"`
-				State      *int   `json:"personastate"`
-				GameID     string `json:"gameid"`
-				Game       string `json:"gameextrainfo"`
+				SteamID      string `json:"steamid"`
+				Name         string `json:"personaname"`
+				Visibility   int    `json:"communityvisibilitystate"`
+				State        *int   `json:"personastate"`
+				GameID       string `json:"gameid"`
+				Game         string `json:"gameextrainfo"`
+				AvatarFull   string `json:"avatarfull"`
+				AvatarMedium string `json:"avatarmedium"`
 			} `json:"players"`
 		} `json:"response"`
 	}
@@ -222,7 +224,13 @@ func (c steamClient) friendSummaries(ctx context.Context, ids []string) ([]playe
 		if !slices.Contains(ids, item.SteamID) {
 			continue
 		}
-		p := player{SteamID: item.SteamID, Name: c.text(item.Name), Public: item.Visibility == 3, State: "unknown"}
+		p := player{
+			SteamID:    item.SteamID,
+			Name:       c.text(item.Name),
+			Public:     item.Visibility == 3,
+			State:      "unknown",
+			AvatarHash: parseAvatarURL(item.AvatarFull, item.AvatarMedium),
+		}
 		if p.Public {
 			c.setPresence(&p, item.State, item.GameID, item.Game)
 		}
@@ -236,9 +244,10 @@ func (c steamClient) friendLinks(ctx context.Context, ids []string) ([]player, p
 		Response *struct {
 			Accounts []struct {
 				Public *struct {
-					SteamID    json.Number `json:"steamid"`
-					Name       string      `json:"persona_name"`
-					Visibility int         `json:"visibility_state"`
+					SteamID      json.Number `json:"steamid"`
+					Name         string      `json:"persona_name"`
+					Visibility   int         `json:"visibility_state"`
+					AvatarDigest string      `json:"sha_digest_avatar"`
 				} `json:"public_data"`
 				Private *struct {
 					State       *int        `json:"persona_state"`
@@ -268,7 +277,13 @@ func (c steamClient) friendLinks(ctx context.Context, ids []string) ([]player, p
 		if item.Public == nil || !slices.Contains(ids, item.Public.SteamID.String()) {
 			continue
 		}
-		p := player{SteamID: item.Public.SteamID.String(), Name: c.text(item.Public.Name), Public: item.Public.Visibility == 3, State: "unknown"}
+		p := player{
+			SteamID:    item.Public.SteamID.String(),
+			Name:       c.text(item.Public.Name),
+			Public:     item.Public.Visibility == 3,
+			State:      "unknown",
+			AvatarHash: parseAvatarDigest(item.Public.AvatarDigest),
+		}
 		if details := item.Private; details != nil {
 			if details.GamePrivate {
 				c.setPresence(&p, details.State, "", "")
@@ -409,7 +424,12 @@ func (d *steamData) friendsSection(ctx context.Context, t *text) wire.Section {
 		if name == "" {
 			name = t.unknownFriend
 		}
-		section.Items = append(section.Items, wire.Component{Type: wire.ComponentRow, Title: name, Subtitle: t.gameName(p.PlayApp, p.Playing)})
+		section.Items = append(section.Items, wire.Component{
+			Type:     wire.ComponentRow,
+			Title:    name,
+			Subtitle: t.gameName(p.PlayApp, p.Playing),
+			Avatar:   playerAvatar(&p, name),
+		})
 	}
 	if len(section.Items) == 0 {
 		section.Items = []wire.Component{empty(t.noFriendsPlaying)}

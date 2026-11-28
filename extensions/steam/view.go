@@ -223,19 +223,33 @@ func unavailablePage(t *text, issue problem) *wire.View {
 
 func (a *app) overview(ctx context.Context, d *steamData, t *text, st pageState, refresh bool) *wire.View {
 	s := d.snapshot(ctx, t.storeLanguage, refresh, true)
+	if s.wishlist.Data != nil {
+		a.images.recordArtwork(s.wishlist.Data.Artwork)
+	}
 	view := &wire.View{Title: "Steam"}
 	profile := wire.Section{Title: t.overview}
+	var playingApp uint32
 	if p := s.player.Data; p == nil {
 		if d.session == nil {
 			return unavailablePage(t, s.player.Issue)
 		}
 		profile.Items = []wire.Component{empty(t.message(s.player.Issue, false))}
 	} else {
+		playingApp = p.PlayApp
 		name := p.Name
 		if name == "" {
 			name = t.status
 		}
-		profile.Items = []wire.Component{{Type: wire.ComponentRow, Title: name, Subtitle: t.presence(p)}}
+		header := wire.Component{
+			Type:     wire.ComponentHeader,
+			Title:    name,
+			Subtitle: t.presence(p),
+			Avatar:   playerAvatar(p, name),
+		}
+		if p.Playing != "" || p.PlayApp != 0 {
+			header.Badges = []wire.Badge{{Text: t.inGameBadge, Tone: wire.TonePositive}}
+		}
+		profile.Items = []wire.Component{header}
 		profile.Footer = t.message(s.player.Issue, s.player.Stale)
 		if d.session == nil && !p.Public {
 			profile.Footer = joinText(profile.Footer, t.message(problemPrivate, false))
@@ -248,6 +262,7 @@ func (a *app) overview(ctx context.Context, d *steamData, t *text, st pageState,
 	profile.Items = append(profile.Items, wire.Component{Type: wire.ComponentStatGrid, Stats: []wire.Stat{
 		{Label: t.recentTime, Value: recentValue(t, s.recent)},
 		{Label: t.owned, Value: countValue(s.library.Data)},
+		{Label: t.discounted, Value: discountValue(t, s.wishlist)},
 	}}, button(t.refresh, "refresh"), button(t.recentNews, gameNewsAction), button(t.recap.title, recapAction))
 	view.Search = &wire.Search{Placeholder: t.search, Value: st.Query, Action: wire.Action{ID: "search"}}
 	view.Filter = &wire.Filter{
@@ -261,7 +276,7 @@ func (a *app) overview(ctx context.Context, d *steamData, t *text, st pageState,
 	}
 	view.Sections = []wire.Section{
 		profile,
-		gamesSection(t, recentSection, s.recent, &st, entries),
+		recentGallerySection(t, s.recent, &st, entries, playingApp),
 		gamesSection(t, librarySection, s.library, &st, entries),
 		wishlistSection(t, s.wishlist, &st),
 	}
@@ -374,7 +389,11 @@ func (a *app) recapPage(ctx context.Context, d *steamData, t *text, st pageState
 func addRecapGames(section *wire.Section, t *text, games []recapGame) {
 	for _, game := range games {
 		section.Items = append(section.Items, wire.Component{
-			Type: wire.ComponentRow, Key: appIDText(game.AppID), Title: game.Name, Value: t.playtime(uint64(game.Minutes)),
+			Type:      wire.ComponentRow,
+			Key:       appIDText(game.AppID),
+			Title:     game.Name,
+			Value:     t.playtime(uint64(game.Minutes)),
+			Thumbnail: &wire.Thumbnail{Ref: appCapsuleRef(game.AppID), Aspect: wire.ThumbnailAspectWide},
 		})
 	}
 }
@@ -384,6 +403,9 @@ func (a *app) card(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 	defer cancel()
 	t := a.viewText(r)
 	s := d.snapshot(ctx, t.storeLanguage, false, false)
+	if s.wishlist.Data != nil {
+		a.images.recordArtwork(s.wishlist.Data.Artwork)
+	}
 	if issue := d.sessionIssue(); issue != "" {
 		s = snapshot{player: reading[player]{Issue: issue}}
 	}
@@ -391,10 +413,26 @@ func (a *app) card(ctx context.Context, r *ext.UIRequest) (*wire.View, error) {
 	if issue == "" && d.session == nil && s.player.Data != nil && !s.player.Data.Public {
 		issue = problemPrivate
 	}
+	identity := wire.Component{Type: wire.ComponentText, Text: t.presence(s.player.Data)}
+	if p := s.player.Data; p != nil {
+		name := p.Name
+		if name == "" {
+			name = t.status
+		}
+		identity = wire.Component{
+			Type:     wire.ComponentRow,
+			Title:    name,
+			Subtitle: t.presence(p),
+			Avatar:   playerAvatar(p, name),
+		}
+		if p.Playing != "" || p.PlayApp != 0 {
+			identity.Badge = &wire.Badge{Text: t.inGameBadge, Tone: wire.TonePositive}
+		}
+	}
 	section := wire.Section{
 		Footer: t.message(issue, s.player.Stale),
 		Items: []wire.Component{
-			{Type: wire.ComponentText, Text: t.presence(s.player.Data)},
+			identity,
 			{Type: wire.ComponentStatGrid, Stats: []wire.Stat{
 				{Label: t.recentTime, Value: recentValue(t, s.recent), Detail: t.message(s.recent.Issue, s.recent.Stale)},
 				{Label: t.discounted, Value: discountValue(t, s.wishlist), Detail: t.message(s.wishlist.Issue, s.wishlist.Stale)},
@@ -428,6 +466,68 @@ func discountValue(t *text, r reading[wishList]) string {
 	return strconv.Itoa(r.Data.Discounted)
 }
 
+func backlogBadge(t *text, status BacklogStatus) *wire.Badge {
+	label := t.backlog.statuses[status]
+	if label == "" {
+		return nil
+	}
+	badge := &wire.Badge{Text: label}
+	switch status {
+	case BacklogPlaying, BacklogCompleted:
+		badge.Tone = wire.TonePositive
+	case BacklogPaused:
+		badge.Tone = wire.ToneCaution
+	}
+	return badge
+}
+
+func recentGallerySection(t *text, r reading[gameList], st *pageState, entries map[uint32]BacklogEntry, playingApp uint32) wire.Section {
+	section := wire.Section{Title: t.recent, Footer: t.message(r.Issue, r.Stale)}
+	if r.Data == nil {
+		section.Items, section.Footer = []wire.Component{empty(section.Footer)}, ""
+		return section
+	}
+	games := r.Data.Games
+	if len(games) == 0 {
+		section.Items = []wire.Component{empty(t.noRecent)}
+		return section
+	}
+	start, end := window(len(games), &st.RecentPage)
+	tiles := make([]wire.Tile, 0, end-start)
+	for _, game := range games[start:end] {
+		id := appIDText(game.AppID)
+		tile := wire.Tile{
+			Key:      recentSection + "-" + id,
+			Title:    truncateRunes(t.gameName(game.AppID, game.Name), 40),
+			Subtitle: truncateRunes(t.totalTime+" · "+t.playtime(uint64(game.PlaytimeForever)), 80),
+			Value:    truncateRunes(t.recentTime+" · "+t.playtime(uint64(game.Playtime2Weeks)), 40),
+			Image:    &wire.ImageSource{Ref: appHeaderRef(game.AppID)},
+			Action:   &wire.Action{ID: recentSection + "-game-" + id},
+		}
+		if badge := backlogBadge(t, entries[game.AppID].Status); badge != nil {
+			tile.Badge = badge
+		} else if playingApp != 0 && playingApp == game.AppID {
+			tile.Badge = &wire.Badge{Text: t.inGameBadge, Tone: wire.TonePositive}
+		}
+		tiles = append(tiles, tile)
+	}
+	maxCols := 3
+	if len(tiles) <= 2 {
+		maxCols = 2
+	}
+	section.Items = append(section.Items, wire.Component{
+		Type:       wire.ComponentGrid,
+		Key:        "recent-gallery",
+		Tiles:      tiles,
+		MaxColumns: maxCols,
+	})
+	addPager(t, &section, recentSection, start, end, len(games))
+	if r.Data.Truncated {
+		section.Footer = joinText(section.Footer, fmt.Sprintf(t.capped, len(r.Data.Games), r.Data.Total))
+	}
+	return section
+}
+
 func gamesSection(t *text, kind string, r reading[gameList], st *pageState, entries map[uint32]BacklogEntry) wire.Section {
 	title, emptyMessage := t.recent, t.noRecent
 	index := &st.RecentPage
@@ -457,11 +557,15 @@ func gamesSection(t *text, kind string, r reading[gameList], st *pageState, entr
 		}
 		id := appIDText(game.AppID)
 		row := wire.Component{
-			Type: wire.ComponentRow, Key: kind + "-" + id, Title: t.gameName(game.AppID, game.Name), Subtitle: subtitle,
-			Action: &wire.Action{ID: kind + "-game-" + id},
+			Type:      wire.ComponentRow,
+			Key:       kind + "-" + id,
+			Title:     t.gameName(game.AppID, game.Name),
+			Subtitle:  subtitle,
+			Thumbnail: &wire.Thumbnail{Ref: appCapsuleRef(game.AppID), Aspect: wire.ThumbnailAspectWide},
+			Action:    &wire.Action{ID: kind + "-game-" + id},
 		}
-		if label := t.backlog.statuses[entries[game.AppID].Status]; label != "" {
-			row.Badge = &wire.Badge{Text: label}
+		if badge := backlogBadge(t, entries[game.AppID].Status); badge != nil {
+			row.Badge = badge
 		}
 		section.Items = append(section.Items, row)
 	}
@@ -484,7 +588,12 @@ func wishlistSection(t *text, r reading[wishList], st *pageState) wire.Section {
 	}
 	start, end := window(len(items), &st.WishPage)
 	for _, item := range items[start:end] {
-		row := wire.Component{Type: wire.ComponentRow, Key: "wish-" + appIDText(item.AppID), Title: t.gameName(item.AppID, item.Name)}
+		row := wire.Component{
+			Type:      wire.ComponentRow,
+			Key:       "wish-" + appIDText(item.AppID),
+			Title:     t.gameName(item.AppID, item.Name),
+			Thumbnail: &wire.Thumbnail{Ref: appCapsuleRef(item.AppID), Aspect: wire.ThumbnailAspectWide},
+		}
 		switch {
 		case item.Price != nil:
 			row.Value = item.Price.FinalFormatted
@@ -492,14 +601,17 @@ func wishlistSection(t *text, r reading[wishList], st *pageState) wire.Section {
 				row.Value = fmt.Sprintf("%s %d.%02d", item.Price.Currency, item.Price.Final/100, item.Price.Final%100)
 			}
 			if discount := item.Price.DiscountPercent; discount > 0 {
-				row.Badge = &wire.Badge{Text: fmt.Sprintf(t.discount, discount), Tone: wire.TonePositive}
+				row.Badge = &wire.Badge{Text: fmt.Sprintf("-%d%%", discount), Tone: wire.TonePositive}
 			}
 		case item.IsFree:
 			row.Value = t.freeToPlay
+			row.Badge = &wire.Badge{Text: t.freeBadge, Tone: wire.TonePositive}
 		case item.PriceChecked:
 			row.Subtitle = t.noPrice
+			row.Badge = &wire.Badge{Text: t.unpricedBadge}
 		default:
 			row.Subtitle = t.priceUnchecked
+			row.Badge = &wire.Badge{Text: t.pricePendingBadge, Tone: wire.ToneCaution}
 		}
 		section.Items = append(section.Items, row)
 	}
@@ -512,7 +624,6 @@ func wishlistSection(t *text, r reading[wishList], st *pageState) wire.Section {
 
 func (a *app) gameDetail(ctx context.Context, d *steamData, t *text, st pageState) *wire.View {
 	view := &wire.View{Title: t.details, State: ext.EncodeState(st)}
-	section := wire.Section{Items: []wire.Component{button(t.back, "back")}}
 	var p reading[player]
 	if d.session == nil {
 		p = d.account(ctx, profileTTL, false)
@@ -524,27 +635,38 @@ func (a *app) gameDetail(ctx context.Context, d *steamData, t *text, st pageStat
 		games = d.ownedGames(ctx, p, false)
 	}
 	if games.Data == nil {
-		section.Items = append(section.Items, empty(t.message(games.Issue, games.Stale)))
+		section := wire.Section{Items: []wire.Component{button(t.back, "back"), empty(t.message(games.Issue, games.Stale))}}
 		view.Sections = []wire.Section{section}
 		return view
 	}
 	i := slices.IndexFunc(games.Data.Games, func(g game) bool { return g.AppID == st.AppID })
 	if i < 0 {
-		section.Items = append(section.Items, empty(t.missingGame))
+		section := wire.Section{Items: []wire.Component{button(t.back, "back"), empty(t.missingGame)}}
 		view.Sections = []wire.Section{section}
 		return view
 	}
 	game := games.Data.Games[i]
 	view.Title = t.gameName(game.AppID, game.Name)
-	section.Footer = t.message(games.Issue, games.Stale)
 	stats := []wire.Stat{{Label: t.totalTime, Value: t.playtime(uint64(game.PlaytimeForever))}}
-	if st.From == recentSection {
+	if st.From == recentSection || game.Playtime2Weeks > 0 {
 		stats = append(stats, wire.Stat{Label: t.recentTime, Value: t.playtime(uint64(game.Playtime2Weeks))})
 	}
-	section.Items = append(section.Items,
-		wire.Component{Type: wire.ComponentStatGrid, Stats: stats},
-		wire.Component{Type: wire.ComponentLink, Title: t.store, URL: storeLink(game.AppID)},
-	)
+	section := wire.Section{
+		Footer: t.message(games.Issue, games.Stale),
+		Items: []wire.Component{
+			{
+				Type:   wire.ComponentImage,
+				Key:    "hero-" + appIDText(game.AppID),
+				Src:    &wire.ImageSource{Ref: appHeaderRef(game.AppID), Width: 460, Height: 215},
+				Alt:    truncateRunes(view.Title, 200),
+				Aspect: wire.ImageAspectAuto,
+				Fit:    wire.ImageFitFill,
+			},
+			{Type: wire.ComponentStatGrid, Stats: stats},
+			{Type: wire.ComponentLink, Title: t.store, URL: storeLink(game.AppID)},
+			button(t.back, "back"),
+		},
+	}
 	progress := d.achievements(ctx, p, game.AppID, t.storeLanguage)
 	achievement := wire.Section{Title: t.achievements}
 	if progress.Data != nil {
