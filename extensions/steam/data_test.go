@@ -781,3 +781,40 @@ func TestHTTPTimeoutAndExpiredSnapshot(t *testing.T) {
 		t.Fatalf("read timeouts should drain idle connections without retrying: closes=%d reads=%d", transport.idleCloses, f.hit(recentPath))
 	}
 }
+
+func TestExpiredSnapshotSurvivesCoalescedReadDeadline(t *testing.T) {
+	f := newFakeSteam(t, 2*time.Second)
+	now := time.Now()
+	d := f.data(t.TempDir(), fixtureID, "", func() time.Time { return now })
+	p := d.account(t.Context(), profileTTL, false)
+	first := d.recentGames(t.Context(), p, false)
+	if first.Data == nil || first.Stale {
+		t.Fatalf("missing initial snapshot: %+v", first)
+	}
+	now = now.Add(recentTTL + time.Minute)
+	started := make(chan struct{})
+	f.handle(recentPath, func(_ http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	})
+	owner, cancelOwner := context.WithCancel(t.Context())
+	defer cancelOwner()
+	done := make(chan reading[gameList], 1)
+	go func() { done <- d.recentGames(owner, p, true) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("the in-flight refresh did not reach Steam")
+	}
+	waiter, cancelWaiter := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancelWaiter()
+	got := d.recentGames(waiter, p, false)
+	cancelOwner()
+	<-done
+	if got.Data == nil || got.Data.Total != first.Data.Total || !got.Stale || got.Issue != problemTimeout || got.At != first.At {
+		t.Fatalf("the coalesced read lost its stale snapshot: %+v", got)
+	}
+	if f.hit(recentPath) != 2 {
+		t.Fatal("a waiting client should share the refresh")
+	}
+}

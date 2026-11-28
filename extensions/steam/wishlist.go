@@ -13,7 +13,6 @@ import (
 
 const (
 	maxWishlistItems = 1_000
-	storeBatchSize   = 50
 )
 
 func (c steamClient) wishlistItems(ctx context.Context, id string) ([]wishItem, problem) {

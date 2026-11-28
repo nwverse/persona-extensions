@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -34,9 +35,11 @@ type cacheRecord[T any] struct {
 	Data  *T        `json:"data"`
 }
 
-// Each dataset has one slot. A read waiting for a concurrent fetch can honor its own deadline.
+// The gate coalesces fetches. A separate lock protects the snapshot so a waiter
+// can reuse it when its own deadline expires during another caller's fetch.
 type cacheSlot[T any] struct {
 	gate      chan struct{}
+	mu        sync.Mutex
 	path      string
 	now       func() time.Time
 	loaded    bool
@@ -64,38 +67,49 @@ func (s *cacheSlot[T]) read(ctx context.Context, scope string, ttl time.Duration
 	case s.gate <- struct{}{}:
 		defer func() { <-s.gate }()
 	case <-ctx.Done():
-		return reading[T]{Issue: sanitizeError(ctx.Err())}
+		return s.interruptedRead(scope, sanitizeError(ctx.Err()))
 	}
 	out, ready := s.cached(scope, ttl, refresh)
 	if ready {
 		return out
 	}
 	if ctx.Err() != nil {
-		return reading[T]{Issue: sanitizeError(ctx.Err())}
+		return s.interruptedRead(scope, sanitizeError(ctx.Err()))
 	}
 	data, issue := fetch(ctx)
 	return s.update(scope, data, issue)
 }
 
-func (s *cacheSlot[T]) cached(scope string, ttl time.Duration, refresh bool) (reading[T], bool) {
+func (s *cacheSlot[T]) lockRecord() func() {
 	if s.session != nil {
 		s.session.auth.mu.Lock()
-		defer s.session.auth.mu.Unlock()
-		if !s.ownsScopeLocked(scope) {
-			return reading[T]{Issue: problemCanceled}, true
-		}
+		return s.session.auth.mu.Unlock
 	}
+	s.mu.Lock()
+	return s.mu.Unlock
+}
+
+func (s *cacheSlot[T]) loadRecordLocked() {
 	if !s.loaded {
-		s.loaded = true
 		s.record = readRecord[T](s.path)
+		s.loaded = true
 	}
+}
+
+func (s *cacheSlot[T]) cached(scope string, ttl time.Duration, refresh bool) (reading[T], bool) {
+	unlock := s.lockRecord()
+	defer unlock()
+	if s.session != nil && !s.ownsScopeLocked(scope) {
+		return reading[T]{Issue: problemCanceled}, true
+	}
+	s.loadRecordLocked()
 	now := s.now()
 	age := now.Sub(s.record.At)
 	hasData := s.record.Scope == scope && s.record.Data != nil && age >= 0
 	if !refresh {
 		if s.retryScope == scope && !s.retryAt.IsZero() {
 			if now.Before(s.retryAt) {
-				if s.failedRead.Stale && age > maxStaleAge {
+				if s.failedRead.Stale && (age < 0 || age > maxStaleAge) {
 					return reading[T]{Issue: s.failedRead.Issue}, true
 				}
 				return s.failedRead, true
@@ -107,13 +121,32 @@ func (s *cacheSlot[T]) cached(scope string, ttl time.Duration, refresh bool) (re
 	return reading[T]{}, false
 }
 
+func (s *cacheSlot[T]) interruptedRead(scope string, issue problem) reading[T] {
+	if !issue.temporary() || s.freshOnly {
+		return reading[T]{Issue: issue}
+	}
+	unlock := s.lockRecord()
+	defer unlock()
+	if s.session != nil && !s.ownsScopeLocked(scope) {
+		return reading[T]{Issue: problemCanceled}
+	}
+	s.loadRecordLocked()
+	return s.withStaleLocked(scope, reading[T]{Issue: issue})
+}
+
+func (s *cacheSlot[T]) withStaleLocked(scope string, out reading[T]) reading[T] {
+	age := s.now().Sub(s.record.At)
+	if !s.freshOnly && s.record.Scope == scope && s.record.Data != nil && age >= 0 && age <= maxStaleAge {
+		return reading[T]{Data: s.record.Data, Issue: out.Issue, Stale: true, At: s.record.At}
+	}
+	return out
+}
+
 func (s *cacheSlot[T]) update(scope string, data *T, issue problem) reading[T] {
-	if s.session != nil {
-		s.session.auth.mu.Lock()
-		defer s.session.auth.mu.Unlock()
-		if !s.ownsScopeLocked(scope) {
-			return reading[T]{Issue: problemCanceled}
-		}
+	unlock := s.lockRecord()
+	defer unlock()
+	if s.session != nil && !s.ownsScopeLocked(scope) {
+		return reading[T]{Issue: problemCanceled}
 	}
 	if issue == "" && data != nil {
 		s.record = cacheRecord[T]{Scope: scope, At: s.now(), Data: data}
@@ -129,10 +162,8 @@ func (s *cacheSlot[T]) update(scope string, data *T, issue problem) reading[T] {
 	}
 
 	out := reading[T]{Data: data, Issue: issue}
-	if issue.temporary() && !s.freshOnly {
-		if age := s.now().Sub(s.record.At); s.record.Scope == scope && s.record.Data != nil && age >= 0 && age <= maxStaleAge {
-			out = reading[T]{Data: s.record.Data, Issue: issue, Stale: true, At: s.record.At}
-		}
+	if issue.temporary() {
+		out = s.withStaleLocked(scope, out)
 	} else if s.record.Scope == scope || issue == problemWishlist {
 		// Discard hidden or invalid data. Wishlist visibility applies across languages.
 		s.record = cacheRecord[T]{}
@@ -158,12 +189,10 @@ func (s *cacheSlot[T]) peek(scope string, maxAge time.Duration) *T {
 	default:
 		return nil
 	}
-	if s.session != nil {
-		s.session.auth.mu.Lock()
-		defer s.session.auth.mu.Unlock()
-		if !s.ownsScopeLocked(scope) {
-			return nil
-		}
+	unlock := s.lockRecord()
+	defer unlock()
+	if s.session != nil && !s.ownsScopeLocked(scope) {
+		return nil
 	}
 	record := s.record
 	if !s.loaded {

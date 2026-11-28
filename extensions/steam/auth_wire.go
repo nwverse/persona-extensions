@@ -137,7 +137,9 @@ func (c steamClient) renewAccess(ctx context.Context, refresh, id string) (qrGra
 	return out, ""
 }
 
-func (c steamClient) authRPC(ctx context.Context, method string, message []byte) ([]byte, problem) {
+func (c steamClient) authRPC(ctx context.Context, method string, message []byte) (_ []byte, issue problem) {
+	ctx, cancel := context.WithTimeout(ctx, httpTimeout)
+	defer cancel()
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
 	if form.WriteField("input_protobuf_encoded", base64.StdEncoding.EncodeToString(message)) != nil || form.Close() != nil {
@@ -149,6 +151,7 @@ func (c steamClient) authRPC(ctx context.Context, method string, message []byte)
 	}
 	req.Header.Set("Content-Type", form.FormDataContentType())
 	req.Header.Set("Accept", "application/octet-stream")
+	defer c.closeIdleOnTimeout(&issue)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, sanitizeError(err)

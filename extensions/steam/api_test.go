@@ -1,15 +1,18 @@
 package main
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 )
 
 func TestSteamHTTPDefaultTransport(t *testing.T) {
 	client := steamHTTP(nil, time.Second)
-	transport, ok := client.Transport.(*http.Transport)
+	transport, ok := client.Transport.(*steamTransport).base.(*http.Transport)
 	if !ok || transport == http.DefaultTransport || transport.Proxy == nil || !transport.ForceAttemptHTTP2 {
 		t.Fatal("Steam needs its own proxy-aware HTTP/2 transport")
 	}
@@ -35,5 +38,41 @@ func TestSteamHTTPDefaultTransport(t *testing.T) {
 	defer response.Body.Close()
 	if response.ProtoMajor != 2 || response.StatusCode != http.StatusNoContent {
 		t.Fatalf("unexpected local response: %s %s", response.Proto, response.Status)
+	}
+}
+
+func TestSteamTransportLimitsActiveBodiesPerOrigin(t *testing.T) {
+	f := newFakeSteam(t, 3*time.Second)
+	streaming := make(chan struct{}, steamConcurrency+1)
+	f.handle(reviewsAPIPath, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "{")
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Error(err)
+		}
+		streaming <- struct{}{}
+		<-r.Context().Done()
+	})
+	f.reply(storeSearchPath, http.StatusOK, `{}`)
+	c := steamClient{http: f.http}
+	ctx, cancel := context.WithCancel(t.Context())
+	var reads sync.WaitGroup
+	defer func() { cancel(); reads.Wait() }()
+	for range steamConcurrency {
+		reads.Go(func() { c.get(ctx, apiBase+reviewsAPIPath, nil, false, &struct{}{}) })
+	}
+	for range steamConcurrency {
+		select {
+		case <-streaming:
+		case <-time.After(time.Second):
+			t.Fatal("Steam API did not start its allowed concurrent reads")
+		}
+	}
+	if issue := c.get(t.Context(), storeBase+storeSearchPath, nil, false, &struct{}{}); issue != "" {
+		t.Fatalf("API streams blocked an independent Store request: %s", issue)
+	}
+	wait, stop := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer stop()
+	if issue := c.get(wait, apiBase+reviewsAPIPath, nil, false, &struct{}{}); issue != problemTimeout || f.hit(reviewsAPIPath) != steamConcurrency {
+		t.Fatalf("request queued at the origin exceeded its deadline or opened another stream: %s", issue)
 	}
 }
