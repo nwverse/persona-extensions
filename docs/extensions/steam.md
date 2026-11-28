@@ -20,9 +20,9 @@ Web API key mode uses read-only calls for publicly visible data. Set the profile
 
 ## Store country or region
 
-Leave **Store country or region override** (`country_code`) blank to follow the account for wishlist prices, Inbox alerts and game research. Mobile QR looks up the signed-in account's country and can fall back to the profile location Steam shares. Web API key mode uses the public profile's `loccountrycode` when available. Both modes use `US` if no country is available.
+Leave **Store country or region override** (`country_code`) blank or select **Automatic** to follow the account for wishlist prices, Inbox alerts and game research. Mobile QR looks up the signed-in account's country and can fall back to the profile location Steam shares. Web API key mode uses the public profile's `loccountrycode` when available. Both modes use `US` if no country is available.
 
-Enter a two-letter ISO 3166-1 alpha-2 code such as `JP`, `US` or `CN` to view prices and research games in another region. Any saved code takes priority, including `US` saved by an earlier version. Clear the setting to enable automatic detection. [ISO 3166 country codes](https://www.iso.org/iso-3166-country-codes.html)
+Choose a country or region to view prices and research games there. The picker shows both English and Chinese names beside the two-letter ISO 3166-1 alpha-2 code. A saved code takes priority, including `US` saved by an earlier version. If an earlier version saved a lowercase or mixed-case code, save it in uppercase before upgrading so it matches the picker's stored values. [ISO 3166 country codes](https://www.iso.org/iso-3166-country-codes.html)
 
 ## Assistant tools
 

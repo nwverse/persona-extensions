@@ -72,14 +72,27 @@
       "country_code": {
         "type": "string",
         "title": "商店国家或地区（可选）",
-        "description": "留空自动跟随当前登录账号的商店区域，无法识别时使用 US。填写两位 ISO 3166-1 国家代码（如 JP、US 或 CN）可手动覆盖，用于跨区查价和调研。",
-        "pattern": "^([A-Za-z]{2})?$"
-      },
-      "friends_radar_enabled": {
-        "type": "boolean",
-        "title": "好友开黑雷达",
-        "description": "默认关闭。仅在开启时读取好友在线状态与 Steam 公开分享的游戏库，供 Steam 页面和助手工具使用。",
-        "default": false
+        "description": "留空自动跟随当前登录账号的商店区域，无法识别时使用 US。选择其他国家或地区可跨区查价和调研。",
+        "enum": [
+          "", "CN", "HK", "TW", "MO", "JP", "KR", "SG", "US", "CA", "GB", "AU", "NZ", "IN",
+          "ID", "MY", "PH", "TH", "VN", "AT", "BE", "CH", "CZ", "DE", "DK", "ES", "FI", "FR",
+          "GR", "IE", "IT", "NL", "NO", "PL", "PT", "RO", "SE", "AE", "IL", "SA", "TR", "UA",
+          "RU", "KZ", "ZA", "AR", "BR", "CL", "CO", "MX", "PE", "AD", "AF", "AG", "AI", "AL",
+          "AM", "AO", "AQ", "AS", "AW", "AX", "AZ", "BA", "BB", "BD", "BF", "BG", "BH", "BI",
+          "BJ", "BL", "BM", "BN", "BO", "BQ", "BS", "BT", "BV", "BW", "BY", "BZ", "CC", "CD",
+          "CF", "CG", "CI", "CK", "CM", "CR", "CU", "CV", "CW", "CX", "CY", "DJ", "DM", "DO",
+          "DZ", "EC", "EE", "EG", "EH", "ER", "ET", "FJ", "FK", "FM", "FO", "GA", "GD", "GE",
+          "GF", "GG", "GH", "GI", "GL", "GM", "GN", "GP", "GQ", "GS", "GT", "GU", "GW", "GY",
+          "HM", "HN", "HR", "HT", "HU", "IM", "IO", "IQ", "IR", "IS", "JE", "JM", "JO", "KE",
+          "KG", "KH", "KI", "KM", "KN", "KP", "KW", "KY", "LA", "LB", "LC", "LI", "LK", "LR",
+          "LS", "LT", "LU", "LV", "LY", "MA", "MC", "MD", "ME", "MF", "MG", "MH", "MK", "ML",
+          "MM", "MN", "MP", "MQ", "MR", "MS", "MT", "MU", "MV", "MW", "MZ", "NA", "NC", "NE",
+          "NF", "NG", "NI", "NP", "NR", "NU", "OM", "PA", "PF", "PG", "PK", "PM", "PN", "PR",
+          "PS", "PW", "PY", "QA", "RE", "RS", "RW", "SB", "SC", "SD", "SH", "SI", "SJ", "SK",
+          "SL", "SM", "SN", "SO", "SR", "SS", "ST", "SV", "SX", "SY", "SZ", "TC", "TD", "TF",
+          "TG", "TJ", "TK", "TL", "TM", "TN", "TO", "TT", "TV", "TZ", "UG", "UM", "UY", "UZ",
+          "VA", "VC", "VE", "VG", "VI", "VU", "WF", "WS", "YE", "YT", "ZM", "ZW"
+        ]
       },
       "inbox_events_enabled": {
         "type": "boolean",
@@ -104,7 +117,7 @@
       "wishlist_event_triggers": {
         "type": "array",
         "title": "愿望单提醒类型",
-        "description": "收件箱开启后，选择折扣（discount）、本机观测新低（local_low）、发售（release）、试玩（demo）和喜加一（giveaway）。同一促销的同一价格或已提醒的版本只提醒一次。",
+        "description": "收件箱开启后，选择要接收的愿望单提醒。同一促销价格或已提醒的发售、试玩版本只提醒一次。",
         "items": {"type": "string", "enum": ["discount", "local_low", "release", "demo", "giveaway"]},
         "default": ["discount", "local_low", "release", "demo", "giveaway"],
         "maxItems": 5,
@@ -125,16 +138,22 @@
         "maxLength": 640,
         "pattern": "^[ \\t]*([0-9]{1,10}:[A-Z]{3}:[0-9]{1,10}([ \\t]*,[ \\t]*[0-9]{1,10}:[A-Z]{3}:[0-9]{1,10}){0,19})?[ \\t]*$"
       },
-      "patch_notes_summary_enabled": {
-        "type": "boolean",
-        "title": "重大更新 AI 摘要",
-        "description": "向助手提供简短的更新公告正文片段以生成摘要。默认关闭，此时可查看标题、日期、来源和链接。",
-        "default": false
-      },
       "sale_roundup_enabled": {
         "type": "boolean",
         "title": "愿望单大促汇总",
         "description": "至少 3 款愿望单游戏同时打折时，将单条价格提醒合并为一条精选。需要开启收件箱事件。默认关闭。",
+        "default": false
+      },
+      "friends_radar_enabled": {
+        "type": "boolean",
+        "title": "好友开黑雷达",
+        "description": "默认关闭。仅在开启时读取好友在线状态与 Steam 公开分享的游戏库，供 Steam 页面和助手工具使用。",
+        "default": false
+      },
+      "patch_notes_summary_enabled": {
+        "type": "boolean",
+        "title": "重大更新 AI 摘要",
+        "description": "向助手提供简短的更新公告正文片段以生成摘要。默认关闭，此时可查看标题、日期、来源和链接。",
         "default": false
       },
       "memory_export_enabled": {

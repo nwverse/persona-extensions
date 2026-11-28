@@ -7,11 +7,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
 
 	"github.com/nwverse/persona-extensions/pluginkit"
 	"github.com/nwverse/persona/sdk/go/ext"
@@ -79,15 +79,22 @@ func TestManifestAndTranslations(t *testing.T) {
 	}
 	var country struct {
 		Type    string          `json:"type"`
-		Pattern string          `json:"pattern"`
+		Enum    []string        `json:"enum"`
 		Default json.RawMessage `json:"default"`
 	}
 	if json.Unmarshal(cfg.Properties["country_code"], &country) != nil || country.Type != "string" || country.Default != nil {
 		t.Fatal("Store country must be an optional string without a default")
 	}
-	pattern, err := regexp.Compile(country.Pattern)
-	if err != nil || !pattern.MatchString("") || !pattern.MatchString("jp") || pattern.MatchString("USA") {
-		t.Fatal("Store country must accept a blank value or a two-letter override")
+	if len(country.Enum) == 0 || country.Enum[0] != "" || !slices.Equal(slices.Sorted(slices.Values(country.Enum[1:])), strings.Fields(isoCountries)) {
+		t.Fatal("Store country must offer automatic selection and continue accepting saved ISO codes")
+	}
+	var triggers struct {
+		Items struct {
+			Enum []string `json:"enum"`
+		} `json:"items"`
+	}
+	if json.Unmarshal(cfg.Properties["wishlist_event_triggers"], &triggers) != nil || len(triggers.Items.Enum) == 0 {
+		t.Fatal("wishlist alert triggers must be an enum of string items")
 	}
 
 	for _, lang := range []string{"en", "zh-Hans"} {
@@ -98,10 +105,13 @@ func TestManifestAndTranslations(t *testing.T) {
 		var translation struct {
 			Name          string
 			Description   string
-			Configuration map[string]struct{ Title, Description string }
-			Secrets       map[string]struct{ Title, Description string }
-			UI            map[string]string
-			Groups        map[string]string
+			Configuration map[string]struct {
+				Title, Description string
+				Choices            map[string]string
+			}
+			Secrets map[string]struct{ Title, Description string }
+			UI      map[string]string
+			Groups  map[string]string
 		}
 		if err := json.Unmarshal(raw, &translation); err != nil {
 			t.Fatal(err)
@@ -116,10 +126,34 @@ func TestManifestAndTranslations(t *testing.T) {
 				t.Errorf("missing %s translation for %s", lang, key)
 			}
 		}
+		countries := translation.Configuration["country_code"].Choices
+		if len(countries) != len(country.Enum) || countries[""] == "" {
+			t.Errorf("%s must localize every Store country, including automatic selection", lang)
+		}
+		for _, code := range country.Enum[1:] {
+			first, second, ok := strings.Cut(countries[code], " ("+code+" · ")
+			if !ok || !strings.HasSuffix(second, ")") || !bilingualCountryLabel(first, second, lang == "zh-Hans") {
+				t.Errorf("%s Store country %s must show both names and the ISO code", lang, code)
+			}
+		}
+		alerts := translation.Configuration["wishlist_event_triggers"].Choices
+		for _, trigger := range triggers.Items.Enum {
+			if label := alerts[trigger]; label == "" || label == trigger {
+				t.Errorf("missing %s label for the %s alert trigger", lang, trigger)
+			}
+		}
 		if f := translation.Secrets[keyName]; f.Title == "" || f.Description == "" {
 			t.Errorf("missing %s secret translation", lang)
 		}
 	}
+}
+
+func bilingualCountryLabel(first, second string, chineseFirst bool) bool {
+	if !chineseFirst {
+		first, second = second, first
+	}
+	return strings.ContainsFunc(first, func(r rune) bool { return unicode.Is(unicode.Han, r) }) &&
+		strings.ContainsFunc(second, func(r rune) bool { return unicode.Is(unicode.Latin, r) })
 }
 
 func TestSetupAndProtocolConformance(t *testing.T) {

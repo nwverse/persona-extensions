@@ -8,7 +8,7 @@ New installations use Steam Mobile QR by default. In **Settings â€º Extensions â
 
 To use the read-only Web API key fallback, select **Web API key** and enter a SteamID64 or profile vanity name and a key. Existing installations with both values use this mode automatically. Steam's privacy settings govern what the key can read. Bounded account caches and recap snapshots can persist on this device. [Setup, permissions and sign-out](../../docs/extensions/steam.md)
 
-Leave **Store country or region override** blank to follow the account automatically. Mobile QR prefers the Steam account country. Web API key mode uses the public profile country when Steam shares it. If no country is available, Steam prices and searches use `US`. Enter a two-letter ISO 3166-1 code such as `JP`, `US` or `CN` to compare prices or research another region. Clear any saved code to turn on automatic detection. [Store country resolution](../../docs/extensions/steam.md#store-country-or-region)
+Leave **Store country or region override** blank or select **Automatic** to follow the account. Mobile QR prefers the Steam account country. Web API key mode uses the public profile country when Steam shares it. If no country is available, Steam prices and searches use `US`. Choose another region such as `JP`, `US` or `CN` to compare prices or research games there. [Store country resolution](../../docs/extensions/steam.md#store-country-or-region)
 
 ## Achievements and game updates
 
