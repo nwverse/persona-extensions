@@ -32,8 +32,9 @@ func TestManifestAndTranslations(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.Version != version {
-		t.Fatalf("manifest version = %q, want runtime version %q", m.Version, version)
+	const release = "0.3.3"
+	if m.Version != release || version != release {
+		t.Fatalf("manifest version = %q, runtime version = %q, want %q", m.Version, version, release)
 	}
 	if m.ID != extensionID || m.Engines == nil || m.Engines.PluginProtocol != 1 ||
 		m.Icon != "" || len(m.Tags) != 0 || m.Permissions == nil ||
@@ -361,10 +362,10 @@ func TestDeclarativeViews(t *testing.T) {
 	// Warm the page's locale before testing a failed refresh of that snapshot.
 	viewAnswer(t, h, nav)
 	beforeRefresh := map[string]int{}
-	for _, path := range []string{playerPath, ownedPath, recentPath, wishlistPath, storePricesPath} {
+	for _, path := range []string{playerPath, ownedPath, recentPath, wishlistPath, storeBrowsePath} {
 		beforeRefresh[path] = f.hit(path)
 	}
-	f.reply(storePricesPath, 429, f.key)
+	f.reply(storeBrowsePath, 429, f.key)
 	v = act(t, h, nav, v, "refresh", nil)
 	raw, _ = json.Marshal(v)
 	contains(t, string(raw), "Showing cached data.", "rate limiting")
@@ -405,7 +406,8 @@ func TestWishlistRowShowsOnlyPositiveDiscount(t *testing.T) {
 
 func TestWishlistNamesFollowLocaleAndCacheScope(t *testing.T) {
 	f := newFakeSteam(t, time.Second)
-	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+	seedWishlistIDs(t, f, []wishItem{{AppID: firstApp}})
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, r *http.Request) {
 		var query struct {
 			Context struct {
 				Language    string `json:"language"`
@@ -438,18 +440,18 @@ func TestWishlistNamesFollowLocaleAndCacheScope(t *testing.T) {
 		v := viewAnswer(t, h, wire.UIParams{Contribution: extensionID, Size: wire.SizeFull, Placement: wire.PlacementNavPage, UIVersion: 12, Locale: locale})
 		return v.Sections[3].Items[0].Title
 	}
-	if title := firstTitle(h, "ja-JP"); title != "Fixture Adventure" || f.hit(storeNamesPath) != 1 {
-		t.Fatalf("non-Chinese locale should reuse the English snapshot, got %q after %d requests", title, f.hit(storeNamesPath))
+	if title := firstTitle(h, "ja-JP"); title != "Fixture Adventure" || f.hit(storeBrowsePath) != 1 {
+		t.Fatalf("non-Chinese locale should reuse the English snapshot, got %q after %d requests", title, f.hit(storeBrowsePath))
 	}
-	if title := firstTitle(h, "zh-Hans"); title != "示例冒险" || f.hit(storeNamesPath) != 2 {
-		t.Fatalf("Chinese locale should fetch a localized snapshot, got %q after %d requests", title, f.hit(storeNamesPath))
+	if title := firstTitle(h, "zh-Hans"); title != "示例冒险" || f.hit(storeBrowsePath) != 2 {
+		t.Fatalf("Chinese locale should fetch a localized snapshot, got %q after %d requests", title, f.hit(storeBrowsePath))
 	}
 	h = startTestHost(t, f, fixtureID, "GB", dir)
-	if title := firstTitle(h, "zh_CN"); title != "示例冒险" || f.hit(storeNamesPath) != 2 {
-		t.Fatalf("Chinese locale variants should reuse the persisted snapshot, got %q after %d requests", title, f.hit(storeNamesPath))
+	if title := firstTitle(h, "zh_CN"); title != "示例冒险" || f.hit(storeBrowsePath) != 2 {
+		t.Fatalf("Chinese locale variants should reuse the persisted snapshot, got %q after %d requests", title, f.hit(storeBrowsePath))
 	}
 	contains(t, toolAnswer(t, h, "steam_wishlist", `{"limit":1}`), "Fixture Adventure")
-	if hits := f.hit(storeNamesPath); hits != 3 {
+	if hits := f.hit(storeBrowsePath); hits != 3 {
 		t.Fatalf("switching back to English should read the English name, got %d requests", hits)
 	}
 	f.reply(wishlistPath, http.StatusForbidden, "hidden")
@@ -485,14 +487,14 @@ func TestHiddenAndPartialReads(t *testing.T) {
 		contains(t, toolAnswer(t, h, "steam_wishlist", "{}"), `"available":false`, `"wishlist_unavailable"`)
 		contains(t, toolAnswer(t, h, "steam_recent_games", "{}"), `"available":true`, `"playtime_2weeks":130`)
 		contains(t, toolAnswer(t, h, "steam_achievements", fmt.Sprintf(`{"appid":%d}`, firstApp)), `"achievements_unavailable"`)
-		if f.hit(storePricesPath) != 0 {
+		if f.hit(storeBrowsePath) != 0 {
 			t.Fatal("private wishlist initiated a Store lookup")
 		}
 	})
 
 	t.Run("cold Store failure", func(t *testing.T) {
 		f := newFakeSteam(t, time.Second)
-		f.reply(storePricesPath, 429, "rate limit")
+		f.reply(storeBrowsePath, 429, "rate limit")
 		h := startTestHost(t, f, fixtureID, "", "")
 		contains(t, toolAnswer(t, h, "steam_wishlist", "{}"), `"available":true`, `"prices_checked":0`, `"rate_limited"`)
 		card := viewAnswer(t, h, wire.UIParams{Contribution: summaryID, Size: wire.SizeCompact, Placement: wire.PlacementOverviewCard, UIVersion: 12})
@@ -557,7 +559,7 @@ func TestNavigationPagerAndEmptySnapshots(t *testing.T) {
 		t.Fatal("expected only the remaining games on the last page")
 	}
 	v = act(t, h, p, v, "library-previous", nil)
-	if v.Sections[2].Items[0].Title != "Fixture 13" || f.hit(ownedPath) != 1 || f.hit(storePricesPath) != 0 {
+	if v.Sections[2].Items[0].Title != "Fixture 13" || f.hit(ownedPath) != 1 || f.hit(storeBrowsePath) != 0 {
 		t.Fatal("paging should reuse the local library, with no Store reads for an empty wishlist")
 	}
 	contains(t, toolAnswer(t, h, "steam_wishlist", "{}"), `"wishlist_count":0`, `"items":[]`, `"discounted_count":0`)

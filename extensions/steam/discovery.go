@@ -71,23 +71,21 @@ const (
 	storeSearchTool = "steam_store_search"
 	gameDetailsTool = "steam_game_details"
 
-	tagCatalogPath  = "/tagdata/populartags/"
-	storeSearchPath = "/search/results/"
-	appReviewsPath  = "/appreviews/"
-	reviewsAPIPath  = "/IUserReviewsService/GetAppReviews/v1/"
+	tagCatalogPath      = "/tagdata/populartags/"
+	storeSearchPath     = "/search/results/"
+	reviewsAPIPath      = "/IUserReviewsService/GetAppReviews/v1/"
+	storeCategoriesPath = "/IStoreBrowseService/GetStoreCategories/v1/"
 
 	discoveryBudget      = 8 * time.Second
 	searchTimeout        = 3 * time.Second
 	accountLookupTimeout = 3 * time.Second
 	tagCatalogTimeout    = 1200 * time.Millisecond
-	legacyReviewTimeout  = time.Second
-	gameLookupTimeout    = 2500 * time.Millisecond
+	legacyDetailTimeout  = 1250 * time.Millisecond
 	searchTTL            = 5 * time.Minute
 	searchMaxStaleAge    = 30 * time.Minute
 	tagCatalogTTL        = 8 * time.Hour
 	discoveryCacheSize   = 64
 	detailBatchLimit     = 10
-	detailConcurrency    = 4
 	searchTagLimit       = 8
 	detailTagLimit       = 8
 	tagNameRunes         = 60
@@ -142,10 +140,12 @@ func discoveryTools(limit int) []wire.ConnectorTool {
 }
 
 type steamDiscovery struct {
-	client steamClient
-	now    func() time.Time
-	tags   discoveryCache[[]discoveryTag]
-	search discoveryCache[discoveryPage]
+	client     steamClient
+	now        func() time.Time
+	tags       discoveryCache[[]discoveryTag]
+	search     discoveryCache[discoveryPage]
+	categories discoveryCache[map[uint32]string]
+	legacy     discoveryCache[discoveryMetadata]
 }
 
 func newSteamDiscovery(client *http.Client, now func() time.Time) *steamDiscovery {
@@ -225,7 +225,12 @@ func discoveryLanguage(input, fallback string) (string, bool) {
 }
 
 func (a *app) callDiscoveryTool(ctx context.Context, name string, raw json.RawMessage) (wire.ConnectorCallResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, discoveryBudget)
+	budget := discoveryBudget
+	if name == gameDetailsTool {
+		// StoreBrowse runs before review jobs, so give both stages room for a batch.
+		budget = min(readBudget, 2*batchTimeout)
+	}
+	ctx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	t := textFor(a.locale)
 	fallbackLanguage, ok := discoveryLanguage(a.locale, t.storeLanguage)
@@ -836,35 +841,56 @@ func (d *steamDiscovery) gameDetails(ctx context.Context, raw json.RawMessage, c
 			games = append(games, discoveryGame{AppID: id, URL: storeLink(id)})
 		}
 	}
-	var browse map[uint32]discoveryBrowseItem
-	var browseIssue problem
+	browse, browseIssue := d.client.browseStore(ctx, selected, country, language, storeDataRequest{
+		BestPurchase: true, BasicInfo: true, Platforms: true, Release: true, TagCount: detailTagLimit,
+	})
+	type reviewQuery struct {
+		appID uint32
+		end   int64
+	}
+	end := d.now().Unix()
+	queries := make([]reviewQuery, 0, 2*len(selected))
+	for _, id := range selected {
+		queries = append(queries, reviewQuery{appID: id}, reviewQuery{appID: id, end: end})
+	}
+	var reviews []batchResult[*discoveryReviews]
+	var legacy []batchResult[reading[discoveryMetadata]]
 	var catalog reading[[]discoveryTag]
+	var categories reading[map[uint32]string]
 	var reads sync.WaitGroup
 	reads.Go(func() {
-		browse, browseIssue = d.browseGames(ctx, selected, country, language)
-		for _, item := range browse {
-			if len(item.TagIDs) > 0 {
-				catalog = d.catalog(ctx, language)
-				break
-			}
-		}
-	})
-	workers := make(chan struct{}, detailConcurrency)
-	end := d.now().Unix()
-	for i := range games {
-		reads.Go(func() {
-			select {
-			case workers <- struct{}{}:
-				defer func() { <-workers }()
-				d.readGame(ctx, &games[i], country, language, end, t)
-			case <-ctx.Done():
-				games[i].warn("details", sanitizeError(ctx.Err()), t)
-			}
+		reviews = runBatches(ctx, queries, 1, batchTimeout, func(ctx context.Context, batch []reviewQuery) (*discoveryReviews, problem) {
+			q := batch[0]
+			return d.gameReviews(ctx, q.appID, language, q.end)
 		})
+	})
+	reads.Go(func() {
+		legacy = runBatches(ctx, selected, 1, legacyDetailTimeout, func(ctx context.Context, batch []uint32) (reading[discoveryMetadata], problem) {
+			id := batch[0]
+			item, found := browse[id]
+			if found && (item.Success != 1 || item.Restricted) {
+				return reading[discoveryMetadata]{}, problemMissing
+			}
+			r := d.legacyDetails(ctx, id, country, language, item.Name == "")
+			return r, r.Issue
+		})
+	})
+	for _, item := range browse {
+		if len(item.TagIDs) > 0 {
+			reads.Go(func() { catalog = d.catalog(ctx, language) })
+			break
+		}
+	}
+	for _, item := range browse {
+		if item.Categories != nil {
+			reads.Go(func() { categories = d.categoryLabels(ctx, language) })
+			break
+		}
 	}
 	reads.Wait()
 
-	describeReading(out, "store_browse", reading[discoveryBrowseItem]{Issue: browseIssue}, t)
+	describeReading(out, "store_browse", reading[storeBrowseItem]{Issue: browseIssue}, t)
+	describeReading(out, "categories", categories, t)
 	describeReading(out, "tags", catalog, t)
 	if catalog.Issue != "" && catalog.Data == nil {
 		describeReading(out, "tags", reading[[]discoveryTag]{Issue: problemBuiltInTags}, t)
@@ -881,58 +907,145 @@ func (d *steamDiscovery) gameDetails(ctx context.Context, raw json.RawMessage, c
 			tagNames[tag.ID] = tag.Name
 		}
 	}
+	var categoryNames map[uint32]string
+	if categories.Data != nil {
+		categoryNames = *categories.Data
+	}
 	available := false
 	for i := range games {
 		g := &games[i]
 		store, found := browse[g.AppID]
-		if found {
-			g.SteamDeck = deckStatus(store.Platforms.SteamDeck)
+		if found && store.Success == 1 && !store.Restricted {
+			g.SteamDeck = deckStatus(store.Platforms.Deck)
 			for _, id := range store.TagIDs[:min(detailTagLimit, len(store.TagIDs))] {
 				if id != 0 && !slices.ContainsFunc(g.Tags, func(tag discoveryTag) bool { return id == tag.ID }) {
 					g.Tags = append(g.Tags, discoveryTag{id, tagNames[id]})
 				}
 			}
-		} else if browseIssue == "" {
-			g.warn("store_browse", problemMissing, t)
 		}
-		available = available || g.Details != nil || found || g.Overall != nil || g.Recent != nil
+		var priceIssue problem
+		g.Details, priceIssue = d.storeMetadata(store, country, categoryNames)
+		older := legacy[i]
+		if g.Details == nil {
+			g.Details = older.value.Data
+			g.warn("details", older.issue, older.value.Stale, t)
+		} else {
+			if older.value.Data != nil {
+				g.Details.Genres = older.value.Data.Genres
+			}
+			g.warn("genres", older.issue, older.value.Stale, t)
+			g.warn("price", priceIssue, false, t)
+		}
+		overall, recent := reviews[2*i], reviews[2*i+1]
+		g.Overall, g.Recent = overall.value, recent.value
+		g.warn("overall_reviews", overall.issue, false, t)
+		g.warn("recent_30_days", recent.issue, false, t)
+		available = available || g.Details != nil || g.SteamDeck != "" || g.Overall != nil || g.Recent != nil
 	}
 	out["available"], out["games"], out["country_code"], out["language"] = available, games, country, language
 	return nil
 }
 
-func (g *discoveryGame) warn(dataset string, issue problem, t *text) {
+func (g *discoveryGame) warn(dataset string, issue problem, stale bool, t *text) {
 	if issue != "" {
-		g.Warnings = append(g.Warnings, toolWarning{Dataset: dataset, Code: issue, Message: t.message(issue, false)})
+		g.Warnings = append(g.Warnings, toolWarning{Dataset: dataset, Code: issue, Message: t.message(issue, stale), Stale: stale})
 	}
 }
 
-func (d *steamDiscovery) readGame(ctx context.Context, g *discoveryGame, country, language string, end int64, t *text) {
-	var detailsIssue, overallIssue, recentIssue problem
-	var reads sync.WaitGroup
-	reads.Go(func() { g.Details, detailsIssue = d.gameMetadata(ctx, g.AppID, country, language) })
-	reads.Go(func() { g.Overall, overallIssue = d.overallReviews(ctx, g.AppID, language) })
-	reads.Go(func() { g.Recent, recentIssue = d.gameReviews(ctx, g.AppID, language, end) })
-	reads.Wait()
-	dataset := "details"
-	if g.Details != nil {
-		dataset = "price"
-	}
-	g.warn(dataset, detailsIssue, t)
-	g.warn("overall_reviews", overallIssue, t)
-	g.warn("recent_30_days", recentIssue, t)
+func (d *steamDiscovery) categoryLabels(ctx context.Context, language string) reading[map[uint32]string] {
+	return d.categories.slot(language, d.now).read(ctx, language, profileTTL, false, func(ctx context.Context) (*map[uint32]string, problem) {
+		var reply struct {
+			Response struct {
+				Categories []struct {
+					ID   uint32 `json:"categoryid"`
+					Name string `json:"display_name"`
+				} `json:"categories"`
+			} `json:"response"`
+		}
+		input, _ := json.Marshal(map[string]string{"language": language})
+		query := url.Values{"input_json": {string(input)}}
+		if issue := d.get(ctx, batchTimeout, tagCatalogBytes, apiBase+storeCategoriesPath, query, &reply); issue != "" {
+			return nil, issue
+		}
+		names := make(map[uint32]string, len(reply.Response.Categories))
+		for _, category := range reply.Response.Categories {
+			if name := cleanText(redactCredentials(category.Name), tagNameRunes); category.ID != 0 && name != "" && !strings.HasPrefix(name, "#") {
+				names[category.ID] = name
+			}
+		}
+		if len(names) == 0 {
+			return nil, problemResponse
+		}
+		return &names, ""
+	})
 }
 
-func (d *steamDiscovery) gameMetadata(ctx context.Context, id uint32, country, language string) (*discoveryMetadata, problem) {
+var storeAppTypes = [...]string{"game", "demo", "mod", "movie", "dlc", "guide", "software", "video", "series", "episode", "hardware", "music", "beta", "tool", "advertising"}
+
+func (d *steamDiscovery) storeMetadata(item storeBrowseItem, country string, labels map[uint32]string) (*discoveryMetadata, problem) {
+	if item.Name == "" || item.Restricted || item.Success != 1 {
+		return nil, ""
+	}
+	meta := &discoveryMetadata{Name: item.Name, ShortDescription: shortStoreDescription(item.BasicInfo.Description), IsFree: item.IsFree}
+	if item.Type >= 0 && item.Type < len(storeAppTypes) {
+		meta.Type = storeAppTypes[item.Type]
+	}
+	if state, date := item.releaseState(d.now()); state != "" {
+		meta.ReleaseDate = &discoveryRelease{ComingSoon: state == "upcoming"}
+		if release := item.Release; release != nil {
+			label := release.CustomDate
+			if label == "" && meta.ReleaseDate.ComingSoon {
+				label = release.ComingSoonDisplay
+			}
+			meta.ReleaseDate.Date = cleanText(redactCredentials(label), 40)
+		}
+		if meta.ReleaseDate.Date == "" && date != 0 {
+			meta.ReleaseDate.Date = time.Unix(int64(date), 0).UTC().Format(time.DateOnly)
+		}
+	}
+	meta.Platforms = storePlatforms(item.Platforms.Windows, item.Platforms.Mac, item.Platforms.Linux)
+	if cats := item.Categories; cats != nil {
+		ids := slices.Concat(cats.Players, cats.Features, cats.Controllers)
+		categories := make([]discoveryCategory, 0, len(ids))
+		for _, id := range ids {
+			category := discoveryCategory{ID: id, Name: labels[id]}
+			categories = append(categories, category)
+			if id != 0 && category.Name != "" && len(meta.Categories) < 24 {
+				meta.Categories = append(meta.Categories, category)
+			}
+		}
+		meta.Features = storeFeatures(categories, "")
+	}
+	var issue problem
+	meta.Price, issue = d.client.browsePrice(item, country)
+	return meta, issue
+}
+
+func (d *steamDiscovery) legacyDetails(ctx context.Context, id uint32, country, language string, full bool) reading[discoveryMetadata] {
+	key := country + "/" + language + "/" + appIDText(id)
+	ttl := profileTTL
+	if full {
+		key += "/full"
+		ttl = wishlistTTL
+	}
+	return d.legacy.slot(key, d.now).read(ctx, key, ttl, false, func(ctx context.Context) (*discoveryMetadata, problem) {
+		return d.legacyGameMetadata(ctx, id, country, language, full)
+	})
+}
+
+func (d *steamDiscovery) legacyGameMetadata(ctx context.Context, id uint32, country, language string, full bool) (*discoveryMetadata, problem) {
 	appID := appIDText(id)
-	query := url.Values{"appids": {appID}, "cc": {country}, "l": {language}, "filters": {
-		"basic,genres,categories,release_date,platforms,price_overview",
-	}}
+	// Legacy genres are a separate taxonomy from StoreBrowse tags and categories.
+	filters := "genres"
+	if full {
+		filters = "basic,genres,categories,release_date,platforms,price_overview"
+	}
+	query := url.Values{"appids": {appID}, "cc": {country}, "l": {language}, "filters": {filters}}
 	var reply map[string]struct {
 		Success *bool           `json:"success"`
 		Data    json.RawMessage `json:"data"`
 	}
-	if p := d.get(ctx, gameLookupTimeout, gameResponseBytes, storeBase+storePricesPath, query, &reply); p != "" {
+	if p := d.get(ctx, legacyDetailTimeout, gameResponseBytes, storeBase+appDetailsPath, query, &reply); p != "" {
 		return nil, p
 	}
 	item := reply[appID]
@@ -956,7 +1069,7 @@ func (d *steamDiscovery) gameMetadata(ctx context.Context, id uint32, country, l
 		} `json:"genres"`
 		Platforms struct{ Windows, Mac, Linux bool }
 	}
-	if json.Unmarshal(item.Data, &data) != nil || data.AppID != id || strings.TrimSpace(data.Name) == "" {
+	if json.Unmarshal(item.Data, &data) != nil || full && (data.AppID != id || strings.TrimSpace(data.Name) == "") {
 		return nil, problemResponse
 	}
 	game := &discoveryMetadata{
@@ -971,19 +1084,15 @@ func (d *steamDiscovery) gameMetadata(ctx context.Context, id uint32, country, l
 			game.Genres = append(game.Genres, name)
 		}
 	}
+	if !full {
+		return game, ""
+	}
 	for _, category := range data.Categories[:min(24, len(data.Categories))] {
 		if category.Name = cleanText(redactCredentials(category.Name), tagNameRunes); category.ID != 0 && category.Name != "" {
 			game.Categories = append(game.Categories, category)
 		}
 	}
-	for _, platform := range []struct {
-		name      string
-		supported bool
-	}{{"windows", data.Platforms.Windows}, {"macos", data.Platforms.Mac}, {"linux", data.Platforms.Linux}} {
-		if platform.supported {
-			game.Platforms = append(game.Platforms, platform.name)
-		}
-	}
+	game.Platforms = storePlatforms(data.Platforms.Windows, data.Platforms.Mac, data.Platforms.Linux)
 	game.Features = storeFeatures(data.Categories, data.Controller)
 	price, valid := d.client.parsePrice(item.Data)
 	game.Price = price
@@ -991,6 +1100,47 @@ func (d *steamDiscovery) gameMetadata(ctx context.Context, id uint32, country, l
 		return game, problemResponse
 	}
 	return game, ""
+}
+
+func storePlatforms(windows, mac, linux bool) []string {
+	var platforms []string
+	if windows {
+		platforms = append(platforms, "windows")
+	}
+	if mac {
+		platforms = append(platforms, "macos")
+	}
+	if linux {
+		platforms = append(platforms, "linux")
+	}
+	return platforms
+}
+
+func (c steamClient) parsePrice(data json.RawMessage) (*storePrice, bool) {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("[]")) {
+		return nil, true
+	}
+	var reply *struct {
+		Price *struct {
+			Currency  string  `json:"currency"`
+			Final     *uint32 `json:"final"`
+			Formatted string  `json:"final_formatted"`
+			Discount  int     `json:"discount_percent"`
+		} `json:"price_overview"`
+	}
+	if json.Unmarshal(data, &reply) != nil || reply == nil {
+		return nil, false
+	}
+	if reply.Price == nil {
+		return nil, true
+	}
+	p := reply.Price
+	if p.Final == nil || len(p.Currency) != 3 || strings.IndexFunc(p.Currency, func(r rune) bool {
+		return r < 'A' || r > 'Z'
+	}) >= 0 || p.Discount < 0 || p.Discount > 100 {
+		return nil, false
+	}
+	return &storePrice{Currency: p.Currency, Final: *p.Final, FinalFormatted: c.text(p.Formatted), DiscountPercent: p.Discount}, true
 }
 
 func shortStoreDescription(raw string) string {
@@ -1043,45 +1193,6 @@ func storeFeatures(categories []discoveryCategory, controller string) *discovery
 	return f
 }
 
-type discoveryBrowseItem struct {
-	AppID     uint32   `json:"appid"`
-	Success   int      `json:"success"`
-	TagIDs    []uint32 `json:"tagids"`
-	Platforms struct {
-		SteamDeck int `json:"steam_deck_compat_category"`
-	} `json:"platforms"`
-}
-
-func (d *steamDiscovery) browseGames(ctx context.Context, apps []uint32, country, language string) (map[uint32]discoveryBrowseItem, problem) {
-	ids := make([]map[string]uint32, 0, len(apps))
-	for _, id := range apps {
-		ids = append(ids, map[string]uint32{"appid": id})
-	}
-	input, _ := json.Marshal(map[string]any{
-		"ids":          ids,
-		"context":      map[string]string{"country_code": country, "language": language},
-		"data_request": map[string]any{"include_tag_count": detailTagLimit, "include_platforms": true},
-	})
-	var reply struct {
-		Response struct {
-			Items []discoveryBrowseItem `json:"store_items"`
-		} `json:"response"`
-	}
-	if p := d.get(ctx, gameLookupTimeout, gameResponseBytes, apiBase+storeNamesPath, url.Values{"input_json": {string(input)}}, &reply); p != "" {
-		return nil, p
-	}
-	if reply.Response.Items == nil {
-		return nil, problemResponse
-	}
-	items := make(map[uint32]discoveryBrowseItem, len(apps))
-	for _, item := range reply.Response.Items {
-		if item.Success == 1 && slices.Contains(apps, item.AppID) {
-			items[item.AppID] = item
-		}
-	}
-	return items, ""
-}
-
 func deckStatus(category int) string {
 	switch category {
 	case 1:
@@ -1119,26 +1230,9 @@ func (s steamReviewSummary) stats() *discoveryReviews {
 	return out
 }
 
-func (d *steamDiscovery) overallReviews(ctx context.Context, appID uint32, language string) (*discoveryReviews, problem) {
-	var reply struct {
-		Success int                `json:"success"`
-		Summary steamReviewSummary `json:"query_summary"`
-	}
-	query := url.Values{"json": {"1"}, "filter": {"recent"}, "language": {"all"}, "l": {language},
-		"purchase_type": {"steam"}, "num_per_page": {"1"}}
-	if issue := d.get(ctx, legacyReviewTimeout, reviewResponseBytes, storeBase+appReviewsPath+appIDText(appID), query, &reply); issue == "" && reply.Success == 1 {
-		if stats := reply.Summary.stats(); stats != nil {
-			return stats, ""
-		}
-	}
-	// Valve deprecated the Store route. Use its official replacement on API
-	// failures or redirects, which the credential-safe HTTP client refuses.
-	return d.gameReviews(ctx, appID, language, 0)
-}
-
 func (d *steamDiscovery) gameReviews(ctx context.Context, appID uint32, language string, end int64) (*discoveryReviews, problem) {
 	input := map[string]any{
-		"appid": appID, "filter": 1, "languages": []string{"all"}, "num_per_page": 1, "display_language": language,
+		"appid": appID, "filter": 1, "purchase_type": 0, "languages": []string{"all"}, "num_per_page": 1, "display_language": language,
 	}
 	if end != 0 {
 		input["date_range_start"] = end - 30*24*60*60
@@ -1152,7 +1246,7 @@ func (d *steamDiscovery) gameReviews(ctx context.Context, appID uint32, language
 		} `json:"response"`
 	}
 	query := url.Values{"input_json": {string(payload)}}
-	if p := d.get(ctx, gameLookupTimeout, reviewResponseBytes, apiBase+reviewsAPIPath, query, &reply); p != "" {
+	if p := d.get(ctx, batchTimeout, reviewResponseBytes, apiBase+reviewsAPIPath, query, &reply); p != "" {
 		return nil, p
 	}
 	stats := reply.Response.Summary.stats()

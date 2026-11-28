@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -86,8 +87,8 @@ func TestFriendsRadarOptIn(t *testing.T) {
 					t.Fatal("disabled radar changed the Steam navigation page")
 				}
 				// The synthetic transport rejects all routes outside the original navigation reads.
-				if n := requests.Load(); n != 6 {
-					t.Fatalf("disabled navigation made %d Steam requests, want the six baseline reads", n)
+				if n := requests.Load(); n != 5 {
+					t.Fatalf("disabled navigation made %d Steam requests, want the five baseline reads", n)
 				}
 			}
 		})
@@ -118,7 +119,7 @@ func newFriendsClient(t *testing.T, key, access string, handler http.HandlerFunc
 			return nil, fmt.Errorf("unexpected Steam route")
 		}
 		wantKey, wantAccess := key, access
-		if req.URL.Path == storeNamesPath || (req.URL.Path == wishlistPath && access == "") {
+		if req.URL.Path == storeBrowsePath || (req.URL.Path == wishlistPath && access == "") {
 			wantKey, wantAccess = "", ""
 		} else if access != "" {
 			wantKey = ""
@@ -483,7 +484,7 @@ func TestCoopOverlapMultiFriend(t *testing.T) {
 				t.Error("shared library read used an unverified SteamID")
 				http.NotFound(w, r)
 			}
-		case storeNamesPath:
+		case storeBrowsePath:
 			storeHits.Add(1)
 			ids := readCategoryBatch(t, r, "english")
 			if slices.Contains(ids, ownOnly) || slices.Contains(ids, subsetOnly) {
@@ -587,7 +588,7 @@ func TestCoopOverlapQRPartial(t *testing.T) {
 				t.Error("QR overlap requested an unexpected SteamID")
 				http.NotFound(w, r)
 			}
-		case storeNamesPath:
+		case storeBrowsePath:
 			if ids := readCategoryBatch(t, r, "schinese"); !slices.Equal(ids, []uint32{firstApp}) {
 				t.Error("unexpected QR Store category request")
 			}
@@ -627,7 +628,7 @@ func TestCoopOverlapStoreScanLimit(t *testing.T) {
 			sendFriendList(t, w, r, []string{friend})
 		case ownedPath:
 			sendFriendGames(w, games)
-		case storeNamesPath:
+		case storeBrowsePath:
 			storeHits.Add(1)
 			ids := readCategoryBatch(t, r, "english")
 			categories := make(map[uint32][]int, len(ids))
@@ -655,4 +656,131 @@ func TestCoopOverlapStoreScanLimit(t *testing.T) {
 	if storeHits.Load() != 4 {
 		t.Fatal("the final Store scan queried outside its cursor window")
 	}
+}
+
+func TestFriendsPresenceSlowBatchRetainsOtherSummaries(t *testing.T) {
+	key := rand.Text()
+	ids := make([]string, (steamConcurrency+1)*friendBatchSize)
+	for i := range ids {
+		ids[i] = syntheticFriendID(i)
+	}
+	started := make(chan struct{}, steamConcurrency+1)
+	release := make(chan struct{})
+	client := newFriendsClient(t, key, "", func(w http.ResponseWriter, r *http.Request) {
+		apps := strings.Split(r.URL.Query().Get("steamids"), ",")
+		if r.URL.Path != playerPath || len(apps) != friendBatchSize {
+			t.Error("friends presence did not use bounded GetPlayerSummaries batches")
+			return
+		}
+		started <- struct{}{}
+		if apps[0] == ids[0] {
+			<-r.Context().Done()
+			return
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		players := make([]map[string]any, 0, len(apps))
+		for _, id := range apps {
+			players = append(players, map[string]any{"steamid": id, "communityvisibilitystate": 3, "personastate": 1})
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"response": map[string]any{"players": players}})
+	})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	result := make(chan reading[[]player], 1)
+	start := time.Now()
+	go func() {
+		players, issue := (steamClient{http: client, key: key}).friendsPresence(ctx, ids)
+		result <- reading[[]player]{Data: players, Issue: issue}
+	}()
+	for range steamConcurrency {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("friend summary batches did not start concurrently")
+		}
+	}
+	close(release)
+	got := <-result
+	if elapsed := time.Since(start); elapsed > 3*time.Second || got.Issue != problemTimeout || got.Data == nil || len(*got.Data) != len(ids)-friendBatchSize {
+		t.Fatalf("a hung summary batch lost other results or used the request budget: elapsed=%s issue=%s", elapsed, got.Issue)
+	}
+}
+
+func TestCoopOverlapSlowLibraryKeepsOtherFriendsAndStoreNames(t *testing.T) {
+	key := rand.Text()
+	friends := make([]string, maxOverlapFriends)
+	for i := range friends {
+		friends[i] = syntheticFriendID(i)
+	}
+	client := newFriendsClient(t, key, "", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case friendListPath:
+			sendFriendList(t, w, r, friends)
+		case ownedPath:
+			id := r.URL.Query().Get("steamid")
+			if id == friends[0] {
+				<-r.Context().Done()
+				return
+			}
+			if id != fixtureID && !slices.Contains(friends, id) {
+				t.Error("looked up an unverified library")
+			}
+			sendFriendGames(w, []game{{AppID: firstApp, PlaytimeForever: 5}})
+		case storeBrowsePath:
+			if !slices.Equal(readCategoryBatch(t, r, "english"), []uint32{firstApp}) {
+				t.Error("StoreBrowse received other games than the surviving intersection")
+			}
+			_, _ = fmt.Fprintf(w, `{"response":{"store_items":[{"appid":%d,"success":1,"name":"Shared Store name","categories":{"supported_player_categoryids":[38]}}]}}`, firstApp)
+		default:
+			t.Error("unexpected overlap endpoint")
+		}
+	})
+	h := startFriendsHost(t, client, key, "en", fmt.Sprintf(`{"steam_id":%q,"friends_radar_enabled":true}`, fixtureID), t.TempDir(), time.Now)
+	args, _ := json.Marshal(map[string]any{"friend_steam_ids": friends})
+	start := time.Now()
+	got := toolAnswer(t, h, coopOverlapTool, string(args))
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("a hung peer library took %s", elapsed)
+	}
+	contains(t, got, `"partial":true`, `"included_friend_count":4`, `"code":"timeout"`, `"total_playtime":25`, `"coop_support":"supported"`, "Shared Store name")
+}
+
+func TestFriendsPresenceReusesStaleDataForTheSameRoster(t *testing.T) {
+	key := rand.Text()
+	friend, replacement := syntheticFriendID(0), syntheticFriendID(1)
+	var stage atomic.Int32
+	now, advance := syntheticClock()
+	client := newFriendsClient(t, key, "", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case friendListPath:
+			id := friend
+			if stage.Load() == 2 {
+				id = replacement
+			}
+			sendFriendList(t, w, r, []string{id})
+		case playerPath:
+			if stage.Load() != 0 {
+				<-r.Context().Done()
+				return
+			}
+			_, _ = fmt.Fprintf(w, `{"response":{"players":[{"steamid":%q,"personaname":"Fixture Friend","communityvisibilitystate":3,"personastate":1}]}}`, friend)
+		default:
+			t.Error("unexpected friends endpoint")
+		}
+	})
+	client.Timeout = 250 * time.Millisecond
+	h := startFriendsHost(t, client, key, "en", fmt.Sprintf(`{"steam_id":%q,"friends_radar_enabled":true}`, fixtureID), t.TempDir(), now)
+	contains(t, toolAnswer(t, h, friendsRadarTool, `{}`), "Fixture Friend")
+	advance(friendTTL + time.Second)
+	stage.Store(1)
+	contains(t, toolAnswer(t, h, friendsRadarTool, `{}`), `"available":true`, "Fixture Friend", `"stale":true`, `"code":"timeout"`)
+	advance(friendTTL + time.Second)
+	stage.Store(2)
+	got := toolAnswer(t, h, friendsRadarTool, `{}`)
+	contains(t, got, `"available":false`, `"code":"timeout"`)
+	assertHidden(t, got, "Fixture Friend", friend, `"stale":true`)
 }

@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 )
@@ -29,12 +30,16 @@ const (
 	achievementsPath = "/ISteamUserStats/GetPlayerAchievements/v1/"
 	progressPath     = "/IPlayerService/GetAchievementsProgress/v1/"
 	wishlistPath     = "/IWishlistService/GetWishlist/v1/"
-	storeNamesPath   = "/IStoreBrowseService/GetItems/v1/"
-	storePricesPath  = "/api/appdetails"
+	storeBrowsePath  = "/IStoreBrowseService/GetItems/v1/"
+	appDetailsPath   = "/api/appdetails"
 
 	maxAPIBytes = 16 << 20
 	maxGames    = 20_000
 	nameRunes   = 120
+
+	// Allow cold connections through slow proxies before falling back to cached data.
+	apiReadTimeout   = 8 * time.Second
+	storeReadTimeout = 5 * time.Second
 )
 
 type steamClient struct {
@@ -56,12 +61,62 @@ func steamHTTP(transport http.RoundTripper, timeout time.Duration) *http.Client 
 		}
 		transport = t
 	}
+	if _, ok := transport.(*steamTransport); !ok {
+		transport = &steamTransport{
+			base: transport, api: make(chan struct{}, steamConcurrency), store: make(chan struct{}, steamConcurrency),
+		}
+	}
 	return &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
 		// The credential is a custom header that the default redirect policy could forward.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
+}
+
+// One shared client limits concurrent responses per origin, including HTTP/2
+// streams and calls made by the background Inbox scan.
+type steamTransport struct {
+	base       http.RoundTripper
+	api, store chan struct{}
+}
+
+func (t *steamTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	slots := t.api
+	if req.URL.Host == storeHost {
+		slots = t.store
+	}
+	select {
+	case slots <- struct{}{}:
+	case <-req.Context().Done():
+		if req.Body != nil {
+			_ = req.Body.Close()
+		}
+		return nil, req.Context().Err()
+	}
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp == nil || resp.Body == nil {
+		<-slots
+		return resp, err
+	}
+	resp.Body = &steamResponseBody{ReadCloser: resp.Body, release: sync.OnceFunc(func() { <-slots })}
+	return resp, nil
+}
+
+func (t *steamTransport) CloseIdleConnections() {
+	if base, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		base.CloseIdleConnections()
+	}
+}
+
+type steamResponseBody struct {
+	io.ReadCloser
+	release func()
+}
+
+func (b *steamResponseBody) Close() error {
+	defer b.release()
+	return b.ReadCloser.Close()
 }
 
 func (c steamClient) get(ctx context.Context, target string, params url.Values, authenticated bool, out any) problem {
@@ -73,6 +128,12 @@ func (c steamClient) readJSON(ctx context.Context, target string, params, form u
 }
 
 func (c steamClient) readBoundedJSON(ctx context.Context, target string, params, form url.Values, authenticated bool, maxBytes int64, out any) (issue problem) {
+	timeout := apiReadTimeout
+	if strings.HasPrefix(target, storeBase+"/") {
+		timeout = storeReadTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	method := http.MethodGet
 	var body io.Reader
 	if form != nil {
@@ -104,11 +165,7 @@ func (c steamClient) readBoundedJSON(ctx context.Context, target string, params,
 	if form != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
-	defer func() {
-		if issue == problemTimeout {
-			c.http.CloseIdleConnections()
-		}
-	}()
+	defer c.closeIdleOnTimeout(&issue)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return sanitizeError(err)
@@ -145,6 +202,12 @@ func (c steamClient) readBoundedJSON(ctx context.Context, target string, params,
 		return problemResponse
 	}
 	return ""
+}
+
+func (c steamClient) closeIdleOnTimeout(issue *problem) {
+	if *issue == problemTimeout {
+		c.http.CloseIdleConnections()
+	}
 }
 
 func httpProblem(status int) problem {

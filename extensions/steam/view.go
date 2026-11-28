@@ -494,6 +494,8 @@ func wishlistSection(t *text, r reading[wishList], st *pageState) wire.Section {
 			if discount := item.Price.DiscountPercent; discount > 0 {
 				row.Badge = &wire.Badge{Text: fmt.Sprintf(t.discount, discount), Tone: wire.TonePositive}
 			}
+		case item.IsFree:
+			row.Value = t.freeToPlay
 		case item.PriceChecked:
 			row.Subtitle = t.noPrice
 		default:
@@ -545,6 +547,9 @@ func (a *app) gameDetail(ctx context.Context, d *steamData, t *text, st pageStat
 	)
 	progress := d.achievements(ctx, p, game.AppID, t.storeLanguage)
 	achievement := wire.Section{Title: t.achievements}
+	if progress.Data != nil {
+		achievement.Footer = t.message(progress.Issue, progress.Stale)
+	}
 	switch {
 	case progress.Data == nil:
 		achievement.Items = []wire.Component{empty(t.message(progress.Issue, false))}

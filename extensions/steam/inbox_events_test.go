@@ -45,7 +45,7 @@ func TestWishlistInboxDisabled(t *testing.T) {
 	if got := collectWishlistInbox(t, h); len(got) != 0 {
 		t.Fatalf("default-off inbox returned %d things", len(got))
 	}
-	for _, path := range []string{playerPath, wishlistPath, storeNamesPath, storePricesPath} {
+	for _, path := range []string{playerPath, wishlistPath, storeBrowsePath, appDetailsPath} {
 		if f.hit(path) != 0 {
 			t.Fatalf("default-off Inbox requested %s", path)
 		}
@@ -71,19 +71,21 @@ func seedInboxWishlist(t *testing.T, f *fakeSteam, games ...inboxFixtureGame) {
 	t.Helper()
 	wishes := make([]wishItem, 0, len(games))
 	items := make([]map[string]any, 0, len(games))
-	prices := make(map[string]any, len(games))
 	for i, game := range games {
 		wishes = append(wishes, wishItem{AppID: game.appid, Priority: uint32(i)})
 		details := map[string]any{"appid": game.appid, "success": 1, "name": fmt.Sprintf("Fixture Game %d", i+1)}
 		if game.metadata != "" {
 			requireStoreOK(t, json.Unmarshal([]byte(game.metadata), &details))
 		}
-		items = append(items, details)
-		var price any = []any{}
 		if game.final >= 0 {
-			price = map[string]any{"price_overview": storePrice{Currency: "USD", Final: uint32(game.final), DiscountPercent: game.discount}}
+			option, _ := details["best_purchase_option"].(map[string]any)
+			if option == nil {
+				option = map[string]any{}
+			}
+			option["final_price_in_cents"], option["discount_pct"] = game.final, game.discount
+			details["best_purchase_option"] = option
 		}
-		prices[appIDText(game.appid)] = map[string]any{"success": true, "data": price}
+		items = append(items, details)
 	}
 	reply := func(dataset string, data any) string {
 		raw, err := json.Marshal(map[string]any{"response": map[string]any{dataset: data}})
@@ -91,10 +93,7 @@ func seedInboxWishlist(t *testing.T, f *fakeSteam, games ...inboxFixtureGame) {
 		return string(raw)
 	}
 	f.reply(wishlistPath, http.StatusOK, reply("items", wishes))
-	f.reply(storeNamesPath, http.StatusOK, reply("store_items", items))
-	raw, err := json.Marshal(prices)
-	requireStoreOK(t, err)
-	f.reply(storePricesPath, http.StatusOK, string(raw))
+	f.reply(storeBrowsePath, http.StatusOK, reply("store_items", items))
 }
 
 func newInboxTestApp(f *fakeSteam, dir string, now func() time.Time, cfg config) *app {
@@ -112,12 +111,12 @@ func TestWishlistInboxWireCollect(t *testing.T) {
 	f := newFakeSteam(t, time.Second)
 	seedInboxWishlist(t, f, inboxFixtureGame{firstApp, 500, 50, fmt.Sprintf(`{"name":%q}`, "Fixture "+fixtureID+" "+f.key)})
 	var metadataRequested atomic.Bool
-	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			DataRequest map[string]bool `json:"data_request"`
 		}
 		metadataRequested.Store(json.Unmarshal([]byte(r.URL.Query().Get("input_json")), &in) == nil && in.DataRequest["include_release"] && in.DataRequest["include_best_purchase_option"])
-		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[{"appid":%d,"success":1,"name":%q}]}}`, firstApp, "Fixture "+fixtureID+" "+f.key)
+		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[{"appid":%d,"success":1,"name":%q,"best_purchase_option":{"final_price_in_cents":"500","discount_pct":50}}]}}`, firstApp, "Fixture "+fixtureID+" "+f.key)
 	})
 	h := startInboxTestHost(t, f, &app{}, time.Now, t.TempDir(), "zh-Hans",
 		`"inbox_events_enabled":true,"triage_rules":"  Price drops are FYI.\\nGiveaways need me.  "`)
@@ -148,7 +147,7 @@ func TestWishlistInboxWireCollect(t *testing.T) {
 	if again := collectWishlistInbox(t, h); !reflect.DeepEqual(got, again) {
 		t.Fatalf("collection changed stable values %+v", again)
 	}
-	if !metadataRequested.Load() || f.hit(playerPath) != 1 || f.hit(wishlistPath) != 1 || f.hit(storeNamesPath) != 1 || f.hit(storePricesPath) != 1 {
+	if !metadataRequested.Load() || f.hit(playerPath) != 1 || f.hit(wishlistPath) != 1 || f.hit(storeBrowsePath) != 1 || f.hit(appDetailsPath) != 0 {
 		t.Fatal("collection should use a single pre-scanned snapshot")
 	}
 }
@@ -553,7 +552,7 @@ func TestWishlistInboxQRLogoutDuringScan(t *testing.T) {
 	session := a.qr.session
 	a.qr.mu.Unlock()
 	blocked := make(chan struct{})
-	f.handle(storePricesPath, func(_ http.ResponseWriter, r *http.Request) {
+	f.handle(storeBrowsePath, func(_ http.ResponseWriter, r *http.Request) {
 		close(blocked)
 		<-r.Context().Done()
 	})

@@ -23,7 +23,7 @@ const (
 	gameAchievementsPath   = "/IPlayerService/GetGameAchievements/v1/"
 	userAchievementsPath   = "/IPlayerService/GetUserAchievements/v1/"
 
-	publicCacheSize       = 16
+	gameReadCacheSize     = 16
 	globalAchievementsTTL = time.Hour
 	achievementIDBytes    = 160
 
@@ -42,21 +42,22 @@ var achievementHunterTool = wire.ConnectorTool{
 type steamPublicData struct {
 	client  steamClient
 	now     func() time.Time
-	rates   publicCache[uint32, map[string]float64]
-	schemas publicCache[achievementSchemaKey, achievementSchema]
-	news    publicCache[newsCacheKey, []gameNewsItem]
-	names   publicCache[storeNameKey, string]
+	rates   gameReadCache[uint32, map[string]float64]
+	schemas gameReadCache[achievementSchemaKey, achievementSchema]
+	news    gameReadCache[newsCacheKey, []gameNewsItem]
+	names   gameReadCache[storeNameKey, string]
 }
 
-// Public datasets use bounded, memory-only AppID caches. Each slot shares an
-// in-flight fetch and handles expiry and transient failures like account reads.
-type publicCache[K comparable, T any] struct {
-	mu    sync.Mutex
-	keys  []K
-	slots map[K]*cacheSlot[T]
+// Per-game datasets use bounded, memory-only caches. Personal slots also
+// validate the QR session before returning or publishing snapshots.
+type gameReadCache[K comparable, T any] struct {
+	mu      sync.Mutex
+	keys    []K
+	slots   map[K]*cacheSlot[T]
+	session *qrSession
 }
 
-func (c *publicCache[K, T]) slot(key K, now func() time.Time) *cacheSlot[T] {
+func (c *gameReadCache[K, T]) slot(key K, now func() time.Time) *cacheSlot[T] {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if i := slices.Index(c.keys, key); i >= 0 {
@@ -65,16 +66,22 @@ func (c *publicCache[K, T]) slot(key K, now func() time.Time) *cacheSlot[T] {
 		return c.slots[key]
 	}
 	if c.slots == nil {
-		c.slots = make(map[K]*cacheSlot[T], publicCacheSize)
+		c.slots = make(map[K]*cacheSlot[T], gameReadCacheSize)
 	}
-	if len(c.keys) == publicCacheSize {
+	if len(c.keys) == gameReadCacheSize {
 		delete(c.slots, c.keys[0])
 		c.keys = c.keys[1:]
 	}
-	slot := newSlot[T]("", "", now, nil)
+	slot := newSlot[T]("", "", now, c.session)
 	c.keys = append(c.keys, key)
 	c.slots[key] = slot
 	return slot
+}
+
+func (c *gameReadCache[K, T]) clear() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.keys, c.slots = nil, nil
 }
 
 func (c steamClient) globalAchievementRates(ctx context.Context, appID uint32) (*map[string]float64, problem) {
@@ -135,14 +142,27 @@ type achievementSchema struct {
 }
 
 func (a *app) hunterSchema(ctx context.Context, key achievementSchemaKey) reading[achievementSchema] {
+	ctx, cancel := context.WithTimeout(ctx, 2*batchTimeout)
+	defer cancel()
 	p := a.publicData
 	return p.schemas.slot(key, p.now).read(ctx, "", profileTTL, false, func(ctx context.Context) (*achievementSchema, problem) {
+		var legacyIssue problem
 		if a.config.AuthMode == modeWebAPIKey && a.setup == "" {
-			if schema, _ := a.client.legacyAchievementSchema(ctx, key); schema != nil {
+			attempt, stop := context.WithTimeout(ctx, batchTimeout)
+			schema, issue := a.client.legacyAchievementSchema(attempt, key)
+			stop()
+			if schema != nil {
 				return schema, ""
 			}
+			legacyIssue = issue
 		}
-		return p.client.playerServiceAchievementSchema(ctx, key)
+		attempt, stop := context.WithTimeout(ctx, batchTimeout)
+		defer stop()
+		schema, issue := p.client.playerServiceAchievementSchema(attempt, key)
+		if schema == nil && !issue.temporary() && legacyIssue.temporary() {
+			issue = legacyIssue
+		}
+		return schema, issue
 	})
 }
 
@@ -299,6 +319,29 @@ func (c steamClient) userAchievements(ctx context.Context, id string, appID uint
 	return reply.Response, ""
 }
 
+type achievementProgressKey struct {
+	account, language string
+	appID             uint32
+}
+
+func (d *steamData) readAchievementProgress(ctx context.Context, id string, appID uint32, language string,
+	fetch func(context.Context, steamClient) (*achievementProgress, problem)) reading[achievementProgress] {
+	ctx, cancel := context.WithTimeout(ctx, batchTimeout)
+	defer cancel()
+	key := achievementProgressKey{account: id, language: language, appID: appID}
+	return d.progress.slot(key, d.library.now).read(ctx, id, 0, true, func(ctx context.Context) (*achievementProgress, problem) {
+		c, issue := d.readClient(ctx)
+		if issue != "" {
+			return nil, issue
+		}
+		progress, issue := fetch(ctx, c)
+		if issue == "" {
+			d.rememberAchievement(id, progress)
+		}
+		return progress, issue
+	})
+}
+
 type achievementPersonalRead struct {
 	account  reading[player]
 	progress reading[achievementProgress]
@@ -315,24 +358,31 @@ func (d *steamData) hunterPersonal(ctx context.Context, appID uint32, language s
 		r.progress.Issue = issue
 		return r
 	}
-	c, issue := d.readClient(ctx)
-	if issue != "" {
-		r.progress.Issue = issue
-		return r
-	}
-	defer func() { d.rememberAchievement(id, r.progress.Data) }()
-	if c.access == "" {
-		r.legacy, r.progress.Issue = c.legacyPlayerAchievements(ctx, id, appID)
-		if r.legacy != nil && r.legacy.Achievements != nil {
-			r.progress.Data = r.legacy.progress(appID)
-		}
+	if d.session == nil {
+		r.progress = d.readAchievementProgress(ctx, id, appID, language, func(ctx context.Context, c steamClient) (*achievementProgress, problem) {
+			legacy, issue := c.legacyPlayerAchievements(ctx, id, appID)
+			r.legacy = legacy
+			if legacy == nil || legacy.Achievements == nil {
+				return nil, issue
+			}
+			return legacy.progress(appID), ""
+		})
 		return r
 	}
 	var reads sync.WaitGroup
 	reads.Go(func() {
-		r.progress.Data, r.progress.Issue = c.achievementTotals(ctx, id, appID, language)
+		r.progress = d.readAchievementProgress(ctx, id, appID, language, func(ctx context.Context, c steamClient) (*achievementProgress, problem) {
+			return c.achievementTotals(ctx, id, appID, language)
+		})
 	})
 	reads.Go(func() {
+		ctx, cancel := context.WithTimeout(ctx, batchTimeout)
+		defer cancel()
+		c, issue := d.readClient(ctx)
+		if issue != "" {
+			r.qr.Issue = issue
+			return
+		}
 		r.qr.Data, r.qr.Issue = c.userAchievements(ctx, id, appID)
 	})
 	reads.Wait()
@@ -379,7 +429,7 @@ func (r achievementPersonalRead) states(schema *achievementSchema) map[string]ac
 	// Fill missing locked rows only when per-game totals confirm the roster
 	// and every unlocked achievement has been identified.
 	p := r.progress.Data
-	if (len(states) == 0 && len(qr.Achievements) > 0) || p == nil || p.Total != len(schema.definitions) || p.Unlocked != unlockedCount(states) {
+	if (len(states) == 0 && len(qr.Achievements) > 0) || r.progress.Stale || p == nil || p.Total != len(schema.definitions) || p.Unlocked != unlockedCount(states) {
 		return nil
 	}
 	for id := range schema.definitions {
@@ -462,6 +512,8 @@ func (a *app) achievementHunter(parent context.Context, raw json.RawMessage) (ma
 	var account *steamData
 	var reads sync.WaitGroup
 	reads.Go(func() {
+		ctx, cancel := context.WithTimeout(ctx, batchTimeout)
+		defer cancel()
 		global = p.rates.slot(args.AppID, p.now).read(ctx, "", globalAchievementsTTL, false, func(ctx context.Context) (*map[string]float64, problem) {
 			return p.client.globalAchievementRates(ctx, args.AppID)
 		})
@@ -591,6 +643,7 @@ const (
 	newsFetchCount   = 40
 	newsExcerptRunes = 700
 	newsTTL          = 10 * time.Minute
+	newsNameTimeout  = 900 * time.Millisecond
 
 	problemGameNews problem = "game_news_unavailable"
 )
@@ -840,30 +893,31 @@ func (a *app) accountGameNews(ctx context.Context, d *steamData, t *text, option
 
 func (p *steamPublicData) collectGameNews(ctx context.Context, games []game, options gameNewsOptions,
 	country string, t *text, result *gameNewsResult) {
-	replies := make([]reading[[]gameNewsItem], len(games))
-	names := make([]string, len(games))
-	var reads sync.WaitGroup
-	for i, g := range games {
-		reads.Go(func() {
-			key := newsCacheKey{g.AppID, options.officialOnly, options.summary}
-			reply := p.news.slot(key, p.now).read(ctx, "", newsTTL, false, func(ctx context.Context) (*[]gameNewsItem, problem) {
-				return p.client.fetchGameNews(ctx, key)
-			})
-			replies[i] = reply
-			if reply.Data != nil && len(*reply.Data) > 0 {
-				names[i] = p.newsGameName(ctx, g, country, t)
-			}
-		})
+	type newsRead struct {
+		reading[[]gameNewsItem]
+		name string
 	}
-	reads.Wait()
-	for i, reply := range replies {
-		result.warn(t, "game_news/"+appIDText(games[i].AppID), reply.Issue, reply.Stale)
+	replies := runBatches(ctx, games, 1, batchTimeout, func(ctx context.Context, batch []game) (newsRead, problem) {
+		g := batch[0]
+		key := newsCacheKey{g.AppID, options.officialOnly, options.summary}
+		reply := p.news.slot(key, p.now).read(ctx, "", newsTTL, false, func(ctx context.Context) (*[]gameNewsItem, problem) {
+			return p.client.fetchGameNews(ctx, key)
+		})
+		result := newsRead{reading: reply}
+		if reply.Data != nil && len(*reply.Data) > 0 {
+			result.name = p.newsGameName(ctx, g, country, t)
+		}
+		return result, reply.Issue
+	})
+	for i, batch := range replies {
+		reply := batch.value
+		result.warn(t, "game_news/"+appIDText(games[i].AppID), batch.issue, reply.Stale)
 		if reply.Data == nil {
 			continue
 		}
 		result.Available = true
 		for _, item := range *reply.Data {
-			item.GameName = names[i]
+			item.GameName = reply.name
 			if !result.SummaryEnabled {
 				item.Excerpt = ""
 			}
@@ -884,9 +938,15 @@ func (p *steamPublicData) newsGameName(ctx context.Context, g game, country stri
 	if g.Name != "" {
 		return g.Name
 	}
+	ctx, cancel := context.WithTimeout(ctx, newsNameTimeout)
+	defer cancel()
 	key := storeNameKey{g.AppID, country, t.storeLanguage}
 	r := p.names.slot(key, p.now).read(ctx, "", profileTTL, false, func(ctx context.Context) (*string, problem) {
-		name := p.client.storeNames(ctx, []uint32{g.AppID}, country, t.storeLanguage)[g.AppID]
+		items, issue := p.client.browseStoreBatch(ctx, []uint32{g.AppID}, country, t.storeLanguage, storeDataRequest{})
+		if issue != "" {
+			return nil, issue
+		}
+		name := items[g.AppID].Name
 		if name == "" {
 			return nil, problemResponse
 		}

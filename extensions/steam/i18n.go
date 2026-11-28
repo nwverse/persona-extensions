@@ -12,7 +12,7 @@ type text struct {
 	recent, recentTime, totalTime, owned, library, wishlist, discounted string
 	search, sort, byPlaytime, byName, previous, next, showing, capped   string
 	noRecent, noGames, noMatches, missingGame, noWishes                 string
-	noPrice, priceUnchecked                                             string
+	noPrice, priceUnchecked, freeToPlay                                 string
 	achievements, noAchievements, unlocked, game, playing, unknown      string
 	minutes, hoursMinutes, discount, atLeast, stale                     string
 	qrHint, keyMode, keySignOut                                         string
@@ -70,7 +70,7 @@ var english = text{
 	previous: "Previous", next: "Next", showing: "%d–%d of %d", capped: "This snapshot includes %d of %d titles.",
 	noRecent: "No games played in the last two weeks.", noGames: "No owned games are visible.", noMatches: "No games match this search.",
 	missingGame: "This game is unavailable in the current list.",
-	noWishes:    "The wishlist is empty.", noPrice: "No price listed in this region.", priceUnchecked: "Price unavailable.",
+	noWishes:    "The wishlist is empty.", noPrice: "No price listed in this region.", priceUnchecked: "Price unavailable.", freeToPlay: "Free to play",
 	achievements: "Achievements", noAchievements: "Steam lists no achievements for this game.", unlocked: "%d of %d unlocked",
 	game: "App %d", playing: "Playing %s", unknown: "Status unavailable",
 	recentNews: "Recent official updates", noRecentNews: "No recent official game updates were found.",
@@ -195,7 +195,7 @@ var chinese = text{
 	previous: "上一页", next: "下一页", showing: "第 %d–%d 项，共 %d 项", capped: "此快照包含 %d 款游戏，共 %d 款。",
 	noRecent: "近两周没有游玩记录。", noGames: "没有可见的游戏。", noMatches: "没有符合搜索条件的游戏。",
 	missingGame: "当前列表中没有这款游戏。",
-	noWishes:    "愿望单为空。", noPrice: "此地区没有挂牌价格。", priceUnchecked: "暂时无法获取价格。",
+	noWishes:    "愿望单为空。", noPrice: "此地区没有挂牌价格。", priceUnchecked: "暂时无法获取价格。", freeToPlay: "免费游玩",
 	achievements: "成就", noAchievements: "Steam 没有列出这款游戏的成就。", unlocked: "已解锁 %d / %d",
 	game: "应用 %d", playing: "游戏中 · %s", unknown: "状态不可用",
 	recentNews: "近期官方更新", noRecentNews: "暂未找到近期官方游戏更新。",

@@ -84,6 +84,7 @@ type wishItem struct {
 	AppID        uint32      `json:"appid"`
 	Priority     uint32      `json:"priority"`
 	Name         string      `json:"name,omitempty"`
+	IsFree       bool        `json:"is_free,omitempty"`
 	PriceChecked bool        `json:"price_checked"`
 	Price        *storePrice `json:"price,omitempty"`
 }
@@ -93,5 +94,5 @@ type wishList struct {
 	Total      int        `json:"total"`
 	Checked    int        `json:"prices_checked"`
 	Discounted int        `json:"discounted_count"`
-	store      map[uint32]wishlistStoreItem
+	store      map[uint32]storeBrowseItem
 }

@@ -20,6 +20,8 @@ import (
 	"github.com/nwverse/persona/sdk/go/wire"
 )
 
+const appReviewsPath = "/appreviews/"
+
 func startDiscoveryHost(t *testing.T, f *fakeSteam, cfg, locale string, now func() time.Time) *exttest.Host {
 	t.Helper()
 	t.Setenv("PERSONA_EXTENSION_DATA_DIR", t.TempDir())
@@ -156,7 +158,7 @@ func TestDiscoverySearchFiltersAndAccount(t *testing.T) {
 			t.Errorf("%s missed its cache", path)
 		}
 	}
-	if f.hit(storePricesPath) != 0 || f.hit(storeNamesPath) != 0 {
+	if f.hit(appDetailsPath) != 0 || f.hit(storeBrowsePath) != 0 {
 		t.Fatal("membership lookup performed unnecessary wishlist enrichment")
 	}
 }
@@ -250,57 +252,33 @@ func TestDiscoveryGameDetailsBatchAndReviewWindows(t *testing.T) {
 	now, _ := syntheticClock()
 	h := startDiscoveryHost(t, f, `{"country_code":"GB","discovery_max_results":2}`, "zh-Hans", now)
 	f.reply(tagCatalogPath+"schinese", http.StatusOK, `[{"tagid":1664,"name":"解谜"}]`)
-	f.handle(storeNamesPath, func(w http.ResponseWriter, r *http.Request) {
-		var input struct {
-			IDs []struct {
-				AppID uint32 `json:"appid"`
-			} `json:"ids"`
-			Context     map[string]string `json:"context"`
-			DataRequest map[string]any    `json:"data_request"`
-		}
-		if json.Unmarshal([]byte(r.URL.Query().Get("input_json")), &input) != nil ||
-			len(input.IDs) == 0 || len(input.IDs) > 2 || input.IDs[0].AppID != firstApp ||
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, r *http.Request) {
+		input := fixtureBrowseInput(t, r)
+		if len(input.IDs) == 0 || len(input.IDs) > 2 || input.IDs[0].AppID != firstApp ||
 			input.Context["country_code"] != "GB" || input.Context["language"] != "schinese" ||
-			input.DataRequest["include_tag_count"] != float64(8) || input.DataRequest["include_platforms"] != true {
+			input.DataRequest["include_tag_count"] != float64(8) || input.DataRequest["include_platforms"] != true ||
+			input.DataRequest["include_best_purchase_option"] != true || input.DataRequest["include_basic_info"] != true {
 			t.Errorf("incorrect metadata batch: %+v", input)
 		}
-		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[
-			{"appid":%d,"success":1,"tagids":[1664,777777],"platforms":{"steam_deck_compat_category":3}}
-		]}}`, firstApp)
-	})
-	f.handle(storePricesPath, func(w http.ResponseWriter, r *http.Request) {
-		q := r.URL.Query()
-		id := q.Get("appids")
-		if q.Get("cc") != "GB" || q.Get("l") != "schinese" || !strings.Contains(q.Get("filters"), "price_overview") {
-			t.Errorf("incorrect localized details request: %v", q)
-		}
-		if id == appIDText(secondApp) {
-			_, _ = fmt.Fprintf(w, `{%q:{"success":false}}`, id)
-			return
-		}
-		if id != appIDText(firstApp) {
-			t.Errorf("unexpected or unbounded appdetails request: %v", q)
-		}
 		description := "模拟 &amp; 联机<br>探索 " + strings.Repeat("试", 700) + "too long"
-		_, _ = fmt.Fprintf(w, `{%q:{"success":true,"data":{
-			"steam_appid":%d,"name":"合成冒险","type":"game","short_description":%q,"about_the_game":"unrequested long description",
-			"genres":[{"id":"25","description":"冒险"}],
-			"categories":[{"id":2,"description":"单人"},{"id":38,"description":"在线合作"},{"id":39,"description":"分屏合作"},{"id":28,"description":"完全支持手柄"}],
-			"platforms":{"windows":true,"mac":true,"linux":false},"release_date":{"date":"2026 年 6 月","coming_soon":false},
-			"price_overview":{"currency":"GBP","final":250,"final_formatted":"£2.50","discount_percent":75}
-		}}}`, id, firstApp, description)
+		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[
+			{"appid":%d,"success":1,"name":"合成冒险","tagids":[1664,777777],
+			 "basic_info":{"short_description":%q},"full_description_bbcode":"unrequested long description",
+			 "categories":{"supported_player_categoryids":[2,38,39],"controller_categoryids":[28]},
+			 "release":{"steam_release_date":1700000000},"platforms":{"windows":true,"mac":true,"steam_deck_compat_category":3},
+			 "best_purchase_option":{"final_price_in_cents":"250","discount_pct":75,"formatted_final_price":"£2.50"}},
+			{"id":%d,"success":15}
+		]}}`, firstApp, description, secondApp)
 	})
-	f.handle(appReviewsPath+appIDText(firstApp), func(w http.ResponseWriter, r *http.Request) {
+	f.handle(appDetailsPath, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
-		if q.Get("json") != "1" || q.Get("language") != "all" || q.Get("num_per_page") != "1" || q.Get("purchase_type") != "steam" {
-			t.Errorf("incorrect Store reviews request: %v", q)
+		if q.Get("cc") != "GB" || q.Get("l") != "schinese" || q.Get("filters") != "genres" || q.Get("appids") != appIDText(firstApp) {
+			t.Errorf("legacy lookup should only request genres for the StoreBrowse item: %v", q)
 		}
-		_, _ = fmt.Fprint(w, `{"success":1,"query_summary":{"total_reviews":100,"total_positive":91,"review_score_desc":"特别好评"},
-			"reviews":[{"review":"private raw review text","author":{"steamid":"synthetic-reviewer"}}]}`)
+		_, _ = fmt.Fprintf(w, `{%q:{"success":true,"data":{"name":"unrequested legacy title","genres":[{"description":"冒险"}]}}}`, appIDText(firstApp))
 	})
-	f.handle(appReviewsPath+appIDText(secondApp), func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, storeBase+"/", http.StatusFound)
-	})
+	f.reply(storeCategoriesPath, http.StatusOK,
+		`{"response":{"categories":[{"categoryid":2,"display_name":"单人"},{"categoryid":38,"display_name":"在线合作"},{"categoryid":39,"display_name":"分屏合作"},{"categoryid":28,"display_name":"完全支持手柄"}]}}`)
 	f.handle(reviewsAPIPath, func(w http.ResponseWriter, r *http.Request) {
 		var input struct {
 			AppID           uint32   `json:"appid"`
@@ -308,18 +286,23 @@ func TestDiscoveryGameDetailsBatchAndReviewWindows(t *testing.T) {
 			Start           int64    `json:"date_range_start"`
 			End             int64    `json:"date_range_end"`
 			NumPerPage      int      `json:"num_per_page"`
+			PurchaseType    *int     `json:"purchase_type"`
 			DisplayLanguage string   `json:"display_language"`
 			Languages       []string `json:"languages"`
 		}
 		if json.Unmarshal([]byte(r.URL.Query().Get("input_json")), &input) != nil || input.Filter != 1 ||
-			input.NumPerPage != 1 || input.DisplayLanguage != "schinese" || len(input.Languages) != 1 || input.Languages[0] != "all" {
+			input.NumPerPage != 1 || input.PurchaseType == nil || *input.PurchaseType != 0 || input.DisplayLanguage != "schinese" || len(input.Languages) != 1 || input.Languages[0] != "all" {
 			t.Errorf("incorrect bounded review query: %+v", input)
 		}
 		if input.End == 0 {
-			if input.AppID != secondApp || input.Start != 0 {
-				t.Errorf("unexpected overall fallback: %+v", input)
+			if input.Start != 0 {
+				t.Errorf("overall reviews should have no date filter: %+v", input)
 			}
-			_, _ = fmt.Fprint(w, `{"response":{"total_matching":8,"query_summary":{"total_reviews":8,"total_positive":6}}}`)
+			if input.AppID == firstApp {
+				_, _ = fmt.Fprint(w, `{"response":{"total_matching":100,"query_summary":{"total_reviews":100,"total_positive":91,"review_score_desc":"特别好评"},"reviews":[{"review":"private raw review text","author":{"steamid":"synthetic-reviewer"}}]}}`)
+			} else {
+				_, _ = fmt.Fprint(w, `{"response":{"total_matching":8,"query_summary":{"total_reviews":8,"total_positive":6}}}`)
+			}
 			return
 		}
 		if input.End != now().Unix() || input.Start != input.End-int64((30*24*time.Hour)/time.Second) {
@@ -335,13 +318,14 @@ func TestDiscoveryGameDetailsBatchAndReviewWindows(t *testing.T) {
 	raw := toolAnswer(t, h, gameDetailsTool, fmt.Sprintf(`{"appids":[%d,%d],"language":"zh-CN"}`, firstApp, secondApp))
 	contains(t, raw, `"available":true`, `"country_code":"GB"`, `"steam_deck":"verified"`, `"positive_percent":91`, `"positive_percent":77.8`,
 		`"recent_30_days":{"count":0}`, `"positive_percent":75`, `"online_coop":true`, `"local_coop":true`, `"controller_support":"full"`,
-		`"platforms":["windows","macos"]`, `"currency":"GBP"`, `"discount_percent":75`, "模拟", "联机 探索", "解谜", "特别好评", "Steam 未返回")
-	assertHidden(t, raw, "private raw review text", "synthetic-reviewer", "unrequested new review body", "unrequested long description", "too long", "<br>")
+		`"platforms":["windows","macos"]`, `"currency":"GBP"`, `"discount_percent":75`, "模拟", "联机 探索", "解谜", "特别好评", "在线合作", "冒险", "Steam 未返回")
+	assertHidden(t, raw, "private raw review text", "synthetic-reviewer", "unrequested new review body", "unrequested long description", "unrequested legacy title", "too long", "<br>")
 	var out struct{ Games []discoveryGame }
 	if json.Unmarshal([]byte(raw), &out) != nil || len(out.Games) != 2 || out.Games[0].AppID != firstApp || out.Games[1].AppID != secondApp {
 		t.Fatalf("batch did not preserve the app order: %s", raw)
 	}
-	if f.hit(storeNamesPath) != 1 || f.hit(storePricesPath) != 2 || f.hit(reviewsAPIPath) != 3 {
+	if f.hit(storeBrowsePath) != 1 || f.hit(appDetailsPath) != 1 || f.hit(reviewsAPIPath) != 4 ||
+		f.hit(appReviewsPath+appIDText(firstApp)) != 0 || f.hit(appReviewsPath+appIDText(secondApp)) != 0 {
 		t.Fatal("unexpected number of Store or review requests")
 	}
 	for _, invalidArgs := range []string{`{"appids":[1,2,3]}`, `{"appid":1,"appids":[2]}`, `{"appid":0}`, `{"appids":[-1]}`} {
@@ -351,10 +335,37 @@ func TestDiscoveryGameDetailsBatchAndReviewWindows(t *testing.T) {
 			t.Errorf("invalid details request accepted: %s: %v", invalidArgs, err)
 		}
 	}
-	if f.hit(storePricesPath) != 2 || f.hit(ownedPath) != 0 || f.hit(wishlistPath) != 0 {
+	if f.hit(appDetailsPath) != 1 || f.hit(ownedPath) != 0 || f.hit(wishlistPath) != 0 {
 		t.Fatal("invalid inputs or public details touched unnecessary endpoints")
 	}
 	contains(t, toolAnswer(t, h, gameDetailsTool, fmt.Sprintf(`{"appid":%d}`, firstApp)), `"name":"合成冒险"`)
+}
+
+func TestDiscoveryLegacyDetailDeadlineKeepsWebAPIResults(t *testing.T) {
+	f := newFakeSteam(t, 7*time.Second)
+	h := startDiscoveryHost(t, f, `{}`, "en", time.Now)
+	var browsed atomic.Bool
+	f.handle(storeBrowsePath, func(w http.ResponseWriter, _ *http.Request) {
+		browsed.Store(true)
+		_, _ = fmt.Fprintf(w, `{"response":{"store_items":[{"appid":%d,"success":1,"name":"Fast API title","best_purchase_option":{"final_price_in_cents":"100"}}]}}`, firstApp)
+	})
+	f.handle(appDetailsPath, func(w http.ResponseWriter, r *http.Request) {
+		if !browsed.Load() {
+			t.Error("appdetails ran before StoreBrowse")
+		}
+		if r.URL.Query().Get("appids") == appIDText(firstApp) {
+			<-r.Context().Done()
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{%q:{"success":true,"data":{"steam_appid":%d,"name":"Fallback title"}}}`, appIDText(secondApp), secondApp)
+	})
+	f.reply(reviewsAPIPath, http.StatusOK, `{"response":{"total_matching":0}}`)
+	start := time.Now()
+	raw := toolAnswer(t, h, gameDetailsTool, fmt.Sprintf(`{"appids":[%d,%d]}`, firstApp, secondApp))
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("one legacy details request took %s", elapsed)
+	}
+	contains(t, raw, "Fast API title", "Fallback title", `"code":"timeout"`, `"overall_reviews":{"count":0}`, `"currency":"USD"`)
 }
 
 func TestDiscoveryDetailsAbsoluteBatchLimit(t *testing.T) {
