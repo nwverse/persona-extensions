@@ -150,6 +150,14 @@ func (a *app) waitMeta(ctx context.Context) error {
 		}
 		a.metaMu.Lock()
 		current, err := loaded == a.metaLoaded, a.metaLoadErr
+		if current && err != nil {
+			// Return this failure, then let the next caller await one new storage-only attempt. An unread sealed
+			// answer must never become a cold provider ask; a temporary Hub failure must not last until restart.
+			next := make(chan struct{})
+			a.metaLoaded, a.metaLoadErr = next, nil
+			store, source, gen := a.metaStore, a.metaSource, a.metaGen
+			go a.loadMeta(context.Background(), store, source, gen, next)
+		}
 		a.metaMu.Unlock()
 		if current {
 			return err

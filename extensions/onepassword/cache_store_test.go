@@ -20,6 +20,7 @@ type memoryMetadata struct {
 	mu               sync.Mutex
 	data             []byte
 	loadErr, saveErr error
+	loadFailures     int
 	ops              []string
 	started, release chan struct{}
 }
@@ -27,6 +28,10 @@ type memoryMetadata struct {
 func (s *memoryMetadata) Load(context.Context) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.loadFailures > 0 {
+		s.loadFailures--
+		return nil, errors.New("temporary Hub storage failure")
+	}
 	return append([]byte(nil), s.data...), s.loadErr
 }
 func (s *memoryMetadata) Save(ctx context.Context, b []byte) error {
@@ -212,7 +217,9 @@ func TestMetadataStorageFailuresNeverAuthorizeOrPersistErrors(t *testing.T) {
 	if f.count() != 0 || len(slot.bytes()) != 0 {
 		t.Fatal("an unread record caused a provider request or was overwritten")
 	}
+	slot.mu.Lock()
 	slot.loadErr = nil
+	slot.mu.Unlock()
 	slot.saveErr = errors.New("private storage detail")
 	restoreMetadata(t, a, slot, source)
 	if _, err := a.listVaults(context.Background()); !errors.Is(err, errMetadataStore) {
@@ -236,6 +243,30 @@ func TestMetadataStorageFailuresNeverAuthorizeOrPersistErrors(t *testing.T) {
 	}
 	if len(slot.bytes()) != 0 {
 		t.Fatal("a provider error was persisted")
+	}
+}
+
+func TestMetadataLoadRetryRestoresTheUnreadAnswerWithoutCallingTheProvider(t *testing.T) {
+	a, f, _ := clocked(t)
+	source := metadataSource("", testToken)
+	first := &memoryMetadata{}
+	restoreMetadata(t, a, first, source)
+	if _, err := a.listVaults(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	slot := &memoryMetadata{data: first.bytes(), loadFailures: 1}
+	b := newApp(fakeConnect(f))
+	b.token = testToken
+	b.now = a.now
+	b.startMeta(context.Background(), slot, source)
+	if _, err := b.listVaults(context.Background()); !errors.Is(err, errMetadataStore) {
+		t.Fatalf("first failed load: %v", err)
+	}
+	if vs, err := b.listVaults(context.Background()); err != nil || len(vs) != 3 {
+		t.Fatalf("restored after retry: %v %v", vs, err)
+	}
+	if f.count() != 1 || string(slot.bytes()) != string(first.bytes()) {
+		t.Fatal("storage recovery called the provider or changed the unread record")
 	}
 }
 
