@@ -8,10 +8,7 @@ package main
 // the authorization holds, and answers codeLocked at once when it does not. The caller then answers what it had.
 // Only an ask with nothing to fall back on (a first reference, a vault never listed) may have the user authorize op.
 
-import (
-	"context"
-	"errors"
-)
+import "context"
 
 type quietKey struct{}
 
@@ -32,11 +29,13 @@ func quietIfKept[T any](a *app, ctx context.Context, get func(*metaCache) (kept[
 }
 
 // needsUser says err is op on a computer that could not answer without the user (not authorized now, locked, no
-// account, a prompt nobody answered in time) or a computer that is offline: an earlier answer stands in for it.
+// account) or a computer that is offline: an earlier answer stands in for it. A time-out is not one of them: a quiet
+// ask never waits on a prompt (authorized turns a slow whoami into codeLocked), so a time-out is 1Password or the
+// network being slow, which the page and the caller report as it is.
 func needsUser(err error) bool {
 	switch opCode(err) {
 	case codeLocked, codeNotSignedIn, "offline":
 		return true
 	}
-	return errors.Is(err, context.DeadlineExceeded)
+	return false
 }
