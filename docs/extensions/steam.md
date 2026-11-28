@@ -2,7 +2,7 @@
 
 [Documentation](../README.md) · [Source](../../extensions/steam/README.md)
 
-Steam 0.3.3 researches games in the Store and reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search and sort the library, review the backlog, or open **Playtime recap**. Game details show achievement progress, local annotations and a link to the Steam Store. **Recent official updates** loads up to five dated Steam announcements when you open it. The Overview card opens the main Steam page. Friends Radar, wishlist alerts and gaming profile memory are optional.
+Steam 0.3.4 researches games in the Store and reads player status, playtime, library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to search and sort the library, review the backlog, or open **Playtime recap**. Game details show achievement progress, local annotations and a link to the Steam Store. **Recent official updates** loads up to five dated Steam announcements when you open it. The Overview card opens the main Steam page. Friends Radar, wishlist alerts and gaming profile memory are optional.
 
 ## Sign in with Steam Mobile QR
 
@@ -18,7 +18,11 @@ In **Settings › Extensions › Steam**, choose **Web API key** as the sign-in 
 
 Web API key mode uses read-only calls for publicly visible data. Set the profile and **Game details** to **Public** for the activity, library and achievements you want Persona to see. [Steam profile privacy](https://help.steampowered.com/en/faqs/view/588C-C67D-0251-C276)
 
-In either mode, set **Store country or region** to a two-letter ISO 3166-1 alpha-2 code for Store prices, currency and research budgets. The default is `US`. [ISO 3166 country codes](https://www.iso.org/iso-3166-country-codes.html)
+## Store country or region
+
+Leave **Store country or region override** (`country_code`) blank or select **Automatic** to follow the account for wishlist prices, Inbox alerts and game research. Mobile QR looks up the signed-in account's country and can fall back to the profile location Steam shares. Web API key mode uses the public profile's `loccountrycode` when available. Both modes use `US` if no country is available.
+
+Choose a country or region to view prices and research games there. The picker shows both English and Chinese names beside the two-letter ISO 3166-1 alpha-2 code. A saved code takes priority, including `US` saved by an earlier version. If an earlier version saved a lowercase or mixed-case code, save it in uppercase before upgrading so it matches the picker's stored values. [ISO 3166 country codes](https://www.iso.org/iso-3166-country-codes.html)
 
 ## Assistant tools
 
@@ -30,7 +34,7 @@ The extension advertises these tools through its Steam connector, including to c
 | `steam_recent_games` | Games played in the last two weeks, lifetime minutes per game and total minutes played in the last two weeks. |
 | `steam_library` | Owned games filtered by an optional `query` for title or AppID. Set `sort` to `playtime` (default, highest first) or `name`. |
 | `steam_achievements` | Achievement progress for a single numeric `appid`, including unlocked and total counts. |
-| `steam_wishlist` | Wishlist titles with current Store prices and discount percentages for the configured country. |
+| `steam_wishlist` | Wishlist titles with current prices and discounts in the selected Store region. |
 | `steam_achievement_hunter` | Locked achievements sorted by global unlock rate and a timeline of dated personal unlocks for one numeric `appid`. |
 | `steam_game_news` | Latest game updates in descending date order for one optional numeric `appid` or a selection of the account's played games. |
 | `steam_wishlist_deals` | Current wishlist discounts, target prices met, locally observed lows and limited-time giveaways, with Steam Store links. |
@@ -50,7 +54,7 @@ The recent games, library, wishlist and backlog list results accept an `offset` 
 
 `steam_game_news` accepts a `limit` from 1 through 20, with 10 updates by default. Omitting `appid` checks up to `games_limit` games (default 4, range 1–5) ranked by minutes played over the past two weeks. If the recent list is empty or unavailable, Steam ranks played library games by lifetime minutes. The default `official_only: true` uses Steam's official announcements feed and selects updates, patches and DLC using tags and headlines from up to 40 recent posts per game. This can miss posts without recognized tags or headlines. Set `official_only: false` to include other announcements and third-party media. Publication dates are Unix timestamps in seconds. [Steamworks news API](https://partner.steamgames.com/doc/webapi/ISteamNews)
 
-`steam_wishlist_deals` accepts a `limit` from 1 through 50, with 20 by default. It checks the configured region on demand and sorts giveaways first, followed by local lows and larger discounts. A local-low flag means the current quote improved on an earlier local price or matches a low previously set that way. The tool works while Inbox alerts are off and publishes no events.
+`steam_wishlist_deals` accepts a `limit` from 1 through 50, with 20 by default. It checks the selected Store region on demand and sorts giveaways first, followed by local lows and larger discounts. A local-low flag means the current quote improved on an earlier local price or matches a low previously set that way. The tool works while Inbox alerts are off and publishes no events.
 
 ## Backlog and tonight's picks
 
@@ -100,10 +104,10 @@ All dimensions are selected by default when export is enabled. The default limit
 | Tool | Arguments and result |
 | --- | --- |
 | `steam_store_tags` | Find Store tag IDs by name or ID with `query`. Set `language` for localized labels and use `limit` for a shorter list. |
-| `steam_store_search` | Combine `query` and up to eight `tags` given as IDs or exact localized or English names. Set `max_price` in the configured currency, `discounted_only`, or `platforms` as needed. All listed platforms are required. `steam_deck` includes Verified and Playable games. Set `language` to require the listed game language and localize results. Sort by `relevance`, `reviews`, `price_asc`, or `release_date`. Use `exclude_owned` to remove titles confirmed in the current library. |
+| `steam_store_search` | Combine `query` and up to eight `tags` given as IDs or exact localized or English names. Set `max_price` in the selected Store currency, `discounted_only`, or `platforms` as needed. All listed platforms are required. `steam_deck` includes Verified and Playable games. Set `language` to require the listed game language and localize results. Sort by `relevance`, `reviews`, `price_asc`, or `release_date`. Use `exclude_owned` to remove titles confirmed in the current library. |
 | `steam_game_details` | Pass one `appid` or an `appids` array, with optional `language`. Returns a short Store description, tags, genres, categories, release information, OS and Deck compatibility, controller and play modes, regional prices and discounts, and compact review summaries. |
 
-The Store's display language defaults to the Hub locale where supported. Prices use the configured Store country. A budget of `19.99` means 19.99 in that currency, and `0` finds free offers. Use the formatted price in the answer. Numeric `final` values are in Steam's hundredths of the currency unit. Price may be absent for an unreleased or unpriced title. [Steam language codes](https://partner.steamgames.com/doc/store/localization/languages) · [Steam Deck compatibility](https://partner.steamgames.com/doc/steamhardware/compat)
+The Store's display language defaults to the Hub locale where supported. Prices use the selected Store region, which both price-bearing research tools return as `country_code`. A budget of `19.99` means 19.99 in that currency, and `0` finds free offers. Use the formatted price in the answer. Numeric `final` values are in Steam's hundredths of the currency unit. Price may be absent for an unreleased or unpriced title. [Steam language codes](https://partner.steamgames.com/doc/store/localization/languages) · [Steam Deck compatibility](https://partner.steamgames.com/doc/steamhardware/compat)
 
 Search uses a bounded first page from the Steam storefront and verifies its returned prices against the exact budget. A result marked `truncated` is a shortlist from a larger set. When the library or wishlist is unavailable, the corresponding `owned` or `in_wishlist` flag is null. With `exclude_owned` enabled the tool filters confirmed owned titles and preserves candidates whose status is unknown. [Steam storefront search](https://store.steampowered.com/search/?category1=998&deck_compatibility=3%2C2)
 
@@ -180,6 +184,8 @@ The global unlock rates, achievement schema and news are cached in memory by App
 
 In QR mode, the extension keeps its data cache in memory for the active signed-in account. Web API key mode persists its account snapshots in `steam-cache-v1` under the extension data directory (`PERSONA_EXTENSION_DATA_DIR`, or the data directory sent by the Hub). A temporary request failure can reuse a labeled snapshot up to 24 hours old. A definitive denial for a dataset discards its cached record. Automatic retries for a failing dataset wait 30 seconds, and Refresh can retry immediately.
 
+The QR region lookup shares a 2.5-second budget between the account and profile reads. Successful results are fresh for eight hours, and an unresolved region can retry after the 30-second backoff. A failed request can reuse the last available country for the session. Signing out clears those results. Wishlist prices, price history, alert deduplication and regional research caches use the selected country as part of their scope.
+
 The HTTP client allows four active requests per Steam origin. Web API reads and waits for the shared QR token refresh have an eight-second budget. Storefront requests have a five-second default, with shorter budgets for search and optional metadata. Each enrichment batch gets up to six seconds within the request's overall budget. Completed results stay available when a sibling times out. Discovery details allow up to 12 seconds for the StoreBrowse and review stages together.
 
 The navigation and tools browse up to 20,000 library or recent entries and price up to 1,000 wishlist items in batches of 50. The wishlist keeps its full item count alongside the number of prices checked. During a partial refresh, cached names and quotes can fill missing fields for titles still on the current wishlist. The card shows a lower bound when some prices remain unchecked and a dash when none could be checked. Free-to-play titles have a localized label and unpriced titles show a price availability message.
@@ -207,6 +213,7 @@ The QR grant is a Steam mobile-client session with account privileges determined
 | Read | Steam Mobile QR | Web API key |
 | --- | --- | --- |
 | Player name, presence and current game | `IPlayerService/GetPlayerLinkDetails` | `ISteamUser/GetPlayerSummaries` |
+| Automatic Store country | `IUserAccountService/GetUserCountry/v1`, with `ISteamUserOAuth/GetUserSummaries/v1` profile fallback | `ISteamUser/GetPlayerSummaries/v2` profile location |
 | Recent playtime | `IPlayerService/GetRecentlyPlayedGames` | `IPlayerService/GetRecentlyPlayedGames` |
 | Owned games and lifetime playtime | `IPlayerService/GetOwnedGames` | `IPlayerService/GetOwnedGames` |
 | Achievement progress | `IPlayerService/GetAchievementsProgress` | `ISteamUserStats/GetPlayerAchievements` |
@@ -220,7 +227,7 @@ The QR grant is a Steam mobile-client session with account privileges determined
 
 `IStoreBrowseService/GetItems/v1` is the wishlist's sole source for display names, prices, release and demo signals, and artwork paths. It receives the selected Store country and language. Prices use Steam's integer hundredths and its formatted display string. The same API supplies multiplayer categories and fallback names for shared games. Inbox price observations and alerts use newly fetched quotes. [StoreBrowse message definitions](https://github.com/SteamDatabase/Protobufs/blob/master/webui/common.proto) · [Steam currency units](https://partner.steamgames.com/doc/store/pricing/currencies) · [Steamworks IPlayerService](https://partner.steamgames.com/doc/webapi/IPlayerService)
 
-Game research uses anonymous HTTPS GET requests. It reads both review windows through `IUserReviewsService/GetAppReviews/v1` and passes explicit start and end dates for the recent window. StoreBrowse provides game details and localized category labels. The legacy `/api/appdetails` route has a 1.25-second budget for genres or missing discovery metadata. The Store tag directory and filtered search have individual budgets and cached fallback. Ownership and wishlist membership use account reads, with an IDs-only wishlist lookup. [Valve reviews API](https://partner.steamgames.com/doc/webapi/IUserReviewsService)
+Store catalog, search and review requests use anonymous HTTPS GET. Game research reads both review windows through `IUserReviewsService/GetAppReviews/v1` and passes explicit start and end dates for the recent window. StoreBrowse provides game details and localized category labels. The legacy `/api/appdetails` route has a 1.25-second budget for genres or missing discovery metadata. The Store tag directory and filtered search have individual budgets and cached fallback. Ownership and wishlist membership use account reads, with an IDs-only wishlist lookup. [Valve reviews API](https://partner.steamgames.com/doc/webapi/IUserReviewsService)
 
 The Hub encrypts the versioned QR sign-in record through `connector.secrets.*`. It holds the refresh token, SteamID, account name and timestamps. The access token stays in the extension process. The extension makes a rotated refresh token usable after the Hub has saved it.
 

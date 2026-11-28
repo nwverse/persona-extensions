@@ -839,7 +839,7 @@ func (a *app) gameNews(parent context.Context, raw json.RawMessage) (gameNewsRes
 		ctx, cancel := context.WithTimeout(parent, readBudget)
 		defer cancel()
 		result := newGameNewsResult(options.summary)
-		a.publicData.collectGameNews(ctx, []game{{AppID: *args.AppID}}, options, a.config.CountryCode, t, &result)
+		a.publicData.collectGameNews(ctx, []game{{AppID: *args.AppID}}, options, a.storeAccount(), "", t, &result)
 		return result, nil
 	}
 	d, ctx, cancel := a.readContext(parent)
@@ -861,7 +861,8 @@ func (a *app) accountGameNews(ctx context.Context, d *steamData, t *text, option
 			result.warn(t, "profile", account.Issue, true)
 		}
 	}
-	if _, issue := d.readID(account); issue != "" {
+	id, issue := d.readID(account)
+	if issue != "" {
 		result.warn(t, "game_news", issue, false)
 		return result
 	}
@@ -887,12 +888,12 @@ func (a *app) accountGameNews(ctx context.Context, d *steamData, t *text, option
 			return result
 		}
 	}
-	a.publicData.collectGameNews(ctx, games, options, d.config.CountryCode, t, &result)
+	a.publicData.collectGameNews(ctx, games, options, d, id, t, &result)
 	return result
 }
 
 func (p *steamPublicData) collectGameNews(ctx context.Context, games []game, options gameNewsOptions,
-	country string, t *text, result *gameNewsResult) {
+	account *steamData, accountID string, t *text, result *gameNewsResult) {
 	type newsRead struct {
 		reading[[]gameNewsItem]
 		name string
@@ -905,7 +906,10 @@ func (p *steamPublicData) collectGameNews(ctx context.Context, games []game, opt
 		})
 		result := newsRead{reading: reply}
 		if reply.Data != nil && len(*reply.Data) > 0 {
-			result.name = p.newsGameName(ctx, g, country, t)
+			result.name = g.Name
+			if result.name == "" {
+				result.name = p.newsGameName(ctx, g.AppID, account.storeCountry(ctx, accountID), t)
+			}
 		}
 		return result, reply.Issue
 	})
@@ -934,19 +938,16 @@ func (p *steamPublicData) collectGameNews(ctx context.Context, games []game, opt
 	result.Updates = result.Updates[:min(len(result.Updates), options.limit)]
 }
 
-func (p *steamPublicData) newsGameName(ctx context.Context, g game, country string, t *text) string {
-	if g.Name != "" {
-		return g.Name
-	}
+func (p *steamPublicData) newsGameName(ctx context.Context, appID uint32, country string, t *text) string {
 	ctx, cancel := context.WithTimeout(ctx, newsNameTimeout)
 	defer cancel()
-	key := storeNameKey{g.AppID, country, t.storeLanguage}
+	key := storeNameKey{appID, country, t.storeLanguage}
 	r := p.names.slot(key, p.now).read(ctx, "", profileTTL, false, func(ctx context.Context) (*string, problem) {
-		items, issue := p.client.browseStoreBatch(ctx, []uint32{g.AppID}, country, t.storeLanguage, storeDataRequest{})
+		items, issue := p.client.browseStoreBatch(ctx, []uint32{appID}, country, t.storeLanguage, storeDataRequest{})
 		if issue != "" {
 			return nil, issue
 		}
-		name := items[g.AppID].Name
+		name := items[appID].Name
 		if name == "" {
 			return nil, problemResponse
 		}
@@ -955,5 +956,5 @@ func (p *steamPublicData) newsGameName(ctx context.Context, g game, country stri
 	if r.Data != nil {
 		return *r.Data
 	}
-	return t.gameName(g.AppID, "")
+	return t.gameName(appID, "")
 }

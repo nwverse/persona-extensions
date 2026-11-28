@@ -122,7 +122,7 @@ func discoveryTools(limit int) []wire.ConnectorTool {
 			InputSchema: json.RawMessage(`{"type":"object","properties":{
 				"query":{"type":"string","description":"Game title or keywords, up to 100 characters."},
 				"tags":{"type":"array","items":{"type":["integer","string"]},"description":"Up to eight Steam tag IDs or exact localized or English names. All tags are combined."},
-				"max_price":{"type":"number","minimum":0,"description":"Maximum current price in the configured Store currency (e.g. 19.99)."},
+				"max_price":{"type":"number","minimum":0,"description":"Maximum current price in the selected Store currency (e.g. 19.99)."},
 				"discounted_only":{"type":"boolean","default":false},
 				"platforms":{"type":"array","items":{"type":"string","enum":["windows","macos","linux","steam_deck"]},"description":"Require all listed platforms. Steam Deck accepts Verified or Playable."},
 				"language":{"type":"string","description":"Steam language code such as english or schinese. When provided, require game support and localize Store results."},
@@ -237,9 +237,12 @@ func (a *app) callDiscoveryTool(ctx context.Context, name string, raw json.RawMe
 	if !ok {
 		fallbackLanguage = t.storeLanguage
 	}
-	country := a.config.CountryCode
-	if name != storeTagsTool && (len(country) != 2 || !strings.Contains(isoCountries, " "+country+" ")) {
-		return wire.ConnectorCallResult{}, invalid(t.message(problemCountry, false))
+	var account *steamData
+	if name != storeTagsTool {
+		if country := a.config.CountryCode; country != "" && !validCountryCode(country) {
+			return wire.ConnectorCallResult{}, invalid(t.message(problemCountry, false))
+		}
+		account = a.storeAccount()
 	}
 	limit := a.config.DiscoveryResultLimit()
 	out := map[string]any{"available": false}
@@ -248,19 +251,22 @@ func (a *app) callDiscoveryTool(ctx context.Context, name string, raw json.RawMe
 	case storeTagsTool:
 		err = a.discovery.listTags(ctx, raw, fallbackLanguage, limit, t, out)
 	case storeSearchTool:
-		err = a.searchStore(ctx, raw, country, fallbackLanguage, limit, t, out)
+		err = a.searchStore(ctx, raw, account, fallbackLanguage, limit, t, out)
 	case gameDetailsTool:
-		var memory *steamData
-		if a.config.exportsMemoryDimension(memoryPlaystyle) {
-			memory = a.memoryData()
-		}
-		err = a.discovery.gameDetails(ctx, raw, country, fallbackLanguage, min(limit, detailBatchLimit), t, out)
-		if games, ok := out["games"].([]discoveryGame); err == nil && ok && memory != nil {
-			memory.rememberGenres(games)
+		err = a.discovery.gameDetails(ctx, raw, account, fallbackLanguage, min(limit, detailBatchLimit), t, out)
+		if games, ok := out["games"].([]discoveryGame); err == nil && ok &&
+			a.config.exportsMemoryDimension(memoryPlaystyle) && a.memoryData() == account {
+			account.rememberGenres(games)
 		}
 	}
 	if err != nil {
 		return wire.ConnectorCallResult{}, err
+	}
+	if account != nil && a.config.CountryCode == "" {
+		if issue := account.sessionIssue(); issue != "" {
+			out = map[string]any{"available": false}
+			describeReading(out, "account", reading[player]{Issue: issue}, t)
+		}
 	}
 	return encodeSteamTool(out, nil)
 }
@@ -387,7 +393,7 @@ var discoverySorts = map[string]string{
 	"": "", "relevance": "", "reviews": "Reviews_DESC", "price_asc": "Price_ASC", "release_date": "Released_DESC",
 }
 
-func (a *app) searchStore(ctx context.Context, raw json.RawMessage, country, fallback string, limit int, t *text, out map[string]any) error {
+func (a *app) searchStore(ctx context.Context, raw json.RawMessage, account *steamData, fallback string, limit int, t *text, out map[string]any) error {
 	var args discoverySearchArgs
 	if !decodeArgs(raw, &args) || utf8.RuneCountInString(args.Query) > maxQueryRunes ||
 		len(args.Tags) > searchTagLimit || len(args.Platforms) > 4 {
@@ -401,7 +407,7 @@ func (a *app) searchStore(ctx context.Context, raw json.RawMessage, country, fal
 	}
 	query := url.Values{
 		"query": {""}, "infinite": {"1"}, "start": {"0"}, "count": {strconv.Itoa(limit)},
-		"category1": {"998"}, "cc": {country}, "l": {language},
+		"category1": {"998"}, "l": {language},
 	}
 	if term := strings.TrimSpace(args.Query); term != "" {
 		query.Set("term", term)
@@ -453,6 +459,8 @@ func (a *app) searchStore(ctx context.Context, raw json.RawMessage, country, fal
 	if len(tagIDs) != 0 {
 		query.Set("tags", strings.Join(tagIDs, ","))
 	}
+	country := account.storeCountry(ctx, "")
+	query.Set("cc", country)
 	page := a.discovery.searchPage(ctx, query, limit)
 	if page.Stale && a.discovery.now().Sub(page.At) > searchMaxStaleAge {
 		page.Data, page.Stale = nil, false
@@ -473,7 +481,7 @@ func (a *app) searchStore(ctx context.Context, raw json.RawMessage, country, fal
 		games = append(games, game)
 	}
 	if len(games) > 0 {
-		games = a.annotateCandidates(ctx, games, args.ExcludeOwned, t, out)
+		games = account.annotateCandidates(ctx, games, args.ExcludeOwned, t, out)
 	}
 	out["available"], out["games"], out["truncated"], out["as_of"] = true, games, page.Data.Truncated, page.At
 	return nil
@@ -689,11 +697,9 @@ func storeNodeText(node *html.Node) string {
 	return strings.Join(strings.Fields(text.String()), " ")
 }
 
-func (a *app) annotateCandidates(ctx context.Context, games []discoveryCandidate, excludeOwned bool, t *text, out map[string]any) []discoveryCandidate {
-	ctx, stop := context.WithTimeout(ctx, accountLookupTimeout)
-	defer stop()
-	d, ctx, cancel := a.readContext(ctx)
-	defer cancel()
+func (d *steamData) annotateCandidates(ctx context.Context, games []discoveryCandidate, excludeOwned bool, t *text, out map[string]any) []discoveryCandidate {
+	ctx, cancel := context.WithTimeout(ctx, accountLookupTimeout)
+	defer d.cancelOnSessionEnd(cancel)()
 	var p reading[player]
 	if d.session == nil {
 		p = d.account(ctx, profileTTL, false)
@@ -813,7 +819,7 @@ type discoveryFeatures struct {
 	LANCoop           bool   `json:"lan_coop"`
 }
 
-func (d *steamDiscovery) gameDetails(ctx context.Context, raw json.RawMessage, country, fallback string, limit int, t *text, out map[string]any) error {
+func (d *steamDiscovery) gameDetails(ctx context.Context, raw json.RawMessage, account *steamData, fallback string, limit int, t *text, out map[string]any) error {
 	var args struct {
 		AppID    *uint32  `json:"appid"`
 		AppIDs   []uint32 `json:"appids"`
@@ -841,6 +847,7 @@ func (d *steamDiscovery) gameDetails(ctx context.Context, raw json.RawMessage, c
 			games = append(games, discoveryGame{AppID: id, URL: storeLink(id)})
 		}
 	}
+	country := account.storeCountry(ctx, "")
 	browse, browseIssue := d.client.browseStore(ctx, selected, country, language, storeDataRequest{
 		BestPurchase: true, BasicInfo: true, Platforms: true, Release: true, TagCount: detailTagLimit,
 	})

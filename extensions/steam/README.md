@@ -1,12 +1,14 @@
 # Steam
 
-Steam 0.3.3 researches Store games and reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to review your backlog, annotate games locally and open a playtime recap. The Overview card opens the same page. Friends Radar, wishlist alerts and gaming profile memory are optional.
+Steam 0.3.4 researches Store games and reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to review your backlog, annotate games locally and open a playtime recap. The Overview card opens the same page. Friends Radar, wishlist alerts and gaming profile memory are optional.
 
 The wishlist loads regional prices, titles and release information together through Steam StoreBrowse. A slow batch leaves the other results visible. When Steam temporarily fails, the page labels any usable cached snapshot. [Network and cache behavior](../../docs/extensions/steam.md#refresh-and-storage)
 
 New installations use Steam Mobile QR by default. In **Settings › Extensions › Steam**, select **Sign In**, scan with Steam Guard in the Steam Mobile App, and approve the login on the phone. The Hub encrypts the refresh token in its connector secret store. The extension keeps the access token, Steam account data and recap history in memory for the current session. Signing out clears them and preserves your explicit local annotations.
 
-To use the read-only Web API key fallback, select **Web API key** and enter a SteamID64 or profile vanity name and a key. Existing installations with both values use this mode automatically. Steam's privacy settings govern what the key can read. Bounded account caches and recap snapshots can persist on this device. The optional Store country defaults to `US`. [Setup, permissions and sign-out](../../docs/extensions/steam.md)
+To use the read-only Web API key fallback, select **Web API key** and enter a SteamID64 or profile vanity name and a key. Existing installations with both values use this mode automatically. Steam's privacy settings govern what the key can read. Bounded account caches and recap snapshots can persist on this device. [Setup, permissions and sign-out](../../docs/extensions/steam.md)
+
+Leave **Store country or region override** blank or select **Automatic** to follow the account. Mobile QR prefers the Steam account country. Web API key mode uses the public profile country when Steam shares it. If no country is available, Steam prices and searches use `US`. Choose another region such as `JP`, `US` or `CN` to compare prices or research games there. [Store country resolution](../../docs/extensions/steam.md#store-country-or-region)
 
 ## Achievements and game updates
 

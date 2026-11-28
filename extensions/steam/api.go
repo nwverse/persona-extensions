@@ -315,12 +315,13 @@ func (c steamClient) profile(ctx context.Context, id string) (*player, problem) 
 	var reply struct {
 		Response *struct {
 			Players []struct {
-				SteamID    string `json:"steamid"`
-				Name       string `json:"personaname"`
-				Visibility int    `json:"communityvisibilitystate"`
-				State      int    `json:"personastate"`
-				Game       string `json:"gameextrainfo"`
-				GameID     string `json:"gameid"`
+				SteamID    string          `json:"steamid"`
+				Name       string          `json:"personaname"`
+				Visibility int             `json:"communityvisibilitystate"`
+				State      int             `json:"personastate"`
+				Game       string          `json:"gameextrainfo"`
+				GameID     string          `json:"gameid"`
+				Country    json.RawMessage `json:"loccountrycode"`
 			} `json:"players"`
 		} `json:"response"`
 	}
@@ -340,8 +341,10 @@ func (c steamClient) profile(ctx context.Context, id string) (*player, problem) 
 		if item.SteamID != id {
 			continue
 		}
-		p := &player{SteamID: id, Name: c.text(item.Name), Public: item.Visibility == 3, State: "unknown"}
+		country := ""
+		p := &player{SteamID: id, Name: c.text(item.Name), Public: item.Visibility == 3, State: "unknown", ProfileCountry: &country}
 		if p.Public {
+			country = apiCountryCode(item.Country)
 			c.setPresence(p, &item.State, item.GameID, item.Game)
 		}
 		return p, ""

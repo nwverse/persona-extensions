@@ -320,7 +320,7 @@ func NewPriceHistoryStore(dataDir string) *PriceHistoryStore {
 
 func priceScope(steamID, country string) (string, error) {
 	country = strings.ToUpper(strings.TrimSpace(country))
-	if !validSteamID(steamID) || len(country) != 2 || !strings.Contains(isoCountries, " "+country+" ") {
+	if !validSteamID(steamID) || !validCountryCode(country) {
 		return "", errors.New("price history requires a SteamID64 and a Store country code")
 	}
 	return steamID + "/" + country + "/", nil

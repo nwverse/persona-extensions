@@ -107,7 +107,7 @@ var english = text{
 	problems: map[problem]string{
 		problemSetup:              "Enter your Steam player ID and Web API key in Settings › Extensions › Steam.",
 		problemInvalidID:          "Steam could not find this player. Check the SteamID64 or profile vanity name.",
-		problemCountry:            "Enter an assigned two-letter ISO 3166-1 country code for the Steam Store.",
+		problemCountry:            "Leave the Steam Store country blank or enter an assigned two-letter ISO 3166-1 code.",
 		problemMode:               "Choose Steam Mobile QR or Web API key in Steam's extension settings.",
 		problemKey:                "Steam rejected the Web API key. Check the saved secret in Settings › Extensions › Steam.",
 		problemPrivate:            "This Steam profile is private. Make the profile public to see its activity.",
@@ -232,7 +232,7 @@ var chinese = text{
 	problems: map[problem]string{
 		problemSetup:              "请在「设置 › 扩展 › Steam」填写玩家标识和 Web API 密钥。",
 		problemInvalidID:          "Steam 未找到该玩家，请检查 SteamID64 或个人资料自定义名称。",
-		problemCountry:            "请填写有效的两位 ISO 3166-1 商店国家或地区代码。",
+		problemCountry:            "请留空以自动识别 Steam 商店区域，或填写有效的两位 ISO 3166-1 国家代码。",
 		problemMode:               "请在 Steam 扩展设置中选择手机 App 扫码或 Web API 密钥。",
 		problemKey:                "Steam 拒绝了 Web API 密钥，请在「设置 › 扩展 › Steam」检查已保存的密钥。",
 		problemPrivate:            "此 Steam 个人资料为私密状态。公开资料后可查看游戏活动。",

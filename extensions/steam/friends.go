@@ -557,7 +557,11 @@ func (d *steamData) coopOverlap(ctx context.Context, out map[string]any, t *text
 		return
 	}
 	shared := sharedGames(own.Data, visible)
-	page, next, categoryIssue := client.coopPage(ctx, shared, args, d.config.CountryCode, t.storeLanguage)
+	country := defaultCountry
+	if args.Offset < len(shared) {
+		country = d.storeCountry(ctx, account)
+	}
+	page, next, categoryIssue := client.coopPage(ctx, shared, args, country, t.storeLanguage)
 	if categoryIssue != "" {
 		out["partial"] = true
 		describeReading(out, "store_categories", reading[gameList]{Issue: problemCoopStore}, t)

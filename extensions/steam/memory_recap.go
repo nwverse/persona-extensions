@@ -377,12 +377,7 @@ func (a *app) memoryData() *steamData {
 		}
 		return nil
 	}
-	a.qr.mu.Lock()
-	defer a.qr.mu.Unlock()
-	if s := a.qr.session; s != nil && s.currentLocked() && s.refreshExpiryLocked().After(a.qr.now()) {
-		return s.reads
-	}
-	return nil
+	return a.currentQRData()
 }
 
 func pageGamingProfile(entries []wire.MemoryEntry, p wire.MemoryEntriesParams, result wire.MemoryEntriesResult) (wire.MemoryEntriesResult, error) {

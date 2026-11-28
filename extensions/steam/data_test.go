@@ -88,6 +88,10 @@ func newFakeSteamMode(t *testing.T, timeout time.Duration, access string) *fakeS
 			wantKey, wantToken = access == "", access != ""
 		case playerLinkPath, wishlistPath:
 			wantToken = access != ""
+		case fixtureCountryPath:
+			method, wantToken = http.MethodPost, true
+		case fixtureMobileSummariesPath:
+			wantToken = true
 		case progressPath:
 			method, wantToken = http.MethodPost, true
 		case userAchievementsPath:
@@ -168,6 +172,8 @@ func (f *fakeSteam) seed() {
 		}
 		_, _ = fmt.Fprintf(w, `{"response":{"players":[{"steamid":%q,"personaname":"Fixture Pilot","personastate":1,"communityvisibilitystate":3,"gameextrainfo":"Synthetic Adventure","gameid":%q}]}}`, id, appIDText(firstApp))
 	})
+	f.reply(fixtureCountryPath, http.StatusOK, `{"response":{"country":"US"}}`)
+	f.reply(fixtureMobileSummariesPath, http.StatusOK, `{"players":[]}`)
 	f.handle(ownedPath, func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if q.Get("include_appinfo") != "1" || q.Get("include_played_free_games") != "1" || q.Get("steamid") == "" {
@@ -406,7 +412,7 @@ func TestQRSnapshotReadsWhileProfileIsPending(t *testing.T) {
 		}
 	})
 	q := &qrAuth{ctx: t.Context(), client: steamClient{http: f.http}, now: time.Now,
-		config: config{AuthMode: modeQR, CountryCode: "US"}}
+		config: config{AuthMode: modeQR}}
 	q.mu.Lock()
 	q.installLocked(steamTokens{secret: fixtureSecret(t, fixtureID, now), refreshExpiry: expires, access: access, accessExpiry: expires})
 	d := q.session.reads
@@ -417,7 +423,8 @@ func TestQRSnapshotReadsWhileProfileIsPending(t *testing.T) {
 	result := make(chan snapshot, 1)
 	go func() { result <- d.snapshot(ctx, "english", false, true) }()
 	await(t, time.Second, func() bool {
-		return f.hit(playerLinkPath) == 1 && f.hit(recentPath) == 1 && f.hit(ownedPath) == 1 && f.hit(wishlistPath) == 1
+		return f.hit(playerLinkPath) == 1 && f.hit(recentPath) == 1 && f.hit(ownedPath) == 1 &&
+			f.hit(fixtureCountryPath) == 1 && f.hit(wishlistPath) == 1
 	})
 	close(releaseProfile)
 	select {
