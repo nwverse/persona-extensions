@@ -32,8 +32,9 @@ func TestManifestAndTranslations(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.Version != version {
-		t.Fatalf("manifest version = %q, want runtime version %q", m.Version, version)
+	const release = "0.3.3"
+	if m.Version != release || version != release {
+		t.Fatalf("manifest version = %q, runtime version = %q, want %q", m.Version, version, release)
 	}
 	if m.ID != extensionID || m.Engines == nil || m.Engines.PluginProtocol != 1 ||
 		m.Icon != "" || len(m.Tags) != 0 || m.Permissions == nil ||
