@@ -33,9 +33,6 @@ type config struct {
 func (c config) normalized(key string) (config, problem) {
 	c.SteamID = strings.TrimSpace(c.SteamID)
 	c.CountryCode = strings.ToUpper(strings.TrimSpace(c.CountryCode))
-	if c.CountryCode == "" {
-		c.CountryCode = defaultCountry
-	}
 	if c.AuthMode == "" {
 		c.AuthMode = modeQR
 		if c.SteamID != "" && key != "" {
@@ -54,7 +51,7 @@ func (c config) normalized(key string) (config, problem) {
 	default:
 		return c, problemMode
 	}
-	if len(c.CountryCode) != 2 || !strings.Contains(isoCountries, " "+c.CountryCode+" ") {
+	if c.CountryCode != "" && !validCountryCode(c.CountryCode) {
 		return c, problemCountry
 	}
 	if c.AuthMode == modeWebAPIKey {
@@ -74,6 +71,10 @@ func validSteamID(s string) bool {
 	}
 	n, err := strconv.ParseUint(s, 10, 64)
 	return err == nil && n > steamIDBase && n <= steamIDBase+(1<<32)-1
+}
+
+func validCountryCode(country string) bool {
+	return len(country) == 2 && strings.Contains(isoCountries, " "+country+" ")
 }
 
 // ISO 3166-1 alpha-2 assignments, delimited to match complete country codes.

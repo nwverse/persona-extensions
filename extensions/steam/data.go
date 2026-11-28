@@ -26,6 +26,8 @@ type steamData struct {
 	session     *qrSession
 	vanity      *cacheSlot[string]
 	profile     *cacheSlot[player]
+	qrCountry   *cacheSlot[string]
+	qrLocation  *cacheSlot[string]
 	library     *cacheSlot[gameList]
 	recent      *cacheSlot[gameList]
 	wishes      *cacheSlot[wishList]
@@ -36,7 +38,7 @@ type steamData struct {
 	stores      steamStores
 	memory      memoryObservations
 	lastAccount atomic.Pointer[reading[player]]
-	inbox       atomic.Pointer[[]wishlistDelivery]
+	inbox       atomic.Pointer[wishlistInbox]
 }
 
 func newSteamData(cfg config, key, dir string, httpClient *http.Client, now func() time.Time) *steamData {
@@ -73,6 +75,13 @@ func newAccountData(cfg config, client steamClient, dataDir string, now func() t
 		stores:   newSteamStores(dataDir),
 	}
 	d.wishes.mergeStale = mergeStaleWishlist
+	if session != nil {
+		d.qrCountry = newSlot[string]("", "", now, session)
+		d.qrLocation = newSlot[string]("", "", now, session)
+	} else if cfg.CountryCode == "" {
+		// Older profile snapshots can still supply stale presence during the first region lookup.
+		d.profile.isFresh = func(p *player) bool { return p.ProfileCountry != nil }
+	}
 	if cfg.FriendsRadarEnabled {
 		d.friendList = newSlot[friendRoster]("", "", now, session)
 		d.friendState = newSlot[[]player]("", "", now, session)
@@ -104,11 +113,32 @@ func (a *app) readContext(parent context.Context) (*steamData, context.Context, 
 	}
 	d := s.reads
 	a.qr.mu.Unlock()
-	stop := context.AfterFunc(s.ctx, cancel)
-	if s.ctx.Err() != nil {
+	return d, ctx, d.cancelOnSessionEnd(cancel)
+}
+
+// Public Store reads and memory exports can inspect a current QR session
+// without waiting for secret restoration or refreshing credentials.
+func (a *app) currentQRData() *steamData {
+	if a.qr == nil || a.setup != "" && a.setup != problemAuthRequired {
+		return nil
+	}
+	a.qr.mu.Lock()
+	defer a.qr.mu.Unlock()
+	if s := a.qr.session; s != nil && s.currentLocked() && s.refreshExpiryLocked().After(a.qr.now()) {
+		return s.reads
+	}
+	return nil
+}
+
+func (d *steamData) cancelOnSessionEnd(cancel context.CancelFunc) func() {
+	if d.session == nil {
+		return cancel
+	}
+	stop := context.AfterFunc(d.session.ctx, cancel)
+	if d.session.ctx.Err() != nil {
 		cancel()
 	}
-	return d, ctx, func() {
+	return func() {
 		stop()
 		cancel()
 	}
@@ -147,6 +177,8 @@ func (d *steamData) readClient(ctx context.Context) (steamClient, problem) {
 // The session lock also guards lookup and publication of these in-memory slots.
 func (d *steamData) clearLocked() {
 	d.profile.clear()
+	d.qrCountry.clear()
+	d.qrLocation.clear()
 	d.library.clear()
 	d.recent.clear()
 	d.wishes.clear()
@@ -274,11 +306,16 @@ func (d *steamData) readGames(ctx context.Context, p reading[player], slot *cach
 }
 
 func (d *steamData) wishlist(ctx context.Context, p reading[player], language string, refresh bool) reading[wishList] {
+	r, _ := d.wishlistWithCountry(ctx, p, language, refresh)
+	return r
+}
+
+func (d *steamData) wishlistWithCountry(ctx context.Context, p reading[player], language string, refresh bool) (reading[wishList], string) {
 	id, issue := d.readID(p)
+	country := d.storeCountry(ctx, id)
 	if issue != "" {
-		return reading[wishList]{Issue: issue}
+		return reading[wishList]{Issue: issue}, country
 	}
-	country := d.config.CountryCode
 	return d.wishes.read(ctx, id+"/"+country+"/"+language, wishlistTTL, refresh, func(ctx context.Context) (*wishList, problem) {
 		c, issue := d.readClient(ctx)
 		if issue != "" {
@@ -290,7 +327,7 @@ func (d *steamData) wishlist(ctx context.Context, p reading[player], language st
 			d.recordSnapshot(func() { _ = d.stores.prices.Observe(id, country, at, quotes) })
 		}
 		return list, issue
-	})
+	}), country
 }
 
 func (d *steamData) achievements(ctx context.Context, p reading[player], appID uint32, language string) reading[achievementProgress] {

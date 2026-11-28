@@ -36,7 +36,7 @@ var tools = append([]wire.ConnectorTool{
 		InputSchema: json.RawMessage(`{"type":"object","required":["appid"],"properties":{"appid":{"type":"integer","minimum":1,"maximum":4294967295}}}`),
 	},
 	{
-		Name: "steam_wishlist", Description: "Read the visible Steam wishlist with Store price and discount in the configured country. Use next_offset to read more; check prices_checked before interpreting the discount count.",
+		Name: "steam_wishlist", Description: "Read the visible Steam wishlist with prices and discounts in the selected Store region. Use next_offset to read more. Check prices_checked before interpreting the discount count.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{` + pageProperties + `}}`),
 	},
 	achievementHunterTool,
@@ -236,7 +236,9 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 		p := d.account(ctx, presenceTTL, false)
 		describeReading(out, "profile", p, t)
 		if p.Data != nil {
-			out["available"], out["profile"] = true, p.Data
+			profile := *p.Data
+			profile.ProfileCountry = nil
+			out["available"], out["profile"] = true, profile
 			games := d.ownedGames(ctx, p, false)
 			describeReading(out, "library", games, t)
 			if games.Data != nil {
@@ -296,9 +298,9 @@ func (a *app) callTool(ctx context.Context, name string, raw json.RawMessage) (w
 			return wire.ConnectorCallResult{}, invalid(badPaging)
 		}
 		p := d.toolAccount(ctx, out, t)
-		r := d.wishlist(ctx, p, t.storeLanguage, false)
+		r, country := d.wishlistWithCountry(ctx, p, t.storeLanguage, false)
 		describeReading(out, "wishlist", r, t)
-		out["country_code"] = d.config.CountryCode
+		out["country_code"] = country
 		if r.Data != nil {
 			out["available"], out["wishlist_count"] = true, r.Data.Total
 			out["discounted_count"], out["prices_checked"] = r.Data.Discounted, r.Data.Checked

@@ -44,12 +44,13 @@ func (p problem) temporary() bool {
 }
 
 type player struct {
-	SteamID string `json:"steam_id"`
-	Name    string `json:"name"`
-	Public  bool   `json:"public"`
-	State   string `json:"state"`
-	Playing string `json:"playing,omitempty"`
-	PlayApp uint32 `json:"playing_appid,omitempty"`
+	SteamID        string  `json:"steam_id"`
+	Name           string  `json:"name"`
+	Public         bool    `json:"public"`
+	State          string  `json:"state"`
+	Playing        string  `json:"playing,omitempty"`
+	PlayApp        uint32  `json:"playing_appid,omitempty"`
+	ProfileCountry *string `json:"loccountrycode,omitempty"`
 }
 
 type game struct {

@@ -420,7 +420,7 @@ func sendFriendGames(w http.ResponseWriter, games []game) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"response": map[string]any{"game_count": len(games), "games": games}})
 }
 
-func readCategoryBatch(t *testing.T, r *http.Request, wantLanguage string) []uint32 {
+func readCategoryBatch(t *testing.T, r *http.Request, wantCountry, wantLanguage string) []uint32 {
 	t.Helper()
 	var query struct {
 		IDs []struct {
@@ -432,7 +432,7 @@ func readCategoryBatch(t *testing.T, r *http.Request, wantLanguage string) []uin
 		} `json:"context"`
 	}
 	q := r.URL.Query()
-	if err := json.Unmarshal([]byte(q.Get("input_json")), &query); err != nil || query.Context.Country != "US" ||
+	if err := json.Unmarshal([]byte(q.Get("input_json")), &query); err != nil || query.Context.Country != wantCountry ||
 		query.Context.Language != wantLanguage || len(query.IDs) < 1 || len(query.IDs) > 50 || len(q) != 1 {
 		t.Error("invalid anonymous Store category batch")
 	}
@@ -486,7 +486,7 @@ func TestCoopOverlapMultiFriend(t *testing.T) {
 			}
 		case storeBrowsePath:
 			storeHits.Add(1)
-			ids := readCategoryBatch(t, r, "english")
+			ids := readCategoryBatch(t, r, "US", "english")
 			if slices.Contains(ids, ownOnly) || slices.Contains(ids, subsetOnly) {
 				t.Error("Store queried games outside the intersection with all visible friends")
 			}
@@ -498,7 +498,7 @@ func TestCoopOverlapMultiFriend(t *testing.T) {
 	})
 	dir := t.TempDir()
 	// Keep the optional discovery skill's startup files out of the persistence check.
-	h := startFriendsHost(t, client, key, "en", fmt.Sprintf(`{"steam_id":%q,"friends_radar_enabled":true,"discovery_tools_enabled":false}`, fixtureID), dir, time.Now)
+	h := startFriendsHost(t, client, key, "en", fmt.Sprintf(`{"steam_id":%q,"country_code":"US","friends_radar_enabled":true,"discovery_tools_enabled":false}`, fixtureID), dir, time.Now)
 	selection := fmt.Sprintf(`"friend_steam_ids":[%q,%q,%q,%q]`, anna, boris, private, stranger)
 	first := toolAnswer(t, h, "steam_coop_overlap", `{`+selection+`,"limit":1}`)
 	contains(t, first, `"available":true`, `"partial":true`, `"included_friend_count":2`, `"private_or_unavailable"`, `"not_verified"`,
@@ -589,7 +589,7 @@ func TestCoopOverlapQRPartial(t *testing.T) {
 				http.NotFound(w, r)
 			}
 		case storeBrowsePath:
-			if ids := readCategoryBatch(t, r, "schinese"); !slices.Equal(ids, []uint32{firstApp}) {
+			if ids := readCategoryBatch(t, r, "US", "schinese"); !slices.Equal(ids, []uint32{firstApp}) {
 				t.Error("unexpected QR Store category request")
 			}
 			http.Error(w, "Store fixture unavailable", http.StatusServiceUnavailable)
@@ -616,7 +616,7 @@ func TestCoopOverlapQRPartial(t *testing.T) {
 
 func TestCoopOverlapStoreScanLimit(t *testing.T) {
 	key, friend := rand.Text(), syntheticFriendID(0)
-	var storeHits atomic.Int32
+	var storeHits, profileHits atomic.Int32
 	const lastApp = thirdApp + 200
 	games := make([]game, 151)
 	for i := range games {
@@ -628,9 +628,15 @@ func TestCoopOverlapStoreScanLimit(t *testing.T) {
 			sendFriendList(t, w, r, []string{friend})
 		case ownedPath:
 			sendFriendGames(w, games)
+		case playerPath:
+			profileHits.Add(1)
+			if r.URL.Query().Get("steamids") != fixtureID {
+				t.Error("co-op Store metadata used a friend's region")
+			}
+			_, _ = fmt.Fprintf(w, `{"response":{"players":[{"steamid":%q,"communityvisibilitystate":3,"loccountrycode":"GB"}]}}`, fixtureID)
 		case storeBrowsePath:
 			storeHits.Add(1)
-			ids := readCategoryBatch(t, r, "english")
+			ids := readCategoryBatch(t, r, "GB", "english")
 			categories := make(map[uint32][]int, len(ids))
 			for _, id := range ids {
 				categories[id] = []int{2}
@@ -653,8 +659,8 @@ func TestCoopOverlapStoreScanLimit(t *testing.T) {
 	second := toolAnswer(t, h, coopOverlapTool, fmt.Sprintf(`{"friend_steam_id":%q,"offset":150}`, friend))
 	contains(t, second, `"coop_support":"supported"`, appIDText(lastApp), `"offset":150`, `"limit":20`)
 	assertHidden(t, second, "next_offset")
-	if storeHits.Load() != 4 {
-		t.Fatal("the final Store scan queried outside its cursor window")
+	if storeHits.Load() != 4 || profileHits.Load() != 1 {
+		t.Fatal("the final Store scan exceeded its cursor window or failed to reuse the account's region")
 	}
 }
 
@@ -731,7 +737,7 @@ func TestCoopOverlapSlowLibraryKeepsOtherFriendsAndStoreNames(t *testing.T) {
 			}
 			sendFriendGames(w, []game{{AppID: firstApp, PlaytimeForever: 5}})
 		case storeBrowsePath:
-			if !slices.Equal(readCategoryBatch(t, r, "english"), []uint32{firstApp}) {
+			if !slices.Equal(readCategoryBatch(t, r, "US", "english"), []uint32{firstApp}) {
 				t.Error("StoreBrowse received other games than the surviving intersection")
 			}
 			_, _ = fmt.Fprintf(w, `{"response":{"store_items":[{"appid":%d,"success":1,"name":"Shared Store name","categories":{"supported_player_categoryids":[38]}}]}}`, firstApp)
@@ -739,7 +745,7 @@ func TestCoopOverlapSlowLibraryKeepsOtherFriendsAndStoreNames(t *testing.T) {
 			t.Error("unexpected overlap endpoint")
 		}
 	})
-	h := startFriendsHost(t, client, key, "en", fmt.Sprintf(`{"steam_id":%q,"friends_radar_enabled":true}`, fixtureID), t.TempDir(), time.Now)
+	h := startFriendsHost(t, client, key, "en", fmt.Sprintf(`{"steam_id":%q,"country_code":"US","friends_radar_enabled":true}`, fixtureID), t.TempDir(), time.Now)
 	args, _ := json.Marshal(map[string]any{"friend_steam_ids": friends})
 	start := time.Now()
 	got := toolAnswer(t, h, coopOverlapTool, string(args))

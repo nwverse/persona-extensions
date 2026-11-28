@@ -36,7 +36,7 @@ const (
 
 var wishlistDealsTool = wire.ConnectorTool{
 	Name:        wishlistDealsName,
-	Description: "Read current Steam wishlist discounts, target prices met, local price lows and limited-time giveaways in the configured region.",
+	Description: "Read current Steam wishlist discounts, target prices met, local price lows and limited-time giveaways in the selected Store region.",
 	InputSchema: json.RawMessage(`{"type":"object","properties":{"limit":{"type":"integer","minimum":1,"maximum":50,"default":20}}}`),
 }
 
@@ -212,6 +212,11 @@ type wishlistDelivery struct {
 	Until time.Time                `json:"until"`
 }
 
+type wishlistInbox struct {
+	scope      string
+	deliveries []wishlistDelivery
+}
+
 func (t *text) wishlistNotice(kind, key, version string, ends uint32, item wishItem, preview string) wishlistCandidate {
 	label := t.inboxPrice
 	switch kind {
@@ -269,7 +274,7 @@ func (t *text) wishlistRoundup(country string, started time.Time, deals []wishli
 	}}
 }
 
-func (state *wishlistWatchState) candidates(cfg config, t *text, at, previous time.Time, list *wishList, complete bool, history map[uint32]PriceHistory) []wishlistCandidate {
+func (state *wishlistWatchState) candidates(cfg config, country string, t *text, at, previous time.Time, list *wishList, complete bool, history map[uint32]PriceHistory) []wishlistCandidate {
 	threshold := enabledLimit(true, cfg.WishlistDiscountThreshold, defaultDiscount, 100)
 	targets := cfg.wishlistTargets()
 	var giveaways, releasesAndDemos, priceAlerts, saleAlerts []wishlistCandidate
@@ -350,7 +355,7 @@ func (state *wishlistWatchState) candidates(cfg config, t *text, at, previous ti
 			state.Roundup = at
 		}
 		slices.SortFunc(sales, compareWishlistDeals)
-		giveaways = append(giveaways, t.wishlistRoundup(cfg.CountryCode, state.Roundup, sales))
+		giveaways = append(giveaways, t.wishlistRoundup(country, state.Roundup, sales))
 		saleAlerts = nil
 	}
 	if complete && len(sales)+uncertainSales < roundupMinDeals {
@@ -359,12 +364,12 @@ func (state *wishlistWatchState) candidates(cfg config, t *text, at, previous ti
 	return slices.Concat(giveaways, releasesAndDemos, saleAlerts, priceAlerts)
 }
 
-func (s *EventCursorStore) observeWishlist(id string, cfg config, t *text, at time.Time, list *wishList, complete bool, histories map[uint32]PriceHistory) (out []wishlistDelivery, created int, err error) {
+func (s *EventCursorStore) observeWishlist(id, country string, cfg config, t *text, at time.Time, list *wishList, complete bool, histories map[uint32]PriceHistory) (out []wishlistDelivery, created int, err error) {
 	limit := cfg.InboxEventLimit()
 	if limit == 0 {
 		return nil, 0, nil
 	}
-	scope, err := priceScope(id, cfg.CountryCode)
+	scope, err := priceScope(id, country)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -376,7 +381,7 @@ func (s *EventCursorStore) observeWishlist(id string, cfg config, t *text, at ti
 	err = s.file.update(func(entries map[string]eventCursorRecord) (bool, error) {
 		saved := entries[scope]
 		if at.Before(saved.SeenAt) {
-			out = wishlistDeliveries(entries, id, cfg.CountryCode, at)
+			out = wishlistDeliveries(entries, id, country, at)
 			return false, nil
 		}
 		var state wishlistWatchState
@@ -386,10 +391,10 @@ func (s *EventCursorStore) observeWishlist(id string, cfg config, t *text, at ti
 		} else {
 			state = wishlistWatchState{Namespace: rand.Text(), Items: make(map[uint32]wishlistItemState)}
 		}
-		candidates := state.candidates(cfg, t, at, saved.SeenAt, list, complete, histories)
+		candidates := state.candidates(cfg, country, t, at, saved.SeenAt, list, complete, histories)
 		keys := make([]string, len(candidates))
 		for i, event := range candidates {
-			key, err := eventCursorKey(id, event.kind, cfg.CountryCode+"/"+event.key, event.version)
+			key, err := eventCursorKey(id, event.kind, country+"/"+event.key, event.version)
 			if err != nil {
 				return false, err
 			}
@@ -432,7 +437,7 @@ func (s *EventCursorStore) observeWishlist(id string, cfg config, t *text, at ti
 			return r.lastSeen()
 		})
 		entries[scope] = eventCursorRecord{SeenAt: at, Wishlist: &state}
-		out = wishlistDeliveries(entries, id, cfg.CountryCode, at)
+		out = wishlistDeliveries(entries, id, country, at)
 		return true, nil
 	})
 	if err != nil {
@@ -493,23 +498,24 @@ func (d *steamData) startWishlistInbox(ctx context.Context, hub *ext.Hub, t *tex
 	}()
 }
 
-func (d *steamData) readWishlistSignals(ctx context.Context, t *text) (string, *wishList, problem) {
+func (d *steamData) readWishlistSignals(ctx context.Context, t *text) (id, country string, list *wishList, issue problem) {
 	var p reading[player]
 	if d.session == nil {
 		p = d.account(ctx, profileTTL, true)
-		if p.Stale {
-			return "", nil, p.Issue
-		}
 	}
-	id, issue := d.readID(p)
+	id, issue = d.readID(p)
+	country = d.storeCountry(ctx, id)
+	if p.Stale {
+		return id, country, nil, p.Issue
+	}
 	if issue != "" {
-		return "", nil, issue
+		return id, country, nil, issue
 	}
 	c, issue := d.readClient(ctx)
 	if issue != "" {
-		return "", nil, issue
+		return id, country, nil, issue
 	}
-	list, issue := c.wishlist(ctx, id, d.config.CountryCode, t.storeLanguage)
+	list, issue = c.wishlist(ctx, id, country, t.storeLanguage)
 	if list != nil {
 		for i := range list.Items {
 			item := &list.Items[i]
@@ -519,7 +525,7 @@ func (d *steamData) readWishlistSignals(ctx context.Context, t *text) (string, *
 			}
 		}
 	}
-	return id, list, issue
+	return id, country, list, issue
 }
 
 func (d *steamData) scanWishlistInbox(ctx context.Context, t *text, notify func()) {
@@ -527,28 +533,30 @@ func (d *steamData) scanWishlistInbox(ctx context.Context, t *text, notify func(
 		return
 	}
 	readCtx, cancel := context.WithTimeout(ctx, readBudget)
-	id, list, issue := d.readWishlistSignals(readCtx, t)
+	id, country, list, issue := d.readWishlistSignals(readCtx, t)
 	cancel()
 	d.recordSnapshot(func() {
 		if ctx.Err() != nil {
 			return
 		}
+		scope := id + "/" + country
 		if list == nil {
-			if !issue.temporary() {
+			previous := d.inbox.Load()
+			if !issue.temporary() || id != "" && previous != nil && previous.scope != scope {
 				d.inbox.Store(nil)
 			}
 			return
 		}
 		at := d.wishes.now().UTC()
 		quotes := wishlistQuotes(list)
-		history, _ := d.stores.prices.Histories(id, d.config.CountryCode, slices.Collect(maps.Keys(quotes))...)
-		deliveries, created, err := d.stores.cursors.observeWishlist(id, d.config, t, at, list, issue == "" && list.Total == len(list.Items), history)
+		history, _ := d.stores.prices.Histories(id, country, slices.Collect(maps.Keys(quotes))...)
+		deliveries, created, err := d.stores.cursors.observeWishlist(id, country, d.config, t, at, list, issue == "" && list.Total == len(list.Items), history)
 		if err != nil {
 			d.inbox.Store(nil)
 			return
 		}
-		_ = d.stores.prices.Observe(id, d.config.CountryCode, at, quotes)
-		d.inbox.Store(&deliveries)
+		_ = d.stores.prices.Observe(id, country, at, quotes)
+		d.inbox.Store(&wishlistInbox{scope: scope, deliveries: deliveries})
 		if created != 0 && ctx.Err() == nil {
 			notify()
 		}
@@ -570,9 +578,9 @@ func (a *app) collectWishlistInbox() wire.ConnectorCollectResult {
 		d = s.reads
 	}
 	var out wire.ConnectorCollectResult
-	if deliveries := d.inbox.Load(); deliveries != nil {
+	if inbox := d.inbox.Load(); inbox != nil {
 		at := d.wishes.now()
-		for _, event := range *deliveries {
+		for _, event := range inbox.deliveries {
 			if at.Before(event.Until) && (d.config.AllowsSaleRoundup() || event.Thing.Kind != wishlistRoundupKind) {
 				thing := event.Thing
 				thing.Rules = a.triageRules
@@ -593,8 +601,8 @@ func (a *app) wishlistDeals(ctx context.Context, raw json.RawMessage) (map[strin
 	d, ctx, cancel := a.readContext(ctx)
 	defer cancel()
 	t := textFor(a.locale)
-	out := map[string]any{"available": false, "country_code": d.config.CountryCode}
-	id, list, issue := d.readWishlistSignals(ctx, t)
+	id, country, list, issue := d.readWishlistSignals(ctx, t)
+	out := map[string]any{"available": false, "country_code": country}
 	if sessionIssue := d.sessionIssue(); sessionIssue != "" {
 		list, issue = nil, sessionIssue
 	}
@@ -604,7 +612,7 @@ func (a *app) wishlistDeals(ctx context.Context, raw json.RawMessage) (map[strin
 	}
 	at := d.wishes.now().UTC()
 	quotes := wishlistQuotes(list)
-	histories, _ := d.stores.prices.Histories(id, d.config.CountryCode, slices.Collect(maps.Keys(quotes))...)
+	histories, _ := d.stores.prices.Histories(id, country, slices.Collect(maps.Keys(quotes))...)
 	targets := d.config.wishlistTargets()
 	deals := make([]wishlistDeal, 0)
 	for _, item := range list.Items {
@@ -620,7 +628,7 @@ func (a *app) wishlistDeals(ctx context.Context, raw json.RawMessage) (map[strin
 		}
 	}
 	if ctx.Err() == nil {
-		d.recordSnapshot(func() { _ = d.stores.prices.Observe(id, d.config.CountryCode, at, quotes) })
+		d.recordSnapshot(func() { _ = d.stores.prices.Observe(id, country, at, quotes) })
 	}
 	if issue := d.sessionIssue(); issue != "" {
 		out = map[string]any{"available": false}

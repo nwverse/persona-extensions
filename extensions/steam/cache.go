@@ -46,6 +46,7 @@ type cacheSlot[T any] struct {
 	record     cacheRecord[T]
 	staleLimit time.Duration
 	mergeStale func(current, previous *T) *T
+	isFresh    func(*T) bool
 	// QR slots belong to exactly one account and generation. The session lock
 	// guards their records against logout while the gate serializes fetches.
 	session *qrSession
@@ -115,7 +116,7 @@ func (s *cacheSlot[T]) cached(scope string, ttl time.Duration, refresh bool) (re
 				}
 				return s.failedRead, true
 			}
-		} else if hasData && age < ttl {
+		} else if hasData && age < ttl && (s.isFresh == nil || s.isFresh(s.record.Data)) {
 			return reading[T]{Data: s.record.Data, At: s.record.At}, true
 		}
 	}
