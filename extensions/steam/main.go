@@ -16,7 +16,7 @@ import (
 
 const (
 	extensionID = "steam"
-	version     = "0.3.4"
+	version     = "0.3.5"
 	summaryID   = "steam-summary"
 )
 
@@ -31,6 +31,7 @@ type app struct {
 	qr          *qrAuth
 	backlog     *BacklogStore
 	discovery   *steamDiscovery
+	images      *imageProxy
 	locale      string
 	triageRules string
 }
@@ -69,6 +70,7 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 			a.steamData = newSteamData(cfg, in.Secrets[keyName], dir, client, now)
 			a.publicData = &steamPublicData{client: steamClient{http: client, key: a.client.key}, now: now}
 			a.backlog = NewBacklogStore(dir)
+			a.images = newImageProxy(client, now)
 			a.locale = in.Hub.Locale
 			a.triageRules = pluginkit.TriageRules(in.InitializeParams.Config)
 			a.discovery = nil
@@ -87,8 +89,8 @@ func (a *app) program(client *http.Client, now func() time.Time) ext.Program {
 		},
 		Namespaces: map[string]ext.Handler{"connector": a.connector, "auth": ext.AuthHandler(a), "memory": a.memoryEntries},
 		UI: map[string]ext.Page{
-			extensionID: {Render: a.render, Action: a.action},
-			summaryID:   {Render: a.card},
+			extensionID: {Render: a.render, Action: a.action, Image: a.image},
+			summaryID:   {Render: a.card, Image: a.image},
 		},
 	}
 }

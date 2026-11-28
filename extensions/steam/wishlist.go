@@ -65,6 +65,12 @@ func (c steamClient) wishlist(ctx context.Context, id, country, language string)
 		}
 		item.Name = meta.Name
 		item.IsFree = meta.IsFree && !meta.Restricted && (meta.ComingSoon == nil || !*meta.ComingSoon)
+		if art := resolveStoreArtwork(meta.Assets); art != nil {
+			if list.Artwork == nil {
+				list.Artwork = make(map[uint32]appArtwork)
+			}
+			list.Artwork[item.AppID] = *art
+		}
 		price, priceIssue := c.browsePrice(meta, country)
 		if priceIssue != "" {
 			if issue == "" {
@@ -90,6 +96,12 @@ func mergeStaleWishlist(current, previous *wishList) *wishList {
 	}
 	merged := *current
 	merged.Items = slices.Clone(current.Items)
+	if len(current.Artwork) > 0 {
+		merged.Artwork = make(map[uint32]appArtwork, len(current.Artwork))
+		for k, v := range current.Artwork {
+			merged.Artwork[k] = v
+		}
+	}
 	used := false
 	for i := range merged.Items {
 		item := &merged.Items[i]
@@ -97,6 +109,15 @@ func mergeStaleWishlist(current, previous *wishList) *wishList {
 		if item.Name == "" && prior.Name != "" {
 			item.Name = prior.Name
 			used = true
+		}
+		if _, hasArt := merged.Artwork[item.AppID]; !hasArt {
+			if priorArt, ok := previous.Artwork[item.AppID]; ok {
+				if merged.Artwork == nil {
+					merged.Artwork = make(map[uint32]appArtwork)
+				}
+				merged.Artwork[item.AppID] = priorArt
+				used = true
+			}
 		}
 		if !item.PriceChecked && prior.PriceChecked {
 			item.Price, item.PriceChecked = prior.Price, true

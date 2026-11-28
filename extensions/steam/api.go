@@ -315,13 +315,15 @@ func (c steamClient) profile(ctx context.Context, id string) (*player, problem) 
 	var reply struct {
 		Response *struct {
 			Players []struct {
-				SteamID    string          `json:"steamid"`
-				Name       string          `json:"personaname"`
-				Visibility int             `json:"communityvisibilitystate"`
-				State      int             `json:"personastate"`
-				Game       string          `json:"gameextrainfo"`
-				GameID     string          `json:"gameid"`
-				Country    json.RawMessage `json:"loccountrycode"`
+				SteamID      string          `json:"steamid"`
+				Name         string          `json:"personaname"`
+				Visibility   int             `json:"communityvisibilitystate"`
+				State        int             `json:"personastate"`
+				Game         string          `json:"gameextrainfo"`
+				GameID       string          `json:"gameid"`
+				Country      json.RawMessage `json:"loccountrycode"`
+				AvatarFull   string          `json:"avatarfull"`
+				AvatarMedium string          `json:"avatarmedium"`
 			} `json:"players"`
 		} `json:"response"`
 	}
@@ -342,7 +344,14 @@ func (c steamClient) profile(ctx context.Context, id string) (*player, problem) 
 			continue
 		}
 		country := ""
-		p := &player{SteamID: id, Name: c.text(item.Name), Public: item.Visibility == 3, State: "unknown", ProfileCountry: &country}
+		p := &player{
+			SteamID:        id,
+			Name:           c.text(item.Name),
+			Public:         item.Visibility == 3,
+			State:          "unknown",
+			ProfileCountry: &country,
+			AvatarHash:     parseAvatarURL(item.AvatarFull, item.AvatarMedium),
+		}
 		if p.Public {
 			country = apiCountryCode(item.Country)
 			c.setPresence(p, &item.State, item.GameID, item.Game)
@@ -357,9 +366,10 @@ func (c steamClient) playerLink(ctx context.Context, id string) (*player, proble
 		Response *struct {
 			Accounts []struct {
 				Public *struct {
-					SteamID    json.Number `json:"steamid"`
-					Name       string      `json:"persona_name"`
-					Visibility int         `json:"visibility_state"`
+					SteamID      json.Number `json:"steamid"`
+					Name         string      `json:"persona_name"`
+					Visibility   int         `json:"visibility_state"`
+					AvatarDigest string      `json:"sha_digest_avatar"`
 				} `json:"public_data"`
 				Private *struct {
 					State  *int        `json:"persona_state"`
@@ -383,7 +393,13 @@ func (c steamClient) playerLink(ctx context.Context, id string) (*player, proble
 		if account.Public == nil || account.Public.SteamID.String() != id {
 			continue
 		}
-		p := &player{SteamID: id, Name: c.text(account.Public.Name), Public: account.Public.Visibility == 3, State: "unknown"}
+		p := &player{
+			SteamID:    id,
+			Name:       c.text(account.Public.Name),
+			Public:     account.Public.Visibility == 3,
+			State:      "unknown",
+			AvatarHash: parseAvatarDigest(account.Public.AvatarDigest),
+		}
 		if private := account.Private; private != nil {
 			c.setPresence(p, private.State, private.GameID.String(), private.Game)
 		}
