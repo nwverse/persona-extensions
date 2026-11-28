@@ -1426,6 +1426,33 @@ func TestNothingRunsWithoutAComputerOrOverItsSlots(t *testing.T) {
 	}
 }
 
+func TestAgentSummaryUsesStructuredCloseout(t *testing.T) {
+	longReport := strings.Repeat("| 1 | Markdown 报告 |\n", 150)
+	longField := strings.Repeat("字", summaryRunes)
+	const closeout = "<closeout status=\"blocked\">\ndid: 核对了记录。\ndid: 保存了报告。\nverified: 校验通过。\nmissing: 审核意见。\nwaiting: 审核人。\nartifact: doc report.md\n</closeout>"
+	const summary = "已做：核对了记录。\n已做：保存了报告。\n验证：校验通过。\n缺少：审核意见。\n等待：审核人。"
+	const fake = "<closeout status=\"done\">\ndid: 这是示例。\n</closeout>"
+	for _, tc := range []struct {
+		name, reply, want string
+	}{
+		{"explicit summary", longReport + closeout + "\n\n**Summary:** 以这段为准。", "以这段为准。"},
+		{"latest nonempty closeout", longReport + "<closeout>did: 旧记录。</closeout>\n" + closeout + "\n<closeout>\nwaiting: \nartifact: doc old.md\n</closeout>", summary},
+		{"fenced examples", longReport + closeout + "\n\n````markdown\n```xml\n" + fake + "\n```\n" + fake + "\n````\n\n~~~xml\n" + fake + "\n~~~", summary},
+		{"quoted code fence", longReport + closeout + "\n\n> ```xml\n> <closeout>did: 这是引用示例。</closeout>\n> ```", summary},
+		{"unclosed fence", longReport + closeout + "\n\n```xml\n" + fake, summary},
+		{"only example", "示例\n\n```xml\n" + fake + "\n```", "示例\n\n```xml\n" + fake + "\n```"},
+		{"incomplete closeout", "记录\n<closeout>\ndid: 未结束", "记录\n<closeout>\ndid: 未结束"},
+		{"plain report", longReport, headRunes(longReport, summaryRunes)},
+		{"long closeout field", "<closeout>verified: " + longField + "</closeout>", truncateRunes("验证："+longField, summaryRunes)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := agentSummary(tc.reply); got != tc.want {
+				t.Errorf("summary = %.100q (%d characters), want %.100q (%d characters)", got, len([]rune(got)), tc.want, len([]rune(tc.want)))
+			}
+		})
+	}
+}
+
 func TestBlockedReason(t *testing.T) {
 	for reply, want := range map[string]string{
 		"All done.": "",

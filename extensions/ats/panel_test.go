@@ -659,6 +659,64 @@ func TestTaskPageShowsWhatATaskIsDoingAndItsEvidence(t *testing.T) {
 	}
 }
 
+func TestPanelTaskViewShowsFullReply(t *testing.T) {
+	atLimit := strings.Repeat("字", detailCodeMost)
+	const end = "\n报告结尾。"
+	tail := strings.Repeat("字", detailCodeMost-1-utf8.RuneCountInString(end)) + end
+	for _, tc := range []struct {
+		name, summary, fullReply, wantCode string
+	}{
+		{"complete reply", "摘要", "\n" + atLimit + "\n", atLimit},
+		{"long reply", strings.Repeat("摘", detailTextMost+1), "报告开头。\n" + atLimit + tail, "…" + tail},
+		{"no summary", " \n", "完整报告。", "完整报告。"},
+		{"same reply", "完整报告。", "\n完整报告。  ", ""},
+		{"no reply", "摘要", " \n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := newPageRig(t)
+			task := p.enqueue(EnqueueInput{Title: "Report", Repo: "/srv/code/app", AcceptanceCommand: "make check"})
+			att := p.lease(task.ID, PhaseAccepting, "")
+			exit := 0
+			p.complete(task.ID, att, CompleteAttemptInput{
+				Outcome: StateSucceeded, Verdict: VerdictPass, ExitCode: &exit,
+				Message: "验收命令退出码 0\n" + atLimit + "完", Summary: tc.summary, FullReply: tc.fullReply,
+			})
+			view := buildTaskView(p.q, task.ID, testStart.Add(2*time.Minute), "UTC")
+			raw, err := json.Marshal(view)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := wire.CheckViewJSON(raw); err != nil {
+				t.Fatal(err)
+			}
+			for _, section := range view.Sections {
+				for _, item := range section.Items {
+					n := utf8.RuneCountInString(item.Text)
+					if item.Type == wire.ComponentText && n > detailTextMost || item.Type == wire.ComponentCode && n > detailCodeMost {
+						t.Errorf("%s has %d characters", item.Key, n)
+					}
+				}
+			}
+			if tc.wantCode == "" {
+				if sectionOf(view, "full-reply-note") != "" || sectionOf(view, "full-reply") != "" {
+					t.Error("the page shows an extra reply")
+				}
+				return
+			}
+			path := fmt.Sprintf("/tasks/%s/evidence?attempt=%d", task.ID, att.AttemptNo)
+			note := findRow(t, view, "full-reply-note")
+			count := fmt.Sprintf("完整回复共 %d 字", utf8.RuneCountInString(strings.TrimSpace(tc.fullReply)))
+			if note.Type != wire.ComponentText || note.Style != wire.TextStyleSecondary || !strings.Contains(note.Text, count) || !strings.Contains(note.Text, path) {
+				t.Errorf("full reply note = %+v, want %q and %q", note, count, path)
+			}
+			code := findRow(t, view, "full-reply")
+			if code.Type != wire.ComponentCode || code.Text != tc.wantCode || sectionOf(view, code.Key) != "它说它做了什么" {
+				t.Errorf("full reply code = %s %.40q (%d characters)", code.Type, code.Text, utf8.RuneCountInString(code.Text))
+			}
+		})
+	}
+}
+
 func TestTaskPageButtonsCancelAndRetryAndStayOnThePage(t *testing.T) {
 	r := newRig(t)
 	a := newATSApp(r.q)

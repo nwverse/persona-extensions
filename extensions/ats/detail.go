@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/nwverse/persona/sdk/go/ext"
 	"github.com/nwverse/persona/sdk/go/wire"
@@ -104,10 +105,23 @@ func buildTaskView(q *Queue, id string, now time.Time, tz string) *wire.View {
 	}
 	view.Sections = append(view.Sections, wire.Section{Title: "现在怎么样", Items: head})
 
-	if rep != nil && strings.TrimSpace(rep.Summary) != "" {
-		view.Sections = append(view.Sections, wire.Section{Title: "它说它做了什么", Items: []wire.Component{
-			{Type: wire.ComponentText, Key: "summary", Text: truncateRunes(rep.Summary, detailTextMost)},
-		}})
+	if rep != nil {
+		var reply []wire.Component
+		summary := strings.TrimSpace(rep.Summary)
+		if summary != "" {
+			reply = append(reply, wire.Component{Type: wire.ComponentText, Key: "summary", Text: truncateRunes(summary, detailTextMost)})
+		}
+		fullReply := strings.TrimSpace(rep.FullReply)
+		if fullRunes := utf8.RuneCountInString(fullReply); fullRunes > utf8.RuneCountInString(summary) {
+			note := fmt.Sprintf("完整回复共 %d 字（完整内容可通过 /tasks/%s/evidence?attempt=%d 查看）", fullRunes, t.ID, rep.AttemptNo)
+			reply = append(reply,
+				wire.Component{Type: wire.ComponentText, Key: "full-reply-note", Style: wire.TextStyleSecondary, Text: truncateRunes(note, detailTextMost)},
+				wire.Component{Type: wire.ComponentCode, Key: "full-reply", Text: detailCodeTail(fullReply)},
+			)
+		}
+		if len(reply) > 0 {
+			view.Sections = append(view.Sections, wire.Section{Title: "它说它做了什么", Items: reply})
+		}
 	}
 
 	// How the result is checked: the command, and what it answered when it ran.
@@ -128,7 +142,7 @@ func buildTaskView(q *Queue, id string, now time.Time, tz string) *wire.View {
 			accept = append(accept, wire.Component{Type: wire.ComponentText, Key: "accept-exit", Text: line, Tone: tone})
 			if tail != "" {
 				accept = append(accept, wire.Component{Type: wire.ComponentText, Key: "accept-output-label", Style: wire.TextStyleSecondary, Text: "命令最后输出的内容："})
-				accept = append(accept, wire.Component{Type: wire.ComponentCode, Key: "accept-output", Text: tailRunes(tail, detailCodeMost)})
+				accept = append(accept, wire.Component{Type: wire.ComponentCode, Key: "accept-output", Text: detailCodeTail(tail)})
 			}
 		case t.IsTerminal():
 			accept = append(accept, wire.Component{Type: wire.ComponentText, Key: "accept-exit", Style: wire.TextStyleSecondary, Text: "没检查：在检查之前就停下了。"})
@@ -204,6 +218,14 @@ func buildTaskView(q *Queue, id string, now time.Time, tz string) *wire.View {
 
 	view.Sections = append(view.Sections, technicalSection(t, rep, machine))
 	return view
+}
+
+func detailCodeTail(text string) string {
+	text = strings.TrimSpace(text)
+	if utf8.RuneCountInString(text) <= detailCodeMost {
+		return text
+	}
+	return tailRunes(text, detailCodeMost-1)
 }
 
 // taskStanding says in a sentence where a task stands and what the user can do next, with the tone to draw it in.

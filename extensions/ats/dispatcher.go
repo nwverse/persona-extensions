@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // The dispatcher runs the queue. Every round it takes the ready tasks the scheduler admits, and moves each
@@ -488,8 +490,6 @@ const (
 // summaryMarker is the line the agent is asked to put before its closing summary.
 const summaryMarker = "Summary:"
 
-// agentSummary is what is kept of the agent's last reply: the part after its last summary marker when it wrote
-// one, else the reply's beginning (a reply states its conclusion first more often than last).
 func agentSummary(reply string) string {
 	reply = strings.TrimSpace(reply)
 	lines := strings.Split(reply, "\n")
@@ -503,9 +503,80 @@ func agentSummary(reply string) string {
 		if sum := strings.TrimSpace(strings.Join(append([]string{rest}, lines[i+1:]...), "\n")); sum != "" {
 			return headRunes(sum, summaryRunes)
 		}
-		break
+		return headRunes(reply, summaryRunes)
+	}
+	if sum := closeoutSummary(reply); sum != "" {
+		return sum
 	}
 	return headRunes(reply, summaryRunes)
+}
+
+var closeoutTokens = regexp.MustCompile(
+	"(?m)^ {0,3}(?:`{3,}[^`\\r\\n]*|~{3,}[^\\r\\n]*|>[^\\r\\n]*)\\r?$|" +
+		`<closeout(?:[ \t]+[^<>\r\n]*)?>|</closeout>`,
+)
+
+func closeoutSummary(reply string) string {
+	if !strings.Contains(reply, "<closeout") {
+		return ""
+	}
+	var summary, fence string
+	bodyStart := 0
+	for _, match := range closeoutTokens.FindAllStringIndex(reply, -1) {
+		token := strings.TrimSpace(reply[match[0]:match[1]])
+		switch token[0] {
+		case '>':
+			continue
+		case '`', '~':
+			info := strings.TrimLeft(token, token[:1])
+			if fence == "" {
+				fence = token[:len(token)-len(info)]
+				bodyStart = 0
+			} else if info == "" && strings.HasPrefix(token, fence) {
+				fence = ""
+			}
+			continue
+		}
+		if fence != "" {
+			continue
+		}
+		if token == "</closeout>" {
+			if bodyStart != 0 {
+				summary = cmpOr(closeoutSummaryFields(reply[bodyStart:match[0]]), summary)
+				bodyStart = 0
+			}
+		} else if !strings.HasSuffix(token, "/>") {
+			bodyStart = match[1]
+		}
+	}
+	return truncateRunes(summary, summaryRunes)
+}
+
+func closeoutSummaryFields(body string) string {
+	var lines []string
+	for line := range strings.Lines(body) {
+		sep := strings.IndexAny(line, ":：")
+		if sep < 0 {
+			continue
+		}
+		_, width := utf8.DecodeRuneInString(line[sep:])
+		value := strings.TrimSpace(line[sep+width:])
+		if value == "" {
+			continue
+		}
+		key := strings.Trim(strings.TrimSpace(line[:sep]), "-* \t")
+		switch strings.ToLower(key) {
+		case "did":
+			lines = append(lines, "已做："+value)
+		case "verified":
+			lines = append(lines, "验证："+value)
+		case "missing":
+			lines = append(lines, "缺少："+value)
+		case "waiting":
+			lines = append(lines, "等待："+value)
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // headRunes is the beginning of s, at most max runes of it, line breaks kept.
