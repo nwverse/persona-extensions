@@ -44,7 +44,7 @@ type cacheSlot[T any] struct {
 	now        func() time.Time
 	loaded     bool
 	record     cacheRecord[T]
-	freshOnly  bool
+	staleLimit time.Duration
 	mergeStale func(current, previous *T) *T
 	// QR slots belong to exactly one account and generation. The session lock
 	// guards their records against logout while the gate serializes fetches.
@@ -56,7 +56,7 @@ type cacheSlot[T any] struct {
 }
 
 func newSlot[T any](dir, name string, now func() time.Time, session *qrSession) *cacheSlot[T] {
-	s := &cacheSlot[T]{gate: make(chan struct{}, 1), now: now, session: session}
+	s := &cacheSlot[T]{gate: make(chan struct{}, 1), now: now, session: session, staleLimit: maxStaleAge}
 	if dir != "" {
 		s.path = filepath.Join(dir, name+".json")
 	}
@@ -123,7 +123,7 @@ func (s *cacheSlot[T]) cached(scope string, ttl time.Duration, refresh bool) (re
 }
 
 func (s *cacheSlot[T]) interruptedRead(scope string, issue problem) reading[T] {
-	if !issue.temporary() || s.freshOnly {
+	if !issue.temporary() || s.staleLimit <= 0 {
 		return reading[T]{Issue: issue}
 	}
 	unlock := s.lockRecord()
@@ -137,7 +137,7 @@ func (s *cacheSlot[T]) interruptedRead(scope string, issue problem) reading[T] {
 
 func (s *cacheSlot[T]) withStaleLocked(scope string, out reading[T]) reading[T] {
 	age := s.now().Sub(s.record.At)
-	if s.freshOnly || s.record.Scope != scope || s.record.Data == nil || age < 0 || age > maxStaleAge {
+	if s.staleLimit <= 0 || s.record.Scope != scope || s.record.Data == nil || age < 0 || age > s.staleLimit {
 		return out
 	}
 	snapshot := s.record.Data

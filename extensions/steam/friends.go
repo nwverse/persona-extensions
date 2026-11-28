@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"slices"
 	"strings"
-	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -22,6 +21,7 @@ const (
 	coopOverlapTool   = "steam_coop_overlap"
 	friendListPath    = "/ISteamUser/GetFriendList/v1/"
 	friendTTL         = 90 * time.Second
+	friendMaxStaleAge = 5 * time.Minute
 	friendBatchSize   = 100
 	maxFriends        = 2_000
 	pageFriendsShown  = 5
@@ -71,6 +71,7 @@ type friendActivity struct {
 	roster  *friendRoster
 	players []player
 	issue   problem
+	stale   bool
 }
 
 func (d *steamData) readFriendRoster(ctx context.Context) (string, reading[friendRoster]) {
@@ -155,21 +156,18 @@ func (d *steamData) readFriendPresence(ctx context.Context, id string, roster *f
 func (c steamClient) friendsPresence(ctx context.Context, ids []string) (*[]player, problem) {
 	players := make([]player, 0, len(ids))
 	seen := make(map[string]bool, len(ids))
+	fetch := c.friendSummaries
+	if c.access != "" {
+		fetch = c.friendLinks
+	}
 	var issue problem
-	for batch := range slices.Chunk(ids, friendBatchSize) {
-		var batchPlayers []player
-		if c.access != "" {
-			batchPlayers, issue = c.friendLinks(ctx, batch)
-		} else {
-			batchPlayers, issue = c.friendSummaries(ctx, batch)
+	available := len(ids) == 0
+	for _, batch := range runBatches(ctx, ids, friendBatchSize, batchTimeout, fetch) {
+		if issue == "" {
+			issue = batch.issue
 		}
-		if issue != "" {
-			if len(players) == 0 {
-				return nil, issue
-			}
-			break
-		}
-		for _, p := range batchPlayers {
+		available = available || batch.issue == "" || len(batch.value) > 0
+		for _, p := range batch.value {
 			if seen[p.SteamID] {
 				continue
 			}
@@ -179,6 +177,9 @@ func (c steamClient) friendsPresence(ctx context.Context, ids []string) (*[]play
 			seen[p.SteamID] = true
 			players = append(players, p)
 		}
+	}
+	if !available {
+		return nil, issue
 	}
 	slices.SortFunc(players, func(a, b player) int {
 		if order := cmp.Compare(friendRank(a), friendRank(b)); order != 0 {
@@ -304,7 +305,7 @@ func (d *steamData) readFriendActivity(ctx context.Context) friendActivity {
 		return friendActivity{issue: roster.Issue}
 	}
 	presence := d.readFriendPresence(ctx, id, roster.Data)
-	activity := friendActivity{roster: roster.Data, issue: presence.Issue}
+	activity := friendActivity{roster: roster.Data, issue: presence.Issue, stale: presence.Stale}
 	if presence.Data != nil {
 		activity.players = *presence.Data
 	}
@@ -313,7 +314,7 @@ func (d *steamData) readFriendActivity(ctx context.Context) friendActivity {
 
 func (d *steamData) friendsRadar(ctx context.Context, out map[string]any, t *text, args friendsRadarArgs) {
 	a := d.readFriendActivity(ctx)
-	describeReading(out, "friends_radar", reading[friendActivity]{Issue: a.issue}, t)
+	describeReading(out, "friends_radar", reading[friendActivity]{Issue: a.issue, Stale: a.stale}, t)
 	if a.roster != nil {
 		out["friend_count"] = len(a.roster.ids)
 		if a.roster.truncated {
@@ -392,7 +393,7 @@ func (d *steamData) friendsSection(ctx context.Context, t *text) wire.Section {
 	if a.players == nil {
 		return wire.Section{Title: t.friendsPlaying, Items: []wire.Component{empty(t.message(a.issue, false))}}
 	}
-	section := wire.Section{Title: t.friendsPlaying, Footer: t.message(a.issue, false)}
+	section := wire.Section{Title: t.friendsPlaying, Footer: t.message(a.issue, a.stale)}
 	if a.roster != nil && a.roster.truncated {
 		section.Footer = joinText(section.Footer, t.message(problemFriendListCap, false))
 	}
@@ -526,6 +527,9 @@ func (d *steamData) coopOverlap(ctx context.Context, out map[string]any, t *text
 		return
 	}
 	own, peers := client.overlapLibraries(ctx, account, friends)
+	if own.Data == nil && own.Issue.temporary() {
+		own = d.library.interruptedRead(account, own.Issue)
+	}
 	describeReading(out, "library", own, t)
 	visible := make([]*gameList, 0, verified)
 	truncated := own.Data != nil && own.Data.Truncated
@@ -548,13 +552,14 @@ func (d *steamData) coopOverlap(ctx context.Context, out map[string]any, t *text
 		describeReading(out, "coop_overlap", reading[gameList]{Issue: problemFriendLibraryCap}, t)
 	}
 	out["included_friend_count"] = len(visible)
-	out["partial"] = truncated || own.Data == nil || len(visible) < len(friends)
+	out["partial"] = truncated || own.Data == nil || own.Stale || len(visible) < len(friends)
 	if own.Data == nil || len(visible) == 0 {
 		return
 	}
 	shared := sharedGames(own.Data, visible)
 	page, next, categoryIssue := client.coopPage(ctx, shared, args, d.config.CountryCode, t.storeLanguage)
 	if categoryIssue != "" {
+		out["partial"] = true
 		describeReading(out, "store_categories", reading[gameList]{Issue: problemCoopStore}, t)
 	}
 	out["available"], out["offset"], out["limit"] = true, args.Offset, args.limit()
@@ -565,29 +570,34 @@ func (d *steamData) coopOverlap(ctx context.Context, out map[string]any, t *text
 }
 
 func (c steamClient) overlapLibraries(ctx context.Context, account string, friends []overlapFriend) (reading[gameList], []reading[gameList]) {
-	read := func(id string, friend bool) reading[gameList] {
-		list, issue := c.games(ctx, id, false)
+	type libraryQuery struct {
+		id    string
+		index int
+	}
+	queries := []libraryQuery{{id: account, index: -1}}
+	for i, friend := range friends {
+		if friend.Visibility != libraryUnverified {
+			queries = append(queries, libraryQuery{id: friend.SteamID, index: i})
+		}
+	}
+	reads := runBatches(ctx, queries, 1, batchTimeout, func(ctx context.Context, batch []libraryQuery) (*gameList, problem) {
+		q := batch[0]
+		list, issue := c.games(ctx, q.id, false)
 		if issue == problemGameDetails || issue == problemBadCall {
 			switch {
 			case c.access != "":
 				issue = problemFriendLibraryQR
-			case friend:
+			case q.index >= 0:
 				issue = problemFriendLibrary
 			}
 		}
-		return reading[gameList]{Data: list, Issue: issue}
-	}
-	// Read libraries directly. Snapshots and cache slots belong to the signed-in user's other reads.
-	var own reading[gameList]
+		return list, issue
+	})
+	own := reading[gameList]{Data: reads[0].value, Issue: reads[0].issue}
 	peers := make([]reading[gameList], len(friends))
-	var reads sync.WaitGroup
-	reads.Go(func() { own = read(account, false) })
-	for i, f := range friends {
-		if f.Visibility != libraryUnverified {
-			reads.Go(func() { peers[i] = read(f.SteamID, true) })
-		}
+	for i, read := range reads[1:] {
+		peers[queries[i+1].index] = reading[gameList]{Data: read.value, Issue: read.issue}
 	}
-	reads.Wait()
 	return own, peers
 }
 
@@ -664,47 +674,6 @@ func classifyPlayerCategories(ids []uint32) storeCoopSupport {
 	return result
 }
 
-func (c steamClient) storeCoopCategories(ctx context.Context, games []sharedGame, country, language string) (map[uint32]storeCoopSupport, problem) {
-	if err := ctx.Err(); err != nil {
-		return nil, sanitizeError(err)
-	}
-	type appRef struct {
-		AppID uint32 `json:"appid"`
-	}
-	ids := make([]appRef, 0, len(games))
-	for _, game := range games {
-		ids = append(ids, appRef{AppID: game.AppID})
-	}
-	query, _ := json.Marshal(map[string]any{
-		"ids":     ids,
-		"context": map[string]string{"country_code": country, "language": language},
-	})
-	var reply struct {
-		Response *struct {
-			Items []struct {
-				AppID      uint32 `json:"appid"`
-				Success    int    `json:"success"`
-				Categories struct {
-					Players []uint32 `json:"supported_player_categoryids"`
-				} `json:"categories"`
-			} `json:"store_items"`
-		} `json:"response"`
-	}
-	if issue := c.get(ctx, apiBase+storeNamesPath, url.Values{"input_json": {string(query)}}, false, &reply); issue != "" {
-		return nil, issue
-	}
-	if reply.Response == nil {
-		return nil, problemResponse
-	}
-	result := make(map[uint32]storeCoopSupport, len(ids))
-	for _, item := range reply.Response.Items {
-		if item.Success == 1 && slices.Contains(ids, appRef{AppID: item.AppID}) {
-			result[item.AppID] = classifyPlayerCategories(item.Categories.Players)
-		}
-	}
-	return result, ""
-}
-
 func (c steamClient) coopPage(ctx context.Context, sorted []sharedGame, args coopOverlapArgs, country, language string) ([]sharedGame, int, problem) {
 	coopOnly := args.CoopOnly == nil || *args.CoopOnly
 	// The cursor counts examined entries in the raw intersection. A filtered page
@@ -714,28 +683,33 @@ func (c steamClient) coopPage(ctx context.Context, sorted []sharedGame, args coo
 	if coopOnly {
 		scan = maxCoopScan
 	}
+	candidates := sorted[start:min(len(sorted), start+scan)]
+	ids := make([]uint32, 0, len(candidates))
+	for _, game := range candidates {
+		ids = append(ids, game.AppID)
+	}
+	store, issue := c.browseStore(ctx, ids, country, language, storeDataRequest{})
 	page := make([]sharedGame, 0, limit)
 	next := start
-	var issue problem
-	for batch := range slices.Chunk(sorted[start:min(len(sorted), start+scan)], storeBatchSize) {
-		var support map[uint32]storeCoopSupport
-		if issue == "" {
-			support, issue = c.storeCoopCategories(ctx, batch, country, language)
+	for _, g := range candidates {
+		next++
+		item := store[g.AppID]
+		metadata := storeCoopSupport{status: coopUnknown}
+		if item.Success == 1 && !item.Restricted {
+			if g.Name == "" {
+				g.Name = item.Name
+			}
+			if item.Categories != nil {
+				metadata = classifyPlayerCategories(item.Categories.Players)
+			}
 		}
-		for _, g := range batch {
-			next++
-			metadata := support[g.AppID]
-			if metadata.status == "" {
-				metadata.status = coopUnknown
-			}
-			if coopOnly && metadata.status == coopNotListed {
-				continue
-			}
-			g.CoopSupport, g.Categories = metadata.status, metadata.categories
-			page = append(page, g)
-			if len(page) == limit {
-				return page, next, issue
-			}
+		if coopOnly && metadata.status == coopNotListed {
+			continue
+		}
+		g.CoopSupport, g.Categories = metadata.status, metadata.categories
+		page = append(page, g)
+		if len(page) == limit {
+			break
 		}
 	}
 	return page, next, issue

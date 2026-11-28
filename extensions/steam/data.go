@@ -74,7 +74,8 @@ func newAccountData(cfg config, client steamClient, dataDir string, now func() t
 	if cfg.FriendsRadarEnabled {
 		d.friendList = newSlot[friendRoster]("", "", now, session)
 		d.friendState = newSlot[[]player]("", "", now, session)
-		d.friendList.freshOnly, d.friendState.freshOnly = true, true
+		// Friend membership verifies visibility and selection for subsequent reads.
+		d.friendList.staleLimit, d.friendState.staleLimit = 0, friendMaxStaleAge
 	}
 	return d
 }
