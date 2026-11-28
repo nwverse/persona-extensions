@@ -77,7 +77,9 @@ func cachedRead[T any](a *app, again bool, get func(*metaCache) (kept[T], bool),
 	}
 	v, err := fetch()
 	if err != nil {
-		if ok && kindOf(err) == errRate { // refused for the limit just now: what is kept answers instead
+		// Refused for the limit just now, or op on the computer would have to ask the user (quiet.go): what is kept
+		// answers instead, however old.
+		if ok && (kindOf(err) == errRate || needsUser(err)) {
 			return k.v, nil
 		}
 		return zero, err

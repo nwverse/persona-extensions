@@ -192,6 +192,24 @@ its observed 12-hour window; it never changes lock settings or approves prompts.
 or an already older authorization can still require a new desktop approval. A lock may make one background refresh
 ask for authorization; failed refreshes are not retried until a foreground call succeeds.
 
+### Authorized once, never prompted on everyday asks
+
+Because the authorization lapses (above), an everyday ask that has an earlier answer to fall back on never runs an `op`
+command that could prompt (nwverse/persona#17636). Such an ask is *quiet*: the program on the computer first runs
+`op whoami`, which never prompts and answers the account only while the authorization holds, and when it does not it
+answers `locked` at once instead of showing a prompt nobody answers.
+
+- **Values**: Persona keeps a launcher's key and an extension's secret sealed once resolved and never asks again for
+  them; when it asks again for a value it may have changed (after a phone-approved write) it sends `quiet: true`, and
+  the extension answers `not_signed_in` at once while `op` is not authorized, so Persona keeps using the value it has.
+- **Words** (`secrets.describe`) are always quiet: they never prompt. While `op` is not authorized and nothing about the
+  item is kept here, the answer is `not_signed_in`, so Persona keeps no words made from the reference alone and shows
+  the reference; Persona keeps the words it got, sealed, so this happens at most until the first authorized look.
+- **Vault tools** (`onepassword_vaults`, search, item): with something kept, however old, they ask quietly and answer
+  what was kept at once when `op` is not authorized, instead of waiting for a prompt until the tool times out.
+- Only an ask with nothing to fall back on (a first reference resolved, a vault or item never listed, the connection
+  page's Check again) may have the user authorize `op`: once, when something new is connected or a secret is rotated.
+
 The Mac setting is **1Password › Settings › Security › Auto-lock**, including **Lock after the device is idle for**;
 lock-on-sleep/screensaver/user-switch and administrator policies can also apply. These are distinct from CLI idle
 expiry. See the official [CLI authorization model](https://developer.1password.com/docs/cli/app-integration-security/)

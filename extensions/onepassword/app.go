@@ -268,6 +268,7 @@ func (a *app) listVaults(ctx context.Context) ([]vaultInfo, error) { return a.re
 
 // readVaults is listVaults; again asks 1Password even when what is kept is fresh (the page, a miss).
 func (a *app) readVaults(ctx context.Context, again bool) ([]vaultInfo, error) {
+	ctx = quietIfKept(a, ctx, (*metaCache).getVaults) // an earlier answer stands in when op would prompt (quiet.go)
 	vs, err := cachedRead(a, again, func(c *metaCache) (kept[[]vaultInfo], bool) { return c.getVaults() },
 		func(c *metaCache, k kept[[]vaultInfo]) { c.vaults = &k },
 		func() ([]vaultInfo, error) {
@@ -314,6 +315,7 @@ func putBounded[T any](m map[string]kept[T], key string, val kept[T]) {
 }
 
 func (a *app) readItems(ctx context.Context, vaultID string, again bool) ([]itemInfo, error) {
+	ctx = quietIfKept(a, ctx, func(c *metaCache) (kept[[]itemInfo], bool) { k, ok := c.items[vaultID]; return k, ok })
 	its, err := cachedRead(a, again, func(c *metaCache) (kept[[]itemInfo], bool) { k, ok := c.items[vaultID]; return k, ok },
 		func(c *metaCache, k kept[[]itemInfo]) {
 			if c.items == nil {
@@ -348,6 +350,7 @@ func (a *app) getItem(ctx context.Context, vaultID, itemID string) (itemDetail, 
 
 func (a *app) readItem(ctx context.Context, vaultID, itemID string, again bool) (itemDetail, error) {
 	key := vaultID + "/" + itemID
+	ctx = quietIfKept(a, ctx, func(c *metaCache) (kept[itemDetail], bool) { k, ok := c.details[key]; return k, ok })
 	d, err := cachedRead(a, again, func(c *metaCache) (kept[itemDetail], bool) { k, ok := c.details[key]; return k, ok },
 		func(c *metaCache, k kept[itemDetail]) {
 			if c.details == nil {

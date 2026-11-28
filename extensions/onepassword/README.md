@@ -14,6 +14,11 @@ References need a Persona hub with secret providers ([nwverse/persona#3962](http
 - [Manifest](persona-extension.json)
 
 
+Version 0.4.3 never prompts on everyday asks when `op` runs on a computer: an ask with an earlier answer (a value
+Persona keeps, metadata kept here, a description) checks `op whoami` first and answers from what it had while the
+1Password app's authorization has lapsed, so only something new needs the user to authorize `op` once. See
+[authorized once](../../docs/extensions/onepassword.md#authorized-once-never-prompted-on-everyday-asks).
+
 Version 0.4.1 adds native `OTP` field support (raw base32 or `otpauth://`), built-in `LOGIN` `username`/`password`
 mapping without duplicate custom fields, and `edit` field deletion and in-place type conversion (including passkey-free
 `LOGIN` items). See [phone-approved writes](../../docs/extensions/onepassword.md#phone-approved-writes) for local file
