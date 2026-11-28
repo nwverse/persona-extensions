@@ -51,6 +51,7 @@ type player struct {
 	Playing        string  `json:"playing,omitempty"`
 	PlayApp        uint32  `json:"playing_appid,omitempty"`
 	ProfileCountry *string `json:"loccountrycode,omitempty"`
+	AvatarHash     string  `json:"avatar_hash,omitempty"`
 }
 
 type game struct {
@@ -91,9 +92,10 @@ type wishItem struct {
 }
 
 type wishList struct {
-	Items      []wishItem `json:"items"`
-	Total      int        `json:"total"`
-	Checked    int        `json:"prices_checked"`
-	Discounted int        `json:"discounted_count"`
+	Items      []wishItem            `json:"items"`
+	Total      int                   `json:"total"`
+	Checked    int                   `json:"prices_checked"`
+	Discounted int                   `json:"discounted_count"`
+	Artwork    map[uint32]appArtwork `json:"artwork,omitempty"`
 	store      map[uint32]storeBrowseItem
 }

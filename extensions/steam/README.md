@@ -1,6 +1,6 @@
 # Steam
 
-Steam 0.3.4 researches Store games and reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to review your backlog, annotate games locally and open a playtime recap. The Overview card opens the same page. Friends Radar, wishlist alerts and gaming profile memory are optional.
+Steam 0.3.5 researches Store games and reads player status, two weeks of playtime, the searchable game library, achievements, official game updates and wishlist prices. Open **Personal › Steam** to browse your player header, recently played cover gallery, wide-artwork library and wishlist, game hero banners, backlog progress and playtime recaps. The Overview card opens the same page. Friends Radar, wishlist alerts and gaming profile memory are optional.
 
 The wishlist loads regional prices, titles and release information together through Steam StoreBrowse. A slow batch leaves the other results visible. When Steam temporarily fails, the page labels any usable cached snapshot. [Network and cache behavior](../../docs/extensions/steam.md#refresh-and-storage)
 

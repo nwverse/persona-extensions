@@ -33,13 +33,13 @@ func TestManifestAndTranslations(t *testing.T) {
 	if err := json.Unmarshal(manifest, &m); err != nil {
 		t.Fatal(err)
 	}
-	const release = "0.3.4"
+	const release = "0.3.5"
 	if m.Version != release || version != release {
 		t.Fatalf("manifest version = %q, runtime version = %q, want %q", m.Version, version, release)
 	}
 	if m.ID != extensionID || m.Engines == nil || m.Engines.PluginProtocol != 1 ||
 		m.Icon != "" || len(m.Tags) != 0 || m.Permissions == nil ||
-		!slices.Equal(m.Permissions.Network, []string{apiHost, storeHost}) {
+		!slices.Equal(m.Permissions.Network, []string{apiHost, storeHost, assetCDNHost, avatarCDNHost}) {
 		t.Fatal("runtime manifest differs from the extension contract")
 	}
 	if m.Contributes == nil || len(m.Contributes.Connectors) != 1 || len(m.Contributes.UI) != 2 {
@@ -376,26 +376,32 @@ func TestDeclarativeViews(t *testing.T) {
 	card := wire.UIParams{Contribution: summaryID, Size: wire.SizeCompact, Placement: wire.PlacementOverviewCard, UIVersion: 12, Locale: "zh-Hans-CN"}
 	v := viewAnswer(t, h, nav)
 	raw, _ := json.Marshal(v)
-	contains(t, string(raw), "Playing Synthetic Adventure", "2 h 10 min", "Fixture Pilot", "40% off", "$3.99")
+	contains(t, string(raw), "Playing Synthetic Adventure", "2 h 10 min", "Fixture Pilot", "-40%", "$3.99")
 	if len(v.Sections) != 5 || v.Sections[4].Title != english.backlog.title ||
-		v.Search == nil || v.Filter == nil || v.Sections[0].Items[1].Stats[1].Value != "3" {
-		t.Fatal("navigation is missing a section or a display control")
+		v.Search == nil || v.Filter == nil ||
+		v.Sections[0].Items[0].Type != wire.ComponentHeader || v.Sections[0].Items[0].Avatar == nil ||
+		v.Sections[0].Items[1].Stats[1].Value != "3" ||
+		v.Sections[1].Items[0].Type != wire.ComponentGrid || len(v.Sections[1].Items[0].Tiles) != 2 {
+		t.Fatal("navigation is missing a section or a visual display control")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "steam-cache-v1", "profile.json")); err != nil {
 		t.Fatalf("configured environment did not receive the persistent cache: %v", err)
 	}
 	v = act(t, h, nav, v, v.Search.Action.ID, map[string]string{"q": "rally"})
 	library := v.Sections[2]
-	if len(library.Items) != 1 || library.Items[0].Title != "Zeta Rally" {
-		t.Fatal("library search did not filter the displayed games")
+	if len(library.Items) != 1 || library.Items[0].Title != "Zeta Rally" || library.Items[0].Thumbnail == nil || library.Items[0].Thumbnail.Aspect != wire.ThumbnailAspectWide {
+		t.Fatal("library search did not filter the displayed games with wide thumbnails")
 	}
 	v = act(t, h, nav, v, v.Filter.Action.ID, map[string]string{"q": "", "order": sortName})
 	if v.Filter.Value != sortName || v.Sections[2].Items[0].Title != "Alpha Café" {
 		t.Fatal("library name sort was not applied")
 	}
 	fromLibrary := act(t, h, nav, v, v.Sections[2].Items[1].Action.ID, nil)
-	fromRecent := act(t, h, nav, v, v.Sections[1].Items[0].Action.ID, nil)
+	fromRecent := act(t, h, nav, v, v.Sections[1].Items[0].Tiles[0].Action.ID, nil)
 	for _, detail := range []wire.View{fromLibrary, fromRecent} {
+		if len(detail.Sections) != 3 || detail.Sections[0].Items[0].Type != wire.ComponentImage || detail.Sections[0].Items[0].Src == nil {
+			t.Fatal("game detail is missing the top hero artwork")
+		}
 		raw, _ := json.Marshal(detail)
 		contains(t, string(raw), "Synthetic Adventure", "2 of 3 unlocked", storeLink(firstApp))
 		back := act(t, h, nav, detail, "back", nil)
@@ -403,7 +409,11 @@ func TestDeclarativeViews(t *testing.T) {
 			t.Fatal("back lost the library state")
 		}
 	}
-	raw, _ = json.Marshal(viewAnswer(t, h, card))
+	summary := viewAnswer(t, h, card)
+	if summary.Sections[0].Items[0].Type != wire.ComponentRow || summary.Sections[0].Items[0].Avatar == nil {
+		t.Fatal("overview card is missing the player identity row with avatar")
+	}
+	raw, _ = json.Marshal(summary)
 	contains(t, string(raw), "游戏中", "近两周", "2 小时 10 分钟", "愿望单打折", `"value":"1"`)
 
 	// Warm the page's locale before testing a failed refresh of that snapshot.
@@ -435,14 +445,15 @@ func TestWishlistRowShowsOnlyPositiveDiscount(t *testing.T) {
 	f := newFakeSteam(t, time.Second)
 	h := startTestHost(t, f, fixtureID, "", "")
 	for _, tc := range []struct{ locale, discount string }{
-		{"en-US", "40% off"},
-		{"zh-Hans", "优惠 40%"},
+		{"en-US", "-40%"},
+		{"zh-Hans", "-40%"},
 	} {
 		t.Run(tc.locale, func(t *testing.T) {
 			v := viewAnswer(t, h, wire.UIParams{Contribution: extensionID, Size: wire.SizeFull, Placement: wire.PlacementNavPage, UIVersion: 12, Locale: tc.locale})
 			rows := v.Sections[3].Items
-			if sale := rows[0]; sale.Value != "$3.99" || sale.Badge == nil || sale.Badge.Text != tc.discount {
-				t.Errorf("sale row should show the price and localized discount badge, got %q and %+v", sale.Value, sale.Badge)
+			if sale := rows[0]; sale.Value != "$3.99" || sale.Badge == nil || sale.Badge.Text != tc.discount || sale.Badge.Tone != wire.TonePositive ||
+				sale.Thumbnail == nil || sale.Thumbnail.Aspect != wire.ThumbnailAspectWide {
+				t.Errorf("sale row should show the price, green discount badge and wide thumbnail, got %q, %+v, %+v", sale.Value, sale.Badge, sale.Thumbnail)
 			}
 			if full := rows[1]; full.Value != "$6.99" || full.Subtitle != "" || full.Badge != nil {
 				t.Errorf("full-price row should show only the price, got %q, subtitle %q, and badge %+v", full.Value, full.Subtitle, full.Badge)
