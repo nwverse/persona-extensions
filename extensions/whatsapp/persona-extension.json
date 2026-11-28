@@ -1,0 +1,96 @@
+{
+  "manifest_version": 1,
+  "id": "whatsapp",
+  "name": "WhatsApp",
+  "version": "0.1.0",
+  "icon": "assets/icon.png",
+  "description": "用你自己的 WhatsApp 账号（多设备协议，纯 Go 实现，支持 HTTPS_PROXY / ALL_PROXY）：支持二维码扫码和手机号 8 位配对码登录，默认静默在线、本地实时索引与全文检索、按需向主设备回填历史、收件箱（私聊未读、群 @我 / 回复我，支持收件箱直接回复）、知识库归档、App 内会话页和助手工具。发消息、回复、表态和标为已读都先在手机上确认。登录设备状态与密钥加密存在 hub 的数据库里，不以明文落盘在扩展目录。",
+  "publisher": "nwverse",
+  "homepage": "https://github.com/nwverse/persona-extensions/blob/main/extensions/whatsapp/README.md",
+  "tags": ["聊天", "收件箱", "知识库", "WhatsApp"],
+  "engines": {
+    "persona": ">=202611041602",
+    "plugin_protocol": 1
+  },
+  "runtime": {
+    "command": {
+      "linux-amd64": "bin/whatsapp-linux-amd64",
+      "linux-arm64": "bin/whatsapp-linux-arm64",
+      "darwin-arm64": "bin/whatsapp-darwin-arm64",
+      "darwin-amd64": "bin/whatsapp-darwin-amd64"
+    }
+  },
+  "contributes": {
+    "connectors": [
+      {
+        "id": "whatsapp",
+        "name": "WhatsApp",
+        "capabilities": [
+          "status",
+          "tools",
+          "catalog",
+          "actions",
+          "events",
+          "inbox",
+          "archive",
+          "login",
+          "threads",
+          "fallback"
+        ],
+        "confirm_always": [
+          "whatsapp_send",
+          "whatsapp_react",
+          "whatsapp_mark_read"
+        ],
+        "kinds": [
+          "dm",
+          "mention"
+        ],
+        "kind_descriptions": {
+          "dm": "WhatsApp 里有人私聊用户，还没读",
+          "mention": "WhatsApp 群里 @ 了用户，或回复了用户的消息"
+        }
+      }
+    ],
+    "assistant": [
+      {
+        "id": "whatsapp",
+        "skills": [
+          "skills/whatsapp"
+        ]
+      }
+    ]
+  },
+  "configuration": {
+    "type": "object",
+    "properties": {
+      "triage_rules": {
+        "type": "string",
+        "title": "分拣规则",
+        "maxLength": 4000,
+        "description": "WhatsApp 的条目按什么分「需要你 / 知悉即可 / 噪音」，用你自己的话写；填了就只用它（只管 WhatsApp）。一般不在这里改：和助手说（比如「WhatsApp 里陌生人的私聊都算噪音」），它来改。写 \\n 换行；空着时私聊和 @你 都算「需要你」"
+      },
+      "quiet_presence": {
+        "type": "boolean",
+        "title": "静默在线状态",
+        "default": true,
+        "description": "默认开启。连上 WhatsApp 后保持离线状态（unavailable），避免联系人看到账号 24 小时在线。"
+      },
+      "max_storage_mb": {
+        "type": "integer",
+        "title": "本地消息索引上限（MB）",
+        "minimum": 16,
+        "maximum": 1024,
+        "default": 128,
+        "description": "本地 SQLite 消息索引库的空间上限；超出后自动按时间清理最旧消息缓存，不影响登录状态和已归档到知识库的内容。"
+      }
+    }
+  },
+  "permissions": {
+    "network": [
+      "web.whatsapp.com",
+      "*.whatsapp.net",
+      "*.whatsapp.com"
+    ]
+  }
+}

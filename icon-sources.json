@@ -1178,6 +1178,17 @@
       "usage": "Service icon used solely to identify this integration. The upstream 40x40 SVG rasterized with Google Chrome 147.0.7727.56 at 512x512, preserving its artwork and aspect ratio.",
       "transformation": "The upstream 40x40 SVG rasterized with Google Chrome 147.0.7727.56 at 512x512, preserving its artwork and aspect ratio."
     },
+    "whatsapp": {
+      "path": "assets/icon.png",
+      "source_id": "raycast",
+      "source_url": "https://raw.githubusercontent.com/raycast/extensions/dfa15bf5d53b5c97722f9d4df1b1e0af939a81ab/extensions/whatsapp/assets/whatsapp.png",
+      "sha256": "2f2c5a8f1f5a894229ba646644b5fca918e045650dd85fde0a0611b8e15bda3d",
+      "format": "png",
+      "width": 512,
+      "height": 512,
+      "trademark_owner": "WhatsApp LLC (Meta Platforms, Inc.)",
+      "usage": "Exact Raycast extension icon used to identify the corresponding public service."
+    },
     "wikipedia": {
       "path": "assets/icon.png",
       "source_id": "raycast",
