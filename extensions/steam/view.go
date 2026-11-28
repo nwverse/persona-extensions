@@ -47,15 +47,23 @@ type snapshot struct {
 }
 
 func (d *steamData) snapshot(ctx context.Context, storeLanguage string, refresh, includeLibrary bool) snapshot {
-	s := snapshot{player: d.account(ctx, presenceTTL, refresh)}
-	if _, issue := d.readID(s.player); issue != "" {
-		return s
-	}
+	var s snapshot
 	var reads sync.WaitGroup
-	reads.Go(func() { s.recent = d.recentGames(ctx, s.player, refresh) })
-	reads.Go(func() { s.wishlist = d.wishlist(ctx, s.player, storeLanguage, refresh) })
+	var profile reading[player]
+	if d.session != nil {
+		// The QR session pins the SteamID, so these reads can start before the profile returns.
+		reads.Go(func() { s.player = d.account(ctx, presenceTTL, refresh) })
+	} else {
+		profile = d.account(ctx, presenceTTL, refresh)
+		s.player = profile
+		if _, issue := d.readID(profile); issue != "" {
+			return s
+		}
+	}
+	reads.Go(func() { s.recent = d.recentGames(ctx, profile, refresh) })
+	reads.Go(func() { s.wishlist = d.wishlist(ctx, profile, storeLanguage, refresh) })
 	if includeLibrary {
-		reads.Go(func() { s.library = d.ownedGames(ctx, s.player, refresh) })
+		reads.Go(func() { s.library = d.ownedGames(ctx, profile, refresh) })
 	}
 	reads.Wait()
 	return s

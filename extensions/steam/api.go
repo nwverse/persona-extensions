@@ -45,6 +45,17 @@ type steamClient struct {
 }
 
 func steamHTTP(transport http.RoundTripper, timeout time.Duration) *http.Client {
+	if transport == nil {
+		t := http.DefaultTransport.(*http.Transport).Clone()
+		t.TLSHandshakeTimeout = 10 * time.Second
+		t.ResponseHeaderTimeout = httpTimeout
+		t.IdleConnTimeout = 45 * time.Second
+		t.HTTP2 = &http.HTTP2Config{
+			SendPingTimeout: 6 * time.Second,
+			PingTimeout:     3 * time.Second,
+		}
+		transport = t
+	}
 	return &http.Client{
 		Transport: transport,
 		Timeout:   timeout,
@@ -61,7 +72,7 @@ func (c steamClient) readJSON(ctx context.Context, target string, params, form u
 	return c.readBoundedJSON(ctx, target, params, form, authenticated, maxAPIBytes, out)
 }
 
-func (c steamClient) readBoundedJSON(ctx context.Context, target string, params, form url.Values, authenticated bool, maxBytes int64, out any) problem {
+func (c steamClient) readBoundedJSON(ctx context.Context, target string, params, form url.Values, authenticated bool, maxBytes int64, out any) (issue problem) {
 	method := http.MethodGet
 	var body io.Reader
 	if form != nil {
@@ -93,6 +104,11 @@ func (c steamClient) readBoundedJSON(ctx context.Context, target string, params,
 	if form != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	}
+	defer func() {
+		if issue == problemTimeout {
+			c.http.CloseIdleConnections()
+		}
+	}()
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return sanitizeError(err)

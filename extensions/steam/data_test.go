@@ -43,6 +43,13 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
+type idleTrackingTransport struct {
+	http.RoundTripper
+	idleCloses int
+}
+
+func (t *idleTrackingTransport) CloseIdleConnections() { t.idleCloses++ }
+
 func newFakeSteam(t *testing.T, timeout time.Duration) *fakeSteam {
 	return newFakeSteamMode(t, timeout, "")
 }
@@ -377,6 +384,50 @@ func TestQRReadErrorRedactsURLError(t *testing.T) {
 	assertHidden(t, out.Text+string(raw), access, saved.RefreshToken, requestID, firstQR, "access_token=", "steamids", apiBase)
 }
 
+func TestQRSnapshotReadsWhileProfileIsPending(t *testing.T) {
+	now := time.Now()
+	expires := now.Add(time.Hour)
+	access := fixtureJWT(t, fixtureID, expires, "snapshot-access")
+	f := newFakeSteamMode(t, 0, access)
+	releaseProfile := make(chan struct{})
+	f.handle(playerLinkPath, func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-releaseProfile:
+			_, _ = fmt.Fprintf(w, `{"response":{"accounts":[{"public_data":{"steamid":%q,"persona_name":"QR Pilot"}}]}}`, fixtureID)
+		case <-r.Context().Done():
+		}
+	})
+	q := &qrAuth{ctx: t.Context(), client: steamClient{http: f.http}, now: time.Now,
+		config: config{AuthMode: modeQR, CountryCode: "US"}}
+	q.mu.Lock()
+	q.installLocked(steamTokens{secret: fixtureSecret(t, fixtureID, now), refreshExpiry: expires, access: access, accessExpiry: expires})
+	d := q.session.reads
+	q.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
+	defer cancel()
+	result := make(chan snapshot, 1)
+	go func() { result <- d.snapshot(ctx, "english", false, true) }()
+	await(t, time.Second, func() bool {
+		return f.hit(playerLinkPath) == 1 && f.hit(recentPath) == 1 && f.hit(ownedPath) == 1 && f.hit(wishlistPath) == 1
+	})
+	close(releaseProfile)
+	select {
+	case s := <-result:
+		if s.player.Data == nil || s.recent.Data == nil || s.library.Data == nil || s.wishlist.Data == nil ||
+			s.player.Issue != "" || s.recent.Issue != "" || s.library.Issue != "" || s.wishlist.Issue != "" {
+			t.Fatalf("the parallel snapshot did not populate all sections: %+v", s)
+		}
+	case <-ctx.Done():
+		t.Fatal("parallel snapshot did not complete")
+	}
+	playtime, playtimeErr := d.stores.playtime.History(fixtureID)
+	prices, pricesErr := d.stores.prices.Histories(fixtureID, "US", firstApp)
+	if playtimeErr != nil || pricesErr != nil || len(playtime) != 1 || prices[firstApp].Latest.Final != 399 {
+		t.Fatal("parallel reads did not record the signed-in account's observations")
+	}
+}
+
 func TestSteamAccessTokenCannotFollowRedirect(t *testing.T) {
 	count := 0
 	c := steamClient{http: steamHTTP(roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -702,6 +753,8 @@ func TestSteamRedirectAndEchoCannotExposeKey(t *testing.T) {
 
 func TestHTTPTimeoutAndExpiredSnapshot(t *testing.T) {
 	f := newFakeSteam(t, 50*time.Millisecond)
+	transport := &idleTrackingTransport{RoundTripper: f.http.Transport}
+	f.http.Transport = transport
 	now := time.Now()
 	d := f.data(t.TempDir(), fixtureID, "", func() time.Time { return now })
 	ctx := context.Background()
@@ -714,8 +767,17 @@ func TestHTTPTimeoutAndExpiredSnapshot(t *testing.T) {
 	if r := d.recentGames(ctx, p, false); r.Data == nil || !r.Stale || r.Issue != problemTimeout {
 		t.Fatalf("timeout did not reuse a labeled snapshot: %+v", r)
 	}
+	f.handle(recentPath, func(w http.ResponseWriter, r *http.Request) {
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Error(err)
+		}
+		<-r.Context().Done()
+	})
 	now = now.Add(maxStaleAge)
 	if r := d.recentGames(ctx, p, false); r.Data != nil || r.Issue != problemTimeout {
 		t.Fatalf("old snapshot survived its age limit: %+v", r)
+	}
+	if transport.idleCloses != 2 || f.hit(recentPath) != 3 {
+		t.Fatalf("read timeouts should drain idle connections without retrying: closes=%d reads=%d", transport.idleCloses, f.hit(recentPath))
 	}
 }
